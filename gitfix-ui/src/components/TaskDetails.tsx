@@ -268,9 +268,9 @@ const TaskDetails: React.FC = () => {
   const historyItemWithPaths = history.find(item => item.promptPath || item.logsPath);
 
   return (
-    <div className="border border-gray-700 rounded-lg p-6 bg-gray-800">
-      <div className="flex justify-between items-center mb-4">
-        <h3 className="text-xl font-semibold text-white break-all">Task History: {taskId}</h3>
+    <div>
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-2xl font-bold text-white break-all">Task History: {taskId}</h2>
         <button
           className="px-4 py-2 bg-gray-700 text-gray-200 rounded-md hover:bg-gray-600 transition-colors"
           onClick={() => navigate('/tasks')}
@@ -446,128 +446,130 @@ const TaskDetails: React.FC = () => {
         </div>
       )}
 
-      {history.length === 0 ? (
-        <p className="text-gray-400 text-center">No history found for this task</p>
-      ) : (
-        <div className="flex flex-col gap-4">
-          {history.map((item, index) => (
-            <div
-              key={index}
-              className="border border-gray-700 rounded-md p-4 bg-gray-700/50"
-            >
-              <div className="flex justify-between items-start mb-3">
-                <h4 className="font-semibold text-white capitalize text-lg">
-                  {item.event ? item.event.replace(/_/g, ' ') : item.state ? item.state.replace(/_/g, ' ') : 'Unknown Event'}
-                </h4>
-                <span className="text-sm text-gray-400">
-                  {formatDate(item.timestamp)}
-                </span>
+      <div className="border border-gray-700 rounded-lg bg-gray-800">
+        {history.length === 0 ? (
+          <p className="text-gray-400 text-center p-8">No history found for this task</p>
+        ) : (
+          <div className="flex flex-col gap-4 p-6">
+            {history.map((item, index) => (
+              <div
+                key={index}
+                className="border border-gray-700 rounded-md p-4 bg-gray-700/50"
+              >
+                <div className="flex justify-between items-start mb-3">
+                  <h4 className="font-semibold text-white capitalize text-lg">
+                    {item.event ? item.event.replace(/_/g, ' ') : item.state ? item.state.replace(/_/g, ' ') : 'Unknown Event'}
+                  </h4>
+                  <span className="text-sm text-gray-400">
+                    {formatDate(item.timestamp)}
+                  </span>
+                </div>
+                
+                {item.reason && (
+                  <p className="text-gray-400 italic mb-2">
+                    {item.reason}
+                  </p>
+                )}
+
+                {item.error && (
+                  <p className="my-2 text-red-400">
+                    Error: {item.error}
+                  </p>
+                )}
+
+                {item.message && (
+                  <p className="text-gray-300 mb-2">
+                    {item.message}
+                  </p>
+                )}
+                
+                {item.metadata && (item.metadata.sessionId || item.metadata.conversationId || item.metadata.model || item.metadata.duration || item.metadata.conversationTurns || item.metadata.success !== undefined || item.metadata.pullRequest || item.metadata.githubComment) && (
+                  <div className="mt-3 space-y-2">
+                    <div className="p-3 bg-gray-800 rounded-md space-y-2">
+                      {item.metadata.sessionId && (
+                        <div className="text-sm text-gray-300">
+                          <strong>Session ID:</strong> <code className="bg-gray-900 px-2 py-1 rounded">{item.metadata.sessionId}</code>
+                        </div>
+                      )}
+                      {item.metadata.conversationId && (
+                        <div className="text-sm text-gray-300">
+                          <strong>Conversation ID:</strong> <code className="bg-gray-900 px-2 py-1 rounded">{item.metadata.conversationId}</code>
+                        </div>
+                      )}
+                      {item.metadata.model && (
+                        <div className="text-sm text-gray-300">
+                          <strong>Model:</strong> <span className="text-blue-400">{item.metadata.model}</span>
+                        </div>
+                      )}
+                      {item.metadata.duration && (
+                        <div className="text-sm text-gray-300">
+                          <strong>Duration:</strong> {(item.metadata.duration / 1000).toFixed(2)}s
+                        </div>
+                      )}
+                      {item.metadata.conversationTurns && (
+                        <div className="text-sm text-gray-300">
+                          <strong>Conversation Turns:</strong> {item.metadata.conversationTurns}
+                        </div>
+                      )}
+                      {item.metadata.success !== undefined && (
+                        <div className="text-sm text-gray-300">
+                          <strong>Success:</strong> <span className={item.metadata.success ? 'text-green-400' : 'text-red-400'}>{item.metadata.success ? 'Yes' : 'No'}</span>
+                        </div>
+                      )}
+                      {item.metadata.pullRequest && (
+                        <div className="text-sm text-gray-300">
+                          <strong>Pull Request:</strong> <a 
+                            href={item.metadata.pullRequest.url} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-blue-400 hover:text-blue-300 underline ml-1"
+                          >
+                            #{item.metadata.pullRequest.number}
+                          </a>
+                        </div>
+                      )}
+                      {item.metadata.githubComment && (
+                        <div className="text-sm text-gray-300">
+                          <strong>GitHub Comment:</strong> <a 
+                            href={item.metadata.githubComment.url} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-blue-400 hover:text-blue-300 underline ml-1"
+                          >
+                            View Comment
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {item.metadata?.githubComment?.body && (
+                  <div className="mt-3 p-3 bg-gray-900/50 rounded-md border border-gray-600">
+                    <div className="text-sm text-gray-400 mb-2 font-semibold">Comment Posted:</div>
+                    <div className="text-sm text-gray-300 whitespace-pre-wrap">
+                      {item.metadata.githubComment.body}
+                    </div>
+                  </div>
+                )}
+                
+                {item.prUrl && (
+                  <div className="mt-3">
+                    <a
+                      href={item.prUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-400 hover:text-blue-300 underline"
+                    >
+                      View Pull Request
+                    </a>
+                  </div>
+                )}
               </div>
-              
-              {item.reason && (
-                <p className="text-gray-400 italic mb-2">
-                  {item.reason}
-                </p>
-              )}
-
-              {item.error && (
-                <p className="my-2 text-red-400">
-                  Error: {item.error}
-                </p>
-              )}
-
-              {item.message && (
-                <p className="text-gray-300 mb-2">
-                  {item.message}
-                </p>
-              )}
-              
-              {item.metadata && (item.metadata.sessionId || item.metadata.conversationId || item.metadata.model || item.metadata.duration || item.metadata.conversationTurns || item.metadata.success !== undefined || item.metadata.pullRequest || item.metadata.githubComment) && (
-                <div className="mt-3 space-y-2">
-                  <div className="p-3 bg-gray-800 rounded-md space-y-2">
-                    {item.metadata.sessionId && (
-                      <div className="text-sm text-gray-300">
-                        <strong>Session ID:</strong> <code className="bg-gray-900 px-2 py-1 rounded">{item.metadata.sessionId}</code>
-                      </div>
-                    )}
-                    {item.metadata.conversationId && (
-                      <div className="text-sm text-gray-300">
-                        <strong>Conversation ID:</strong> <code className="bg-gray-900 px-2 py-1 rounded">{item.metadata.conversationId}</code>
-                      </div>
-                    )}
-                    {item.metadata.model && (
-                      <div className="text-sm text-gray-300">
-                        <strong>Model:</strong> <span className="text-blue-400">{item.metadata.model}</span>
-                      </div>
-                    )}
-                    {item.metadata.duration && (
-                      <div className="text-sm text-gray-300">
-                        <strong>Duration:</strong> {(item.metadata.duration / 1000).toFixed(2)}s
-                      </div>
-                    )}
-                    {item.metadata.conversationTurns && (
-                      <div className="text-sm text-gray-300">
-                        <strong>Conversation Turns:</strong> {item.metadata.conversationTurns}
-                      </div>
-                    )}
-                    {item.metadata.success !== undefined && (
-                      <div className="text-sm text-gray-300">
-                        <strong>Success:</strong> <span className={item.metadata.success ? 'text-green-400' : 'text-red-400'}>{item.metadata.success ? 'Yes' : 'No'}</span>
-                      </div>
-                    )}
-                    {item.metadata.pullRequest && (
-                      <div className="text-sm text-gray-300">
-                        <strong>Pull Request:</strong> <a 
-                          href={item.metadata.pullRequest.url} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="text-blue-400 hover:text-blue-300 underline ml-1"
-                        >
-                          #{item.metadata.pullRequest.number}
-                        </a>
-                      </div>
-                    )}
-                    {item.metadata.githubComment && (
-                      <div className="text-sm text-gray-300">
-                        <strong>GitHub Comment:</strong> <a 
-                          href={item.metadata.githubComment.url} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="text-blue-400 hover:text-blue-300 underline ml-1"
-                        >
-                          View Comment
-                        </a>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {item.metadata?.githubComment?.body && (
-                <div className="mt-3 p-3 bg-gray-900/50 rounded-md border border-gray-600">
-                  <div className="text-sm text-gray-400 mb-2 font-semibold">Comment Posted:</div>
-                  <div className="text-sm text-gray-300 whitespace-pre-wrap">
-                    {item.metadata.githubComment.body}
-                  </div>
-                </div>
-              )}
-              
-              {item.prUrl && (
-                <div className="mt-3">
-                  <a
-                    href={item.prUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-400 hover:text-blue-300 underline"
-                  >
-                    View Pull Request
-                  </a>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </div>
 
       {selectedPrompt && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
