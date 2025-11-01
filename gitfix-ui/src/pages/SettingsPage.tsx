@@ -286,7 +286,7 @@ const SettingsPage: React.FC = () => {
                 onChange={handleSettingChange}
                 rows={3}
                 placeholder="Comma-separated list of GitHub usernames (e.g., user1, user2)"
-                className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm"
+                className="w-full px-3 py-2 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm"
               />
               <p className="mt-1 text-sm text-gray-600">
                 Only process issues from these GitHub users. Leave empty to process from all users.
@@ -296,10 +296,10 @@ const SettingsPage: React.FC = () => {
             <button
               onClick={handleSaveSettings}
               disabled={saving}
-              className={`px-6 py-3 text-white font-medium rounded-md transition-colors ${
+              className={`px-6 py-3 font-medium rounded-md transition-colors ${
                 saving
-                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  : 'bg-primary-600 hover:bg-primary-700 cursor-pointer'
+                  ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                  : 'bg-primary-600 text-white hover:bg-primary-700 cursor-pointer'
               }`}
             >
               {saving ? 'Saving...' : 'Save Settings'}
@@ -354,10 +354,10 @@ const SettingsPage: React.FC = () => {
             <button
               onClick={handleSavePrLabel}
               disabled={prLabelSaving || !settings.pr_label || settings.pr_label.trim() === ''}
-              className={`px-6 py-3 text-white font-medium rounded-md transition-colors ${
+              className={`px-6 py-3 font-medium rounded-md transition-colors ${
                 prLabelSaving || !settings.pr_label || settings.pr_label.trim() === ''
-                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  : 'bg-primary-600 hover:bg-primary-700 cursor-pointer'
+                  ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                  : 'bg-primary-600 text-white hover:bg-primary-700 cursor-pointer'
               }`}
             >
               {prLabelSaving ? 'Saving...' : 'Save PR Label'}
@@ -397,15 +397,15 @@ const SettingsPage: React.FC = () => {
                 onChange={(e) => setNewPrimaryLabel(e.target.value)}
                 onKeyPress={(e: React.KeyboardEvent) => e.key === 'Enter' && handleAddPrimaryLabel()}
                 placeholder="Add a label (e.g., AI, gitfix)"
-                className="flex-1 px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="flex-1 px-3 py-2 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
               />
               <button
                 onClick={handleAddPrimaryLabel}
                 disabled={!newPrimaryLabel || primaryLabels.includes(newPrimaryLabel)}
-                className={`px-4 py-2 text-white font-medium rounded-md transition-colors ${
+                className={`px-4 py-2 font-medium rounded-md transition-colors ${
                   !newPrimaryLabel || primaryLabels.includes(newPrimaryLabel)
-                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                    : 'bg-green-600 hover:bg-green-700 cursor-pointer'
+                    ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                    : 'bg-green-600 text-white hover:bg-green-700 cursor-pointer'
                 }`}
               >
                 Add Label
@@ -441,10 +441,10 @@ const SettingsPage: React.FC = () => {
             <button
               onClick={handleSavePrimaryProcessingLabels}
               disabled={primaryLabelsSaving || primaryLabels.length === 0}
-              className={`px-6 py-3 text-white font-medium rounded-md transition-colors ${
+              className={`px-6 py-3 font-medium rounded-md transition-colors ${
                 primaryLabelsSaving || primaryLabels.length === 0
-                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  : 'bg-primary-600 hover:bg-primary-700 cursor-pointer'
+                  ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                  : 'bg-primary-600 text-white hover:bg-primary-700 cursor-pointer'
               }`}
             >
               {primaryLabelsSaving ? 'Saving...' : 'Save Primary Processing Labels'}
@@ -483,15 +483,15 @@ const SettingsPage: React.FC = () => {
                 onChange={(e) => setNewKeyword(e.target.value)}
                 onKeyPress={(e: React.KeyboardEvent) => e.key === 'Enter' && handleAddKeyword()}
                 placeholder="Add a keyword (e.g., GITFIX)"
-                className="flex-1 px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="flex-1 px-3 py-2 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
               />
               <button
                 onClick={handleAddKeyword}
                 disabled={!newKeyword || keywords.includes(newKeyword)}
-                className={`px-4 py-2 text-white font-medium rounded-md transition-colors ${
+                className={`px-4 py-2 font-medium rounded-md transition-colors ${
                   !newKeyword || keywords.includes(newKeyword)
-                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                    : 'bg-green-600 hover:bg-green-700 cursor-pointer'
+                    ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                    : 'bg-green-600 text-white hover:bg-green-700 cursor-pointer'
                 }`}
               >
                 Add Keyword
@@ -523,10 +523,10 @@ const SettingsPage: React.FC = () => {
             <button
               onClick={handleSaveKeywords}
               disabled={keywordsSaving || keywords.length === 0}
-              className={`px-6 py-3 text-white font-medium rounded-md transition-colors ${
+              className={`px-6 py-3 font-medium rounded-md transition-colors ${
                 keywordsSaving || keywords.length === 0
-                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  : 'bg-primary-600 hover:bg-primary-700 cursor-pointer'
+                  ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                  : 'bg-primary-600 text-white hover:bg-primary-700 cursor-pointer'
               }`}
             >
               {keywordsSaving ? 'Saving...' : 'Save Keywords'}

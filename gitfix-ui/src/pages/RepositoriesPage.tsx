@@ -120,10 +120,10 @@ const RepositoriesPage: React.FC = () => {
         <button
           onClick={handleAddRepo}
           disabled={!newRepo || repos.some(r => r.name === newRepo)}
-          className={`px-4 py-2 text-white font-medium rounded-md transition-colors ${
+          className={`px-4 py-2 font-medium rounded-md transition-colors ${
             !newRepo || repos.some(r => r.name === newRepo)
-              ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-              : 'bg-green-600 hover:bg-green-700 cursor-pointer'
+              ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+              : 'bg-green-600 text-white hover:bg-green-700 cursor-pointer'
           }`}
         >
           Add Repository
@@ -168,10 +168,10 @@ const RepositoriesPage: React.FC = () => {
       <button
         onClick={handleSave}
         disabled={saving || repos.length === 0}
-        className={`px-6 py-3 text-white font-medium rounded-md transition-colors ${
+        className={`px-6 py-3 font-medium rounded-md transition-colors ${
           saving || repos.length === 0
-            ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-            : 'bg-primary-600 hover:bg-primary-700 cursor-pointer'
+            ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+            : 'bg-primary-600 text-white hover:bg-primary-700 cursor-pointer'
         }`}
       >
         {saving ? 'Saving...' : 'Save Changes'}
