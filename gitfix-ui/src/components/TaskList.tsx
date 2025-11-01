@@ -98,18 +98,18 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
     return `${minutes}m ${seconds}s${suffix}`;
   };
 
-  if (loading && tasks.length === 0) return <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 text-gray-400">Loading tasks...</div>;
-  if (error) return <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 text-red-400">Error loading tasks: {error}</div>;
+  if (loading && tasks.length === 0) return <div className="text-gray-500">Loading tasks...</div>;
+  if (error) return <div className="text-red-600">Error loading tasks: {error}</div>;
 
   return (
-    <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 mt-4">
+    <div>
       <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-semibold text-white">Tasks</h3>
+        <h3 className="text-lg font-semibold text-gray-900">Tasks</h3>
         <div className="flex items-center gap-4">
           <select 
             value={filter} 
             onChange={(e) => setFilter(e.target.value)}
-            className="px-3 py-2 bg-gray-700 border border-gray-600 text-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer"
+            className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer"
           >
             <option value="all">All Tasks</option>
             <option value="active">Active</option>
@@ -118,7 +118,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
             <option value="waiting">Waiting</option>
           </select>
           {showViewAll && (
-            <Link to="/tasks" className="text-blue-400 hover:text-blue-300 transition-colors">
+            <Link to="/tasks" className="text-primary-600 hover:text-primary-700 transition-colors">
               View All Tasks
             </Link>
           )}
@@ -126,40 +126,40 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
       </div>
 
       {tasks.length === 0 ? (
-        <p className="text-gray-400 text-center py-8">No tasks found</p>
+        <p className="text-gray-500 text-center py-8">No tasks found</p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg shadow-sm">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-gray-700">
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-400 uppercase tracking-wider">Repository</th>
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-400 uppercase tracking-wider">Issue/Task</th>
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-400 uppercase tracking-wider">Status</th>
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-400 uppercase tracking-wider">Created</th>
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-400 uppercase tracking-wider">Duration</th>
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-400 uppercase tracking-wider">Actions</th>
+              <tr className="border-b border-gray-200">
+                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Repository</th>
+                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Issue/Task</th>
+                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-700">
+            <tbody className="divide-y divide-gray-200">
               {tasks.map((task, index) => (
                 <tr 
                   key={task.id}
-                  className={`hover:bg-gray-700/50 transition-colors cursor-pointer ${
-                    index % 2 === 0 ? 'bg-gray-800/50' : 'bg-gray-800/30'
+                  className={`hover:bg-gray-50 transition-colors cursor-pointer ${
+                    index % 2 === 0 ? 'bg-white' : 'bg-light-100/50'
                   }`}
                 >
-                  <td className="py-4 px-4 text-sm text-gray-300">
+                  <td className="py-4 px-4 text-sm text-gray-600">
                     {task.repository || 'Unknown'}
                   </td>
                   <td className="py-4 px-4">
-                    <div className="font-medium text-gray-200">
+                    <div className="font-medium text-gray-800">
                       {task.id.startsWith('pr-comments-batch') ? 
                         `PR #${task.issueNumber || 'N/A'} Comments` : 
                         task.issueNumber ? `Issue #${task.issueNumber}` : 'Task'
                       }
                     </div>
                     {task.title && (
-                      <div className="text-sm text-gray-400 mt-1">
+                      <div className="text-sm text-gray-500 mt-1">
                         {task.title.substring(0, 60)}
                         {task.title.length > 60 && '...'}
                       </div>
@@ -173,15 +173,15 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
                       </span>
                     </div>
                   </td>
-                  <td className="py-4 px-4 text-sm text-gray-300">
+                  <td className="py-4 px-4 text-sm text-gray-600">
                     {formatDate(task.createdAt)}
                   </td>
-                  <td className="py-4 px-4 text-sm text-gray-300">
+                  <td className="py-4 px-4 text-sm text-gray-600">
                     {formatDuration(task.processedAt || task.createdAt, task.completedAt, task.status)}
                   </td>
                   <td className="py-4 px-4">
                     <Link to={`/tasks/${task.id}`}>
-                      <button className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md transition-colors">
+                      <button className="px-3 py-1.5 bg-primary-600 hover:bg-primary-700 text-white text-sm rounded-md transition-colors">
                         View Details
                       </button>
                     </Link>

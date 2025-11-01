@@ -40,11 +40,11 @@ const SystemStatus: React.FC = () => {
   }, []);
 
   if (loading && !status) {
-    return <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 min-w-[300px] text-gray-400">Loading System Status...</div>;
+    return <div className="text-gray-500">Loading System Status...</div>;
   }
 
   if (error) {
-    return <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 min-w-[300px] text-red-400">Error: {error}</div>;
+    return <div className="text-red-600">Error: {error}</div>;
   }
 
   const getStatusColor = (status?: string): string => {
@@ -53,16 +53,16 @@ const SystemStatus: React.FC = () => {
       case 'connected':
       case 'authenticated':
       case 'active':
-        return '#10b981'; // green-500
+        return '#16A34A'; // green-600
       case 'stopped':
       case 'disconnected':
       case 'failed':
       case 'error':
         return '#ef4444'; // red-500
       case 'idle':
-        return '#f59e0b'; // amber-500
+        return '#F59E0B'; // amber-500
       default:
-        return '#6b7280'; // gray-500
+        return '#6B7280'; // gray-500
     }
   };
 
@@ -74,35 +74,35 @@ const SystemStatus: React.FC = () => {
   };
 
   return (
-    <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 min-w-[300px]">
-      <h3 className="text-lg font-semibold text-white mb-6">System Status</h3>
-      <div className="flex flex-col gap-3">
-        <div className="flex justify-between items-center py-2 border-b border-gray-700">
-          <span className="font-medium text-gray-400">Daemon:</span>
+    <div className="min-w-[300px]">
+      <h3 className="text-lg font-semibold text-gray-900 mb-6">System Status</h3>
+      <div className="flex flex-col gap-3 bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+        <div className="flex justify-between items-center py-2 border-b border-gray-200">
+          <span className="font-medium text-gray-600">Daemon:</span>
           <span className="font-semibold" style={{ color: getStatusColor(status?.daemon) }}>
             {status?.daemon || 'Unknown'}
           </span>
         </div>
-        <div className="flex justify-between items-center py-2 border-b border-gray-700">
-          <span className="font-medium text-gray-400">Workers:</span>
-          <span className="font-semibold text-gray-200">
+        <div className="flex justify-between items-center py-2 border-b border-gray-200">
+          <span className="font-medium text-gray-600">Workers:</span>
+          <span className="font-semibold text-gray-700">
             {getWorkerStatus()}
           </span>
         </div>
-        <div className="flex justify-between items-center py-2 border-b border-gray-700">
-          <span className="font-medium text-gray-400">Redis:</span>
+        <div className="flex justify-between items-center py-2 border-b border-gray-200">
+          <span className="font-medium text-gray-600">Redis:</span>
           <span className="font-semibold" style={{ color: getStatusColor(status?.redis) }}>
             {status?.redis || 'Unknown'}
           </span>
         </div>
-        <div className="flex justify-between items-center py-2 border-b border-gray-700">
-          <span className="font-medium text-gray-400">GitHub Auth:</span>
+        <div className="flex justify-between items-center py-2 border-b border-gray-200">
+          <span className="font-medium text-gray-600">GitHub Auth:</span>
           <span className="font-semibold" style={{ color: getStatusColor(status?.githubAuth) }}>
             {status?.githubAuth || 'Unknown'}
           </span>
         </div>
         <div className="flex justify-between items-center py-2">
-          <span className="font-medium text-gray-400">Claude Auth:</span>
+          <span className="font-medium text-gray-600">Claude Auth:</span>
           <span className="font-semibold" style={{ color: getStatusColor(status?.claudeAuth) }}>
             {status?.claudeAuth || 'Unknown'}
           </span>
