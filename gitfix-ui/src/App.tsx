@@ -12,8 +12,8 @@ import { getSystemStatus } from './api/gitfixApi'
 const App: React.FC = () => {
   useEffect(() => {
     const favicon = document.getElementById('favicon') as HTMLLinkElement | null;
-    const defaultFavicon = '/logo.svg';
-    const loadingFavicon = '/logo-loading.svg';
+    const defaultFavicon = '/logo.png';
+    const loadingFavicon = '/logo-loading.png';
 
     const updateFavicon = async () => {
       try {

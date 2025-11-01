@@ -98,11 +98,11 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
     return `${minutes}m ${seconds}s${suffix}`;
   };
 
-  if (loading && tasks.length === 0) return <div className="bg-white border border-gray-200 rounded-lg p-6 text-gray-500 shadow-sm">Loading tasks...</div>;
-  if (error) return <div className="bg-white border border-gray-200 rounded-lg p-6 text-red-600 shadow-sm">Error loading tasks: {error}</div>;
+  if (loading && tasks.length === 0) return <div className="text-gray-500">Loading tasks...</div>;
+  if (error) return <div className="text-red-600">Error loading tasks: {error}</div>;
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 mt-4 shadow-sm">
+    <div>
       <div className="flex justify-between items-center mb-4">
         <h3 className="text-lg font-semibold text-gray-900">Tasks</h3>
         <div className="flex items-center gap-4">
@@ -128,7 +128,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
       {tasks.length === 0 ? (
         <p className="text-gray-500 text-center py-8">No tasks found</p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg shadow-sm">
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-200">

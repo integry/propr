@@ -40,11 +40,11 @@ const SystemStatus: React.FC = () => {
   }, []);
 
   if (loading && !status) {
-    return <div className="bg-white border border-gray-200 rounded-lg p-6 min-w-[300px] text-gray-500 shadow-sm">Loading System Status...</div>;
+    return <div className="text-gray-500">Loading System Status...</div>;
   }
 
   if (error) {
-    return <div className="bg-white border border-gray-200 rounded-lg p-6 min-w-[300px] text-red-600 shadow-sm">Error: {error}</div>;
+    return <div className="text-red-600">Error: {error}</div>;
   }
 
   const getStatusColor = (status?: string): string => {
@@ -74,9 +74,9 @@ const SystemStatus: React.FC = () => {
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 min-w-[300px] shadow-sm">
+    <div className="min-w-[300px]">
       <h3 className="text-lg font-semibold text-gray-900 mb-6">System Status</h3>
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-3 bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
         <div className="flex justify-between items-center py-2 border-b border-gray-200">
           <span className="font-medium text-gray-600">Daemon:</span>
           <span className="font-semibold" style={{ color: getStatusColor(status?.daemon) }}>

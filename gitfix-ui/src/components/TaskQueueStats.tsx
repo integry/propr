@@ -34,11 +34,11 @@ const TaskQueueStats: React.FC = () => {
   }, []);
 
   if (loading && !stats) {
-    return <div className="bg-white border border-gray-200 rounded-lg p-6 min-w-[300px] text-gray-500 shadow-sm">Loading Queue Stats...</div>;
+    return <div className="text-gray-500">Loading Queue Stats...</div>;
   }
 
   if (error) {
-    return <div className="bg-white border border-gray-200 rounded-lg p-6 min-w-[300px] text-red-600 shadow-sm">Error: {error}</div>;
+    return <div className="text-red-600">Error: {error}</div>;
   }
 
   const getStatColor = (type: string, value: number): string => {
@@ -50,9 +50,9 @@ const TaskQueueStats: React.FC = () => {
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 min-w-[300px] shadow-sm">
+    <div className="min-w-[300px]">
       <h3 className="text-lg font-semibold text-gray-900 mb-6">Task Queue</h3>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-4 bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
         <div className="stat-item bg-gray-50 rounded-lg p-4 text-center border border-gray-200">
           <div className="text-sm text-gray-500 mb-1">Active</div>
           <div className="text-3xl font-bold" style={{ color: getStatColor('active', stats?.active) }}>
