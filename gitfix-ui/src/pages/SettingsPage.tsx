@@ -235,30 +235,30 @@ const SettingsPage: React.FC = () => {
 
   return (
     <div className="max-w-4xl">
-      <h2 className="text-white text-2xl font-semibold mb-8">Settings</h2>
+      <h2 className="text-gray-900 text-2xl font-semibold mb-8">Settings</h2>
       
       {/* General Settings Section */}
       <div className="mb-8">
-        <h3 className="text-white text-xl font-semibold mb-4">General Settings</h3>
+        <h3 className="text-gray-900 text-xl font-semibold mb-4">General Settings</h3>
         
         {error && (
-          <div className="mb-4 p-4 bg-red-900/20 border border-red-700 rounded-md text-red-400">
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
             {error}
           </div>
         )}
         
         {success && (
-          <div className="mb-4 p-4 bg-green-900/20 border border-green-700 rounded-md text-green-400">
+          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-md text-green-700">
             {success}
           </div>
         )}
         
         {loading ? (
-          <p className="text-gray-400">Loading settings...</p>
+          <p className="text-gray-600">Loading settings...</p>
         ) : (
           <div className="space-y-4">
             <div>
-              <label className="block text-gray-400 mb-2" htmlFor="worker_concurrency">
+              <label className="block text-gray-700 mb-2" htmlFor="worker_concurrency">
                 Worker Concurrency
               </label>
               <input
@@ -268,15 +268,15 @@ const SettingsPage: React.FC = () => {
                 value={settings.worker_concurrency}
                 onChange={handleSettingChange}
                 placeholder="Number of concurrent workers (e.g., 2)"
-                className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-3 py-2 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
               />
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-sm text-gray-600">
                 Controls how many issues can be processed simultaneously
               </p>
             </div>
 
             <div>
-              <label className="block text-gray-400 mb-2" htmlFor="github_user_whitelist">
+              <label className="block text-gray-700 mb-2" htmlFor="github_user_whitelist">
                 GitHub User Whitelist
               </label>
               <textarea
@@ -288,7 +288,7 @@ const SettingsPage: React.FC = () => {
                 placeholder="Comma-separated list of GitHub usernames (e.g., user1, user2)"
                 className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm"
               />
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-sm text-gray-600">
                 Only process issues from these GitHub users. Leave empty to process from all users.
               </p>
             </div>
@@ -298,8 +298,8 @@ const SettingsPage: React.FC = () => {
               disabled={saving}
               className={`px-6 py-3 text-white font-medium rounded-md transition-colors ${
                 saving
-                  ? 'bg-gray-600 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  : 'bg-primary-600 hover:bg-primary-700 cursor-pointer'
               }`}
             >
               {saving ? 'Saving...' : 'Save Settings'}
@@ -310,31 +310,31 @@ const SettingsPage: React.FC = () => {
 
       {/* PR Label Section */}
       <div className="mb-8">
-        <h3 className="text-white text-xl font-semibold mb-4">PR Label</h3>
-        <p className="text-gray-400 mb-4">
+        <h3 className="text-gray-900 text-xl font-semibold mb-4">PR Label</h3>
+        <p className="text-gray-600 mb-4">
           Configure the label that will be automatically added to all PRs created by GitFix. 
           Only PRs with this label will be monitored for follow-up comments.
         </p>
         
         {prLabelError && (
-          <div className="mb-4 p-4 bg-red-900/20 border border-red-700 rounded-md text-red-400">
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
             {prLabelError}
           </div>
         )}
         
         {prLabelSuccess && (
-          <div className="mb-4 p-4 bg-green-900/20 border border-green-700 rounded-md text-green-400">
+          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-md text-green-700">
             {prLabelSuccess}
           </div>
         )}
         
         {prLabelLoading ? (
-          <p className="text-gray-400">Loading PR label...</p>
+          <p className="text-gray-600">Loading PR label...</p>
         ) : (
           <div className="space-y-4">
             <div>
-              <label className="block text-gray-400 mb-2" htmlFor="pr_label">
-                PR Label <span className="text-red-500">*</span>
+              <label className="block text-gray-700 mb-2" htmlFor="pr_label">
+                PR Label <span className="text-red-600">*</span>
               </label>
               <input
                 type="text"
@@ -344,9 +344,9 @@ const SettingsPage: React.FC = () => {
                 onChange={handleSettingChange}
                 placeholder="e.g., gitfix"
                 required
-                className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-3 py-2 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
               />
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-sm text-gray-600">
                 This label will be added to all PRs created by GitFix and used to filter follow-up comments
               </p>
             </div>
@@ -356,8 +356,8 @@ const SettingsPage: React.FC = () => {
               disabled={prLabelSaving || !settings.pr_label || settings.pr_label.trim() === ''}
               className={`px-6 py-3 text-white font-medium rounded-md transition-colors ${
                 prLabelSaving || !settings.pr_label || settings.pr_label.trim() === ''
-                  ? 'bg-gray-600 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  : 'bg-primary-600 hover:bg-primary-700 cursor-pointer'
               }`}
             >
               {prLabelSaving ? 'Saving...' : 'Save PR Label'}
@@ -368,27 +368,27 @@ const SettingsPage: React.FC = () => {
 
       {/* Primary Processing Labels Section */}
       <div className="mb-8">
-        <h3 className="text-white text-xl font-semibold mb-4">Primary Processing Labels</h3>
-        <p className="text-gray-400 mb-4">
+        <h3 className="text-gray-900 text-xl font-semibold mb-4">Primary Processing Labels</h3>
+        <p className="text-gray-600 mb-4">
           Configure multiple primary labels that GitFix uses to identify issues for processing. 
           Issues with any of these labels will be automatically processed. State labels (-processing, -done) 
           are dynamically generated based on the specific label found on each issue.
         </p>
         
         {primaryLabelsError && (
-          <div className="mb-4 p-4 bg-red-900/20 border border-red-700 rounded-md text-red-400">
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
             {primaryLabelsError}
           </div>
         )}
         
         {primaryLabelsSuccess && (
-          <div className="mb-4 p-4 bg-green-900/20 border border-green-700 rounded-md text-green-400">
+          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-md text-green-700">
             {primaryLabelsSuccess}
           </div>
         )}
         
         {primaryLabelsLoading ? (
-          <p className="text-gray-400">Loading primary processing labels...</p>
+          <p className="text-gray-600">Loading primary processing labels...</p>
         ) : (
           <>
             <div className="flex gap-4 mb-4">
@@ -404,7 +404,7 @@ const SettingsPage: React.FC = () => {
                 disabled={!newPrimaryLabel || primaryLabels.includes(newPrimaryLabel)}
                 className={`px-4 py-2 text-white font-medium rounded-md transition-colors ${
                   !newPrimaryLabel || primaryLabels.includes(newPrimaryLabel)
-                    ? 'bg-gray-600 cursor-not-allowed'
+                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                     : 'bg-green-600 hover:bg-green-700 cursor-pointer'
                 }`}
               >
@@ -416,9 +416,9 @@ const SettingsPage: React.FC = () => {
               {primaryLabels.map(label => (
                 <div
                   key={label}
-                  className="flex items-center justify-between px-4 py-3 bg-gray-700 rounded-md"
+                  className="flex items-center justify-between px-4 py-3 bg-gray-50 border border-gray-200 rounded-md"
                 >
-                  <span className="font-mono text-white">{label}</span>
+                  <span className="font-mono text-gray-900">{label}</span>
                   <button
                     onClick={() => handleRemovePrimaryLabel(label)}
                     className="bg-red-600 hover:bg-red-700 text-xs px-3 py-1 text-white rounded-md font-medium transition-colors"
@@ -428,12 +428,12 @@ const SettingsPage: React.FC = () => {
                 </div>
               ))}
               {primaryLabels.length === 0 && (
-                <p className="text-gray-400 text-center py-8">
+                <p className="text-gray-600 text-center py-8">
                   No labels configured. Add at least one label to enable issue processing.
                 </p>
               )}
             </div>
-            <p className="text-sm text-gray-500 mb-4">
+            <p className="text-sm text-gray-600 mb-4">
               Issues with any of these labels will be processed. For each label, state labels will be 
               automatically generated (e.g., "AI-processing", "AI-done", "gitfix-processing", "gitfix-done")
             </p>
@@ -443,8 +443,8 @@ const SettingsPage: React.FC = () => {
               disabled={primaryLabelsSaving || primaryLabels.length === 0}
               className={`px-6 py-3 text-white font-medium rounded-md transition-colors ${
                 primaryLabelsSaving || primaryLabels.length === 0
-                  ? 'bg-gray-600 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  : 'bg-primary-600 hover:bg-primary-700 cursor-pointer'
               }`}
             >
               {primaryLabelsSaving ? 'Saving...' : 'Save Primary Processing Labels'}
@@ -455,26 +455,26 @@ const SettingsPage: React.FC = () => {
 
       {/* Follow-up Keywords Section */}
       <div>
-        <h3 className="text-white text-xl font-semibold mb-4">Follow-up Keywords</h3>
-        <p className="text-gray-400 mb-4">
+        <h3 className="text-gray-900 text-xl font-semibold mb-4">Follow-up Keywords</h3>
+        <p className="text-gray-600 mb-4">
           When these keywords are found in follow-up comments on issues with the configured AI primary label, 
           the bot will process them automatically.
         </p>
         
         {keywordsError && (
-          <div className="mb-4 p-4 bg-red-900/20 border border-red-700 rounded-md text-red-400">
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
             {keywordsError}
           </div>
         )}
         
         {keywordsSuccess && (
-          <div className="mb-4 p-4 bg-green-900/20 border border-green-700 rounded-md text-green-400">
+          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-md text-green-700">
             {keywordsSuccess}
           </div>
         )}
         
         {keywordsLoading ? (
-          <p className="text-gray-400">Loading keywords...</p>
+          <p className="text-gray-600">Loading keywords...</p>
         ) : (
           <>
             <div className="flex gap-4 mb-4">
@@ -490,7 +490,7 @@ const SettingsPage: React.FC = () => {
                 disabled={!newKeyword || keywords.includes(newKeyword)}
                 className={`px-4 py-2 text-white font-medium rounded-md transition-colors ${
                   !newKeyword || keywords.includes(newKeyword)
-                    ? 'bg-gray-600 cursor-not-allowed'
+                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                     : 'bg-green-600 hover:bg-green-700 cursor-pointer'
                 }`}
               >
@@ -502,9 +502,9 @@ const SettingsPage: React.FC = () => {
               {keywords.map(keyword => (
                 <div
                   key={keyword}
-                  className="flex items-center justify-between px-4 py-3 bg-gray-700 rounded-md"
+                  className="flex items-center justify-between px-4 py-3 bg-gray-50 border border-gray-200 rounded-md"
                 >
-                  <span className="font-mono text-white">{keyword}</span>
+                  <span className="font-mono text-gray-900">{keyword}</span>
                   <button
                     onClick={() => handleRemoveKeyword(keyword)}
                     className="bg-red-600 hover:bg-red-700 text-xs px-3 py-1 text-white rounded-md font-medium transition-colors"
@@ -514,7 +514,7 @@ const SettingsPage: React.FC = () => {
                 </div>
               ))}
               {keywords.length === 0 && (
-                <p className="text-gray-400 text-center py-8">
+                <p className="text-gray-600 text-center py-8">
                   No keywords configured. Add a keyword to enable follow-up comment processing.
                 </p>
               )}
@@ -525,8 +525,8 @@ const SettingsPage: React.FC = () => {
               disabled={keywordsSaving || keywords.length === 0}
               className={`px-6 py-3 text-white font-medium rounded-md transition-colors ${
                 keywordsSaving || keywords.length === 0
-                  ? 'bg-gray-600 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  : 'bg-primary-600 hover:bg-primary-700 cursor-pointer'
               }`}
             >
               {keywordsSaving ? 'Saving...' : 'Save Keywords'}
