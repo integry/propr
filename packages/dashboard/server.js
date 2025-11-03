@@ -1075,6 +1075,11 @@ app.get('/api/github/repos', ensureAuthenticated, async (req, res) => {
     });
 
     if (!response.ok) {
+      // If GitHub returns 401, the token is invalid/expired
+      // Return 401 to frontend so it can redirect to re-authenticate
+      if (response.status === 401) {
+        return res.status(401).json({ error: 'GitHub token expired or invalid' });
+      }
       throw new Error(`GitHub API request failed: ${response.status}`);
     }
 
