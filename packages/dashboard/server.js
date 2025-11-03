@@ -236,56 +236,114 @@ app.get('/api/metrics', ensureAuthenticated, async (req, res) => {
 app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
   try {
     const { status = 'all', limit = 50, offset = 0 } = req.query;
-    
-    // Get jobs from the queue
-    let jobs = [];
-    if (status === 'all' || status === 'completed') {
-      const completed = await taskQueue.getJobs(['completed'], parseInt(offset), parseInt(offset) + parseInt(limit));
-      jobs = jobs.concat(completed);
+
+    if (isDbEnabled && db) {
+      const latestHistorySubquery = db('task_history')
+        .select(
+          'task_id',
+          'state',
+          'timestamp',
+          'reason',
+          db.raw('ROW_NUMBER() OVER(PARTITION BY task_id ORDER BY timestamp DESC) as rn')
+        )
+        .as('h');
+
+      const baseQuery = db('tasks as t')
+        .join(latestHistorySubquery, 't.task_id', 'h.task_id')
+        .where('h.rn', 1);
+
+      if (status && status !== 'all') {
+        baseQuery.where('h.state', status);
+      }
+
+      const totalResult = await baseQuery.clone().count('* as total').first();
+      const total = parseInt(totalResult.total, 10);
+
+      const dbTasks = await baseQuery
+        .select('t.*', 'h.state', 'h.timestamp as state_timestamp', 'h.reason as failedReason')
+        .orderBy('t.created_at', 'desc')
+        .limit(parseInt(limit))
+        .offset(parseInt(offset));
+
+      const tasks = dbTasks.map(row => {
+        let title = null;
+        if (row.initial_job_data) {
+          try {
+            const jobData = typeof row.initial_job_data === 'string'
+              ? JSON.parse(row.initial_job_data)
+              : row.initial_job_data;
+            title = jobData.title || (jobData.issueRef ? jobData.issueRef.title : null) || null;
+          } catch (e) {
+            console.error('Failed to parse initial_job_data', e);
+          }
+        }
+        return {
+          id: row.task_id,
+          issueId: row.task_id,
+          repository: row.repository,
+          issueNumber: row.issue_number,
+          title: title,
+          status: row.state,
+          createdAt: new Date(row.created_at).toISOString(),
+          completedAt: (row.state === 'completed' || row.state === 'failed') ? new Date(row.state_timestamp).toISOString() : null,
+          processedAt: (row.state !== 'pending' && row.state !== 'waiting') ? new Date(row.state_timestamp).toISOString() : null,
+          failedReason: row.state === 'failed' ? row.failedReason : null,
+          progress: (row.state === 'completed' || row.state === 'failed') ? 100 : (row.state === 'processing' ? 50 : 0),
+          attemptsMade: 1,
+          modelName: row.model_name
+        };
+      });
+
+      res.json({ tasks, total, offset: parseInt(offset), limit: parseInt(limit) });
+
+    } else {
+      let jobs = [];
+      if (status === 'all' || status === 'completed') {
+        const completed = await taskQueue.getJobs(['completed'], parseInt(offset), parseInt(offset) + parseInt(limit));
+        jobs = jobs.concat(completed);
+      }
+      if (status === 'all' || status === 'failed') {
+        const failed = await taskQueue.getJobs(['failed'], parseInt(offset), parseInt(offset) + parseInt(limit));
+        jobs = jobs.concat(failed);
+      }
+      if (status === 'all' || status === 'active') {
+        const active = await taskQueue.getJobs(['active'], parseInt(offset), parseInt(offset) + parseInt(limit));
+        jobs = jobs.concat(active);
+      }
+      if (status === 'all' || status === 'waiting') {
+        const waiting = await taskQueue.getJobs(['waiting'], parseInt(offset), parseInt(offset) + parseInt(limit));
+        jobs = jobs.concat(waiting);
+      }
+      
+      const tasks = jobs.map(job => ({
+        id: job.id,
+        issueId: job.id,
+        repository: job.data?.repoOwner && job.data?.repoName 
+          ? `${job.data.repoOwner}/${job.data.repoName}`
+          : 'Unknown',
+        issueNumber: job.data?.number || job.data?.issueNumber || 
+          (job.id.startsWith('pr-comments-batch') ? 
+            parseInt(job.id.match(/-(\d+)-\d+$/)?.[1]) : null),
+        title: job.returnvalue?.issueTitle || job.data?.title || null,
+        status: job.failedReason ? 'failed' : job.finishedOn ? 'completed' : job.processedOn ? 'active' : 'waiting',
+        createdAt: new Date(job.timestamp).toISOString(),
+        completedAt: job.finishedOn ? new Date(job.finishedOn).toISOString() : null,
+        processedAt: job.processedOn ? new Date(job.processedOn).toISOString() : null,
+        failedReason: job.failedReason,
+        progress: job.progress,
+        attemptsMade: job.attemptsMade,
+        modelName: job.data?.modelName
+      }));
+      
+      tasks.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      
+      res.json({
+        tasks: tasks.slice(0, limit),
+        total: tasks.length,
+        offset: parseInt(offset),
+        limit: parseInt(limit)
+      });
     }
-    if (status === 'all' || status === 'failed') {
-      const failed = await taskQueue.getJobs(['failed'], parseInt(offset), parseInt(offset) + parseInt(limit));
-      jobs = jobs.concat(failed);
-    }
-    if (status === 'all' || status === 'active') {
-      const active = await taskQueue.getJobs(['active'], parseInt(offset), parseInt(offset) + parseInt(limit));
-      jobs = jobs.concat(active);
-    }
-    if (status === 'all' || status === 'waiting') {
-      const waiting = await taskQueue.getJobs(['waiting'], parseInt(offset), parseInt(offset) + parseInt(limit));
-      jobs = jobs.concat(waiting);
-    }
-    
-    // Transform jobs to task format
-    const tasks = jobs.map(job => ({
-      id: job.id,
-      issueId: job.id, // Using job id as issueId for now
-      repository: job.data?.repoOwner && job.data?.repoName 
-        ? `${job.data.repoOwner}/${job.data.repoName}`
-        : 'Unknown',
-      issueNumber: job.data?.number || job.data?.issueNumber || 
-        (job.id.startsWith('pr-comments-batch') ? 
-          parseInt(job.id.match(/-(\d+)-\d+$/)?.[1]) : null),
-      title: job.returnvalue?.issueTitle || job.data?.title || null,
-      status: job.failedReason ? 'failed' : job.finishedOn ? 'completed' : job.processedOn ? 'active' : 'waiting',
-      createdAt: new Date(job.timestamp).toISOString(),
-      completedAt: job.finishedOn ? new Date(job.finishedOn).toISOString() : null,
-      processedAt: job.processedOn ? new Date(job.processedOn).toISOString() : null,
-      failedReason: job.failedReason,
-      progress: job.progress,
-      attemptsMade: job.attemptsMade,
-      modelName: job.data?.modelName
-    }));
-    
-    // Sort by creation time descending
-    tasks.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    
-    res.json({
-      tasks: tasks.slice(0, limit),
-      total: tasks.length,
-      offset: parseInt(offset),
-      limit: parseInt(limit)
-    });
   } catch (error) {
     console.error('Error in /api/tasks:', error);
   }
