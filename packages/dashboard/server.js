@@ -426,6 +426,19 @@ app.get('/api/task/:taskId/history', ensureAuthenticated, async (req, res) => {
             correlationId: task.correlation_id
           };
           
+          // Fetch LLM executions for this task
+          const llmExecutions = await db('llm_executions')
+            .where({ task_id: taskId })
+            .orderBy('start_time', 'asc');
+          
+          // Create a map of history_id to execution for quick lookup
+          const executionsByHistoryId = new Map();
+          llmExecutions.forEach(exec => {
+            if (exec.history_id) {
+              executionsByHistoryId.set(exec.history_id, exec);
+            }
+          });
+          
           history = historyRecords.map(record => {
             const historyItem = {
               state: record.state,
@@ -433,17 +446,42 @@ app.get('/api/task/:taskId/history', ensureAuthenticated, async (req, res) => {
               reason: record.reason
             };
             
+            // Get base metadata from the record
+            let metadata = null;
             if (record.metadata) {
-              const metadata = typeof record.metadata === 'string' 
+              metadata = typeof record.metadata === 'string' 
                 ? JSON.parse(record.metadata) 
                 : record.metadata;
-              
-              historyItem.metadata = metadata;
-              
-              if (metadata.sessionId) {
-                historyItem.promptPath = `/api/execution/${metadata.sessionId}/prompt`;
-                historyItem.logsPath = `/api/execution/${metadata.sessionId}/logs`;
+            }
+            
+            // Check if there's an LLM execution linked to this history record
+            const execution = executionsByHistoryId.get(record.history_id);
+            if (execution) {
+              // Enrich metadata with execution data
+              if (!metadata) {
+                metadata = {};
               }
+              
+              metadata.sessionId = execution.session_id;
+              metadata.conversationId = execution.conversation_id;
+              metadata.model = execution.model_name;
+              metadata.duration = execution.duration_ms;
+              metadata.success = execution.success;
+              metadata.conversationTurns = execution.num_turns;
+              
+              // Add prompt and logs paths
+              if (execution.session_id) {
+                historyItem.promptPath = `/api/execution/${execution.session_id}/prompt`;
+                historyItem.logsPath = `/api/execution/${execution.session_id}/logs`;
+              }
+            } else if (metadata && metadata.sessionId) {
+              // If metadata already has sessionId, add paths
+              historyItem.promptPath = `/api/execution/${metadata.sessionId}/prompt`;
+              historyItem.logsPath = `/api/execution/${metadata.sessionId}/logs`;
+            }
+            
+            if (metadata) {
+              historyItem.metadata = metadata;
             }
             
             return historyItem;
@@ -892,29 +930,63 @@ app.get('/api/task/:taskId/live-details', ensureAuthenticated, async (req, res) 
 
     console.log(`[live-details] jobId: ${jobId}, taskId: ${taskId}`);
 
-    const stateKey = `worker:state:${taskId}`;
-    const stateData = await redisClient.get(stateKey);
+    let sessionId = null;
 
-    console.log(`[live-details] stateKey: ${stateKey}, hasData: ${!!stateData}`);
+    // Try PostgreSQL first if enabled
+    if (isDbEnabled && db) {
+      try {
+        console.log(`[live-details] Fetching sessionId from PostgreSQL for taskId: ${taskId}`);
 
-    if (!stateData) {
-      console.log('[live-details] No state data found');
+        // Get the most recent LLM execution for this task
+        const llmExecution = await db('llm_executions')
+          .where({ task_id: taskId })
+          .orderBy('start_time', 'desc')
+          .first();
+
+        if (llmExecution && llmExecution.session_id) {
+          sessionId = llmExecution.session_id;
+          console.log(`[live-details] Found sessionId in PostgreSQL: ${sessionId}`);
+        } else {
+          console.log('[live-details] No LLM execution found in PostgreSQL');
+        }
+      } catch (error) {
+        console.error('[live-details] Error fetching from PostgreSQL:', error);
+        console.log('[live-details] Falling back to Redis');
+      }
+    }
+
+    // Fallback to Redis if not found in PostgreSQL
+    if (!sessionId) {
+      console.log('[live-details] Trying Redis fallback');
+      const stateKey = `worker:state:${taskId}`;
+      const stateData = await redisClient.get(stateKey);
+
+      console.log(`[live-details] stateKey: ${stateKey}, hasData: ${!!stateData}`);
+
+      if (!stateData) {
+        console.log('[live-details] No state data found in Redis');
+        return res.json({ events: [], todos: [], currentTask: null });
+      }
+
+      const state = JSON.parse(stateData);
+      const claudeExecutionEntry = state.history.find(h => h.state === 'claude_execution' && h.metadata?.sessionId);
+
+      console.log(`[live-details] Found claudeExecutionEntry: ${!!claudeExecutionEntry}, sessionId: ${claudeExecutionEntry?.metadata?.sessionId}`);
+
+      if (!claudeExecutionEntry) {
+        console.log('[live-details] No claude_execution entry with sessionId in Redis');
+        return res.json({ events: [], todos: [], currentTask: null });
+      }
+
+      sessionId = claudeExecutionEntry.metadata.sessionId;
+    }
+
+    if (!sessionId) {
+      console.log('[live-details] No sessionId found in either PostgreSQL or Redis');
       return res.json({ events: [], todos: [], currentTask: null });
     }
 
-    const state = JSON.parse(stateData);
-    const claudeExecutionEntry = state.history.find(h => h.state === 'claude_execution' && h.metadata?.sessionId);
-
-    console.log(`[live-details] Found claudeExecutionEntry: ${!!claudeExecutionEntry}, sessionId: ${claudeExecutionEntry?.metadata?.sessionId}`);
-
-    if (!claudeExecutionEntry) {
-      console.log('[live-details] No claude_execution entry with sessionId');
-      return res.json({ events: [], todos: [], currentTask: null });
-    }
-
-    const { sessionId } = claudeExecutionEntry.metadata;
-
-    console.log(`[live-details] sessionId: ${sessionId}`);
+    console.log(`[live-details] Using sessionId: ${sessionId}`);
 
     // For running tasks, read from the actual .claude conversation file
     // Claude stores conversation files in ~/.claude/projects/-home-node-workspace/{sessionId}.jsonl
