@@ -137,6 +137,8 @@ const TaskDetails: React.FC = () => {
             formatted = formatted.replace(/(<li.*<\/li>\n?)+/g, '<ul class="list-disc list-inside space-y-1 my-2">$&</ul>');
             // Convert newlines to <br> with reduced line height
             formatted = formatted.replace(/\n/g, '<br style="line-height: 0.5; margin: 0;">');
+            // Filter out multiple sequential <br> tags (2 or more) and replace with single one
+            formatted = formatted.replace(/(<br[^>]*>\s*){2,}/gi, '<br style="line-height: 0.5; margin: 0;">');
             return <span key={index} dangerouslySetInnerHTML={{ __html: formatted }} />;
           }
         })}
@@ -556,12 +558,12 @@ const TaskDetails: React.FC = () => {
                         } else if (item.metadata?.description) {
                           displayLabel = item.metadata.description;
                         } else if (claudeCount === 1) {
-                          displayLabel = 'Implementing Changes';
+                          displayLabel = 'Claude Execution Started';
                         } else {
                           displayLabel = `Retry Implementation ${claudeCount - 1}`;
                         }
                       } else if (stateUpper === 'CLAUDE_EXECUTION_COMPLETED') {
-                        displayLabel = 'Implementation Completed';
+                        displayLabel = 'Claude Execution Completed';
                       } else if (stateUpper === 'POST_PROCESSING') {
                         displayLabel = 'Creating Pull Request';
                       } else if (stateUpper === 'COMPLETED') {
