@@ -22,6 +22,82 @@ const TaskDetails: React.FC = () => {
   const [eventsCollapsed, setEventsCollapsed] = useState<boolean>(true);
   const [lastThought, setLastThought] = useState<string | null>(null);
 
+  const formatDate = (dateString) => {
+    return new Date(dateString).toLocaleString();
+  };
+
+  const formatPath = (path) => {
+    if (!path) return 'N/A';
+    const match = path.match(/\/tasks\/(.+)/);
+    return match ? match[1] : path;
+  };
+
+  const formatModelName = (modelId) => {
+    if (!modelId) return 'Unknown Model';
+    const modelMap = {
+      'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
+      'claude-sonnet-3-5-20240620': 'Claude Sonnet 3.5',
+      'claude-opus-3-20240229': 'Claude Opus 3',
+      'claude-haiku-3-20240307': 'Claude Haiku 3',
+    };
+    return modelMap[modelId] || modelId;
+  };
+
+  const formatRelativeTime = (milliseconds) => {
+    const seconds = Math.floor(milliseconds / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds}s`;
+  };
+
+  const renderMarkdown = (text) => {
+    if (!text) return text;
+    let formatted = text;
+    formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    formatted = formatted.replace(/`(.+?)`/g, '<code class="bg-gray-100 px-1 rounded">$1</code>');
+    return <span dangerouslySetInnerHTML={{ __html: formatted }} />;
+  };
+
+  const handleNextMatch = () => {
+    if (searchMatches.length > 0) {
+      setCurrentMatchIndex((prev) => (prev + 1) % searchMatches.length);
+    }
+  };
+
+  const handlePrevMatch = () => {
+    if (searchMatches.length > 0) {
+      setCurrentMatchIndex((prev) => (prev - 1 + searchMatches.length) % searchMatches.length);
+    }
+  };
+
+  const highlightContent = (content) => {
+    if (!searchQuery) return content;
+
+    const parts = content.split(new RegExp(`(${searchQuery})`, 'gi'));
+    let matchCount = 0;
+
+    return parts.map((part, index) => {
+      if (part.toLowerCase() === searchQuery.toLowerCase()) {
+        const isCurrentMatch = matchCount === currentMatchIndex;
+        matchCount++;
+        return (
+          <span
+            key={index}
+            id={`match-${matchCount - 1}`}
+            className={`${
+              isCurrentMatch ? 'bg-yellow-500 text-black' : 'bg-yellow-300 text-black'
+            } px-1 rounded`}
+          >
+            {part}
+          </span>
+        );
+      }
+      return part;
+    });
+  };
+
   const thinkingLogEvents = React.useMemo(() => {
     return liveDetails.events.filter(e => e.type === 'thought');
   }, [liveDetails.events]);
@@ -226,80 +302,11 @@ const TaskDetails: React.FC = () => {
     }
   };
 
-  const formatDate = (dateString) => {
-    return new Date(dateString).toLocaleString();
-  };
-
-  const formatPath = (path) => {
-    if (!path) return 'N/A';
-    const match = path.match(/\/tasks\/(.+)/);
-    return match ? match[1] : path;
-  };
-
-  const formatModelName = (modelId) => {
-    if (!modelId) return 'Unknown Model';
-    const modelMap = {
-      'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
-      'claude-sonnet-3-5-20240620': 'Claude Sonnet 3.5',
-      'claude-opus-3-20240229': 'Claude Opus 3',
-      'claude-haiku-3-20240307': 'Claude Haiku 3',
-    };
-    return modelMap[modelId] || modelId;
-  };
-
-  const formatRelativeTime = (milliseconds) => {
-    const seconds = Math.floor(milliseconds / 1000);
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    return `${minutes}m ${remainingSeconds}s`;
-  };
-
-  const renderMarkdown = (text) => {
-    if (!text) return text;
-    let formatted = text;
-    formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
-    formatted = formatted.replace(/`(.+?)`/g, '<code class="bg-gray-100 px-1 rounded">$1</code>');
-    return <span dangerouslySetInnerHTML={{ __html: formatted }} />;
-  };
-
-  const handleNextMatch = () => {
-    if (searchMatches.length > 0) {
-      setCurrentMatchIndex((prev) => (prev + 1) % searchMatches.length);
-    }
-  };
-
-  const handlePrevMatch = () => {
-    if (searchMatches.length > 0) {
-      setCurrentMatchIndex((prev) => (prev - 1 + searchMatches.length) % searchMatches.length);
-    }
-  };
-
-  const highlightContent = (content) => {
-    if (!searchQuery) return content;
-
-    const parts = content.split(new RegExp(`(${searchQuery})`, 'gi'));
-    let matchCount = 0;
-
-    return parts.map((part, index) => {
-      if (part.toLowerCase() === searchQuery.toLowerCase()) {
-        const isCurrentMatch = matchCount === currentMatchIndex;
-        matchCount++;
-        return (
-          <span
-            key={index}
-            id={`match-${matchCount - 1}`}
-            className={`${
-              isCurrentMatch ? 'bg-yellow-500 text-black' : 'bg-yellow-300 text-black'
-            } px-1 rounded`}
-          >
-            {part}
-          </span>
-        );
-      }
-      return part;
-    });
+  const getStatusIcon = (status) => {
+    if (status === 'COMPLETED') return '✅';
+    if (status === 'FAILED') return '❌';
+    if (['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(status)) return '⏳';
+    return '📋';
   };
 
   if (loading) return <div className="text-gray-600">Loading task details...</div>;
@@ -311,19 +318,11 @@ const TaskDetails: React.FC = () => {
   const currentStatus = history[history.length - 1]?.state?.toUpperCase();
   const modelName = formatModelName(history.find(item => item.metadata?.model)?.metadata?.model);
 
-  const getStatusIcon = () => {
-    if (currentStatus === 'COMPLETED') return '✅';
-    if (currentStatus === 'FAILED') return '❌';
-    if (['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus)) return '⏳';
-    return '📋';
-  };
-  // --- End Helper ---
-
   return (
     <div>
       {/* 1. Header & Subtitle */}
       <div className="flex items-center gap-3 mb-2">
-        <span className="text-2xl">{getStatusIcon()}</span>
+        <span className="text-2xl">{getStatusIcon(currentStatus)}</span>
         <h2 className="text-2xl font-bold text-gray-900 break-all">
           {taskInfo?.title || 'Loading...'}
         </h2>
