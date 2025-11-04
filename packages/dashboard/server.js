@@ -238,6 +238,7 @@ app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
     const { status = 'all', limit = 50, offset = 0 } = req.query;
 
     if (isDbEnabled && db) {
+      // Get the latest state for each task
       const latestHistorySubquery = db('task_history')
         .select(
           'task_id',
@@ -248,9 +249,32 @@ app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
         )
         .as('h');
 
+      // Get the earliest processing state timestamp (when task started processing)
+      const processingStartSubquery = db('task_history')
+        .select(
+          'task_id',
+          db.raw('MIN(timestamp) as processing_start_timestamp')
+        )
+        .whereIn('state', ['processing', 'claude_execution', 'post_processing'])
+        .groupBy('task_id')
+        .as('ps');
+
+      // Get the completion timestamp (when task completed or failed)
+      const completionSubquery = db('task_history')
+        .select(
+          'task_id',
+          db.raw('MIN(timestamp) as completion_timestamp')
+        )
+        .whereIn('state', ['completed', 'failed'])
+        .groupBy('task_id')
+        .as('cs');
+
       const baseQuery = db('tasks as t')
-        .join(latestHistorySubquery, 't.task_id', 'h.task_id')
-        .where('h.rn', 1);
+        .join(latestHistorySubquery, function() {
+          this.on('t.task_id', '=', 'h.task_id').andOn('h.rn', '=', db.raw('?', [1]));
+        })
+        .leftJoin(processingStartSubquery, 'ps.task_id', 't.task_id')
+        .leftJoin(completionSubquery, 'cs.task_id', 't.task_id');
 
       if (status && status !== 'all') {
         baseQuery.where('h.state', status);
@@ -260,7 +284,8 @@ app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
       const total = parseInt(totalResult.total, 10);
 
       const dbTasks = await baseQuery
-        .select('t.*', 'h.state', 'h.timestamp as state_timestamp', 'h.reason as failedReason')
+        .select('t.*', 'h.state', 'h.timestamp as state_timestamp', 'h.reason as failedReason',
+                'ps.processing_start_timestamp', 'cs.completion_timestamp')
         .orderBy('t.created_at', 'desc')
         .limit(parseInt(limit))
         .offset(parseInt(offset));
@@ -285,8 +310,8 @@ app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
           title: title,
           status: row.state,
           createdAt: new Date(row.created_at).toISOString(),
-          completedAt: (row.state === 'completed' || row.state === 'failed') ? new Date(row.state_timestamp).toISOString() : null,
-          processedAt: (row.state !== 'pending' && row.state !== 'waiting') ? new Date(row.state_timestamp).toISOString() : null,
+          completedAt: row.completion_timestamp ? new Date(row.completion_timestamp).toISOString() : null,
+          processedAt: row.processing_start_timestamp ? new Date(row.processing_start_timestamp).toISOString() : null,
           failedReason: row.state === 'failed' ? row.failedReason : null,
           progress: (row.state === 'completed' || row.state === 'failed') ? 100 : (row.state === 'processing' ? 50 : 0),
           attemptsMade: 1,
