@@ -54,8 +54,11 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
       case 'failed':
         return '#ef4444';
       case 'active':
+      case 'claude_execution':
+      case 'processing':
         return '#3b82f6';
       case 'waiting':
+      case 'pending':
         return '#8b5cf6';
       default:
         return '#6b7280';
@@ -69,8 +72,11 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
       case 'failed':
         return 'bg-red-500';
       case 'active':
+      case 'claude_execution':
+      case 'processing':
         return 'bg-blue-500 animate-pulse';
       case 'waiting':
+      case 'pending':
         return 'bg-purple-500';
       default:
         return 'bg-gray-500';
@@ -94,7 +100,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
     const seconds = Math.floor((duration % 60000) / 1000);
     
     // Add indicator for active tasks
-    const suffix = status === 'active' ? ' (running)' : '';
+    const isActive = status === 'active' || status === 'claude_execution' || status === 'processing';
+    const suffix = isActive ? ' (running)' : '';
     return `${minutes}m ${seconds}s${suffix}`;
   };
 
@@ -169,7 +176,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
                     <div className="flex items-center gap-2">
                       <span className={`w-2 h-2 rounded-full ${getStatusDotClass(task.status)}`}></span>
                       <span className="text-sm font-medium capitalize" style={{ color: getStatusColor(task.status) }}>
-                        {task.status}
+                        {task.status === 'claude_execution' ? 'Implementing' : task.status}
                       </span>
                     </div>
                   </td>
