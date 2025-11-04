@@ -70,7 +70,11 @@ const TaskDetails: React.FC = () => {
       }
 
       const language = match[1] || 'javascript';
-      const code = match[2];
+      let code = match[2];
+      // Remove trailing newline from code blocks
+      if (code.endsWith('\n')) {
+        code = code.slice(0, -1);
+      }
       parts.push({ type: 'code', language, content: code });
 
       lastIndex = match.index + match[0].length;
@@ -88,15 +92,20 @@ const TaskDetails: React.FC = () => {
       <div>
         {parts.map((part, index) => {
           if (part.type === 'code') {
+            const languageLabel = part.language.charAt(0).toUpperCase() + part.language.slice(1);
             return (
-              <div key={index} className="my-3">
+              <div key={index} className="my-2 relative">
+                <div className="absolute top-2 right-2 text-xs text-gray-400 bg-gray-800 px-2 py-1 rounded z-10">
+                  {languageLabel}
+                </div>
                 <SyntaxHighlighter
                   language={part.language}
                   style={vscDarkPlus}
                   customStyle={{
                     borderRadius: '0.375rem',
                     fontSize: '0.875rem',
-                    border: '1px solid #d1d5db'
+                    border: '1px solid #d1d5db',
+                    margin: 0
                   }}
                 >
                   {part.content}
@@ -105,13 +114,17 @@ const TaskDetails: React.FC = () => {
             );
           } else {
             let formatted = part.content;
-            formatted = formatted.replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h2>');
-            formatted = formatted.replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold text-gray-800 mt-3 mb-2">$1</h3>');
+            // Reduce excessive line breaks (more than 2 newlines become 1)
+            formatted = formatted.replace(/\n{3,}/g, '\n\n');
+            formatted = formatted.replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold text-gray-900 mt-3 mb-1">$1</h2>');
+            formatted = formatted.replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold text-gray-800 mt-2 mb-1">$1</h3>');
             formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>');
             formatted = formatted.replace(/\*(.+?)\*/g, '<em class="italic">$1</em>');
-            formatted = formatted.replace(/`(.+?)`/g, '<code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300">$1</code>');
+            formatted = formatted.replace(/`([^`]+)`/g, '<code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300">$1</code>');
             formatted = formatted.replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>');
             formatted = formatted.replace(/(<li.*<\/li>\n?)+/g, '<ul class="list-disc list-inside space-y-1 my-2">$&</ul>');
+            // Convert newlines to <br> but not within HTML tags
+            formatted = formatted.replace(/\n/g, '<br>');
             return <span key={index} dangerouslySetInnerHTML={{ __html: formatted }} />;
           }
         })}
@@ -401,7 +414,8 @@ const TaskDetails: React.FC = () => {
   const historyItemWithPaths = history.find(item => item.promptPath || item.logsPath);
 
   const currentStatus = history[history.length - 1]?.state?.toUpperCase();
-  const modelName = formatModelName(history.find(item => item.metadata?.model)?.metadata?.model);
+  const modelItem = history.find(item => item.metadata?.model);
+  const modelName = formatModelName(modelItem?.metadata?.model || taskInfo?.modelName);
 
   return (
     <div>
@@ -512,8 +526,14 @@ const TaskDetails: React.FC = () => {
                         : null;
                       
                       let displayLabel = item.state?.replace(/_/g, ' ').toLowerCase();
+                      const stateUpper = item.state?.toUpperCase();
                       
-                      if (item.state?.toUpperCase() === 'CLAUDE_EXECUTION') {
+                      // Map states to more descriptive labels
+                      if (stateUpper === 'PENDING') {
+                        displayLabel = 'Task Queued';
+                      } else if (stateUpper === 'PROCESSING') {
+                        displayLabel = 'Analyzing Request';
+                      } else if (stateUpper === 'CLAUDE_EXECUTION') {
                         const claudeCount = history.slice(0, index + 1).filter(h => h.state?.toUpperCase() === 'CLAUDE_EXECUTION').length;
                         
                         if (item.reason) {
@@ -521,10 +541,16 @@ const TaskDetails: React.FC = () => {
                         } else if (item.metadata?.description) {
                           displayLabel = item.metadata.description;
                         } else if (claudeCount === 1) {
-                          displayLabel = 'Initial Implementation';
+                          displayLabel = 'Implementing Changes';
                         } else {
-                          displayLabel = `Retry Attempt ${claudeCount - 1}`;
+                          displayLabel = `Retry Implementation ${claudeCount - 1}`;
                         }
+                      } else if (stateUpper === 'POST_PROCESSING') {
+                        displayLabel = 'Creating Pull Request';
+                      } else if (stateUpper === 'COMPLETED') {
+                        displayLabel = 'Task Completed';
+                      } else if (stateUpper === 'FAILED') {
+                        displayLabel = 'Task Failed';
                       }
                       
                       const isLastItem = index === history.length - 1;
