@@ -223,9 +223,36 @@ const TaskDetails: React.FC = () => {
 
   const formatPath = (path) => {
     if (!path) return 'N/A';
-    // Extract the important part of the path (after /var/folders/)
     const match = path.match(/\/tasks\/(.+)/);
     return match ? match[1] : path;
+  };
+
+  const formatModelName = (modelId) => {
+    if (!modelId) return 'Unknown Model';
+    const modelMap = {
+      'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
+      'claude-sonnet-3-5-20240620': 'Claude Sonnet 3.5',
+      'claude-opus-3-20240229': 'Claude Opus 3',
+      'claude-haiku-3-20240307': 'Claude Haiku 3',
+    };
+    return modelMap[modelId] || modelId;
+  };
+
+  const formatRelativeTime = (milliseconds) => {
+    const seconds = Math.floor(milliseconds / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds}s`;
+  };
+
+  const renderMarkdown = (text) => {
+    if (!text) return text;
+    let formatted = text;
+    formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    formatted = formatted.replace(/`(.+?)`/g, '<code class="bg-gray-100 px-1 rounded">$1</code>');
+    return <span dangerouslySetInnerHTML={{ __html: formatted }} />;
   };
 
   const handleNextMatch = () => {
@@ -274,7 +301,17 @@ const TaskDetails: React.FC = () => {
 
   // --- Helper for new UI ---
   const currentStatus = history[history.length - 1]?.state?.toUpperCase();
-  const modelName = history.find(item => item.metadata?.model)?.metadata?.model || 'Unknown Model';
+  const modelName = formatModelName(history.find(item => item.metadata?.model)?.metadata?.model);
+
+  const executionStartTime = history.find(item => item.state?.toUpperCase() === 'CLAUDE_EXECUTION')?.timestamp;
+  const thinkingLogWithTimestamps = React.useMemo(() => {
+    if (!executionStartTime) return thinkingLogEvents;
+    const startTime = new Date(executionStartTime).getTime();
+    return thinkingLogEvents.map(event => ({
+      ...event,
+      relativeTime: event.timestamp ? formatRelativeTime(new Date(event.timestamp).getTime() - startTime) : null
+    }));
+  }, [thinkingLogEvents, executionStartTime]);
 
   const getStatusIcon = () => {
     if (currentStatus === 'COMPLETED') return '✅';
@@ -286,21 +323,11 @@ const TaskDetails: React.FC = () => {
 
   return (
     <div>
-      {/* Absolute positioned "Back to Tasks" button */}
-      <div className="absolute top-8 right-8">
-        <button
-          className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors border border-gray-300"
-          onClick={() => navigate('/tasks')}
-        >
-          Back to Tasks
-        </button>
-      </div>
-
       {/* 1. Header & Subtitle */}
       <div className="flex items-center gap-3 mb-2">
         <span className="text-2xl">{getStatusIcon()}</span>
         <h2 className="text-2xl font-bold text-gray-900 break-all">
-          {taskInfo?.title ? taskInfo.title : `Task: ${taskId}`}
+          {taskInfo?.title || 'Loading...'}
         </h2>
       </div>
       {taskInfo && (
@@ -375,7 +402,23 @@ const TaskDetails: React.FC = () => {
         {/* Left Column: Task Status Steps */}
         <div className="p-4 bg-white rounded-lg border border-gray-200">
           <h4 className="text-lg font-semibold text-gray-900 mb-4">Task Status</h4>
-          <p>Current Step: <strong>{currentStatus || 'LOADING'}</strong></p>
+          <p className="mb-3">Current Step: <strong>{currentStatus || 'LOADING'}</strong></p>
+          {history.length > 0 && (
+            <div className="mt-4">
+              <h5 className="text-sm font-semibold text-gray-700 mb-2">State Changes:</h5>
+              <ul className="space-y-1">
+                {history.map((item, index) => (
+                  <li key={index} className="text-sm text-gray-600 flex items-start gap-2">
+                    <span className="text-gray-400 flex-shrink-0">•</span>
+                    <span className="flex-1">
+                      <strong className="text-gray-800">{item.state?.replace(/_/g, ' ')}</strong>
+                      <span className="text-gray-500 text-xs ml-2">{formatDate(item.timestamp)}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
         
         {/* Right Column: Real-time Stats */}
@@ -433,14 +476,19 @@ const TaskDetails: React.FC = () => {
       )}
 
       {/* 5. Thinking Log */}
-      {thinkingLogEvents.length > 0 && (
+      {thinkingLogWithTimestamps.length > 0 && (
         <div className="mb-6">
           <h4 className="text-lg font-semibold text-gray-900 mb-4">Thinking Log</h4>
-          <div className="space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200 max-h-96 overflow-y-auto">
-            {thinkingLogEvents.map((event, index) => (
+          <div className="space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200 overflow-y-auto">
+            {thinkingLogWithTimestamps.map((event, index) => (
               <div key={index} className="flex items-start gap-3">
                 <span className="text-lg mt-1">🧠</span>
-                <p className="text-gray-700 italic whitespace-pre-wrap">{event.content}</p>
+                <div className="flex-1">
+                  <p className="text-gray-700 whitespace-pre-wrap">{renderMarkdown(event.content)}</p>
+                  {event.relativeTime && (
+                    <p className="text-xs text-gray-500 mt-1">{event.relativeTime}</p>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -505,132 +553,6 @@ const TaskDetails: React.FC = () => {
         </div>
       )}
 
-      {/* Original History Log (now at the bottom) */}
-      <h4 className="text-lg font-semibold text-gray-900 mb-4">State Change Log</h4>
-      <div className="border border-gray-200 rounded-lg bg-white shadow-sm">
-        {history.length === 0 ? (
-          <p className="text-gray-500 text-center p-8">No history found for this task</p>
-        ) : (
-          <div className="flex flex-col gap-4 p-6">
-            {history.map((item, index) => (
-              <div
-                key={index}
-                className="border border-gray-200 rounded-md p-4 bg-gray-50"
-              >
-                <div className="flex justify-between items-start mb-3">
-                  <h4 className="font-semibold text-gray-900 capitalize text-lg">
-                    {item.event ? item.event.replace(/_/g, ' ') : item.state ? item.state.replace(/_/g, ' ') : 'Unknown Event'}
-                  </h4>
-                  <span className="text-sm text-gray-500">
-                    {formatDate(item.timestamp)}
-                  </span>
-                </div>
-                
-                {item.reason && (
-                  <p className="text-gray-600 italic mb-2">
-                    {item.reason}
-                  </p>
-                )}
-
-                {item.error && (
-                  <p className="my-2 text-red-600">
-                    Error: {item.error}
-                  </p>
-                )}
-
-                {item.message && (
-                  <p className="text-gray-700 mb-2">
-                    {item.message}
-                  </p>
-                )}
-                
-                {item.metadata && (item.metadata.sessionId || item.metadata.conversationId || item.metadata.model || item.metadata.duration || item.metadata.conversationTurns || item.metadata.success !== undefined || item.metadata.pullRequest || item.metadata.githubComment) && (
-                  <div className="mt-3 space-y-2">
-                    <div className="p-3 bg-white rounded-md border border-gray-200 space-y-2">
-                      {item.metadata.sessionId && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Session ID:</strong> <code className="bg-gray-100 px-2 py-1 rounded border border-gray-300">{item.metadata.sessionId}</code>
-                        </div>
-                      )}
-                      {item.metadata.conversationId && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Conversation ID:</strong> <code className="bg-gray-100 px-2 py-1 rounded border border-gray-300">{item.metadata.conversationId}</code>
-                        </div>
-                      )}
-                      {item.metadata.model && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Model:</strong> <span className="text-blue-600">{item.metadata.model}</span>
-                        </div>
-                      )}
-                      {item.metadata.duration && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Duration:</strong> {(item.metadata.duration / 1000).toFixed(2)}s
-                        </div>
-                      )}
-                      {item.metadata.conversationTurns && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Conversation Turns:</strong> {item.metadata.conversationTurns}
-                        </div>
-                      )}
-                      {item.metadata.success !== undefined && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Success:</strong> <span className={item.metadata.success ? 'text-green-600' : 'text-red-600'}>{item.metadata.success ? 'Yes' : 'No'}</span>
-                        </div>
-                      )}
-                      {item.metadata.pullRequest && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Pull Request:</strong> <a 
-                            href={item.metadata.pullRequest.url} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:text-blue-700 underline ml-1"
-                          >
-                            #{item.metadata.pullRequest.number}
-                          </a>
-                        </div>
-                      )}
-                      {item.metadata.githubComment && (
-                        <div className="text-sm text-gray-700">
-                          <strong>GitHub Comment:</strong> <a 
-                            href={item.metadata.githubComment.url} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:text-blue-700 underline ml-1"
-                          >
-                            View Comment
-                          </a>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {item.metadata?.githubComment?.body && (
-                  <div className="mt-3 p-3 bg-white rounded-md border border-gray-200">
-                    <div className="text-sm text-gray-600 mb-2 font-semibold">Comment Posted:</div>
-                    <div className="text-sm text-gray-700 whitespace-pre-wrap">
-                      {item.metadata.githubComment.body}
-                    </div>
-                  </div>
-                )}
-                
-                {item.prUrl && (
-                  <div className="mt-3">
-                    <a
-                      href={item.prUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:text-blue-700 underline"
-                    >
-                      View Pull Request
-                    </a>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
       {selectedPrompt && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -663,7 +585,7 @@ const TaskDetails: React.FC = () => {
                       {selectedPrompt.model && (
                         <div className="text-sm">
                           <span className="text-gray-600">Model:</span>
-                          <span className="ml-2 text-blue-600">{selectedPrompt.model}</span>
+                          <span className="ml-2 text-blue-600">{formatModelName(selectedPrompt.model)}</span>
                         </div>
                       )}
                       {selectedPrompt.timestamp && (
