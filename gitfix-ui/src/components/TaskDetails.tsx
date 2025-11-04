@@ -54,9 +54,13 @@ const TaskDetails: React.FC = () => {
   const renderMarkdown = (text) => {
     if (!text) return text;
     let formatted = text;
-    formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    formatted = formatted.replace(/\*(.+?)\*/g, '<em>$1</em>');
-    formatted = formatted.replace(/`(.+?)`/g, '<code class="bg-gray-100 px-1 rounded">$1</code>');
+    formatted = formatted.replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h2>');
+    formatted = formatted.replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold text-gray-800 mt-3 mb-2">$1</h3>');
+    formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>');
+    formatted = formatted.replace(/\*(.+?)\*/g, '<em class="italic">$1</em>');
+    formatted = formatted.replace(/`(.+?)`/g, '<code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300">$1</code>');
+    formatted = formatted.replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>');
+    formatted = formatted.replace(/(<li.*<\/li>\n?)+/g, '<ul class="list-disc list-inside space-y-1 my-2">$&</ul>');
     return <span dangerouslySetInnerHTML={{ __html: formatted }} />;
   };
 
@@ -403,17 +407,41 @@ const TaskDetails: React.FC = () => {
           {history.length > 0 && (
             <div className="mt-4">
               <h5 className="text-sm font-semibold text-gray-700 mb-2">State Changes:</h5>
-              <ul className="space-y-1">
-                {history.map((item, index) => (
-                  <li key={index} className="text-sm text-gray-600 flex items-start gap-2">
-                    <span className="text-gray-400 flex-shrink-0">•</span>
-                    <span className="flex-1">
-                      <strong className="text-gray-800">{item.state?.replace(/_/g, ' ')}</strong>
-                      <span className="text-gray-500 text-xs ml-2">{formatDate(item.timestamp)}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="border-b-2 border-gray-300">
+                      <th className="text-left py-2 pr-4 text-gray-700 font-semibold">#</th>
+                      <th className="text-left py-2 pr-4 text-gray-700 font-semibold">State</th>
+                      <th className="text-left py-2 pr-4 text-gray-700 font-semibold">Timestamp</th>
+                      <th className="text-right py-2 text-gray-700 font-semibold">Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {history.map((item, index) => {
+                      const duration = index < history.length - 1
+                        ? new Date(history[index + 1].timestamp).getTime() - new Date(item.timestamp).getTime()
+                        : null;
+                      const stateLabel = item.state?.replace(/_/g, ' ').toLowerCase();
+                      const claudeCount = history.slice(0, index + 1).filter(h => h.state?.toUpperCase() === 'CLAUDE_EXECUTION').length;
+                      const displayLabel = item.state?.toUpperCase() === 'CLAUDE_EXECUTION'
+                        ? `Claude Execution #${claudeCount}`
+                        : stateLabel;
+                      
+                      return (
+                        <tr key={index} className="border-b border-gray-200">
+                          <td className="py-2 pr-4 text-gray-500">{index + 1}</td>
+                          <td className="py-2 pr-4 text-gray-800 font-medium capitalize">{displayLabel}</td>
+                          <td className="py-2 pr-4 text-gray-600 text-xs">{formatDate(item.timestamp)}</td>
+                          <td className="py-2 text-gray-600 text-xs text-right">
+                            {duration !== null ? formatRelativeTime(duration) : '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
@@ -571,42 +599,53 @@ const TaskDetails: React.FC = () => {
               ) : (
                 <div className="space-y-4">
                   {(selectedPrompt.sessionId || selectedPrompt.model || selectedPrompt.timestamp || selectedPrompt.issueRef) && (
-                    <div className="bg-gray-50 rounded-md p-4 space-y-2 border border-gray-200">
+                    <div className="bg-gray-50 rounded-md p-4 border border-gray-200">
                       <h4 className="text-sm font-semibold text-gray-600 uppercase mb-3">Prompt Metadata</h4>
-                      {selectedPrompt.sessionId && (
-                        <div className="text-sm">
-                          <span className="text-gray-600">Session ID:</span>
-                          <code className="ml-2 bg-white px-2 py-1 rounded text-gray-700 border border-gray-300">{selectedPrompt.sessionId}</code>
-                        </div>
-                      )}
-                      {selectedPrompt.model && (
-                        <div className="text-sm">
-                          <span className="text-gray-600">Model:</span>
-                          <span className="ml-2 text-blue-600">{formatModelName(selectedPrompt.model)}</span>
-                        </div>
-                      )}
-                      {selectedPrompt.timestamp && (
-                        <div className="text-sm">
-                          <span className="text-gray-600">Timestamp:</span>
-                          <span className="ml-2 text-gray-700">{new Date(selectedPrompt.timestamp).toLocaleString()}</span>
-                        </div>
-                      )}
-                      {selectedPrompt.isRetry !== undefined && (
-                        <div className="text-sm">
-                          <span className="text-gray-600">Is Retry:</span>
-                          <span className={`ml-2 ${selectedPrompt.isRetry ? 'text-amber-600' : 'text-gray-700'}`}>
-                            {selectedPrompt.isRetry ? 'Yes' : 'No'}
-                          </span>
-                        </div>
-                      )}
-                      {selectedPrompt.issueRef && (
-                        <div className="text-sm">
-                          <span className="text-gray-600">Issue Reference:</span>
-                          <div className="ml-2 mt-1 bg-white px-2 py-1 rounded text-gray-700 font-mono text-xs border border-gray-300">
-                            {selectedPrompt.issueRef.repoOwner}/{selectedPrompt.issueRef.repoName} #{selectedPrompt.issueRef.number}
-                          </div>
-                        </div>
-                      )}
+                      <table className="w-full text-sm border-collapse">
+                        <tbody>
+                          {selectedPrompt.sessionId && (
+                            <tr className="border-b border-gray-200">
+                              <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Session ID:</td>
+                              <td className="py-2 text-gray-700">
+                                <code className="bg-white px-2 py-1 rounded border border-gray-300 text-xs">{selectedPrompt.sessionId}</code>
+                              </td>
+                            </tr>
+                          )}
+                          {selectedPrompt.model && (
+                            <tr className="border-b border-gray-200">
+                              <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Model:</td>
+                              <td className="py-2 text-gray-700">
+                                <div className="text-blue-600 font-medium">{formatModelName(selectedPrompt.model)}</div>
+                                <div className="text-xs text-gray-500 mt-1">{selectedPrompt.model}</div>
+                              </td>
+                            </tr>
+                          )}
+                          {selectedPrompt.timestamp && (
+                            <tr className="border-b border-gray-200">
+                              <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Timestamp:</td>
+                              <td className="py-2 text-gray-700">{new Date(selectedPrompt.timestamp).toLocaleString()}</td>
+                            </tr>
+                          )}
+                          {selectedPrompt.isRetry !== undefined && (
+                            <tr className="border-b border-gray-200">
+                              <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Is Retry:</td>
+                              <td className={`py-2 ${selectedPrompt.isRetry ? 'text-amber-600 font-medium' : 'text-gray-700'}`}>
+                                {selectedPrompt.isRetry ? 'Yes' : 'No'}
+                              </td>
+                            </tr>
+                          )}
+                          {selectedPrompt.issueRef && (
+                            <tr>
+                              <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Issue Reference:</td>
+                              <td className="py-2 text-gray-700">
+                                <code className="bg-white px-2 py-1 rounded border border-gray-300 text-xs">
+                                  {selectedPrompt.issueRef.repoOwner}/{selectedPrompt.issueRef.repoName} #{selectedPrompt.issueRef.number}
+                                </code>
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
                     </div>
                   )}
                   
