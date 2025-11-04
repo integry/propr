@@ -12,8 +12,9 @@ import {
 import { formatResetTime } from '../utils/scheduling.js';
 import { ensureGitRepository } from '../utils/git/gitValidation.js';
 import { createLogFiles } from '../utils/github/logFiles.js';
+import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import fs from 'fs-extra';
-import { executeClaudeCode, UsageLimitError } from '../claude/claudeService.js';
+import { executeClaudeCode, UsageLimitError, generateTaskSummary } from '../claude/claudeService.js';
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { handleError } from '../utils/errorHandler.js';
 import { issueQueue } from '../queue/taskQueue.js';
@@ -94,6 +95,13 @@ export async function processPullRequestCommentJob(job) {
             { ...retryConfigs.githubApi, correlationId },
             'get_authenticated_octokit'
         );
+
+        // Fetch PR data to get its title
+        const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+            owner: repoOwner,
+            repo: repoName,
+            pull_number: pullRequestNumber
+        });
 
         const botUsername = process.env.GITHUB_BOT_USERNAME || 'github-actions[bot]';
         const prComments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -205,7 +213,8 @@ ${body}
 
         commentIds = unprocessedComments.map(c => c.id).join(', ');
         authorsText = commentAuthors.map(a => `@${a}`).join(', ');
-        
+
+        // Post starting work comment *before* worktree creation
         startingWorkComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: repoOwner,
             repo: repoName,
@@ -241,6 +250,44 @@ ${body}
             branchName: worktreeInfo.branchName 
         }, 'Created worktree from existing PR branch');
 
+        // --- Generate and Store AI Summary Title ---
+        // Must be done *after* worktree is created, as the summary service needs it
+        let summaryTitle = '';
+        try {
+            const summaryRequest = `Summarize this change request in one sentence, focusing on the main action: ${combinedCommentBody}`;
+            summaryTitle = await generateTaskSummary(summaryRequest, worktreeInfo.worktreePath, githubToken.token, { number: pullRequestNumber, repoOwner, repoName }, correlationId, 'haiku');
+            correlatedLogger.info({ taskId, summaryTitle }, 'Generated AI summary for follow-up task');
+        } catch (summaryError) {
+            correlatedLogger.warn({ taskId, error: summaryError.message }, 'Failed to generate AI summary, falling back to truncation.');
+            // Fallback to simple truncation
+            summaryTitle = `Summary of change request: ${combinedCommentBody.substring(0, 100)}...`;
+        }
+
+        job.data.title = `Followup: ${prData.data.title}`;
+        job.data.subtitle = summaryTitle;
+
+        if (isDbEnabled && db) {
+            try {
+                await db('tasks')
+                    .where({ task_id: taskId })
+                    .update({ initial_job_data: JSON.stringify(job.data) });
+                correlatedLogger.info({ taskId, title: job.data.title, subtitle: job.data.subtitle }, 'Updated task with title/subtitle in DB');
+            } catch (dbError) {
+                correlatedLogger.warn({ taskId, error: dbError.message }, 'Failed to update task with title/subtitle in DB');
+            }
+        }
+        try {
+            const state = await stateManager.getTaskState(taskId);
+            if (state) {
+                state.issueRef = job.data;
+                await stateManager.redis.setex(stateManager.getTaskKey(taskId), stateManager.stateExpiry, JSON.stringify(state));
+                correlatedLogger.info({ taskId, title: job.data.title }, 'Updated task with title/subtitle in Redis');
+            }
+        } catch (redisError) {
+            correlatedLogger.warn({ taskId, error: redisError.message }, 'Failed to update task with title/subtitle in Redis');
+        }
+        // --- End Generate and Store AI Summary Title ---
+
         const prompt = `You are working on pull request #${pullRequestNumber} to apply follow-up changes.
 
 **New Request${unprocessedComments.length > 1 ? 's' : ''}:**
@@ -265,7 +312,8 @@ ${commentHistory}
             issueRef: { 
                 number: pullRequestNumber, 
                 repoOwner, 
-                repoName 
+                repoName,
+                title: job.data.title
             },
             githubToken: githubToken.token,
             customPrompt: prompt,

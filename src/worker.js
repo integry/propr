@@ -22,7 +22,7 @@ import { ensureGitRepository } from './utils/git/gitValidation.js';
 import { createLogFiles, generateCompletionComment } from './utils/github/logFiles.js';
 import fs from 'fs-extra';
 import { completePostProcessing } from './githubService.js';
-import { executeClaudeCode, buildClaudeDockerImage, UsageLimitError } from './claude/claudeService.js';
+import { executeClaudeCode, buildClaudeDockerImage, UsageLimitError, generateTaskSummary } from './claude/claudeService.js';
 import { generateTaskImportPrompt } from './claude/prompts/promptGenerator.js';
 import { recordLLMMetrics } from './utils/llmMetrics.js';
 import { 
@@ -326,6 +326,50 @@ ${body}
             branchName: worktreeInfo.branchName 
         }, 'Created worktree from existing PR branch');
 
+        // --- Generate and Store AI Summary Title ---
+        // Must be done *after* worktree is created, as the summary service needs it
+        let summaryTitle = '';
+        try {
+            const summaryRequest = `Summarize this change request in one sentence, focusing on the main action: ${combinedCommentBody}`;
+            summaryTitle = await generateTaskSummary(summaryRequest, worktreeInfo.worktreePath, githubToken.token, { number: pullRequestNumber, repoOwner, repoName }, correlationId, 'haiku');
+            correlatedLogger.info({ taskId, summaryTitle }, 'Generated AI summary for follow-up task');
+        } catch (summaryError) {
+            correlatedLogger.warn({ taskId, error: summaryError.message }, 'Failed to generate AI summary, falling back to truncation.');
+            // Fallback to simple truncation
+            if (combinedCommentBody) {
+                const firstLine = combinedCommentBody.split('\n')[0].replace(/[^a-zA-Z0-9 ]/g, '').trim();
+                summaryTitle = "Follow-up: " + firstLine.substring(0, 75);
+                if (firstLine.length > 75) summaryTitle += '...';
+            } else {
+                summaryTitle = `Follow-up: PR #${pullRequestNumber}`;
+            }
+        }
+
+        job.data.title = `Followup: ${prData.data.title}`;
+        job.data.subtitle = summaryTitle;
+
+        if (isDbEnabled && db) {
+            try {
+                await db('tasks')
+                    .where({ task_id: taskId })
+                    .update({ initial_job_data: JSON.stringify(job.data) });
+                correlatedLogger.info({ taskId, title: job.data.title, subtitle: job.data.subtitle }, 'Updated task with title/subtitle in DB');
+            } catch (dbError) {
+                correlatedLogger.warn({ taskId, error: dbError.message }, 'Failed to update task with title/subtitle in DB');
+            }
+        }
+        try {
+            const state = await stateManager.getTaskState(taskId);
+            if (state) {
+                state.issueRef = job.data;
+                await stateManager.redis.setex(stateManager.getTaskKey(taskId), stateManager.stateExpiry, JSON.stringify(state));
+                correlatedLogger.info({ taskId, title: job.data.title }, 'Updated task with title/subtitle in Redis');
+            }
+        } catch (redisError) {
+            correlatedLogger.warn({ taskId, error: redisError.message }, 'Failed to update task with title/subtitle in Redis');
+        }
+        // --- End Generate and Store AI Summary Title ---
+
         // Step 3: Generate prompt for follow-up changes
         const prompt = `You are working on pull request #${pullRequestNumber} to apply follow-up changes.
 
@@ -352,7 +396,8 @@ ${commentHistory}
             issueRef: { 
                 number: pullRequestNumber, 
                 repoOwner, 
-                repoName 
+                repoName,
+                title: job.data.title
             },
             githubToken: githubToken.token,
             customPrompt: prompt,

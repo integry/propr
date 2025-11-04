@@ -22,6 +22,11 @@ const TaskDetails: React.FC = () => {
   const [eventsCollapsed, setEventsCollapsed] = useState<boolean>(true);
   const [lastThought, setLastThought] = useState<string | null>(null);
 
+  // New memo for thinking log
+  const thinkingLogEvents = React.useMemo(() => {
+    return liveDetails.events.filter(e => e.type === 'thought');
+  }, [liveDetails.events]);
+
   useEffect(() => {
     const fetchHistory = async () => {
       if (!taskId) return;
@@ -267,10 +272,22 @@ const TaskDetails: React.FC = () => {
 
   const historyItemWithPaths = history.find(item => item.promptPath || item.logsPath);
 
+  // --- Helper for new UI ---
+  const currentStatus = history[history.length - 1]?.state?.toUpperCase();
+  const modelName = history.find(item => item.metadata?.model)?.metadata?.model || 'Unknown Model';
+
+  const getStatusIcon = () => {
+    if (currentStatus === 'COMPLETED') return '✅';
+    if (currentStatus === 'FAILED') return '❌';
+    if (['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus)) return '⏳';
+    return '📋';
+  };
+  // --- End Helper ---
+
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900 break-all">Task History: {taskId}</h2>
+      {/* Absolute positioned "Back to Tasks" button */}
+      <div className="absolute top-8 right-8">
         <button
           className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors border border-gray-300"
           onClick={() => navigate('/tasks')}
@@ -279,53 +296,62 @@ const TaskDetails: React.FC = () => {
         </button>
       </div>
 
+      {/* 1. Header & Subtitle */}
+      <div className="flex items-center gap-3 mb-2">
+        <span className="text-2xl">{getStatusIcon()}</span>
+        <h2 className="text-2xl font-bold text-gray-900 break-all">
+          {taskInfo?.title ? taskInfo.title : `Task: ${taskId}`}
+        </h2>
+      </div>
       {taskInfo && (
-        <div className="mb-6 p-4 bg-gray-50 rounded-md border border-gray-200">
-          <div className="flex items-center gap-3">
-            <span className="text-gray-700 font-semibold">Repository:</span>
-            <a 
-              href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-700 underline"
-            >
-              {taskInfo.repoOwner}/{taskInfo.repoName}
-            </a>
-            {taskInfo.type === 'pr-comment' && (
-              <>
-                <span className="text-gray-400">•</span>
-                <span className="text-gray-700 font-semibold">Pull Request:</span>
-                <a 
-                  href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/pull/${taskInfo.number}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:text-blue-700 underline"
-                >
-                  #{taskInfo.number}
-                </a>
-              </>
-            )}
-            {taskInfo.type === 'issue' && (
-              <>
-                <span className="text-gray-400">•</span>
-                <span className="text-gray-700 font-semibold">Issue:</span>
-                <a 
-                  href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/issues/${taskInfo.number}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:text-blue-700 underline"
-                >
-                  #{taskInfo.number}
-                </a>
-              </>
-            )}
-          </div>
-        </div>
+        <p className="text-gray-600 mb-6 ml-10">
+          {taskInfo.subtitle || (taskInfo.type === 'pr-comment'
+            ? `Follow-up changes for PR #${taskInfo.number}`
+            : `Initial implementation for Issue #${taskInfo.number}`)}
+        </p>
       )}
 
-      {historyItemWithPaths && (historyItemWithPaths.promptPath || historyItemWithPaths.logsPath) && (
-        <div className="mb-6 flex gap-2">
-          {historyItemWithPaths.promptPath && (
+      {/* 2. Metadata Bar */}
+      <div className="flex justify-between items-center mb-6 p-4 bg-gray-50 rounded-md border border-gray-200">
+        <div className="flex items-center gap-4 flex-wrap">
+          <button
+            className="px-3 py-1.5 bg-gray-200 text-gray-500 text-sm rounded-md cursor-not-allowed"
+            disabled
+          >
+            Stop Execution (Soon)
+          </button>
+          <span className="text-gray-400 hidden md:inline">|</span>
+          {taskInfo && (
+            <>
+              <span className="text-gray-700 font-semibold">Repository:</span>
+              <a
+                href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-700 underline"
+              >
+                {taskInfo.repoOwner}/{taskInfo.repoName}
+              </a>
+              <span className="text-gray-400">•</span>
+              <span className="text-gray-700 font-semibold">
+                {taskInfo.type === 'pr-comment' ? 'Pull Request:' : 'Issue:'}
+              </span>
+              <a
+                href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/${taskInfo.type === 'pr-comment' ? 'pull' : 'issues'}/${taskInfo.number}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-700 underline"
+              >
+                #{taskInfo.number}
+              </a>
+            </>
+          )}
+          <span className="text-gray-400">•</span>
+          <span className="text-gray-700 font-semibold">Model:</span>
+          <span className="text-blue-600">{modelName}</span>
+        </div>
+        <div className="flex gap-2">
+          {historyItemWithPaths?.promptPath && (
             <button
               onClick={() => fetchPrompt(historyItemWithPaths.promptPath)}
               className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
@@ -333,7 +359,7 @@ const TaskDetails: React.FC = () => {
               View Prompt
             </button>
           )}
-          {historyItemWithPaths.logsPath && (
+          {historyItemWithPaths?.logsPath && (
             <button
               onClick={() => fetchLogFiles(historyItemWithPaths.logsPath)}
               className="px-3 py-1.5 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 transition-colors"
@@ -342,10 +368,27 @@ const TaskDetails: React.FC = () => {
             </button>
           )}
         </div>
-      )}
+      </div>
+      
+      {/* 3. Status & Stats Row */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        {/* Left Column: Task Status Steps */}
+        <div className="p-4 bg-white rounded-lg border border-gray-200">
+          <h4 className="text-lg font-semibold text-gray-900 mb-4">Task Status</h4>
+          <p>Current Step: <strong>{currentStatus || 'LOADING'}</strong></p>
+        </div>
+        
+        {/* Right Column: Real-time Stats */}
+        <div className="p-4 bg-white rounded-lg border border-gray-200">
+          <h4 className="text-lg font-semibold text-gray-900 mb-4">Real-time Stats</h4>
+          <p className="text-gray-500">Files Added: N/A (Placeholder)</p>
+          <p className="text-gray-500">Lines Changed: N/A (Placeholder)</p>
+        </div>
+      </div>
 
+      {/* 4. To-do List */}
       {liveDetails.todos.length > 0 && history.length > 0 && (
-        <div className="mb-6 p-4 bg-blue-50 rounded-lg border-2 border-blue-500">
+        <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
           {!['COMPLETED', 'FAILED'].includes(history[history.length - 1]?.state?.toUpperCase()) ? (
             <>
               <h4 className="mt-0 text-blue-900 flex items-center gap-2">
@@ -377,9 +420,9 @@ const TaskDetails: React.FC = () => {
                   {todo.status === 'completed' ? '✅' : todo.status === 'in_progress' ? '⏳' : '📋'}
                 </span>
                 <span className={`${
-                  todo.status === 'completed' ? 'line-through text-gray-500' : 'text-gray-700'
+                  todo.status === 'completed' ? 'text-gray-500' : 'text-gray-700'
                 } ${
-                  todo.status === 'in_progress' ? 'font-bold' : 'font-normal'
+                  todo.status === 'in_progress' ? 'font-bold text-blue-800' : 'font-normal'
                 }`}>
                   {todo.content}
                 </span>
@@ -389,6 +432,22 @@ const TaskDetails: React.FC = () => {
         </div>
       )}
 
+      {/* 5. Thinking Log */}
+      {thinkingLogEvents.length > 0 && (
+        <div className="mb-6">
+          <h4 className="text-lg font-semibold text-gray-900 mb-4">Thinking Log</h4>
+          <div className="space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200 max-h-96 overflow-y-auto">
+            {thinkingLogEvents.map((event, index) => (
+              <div key={index} className="flex items-start gap-3">
+                <span className="text-lg mt-1">🧠</span>
+                <p className="text-gray-700 italic whitespace-pre-wrap">{event.content}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 6. Full Execution Log (Unaltered, shows all events) */}
       {liveDetails.events.length > 0 && history.length > 0 && (
         <div className="mb-6">
           <div
@@ -399,7 +458,7 @@ const TaskDetails: React.FC = () => {
               <span>{eventsCollapsed ? '▶' : '▼'}</span>
               <span>
                 {!['COMPLETED', 'FAILED'].includes(history[history.length - 1]?.state?.toUpperCase())
-                  ? 'Live Event Stream'
+                  ? 'Full Execution Event Log'
                   : 'Execution Event Log'}
               </span>
               <span className="text-sm font-normal text-gray-500">({liveDetails.events.length} events)</span>
@@ -411,7 +470,7 @@ const TaskDetails: React.FC = () => {
             )}
           </div>
           {!eventsCollapsed && (
-            <div className="mt-4 space-y-4">
+            <div className="mt-4 space-y-4 p-4 bg-white border border-gray-200 rounded-lg max-h-[600px] overflow-y-auto">
               {liveDetails.events.map((event, index) => (
                 <div key={index} className="flex items-start gap-4">
                   <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-lg">
@@ -446,6 +505,8 @@ const TaskDetails: React.FC = () => {
         </div>
       )}
 
+      {/* Original History Log (now at the bottom) */}
+      <h4 className="text-lg font-semibold text-gray-900 mb-4">State Change Log</h4>
       <div className="border border-gray-200 rounded-lg bg-white shadow-sm">
         {history.length === 0 ? (
           <p className="text-gray-500 text-center p-8">No history found for this task</p>

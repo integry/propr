@@ -418,12 +418,32 @@ app.get('/api/task/:taskId/history', ensureAuthenticated, async (req, res) => {
         
         if (task && historyRecords.length > 0) {
           const [repoOwner, repoName] = task.repository.split('/');
+          
+          // Extract title and subtitle from initial_job_data
+          let title = null, subtitle = null;
+          if (task.initial_job_data) {
+            try {
+              const jobData = typeof task.initial_job_data === 'string'
+                ? JSON.parse(task.initial_job_data)
+                : task.initial_job_data;
+              // Use new title/subtitle fields
+              title = jobData.title || (jobData.issueRef ? jobData.issueRef.title : null) || null;
+              subtitle = jobData.subtitle || null;
+              // If new title isn't present, fall back to old logic
+              if (!title && jobData.issueRef) title = jobData.issueRef.title;
+            } catch (e) {
+              console.error('Failed to parse initial_job_data', e);
+            }
+          }
+          
           taskInfo = {
             repoOwner,
             repoName,
             number: task.issue_number,
             type: task.task_type,
-            correlationId: task.correlation_id
+            correlationId: task.correlation_id,
+            title: title,
+            subtitle: subtitle
           };
           
           // Fetch LLM executions for this task
@@ -520,12 +540,17 @@ app.get('/api/task/:taskId/history', ensureAuthenticated, async (req, res) => {
         
         // Extract task info from state
         if (state.issueRef) {
+          // New logic for title/subtitle
+          const title = state.issueRef.title || null;
+          const subtitle = state.issueRef.subtitle || null;
           taskInfo = {
             repoOwner: state.issueRef.repoOwner,
             repoName: state.issueRef.repoName,
             number: state.issueRef.number,
             type: taskId.startsWith('pr-comments-batch-') ? 'pr-comment' : 'issue',
-            comments: state.issueRef.comments
+            comments: state.issueRef.comments,
+            title: title,
+            subtitle: subtitle
           };
         }
       } catch (e) {
@@ -540,13 +565,17 @@ app.get('/api/task/:taskId/history', ensureAuthenticated, async (req, res) => {
         if (job) {
           // Extract task info from job data if not already set
           if (!taskInfo && job.data) {
+            const title = job.data.title || null;
+            const subtitle = job.data.subtitle || null;
             if (job.data.repoOwner && job.data.repoName) {
               taskInfo = {
                 repoOwner: job.data.repoOwner,
                 repoName: job.data.repoName,
                 number: job.data.pullRequestNumber || job.data.number,
                 type: taskId.startsWith('pr-comments-batch-') ? 'pr-comment' : 'issue',
-                comments: job.data.comments
+                comments: job.data.comments,
+                title: title,
+                subtitle: subtitle
               };
             }
           }

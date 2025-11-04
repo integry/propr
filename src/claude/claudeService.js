@@ -3,7 +3,7 @@ import os from 'os';
 import fs from 'fs';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
-import { getDefaultModel } from '../config/modelAliases.js';
+import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { generateClaudePrompt, generateTaskImportPrompt } from './prompts/promptGenerator.js';
 import { executeDockerCommand, buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.js';
 
@@ -513,6 +513,53 @@ export async function executeClaudeCode({ worktreePath, issueRef, githubToken, c
         };
     } finally {
         // Cleanup moved to after Docker execution completes
+    }
+}
+
+/**
+ * Generates a text summary using the Claude Code Docker executor.
+ * This re-uses the secure Docker setup for a text-only task.
+ * @param {string} summaryRequest - The text to be summarized.
+ * @param {string} worktreePath - Path to a valid worktree (required by executeClaudeCode).
+ * @param {string} githubToken - GitHub authentication token.
+ * @param {Object} issueRef - Issue reference for context.
+ * @param {string} correlationId - Correlation ID for logging.
+ * @param {string} modelAlias - The model alias (e.g., 'haiku') to use.
+ * @returns {Promise<string>} The text content of the response.
+ */
+export async function generateTaskSummary(summaryRequest, worktreePath, githubToken, issueRef, correlationId, modelAlias = 'haiku') {
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    correlatedLogger.info({ modelAlias, issueRef: issueRef.number }, 'Generating task summary via Docker executor...');
+
+    const model = resolveModelAlias(modelAlias);
+
+    const summaryPrompt = `Please provide a one-sentence summary for the following request, focusing on the main action. Your output must be ONLY the summary string itself, with no other text.
+    
+REQUEST:
+${summaryRequest}
+
+CRITICAL: Do not modify any files. Do not run any commands. Only output the summary.`;
+
+    try {
+        const claudeResult = await executeClaudeCode({
+            worktreePath: worktreePath,
+            issueRef: issueRef,
+            githubToken: githubToken,
+            customPrompt: summaryPrompt,
+            branchName: 'summary-generation',
+            modelName: model,
+        });
+
+        if (claudeResult.success && (claudeResult.finalResult?.result || claudeResult.summary)) {
+            const summary = (claudeResult.finalResult?.result || claudeResult.summary).trim().replace(/^"|"$/g, '');
+            correlatedLogger.info({ summary, model }, 'Successfully generated task summary');
+            return summary;
+        }
+        
+        throw new Error(`Invalid summary response from Claude execution: ${claudeResult.error}`);
+    } catch (error) {
+        correlatedLogger.error({ error: error.message, model, promptLength: summaryPrompt.length }, 'Failed to generate task summary');
+        throw error;
     }
 }
 
