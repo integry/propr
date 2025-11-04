@@ -220,6 +220,7 @@ const TaskDetails: React.FC = () => {
             try {
               const updatedData = await getTaskHistory(taskId);
               setHistory(updatedData.history || []);
+              setTaskInfo(updatedData.taskInfo || null);
               
               const stillActive = updatedData.history && updatedData.history.length > 0 && 
                 ['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(
