@@ -214,3 +214,12 @@ export const updatePrimaryProcessingLabels = async (primaryLabels) => {
   await handleApiResponse(response);
   return response.json();
 };
+
+export const stopTaskExecution = async (taskId) => {
+  const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/stop`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};

@@ -418,12 +418,32 @@ app.get('/api/task/:taskId/history', ensureAuthenticated, async (req, res) => {
         
         if (task && historyRecords.length > 0) {
           const [repoOwner, repoName] = task.repository.split('/');
+          
+          // Extract title and subtitle from initial_job_data
+          let title = null, subtitle = null;
+          if (task.initial_job_data) {
+            try {
+              const jobData = typeof task.initial_job_data === 'string'
+                ? JSON.parse(task.initial_job_data)
+                : task.initial_job_data;
+              // Use new title/subtitle fields
+              title = jobData.title || (jobData.issueRef ? jobData.issueRef.title : null) || null;
+              subtitle = jobData.subtitle || null;
+              // If new title isn't present, fall back to old logic
+              if (!title && jobData.issueRef) title = jobData.issueRef.title;
+            } catch (e) {
+              console.error('Failed to parse initial_job_data', e);
+            }
+          }
+          
           taskInfo = {
             repoOwner,
             repoName,
             number: task.issue_number,
             type: task.task_type,
-            correlationId: task.correlation_id
+            correlationId: task.correlation_id,
+            title: title,
+            subtitle: subtitle
           };
           
           // Fetch LLM executions for this task
@@ -520,12 +540,17 @@ app.get('/api/task/:taskId/history', ensureAuthenticated, async (req, res) => {
         
         // Extract task info from state
         if (state.issueRef) {
+          // New logic for title/subtitle
+          const title = state.issueRef.title || null;
+          const subtitle = state.issueRef.subtitle || null;
           taskInfo = {
             repoOwner: state.issueRef.repoOwner,
             repoName: state.issueRef.repoName,
             number: state.issueRef.number,
             type: taskId.startsWith('pr-comments-batch-') ? 'pr-comment' : 'issue',
-            comments: state.issueRef.comments
+            comments: state.issueRef.comments,
+            title: title,
+            subtitle: subtitle
           };
         }
       } catch (e) {
@@ -540,13 +565,17 @@ app.get('/api/task/:taskId/history', ensureAuthenticated, async (req, res) => {
         if (job) {
           // Extract task info from job data if not already set
           if (!taskInfo && job.data) {
+            const title = job.data.title || null;
+            const subtitle = job.data.subtitle || null;
             if (job.data.repoOwner && job.data.repoName) {
               taskInfo = {
                 repoOwner: job.data.repoOwner,
                 repoName: job.data.repoName,
                 number: job.data.pullRequestNumber || job.data.number,
                 type: taskId.startsWith('pr-comments-batch-') ? 'pr-comment' : 'issue',
-                comments: job.data.comments
+                comments: job.data.comments,
+                title: title,
+                subtitle: subtitle
               };
             }
           }
@@ -906,6 +935,70 @@ app.get('/api/task/:taskId/docker-logs', ensureAuthenticated, async (req, res) =
     }
   } catch (error) {
     console.error('Error in /api/task/:taskId/docker-logs:', error);
+    res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+});
+
+app.post('/api/task/:taskId/stop', ensureAuthenticated, async (req, res) => {
+  try {
+    const { taskId: jobId } = req.params;
+
+    let taskId = jobId;
+    if (jobId.startsWith('issue-')) {
+      const parts = jobId.replace(/^issue-/, '').split('-');
+      parts.pop();
+      taskId = parts.join('-');
+    }
+
+    console.log(`[stop-execution] Attempting to stop task: ${jobId} (taskId: ${taskId})`);
+
+    const stateKey = `worker:state:${taskId}`;
+    const stateData = await redisClient.get(stateKey);
+
+    if (!stateData) {
+      return res.status(404).json({ 
+        error: 'Task not found',
+        message: 'The task may have already completed or does not exist.'
+      });
+    }
+
+    const state = JSON.parse(stateData);
+    const currentState = state.history[state.history.length - 1]?.state;
+
+    if (!['processing', 'claude_execution', 'post_processing'].includes(currentState)) {
+      return res.status(400).json({ 
+        error: 'Task is not running',
+        message: 'The task has already completed or is not in an active state.',
+        currentState
+      });
+    }
+
+    const abortKey = `worker:abort:${taskId}`;
+    await redisClient.set(abortKey, JSON.stringify({
+      timestamp: new Date().toISOString(),
+      requestedBy: req.user?.username || 'user'
+    }), { EX: 3600 });
+
+    const logMessage = {
+      type: 'system',
+      timestamp: new Date().toISOString(),
+      content: 'Stop requested by user. Waiting for worker to acknowledge...',
+      level: 'warning'
+    };
+
+    const conversationKey = `conversation:${taskId}`;
+    await redisClient.rpush(conversationKey, JSON.stringify(logMessage));
+
+    console.log(`[stop-execution] Abort signal set for task: ${taskId}`);
+
+    res.json({ 
+      success: true,
+      message: 'Stop request sent to worker. The execution will be terminated shortly.',
+      taskId
+    });
+
+  } catch (error) {
+    console.error('Error in /api/task/:taskId/stop:', error);
     res.status(500).json({ error: 'Internal server error', message: error.message });
   }
 });

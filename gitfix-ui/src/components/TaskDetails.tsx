@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getTaskHistory, getTaskLiveDetails, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile } from '../api/gitfixApi';
+import { getTaskHistory, getTaskLiveDetails, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution } from '../api/gitfixApi';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
@@ -21,6 +23,183 @@ const TaskDetails: React.FC = () => {
   const [liveDetails, setLiveDetails] = useState<{ events: any[]; todos: any[]; currentTask: any }>({ events: [], todos: [], currentTask: null });
   const [eventsCollapsed, setEventsCollapsed] = useState<boolean>(true);
   const [lastThought, setLastThought] = useState<string | null>(null);
+  const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
+
+  const formatDate = (dateString) => {
+    return new Date(dateString).toLocaleString();
+  };
+
+  const formatPath = (path) => {
+    if (!path) return 'N/A';
+    const match = path.match(/\/tasks\/(.+)/);
+    return match ? match[1] : path;
+  };
+
+  const formatModelName = (modelId) => {
+    if (!modelId) return 'Unknown Model';
+    const modelMap = {
+      'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
+      'claude-sonnet-3-5-20240620': 'Claude Sonnet 3.5',
+      'claude-opus-3-20240229': 'Claude Opus 3',
+      'claude-haiku-3-20240307': 'Claude Haiku 3',
+    };
+    return modelMap[modelId] || modelId;
+  };
+
+  const formatRelativeTime = (milliseconds) => {
+    const seconds = Math.floor(milliseconds / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds}s`;
+  };
+
+  const renderMarkdown = (text) => {
+    if (!text) return text;
+
+    const parts: any[] = [];
+    let lastIndex = 0;
+
+    const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+    let match;
+
+    while ((match = codeBlockRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        const beforeText = text.substring(lastIndex, match.index);
+        parts.push({ type: 'text', content: beforeText });
+      }
+
+      const language = match[1] || 'javascript';
+      let code = match[2];
+      // Remove trailing newline from code blocks
+      if (code.endsWith('\n')) {
+        code = code.slice(0, -1);
+      }
+      parts.push({ type: 'code', language, content: code });
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    if (lastIndex < text.length) {
+      parts.push({ type: 'text', content: text.substring(lastIndex) });
+    }
+
+    if (parts.length === 0) {
+      parts.push({ type: 'text', content: text });
+    }
+
+    const escapeHtml = (str) => {
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    };
+
+    return (
+      <div>
+        {parts.map((part, index) => {
+          if (part.type === 'code') {
+            const languageLabel = part.language.charAt(0).toUpperCase() + part.language.slice(1);
+            return (
+              <div key={index} className="my-2 relative">
+                <div className="absolute top-2 right-2 text-xs text-gray-400 bg-gray-800 px-2 py-1 rounded z-10">
+                  {languageLabel}
+                </div>
+                <SyntaxHighlighter
+                  language={part.language}
+                  style={vscDarkPlus}
+                  customStyle={{
+                    borderRadius: '0.375rem',
+                    fontSize: '0.875rem',
+                    border: '1px solid #d1d5db',
+                    margin: 0
+                  }}
+                >
+                  {part.content}
+                </SyntaxHighlighter>
+              </div>
+            );
+          } else {
+            let formatted = part.content;
+            // Reduce excessive line breaks (more than 2 newlines become 1)
+            formatted = formatted.replace(/\n{3,}/g, '\n\n');
+            formatted = formatted.replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h2>');
+            formatted = formatted.replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold text-gray-800 mt-3 mb-1">$1</h3>');
+            formatted = formatted.replace(/^#### (.+)$/gm, '<h4 class="text-sm font-semibold text-gray-700 mt-2 mb-1">$1</h4>');
+            formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>');
+            formatted = formatted.replace(/\*(.+?)\*/g, '<em class="italic">$1</em>');
+            // Escape HTML in inline code blocks
+            formatted = formatted.replace(/`([^`]+)`/g, (match, code) => {
+              return `<code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300">${escapeHtml(code)}</code>`;
+            });
+            formatted = formatted.replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>');
+            formatted = formatted.replace(/(<li.*<\/li>\n?)+/g, '<ul class="list-disc list-inside space-y-1 my-2">$&</ul>');
+            // Convert newlines to <br>
+            formatted = formatted.replace(/\n/g, '<br>');
+            // Remove <br> tags that come right after closing tags (like </li>, </ul>, </h2>, etc.)
+            formatted = formatted.replace(/(\<\/(li|ul|ol|h2|h3|h4|h5|strong|em|code)\>)<br>/gi, '$1');
+            // Filter out multiple sequential <br> tags (2 or more) and replace with single one
+            formatted = formatted.replace(/(<br[^>]*>\s*){2,}/gi, '<br>');
+            return <span key={index} dangerouslySetInnerHTML={{ __html: formatted }} />;
+          }
+        })}
+      </div>
+    );
+  };
+
+  const handleNextMatch = () => {
+    if (searchMatches.length > 0) {
+      setCurrentMatchIndex((prev) => (prev + 1) % searchMatches.length);
+    }
+  };
+
+  const handlePrevMatch = () => {
+    if (searchMatches.length > 0) {
+      setCurrentMatchIndex((prev) => (prev - 1 + searchMatches.length) % searchMatches.length);
+    }
+  };
+
+  const highlightContent = (content) => {
+    if (!searchQuery) return content;
+
+    const parts = content.split(new RegExp(`(${searchQuery})`, 'gi'));
+    let matchCount = 0;
+
+    return parts.map((part, index) => {
+      if (part.toLowerCase() === searchQuery.toLowerCase()) {
+        const isCurrentMatch = matchCount === currentMatchIndex;
+        matchCount++;
+        return (
+          <span
+            key={index}
+            id={`match-${matchCount - 1}`}
+            className={`${
+              isCurrentMatch ? 'bg-yellow-500 text-black' : 'bg-yellow-300 text-black'
+            } px-1 rounded`}
+          >
+            {part}
+          </span>
+        );
+      }
+      return part;
+    });
+  };
+
+  const thinkingLogEvents = React.useMemo(() => {
+    return liveDetails.events.filter(e => e.type === 'thought');
+  }, [liveDetails.events]);
+
+  const executionStartTime = history.find(item => item.state?.toUpperCase() === 'CLAUDE_EXECUTION')?.timestamp;
+  const thinkingLogWithTimestamps = React.useMemo(() => {
+    if (!executionStartTime) return thinkingLogEvents;
+    const startTime = new Date(executionStartTime).getTime();
+    return thinkingLogEvents.map(event => ({
+      ...event,
+      relativeTime: event.timestamp ? formatRelativeTime(new Date(event.timestamp).getTime() - startTime) : null
+    }));
+  }, [thinkingLogEvents, executionStartTime]);
 
   useEffect(() => {
     const fetchHistory = async () => {
@@ -42,6 +221,7 @@ const TaskDetails: React.FC = () => {
             try {
               const updatedData = await getTaskHistory(taskId);
               setHistory(updatedData.history || []);
+              setTaskInfo(updatedData.taskInfo || null);
               
               const stillActive = updatedData.history && updatedData.history.length > 0 && 
                 ['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(
@@ -212,53 +392,37 @@ const TaskDetails: React.FC = () => {
     }
   };
 
-  const formatDate = (dateString) => {
-    return new Date(dateString).toLocaleString();
+  const getStatusIcon = (status) => {
+    if (status === 'COMPLETED') return '✅';
+    if (status === 'FAILED') return '❌';
+    if (['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(status)) return '⏳';
+    return '📋';
   };
 
-  const formatPath = (path) => {
-    if (!path) return 'N/A';
-    // Extract the important part of the path (after /var/folders/)
-    const match = path.match(/\/tasks\/(.+)/);
-    return match ? match[1] : path;
-  };
+  const handleStopExecution = async () => {
+    if (!taskId) return;
+    
+    const confirmed = window.confirm('Are you sure you want to stop this execution? This action cannot be undone.');
+    if (!confirmed) return;
 
-  const handleNextMatch = () => {
-    if (searchMatches.length > 0) {
-      setCurrentMatchIndex((prev) => (prev + 1) % searchMatches.length);
+    try {
+      setStoppingExecution(true);
+      await stopTaskExecution(taskId);
+      
+      setTimeout(async () => {
+        try {
+          const data = await getTaskHistory(taskId);
+          setHistory(data.history || []);
+        } catch (err) {
+          console.error('Error refreshing task history after stop:', err);
+        }
+        setStoppingExecution(false);
+      }, 1000);
+    } catch (err) {
+      console.error('Error stopping execution:', err);
+      alert(`Failed to stop execution: ${err.message || 'Unknown error'}`);
+      setStoppingExecution(false);
     }
-  };
-
-  const handlePrevMatch = () => {
-    if (searchMatches.length > 0) {
-      setCurrentMatchIndex((prev) => (prev - 1 + searchMatches.length) % searchMatches.length);
-    }
-  };
-
-  const highlightContent = (content) => {
-    if (!searchQuery) return content;
-
-    const parts = content.split(new RegExp(`(${searchQuery})`, 'gi'));
-    let matchCount = 0;
-
-    return parts.map((part, index) => {
-      if (part.toLowerCase() === searchQuery.toLowerCase()) {
-        const isCurrentMatch = matchCount === currentMatchIndex;
-        matchCount++;
-        return (
-          <span
-            key={index}
-            id={`match-${matchCount - 1}`}
-            className={`${
-              isCurrentMatch ? 'bg-yellow-500 text-black' : 'bg-yellow-300 text-black'
-            } px-1 rounded`}
-          >
-            {part}
-          </span>
-        );
-      }
-      return part;
-    });
   };
 
   if (loading) return <div className="text-gray-600">Loading task details...</div>;
@@ -267,65 +431,77 @@ const TaskDetails: React.FC = () => {
 
   const historyItemWithPaths = history.find(item => item.promptPath || item.logsPath);
 
+  const currentStatus = history[history.length - 1]?.state?.toUpperCase();
+  const modelItem = history.find(item => item.metadata?.model);
+  const modelName = formatModelName(modelItem?.metadata?.model || taskInfo?.modelName);
+
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900 break-all">Task History: {taskId}</h2>
-        <button
-          className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors border border-gray-300"
-          onClick={() => navigate('/tasks')}
-        >
-          Back to Tasks
-        </button>
+      {/* 1. Header & Subtitle */}
+      <div className="flex items-center gap-3 mb-2">
+        <span className="text-2xl">{getStatusIcon(currentStatus)}</span>
+        <h2 className="text-2xl font-bold text-gray-900 break-all">
+          {taskInfo?.title || 'Loading...'}
+        </h2>
       </div>
-
       {taskInfo && (
-        <div className="mb-6 p-4 bg-gray-50 rounded-md border border-gray-200">
-          <div className="flex items-center gap-3">
-            <span className="text-gray-700 font-semibold">Repository:</span>
-            <a 
-              href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-700 underline"
-            >
-              {taskInfo.repoOwner}/{taskInfo.repoName}
-            </a>
-            {taskInfo.type === 'pr-comment' && (
-              <>
-                <span className="text-gray-400">•</span>
-                <span className="text-gray-700 font-semibold">Pull Request:</span>
-                <a 
-                  href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/pull/${taskInfo.number}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:text-blue-700 underline"
-                >
-                  #{taskInfo.number}
-                </a>
-              </>
-            )}
-            {taskInfo.type === 'issue' && (
-              <>
-                <span className="text-gray-400">•</span>
-                <span className="text-gray-700 font-semibold">Issue:</span>
-                <a 
-                  href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/issues/${taskInfo.number}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:text-blue-700 underline"
-                >
-                  #{taskInfo.number}
-                </a>
-              </>
-            )}
-          </div>
-        </div>
+        <p className="text-gray-600 mb-6 ml-10">
+          {taskInfo.subtitle || (taskInfo.type === 'pr-comment'
+            ? `Follow-up changes for PR #${taskInfo.number}`
+            : `Initial implementation for Issue #${taskInfo.number}`)}
+        </p>
       )}
 
-      {historyItemWithPaths && (historyItemWithPaths.promptPath || historyItemWithPaths.logsPath) && (
-        <div className="mb-6 flex gap-2">
-          {historyItemWithPaths.promptPath && (
+      {/* 2. Metadata Bar */}
+      <div className="flex justify-between items-center mb-6 p-4 bg-gray-50 rounded-md border border-gray-200">
+        <div className="flex items-center gap-4 flex-wrap">
+          {['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus) ? (
+            <button
+              onClick={handleStopExecution}
+              disabled={stoppingExecution}
+              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+                stoppingExecution
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  : 'bg-red-600 text-white hover:bg-red-700'
+              }`}
+            >
+              {stoppingExecution ? 'Stopping...' : 'Stop Execution'}
+            </button>
+          ) : null}
+          {['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus) && (
+            <span className="text-gray-400 hidden md:inline">|</span>
+          )}
+          {taskInfo && (
+            <>
+              <span className="text-gray-700 font-semibold">Repository:</span>
+              <a
+                href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-700 underline"
+              >
+                {taskInfo.repoOwner}/{taskInfo.repoName}
+              </a>
+              <span className="text-gray-400">•</span>
+              <span className="text-gray-700 font-semibold">
+                {taskInfo.type === 'pr-comment' ? 'Pull Request:' : 'Issue:'}
+              </span>
+              <a
+                href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/${taskInfo.type === 'pr-comment' ? 'pull' : 'issues'}/${taskInfo.number}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-700 underline"
+              >
+                #{taskInfo.number}
+              </a>
+            </>
+          )}
+          <span className="text-gray-400">•</span>
+          <span className="text-gray-700 font-semibold">Model:</span>
+          <span className="text-blue-600">{modelName}</span>
+        </div>
+        <div className="flex gap-2">
+          {historyItemWithPaths?.promptPath && (
             <button
               onClick={() => fetchPrompt(historyItemWithPaths.promptPath)}
               className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
@@ -333,7 +509,7 @@ const TaskDetails: React.FC = () => {
               View Prompt
             </button>
           )}
-          {historyItemWithPaths.logsPath && (
+          {historyItemWithPaths?.logsPath && (
             <button
               onClick={() => fetchLogFiles(historyItemWithPaths.logsPath)}
               className="px-3 py-1.5 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 transition-colors"
@@ -342,10 +518,109 @@ const TaskDetails: React.FC = () => {
             </button>
           )}
         </div>
-      )}
+      </div>
+      
+      {/* 3. Status & Stats Row */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        {/* Left Column: Task Implementation Status Steps */}
+        <div className="p-4 bg-white rounded-lg border border-gray-200">
+          <h4 className="text-lg font-semibold text-gray-900 mb-4">Task Implementation Status</h4>
+          {history.length > 0 && (
+            <div className="mt-0">
+              <div>
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="border-b-2 border-gray-300">
+                      <th className="text-left py-2 pr-4 text-gray-700 font-semibold">#</th>
+                      <th className="text-left py-2 pr-4 text-gray-700 font-semibold">State</th>
+                      <th className="text-left py-2 pr-4 text-gray-700 font-semibold">Timestamp</th>
+                      <th className="text-right py-2 text-gray-700 font-semibold">Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {history.map((item, index) => {
+                      const duration = index < history.length - 1
+                        ? new Date(history[index + 1].timestamp).getTime() - new Date(item.timestamp).getTime()
+                        : null;
+                      
+                      let displayLabel = item.state?.replace(/_/g, ' ').toLowerCase();
+                      const stateUpper = item.state?.toUpperCase();
+                      
+                      // Map states to more descriptive labels
+                      if (stateUpper === 'PENDING') {
+                        displayLabel = 'Task Queued';
+                      } else if (stateUpper === 'PROCESSING') {
+                        displayLabel = 'Analyzing Request';
+                      } else if (stateUpper === 'CLAUDE_EXECUTION' || stateUpper === 'CLAUDE_EXECUTION_STARTED') {
+                        const claudeCount = history.slice(0, index + 1).filter(h => {
+                          const s = h.state?.toUpperCase();
+                          return s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED';
+                        }).length;
+                        
+                        // Check reason to determine if this is start or completion
+                        if (item.reason?.toLowerCase().includes('completed')) {
+                          displayLabel = 'Implementation Completed';
+                        } else if (item.reason?.toLowerCase().includes('started')) {
+                          if (claudeCount === 1) {
+                            displayLabel = 'Implementing Changes';
+                          } else {
+                            displayLabel = `Retry Implementation ${claudeCount}`;
+                          }
+                        } else if (item.metadata?.description) {
+                          displayLabel = item.metadata.description;
+                        } else if (claudeCount === 1) {
+                          displayLabel = 'Implementing Changes';
+                        } else {
+                          displayLabel = `Retry Implementation ${claudeCount}`;
+                        }
+                      } else if (stateUpper === 'CLAUDE_EXECUTION_COMPLETED') {
+                        displayLabel = 'Implementation Completed';
+                      } else if (stateUpper === 'POST_PROCESSING') {
+                        displayLabel = 'Creating Pull Request';
+                      } else if (stateUpper === 'COMPLETED') {
+                        displayLabel = 'Task Completed';
+                      } else if (stateUpper === 'FAILED') {
+                        displayLabel = 'Task Failed';
+                      }
+                      
+                      const isLastItem = index === history.length - 1;
+                      const isRunning = isLastItem && duration === null && !['COMPLETED', 'FAILED'].includes(item.state?.toUpperCase());
+                      return (
+                        <tr key={index} className="border-b border-gray-200">
+                          <td className="py-2 pr-4 text-gray-500">{index + 1}</td>
+                          <td className={`py-2 pr-4 text-gray-800 ${isLastItem ? 'font-bold' : 'font-medium'}`}>{displayLabel}</td>
+                          <td className="py-2 pr-4 text-gray-600 text-xs">{formatDate(item.timestamp)}</td>
+                          <td className="py-2 text-gray-600 text-xs text-right">
+                            {isRunning ? (
+                              <span className="inline-flex items-center gap-1">
+                                <svg className="animate-spin h-3 w-3 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                              </span>
+                            ) : duration !== null ? formatRelativeTime(duration) : '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+        
+        {/* Right Column: Real-time Stats */}
+        <div className="p-4 bg-white rounded-lg border border-gray-200">
+          <h4 className="text-lg font-semibold text-gray-900 mb-4">Real-time Stats</h4>
+          <p className="text-gray-500">Files Added: N/A (Placeholder)</p>
+          <p className="text-gray-500">Lines Changed: N/A (Placeholder)</p>
+        </div>
+      </div>
 
+      {/* 4. To-do List */}
       {liveDetails.todos.length > 0 && history.length > 0 && (
-        <div className="mb-6 p-4 bg-blue-50 rounded-lg border-2 border-blue-500">
+        <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
           {!['COMPLETED', 'FAILED'].includes(history[history.length - 1]?.state?.toUpperCase()) ? (
             <>
               <h4 className="mt-0 text-blue-900 flex items-center gap-2">
@@ -358,12 +633,7 @@ const TaskDetails: React.FC = () => {
                 </p>
               )}
             </>
-          ) : (
-            <h4 className="mt-0 text-blue-900 flex items-center gap-2">
-              <span className="text-xl">📋</span>
-              Task Execution History
-            </h4>
-          )}
+          ) : null}
           <h5 className="mt-4 mb-2 text-blue-900">To-do List:</h5>
           <ul className="list-none pl-0 m-0">
             {liveDetails.todos.map(todo => (
@@ -377,9 +647,9 @@ const TaskDetails: React.FC = () => {
                   {todo.status === 'completed' ? '✅' : todo.status === 'in_progress' ? '⏳' : '📋'}
                 </span>
                 <span className={`${
-                  todo.status === 'completed' ? 'line-through text-gray-500' : 'text-gray-700'
+                  todo.status === 'completed' ? 'text-gray-500' : 'text-gray-700'
                 } ${
-                  todo.status === 'in_progress' ? 'font-bold' : 'font-normal'
+                  todo.status === 'in_progress' ? 'font-bold text-blue-800' : 'font-normal'
                 }`}>
                   {todo.content}
                 </span>
@@ -389,6 +659,27 @@ const TaskDetails: React.FC = () => {
         </div>
       )}
 
+      {/* 5. Thinking Log */}
+      {thinkingLogWithTimestamps.length > 0 && (
+        <div className="mb-6">
+          <h4 className="text-lg font-semibold text-gray-900 mb-4">Thinking Log</h4>
+          <div className="space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200 overflow-y-auto">
+            {thinkingLogWithTimestamps.map((event, index) => (
+              <div key={index} className="flex items-start gap-3">
+                <span className="text-lg mt-0">🧠</span>
+                <div className="flex-1">
+                  <p className="text-gray-700 whitespace-pre-wrap">{renderMarkdown(event.content)}</p>
+                  {event.relativeTime && (
+                    <p className="text-xs text-gray-500 mt-1">{event.relativeTime}</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 6. Full Execution Log (Unaltered, shows all events) */}
       {liveDetails.events.length > 0 && history.length > 0 && (
         <div className="mb-6">
           <div
@@ -399,7 +690,7 @@ const TaskDetails: React.FC = () => {
               <span>{eventsCollapsed ? '▶' : '▼'}</span>
               <span>
                 {!['COMPLETED', 'FAILED'].includes(history[history.length - 1]?.state?.toUpperCase())
-                  ? 'Live Event Stream'
+                  ? 'Full Execution Event Log'
                   : 'Execution Event Log'}
               </span>
               <span className="text-sm font-normal text-gray-500">({liveDetails.events.length} events)</span>
@@ -411,7 +702,7 @@ const TaskDetails: React.FC = () => {
             )}
           </div>
           {!eventsCollapsed && (
-            <div className="mt-4 space-y-4">
+            <div className="mt-4 space-y-4 p-4 bg-white border border-gray-200 rounded-lg overflow-y-auto">
               {liveDetails.events.map((event, index) => (
                 <div key={index} className="flex items-start gap-4">
                   <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-lg">
@@ -446,130 +737,6 @@ const TaskDetails: React.FC = () => {
         </div>
       )}
 
-      <div className="border border-gray-200 rounded-lg bg-white shadow-sm">
-        {history.length === 0 ? (
-          <p className="text-gray-500 text-center p-8">No history found for this task</p>
-        ) : (
-          <div className="flex flex-col gap-4 p-6">
-            {history.map((item, index) => (
-              <div
-                key={index}
-                className="border border-gray-200 rounded-md p-4 bg-gray-50"
-              >
-                <div className="flex justify-between items-start mb-3">
-                  <h4 className="font-semibold text-gray-900 capitalize text-lg">
-                    {item.event ? item.event.replace(/_/g, ' ') : item.state ? item.state.replace(/_/g, ' ') : 'Unknown Event'}
-                  </h4>
-                  <span className="text-sm text-gray-500">
-                    {formatDate(item.timestamp)}
-                  </span>
-                </div>
-                
-                {item.reason && (
-                  <p className="text-gray-600 italic mb-2">
-                    {item.reason}
-                  </p>
-                )}
-
-                {item.error && (
-                  <p className="my-2 text-red-600">
-                    Error: {item.error}
-                  </p>
-                )}
-
-                {item.message && (
-                  <p className="text-gray-700 mb-2">
-                    {item.message}
-                  </p>
-                )}
-                
-                {item.metadata && (item.metadata.sessionId || item.metadata.conversationId || item.metadata.model || item.metadata.duration || item.metadata.conversationTurns || item.metadata.success !== undefined || item.metadata.pullRequest || item.metadata.githubComment) && (
-                  <div className="mt-3 space-y-2">
-                    <div className="p-3 bg-white rounded-md border border-gray-200 space-y-2">
-                      {item.metadata.sessionId && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Session ID:</strong> <code className="bg-gray-100 px-2 py-1 rounded border border-gray-300">{item.metadata.sessionId}</code>
-                        </div>
-                      )}
-                      {item.metadata.conversationId && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Conversation ID:</strong> <code className="bg-gray-100 px-2 py-1 rounded border border-gray-300">{item.metadata.conversationId}</code>
-                        </div>
-                      )}
-                      {item.metadata.model && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Model:</strong> <span className="text-blue-600">{item.metadata.model}</span>
-                        </div>
-                      )}
-                      {item.metadata.duration && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Duration:</strong> {(item.metadata.duration / 1000).toFixed(2)}s
-                        </div>
-                      )}
-                      {item.metadata.conversationTurns && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Conversation Turns:</strong> {item.metadata.conversationTurns}
-                        </div>
-                      )}
-                      {item.metadata.success !== undefined && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Success:</strong> <span className={item.metadata.success ? 'text-green-600' : 'text-red-600'}>{item.metadata.success ? 'Yes' : 'No'}</span>
-                        </div>
-                      )}
-                      {item.metadata.pullRequest && (
-                        <div className="text-sm text-gray-700">
-                          <strong>Pull Request:</strong> <a 
-                            href={item.metadata.pullRequest.url} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:text-blue-700 underline ml-1"
-                          >
-                            #{item.metadata.pullRequest.number}
-                          </a>
-                        </div>
-                      )}
-                      {item.metadata.githubComment && (
-                        <div className="text-sm text-gray-700">
-                          <strong>GitHub Comment:</strong> <a 
-                            href={item.metadata.githubComment.url} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:text-blue-700 underline ml-1"
-                          >
-                            View Comment
-                          </a>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {item.metadata?.githubComment?.body && (
-                  <div className="mt-3 p-3 bg-white rounded-md border border-gray-200">
-                    <div className="text-sm text-gray-600 mb-2 font-semibold">Comment Posted:</div>
-                    <div className="text-sm text-gray-700 whitespace-pre-wrap">
-                      {item.metadata.githubComment.body}
-                    </div>
-                  </div>
-                )}
-                
-                {item.prUrl && (
-                  <div className="mt-3">
-                    <a
-                      href={item.prUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:text-blue-700 underline"
-                    >
-                      View Pull Request
-                    </a>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
       {selectedPrompt && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -591,42 +758,53 @@ const TaskDetails: React.FC = () => {
               ) : (
                 <div className="space-y-4">
                   {(selectedPrompt.sessionId || selectedPrompt.model || selectedPrompt.timestamp || selectedPrompt.issueRef) && (
-                    <div className="bg-gray-50 rounded-md p-4 space-y-2 border border-gray-200">
+                    <div className="bg-gray-50 rounded-md p-4 border border-gray-200">
                       <h4 className="text-sm font-semibold text-gray-600 uppercase mb-3">Prompt Metadata</h4>
-                      {selectedPrompt.sessionId && (
-                        <div className="text-sm">
-                          <span className="text-gray-600">Session ID:</span>
-                          <code className="ml-2 bg-white px-2 py-1 rounded text-gray-700 border border-gray-300">{selectedPrompt.sessionId}</code>
-                        </div>
-                      )}
-                      {selectedPrompt.model && (
-                        <div className="text-sm">
-                          <span className="text-gray-600">Model:</span>
-                          <span className="ml-2 text-blue-600">{selectedPrompt.model}</span>
-                        </div>
-                      )}
-                      {selectedPrompt.timestamp && (
-                        <div className="text-sm">
-                          <span className="text-gray-600">Timestamp:</span>
-                          <span className="ml-2 text-gray-700">{new Date(selectedPrompt.timestamp).toLocaleString()}</span>
-                        </div>
-                      )}
-                      {selectedPrompt.isRetry !== undefined && (
-                        <div className="text-sm">
-                          <span className="text-gray-600">Is Retry:</span>
-                          <span className={`ml-2 ${selectedPrompt.isRetry ? 'text-amber-600' : 'text-gray-700'}`}>
-                            {selectedPrompt.isRetry ? 'Yes' : 'No'}
-                          </span>
-                        </div>
-                      )}
-                      {selectedPrompt.issueRef && (
-                        <div className="text-sm">
-                          <span className="text-gray-600">Issue Reference:</span>
-                          <div className="ml-2 mt-1 bg-white px-2 py-1 rounded text-gray-700 font-mono text-xs border border-gray-300">
-                            {selectedPrompt.issueRef.repoOwner}/{selectedPrompt.issueRef.repoName} #{selectedPrompt.issueRef.number}
-                          </div>
-                        </div>
-                      )}
+                      <table className="w-full text-sm border-collapse">
+                        <tbody>
+                          {selectedPrompt.sessionId && (
+                            <tr className="border-b border-gray-200">
+                              <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Session ID:</td>
+                              <td className="py-2 text-gray-700">
+                                <code className="bg-white px-2 py-1 rounded border border-gray-300 text-xs">{selectedPrompt.sessionId}</code>
+                              </td>
+                            </tr>
+                          )}
+                          {selectedPrompt.model && (
+                            <tr className="border-b border-gray-200">
+                              <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Model:</td>
+                              <td className="py-2 text-gray-700">
+                                <div className="text-blue-600 font-medium">{formatModelName(selectedPrompt.model)}</div>
+                                <div className="text-xs text-gray-500 mt-1">{selectedPrompt.model}</div>
+                              </td>
+                            </tr>
+                          )}
+                          {selectedPrompt.timestamp && (
+                            <tr className="border-b border-gray-200">
+                              <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Timestamp:</td>
+                              <td className="py-2 text-gray-700">{new Date(selectedPrompt.timestamp).toLocaleString()}</td>
+                            </tr>
+                          )}
+                          {selectedPrompt.isRetry !== undefined && (
+                            <tr className="border-b border-gray-200">
+                              <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Is Retry:</td>
+                              <td className={`py-2 ${selectedPrompt.isRetry ? 'text-amber-600 font-medium' : 'text-gray-700'}`}>
+                                {selectedPrompt.isRetry ? 'Yes' : 'No'}
+                              </td>
+                            </tr>
+                          )}
+                          {selectedPrompt.issueRef && (
+                            <tr>
+                              <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Issue Reference:</td>
+                              <td className="py-2 text-gray-700">
+                                <code className="bg-white px-2 py-1 rounded border border-gray-300 text-xs">
+                                  {selectedPrompt.issueRef.repoOwner}/{selectedPrompt.issueRef.repoName} #{selectedPrompt.issueRef.number}
+                                </code>
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
                     </div>
                   )}
                   

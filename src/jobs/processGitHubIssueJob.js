@@ -26,6 +26,7 @@ import {
 } from '../utils/prValidation.js';
 import Redis from 'ioredis';
 import { getDefaultModel } from '../config/modelAliases.js';
+import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import { issueQueue } from '../queue/taskQueue.js';
 import { ErrorCategories } from '../utils/errorHandler.js';
 import { loadAiPrimaryTag, loadPrLabel, loadPrimaryProcessingLabels } from '../config/configRepoManager.js';
@@ -206,6 +207,35 @@ async function processGitHubIssueJob(job) {
                 issueNumber: issueRef.number 
             }, `Issue already has '${AI_PROCESSING_TAG}' tag, continuing with processing`);
         }
+
+        // --- Store Issue Title and Subtitle ---
+        const issueTitle = currentIssueData.data.title;
+        const issueSubtitle = `Preparing a PR for issue #${issueRef.number}`;
+        
+        issueRef.title = `New Issue: ${issueTitle}`;
+        issueRef.subtitle = issueSubtitle;
+        
+        if (isDbEnabled && db) {
+            try {
+                await db('tasks')
+                    .where({ task_id: taskId })
+                    .update({ initial_job_data: JSON.stringify(issueRef) });
+                correlatedLogger.info({ taskId, title: issueRef.title }, 'Updated task with title/subtitle in DB');
+            } catch (dbError) {
+                correlatedLogger.warn({ taskId, error: dbError.message }, 'Failed to update task with title/subtitle in DB');
+            }
+        }
+        try {
+            const state = await stateManager.getTaskState(taskId);
+            if (state) {
+                state.issueRef = issueRef;
+                await stateManager.redis.setex(stateManager.getTaskKey(taskId), stateManager.stateExpiry, JSON.stringify(state));
+                correlatedLogger.info({ taskId, title: issueRef.title }, 'Updated task with title/subtitle in Redis');
+            }
+        } catch (redisError) {
+            correlatedLogger.warn({ taskId, error: redisError.message }, 'Failed to update task with title/subtitle in Redis');
+        }
+        // --- End Store Title/Subtitle ---
 
         logger.info({ 
             jobId, 
