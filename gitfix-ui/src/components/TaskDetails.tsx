@@ -400,13 +400,11 @@ const TaskDetails: React.FC = () => {
       
       {/* 3. Status & Stats Row */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-        {/* Left Column: Task Status Steps */}
+        {/* Left Column: Task Implementation Status Steps */}
         <div className="p-4 bg-white rounded-lg border border-gray-200">
-          <h4 className="text-lg font-semibold text-gray-900 mb-4">Task Status</h4>
-          <p className="mb-3">Current Step: <strong>{currentStatus || 'LOADING'}</strong></p>
+          <h4 className="text-lg font-semibold text-gray-900 mb-4">Task Implementation Status</h4>
           {history.length > 0 && (
-            <div className="mt-4">
-              <h5 className="text-sm font-semibold text-gray-700 mb-2">State Changes:</h5>
+            <div className="mt-0">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm border-collapse">
                   <thead>
@@ -428,10 +426,11 @@ const TaskDetails: React.FC = () => {
                         ? `Claude Execution #${claudeCount}`
                         : stateLabel;
                       
+                      const isLastItem = index === history.length - 1;
                       return (
                         <tr key={index} className="border-b border-gray-200">
                           <td className="py-2 pr-4 text-gray-500">{index + 1}</td>
-                          <td className="py-2 pr-4 text-gray-800 font-medium capitalize">{displayLabel}</td>
+                          <td className={`py-2 pr-4 text-gray-800 capitalize ${isLastItem ? 'font-bold' : 'font-medium'}`}>{displayLabel}</td>
                           <td className="py-2 pr-4 text-gray-600 text-xs">{formatDate(item.timestamp)}</td>
                           <td className="py-2 text-gray-600 text-xs text-right">
                             {duration !== null ? formatRelativeTime(duration) : '—'}
@@ -538,7 +537,7 @@ const TaskDetails: React.FC = () => {
             )}
           </div>
           {!eventsCollapsed && (
-            <div className="mt-4 space-y-4 p-4 bg-white border border-gray-200 rounded-lg max-h-[600px] overflow-y-auto">
+            <div className="mt-4 space-y-4 p-4 bg-white border border-gray-200 rounded-lg overflow-y-auto">
               {liveDetails.events.map((event, index) => (
                 <div key={index} className="flex items-start gap-4">
                   <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-lg">
