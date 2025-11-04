@@ -22,10 +22,19 @@ const TaskDetails: React.FC = () => {
   const [eventsCollapsed, setEventsCollapsed] = useState<boolean>(true);
   const [lastThought, setLastThought] = useState<string | null>(null);
 
-  // New memo for thinking log
   const thinkingLogEvents = React.useMemo(() => {
     return liveDetails.events.filter(e => e.type === 'thought');
   }, [liveDetails.events]);
+
+  const executionStartTime = history.find(item => item.state?.toUpperCase() === 'CLAUDE_EXECUTION')?.timestamp;
+  const thinkingLogWithTimestamps = React.useMemo(() => {
+    if (!executionStartTime) return thinkingLogEvents;
+    const startTime = new Date(executionStartTime).getTime();
+    return thinkingLogEvents.map(event => ({
+      ...event,
+      relativeTime: event.timestamp ? formatRelativeTime(new Date(event.timestamp).getTime() - startTime) : null
+    }));
+  }, [thinkingLogEvents, executionStartTime]);
 
   useEffect(() => {
     const fetchHistory = async () => {
@@ -299,19 +308,8 @@ const TaskDetails: React.FC = () => {
 
   const historyItemWithPaths = history.find(item => item.promptPath || item.logsPath);
 
-  // --- Helper for new UI ---
   const currentStatus = history[history.length - 1]?.state?.toUpperCase();
   const modelName = formatModelName(history.find(item => item.metadata?.model)?.metadata?.model);
-
-  const executionStartTime = history.find(item => item.state?.toUpperCase() === 'CLAUDE_EXECUTION')?.timestamp;
-  const thinkingLogWithTimestamps = React.useMemo(() => {
-    if (!executionStartTime) return thinkingLogEvents;
-    const startTime = new Date(executionStartTime).getTime();
-    return thinkingLogEvents.map(event => ({
-      ...event,
-      relativeTime: event.timestamp ? formatRelativeTime(new Date(event.timestamp).getTime() - startTime) : null
-    }));
-  }, [thinkingLogEvents, executionStartTime]);
 
   const getStatusIcon = () => {
     if (currentStatus === 'COMPLETED') return '✅';
