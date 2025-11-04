@@ -553,17 +553,24 @@ const TaskDetails: React.FC = () => {
                           return s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED';
                         }).length;
                         
-                        if (item.reason) {
-                          displayLabel = item.reason;
+                        // Check reason to determine if this is start or completion
+                        if (item.reason?.toLowerCase().includes('completed')) {
+                          displayLabel = 'Implementation Completed';
+                        } else if (item.reason?.toLowerCase().includes('started')) {
+                          if (claudeCount === 1) {
+                            displayLabel = 'Implementing Changes';
+                          } else {
+                            displayLabel = `Retry Implementation ${claudeCount}`;
+                          }
                         } else if (item.metadata?.description) {
                           displayLabel = item.metadata.description;
                         } else if (claudeCount === 1) {
-                          displayLabel = 'Claude Execution Started';
+                          displayLabel = 'Implementing Changes';
                         } else {
-                          displayLabel = `Retry Implementation ${claudeCount - 1}`;
+                          displayLabel = `Retry Implementation ${claudeCount}`;
                         }
                       } else if (stateUpper === 'CLAUDE_EXECUTION_COMPLETED') {
-                        displayLabel = 'Claude Execution Completed';
+                        displayLabel = 'Implementation Completed';
                       } else if (stateUpper === 'POST_PROCESSING') {
                         displayLabel = 'Creating Pull Request';
                       } else if (stateUpper === 'COMPLETED') {
