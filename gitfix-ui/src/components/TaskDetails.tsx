@@ -457,17 +457,25 @@ const TaskDetails: React.FC = () => {
                       const stateLabel = item.state?.replace(/_/g, ' ').toLowerCase();
                       const claudeCount = history.slice(0, index + 1).filter(h => h.state?.toUpperCase() === 'CLAUDE_EXECUTION').length;
                       const displayLabel = item.state?.toUpperCase() === 'CLAUDE_EXECUTION'
-                        ? `Claude Execution #${claudeCount}`
+                        ? `Implementing #${claudeCount}`
                         : stateLabel;
                       
                       const isLastItem = index === history.length - 1;
+                      const isRunning = isLastItem && duration === null && !['COMPLETED', 'FAILED'].includes(item.state?.toUpperCase());
                       return (
                         <tr key={index} className="border-b border-gray-200">
                           <td className="py-2 pr-4 text-gray-500">{index + 1}</td>
                           <td className={`py-2 pr-4 text-gray-800 capitalize ${isLastItem ? 'font-bold' : 'font-medium'}`}>{displayLabel}</td>
                           <td className="py-2 pr-4 text-gray-600 text-xs">{formatDate(item.timestamp)}</td>
                           <td className="py-2 text-gray-600 text-xs text-right">
-                            {duration !== null ? formatRelativeTime(duration) : '—'}
+                            {isRunning ? (
+                              <span className="inline-flex items-center gap-1">
+                                <svg className="animate-spin h-3 w-3 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                              </span>
+                            ) : duration !== null ? formatRelativeTime(duration) : '—'}
                           </td>
                         </tr>
                       );
