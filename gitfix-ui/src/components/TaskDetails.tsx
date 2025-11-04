@@ -135,10 +135,12 @@ const TaskDetails: React.FC = () => {
             });
             formatted = formatted.replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>');
             formatted = formatted.replace(/(<li.*<\/li>\n?)+/g, '<ul class="list-disc list-inside space-y-1 my-2">$&</ul>');
-            // Convert newlines to <br> with reduced line height
-            formatted = formatted.replace(/\n/g, '<br style="line-height: 0.5; margin: 0;">');
+            // Convert newlines to <br>
+            formatted = formatted.replace(/\n/g, '<br>');
+            // Remove <br> tags that come right after closing tags (like </li>, </ul>, </h2>, etc.)
+            formatted = formatted.replace(/(\<\/(li|ul|ol|h2|h3|h4|h5|strong|em|code)\>)<br>/gi, '$1');
             // Filter out multiple sequential <br> tags (2 or more) and replace with single one
-            formatted = formatted.replace(/(<br[^>]*>\s*){2,}/gi, '<br style="line-height: 0.5; margin: 0;">');
+            formatted = formatted.replace(/(<br[^>]*>\s*){2,}/gi, '<br>');
             return <span key={index} dangerouslySetInnerHTML={{ __html: formatted }} />;
           }
         })}
