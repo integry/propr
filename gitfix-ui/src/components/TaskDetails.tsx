@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { getTaskHistory, getTaskLiveDetails, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution } from '../api/gitfixApi';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
@@ -54,15 +56,67 @@ const TaskDetails: React.FC = () => {
 
   const renderMarkdown = (text) => {
     if (!text) return text;
-    let formatted = text;
-    formatted = formatted.replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h2>');
-    formatted = formatted.replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold text-gray-800 mt-3 mb-2">$1</h3>');
-    formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>');
-    formatted = formatted.replace(/\*(.+?)\*/g, '<em class="italic">$1</em>');
-    formatted = formatted.replace(/`(.+?)`/g, '<code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300">$1</code>');
-    formatted = formatted.replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>');
-    formatted = formatted.replace(/(<li.*<\/li>\n?)+/g, '<ul class="list-disc list-inside space-y-1 my-2">$&</ul>');
-    return <span dangerouslySetInnerHTML={{ __html: formatted }} />;
+
+    const parts: any[] = [];
+    let lastIndex = 0;
+
+    const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+    let match;
+
+    while ((match = codeBlockRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        const beforeText = text.substring(lastIndex, match.index);
+        parts.push({ type: 'text', content: beforeText });
+      }
+
+      const language = match[1] || 'javascript';
+      const code = match[2];
+      parts.push({ type: 'code', language, content: code });
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    if (lastIndex < text.length) {
+      parts.push({ type: 'text', content: text.substring(lastIndex) });
+    }
+
+    if (parts.length === 0) {
+      parts.push({ type: 'text', content: text });
+    }
+
+    return (
+      <div>
+        {parts.map((part, index) => {
+          if (part.type === 'code') {
+            return (
+              <div key={index} className="my-3">
+                <SyntaxHighlighter
+                  language={part.language}
+                  style={vscDarkPlus}
+                  customStyle={{
+                    borderRadius: '0.375rem',
+                    fontSize: '0.875rem',
+                    border: '1px solid #d1d5db'
+                  }}
+                >
+                  {part.content}
+                </SyntaxHighlighter>
+              </div>
+            );
+          } else {
+            let formatted = part.content;
+            formatted = formatted.replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h2>');
+            formatted = formatted.replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold text-gray-800 mt-3 mb-2">$1</h3>');
+            formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>');
+            formatted = formatted.replace(/\*(.+?)\*/g, '<em class="italic">$1</em>');
+            formatted = formatted.replace(/`(.+?)`/g, '<code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300">$1</code>');
+            formatted = formatted.replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>');
+            formatted = formatted.replace(/(<li.*<\/li>\n?)+/g, '<ul class="list-disc list-inside space-y-1 my-2">$&</ul>');
+            return <span key={index} dangerouslySetInnerHTML={{ __html: formatted }} />;
+          }
+        })}
+      </div>
+    );
   };
 
   const handleNextMatch = () => {
@@ -454,18 +508,29 @@ const TaskDetails: React.FC = () => {
                       const duration = index < history.length - 1
                         ? new Date(history[index + 1].timestamp).getTime() - new Date(item.timestamp).getTime()
                         : null;
-                      const stateLabel = item.state?.replace(/_/g, ' ').toLowerCase();
-                      const claudeCount = history.slice(0, index + 1).filter(h => h.state?.toUpperCase() === 'CLAUDE_EXECUTION').length;
-                      const displayLabel = item.state?.toUpperCase() === 'CLAUDE_EXECUTION'
-                        ? `Implementing #${claudeCount}`
-                        : stateLabel;
+                      
+                      let displayLabel = item.state?.replace(/_/g, ' ').toLowerCase();
+                      
+                      if (item.state?.toUpperCase() === 'CLAUDE_EXECUTION') {
+                        const claudeCount = history.slice(0, index + 1).filter(h => h.state?.toUpperCase() === 'CLAUDE_EXECUTION').length;
+                        
+                        if (item.reason) {
+                          displayLabel = item.reason;
+                        } else if (item.metadata?.description) {
+                          displayLabel = item.metadata.description;
+                        } else if (claudeCount === 1) {
+                          displayLabel = 'Initial Implementation';
+                        } else {
+                          displayLabel = `Retry Attempt ${claudeCount - 1}`;
+                        }
+                      }
                       
                       const isLastItem = index === history.length - 1;
                       const isRunning = isLastItem && duration === null && !['COMPLETED', 'FAILED'].includes(item.state?.toUpperCase());
                       return (
                         <tr key={index} className="border-b border-gray-200">
                           <td className="py-2 pr-4 text-gray-500">{index + 1}</td>
-                          <td className={`py-2 pr-4 text-gray-800 capitalize ${isLastItem ? 'font-bold' : 'font-medium'}`}>{displayLabel}</td>
+                          <td className={`py-2 pr-4 text-gray-800 ${isLastItem ? 'font-bold' : 'font-medium'}`}>{displayLabel}</td>
                           <td className="py-2 pr-4 text-gray-600 text-xs">{formatDate(item.timestamp)}</td>
                           <td className="py-2 text-gray-600 text-xs text-right">
                             {isRunning ? (
