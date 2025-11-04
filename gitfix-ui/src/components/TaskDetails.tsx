@@ -469,12 +469,7 @@ const TaskDetails: React.FC = () => {
                 </p>
               )}
             </>
-          ) : (
-            <h4 className="mt-0 text-blue-900 flex items-center gap-2">
-              <span className="text-xl">📋</span>
-              Task Execution History
-            </h4>
-          )}
+          ) : null}
           <h5 className="mt-4 mb-2 text-blue-900">To-do List:</h5>
           <ul className="list-none pl-0 m-0">
             {liveDetails.todos.map(todo => (
