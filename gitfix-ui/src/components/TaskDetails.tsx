@@ -88,6 +88,15 @@ const TaskDetails: React.FC = () => {
       parts.push({ type: 'text', content: text });
     }
 
+    const escapeHtml = (str) => {
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    };
+
     return (
       <div>
         {parts.map((part, index) => {
@@ -120,11 +129,14 @@ const TaskDetails: React.FC = () => {
             formatted = formatted.replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold text-gray-800 mt-2 mb-1">$1</h3>');
             formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>');
             formatted = formatted.replace(/\*(.+?)\*/g, '<em class="italic">$1</em>');
-            formatted = formatted.replace(/`([^`]+)`/g, '<code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300">$1</code>');
+            // Escape HTML in inline code blocks
+            formatted = formatted.replace(/`([^`]+)`/g, (match, code) => {
+              return `<code class="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300">${escapeHtml(code)}</code>`;
+            });
             formatted = formatted.replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>');
             formatted = formatted.replace(/(<li.*<\/li>\n?)+/g, '<ul class="list-disc list-inside space-y-1 my-2">$&</ul>');
-            // Convert newlines to <br> but not within HTML tags
-            formatted = formatted.replace(/\n/g, '<br>');
+            // Convert newlines to <br> with reduced line height
+            formatted = formatted.replace(/\n/g, '<br style="line-height: 0.5; margin: 0;">');
             return <span key={index} dangerouslySetInnerHTML={{ __html: formatted }} />;
           }
         })}
@@ -533,8 +545,11 @@ const TaskDetails: React.FC = () => {
                         displayLabel = 'Task Queued';
                       } else if (stateUpper === 'PROCESSING') {
                         displayLabel = 'Analyzing Request';
-                      } else if (stateUpper === 'CLAUDE_EXECUTION') {
-                        const claudeCount = history.slice(0, index + 1).filter(h => h.state?.toUpperCase() === 'CLAUDE_EXECUTION').length;
+                      } else if (stateUpper === 'CLAUDE_EXECUTION' || stateUpper === 'CLAUDE_EXECUTION_STARTED') {
+                        const claudeCount = history.slice(0, index + 1).filter(h => {
+                          const s = h.state?.toUpperCase();
+                          return s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED';
+                        }).length;
                         
                         if (item.reason) {
                           displayLabel = item.reason;
@@ -545,6 +560,8 @@ const TaskDetails: React.FC = () => {
                         } else {
                           displayLabel = `Retry Implementation ${claudeCount - 1}`;
                         }
+                      } else if (stateUpper === 'CLAUDE_EXECUTION_COMPLETED') {
+                        displayLabel = 'Implementation Completed';
                       } else if (stateUpper === 'POST_PROCESSING') {
                         displayLabel = 'Creating Pull Request';
                       } else if (stateUpper === 'COMPLETED') {
