@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getTaskHistory, getTaskLiveDetails, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile } from '../api/gitfixApi';
+import { getTaskHistory, getTaskLiveDetails, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution } from '../api/gitfixApi';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
@@ -21,6 +21,7 @@ const TaskDetails: React.FC = () => {
   const [liveDetails, setLiveDetails] = useState<{ events: any[]; todos: any[]; currentTask: any }>({ events: [], todos: [], currentTask: null });
   const [eventsCollapsed, setEventsCollapsed] = useState<boolean>(true);
   const [lastThought, setLastThought] = useState<string | null>(null);
+  const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
 
   const formatDate = (dateString) => {
     return new Date(dateString).toLocaleString();
@@ -313,6 +314,32 @@ const TaskDetails: React.FC = () => {
     return '📋';
   };
 
+  const handleStopExecution = async () => {
+    if (!taskId) return;
+    
+    const confirmed = window.confirm('Are you sure you want to stop this execution? This action cannot be undone.');
+    if (!confirmed) return;
+
+    try {
+      setStoppingExecution(true);
+      await stopTaskExecution(taskId);
+      
+      setTimeout(async () => {
+        try {
+          const data = await getTaskHistory(taskId);
+          setHistory(data.history || []);
+        } catch (err) {
+          console.error('Error refreshing task history after stop:', err);
+        }
+        setStoppingExecution(false);
+      }, 1000);
+    } catch (err) {
+      console.error('Error stopping execution:', err);
+      alert(`Failed to stop execution: ${err.message || 'Unknown error'}`);
+      setStoppingExecution(false);
+    }
+  };
+
   if (loading) return <div className="text-gray-600">Loading task details...</div>;
   if (error) return <div className="text-red-600">Error loading task details: {error}</div>;
   if (!history || history.length === 0) return <div className="text-gray-600">No history found for task {taskId}</div>;
@@ -342,12 +369,19 @@ const TaskDetails: React.FC = () => {
       {/* 2. Metadata Bar */}
       <div className="flex justify-between items-center mb-6 p-4 bg-gray-50 rounded-md border border-gray-200">
         <div className="flex items-center gap-4 flex-wrap">
-          <button
-            className="px-3 py-1.5 bg-gray-200 text-gray-500 text-sm rounded-md cursor-not-allowed"
-            disabled
-          >
-            Stop Execution (Soon)
-          </button>
+          {['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus) ? (
+            <button
+              onClick={handleStopExecution}
+              disabled={stoppingExecution}
+              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+                stoppingExecution
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  : 'bg-red-600 text-white hover:bg-red-700'
+              }`}
+            >
+              {stoppingExecution ? 'Stopping...' : 'Stop Execution'}
+            </button>
+          ) : null}
           <span className="text-gray-400 hidden md:inline">|</span>
           {taskInfo && (
             <>
