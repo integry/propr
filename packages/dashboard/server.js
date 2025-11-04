@@ -952,111 +952,51 @@ app.post('/api/task/:taskId/stop', ensureAuthenticated, async (req, res) => {
 
     console.log(`[stop-execution] Attempting to stop task: ${jobId} (taskId: ${taskId})`);
 
-    let containerId = null;
-    let containerName = null;
+    const stateKey = `worker:state:${taskId}`;
+    const stateData = await redisClient.get(stateKey);
 
-    if (isDbEnabled && db) {
-      try {
-        const historyRecord = await db('task_history')
-          .where({ task_id: taskId, state: 'claude_execution' })
-          .orderBy('timestamp', 'desc')
-          .first();
-
-        if (historyRecord && historyRecord.metadata) {
-          const metadata = typeof historyRecord.metadata === 'string'
-            ? JSON.parse(historyRecord.metadata)
-            : historyRecord.metadata;
-          containerId = metadata.containerId;
-          containerName = metadata.containerName;
-        }
-      } catch (error) {
-        console.error('[stop-execution] Error fetching from PostgreSQL:', error);
-      }
-    }
-
-    if (!containerId) {
-      const stateKey = `worker:state:${taskId}`;
-      const stateData = await redisClient.get(stateKey);
-
-      if (stateData) {
-        const state = JSON.parse(stateData);
-        const claudeExecutionEntry = state.history.find(h => h.state === 'claude_execution' && h.metadata?.containerId);
-
-        if (claudeExecutionEntry?.metadata?.containerId) {
-          containerId = claudeExecutionEntry.metadata.containerId;
-          containerName = claudeExecutionEntry.metadata.containerName;
-        }
-      }
-    }
-
-    if (!containerId) {
+    if (!stateData) {
       return res.status(404).json({ 
-        error: 'No Docker container found for this task',
-        message: 'The task may not be running or has already completed.'
+        error: 'Task not found',
+        message: 'The task may have already completed or does not exist.'
       });
     }
 
-    const { execSync } = require('child_process');
-    
-    try {
-      const statusOutput = execSync(
-        `docker ps -a --filter "id=${containerId}" --format "{{.Status}}"`,
-        { encoding: 'utf8', timeout: 5000 }
-      ).trim();
+    const state = JSON.parse(stateData);
+    const currentState = state.history[state.history.length - 1]?.state;
 
-      if (!statusOutput || !statusOutput.includes('Up')) {
-        return res.status(400).json({ 
-          error: 'Container is not running',
-          message: 'The execution has already stopped or completed.',
-          containerId,
-          status: statusOutput || 'removed'
-        });
-      }
-
-      console.log(`[stop-execution] Killing container ${containerId} (${containerName})`);
-      execSync(`docker kill ${containerId}`, { encoding: 'utf8', timeout: 10000 });
-
-      const logMessage = {
-        type: 'system',
-        timestamp: new Date().toISOString(),
-        content: 'Execution aborted by user',
-        level: 'warning'
-      };
-
-      const conversationKey = `conversation:${taskId}`;
-      await redisClient.rpush(conversationKey, JSON.stringify(logMessage));
-
-      if (isDbEnabled && db) {
-        try {
-          await db('task_history').insert({
-            task_id: taskId,
-            state: 'failed',
-            timestamp: new Date().toISOString(),
-            reason: 'Execution aborted by user',
-            metadata: JSON.stringify({ abortedByUser: true, containerId })
-          });
-        } catch (dbError) {
-          console.error('[stop-execution] Error inserting abort history:', dbError);
-        }
-      }
-
-      res.json({ 
-        success: true,
-        message: 'Container stopped successfully',
-        containerId,
-        containerName
+    if (!['processing', 'claude_execution', 'post_processing'].includes(currentState)) {
+      return res.status(400).json({ 
+        error: 'Task is not running',
+        message: 'The task has already completed or is not in an active state.',
+        currentState
       });
-
-    } catch (err) {
-      if (err.message.includes('No such container')) {
-        return res.status(404).json({ 
-          error: 'Container no longer exists',
-          message: 'The container may have already been removed.',
-          containerId 
-        });
-      }
-      throw err;
     }
+
+    const abortKey = `worker:abort:${taskId}`;
+    await redisClient.set(abortKey, JSON.stringify({
+      timestamp: new Date().toISOString(),
+      requestedBy: req.user?.username || 'user'
+    }), { EX: 3600 });
+
+    const logMessage = {
+      type: 'system',
+      timestamp: new Date().toISOString(),
+      content: 'Stop requested by user. Waiting for worker to acknowledge...',
+      level: 'warning'
+    };
+
+    const conversationKey = `conversation:${taskId}`;
+    await redisClient.rpush(conversationKey, JSON.stringify(logMessage));
+
+    console.log(`[stop-execution] Abort signal set for task: ${taskId}`);
+
+    res.json({ 
+      success: true,
+      message: 'Stop request sent to worker. The execution will be terminated shortly.',
+      taskId
+    });
+
   } catch (error) {
     console.error('Error in /api/task/:taskId/stop:', error);
     res.status(500).json({ error: 'Internal server error', message: error.message });
