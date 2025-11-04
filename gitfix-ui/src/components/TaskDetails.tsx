@@ -436,7 +436,9 @@ const TaskDetails: React.FC = () => {
               {stoppingExecution ? 'Stopping...' : 'Stop Execution'}
             </button>
           ) : null}
-          <span className="text-gray-400 hidden md:inline">|</span>
+          {['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus) && (
+            <span className="text-gray-400 hidden md:inline">|</span>
+          )}
           {taskInfo && (
             <>
               <span className="text-gray-700 font-semibold">Repository:</span>
@@ -493,7 +495,7 @@ const TaskDetails: React.FC = () => {
           <h4 className="text-lg font-semibold text-gray-900 mb-4">Task Implementation Status</h4>
           {history.length > 0 && (
             <div className="mt-0">
-              <div className="overflow-x-auto">
+              <div>
                 <table className="w-full text-sm border-collapse">
                   <thead>
                     <tr className="border-b-2 border-gray-300">
