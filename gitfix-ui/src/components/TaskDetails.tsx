@@ -125,8 +125,9 @@ const TaskDetails: React.FC = () => {
             let formatted = part.content;
             // Reduce excessive line breaks (more than 2 newlines become 1)
             formatted = formatted.replace(/\n{3,}/g, '\n\n');
-            formatted = formatted.replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold text-gray-900 mt-3 mb-1">$1</h2>');
-            formatted = formatted.replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold text-gray-800 mt-2 mb-1">$1</h3>');
+            formatted = formatted.replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h2>');
+            formatted = formatted.replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold text-gray-800 mt-3 mb-1">$1</h3>');
+            formatted = formatted.replace(/^#### (.+)$/gm, '<h4 class="text-sm font-semibold text-gray-700 mt-2 mb-1">$1</h4>');
             formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>');
             formatted = formatted.replace(/\*(.+?)\*/g, '<em class="italic">$1</em>');
             // Escape HTML in inline code blocks
@@ -665,7 +666,7 @@ const TaskDetails: React.FC = () => {
           <div className="space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200 overflow-y-auto">
             {thinkingLogWithTimestamps.map((event, index) => (
               <div key={index} className="flex items-start gap-3">
-                <span className="text-lg mt-1">🧠</span>
+                <span className="text-lg mt-0">🧠</span>
                 <div className="flex-1">
                   <p className="text-gray-700 whitespace-pre-wrap">{renderMarkdown(event.content)}</p>
                   {event.relativeTime && (
