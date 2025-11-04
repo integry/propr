@@ -1005,7 +1005,20 @@ This is an emergency retry - the main implementation is complete, you just need 
             timestamp: new Date().toISOString(),
             systemVersion: process.env.npm_package_version || 'unknown'
         }, 'Issue processing completed - comprehensive metrics logged');
-        return { 
+
+        // Mark task as completed in state manager
+        try {
+            await stateManager.markTaskCompleted(taskId, {
+                status: finalStatus,
+                claudeSuccess: claudeResult?.success || false,
+                prCreated: !!postProcessingResult?.pr,
+                prNumber: postProcessingResult?.pr?.number || null
+            });
+        } catch (stateError) {
+            correlatedLogger.warn({ error: stateError.message }, 'Failed to update task state to completed');
+        }
+
+        return {
             status: finalStatus,
             issueNumber: issueRef.number,
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`,

@@ -132,11 +132,21 @@ export async function processPullRequestCommentJob(job) {
                 pullRequestNumber,
                 originalCount: commentsToProcess.length
             }, 'All PR comments have already been processed, skipping');
-            
-            return { 
-                status: 'skipped', 
+
+            // Mark task as completed in state manager
+            try {
+                await stateManager.markTaskCompleted(taskId, {
+                    status: 'skipped',
+                    reason: 'already_processed'
+                });
+            } catch (stateError) {
+                correlatedLogger.warn({ error: stateError.message }, 'Failed to update task state to completed');
+            }
+
+            return {
+                status: 'skipped',
                 reason: 'already_processed',
-                pullRequestNumber 
+                pullRequestNumber
             };
         }
 
@@ -525,8 +535,8 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
             }
         });
 
-        return { 
-            status: 'complete', 
+        return {
+            status: 'complete',
             commit: commitResult?.commitHash,
             pullRequestNumber,
             claudeResult
