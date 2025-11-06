@@ -45,8 +45,8 @@ export const getQueueStats = async () => {
   return response.json();
 };
 
-export const getTasks = async (status = 'all', limit = 50, offset = 0) => {
-  const response = await fetch(`${API_BASE_URL}/api/tasks?status=${status}&limit=${limit}&offset=${offset}`, {
+export const getTasks = async (status = 'all', limit = 50, offset = 0, repository = 'all') => {
+  const response = await fetch(`${API_BASE_URL}/api/tasks?status=${status}&limit=${limit}&offset=${offset}&repository=${repository}`, {
     credentials: 'include'
   });
   await handleApiResponse(response);
