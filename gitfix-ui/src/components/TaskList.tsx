@@ -17,13 +17,14 @@ interface Task {
 interface TaskListProps {
   limit: number;
   showViewAll?: boolean;
+  hideFilters?: boolean;
 }
 
 interface LoadConfig {
   setLoadingState?: boolean;
 }
 
-const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
+const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -144,34 +145,38 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
       <div className="flex justify-between items-center mb-4 flex-wrap gap-4">
         <h3 className="text-lg font-semibold text-gray-900">Tasks</h3>
         <div className="flex items-center gap-4">
-          <select 
-            value={repoFilter} 
-            onChange={(e) => { setRepoFilter(e.target.value); setCurrentPage(0); }}
-            disabled={reposLoading}
-            className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer disabled:opacity-50"
-          >
-            {reposLoading ? (
-              <option value="all">Loading repos...</option>
-            ) : (
-              availableRepos.map(repo => (
-                <option key={repo} value={repo}>
-                  {repo === 'all' ? 'All Repositories' : repo}
-                </option>
-              ))
-            )}
-          </select>
-          
-          <select 
-            value={filter} 
-            onChange={(e) => { setFilter(e.target.value); setCurrentPage(0); }}
-            className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer"
-          >
-            <option value="all">All Tasks</option>
-            <option value="active">Active</option>
-            <option value="completed">Completed</option>
-            <option value="failed">Failed</option>
-            <option value="waiting">Waiting</option>
-          </select>
+          {!hideFilters && (
+            <>
+              <select 
+                value={repoFilter} 
+                onChange={(e) => { setRepoFilter(e.target.value); setCurrentPage(0); }}
+                disabled={reposLoading}
+                className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer disabled:opacity-50"
+              >
+                {reposLoading ? (
+                  <option value="all">Loading repos...</option>
+                ) : (
+                  availableRepos.map(repo => (
+                    <option key={repo} value={repo}>
+                      {repo === 'all' ? 'All Repositories' : repo}
+                    </option>
+                  ))
+                )}
+              </select>
+              
+              <select 
+                value={filter} 
+                onChange={(e) => { setFilter(e.target.value); setCurrentPage(0); }}
+                className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer"
+              >
+                <option value="all">All Tasks</option>
+                <option value="active">Active</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+                <option value="waiting">Waiting</option>
+              </select>
+            </>
+          )}
           {showViewAll && (
             <Link to="/tasks" className="text-primary-600 hover:text-primary-700 transition-colors">
               View All Tasks
@@ -251,7 +256,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
         </div>
       )}
 
-      {totalTasks > tasksPerPage && (
+      {!hideFilters && totalTasks > tasksPerPage && (
         <div className="flex justify-between items-center mt-4">
           <div>
             <span className="text-sm text-gray-600">

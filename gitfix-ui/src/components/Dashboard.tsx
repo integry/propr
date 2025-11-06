@@ -13,10 +13,11 @@ const Dashboard: React.FC = () => {
       </div>
       
       <div>
-        <h3 className="text-xl font-semibold text-white mb-4">Recent Tasks</h3>
+        <h3 className="text-xl font-semibold text-white mb-4">Latest Tasks</h3>
         <TaskList
           limit={5}
           showViewAll={true}
+          hideFilters={true}
         />
       </div>
     </div>
