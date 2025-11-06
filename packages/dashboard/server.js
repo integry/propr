@@ -235,10 +235,9 @@ app.get('/api/metrics', ensureAuthenticated, async (req, res) => {
 
 app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
   try {
-    const { status = 'all', limit = 50, offset = 0 } = req.query;
+    const { status = 'all', limit = 50, offset = 0, repository = 'all' } = req.query;
 
     if (isDbEnabled && db) {
-      // Get the latest state for each task
       const latestHistorySubquery = db('task_history')
         .select(
           'task_id',
@@ -249,7 +248,6 @@ app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
         )
         .as('h');
 
-      // Get the earliest processing state timestamp (when task started processing)
       const processingStartSubquery = db('task_history')
         .select(
           'task_id',
@@ -259,7 +257,6 @@ app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
         .groupBy('task_id')
         .as('ps');
 
-      // Get the completion timestamp (when task completed or failed)
       const completionSubquery = db('task_history')
         .select(
           'task_id',
@@ -280,6 +277,10 @@ app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
         baseQuery.where('h.state', status);
       }
 
+      if (repository && repository !== 'all') {
+        baseQuery.where('t.repository', repository);
+      }
+
       const totalResult = await baseQuery.clone().count('* as total').first();
       const total = parseInt(totalResult.total, 10);
 
@@ -292,12 +293,14 @@ app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
 
       const tasks = dbTasks.map(row => {
         let title = null;
+        let subtitle = null;
         if (row.initial_job_data) {
           try {
             const jobData = typeof row.initial_job_data === 'string'
               ? JSON.parse(row.initial_job_data)
               : row.initial_job_data;
             title = jobData.title || (jobData.issueRef ? jobData.issueRef.title : null) || null;
+            subtitle = jobData.subtitle || null;
           } catch (e) {
             console.error('Failed to parse initial_job_data', e);
           }
@@ -308,6 +311,7 @@ app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
           repository: row.repository,
           issueNumber: row.issue_number,
           title: title,
+          subtitle: subtitle,
           status: row.state,
           createdAt: new Date(row.created_at).toISOString(),
           completedAt: row.completion_timestamp ? new Date(row.completion_timestamp).toISOString() : null,
@@ -340,25 +344,31 @@ app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
         jobs = jobs.concat(waiting);
       }
       
-      const tasks = jobs.map(job => ({
-        id: job.id,
-        issueId: job.id,
-        repository: job.data?.repoOwner && job.data?.repoName 
-          ? `${job.data.repoOwner}/${job.data.repoName}`
-          : 'Unknown',
-        issueNumber: job.data?.number || job.data?.issueNumber || 
-          (job.id.startsWith('pr-comments-batch') ? 
-            parseInt(job.id.match(/-(\d+)-\d+$/)?.[1]) : null),
-        title: job.returnvalue?.issueTitle || job.data?.title || null,
-        status: job.failedReason ? 'failed' : job.finishedOn ? 'completed' : job.processedOn ? 'active' : 'waiting',
-        createdAt: new Date(job.timestamp).toISOString(),
-        completedAt: job.finishedOn ? new Date(job.finishedOn).toISOString() : null,
-        processedAt: job.processedOn ? new Date(job.processedOn).toISOString() : null,
-        failedReason: job.failedReason,
-        progress: job.progress,
-        attemptsMade: job.attemptsMade,
-        modelName: job.data?.modelName
-      }));
+      const tasks = jobs
+        .map(job => {
+          const repo = job.data?.repoOwner && job.data?.repoName 
+            ? `${job.data.repoOwner}/${job.data.repoName}`
+            : 'Unknown';
+          return {
+            id: job.id,
+            issueId: job.id,
+            repository: repo,
+            issueNumber: job.data?.number || job.data?.issueNumber || 
+              (job.id.startsWith('pr-comments-batch') ? 
+                parseInt(job.id.match(/-(\d+)-\d+$/)?.[1]) : null),
+            title: job.returnvalue?.issueTitle || job.data?.title || null,
+            subtitle: job.data?.subtitle || null,
+            status: job.failedReason ? 'failed' : job.finishedOn ? 'completed' : job.processedOn ? 'active' : 'waiting',
+            createdAt: new Date(job.timestamp).toISOString(),
+            completedAt: job.finishedOn ? new Date(job.finishedOn).toISOString() : null,
+            processedAt: job.processedOn ? new Date(job.processedOn).toISOString() : null,
+            failedReason: job.failedReason,
+            progress: job.progress,
+            attemptsMade: job.attemptsMade,
+            modelName: job.data?.modelName
+          };
+        })
+        .filter(task => repository === 'all' || task.repository === repository);
       
       tasks.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
       
@@ -371,6 +381,7 @@ app.get('/api/tasks', ensureAuthenticated, async (req, res) => {
     }
   } catch (error) {
     console.error('Error in /api/tasks:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1309,35 +1320,36 @@ app.post('/api/config/repos', ensureAuthenticated, async (req, res) => {
 
 app.get('/api/github/repos', ensureAuthenticated, async (req, res) => {
   try {
-    if (!req.user.accessToken) {
-      return res.status(401).json({ error: 'GitHub access token not available' });
+    let repos = [];
+
+    if (isDbEnabled && db) {
+      const distinctRepos = await db('tasks')
+        .distinct('repository')
+        .whereNotNull('repository')
+        .orderBy('repository', 'asc');
+      repos = distinctRepos.map(row => row.repository).filter(r => r && r !== 'Unknown');
+    } else {
+      const allJobs = await Promise.all([
+        taskQueue.getJobs(['completed'], 0, 1000),
+        taskQueue.getJobs(['failed'], 0, 1000),
+        taskQueue.getJobs(['active'], 0, 1000),
+        taskQueue.getJobs(['waiting'], 0, 1000)
+      ]);
+
+      const repoSet = new Set();
+      allJobs.flat().forEach(job => {
+        if (job.data?.repoOwner && job.data?.repoName) {
+          repoSet.add(`${job.data.repoOwner}/${job.data.repoName}`);
+        }
+      });
+
+      repos = Array.from(repoSet).sort();
     }
 
-    const fetch = (await import('node-fetch')).default;
-    const response = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
-      headers: {
-        'Authorization': `Bearer ${req.user.accessToken}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'GitFix-Dashboard'
-      }
-    });
-
-    if (!response.ok) {
-      // If GitHub returns 401, the token is invalid/expired
-      // Return 401 to frontend so it can redirect to re-authenticate
-      if (response.status === 401) {
-        return res.status(401).json({ error: 'GitHub token expired or invalid' });
-      }
-      throw new Error(`GitHub API request failed: ${response.status}`);
-    }
-
-    const repos = await response.json();
-    const repoNames = repos.map(repo => repo.full_name);
-
-    res.json({ repos: repoNames });
+    res.json({ repos });
   } catch (error) {
     console.error('Error in /api/github/repos:', error);
-    res.status(500).json({ error: 'Failed to fetch GitHub repositories' });
+    res.status(500).json({ error: 'Failed to fetch repositories with tasks' });
   }
 });
 

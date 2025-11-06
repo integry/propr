@@ -17,6 +17,7 @@ const Dashboard: React.FC = () => {
         <TaskList
           limit={5}
           showViewAll={true}
+          hideFilters={true}
         />
       </div>
     </div>

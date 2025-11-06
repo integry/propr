@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { getTasks } from '../api/gitfixApi';
+import { Link, useNavigate } from 'react-router-dom';
+import { getTasks, getAvailableGithubRepos } from '../api/gitfixApi';
 
 interface Task {
   id: string;
   repository?: string;
   issueNumber?: number;
   title?: string;
+  subtitle?: string;
   status: string;
   createdAt: string;
   processedAt?: string;
@@ -16,24 +17,53 @@ interface Task {
 interface TaskListProps {
   limit: number;
   showViewAll?: boolean;
+  hideFilters?: boolean;
 }
 
 interface LoadConfig {
   setLoadingState?: boolean;
 }
 
-const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
+const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  
   const [filter, setFilter] = useState<string>('all');
+  const [repoFilter, setRepoFilter] = useState<string>('all');
+  
+  const [availableRepos, setAvailableRepos] = useState<string[]>([]);
+  const [reposLoading, setReposLoading] = useState<boolean>(true);
+
+  const [totalTasks, setTotalTasks] = useState<number>(0);
+  const [currentPage, setCurrentPage] = useState<number>(0);
+  const tasksPerPage = limit;
+
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const fetchRepos = async () => {
+      try {
+        setReposLoading(true);
+        const data = await getAvailableGithubRepos();
+        setAvailableRepos(['all', ...(data.repos || []).sort()]);
+      } catch (err) {
+        console.error('Error fetching repositories:', err);
+      } finally {
+        setReposLoading(false);
+      }
+    };
+    fetchRepos();
+  }, []);
 
   useEffect(() => {
     const fetchTasks = async (loadConfig?: LoadConfig) => {
       try {
         setLoading(loadConfig?.setLoadingState ?? true);
-        const data = await getTasks(filter, limit);
+        const offset = currentPage * tasksPerPage;
+        const data = await getTasks(filter, tasksPerPage, offset, repoFilter);
         setTasks(data.tasks || []);
+        setTotalTasks(data.total || 0);
       } catch (err) {
         setError((err as Error).message);
         console.error('Error fetching tasks:', err);
@@ -43,9 +73,9 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
     };
 
     fetchTasks({ setLoadingState: true });
-    const interval = setInterval(() => fetchTasks({ setLoadingState: false }), 5000); // Refresh every 5 seconds
+    const interval = setInterval(() => fetchTasks({ setLoadingState: false }), 5000);
     return () => clearInterval(interval);
-  }, [filter, limit]);
+  }, [filter, tasksPerPage, currentPage, repoFilter]);
 
   const getStatusColor = (status: string): string => {
     switch (status) {
@@ -92,17 +122,19 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
   const formatDuration = (startTime: string | undefined, endTime: string | undefined, status: string): string => {
     if (!startTime) return 'N/A';
     
-    // For active tasks, calculate duration from start time to now
     const end = endTime ? new Date(endTime) : new Date();
-    const duration = end - new Date(startTime);
+    const duration = end.getTime() - new Date(startTime).getTime();
     
     const minutes = Math.floor(duration / 60000);
     const seconds = Math.floor((duration % 60000) / 1000);
     
-    // Add indicator for active tasks
-    const isActive = status === 'active' || status === 'claude_execution' || status === 'processing';
+    const isActive = ['active', 'claude_execution', 'processing'].includes(status);
     const suffix = isActive ? ' (running)' : '';
     return `${minutes}m ${seconds}s${suffix}`;
+  };
+
+  const handleRowClick = (taskId: string) => {
+    navigate(`/tasks/${taskId}`);
   };
 
   if (loading && tasks.length === 0) return <div className="text-gray-500">Loading tasks...</div>;
@@ -110,20 +142,41 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-4">
+      <div className="flex justify-between items-center mb-4 flex-wrap gap-4">
         <h3 className="text-lg font-semibold text-gray-900">Tasks</h3>
         <div className="flex items-center gap-4">
-          <select 
-            value={filter} 
-            onChange={(e) => setFilter(e.target.value)}
-            className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer"
-          >
-            <option value="all">All Tasks</option>
-            <option value="active">Active</option>
-            <option value="completed">Completed</option>
-            <option value="failed">Failed</option>
-            <option value="waiting">Waiting</option>
-          </select>
+          {!hideFilters && (
+            <>
+              <select 
+                value={repoFilter} 
+                onChange={(e) => { setRepoFilter(e.target.value); setCurrentPage(0); }}
+                disabled={reposLoading}
+                className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer disabled:opacity-50"
+              >
+                {reposLoading ? (
+                  <option value="all">Loading repos...</option>
+                ) : (
+                  availableRepos.map(repo => (
+                    <option key={repo} value={repo}>
+                      {repo === 'all' ? 'All Repositories' : repo}
+                    </option>
+                  ))
+                )}
+              </select>
+              
+              <select 
+                value={filter} 
+                onChange={(e) => { setFilter(e.target.value); setCurrentPage(0); }}
+                className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer"
+              >
+                <option value="all">All Tasks</option>
+                <option value="active">Active</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+                <option value="waiting">Waiting</option>
+              </select>
+            </>
+          )}
           {showViewAll && (
             <Link to="/tasks" className="text-primary-600 hover:text-primary-700 transition-colors">
               View All Tasks
@@ -154,11 +207,12 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
                   className={`hover:bg-gray-50 transition-colors cursor-pointer ${
                     index % 2 === 0 ? 'bg-white' : 'bg-light-100/50'
                   }`}
+                  onClick={() => handleRowClick(task.id)}
                 >
-                  <td className="py-4 px-4 text-sm text-gray-600">
+                  <td className="py-4 px-4 text-sm text-gray-600 truncate">
                     {task.repository || 'Unknown'}
                   </td>
-                  <td className="py-4 px-4">
+                  <td className="py-4 px-4 max-w-xs">
                     <div className="font-medium text-gray-800">
                       {task.id.startsWith('pr-comments-batch') ? 
                         `PR #${task.issueNumber || 'N/A'} Comments` : 
@@ -166,9 +220,13 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
                       }
                     </div>
                     {task.title && (
-                      <div className="text-sm text-gray-500 mt-1">
-                        {task.title.substring(0, 60)}
-                        {task.title.length > 60 && '...'}
+                      <div className="text-sm text-gray-500 mt-1 truncate">
+                        {task.title.replace(/^(New Issue: |Followup: )/, '')}
+                      </div>
+                    )}
+                    {task.subtitle && (
+                      <div className="text-sm text-gray-400 mt-1 truncate">
+                        {task.subtitle}
                       </div>
                     )}
                   </td>
@@ -187,16 +245,40 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false }) => {
                     {formatDuration(task.processedAt || task.createdAt, task.completedAt, task.status)}
                   </td>
                   <td className="py-4 px-4">
-                    <Link to={`/tasks/${task.id}`}>
-                      <button className="px-3 py-1.5 bg-primary-600 hover:bg-primary-700 text-white text-sm rounded-md transition-colors">
-                        View Details
-                      </button>
-                    </Link>
+                    <button className="px-3 py-1.5 bg-white border border-primary-600 text-primary-600 hover:bg-primary-600 hover:text-white text-sm rounded-md transition-colors">
+                      Details
+                    </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!hideFilters && totalTasks > tasksPerPage && (
+        <div className="flex justify-between items-center mt-4">
+          <div>
+            <span className="text-sm text-gray-600">
+              Showing {currentPage * tasksPerPage + 1} - {Math.min((currentPage + 1) * tasksPerPage, totalTasks)} of {totalTasks} tasks
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setCurrentPage(prev => Math.max(prev - 1, 0))}
+              disabled={currentPage === 0}
+              className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Previous
+            </button>
+            <button
+              onClick={() => setCurrentPage(prev => (prev + 1) * tasksPerPage < totalTasks ? prev + 1 : prev)}
+              disabled={(currentPage + 1) * tasksPerPage >= totalTasks}
+              className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Next
+            </button>
+          </div>
         </div>
       )}
     </div>
