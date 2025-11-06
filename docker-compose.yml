@@ -105,6 +105,17 @@ services:
     networks:
       - gitfix-net
 
+  docs:
+    build:
+      context: ./docs
+      dockerfile: Dockerfile
+    container_name: gitfix-docs
+    ports:
+      - '8080:3000' # Expose docs on host port 8080
+    networks:
+      - gitfix-net
+    restart: unless-stopped
+
   dashboard-api:
     build:
       context: .
