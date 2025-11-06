@@ -533,12 +533,29 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
                 prCommentBody += `- Cost: $${cost.toFixed(2)}\n`;
             }
 
+            prCommentBody += `\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
+
             completionComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner,
                 repo: repoName,
                 issue_number: pullRequestNumber,
                 body: prCommentBody,
             });
+
+            if (startingWorkComment && startingWorkComment.data.id) {
+                correlatedLogger.info({ commentId: startingWorkComment.data.id }, 'Process complete, delaying removal of \'starting work\' comment...');
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                try {
+                    await octokit.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+                        owner: repoOwner,
+                        repo: repoName,
+                        comment_id: startingWorkComment.data.id
+                    });
+                    correlatedLogger.info({ commentId: startingWorkComment.data.id }, 'Removed \'starting work\' comment');
+                } catch (deleteError) {
+                    correlatedLogger.warn({ commentId: startingWorkComment.data.id, error: deleteError.message }, 'Failed to remove \'starting work\' comment');
+                }
+            }
 
             correlatedLogger.info({
                 pullRequestNumber,
@@ -564,12 +581,29 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
                 noChangesBody += `- Cost: $${analysisCost.toFixed(2)}\n`;
             }
             
+            noChangesBody += `\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
+            
             completionComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner,
                 repo: repoName,
                 issue_number: pullRequestNumber,
                 body: noChangesBody,
             });
+
+            if (startingWorkComment && startingWorkComment.data.id) {
+                correlatedLogger.info({ commentId: startingWorkComment.data.id }, 'Process complete (no changes), delaying removal of \'starting work\' comment...');
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                try {
+                    await octokit.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+                        owner: repoOwner,
+                        repo: repoName,
+                        comment_id: startingWorkComment.data.id
+                    });
+                    correlatedLogger.info({ commentId: startingWorkComment.data.id }, 'Removed \'starting work\' comment');
+                } catch (deleteError) {
+                    correlatedLogger.warn({ commentId: startingWorkComment.data.id, error: deleteError.message }, 'Failed to remove \'starting work\' comment');
+                }
+            }
         }
 
         await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
