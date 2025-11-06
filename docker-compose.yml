@@ -128,6 +128,17 @@ services:
     networks:
       - gitfix-net
 
+  docs:
+    build:
+      context: ./docs
+      dockerfile: Dockerfile
+    container_name: gitfix-docs
+    ports:
+      - '8080:3000'
+    networks:
+      - gitfix-net
+    restart: unless-stopped
+
 networks:
   gitfix-net:
     driver: bridge
