@@ -533,8 +533,6 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
                 prCommentBody += `- Cost: $${cost.toFixed(2)}\n`;
             }
 
-            prCommentBody += `\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
-
             completionComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner,
                 repo: repoName,
@@ -580,8 +578,6 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
             if (analysisCost) {
                 noChangesBody += `- Cost: $${analysisCost.toFixed(2)}\n`;
             }
-            
-            noChangesBody += `\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
             
             completionComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner,
@@ -696,8 +692,6 @@ An error occurred while processing your request:
 ${error.message}
 \`\`\`
 
----
-Comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}
 Please check the logs for more details.`,
                     });
                 } catch (commentError) {
