@@ -707,11 +707,27 @@ ${error.message}
 
 Please check the logs for more details.`,
                     });
+
+                    // Delete the starting work comment after posting error
+                    if (startingWorkComment && startingWorkComment.data.id) {
+                        correlatedLogger.info({ commentId: startingWorkComment.data.id }, 'Process failed, delaying removal of \'starting work\' comment...');
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        try {
+                            await octokit.request('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+                                owner: repoOwner,
+                                repo: repoName,
+                                comment_id: startingWorkComment.data.id
+                            });
+                            correlatedLogger.info({ commentId: startingWorkComment.data.id }, 'Removed \'starting work\' comment');
+                        } catch (deleteError) {
+                            correlatedLogger.warn({ commentId: startingWorkComment.data.id, error: deleteError.message }, 'Failed to remove \'starting work\' comment');
+                        }
+                    }
                 } catch (commentError) {
                     correlatedLogger.error({ error: commentError.message }, 'Failed to post error comment');
                 }
             }
-            
+
             throw error;
         }
     } finally {
