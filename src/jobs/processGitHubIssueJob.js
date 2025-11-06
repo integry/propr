@@ -400,7 +400,8 @@ async function processGitHubIssueJob(job) {
                             },
                             historyMetadata: {
                                 sessionId,
-                                conversationId
+                                conversationId,
+                                model: modelName
                             }
                         });
                         

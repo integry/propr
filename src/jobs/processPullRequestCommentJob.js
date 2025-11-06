@@ -329,7 +329,8 @@ ${commentHistory}
                         },
                         historyMetadata: {
                             sessionId,
-                            conversationId
+                            conversationId,
+                            model: llm || DEFAULT_MODEL_NAME
                         }
                     });
                     
