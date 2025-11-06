@@ -507,6 +507,8 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
                     prCommentBody += `- Comment ${index + 1} by @${comment.author} (ID: ${String(comment.id)}✓)\n`;
                 });
                 prCommentBody += '\n';
+            } else if (unprocessedComments.length === 1) {
+                prCommentBody += `---\n_Processed comment ID: ${String(unprocessedComments[0].id)}✓_\n\n`;
             }
             
             if (changesSummary) {
@@ -568,6 +570,17 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
             }
             
             noChangesBody += `No code changes were necessary based on the current state of the branch.\n\n`;
+            
+            if (unprocessedComments.length > 1) {
+                noChangesBody += `Processed ${unprocessedComments.length} comments:\n`;
+                unprocessedComments.forEach((comment, index) => {
+                    noChangesBody += `- Comment ${index + 1} by @${comment.author} (ID: ${String(comment.id)}✓)\n`;
+                });
+                noChangesBody += '\n';
+            } else if (unprocessedComments.length === 1) {
+                noChangesBody += `---\n_Processed comment ID: ${String(unprocessedComments[0].id)}✓_\n\n`;
+            }
+            
             noChangesBody += `---\n`;
             noChangesBody += `🤖 **Analysis by Claude Code**\n`;
             noChangesBody += `- Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}\n`;
