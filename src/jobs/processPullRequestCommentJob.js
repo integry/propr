@@ -3,6 +3,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getStateManager, TaskStates } from '../utils/workerStateManager.js';
 import { 
+    ensureRepoCloned,
     createWorktreeFromExistingBranch,
     cleanupWorktree,
     getRepoUrl,
@@ -19,10 +20,23 @@ import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { handleError } from '../utils/errorHandler.js';
 import { issueQueue } from '../queue/taskQueue.js';
 import Redis from 'ioredis';
+import { getDefaultModel } from '../config/modelAliases.js';
+import { loadPrLabel } from '../config/configRepoManager.js';
 
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
+const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10);
 const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || (2 * 60 * 1000), 10);
+
+async function getPrLabel() {
+    try {
+        if (process.env.CONFIG_REPO) {
+            return await loadPrLabel();
+        }
+    } catch (error) {
+        logger.warn({ error: error.message }, 'Failed to load PR label from config, using fallback');
+    }
+    return process.env.PR_LABEL || 'gitfix';
+}
 
 export async function processPullRequestCommentJob(job) {
     const {
@@ -38,6 +52,8 @@ export async function processPullRequestCommentJob(job) {
         correlationId
     } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
+    
+    const PR_LABEL = await getPrLabel();
     
     const isBatchJob = !!comments && Array.isArray(comments);
     const commentsToProcess = isBatchJob ? comments : [{
@@ -96,12 +112,26 @@ export async function processPullRequestCommentJob(job) {
             'get_authenticated_octokit'
         );
 
-        // Fetch PR data to get its title
         const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
             owner: repoOwner,
             repo: repoName,
             pull_number: pullRequestNumber
         });
+        
+        const hasRequiredLabel = prData.data.labels.some(label => label.name === PR_LABEL);
+        
+        if (!hasRequiredLabel) {
+            correlatedLogger.info({
+                pullRequestNumber,
+                requiredLabel: PR_LABEL
+            }, 'PR does not have the required label, skipping follow-up comment processing');
+            
+            return { 
+                status: 'skipped', 
+                reason: 'missing_required_label',
+                pullRequestNumber 
+            };
+        }
 
         const botUsername = process.env.GITHUB_BOT_USERNAME || 'github-actions[bot]';
         const prComments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -140,21 +170,11 @@ export async function processPullRequestCommentJob(job) {
                 pullRequestNumber,
                 originalCount: commentsToProcess.length
             }, 'All PR comments have already been processed, skipping');
-
-            // Mark task as completed in state manager
-            try {
-                await stateManager.markTaskCompleted(taskId, {
-                    status: 'skipped',
-                    reason: 'already_processed'
-                });
-            } catch (stateError) {
-                correlatedLogger.warn({ error: stateError.message }, 'Failed to update task state to completed');
-            }
-
-            return {
-                status: 'skipped',
+            
+            return { 
+                status: 'skipped', 
                 reason: 'already_processed',
-                pullRequestNumber
+                pullRequestNumber 
             };
         }
 
@@ -213,8 +233,7 @@ ${body}
 
         commentIds = unprocessedComments.map(c => c.id).join(', ');
         authorsText = commentAuthors.map(a => `@${a}`).join(', ');
-
-        // Post starting work comment *before* worktree creation
+        
         startingWorkComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: repoOwner,
             repo: repoName,
@@ -231,7 +250,6 @@ ${body}
 
         await ensureGitRepository(correlatedLogger);
 
-        const { ensureRepoCloned } = await import('../git/repoManager.js');
         localRepoPath = await ensureRepoCloned(repoUrl, repoOwner, repoName, githubToken.token);
 
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
@@ -250,8 +268,6 @@ ${body}
             branchName: worktreeInfo.branchName 
         }, 'Created worktree from existing PR branch');
 
-        // --- Generate and Store AI Summary Title ---
-        // Must be done *after* worktree is created, as the summary service needs it
         let summaryTitle = '';
         try {
             const summaryRequest = `Summarize this change request in one sentence, focusing on the main action: ${combinedCommentBody}`;
@@ -259,8 +275,13 @@ ${body}
             correlatedLogger.info({ taskId, summaryTitle }, 'Generated AI summary for follow-up task');
         } catch (summaryError) {
             correlatedLogger.warn({ taskId, error: summaryError.message }, 'Failed to generate AI summary, falling back to truncation.');
-            // Fallback to simple truncation
-            summaryTitle = `Summary of change request: ${combinedCommentBody.substring(0, 100)}...`;
+            if (combinedCommentBody) {
+                const firstLine = combinedCommentBody.split('\n')[0].replace(/[^a-zA-Z0-9 ]/g, '').trim();
+                summaryTitle = "Follow-up: " + firstLine.substring(0, 75);
+                if (firstLine.length > 75) summaryTitle += '...';
+            } else {
+                summaryTitle = `Follow-up: PR #${pullRequestNumber}`;
+            }
         }
 
         job.data.title = `Followup: ${prData.data.title}`;
@@ -286,7 +307,6 @@ ${body}
         } catch (redisError) {
             correlatedLogger.warn({ taskId, error: redisError.message }, 'Failed to update task with title/subtitle in Redis');
         }
-        // --- End Generate and Store AI Summary Title ---
 
         const prompt = `You are working on pull request #${pullRequestNumber} to apply follow-up changes.
 
@@ -533,10 +553,12 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
                 prCommentBody += `- Cost: $${cost.toFixed(2)}\n`;
             }
 
-            completionComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            prCommentBody += `\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
+
+            completionComment = await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner,
                 repo: repoName,
-                issue_number: pullRequestNumber,
+                comment_id: startingWorkComment.data.id,
                 body: prCommentBody,
             });
 
@@ -564,10 +586,12 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
                 noChangesBody += `- Cost: $${analysisCost.toFixed(2)}\n`;
             }
             
-            completionComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            noChangesBody += `\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
+
+            completionComment = await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner,
                 repo: repoName,
-                issue_number: pullRequestNumber,
+                comment_id: startingWorkComment.data.id,
                 body: noChangesBody,
             });
         }
@@ -583,8 +607,8 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
             }
         });
 
-        return {
-            status: 'complete',
+        return { 
+            status: 'complete', 
             commit: commitResult?.commitHash,
             pullRequestNumber,
             claudeResult
@@ -648,12 +672,12 @@ The job has been automatically rescheduled and will restart ${readableResetTime}
                 }
             }
             
-            if (octokit) {
+            if (octokit && startingWorkComment) {
                 try {
-                    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                    await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                         owner: repoOwner,
                         repo: repoName,
-                        issue_number: pullRequestNumber,
+                        comment_id: startingWorkComment.data.id,
                         body: `❌ **Failed to apply follow-up changes** requested by ${authorsText}
 
 An error occurred while processing your request:
