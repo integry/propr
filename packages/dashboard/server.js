@@ -454,7 +454,8 @@ app.get('/api/task/:taskId/history', ensureAuthenticated, async (req, res) => {
             type: task.task_type,
             correlationId: task.correlation_id,
             title: title,
-            subtitle: subtitle
+            subtitle: subtitle,
+            modelName: task.model_name
           };
           
           // Fetch LLM executions for this task
@@ -561,7 +562,8 @@ app.get('/api/task/:taskId/history', ensureAuthenticated, async (req, res) => {
             type: taskId.startsWith('pr-comments-batch-') ? 'pr-comment' : 'issue',
             comments: state.issueRef.comments,
             title: title,
-            subtitle: subtitle
+            subtitle: subtitle,
+            modelName: state.issueRef?.modelName
           };
         }
       } catch (e) {
@@ -586,7 +588,8 @@ app.get('/api/task/:taskId/history', ensureAuthenticated, async (req, res) => {
                 type: taskId.startsWith('pr-comments-batch-') ? 'pr-comment' : 'issue',
                 comments: job.data.comments,
                 title: title,
-                subtitle: subtitle
+                subtitle: subtitle,
+                modelName: job.data?.modelName
               };
             }
           }

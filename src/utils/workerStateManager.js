@@ -80,7 +80,7 @@ export class WorkerStateManager {
                     repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
                     issue_number: issueRef.number,
                     task_type: issueRef.type || 'issue',
-                    model_name: null,
+                    model_name: issueRef.modelName || null,
                     created_at: state.createdAt,
                     initial_job_data: JSON.stringify(issueRef)
                 };
