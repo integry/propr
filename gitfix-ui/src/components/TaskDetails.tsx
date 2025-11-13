@@ -435,6 +435,11 @@ const TaskDetails: React.FC = () => {
   const modelItem = history.find(item => item.metadata?.model);
   const modelName = formatModelName(modelItem?.metadata?.model || taskInfo?.modelName);
 
+  const completedStep = [...history].reverse().find(item =>
+      (item.state?.toUpperCase() === 'COMPLETED' || item.state?.toUpperCase() === 'POST_PROCESSING') && (item.metadata?.pr || item.metadata?.pullRequest)
+  );
+  const prInfo = completedStep?.metadata?.pr || completedStep?.metadata?.pullRequest;
+
   return (
     <div>
       {/* 1. Header & Subtitle */}
@@ -499,6 +504,20 @@ const TaskDetails: React.FC = () => {
           <span className="text-gray-400">•</span>
           <span className="text-gray-700 font-semibold">Model:</span>
           <span className="text-blue-600">{modelName}</span>
+          {prInfo?.url && (
+            <>
+              <span className="text-gray-400">•</span>
+              <span className="text-gray-700 font-semibold">Pull Request:</span>
+              <a
+                href={prInfo.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-700 underline"
+              >
+                #{prInfo.number}
+              </a>
+            </>
+          )}
         </div>
         <div className="flex gap-2">
           {historyItemWithPaths?.promptPath && (
@@ -581,6 +600,22 @@ const TaskDetails: React.FC = () => {
                         displayLabel = 'Task Completed';
                       } else if (stateUpper === 'FAILED') {
                         displayLabel = 'Task Failed';
+                      }
+
+                      const itemPrInfo = item.metadata?.pr || item.metadata?.pullRequest;
+                      if ((stateUpper === 'COMPLETED' || stateUpper === 'POST_PROCESSING') && itemPrInfo?.url) {
+                        displayLabel = (
+                          <>{displayLabel}
+                            <a
+                              href={itemPrInfo.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:text-blue-700 underline ml-2"
+                            >
+                              (View PR #{itemPrInfo.number})
+                            </a>
+                          </>
+                        );
                       }
                       
                       const isLastItem = index === history.length - 1;
