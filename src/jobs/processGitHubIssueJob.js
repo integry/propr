@@ -1043,7 +1043,8 @@ This is an emergency retry - the main implementation is complete, you just need 
                 status: finalStatus,
                 claudeSuccess: claudeResult?.success || false,
                 prCreated: !!postProcessingResult?.pr,
-                prNumber: postProcessingResult?.pr?.number || null
+                prNumber: postProcessingResult?.pr?.number || null,
+                prUrl: postProcessingResult?.pr?.url || null
             });
         } catch (stateError) {
             correlatedLogger.warn({ error: stateError.message }, 'Failed to update task state to completed');

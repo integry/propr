@@ -353,7 +353,13 @@ export class WorkerStateManager {
     async markTaskCompleted(taskId, result = {}) {
         const metadata = {
             result,
-            reason: 'Task completed successfully'
+            reason: 'Task completed successfully',
+            historyMetadata: {
+                pr: (result.prUrl && result.prNumber) ? {
+                    number: result.prNumber,
+                    url: result.prUrl
+                } : null
+            }
         };
         
         return await this.updateTaskState(taskId, TaskStates.COMPLETED, metadata);
