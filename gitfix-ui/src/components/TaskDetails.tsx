@@ -815,9 +815,21 @@ const TaskDetails: React.FC = () => {
                       <div className={`text-sm p-2 rounded ${event.isError ? 'bg-red-50 border border-red-200' : 'bg-gray-50 border border-gray-200'}`}>
                         <p className={`font-semibold ${event.isError ? 'text-red-600' : 'text-green-600'}`}>Tool Result {event.isError ? '(Error)' : '(Success)'}</p>
                         <pre className="whitespace-pre-wrap font-mono text-xs text-gray-600 mt-1 max-h-40 overflow-y-auto">
-                          {typeof event.result === 'string'
-                            ? event.result
-                            : JSON.stringify(event.result, null, 2)}
+                          {(() => {
+                            let resultText = typeof event.result === 'string'
+                              ? event.result
+                              : JSON.stringify(event.result, null, 2);
+                            
+                            for (const prefix of WORKSPACE_PREFIXES) {
+                              if (typeof prefix === 'string') {
+                                resultText = resultText.split(prefix).join('');
+                              } else if (prefix instanceof RegExp) {
+                                resultText = resultText.replace(new RegExp(prefix.source, 'g'), '');
+                              }
+                            }
+                            
+                            return resultText;
+                          })()}
                         </pre>
                       </div>
                     )}
