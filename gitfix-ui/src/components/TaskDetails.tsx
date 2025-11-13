@@ -25,12 +25,27 @@ const TaskDetails: React.FC = () => {
   const [lastThought, setLastThought] = useState<string | null>(null);
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
 
-  const WORKSPACE_PREFIX = '/home/node/workspace/';
+  const WORKSPACE_PREFIXES = [
+    '/home/node/workspace/',
+    /^\/tmp\/git-processor\/worktrees\/[^\/]+\/[^\/]+\/[^\/]+\//
+  ];
 
   const formatDisplayPath = (fullPath: string) => {
-    if (fullPath && typeof fullPath === 'string' && fullPath.startsWith(WORKSPACE_PREFIX)) {
-      return fullPath.substring(WORKSPACE_PREFIX.length);
+    if (!fullPath || typeof fullPath !== 'string') {
+      return fullPath;
     }
+    
+    for (const prefix of WORKSPACE_PREFIXES) {
+      if (typeof prefix === 'string' && fullPath.startsWith(prefix)) {
+        return fullPath.substring(prefix.length);
+      } else if (prefix instanceof RegExp) {
+        const match = fullPath.match(prefix);
+        if (match) {
+          return fullPath.substring(match[0].length);
+        }
+      }
+    }
+    
     return fullPath;
   };
 
@@ -801,9 +816,7 @@ const TaskDetails: React.FC = () => {
                         <p className={`font-semibold ${event.isError ? 'text-red-600' : 'text-green-600'}`}>Tool Result {event.isError ? '(Error)' : '(Success)'}</p>
                         <pre className="whitespace-pre-wrap font-mono text-xs text-gray-600 mt-1 max-h-40 overflow-y-auto">
                           {typeof event.result === 'string'
-                            ? event.result.split('\n').map((line, i) => (
-                                <React.Fragment key={i}>{renderClickablePath(line)}<br /></React.Fragment>
-                              ))
+                            ? event.result
                             : JSON.stringify(event.result, null, 2)}
                         </pre>
                       </div>
