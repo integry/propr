@@ -27,7 +27,7 @@ const TaskDetails: React.FC = () => {
 
   const WORKSPACE_PREFIXES = [
     '/home/node/workspace/',
-    /^\/tmp\/git-processor\/worktrees\/[^\/]+\/[^\/]+\/[^\/]+\//
+    /\/tmp\/git-processor\/worktrees\/[^\/]+\/[^\/]+\/[^\/]+\//
   ];
 
   const formatDisplayPath = (fullPath: string) => {
