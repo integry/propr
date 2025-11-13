@@ -27,7 +27,7 @@ const TaskDetails: React.FC = () => {
 
   const WORKSPACE_PREFIXES = [
     '/home/node/workspace',
-    /^\/tmp\/git-processor\/worktrees\/[^\/]+\/[^\/]+\/[^\/]+/
+    /^\/tmp\/git-processor\/worktrees\/[^\/]+\/[^\/]+\/[^\/]+\//
   ];
 
   const formatDisplayPath = (fullPath: string) => {
@@ -824,7 +824,7 @@ const TaskDetails: React.FC = () => {
                               if (typeof prefix === 'string') {
                                 resultText = resultText.split(prefix).join('');
                               } else if (prefix instanceof RegExp) {
-                                resultText = resultText.replace(prefix, '');
+                                resultText = resultText.replace(new RegExp(prefix.source, 'g'), '');
                               }
                             }
                             
