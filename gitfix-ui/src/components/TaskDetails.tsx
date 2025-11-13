@@ -802,7 +802,7 @@ const TaskDetails: React.FC = () => {
                         <pre className="whitespace-pre-wrap font-mono text-xs text-gray-600 mt-1 max-h-40 overflow-y-auto">
                           {typeof event.result === 'string'
                             ? event.result.split('\n').map((line, i) => (
-                                <span key={i}>{renderClickablePath(line)}<br /></span>
+                                <React.Fragment key={i}>{renderClickablePath(line)}<br /></React.Fragment>
                               ))
                             : JSON.stringify(event.result, null, 2)}
                         </pre>
