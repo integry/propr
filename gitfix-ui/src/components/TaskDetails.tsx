@@ -26,7 +26,7 @@ const TaskDetails: React.FC = () => {
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
 
   const WORKSPACE_PREFIXES = [
-    '/home/node/workspace',
+    '/home/node/workspace/',
     /^\/tmp\/git-processor\/worktrees\/[^\/]+\/[^\/]+\/[^\/]+\//
   ];
 
