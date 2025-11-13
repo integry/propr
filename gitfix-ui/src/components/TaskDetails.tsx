@@ -25,6 +25,30 @@ const TaskDetails: React.FC = () => {
   const [lastThought, setLastThought] = useState<string | null>(null);
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
 
+  const WORKSPACE_PREFIXES = [
+    '/home/node/workspace/',
+    /\/tmp\/git-processor\/worktrees\/[^\/]+\/[^\/]+\/[^\/]+\//
+  ];
+
+  const formatDisplayPath = (fullPath: string) => {
+    if (!fullPath || typeof fullPath !== 'string') {
+      return fullPath;
+    }
+    
+    for (const prefix of WORKSPACE_PREFIXES) {
+      if (typeof prefix === 'string' && fullPath.startsWith(prefix)) {
+        return fullPath.substring(prefix.length);
+      } else if (prefix instanceof RegExp) {
+        const match = fullPath.match(prefix);
+        if (match) {
+          return fullPath.substring(match[0].length);
+        }
+      }
+    }
+    
+    return fullPath;
+  };
+
   const formatDate = (dateString) => {
     return new Date(dateString).toLocaleString();
   };
@@ -146,6 +170,33 @@ const TaskDetails: React.FC = () => {
           }
         })}
       </div>
+    );
+  };
+
+  const renderClickablePath = (fullPath: string) => {
+    const cleanPath = formatDisplayPath(fullPath);
+    
+    if (!cleanPath || !cleanPath.includes('/') || cleanPath.startsWith('http')) {
+      return <span className="font-mono">{cleanPath}</span>;
+    }
+
+    const REPO_BASE_URL = taskInfo?.repoOwner && taskInfo?.repoName
+      ? `https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/blob/main`
+      : null;
+
+    if (!REPO_BASE_URL) {
+      return <span className="font-mono">{cleanPath}</span>;
+    }
+
+    return (
+      <a
+        href={`${REPO_BASE_URL}/${cleanPath}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="font-mono text-blue-600 hover:text-blue-700 underline"
+      >
+        {cleanPath}
+      </a>
     );
   };
 
@@ -752,7 +803,11 @@ const TaskDetails: React.FC = () => {
                     {event.type === 'tool_use' && (
                       <div className="text-sm">
                         <p className="font-semibold text-gray-800">Tool: <span className="font-mono bg-gray-100 px-2 py-1 rounded border border-gray-300">{event.toolName}</span></p>
-                        {event.input?.file_path && <p className="text-gray-600 mt-1">File: <span className="font-mono">{event.input.file_path}</span></p>}
+                        {event.input?.file_path && (
+                          <p className="text-gray-600 mt-1">
+                            File: {renderClickablePath(event.input.file_path)}
+                          </p>
+                        )}
                         {event.input?.command && <p className="text-gray-600 mt-1">Command: <code className="bg-gray-100 p-1 rounded font-mono text-xs border border-gray-300">{event.input.command}</code></p>}
                       </div>
                     )}
@@ -760,7 +815,21 @@ const TaskDetails: React.FC = () => {
                       <div className={`text-sm p-2 rounded ${event.isError ? 'bg-red-50 border border-red-200' : 'bg-gray-50 border border-gray-200'}`}>
                         <p className={`font-semibold ${event.isError ? 'text-red-600' : 'text-green-600'}`}>Tool Result {event.isError ? '(Error)' : '(Success)'}</p>
                         <pre className="whitespace-pre-wrap font-mono text-xs text-gray-600 mt-1 max-h-40 overflow-y-auto">
-                          {typeof event.result === 'string' ? event.result : JSON.stringify(event.result, null, 2)}
+                          {(() => {
+                            let resultText = typeof event.result === 'string'
+                              ? event.result
+                              : JSON.stringify(event.result, null, 2);
+                            
+                            for (const prefix of WORKSPACE_PREFIXES) {
+                              if (typeof prefix === 'string') {
+                                resultText = resultText.split(prefix).join('');
+                              } else if (prefix instanceof RegExp) {
+                                resultText = resultText.replace(new RegExp(prefix.source, 'g'), '');
+                              }
+                            }
+                            
+                            return resultText;
+                          })()}
                         </pre>
                       </div>
                     )}
