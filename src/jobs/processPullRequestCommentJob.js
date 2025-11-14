@@ -1,4 +1,4 @@
-import logger from '../utils/logger.js';
+import logger, { generateCorrelationId } from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getStateManager, TaskStates } from '../utils/workerStateManager.js';
@@ -45,7 +45,7 @@ export async function processPullRequestCommentJob(job) {
         commentBody,
         commentAuthor,
         comments,
-        branchName,
+        branchName: jobBranchName,
         repoOwner,
         repoName,
         llm,
@@ -62,9 +62,9 @@ export async function processPullRequestCommentJob(job) {
         author: commentAuthor
     }];
     
-    correlatedLogger.info({ 
-        pullRequestNumber, 
-        branchName, 
+    correlatedLogger.info({
+        pullRequestNumber,
+        branchName: jobBranchName,
         llm,
         isBatchJob,
         commentsCount: commentsToProcess.length
@@ -117,7 +117,100 @@ export async function processPullRequestCommentJob(job) {
             repo: repoName,
             pull_number: pullRequestNumber
         });
-        
+
+        const botUsername = process.env.GITHUB_BOT_USERNAME || 'gitfixio[bot]';
+        const prCommentsForValidation = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: repoOwner,
+            repo: repoName,
+            issue_number: pullRequestNumber,
+            per_page: 100
+        });
+
+        const reviewCommentsForValidation = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
+            owner: repoOwner,
+            repo: repoName,
+            pull_number: pullRequestNumber,
+            per_page: 100
+        });
+
+        const allCommentsForValidation = [...prCommentsForValidation, ...reviewCommentsForValidation];
+
+        for (const comment of commentsToProcess) {
+            const currentComment = allCommentsForValidation.find(c => c.id === comment.id);
+            
+            if (!currentComment) {
+                correlatedLogger.warn({
+                    pullRequestNumber,
+                    commentId: comment.id,
+                    commentAuthor: comment.author
+                }, 'Comment has been deleted, aborting execution');
+                
+                return {
+                    status: 'aborted',
+                    reason: 'comment_deleted',
+                    pullRequestNumber,
+                    commentId: comment.id
+                };
+            }
+            
+            // Check if comment was edited AFTER the job was queued
+            // Only restart if the comment's updated_at has changed since we queued the job
+            const commentWasEditedAfterQueuing = comment.updated_at &&
+                currentComment.updated_at !== comment.updated_at;
+
+            if (commentWasEditedAfterQueuing) {
+                correlatedLogger.info({
+                    pullRequestNumber,
+                    commentId: comment.id,
+                    commentAuthor: comment.author,
+                    originalUpdatedAt: comment.updated_at,
+                    currentUpdatedAt: currentComment.updated_at
+                }, 'Comment has been edited since job was queued, restarting execution with updated content');
+
+                // Generate a NEW correlation ID for the restarted job to avoid unique constraint violations
+                const newCorrelationId = generateCorrelationId();
+
+                const updatedJobData = {
+                    ...job.data,
+                    correlationId: newCorrelationId,  // Use new correlation ID
+                    comments: commentsToProcess.map(c => {
+                        if (c.id === comment.id) {
+                            return {
+                                ...c,
+                                body: currentComment.body,
+                                updated_at: currentComment.updated_at
+                            };
+                        }
+                        return c;
+                    })
+                };
+
+                const timestamp = Date.now();
+                const newJobId = `pr-comments-restart-${repoOwner}-${repoName}-${pullRequestNumber}-${timestamp}`;
+
+                await issueQueue.add('processPullRequestComment', updatedJobData, { jobId: newJobId });
+                
+                correlatedLogger.info({
+                    pullRequestNumber,
+                    commentId: comment.id,
+                    newJobId
+                }, 'Requeued job with updated comment content');
+                
+                return {
+                    status: 'restarted',
+                    reason: 'comment_edited',
+                    pullRequestNumber,
+                    commentId: comment.id,
+                    newJobId
+                };
+            }
+        }
+
+        const branchName = jobBranchName || prData.data.head.ref;
+        if (!jobBranchName) {
+            correlatedLogger.debug({ branchName }, 'Extracted branch name from PR data');
+        }
+
         const hasRequiredLabel = prData.data.labels.some(label => label.name === PR_LABEL);
         
         if (!hasRequiredLabel) {
@@ -133,19 +226,9 @@ export async function processPullRequestCommentJob(job) {
             };
         }
 
-        const botUsername = process.env.GITHUB_BOT_USERNAME || 'github-actions[bot]';
-        const prComments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: repoOwner,
-            repo: repoName,
-            issue_number: pullRequestNumber,
-            per_page: 100
-        });
-
         unprocessedComments = commentsToProcess.filter(comment => {
-            const alreadyProcessed = prComments.some(prComment => {
-                const isBotComment = prComment.user.login === botUsername || 
-                                    prComment.user.type === 'Bot' ||
-                                    prComment.user.login.includes('[bot]');
+            const alreadyProcessed = prCommentsForValidation.some(prComment => {
+                const isBotComment = prComment.user.login === botUsername;
                 
                 if (!isBotComment) return false;
                 

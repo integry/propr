@@ -61,11 +61,14 @@ services:
       DB_USER: ${DB_USER}
       DB_NAME: ${DB_NAME}
       DB_PASSWORD: ${DB_PASSWORD}
+      GH_WEBHOOK_SECRET: ${GH_WEBHOOK_SECRET}
     depends_on:
       redis:
         condition: service_healthy
       db:
         condition: service_healthy
+      daemon:
+        condition: service_started
     networks:
       - gitfix-network
 

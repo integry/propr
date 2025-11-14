@@ -353,12 +353,9 @@ async function processGitHubIssueJob(job) {
                     per_page: 100
                 });
                 
-                const botUsername = process.env.GITHUB_BOT_USERNAME || 'github-actions[bot]';
+                const botUsername = process.env.GITHUB_BOT_USERNAME || 'gitfixio[bot]';
                 issueComments = allComments.filter(comment => {
-                    const isBot = comment.user.login === botUsername || 
-                                  comment.user.type === 'Bot' ||
-                                  comment.user.login.includes('[bot]') ||
-                                  comment.user.login.toLowerCase().includes('gitfixio');
+                    const isBot = comment.user.login === botUsername;
                     return !isBot;
                 });
                 

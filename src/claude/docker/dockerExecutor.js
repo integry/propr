@@ -7,9 +7,13 @@ export function executeDockerCommand(command, args, options = {}) {
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath } = options;
 
-        const child = spawn(command, args, {
+        // Use full path for docker command to avoid PATH resolution issues
+        const executablePath = command === 'docker' ? '/usr/bin/docker' : command;
+
+        const child = spawn(executablePath, args, {
             cwd,
-            stdio: ['ignore', 'pipe', 'pipe']
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: process.env
         });
 
         let stdout = '';
@@ -36,7 +40,7 @@ export function executeDockerCommand(command, args, options = {}) {
                     try {
                         const { execSync } = await import('child_process');
                         const containersOutput = execSync(
-                            `docker ps --filter "volume=${worktreePath}" --format "{{.ID}}:{{.Names}}" --latest`,
+                            `/usr/bin/docker ps --filter "volume=${worktreePath}" --format "{{.ID}}:{{.Names}}" --latest`,
                             { encoding: 'utf8', timeout: 5000 }
                         ).trim();
                         

@@ -125,6 +125,8 @@ services:
         condition: service_started
       db:
         condition: service_healthy
+      daemon:
+        condition: service_started
     networks:
       - gitfix-net
 

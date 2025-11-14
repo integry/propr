@@ -3,11 +3,13 @@ import { getAuthenticatedOctokit } from './auth/githubAuth.js';
 import logger, { generateCorrelationId } from './utils/logger.js';
 import { withErrorHandling, handleError } from './utils/errorHandler.js';
 import { withRetry, retryConfigs } from './utils/retryHandler.js';
-import { issueQueue, shutdownQueue } from './queue/taskQueue.js';
+import { issueQueue, shutdownQueue, COMMENT_BATCH_DELAY_MS } from './queue/taskQueue.js';
 import Redis from 'ioredis';
 import { resolveModelAlias, getDefaultModel } from './config/modelAliases.js';
 import { loadMonitoredRepos, ensureConfigRepoExists, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from './config/configRepoManager.js';
 import { db, isEnabled as isDbEnabled } from './db/postgres.js';
+import { initializeWebhookHandler } from './webhook/webhookHandler.js';
+import { filterCommentByAuthor, checkCommentTrigger } from './utils/commentFilters.js';
 
 // Create Redis client for activity logging
 const redisClient = new Redis({
@@ -30,6 +32,8 @@ let GITHUB_BOT_USERNAME = process.env.GITHUB_BOT_USERNAME;
 const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
 
+const ENABLE_WEBHOOKS = process.env.ENABLE_GITHUB_WEBHOOKS === 'true';
+
 let monitoredRepos = [];
 let GITHUB_USER_WHITELIST = (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u);
 
@@ -51,7 +55,7 @@ async function detectBotUsername() {
         return GITHUB_BOT_USERNAME;
     } catch (error) {
         logger.warn({ error: error.message }, 'Failed to auto-detect bot username, will use default');
-        GITHUB_BOT_USERNAME = 'github-actions[bot]';
+        GITHUB_BOT_USERNAME = 'gitfixio[bot]';
         return GITHUB_BOT_USERNAME;
     }
 }
@@ -134,6 +138,143 @@ const getRepos = () => {
 };
 
 /**
+ * Processes a detected issue by checking labels, finding target models, and enqueueing jobs
+ * @param {Object} issue - Issue object with properties: id, number, labels, repoOwner, repoName, etc.
+ * @param {string} correlationId - Correlation ID for tracking
+ */
+async function processDetectedIssue(issue, correlationId) {
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    const repoFullName = `${issue.repoOwner}/${issue.repoName}`;
+    
+    const allExcludeLabels = [];
+    for (const label of primaryProcessingLabels) {
+        allExcludeLabels.push(`${label}-processing`);
+        allExcludeLabels.push(`${label}-done`);
+    }
+    
+    if (allExcludeLabels.some(excludeLabel => issue.labels.includes(excludeLabel))) {
+        correlatedLogger.debug({
+            issueNumber: issue.number,
+            repository: repoFullName
+        }, 'Issue has exclude labels, skipping');
+        return;
+    }
+    
+    const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl)) || primaryProcessingLabels[0];
+    
+    const identifiedModels = [];
+    const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
+    
+    for (const label of issue.labels) {
+        const match = label.match(modelLabelRegex);
+        if (match && match[1]) {
+            const resolvedModel = resolveModelAlias(match[1]);
+            identifiedModels.push(resolvedModel);
+        }
+    }
+    
+    const targetModels = identifiedModels.length > 0 ? identifiedModels : [DEFAULT_MODEL_NAME];
+    
+    correlatedLogger.info({ 
+        issueId: issue.id, 
+        issueNumber: issue.number, 
+        issueTitle: issue.title, 
+        issueUrl: issue.url,
+        repository: repoFullName,
+        targetModels: targetModels,
+        triggeringLabel: triggeringLabel
+    }, 'Detected eligible issue');
+    
+    for (const modelName of targetModels) {
+        const activeJobs = await issueQueue.getActive();
+        const waitingJobs = await issueQueue.getWaiting();
+        const existingJobs = [...activeJobs, ...waitingJobs];
+
+        const jobExists = existingJobs.some(job =>
+            job.name === 'processGitHubIssue' &&
+            job.data.number === issue.number &&
+            job.data.repoOwner === issue.repoOwner &&
+            job.data.repoName === issue.repoName &&
+            job.data.modelName === modelName
+        );
+
+        if (jobExists) {
+            correlatedLogger.debug({
+                issueNumber: issue.number,
+                repository: repoFullName,
+                modelName: modelName
+            }, 'A job for this issue is already active or waiting, skipping duplicate');
+            continue;
+        }
+
+        correlatedLogger.info({
+            issueId: issue.id,
+            issueNumber: issue.number,
+            repository: repoFullName,
+            modelName: modelName,
+            triggeringLabel: triggeringLabel
+        }, `Enqueueing job for model: ${modelName}`);
+
+        try {
+            const timestamp = Date.now();
+            const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${modelName}-${timestamp}`;
+            const issueJob = {
+                repoOwner: issue.repoOwner,
+                repoName: issue.repoName,
+                number: issue.number,
+                modelName: modelName,
+                triggeringLabel: triggeringLabel,
+                correlationId: generateCorrelationId()
+            };
+            
+            const addToQueueWithRetry = () => withRetry(
+                () => issueQueue.add('processGitHubIssue', issueJob, {
+                    jobId,
+                    attempts: 3,
+                    backoff: {
+                        type: 'exponential',
+                        delay: 2000,
+                    },
+                }),
+                { ...retryConfigs.redis, correlationId },
+                `add_issue_to_queue_${issue.number}_${modelName}`
+            );
+            
+            await addToQueueWithRetry();
+            
+            try {
+                const activity = {
+                    id: `activity-${timestamp}-${issue.id}-${modelName}`,
+                    type: 'issue_created',
+                    timestamp: new Date().toISOString(),
+                    repository: repoFullName,
+                    issueNumber: issue.number,
+                    description: `New issue #${issue.number} detected for processing with ${modelName}`,
+                    status: 'info'
+                };
+                await redisClient.lpush('system:activity:log', JSON.stringify(activity));
+                await redisClient.ltrim('system:activity:log', 0, 999);
+            } catch (activityError) {
+                correlatedLogger.warn({ error: activityError.message }, 'Failed to log activity');
+            }
+            
+            correlatedLogger.info({ 
+                jobId,
+                issueNumber: issue.number,
+                repository: repoFullName,
+                modelName: modelName,
+                issueCorrelationId: issueJob.correlationId
+            }, 'Successfully added issue-model job to processing queue');
+            
+        } catch (error) {
+            handleError(error, `Failed to add issue ${issue.number} with model ${modelName} to queue`, { 
+                correlationId 
+            });
+        }
+    }
+}
+
+/**
  * Fetches issues for a specific repository based on configured criteria
  * @param {import('@octokit/core').Octokit} octokit - Authenticated Octokit instance
  * @param {string} repoFullName - Repository in format "owner/repo"
@@ -214,33 +355,17 @@ async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
             count: response.data.items.length 
         }, `Found ${response.data.items.length} matching issues.`);
 
-        // Transform issues to a simplified format
-        return response.data.items.map(issue => {
-            const identifiedModels = [];
-            const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
-            
-            for (const label of issue.labels) {
-                const match = label.name.match(modelLabelRegex);
-                if (match && match[1]) {
-                    // Resolve model alias to full model ID
-                    const resolvedModel = resolveModelAlias(match[1]);
-                    identifiedModels.push(resolvedModel);
-                }
-            }
-            
-            return {
-                id: issue.id,
-                number: issue.number,
-                title: issue.title,
-                url: issue.html_url,
-                repoOwner: owner,
-                repoName: repo,
-                labels: issue.labels.map(l => l.name),
-                targetModels: identifiedModels.length > 0 ? identifiedModels : [DEFAULT_MODEL_NAME],
-                createdAt: issue.created_at,
-                updatedAt: issue.updated_at
-            };
-        });
+        return response.data.items.map(issue => ({
+            id: issue.id,
+            number: issue.number,
+            title: issue.title,
+            url: issue.html_url,
+            repoOwner: owner,
+            repoName: repo,
+            labels: issue.labels.map(l => l.name),
+            createdAt: issue.created_at,
+            updatedAt: issue.updated_at
+        }));
     } catch (error) {
         handleError(error, `fetch_issues_${repoFullName}`, { correlationId });
 
@@ -250,6 +375,347 @@ async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
         }
         
         return [];
+    }
+}
+
+/**
+ * Handles comment deletion by aborting any active jobs
+ * @param {Object} payload - Webhook payload from 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} eventType - Type of event: 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} correlationId - Correlation ID for tracking
+ */
+async function handleCommentDeleted(payload, eventType, correlationId) {
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    
+    const owner = payload.repository.owner.login;
+    const repo = payload.repository.name;
+    const repoFullName = `${owner}/${repo}`;
+    
+    let prNumber, commentId;
+    
+    if (eventType === 'issue_comment') {
+        if (!payload.issue.pull_request) {
+            correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
+            return;
+        }
+        prNumber = payload.issue.number;
+        commentId = payload.comment.id;
+    } else if (eventType === 'pull_request_review_comment') {
+        prNumber = payload.pull_request.number;
+        commentId = payload.comment.id;
+    } else {
+        correlatedLogger.warn({ eventType }, 'Unknown event type for comment deletion');
+        return;
+    }
+    
+    correlatedLogger.info({
+        repository: repoFullName,
+        pullRequestNumber: prNumber,
+        commentId: commentId
+    }, 'Comment deleted, aborting any active jobs for this PR');
+    
+    const activeJobs = await issueQueue.getActive();
+    const waitingJobs = await issueQueue.getWaiting();
+    const allJobs = [...activeJobs, ...waitingJobs];
+    
+    for (const job of allJobs) {
+        if (job.name === 'processPullRequestComment' &&
+            job.data.pullRequestNumber === prNumber &&
+            job.data.repoOwner === owner &&
+            job.data.repoName === repo) {
+            
+            const jobCommentIds = job.data.comments?.map(c => c.id) || [];
+            if (jobCommentIds.includes(commentId)) {
+                correlatedLogger.info({
+                    jobId: job.id,
+                    pullRequestNumber: prNumber,
+                    repository: repoFullName
+                }, 'Aborting job due to comment deletion');
+                
+                const taskId = job.id.startsWith('pr-comments-batch-') ? 
+                    job.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') : 
+                    `${owner}-${repo}-${prNumber}`;
+                
+                const abortKey = `worker:abort:${taskId}`;
+                await redisClient.set(abortKey, JSON.stringify({
+                    timestamp: new Date().toISOString(),
+                    reason: 'comment_deleted',
+                    commentId: commentId
+                }), { EX: 3600 });
+                
+                await job.remove();
+                
+                correlatedLogger.info({
+                    jobId: job.id,
+                    taskId: taskId
+                }, 'Job aborted and removed from queue');
+            }
+        }
+    }
+    
+    const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${commentId}`;
+    await redisClient.del(commentTrackingKey);
+}
+
+/**
+ * Handles comment editing by restarting any active jobs
+ * @param {Object} payload - Webhook payload from 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} eventType - Type of event: 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} correlationId - Correlation ID for tracking
+ */
+async function handleCommentEdited(payload, eventType, correlationId) {
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    
+    const owner = payload.repository.owner.login;
+    const repo = payload.repository.name;
+    const repoFullName = `${owner}/${repo}`;
+    
+    let prNumber, commentId;
+    
+    if (eventType === 'issue_comment') {
+        if (!payload.issue.pull_request) {
+            correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
+            return;
+        }
+        prNumber = payload.issue.number;
+        commentId = payload.comment.id;
+    } else if (eventType === 'pull_request_review_comment') {
+        prNumber = payload.pull_request.number;
+        commentId = payload.comment.id;
+    } else {
+        correlatedLogger.warn({ eventType }, 'Unknown event type for comment edit');
+        return;
+    }
+    
+    correlatedLogger.info({
+        repository: repoFullName,
+        pullRequestNumber: prNumber,
+        commentId: commentId
+    }, 'Comment edited, restarting any active jobs for this PR');
+    
+    const activeJobs = await issueQueue.getActive();
+    const waitingJobs = await issueQueue.getWaiting();
+    const allJobs = [...activeJobs, ...waitingJobs];
+    
+    let foundJob = null;
+    for (const job of allJobs) {
+        if (job.name === 'processPullRequestComment' &&
+            job.data.pullRequestNumber === prNumber &&
+            job.data.repoOwner === owner &&
+            job.data.repoName === repo) {
+            
+            const jobCommentIds = job.data.comments?.map(c => c.id) || [];
+            if (jobCommentIds.includes(commentId)) {
+                foundJob = job;
+                break;
+            }
+        }
+    }
+    
+    if (foundJob) {
+        correlatedLogger.info({
+            jobId: foundJob.id,
+            pullRequestNumber: prNumber,
+            repository: repoFullName
+        }, 'Aborting existing job due to comment edit');
+        
+        const taskId = foundJob.id.startsWith('pr-comments-batch-') ? 
+            foundJob.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') : 
+            `${owner}-${repo}-${prNumber}`;
+        
+        const abortKey = `worker:abort:${taskId}`;
+        await redisClient.set(abortKey, JSON.stringify({
+            timestamp: new Date().toISOString(),
+            reason: 'comment_edited',
+            commentId: commentId
+        }), { EX: 3600 });
+        
+        await foundJob.remove();
+    }
+    
+    const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${commentId}`;
+    await redisClient.del(commentTrackingKey);
+    
+    correlatedLogger.info({
+        pullRequestNumber: prNumber,
+        repository: repoFullName,
+        commentId: commentId
+    }, 'Reprocessing edited comment');
+    
+    await processCommentEvent(payload, eventType, correlationId);
+}
+
+/**
+ * Processes a comment event by checking author, trigger keywords, and enqueueing a job
+ * @param {Object} payload - Webhook payload from 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} eventType - Type of event: 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} correlationId - Correlation ID for tracking
+ */
+async function processCommentEvent(payload, eventType, correlationId) {
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    
+    const owner = payload.repository.owner.login;
+    const repo = payload.repository.name;
+    const repoFullName = `${owner}/${repo}`;
+    
+    let prNumber, comment;
+    
+    if (eventType === 'issue_comment') {
+        if (!payload.issue.pull_request) {
+            correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
+            return;
+        }
+        prNumber = payload.issue.number;
+        comment = payload.comment;
+    } else if (eventType === 'pull_request_review_comment') {
+        prNumber = payload.pull_request.number;
+        comment = payload.comment;
+    } else {
+        correlatedLogger.warn({ eventType }, 'Unknown event type for comment processing');
+        return;
+    }
+    
+    const commentAuthor = comment.user.login;
+
+    // Use centralized comment filtering
+    const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
+    if (filterResult.shouldFilter) {
+        return;
+    }
+
+    // Check if comment triggers processing
+    const triggerResult = checkCommentTrigger(comment.body, correlationId);
+    if (!triggerResult.isTriggered) {
+        return;
+    }
+    
+    const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
+    const alreadyQueued = await redisClient.get(commentTrackingKey);
+    
+    if (alreadyQueued) {
+        correlatedLogger.debug({
+            repository: repoFullName,
+            pullRequestNumber: prNumber,
+            commentId: comment.id,
+            commentAuthor
+        }, 'PR comment already queued/processed, skipping');
+        return;
+    }
+    
+    const activeJobs = await issueQueue.getActive();
+    const waitingJobs = await issueQueue.getWaiting();
+    const existingJobs = [...activeJobs, ...waitingJobs];
+    
+    const jobExists = existingJobs.some(job =>
+        job.name === 'processPullRequestComment' &&
+        job.data.pullRequestNumber === prNumber &&
+        job.data.repoOwner === owner &&
+        job.data.repoName === repo
+    );
+    
+    if (jobExists) {
+        correlatedLogger.info({
+            pullRequestNumber: prNumber,
+            repository: repoFullName
+        }, 'A job for this PR is already active or waiting, skipping new job creation.');
+        return;
+    }
+    
+    let llm = null;
+    if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
+        for (const keyword of PR_FOLLOWUP_TRIGGER_KEYWORDS) {
+            const llmMatch = comment.body.match(new RegExp(`${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:([\\w.-]+)`));
+            if (llmMatch) llm = resolveModelAlias(llmMatch[1]);
+            if (llm) break;
+        }
+    }
+    
+    let enhancedCommentBody = comment.body;
+    if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
+        for (const keyword of PR_FOLLOWUP_TRIGGER_KEYWORDS) {
+            const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            enhancedCommentBody = enhancedCommentBody.replace(new RegExp(`${escapedKeyword}(:\\w+)?`, 'g'), '');
+        }
+    }
+    enhancedCommentBody = enhancedCommentBody.trim();
+    
+    if (comment.pull_request_review_id || eventType === 'pull_request_review_comment') {
+        const codeContext = [];
+        if (comment.path) {
+            codeContext.push(`File: ${comment.path}`);
+        }
+        if (comment.line) {
+            codeContext.push(`Line: ${comment.line}`);
+        }
+        if (comment.diff_hunk) {
+            codeContext.push('Code context:');
+            codeContext.push('```diff');
+            codeContext.push(comment.diff_hunk);
+            codeContext.push('```');
+        }
+        
+        if (codeContext.length > 0) {
+            enhancedCommentBody = `${comment.body}\n\n--- Review Comment Context ---\n${codeContext.join('\n')}`;
+        }
+    }
+    
+    const unprocessedComment = {
+        id: comment.id,
+        body: enhancedCommentBody,
+        author: commentAuthor,
+        type: (comment.pull_request_review_id || eventType === 'pull_request_review_comment') ? 'review' : 'issue',
+        hasCodeContext: (comment.pull_request_review_id || eventType === 'pull_request_review_comment') && comment.diff_hunk ? true : false
+    };
+    
+    let branchName;
+    if (eventType === 'issue_comment') {
+        const octokit = await getAuthenticatedOctokit();
+        const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+            owner,
+            repo,
+            pull_number: prNumber
+        });
+        branchName = pr.head.ref;
+    } else {
+        branchName = payload.pull_request.head.ref;
+    }
+    
+    const jobData = {
+        pullRequestNumber: prNumber,
+        comments: [unprocessedComment],
+        repoOwner: owner,
+        repoName: repo,
+        branchName: branchName,
+        llm: llm,
+        correlationId: generateCorrelationId(),
+    };
+    
+    const timestamp = Date.now();
+    const jobId = `pr-comments-batch-${owner}-${repo}-${prNumber}-${timestamp}`;
+    
+    try {
+        await issueQueue.add('processPullRequestComment', jobData, { 
+            jobId,
+            delay: COMMENT_BATCH_DELAY_MS
+        });
+        
+        await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
+        
+        correlatedLogger.info({
+            jobId,
+            pullRequestNumber: prNumber,
+            commentId: comment.id,
+            commentType: unprocessedComment.type,
+            delayMs: COMMENT_BATCH_DELAY_MS
+        }, `Successfully added PR comment job to processing queue with ${COMMENT_BATCH_DELAY_MS}ms delay for batching`);
+    } catch (error) {
+        if (error.message?.includes('Job already exists')) {
+            correlatedLogger.debug({
+                pullRequestNumber: prNumber,
+            }, 'PR comment job already in queue, skipping');
+        } else {
+            handleError(error, `Failed to add PR comment to queue`, { correlationId });
+        }
     }
 }
 
@@ -320,7 +786,7 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
             ];
 
             // Check if any bot comments exist after this comment that indicate processing
-            const botUsername = GITHUB_BOT_USERNAME || 'github-actions[bot]';
+            const botUsername = GITHUB_BOT_USERNAME || 'gitfixio[bot]';
             const commentsByTime = allComments.sort((a, b) => 
                 new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
             );
@@ -364,33 +830,20 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
 
             for (const comment of commentsByTime) {
                 const commentAuthor = comment.user.login;
-                let isTriggered = false;
-
-                if (comment.body) {
-                    if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
-                        isTriggered = PR_FOLLOWUP_TRIGGER_KEYWORDS.some(keyword => comment.body.includes(keyword));
-                    } else {
-                        isTriggered = true;
-                    }
+                // Use centralized comment filtering
+                const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
+                if (filterResult.shouldFilter) {
+                    continue;
                 }
 
-                if (isTriggered) {
-                    // Always skip this bot's own comments to prevent infinite loops
-                    if (GITHUB_BOT_USERNAME && commentAuthor === GITHUB_BOT_USERNAME) {
-                        continue;
-                    }
+                // Check if comment triggers processing
+                const triggerResult = checkCommentTrigger(comment.body, correlationId);
+                if (!triggerResult.isTriggered) {
+                    continue;
+                }
 
-                    // If a whitelist is defined, only users in that list are allowed.
-                    if (GITHUB_USER_WHITELIST.length > 0) {
-                        if (!GITHUB_USER_WHITELIST.includes(commentAuthor)) {
-                            continue;
-                        }
-                    } else {
-                        // If no whitelist, check blacklist
-                        if (GITHUB_USER_BLACKLIST.length > 0 && GITHUB_USER_BLACKLIST.includes(commentAuthor)) {
-                            continue;
-                        }
-                    }
+                // Passed filters, process this comment
+                {
 
                     // 4. Check if this comment has already been queued or processed
                     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${pr.number}:${comment.id}`;
@@ -411,9 +864,7 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
                     const commentIndex = commentsByTime.indexOf(comment);
                     const subsequentComments = commentsByTime.slice(commentIndex + 1);
                     const alreadyProcessed = subsequentComments.some(laterComment => {
-                        const isBotComment = laterComment.user.login === botUsername ||
-                                           laterComment.user.type === 'Bot' ||
-                                           laterComment.user.login.includes('[bot]');
+                        const isBotComment = laterComment.user.login === botUsername;
 
                         if (!isBotComment) return false;
 
@@ -525,7 +976,10 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
                 const jobId = `pr-comments-batch-${owner}-${repo}-${pr.number}-${timestamp}`;
 
                 try {
-                    await issueQueue.add('processPullRequestComment', jobData, { jobId });
+                    await issueQueue.add('processPullRequestComment', jobData, { 
+                        jobId,
+                        delay: COMMENT_BATCH_DELAY_MS
+                    });
 
                     // Mark all comments as queued in Redis with 24 hour expiration
                     const pipeline = redisClient.pipeline();
@@ -540,8 +994,9 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
                         pullRequestNumber: pr.number,
                         commentsCount: unprocessedComments.length,
                         commentIds: unprocessedComments.map(c => c.id),
-                        commentTypes: unprocessedComments.map(c => c.type)
-                    }, `Successfully added batch PR comments job to processing queue (${unprocessedComments.length} comments)`);
+                        commentTypes: unprocessedComments.map(c => c.type),
+                        delayMs: COMMENT_BATCH_DELAY_MS
+                    }, `Successfully added batch PR comments job to processing queue (${unprocessedComments.length} comments) with ${COMMENT_BATCH_DELAY_MS}ms delay for batching`);
                 } catch (error) {
                     if (error.message?.includes('Job already exists')) {
                         correlatedLogger.debug({
@@ -592,113 +1047,7 @@ async function pollForIssues() {
             
             if (issues.length > 0) {
                 for (const issue of issues) {
-                    const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl)) || primaryProcessingLabels[0];
-                    
-                    correlatedLogger.info({ 
-                        issueId: issue.id, 
-                        issueNumber: issue.number, 
-                        issueTitle: issue.title, 
-                        issueUrl: issue.url,
-                        repository: repoFullName,
-                        targetModels: issue.targetModels,
-                        triggeringLabel: triggeringLabel
-                    }, 'Detected eligible issue');
-                    
-                    // Create separate jobs for each target model
-                    for (const modelName of issue.targetModels) {
-                        // Check if a job for this issue is already active or waiting
-                        const activeJobs = await issueQueue.getActive();
-                        const waitingJobs = await issueQueue.getWaiting();
-                        const existingJobs = [...activeJobs, ...waitingJobs];
-
-                        const jobExists = existingJobs.some(job =>
-                            job.name === 'processGitHubIssue' &&
-                            job.data.number === issue.number &&
-                            job.data.repoOwner === issue.repoOwner &&
-                            job.data.repoName === issue.repoName &&
-                            job.data.modelName === modelName
-                        );
-
-                        if (jobExists) {
-                            correlatedLogger.debug({
-                                issueNumber: issue.number,
-                                repository: repoFullName,
-                                modelName: modelName
-                            }, 'A job for this issue is already active or waiting, skipping duplicate');
-                            continue;
-                        }
-
-                        correlatedLogger.info({
-                            issueId: issue.id,
-                            issueNumber: issue.number,
-                            repository: repoFullName,
-                            modelName: modelName,
-                            triggeringLabel: triggeringLabel
-                        }, `Enqueueing job for model: ${modelName}`);
-
-                        try {
-                            // Include timestamp in jobId to allow reprocessing after AI-done label removal
-                            const timestamp = Date.now();
-                            const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${modelName}-${timestamp}`;
-                            const issueJob = {
-                                repoOwner: issue.repoOwner,
-                                repoName: issue.repoName,
-                                number: issue.number,
-                                modelName: modelName,
-                                triggeringLabel: triggeringLabel,
-                                correlationId: generateCorrelationId() // Each job gets its own correlation ID
-                            };
-                            
-                            const addToQueueWithRetry = () => withRetry(
-                                () => issueQueue.add('processGitHubIssue', issueJob, {
-                                    jobId,
-                                    // Allow reprocessing by using unique jobId with timestamp
-                                    attempts: 3,
-                                    backoff: {
-                                        type: 'exponential',
-                                        delay: 2000,
-                                    },
-                                }),
-                                { ...retryConfigs.redis, correlationId },
-                                `add_issue_to_queue_${issue.number}_${modelName}`
-                            );
-                            
-                            await addToQueueWithRetry();
-                            
-                            // Log activity for dashboard
-                            try {
-                                const activity = {
-                                    id: `activity-${timestamp}-${issue.id}-${modelName}`,
-                                    type: 'issue_created',
-                                    timestamp: new Date().toISOString(),
-                                    repository: repoFullName,
-                                    issueNumber: issue.number,
-                                    description: `New issue #${issue.number} detected for processing with ${modelName}`,
-                                    status: 'info'
-                                };
-                                await redisClient.lpush('system:activity:log', JSON.stringify(activity));
-                                await redisClient.ltrim('system:activity:log', 0, 999); // Keep last 1000 activities
-                            } catch (activityError) {
-                                correlatedLogger.warn({ error: activityError.message }, 'Failed to log activity');
-                            }
-                            
-                            correlatedLogger.info({ 
-                                jobId,
-                                issueNumber: issue.number,
-                                repository: repoFullName,
-                                modelName: modelName,
-                                issueCorrelationId: issueJob.correlationId
-                            }, 'Successfully added issue-model job to processing queue');
-                            
-                        } catch (error) {
-                            // Since we now use unique jobIds with timestamps, this error should not occur
-                            // Log any queue errors that do occur
-                            handleError(error, `Failed to add issue ${issue.number} with model ${modelName} to queue`, { 
-                                correlationId 
-                            });
-                        }
-                    }
-                    
+                    await processDetectedIssue(issue, correlationId);
                     allDetectedIssues.push(issue);
                 }
             }
@@ -842,6 +1191,7 @@ async function resetIssueLabels() {
     }
 }
 
+
 /**
  * Starts the daemon with configured polling interval
  */
@@ -911,25 +1261,48 @@ async function startDaemon(options = {}) {
     // Set up heartbeat interval (every 30 seconds)
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
     
-    logger.info({
-        repositories: repos,
-        pollingInterval: POLLING_INTERVAL_MS,
-        primaryProcessingLabels: primaryProcessingLabels,
-        modelLabelPattern: MODEL_LABEL_PATTERN,
-        defaultModelName: DEFAULT_MODEL_NAME,
-        botUsername: GITHUB_BOT_USERNAME || 'not configured',
-        userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
-        userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
-        prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
-        resetPerformed: !!options.reset
-    }, 'GitHub Issue Detection Daemon starting...');
+    let intervalId = null;
+    
+    if (ENABLE_WEBHOOKS) {
+        logger.info({
+            repositories: repos,
+            webhookEnabled: true,
+            webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
+            primaryProcessingLabels: primaryProcessingLabels,
+            modelLabelPattern: MODEL_LABEL_PATTERN,
+            defaultModelName: DEFAULT_MODEL_NAME,
+            botUsername: GITHUB_BOT_USERNAME || 'not configured',
+            userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
+            userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
+            prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
+            resetPerformed: !!options.reset
+        }, 'GitHub Issue Detection Daemon starting in webhook mode...');
+        
+        if (!process.env.GH_WEBHOOK_SECRET) {
+            logger.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
+        }
+        
+        await initializeWebhookHandler(processDetectedIssue, processCommentEvent, handleCommentDeleted, handleCommentEdited);
+        logger.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');
+    } else {
+        logger.info({
+            repositories: repos,
+            pollingInterval: POLLING_INTERVAL_MS,
+            primaryProcessingLabels: primaryProcessingLabels,
+            modelLabelPattern: MODEL_LABEL_PATTERN,
+            defaultModelName: DEFAULT_MODEL_NAME,
+            botUsername: GITHUB_BOT_USERNAME || 'not configured',
+            userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
+            userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
+            prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
+            resetPerformed: !!options.reset
+        }, 'GitHub Issue Detection Daemon starting in polling mode...');
 
-    // Initial poll
-    const safePoll = withErrorHandling(pollForIssues, 'daemon polling');
-    safePoll();
+        const safePoll = withErrorHandling(pollForIssues, 'daemon polling');
+        safePoll();
 
-    // Set up recurring polling
-    const intervalId = setInterval(safePoll, POLLING_INTERVAL_MS);
+        intervalId = setInterval(safePoll, POLLING_INTERVAL_MS);
+    }
 
     // Set up config reloading (every 5 minutes)
     const configReloadInterval = setInterval(async () => {
@@ -948,7 +1321,7 @@ async function startDaemon(options = {}) {
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
         logger.info('Received SIGINT, shutting down gracefully...');
-        clearInterval(intervalId);
+        if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         await heartbeatRedis.quit();
@@ -959,7 +1332,7 @@ async function startDaemon(options = {}) {
 
     process.on('SIGTERM', async () => {
         logger.info('Received SIGTERM, shutting down gracefully...');
-        clearInterval(intervalId);
+        if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         await heartbeatRedis.quit();
@@ -970,7 +1343,18 @@ async function startDaemon(options = {}) {
 }
 
 // Export functions for testing
-export { fetchIssuesForRepo, pollForIssues, pollForPullRequestComments, startDaemon, resetQueues, resetIssueLabels };
+export { 
+    fetchIssuesForRepo, 
+    pollForIssues, 
+    pollForPullRequestComments, 
+    startDaemon, 
+    resetQueues, 
+    resetIssueLabels,
+    processDetectedIssue,
+    processCommentEvent,
+    handleCommentDeleted,
+    handleCommentEdited
+};
 
 /**
  * Parse command line arguments
