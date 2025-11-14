@@ -117,7 +117,13 @@ export async function processPullRequestCommentJob(job) {
             repo: repoName,
             pull_number: pullRequestNumber
         });
-        
+
+        // Extract branchName from PR data if not provided in job data
+        if (!branchName) {
+            branchName = prData.data.head.ref;
+            correlatedLogger.debug({ branchName }, 'Extracted branch name from PR data');
+        }
+
         const hasRequiredLabel = prData.data.labels.some(label => label.name === PR_LABEL);
         
         if (!hasRequiredLabel) {

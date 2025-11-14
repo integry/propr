@@ -1755,13 +1755,17 @@ async function start() {
           const owner = payload.repository.owner.login;
           const repo = payload.repository.name;
 
-          let prNumber, comment;
+          let prNumber, comment, branchName;
           if (eventType === 'issue_comment') {
             prNumber = payload.issue.number;
             comment = payload.comment;
+            // For issue comments, we need to fetch the PR to get the branch name
+            // For now, set to null - the worker will handle this
+            branchName = null;
           } else if (eventType === 'pull_request_review_comment') {
             prNumber = payload.pull_request.number;
             comment = payload.comment;
+            branchName = payload.pull_request.head.ref;
           } else {
             console.warn(`[webhook] Unknown event type: ${eventType}`);
             return;
@@ -1769,24 +1773,29 @@ async function start() {
 
           console.log(`[webhook] Processing comment on PR #${prNumber} in ${owner}/${repo}`);
 
-          const jobData = {
-            owner,
-            repo,
-            prNumber,
-            comment: {
-              id: comment.id,
-              body: comment.body,
-              user: comment.user.login,
-              created_at: comment.created_at,
-              html_url: comment.html_url
-            },
-            eventType,
-            correlationId
+          // Create unprocessed comment structure matching daemon.js format
+          const unprocessedComment = {
+            id: comment.id,
+            body: comment.body,
+            author: comment.user.login,
+            type: eventType === 'pull_request_review_comment' ? 'review' : 'issue',
+            hasCodeContext: false  // Webhook payload doesn't include diff_hunk
           };
 
-          await taskQueue.add('processPullRequestComment', jobData, {
-            jobId: `pr-comment-${owner}-${repo}-${prNumber}-${comment.id}`
-          });
+          const jobData = {
+            pullRequestNumber: prNumber,
+            comments: [unprocessedComment],
+            repoOwner: owner,
+            repoName: repo,
+            branchName: branchName,
+            llm: null,  // No LLM extraction from webhook for now
+            correlationId: correlationId
+          };
+
+          const timestamp = Date.now();
+          const jobId = `pr-comments-batch-${owner}-${repo}-${prNumber}-${timestamp}`;
+
+          await taskQueue.add('processPullRequestComment', jobData, { jobId });
 
           console.log(`[webhook] Queued job for PR #${prNumber} comment`);
         };
