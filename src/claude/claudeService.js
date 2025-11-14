@@ -1,6 +1,7 @@
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import Anthropic from '@anthropic-ai/sdk';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
@@ -573,3 +574,37 @@ CRITICAL: Do not modify any files. Do not run any commands. Only output the summ
 export const buildClaudeDockerImage = buildDockerImageInternal;
 
 export { generateTaskImportPrompt };
+
+const anthropic = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
+export async function runLightweightLLMAnalysis(prompt, model, correlationId) {
+  const correlatedLogger = logger.withCorrelation(correlationId);
+  correlatedLogger.info({ model }, 'Running lightweight LLM analysis...');
+  
+  try {
+    const response = await anthropic.messages.create({
+      model: model,
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    
+    const textContent = response.content.find(block => block.type === 'text');
+    if (!textContent) {
+      throw new Error('No text content in LLM response');
+    }
+    
+    correlatedLogger.info({ 
+      model, 
+      responseLength: textContent.text.length,
+      inputTokens: response.usage?.input_tokens,
+      outputTokens: response.usage?.output_tokens
+    }, 'Lightweight LLM analysis completed successfully');
+    
+    return textContent.text;
+  } catch (error) {
+    correlatedLogger.error({ error: error.message, model }, 'Lightweight LLM analysis failed');
+    throw error;
+  }
+}
