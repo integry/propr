@@ -55,7 +55,7 @@ async function detectBotUsername() {
         return GITHUB_BOT_USERNAME;
     } catch (error) {
         logger.warn({ error: error.message }, 'Failed to auto-detect bot username, will use default');
-        GITHUB_BOT_USERNAME = 'github-actions[bot]';
+        GITHUB_BOT_USERNAME = 'gitfixio[bot]';
         return GITHUB_BOT_USERNAME;
     }
 }
@@ -622,7 +622,7 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
             ];
 
             // Check if any bot comments exist after this comment that indicate processing
-            const botUsername = GITHUB_BOT_USERNAME || 'github-actions[bot]';
+            const botUsername = GITHUB_BOT_USERNAME || 'gitfixio[bot]';
             const commentsByTime = allComments.sort((a, b) => 
                 new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
             );
@@ -700,9 +700,7 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
                     const commentIndex = commentsByTime.indexOf(comment);
                     const subsequentComments = commentsByTime.slice(commentIndex + 1);
                     const alreadyProcessed = subsequentComments.some(laterComment => {
-                        const isBotComment = laterComment.user.login === botUsername ||
-                                           laterComment.user.type === 'Bot' ||
-                                           laterComment.user.login.includes('[bot]');
+                        const isBotComment = laterComment.user.login === botUsername;
 
                         if (!isBotComment) return false;
 
