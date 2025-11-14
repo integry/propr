@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getTaskHistory, getTaskLiveDetails, getTaskAnalysis, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution } from '../api/gitfixApi';
+import { getTaskHistory, getTaskLiveDetails, getTaskAnalysis, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution, generateDeepDiveAnalysis } from '../api/gitfixApi';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
@@ -26,6 +26,8 @@ const TaskDetails: React.FC = () => {
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
   const [analysis, setAnalysis] = useState<any>(null);
   const [analysisLoading, setAnalysisLoading] = useState<boolean>(true);
+  const [deepDiveAnalysis, setDeepDiveAnalysis] = useState<any>(null);
+  const [deepDiveLoading, setDeepDiveLoading] = useState<boolean>(false);
 
   const WORKSPACE_PREFIXES = [
     '/home/node/workspace/',
@@ -496,6 +498,20 @@ const TaskDetails: React.FC = () => {
     }
   };
 
+  const handleDeepDive = async () => {
+    if (!taskId) return;
+    setDeepDiveLoading(true);
+    setDeepDiveAnalysis(null);
+    try {
+      const data = await generateDeepDiveAnalysis(taskId);
+      setDeepDiveAnalysis(data.analysis);
+    } catch (err) {
+      setDeepDiveAnalysis({ error: err.message || 'Failed to run deep-dive analysis.' });
+    } finally {
+      setDeepDiveLoading(false);
+    }
+  };
+
   if (loading) return <div className="text-gray-600">Loading task details...</div>;
   if (error) return <div className="text-red-600">Error loading task details: {error}</div>;
   if (!history || history.length === 0) return <div className="text-gray-600">No history found for task {taskId}</div>;
@@ -782,6 +798,39 @@ const TaskDetails: React.FC = () => {
           <div className="text-gray-500 text-sm">Automated analysis is pending...</div>
         </div>
       )}
+
+      {/* 5a. Deep-Dive Analysis Button and Display */}
+      <div className="mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <h4 className="text-lg font-semibold text-gray-900">Deep-Dive Analysis (Advanced Model)</h4>
+          <button
+            onClick={handleDeepDive}
+            disabled={deepDiveLoading}
+            className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            {deepDiveLoading ? 'Analyzing...' : 'Run Deep-Dive Analysis'}
+          </button>
+        </div>
+        {deepDiveLoading && (
+          <div className="p-4 bg-purple-50 rounded-lg border border-purple-200">
+            <div className="text-purple-800">Running deep-dive analysis with advanced model...</div>
+          </div>
+        )}
+        {deepDiveAnalysis && !deepDiveLoading && (
+          <div className="space-y-4 p-4 bg-purple-50 rounded-lg border border-purple-200">
+            {deepDiveAnalysis.error ? (
+              <div className="text-red-600">{deepDiveAnalysis.error}</div>
+            ) : (
+              renderMarkdown(deepDiveAnalysis)
+            )}
+          </div>
+        )}
+        {!deepDiveAnalysis && !deepDiveLoading && (
+          <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+            <div className="text-gray-500 text-sm">Click "Run Deep-Dive Analysis" to generate an in-depth analysis using the advanced model.</div>
+          </div>
+        )}
+      </div>
 
       {/* 6. Thinking Log */}
       {thinkingLogWithTimestamps.length > 0 && (

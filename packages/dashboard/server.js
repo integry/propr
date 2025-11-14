@@ -862,6 +862,42 @@ app.get('/api/task/:taskId/analysis', ensureAuthenticated, async (req, res) => {
   }
 });
 
+app.post('/api/task/:taskId/deep-dive-analysis', ensureAuthenticated, async (req, res) => {
+  if (!isDbEnabled || !db) {
+    return res.status(503).json({ error: 'Database persistence is not enabled.' });
+  }
+
+  try {
+    const { taskId } = req.params;
+
+    const latestExecution = await db('llm_executions')
+      .where({ task_id: taskId })
+      .orderBy('start_time', 'desc')
+      .first('execution_id', 'session_id', 'correlation_id');
+
+    if (!latestExecution) {
+      return res.status(404).json({ error: 'No execution data found.' });
+    }
+
+    const settings = await configRepoManager.loadSettings();
+    const advancedModel = settings.analysis_model_advanced || process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514';
+
+    const { getExecutionAnalysis } = await import('../../src/services/analysisService.js');
+    
+    const analysisReport = await getExecutionAnalysis({
+      executionId: latestExecution.execution_id,
+      sessionId: latestExecution.session_id,
+      correlationId: latestExecution.correlation_id || `deep-dive-${Date.now()}`,
+      model: advancedModel,
+    });
+
+    res.json({ analysis: analysisReport.report });
+  } catch (error) {
+    console.error('Error in /api/task/:taskId/deep-dive-analysis:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.get('/api/task/:taskId/docker-info', ensureAuthenticated, async (req, res) => {
   try {
     const { taskId: jobId } = req.params;
