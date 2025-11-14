@@ -4,6 +4,8 @@ import { getSettings, updateSettings, getFollowupKeywords, updateFollowupKeyword
 interface Settings {
   worker_concurrency: string;
   github_user_whitelist: string;
+  analysis_model_fast: string;
+  analysis_model_advanced: string;
   pr_label: string;
 }
 
@@ -11,6 +13,8 @@ const SettingsPage: React.FC = () => {
   const [settings, setSettings] = useState<Settings>({
     worker_concurrency: '',
     github_user_whitelist: '',
+    analysis_model_fast: '',
+    analysis_model_advanced: '',
     pr_label: ''
   });
   const [keywords, setKeywords] = useState<string[]>([]);
@@ -42,7 +46,9 @@ const SettingsPage: React.FC = () => {
         const data = await getSettings();
         setSettings({
           worker_concurrency: data.worker_concurrency || '',
-          github_user_whitelist: (data.github_user_whitelist || []).join(', ')
+          github_user_whitelist: (data.github_user_whitelist || []).join(', '),
+          analysis_model_fast: data.analysis_model_fast || 'claude-3-5-haiku-20241022',
+          analysis_model_advanced: data.analysis_model_advanced || 'claude-opus-4-20250514'
         });
       } catch (err) {
         setError((err as Error).message || 'Failed to load settings');
@@ -116,11 +122,13 @@ const SettingsPage: React.FC = () => {
       setSuccess(null);
 
       const updatedSettings = {
-        ...settings,
+        worker_concurrency: settings.worker_concurrency,
         github_user_whitelist: settings.github_user_whitelist
           .split(',')
           .map(u => u.trim())
-          .filter(u => u.length > 0)
+          .filter(u => u.length > 0),
+        analysis_model_fast: settings.analysis_model_fast,
+        analysis_model_advanced: settings.analysis_model_advanced
       };
 
       // Convert worker_concurrency to number if provided
@@ -291,6 +299,38 @@ const SettingsPage: React.FC = () => {
               <p className="mt-1 text-sm text-gray-600">
                 Only process issues from these GitHub users. Leave empty to process from all users.
               </p>
+            </div>
+
+            <div>
+              <label className="block text-gray-700 mb-2" htmlFor="analysis_model_fast">
+                Fast Analysis Model
+              </label>
+              <input
+                type="text"
+                id="analysis_model_fast"
+                name="analysis_model_fast"
+                value={settings.analysis_model_fast}
+                onChange={handleSettingChange}
+                placeholder="e.g., claude-3-5-haiku-20241022"
+                className="w-full px-3 py-2 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm"
+              />
+              <p className="mt-1 text-sm text-gray-600">Model for automatic, fast analysis of all tasks (e.g., Haiku, Flash).</p>
+            </div>
+
+            <div>
+              <label className="block text-gray-700 mb-2" htmlFor="analysis_model_advanced">
+                Advanced Analysis Model
+              </label>
+              <input
+                type="text"
+                id="analysis_model_advanced"
+                name="analysis_model_advanced"
+                value={settings.analysis_model_advanced}
+                onChange={handleSettingChange}
+                placeholder="e.g., claude-opus-4-20250514"
+                className="w-full px-3 py-2 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm"
+              />
+              <p className="mt-1 text-sm text-gray-600">Model for manual "Deep-Dive Analysis" (e.g., Opus, Pro).</p>
             </div>
 
             <button
