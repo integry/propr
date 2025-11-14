@@ -62,9 +62,9 @@ export async function processPullRequestCommentJob(job) {
         author: commentAuthor
     }];
     
-    correlatedLogger.info({ 
-        pullRequestNumber, 
-        branchName, 
+    correlatedLogger.info({
+        pullRequestNumber,
+        branchName: jobBranchName,
         llm,
         isBatchJob,
         commentsCount: commentsToProcess.length
