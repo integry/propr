@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import express from 'express';
+import crypto from 'crypto';
 import { getAuthenticatedOctokit } from './auth/githubAuth.js';
 import logger, { generateCorrelationId } from './utils/logger.js';
 import { withErrorHandling, handleError } from './utils/errorHandler.js';
@@ -29,6 +31,11 @@ const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel()
 let GITHUB_BOT_USERNAME = process.env.GITHUB_BOT_USERNAME;
 const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
+
+// Webhook configuration
+const ENABLE_WEBHOOKS = process.env.ENABLE_GITHUB_WEBHOOKS === 'true';
+const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 9090;
+const WEBHOOK_SECRET = process.env.GH_WEBHOOK_SECRET;
 
 let monitoredRepos = [];
 let GITHUB_USER_WHITELIST = (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u);
@@ -132,6 +139,130 @@ const getReposFromEnv = () => {
 const getRepos = () => {
     return monitoredRepos;
 };
+
+/**
+ * Processes a detected issue by checking labels, finding target models, and enqueueing jobs
+ * @param {Object} issue - Issue object with properties: id, number, labels, repoOwner, repoName, targetModels, etc.
+ * @param {string} correlationId - Correlation ID for tracking
+ */
+async function processDetectedIssue(issue, correlationId) {
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    const repoFullName = `${issue.repoOwner}/${issue.repoName}`;
+    
+    const allExcludeLabels = [];
+    for (const label of primaryProcessingLabels) {
+        allExcludeLabels.push(`${label}-processing`);
+        allExcludeLabels.push(`${label}-done`);
+    }
+    
+    if (allExcludeLabels.some(excludeLabel => issue.labels.includes(excludeLabel))) {
+        correlatedLogger.debug({
+            issueNumber: issue.number,
+            repository: repoFullName
+        }, 'Issue has exclude labels, skipping');
+        return;
+    }
+    
+    const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl)) || primaryProcessingLabels[0];
+    
+    correlatedLogger.info({ 
+        issueId: issue.id, 
+        issueNumber: issue.number, 
+        issueTitle: issue.title, 
+        issueUrl: issue.url,
+        repository: repoFullName,
+        targetModels: issue.targetModels,
+        triggeringLabel: triggeringLabel
+    }, 'Detected eligible issue');
+    
+    for (const modelName of issue.targetModels) {
+        const activeJobs = await issueQueue.getActive();
+        const waitingJobs = await issueQueue.getWaiting();
+        const existingJobs = [...activeJobs, ...waitingJobs];
+
+        const jobExists = existingJobs.some(job =>
+            job.name === 'processGitHubIssue' &&
+            job.data.number === issue.number &&
+            job.data.repoOwner === issue.repoOwner &&
+            job.data.repoName === issue.repoName &&
+            job.data.modelName === modelName
+        );
+
+        if (jobExists) {
+            correlatedLogger.debug({
+                issueNumber: issue.number,
+                repository: repoFullName,
+                modelName: modelName
+            }, 'A job for this issue is already active or waiting, skipping duplicate');
+            continue;
+        }
+
+        correlatedLogger.info({
+            issueId: issue.id,
+            issueNumber: issue.number,
+            repository: repoFullName,
+            modelName: modelName,
+            triggeringLabel: triggeringLabel
+        }, `Enqueueing job for model: ${modelName}`);
+
+        try {
+            const timestamp = Date.now();
+            const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${modelName}-${timestamp}`;
+            const issueJob = {
+                repoOwner: issue.repoOwner,
+                repoName: issue.repoName,
+                number: issue.number,
+                modelName: modelName,
+                triggeringLabel: triggeringLabel,
+                correlationId: generateCorrelationId()
+            };
+            
+            const addToQueueWithRetry = () => withRetry(
+                () => issueQueue.add('processGitHubIssue', issueJob, {
+                    jobId,
+                    attempts: 3,
+                    backoff: {
+                        type: 'exponential',
+                        delay: 2000,
+                    },
+                }),
+                { ...retryConfigs.redis, correlationId },
+                `add_issue_to_queue_${issue.number}_${modelName}`
+            );
+            
+            await addToQueueWithRetry();
+            
+            try {
+                const activity = {
+                    id: `activity-${timestamp}-${issue.id}-${modelName}`,
+                    type: 'issue_created',
+                    timestamp: new Date().toISOString(),
+                    repository: repoFullName,
+                    issueNumber: issue.number,
+                    description: `New issue #${issue.number} detected for processing with ${modelName}`,
+                    status: 'info'
+                };
+                await redisClient.lpush('system:activity:log', JSON.stringify(activity));
+                await redisClient.ltrim('system:activity:log', 0, 999);
+            } catch (activityError) {
+                correlatedLogger.warn({ error: activityError.message }, 'Failed to log activity');
+            }
+            
+            correlatedLogger.info({ 
+                jobId,
+                issueNumber: issue.number,
+                repository: repoFullName,
+                modelName: modelName,
+                issueCorrelationId: issueJob.correlationId
+            }, 'Successfully added issue-model job to processing queue');
+            
+        } catch (error) {
+            handleError(error, `Failed to add issue ${issue.number} with model ${modelName} to queue`, { 
+                correlationId 
+            });
+        }
+    }
+}
 
 /**
  * Fetches issues for a specific repository based on configured criteria
@@ -250,6 +381,196 @@ async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
         }
         
         return [];
+    }
+}
+
+/**
+ * Processes a comment event by checking author, trigger keywords, and enqueueing a job
+ * @param {Object} payload - Webhook payload from 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} eventType - Type of event: 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} correlationId - Correlation ID for tracking
+ */
+async function processCommentEvent(payload, eventType, correlationId) {
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    
+    const owner = payload.repository.owner.login;
+    const repo = payload.repository.name;
+    const repoFullName = `${owner}/${repo}`;
+    
+    let prNumber, comment;
+    
+    if (eventType === 'issue_comment') {
+        if (!payload.issue.pull_request) {
+            correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
+            return;
+        }
+        prNumber = payload.issue.number;
+        comment = payload.comment;
+    } else if (eventType === 'pull_request_review_comment') {
+        prNumber = payload.pull_request.number;
+        comment = payload.comment;
+    } else {
+        correlatedLogger.warn({ eventType }, 'Unknown event type for comment processing');
+        return;
+    }
+    
+    const commentAuthor = comment.user.login;
+    const botUsername = GITHUB_BOT_USERNAME || 'github-actions[bot]';
+    
+    if (GITHUB_BOT_USERNAME && commentAuthor === GITHUB_BOT_USERNAME) {
+        correlatedLogger.debug({ commentAuthor }, 'Skipping bot own comment');
+        return;
+    }
+    
+    if (GITHUB_USER_WHITELIST.length > 0) {
+        if (!GITHUB_USER_WHITELIST.includes(commentAuthor)) {
+            correlatedLogger.debug({ commentAuthor }, 'Comment author not in whitelist, skipping');
+            return;
+        }
+    } else {
+        if (GITHUB_USER_BLACKLIST.length > 0 && GITHUB_USER_BLACKLIST.includes(commentAuthor)) {
+            correlatedLogger.debug({ commentAuthor }, 'Comment author in blacklist, skipping');
+            return;
+        }
+    }
+    
+    let isTriggered = false;
+    if (comment.body) {
+        if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
+            isTriggered = PR_FOLLOWUP_TRIGGER_KEYWORDS.some(keyword => comment.body.includes(keyword));
+        } else {
+            isTriggered = true;
+        }
+    }
+    
+    if (!isTriggered) {
+        correlatedLogger.debug({ commentId: comment.id }, 'Comment does not contain trigger keywords, skipping');
+        return;
+    }
+    
+    const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
+    const alreadyQueued = await redisClient.get(commentTrackingKey);
+    
+    if (alreadyQueued) {
+        correlatedLogger.debug({
+            repository: repoFullName,
+            pullRequestNumber: prNumber,
+            commentId: comment.id,
+            commentAuthor
+        }, 'PR comment already queued/processed, skipping');
+        return;
+    }
+    
+    const activeJobs = await issueQueue.getActive();
+    const waitingJobs = await issueQueue.getWaiting();
+    const existingJobs = [...activeJobs, ...waitingJobs];
+    
+    const jobExists = existingJobs.some(job =>
+        job.name === 'processPullRequestComment' &&
+        job.data.pullRequestNumber === prNumber &&
+        job.data.repoOwner === owner &&
+        job.data.repoName === repo
+    );
+    
+    if (jobExists) {
+        correlatedLogger.info({
+            pullRequestNumber: prNumber,
+            repository: repoFullName
+        }, 'A job for this PR is already active or waiting, skipping new job creation.');
+        return;
+    }
+    
+    let llm = null;
+    if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
+        for (const keyword of PR_FOLLOWUP_TRIGGER_KEYWORDS) {
+            const llmMatch = comment.body.match(new RegExp(`${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:([\\w.-]+)`));
+            if (llmMatch) llm = resolveModelAlias(llmMatch[1]);
+            if (llm) break;
+        }
+    }
+    
+    let enhancedCommentBody = comment.body;
+    if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
+        for (const keyword of PR_FOLLOWUP_TRIGGER_KEYWORDS) {
+            const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            enhancedCommentBody = enhancedCommentBody.replace(new RegExp(`${escapedKeyword}(:\\w+)?`, 'g'), '');
+        }
+    }
+    enhancedCommentBody = enhancedCommentBody.trim();
+    
+    if (comment.pull_request_review_id || eventType === 'pull_request_review_comment') {
+        const codeContext = [];
+        if (comment.path) {
+            codeContext.push(`File: ${comment.path}`);
+        }
+        if (comment.line) {
+            codeContext.push(`Line: ${comment.line}`);
+        }
+        if (comment.diff_hunk) {
+            codeContext.push('Code context:');
+            codeContext.push('```diff');
+            codeContext.push(comment.diff_hunk);
+            codeContext.push('```');
+        }
+        
+        if (codeContext.length > 0) {
+            enhancedCommentBody = `${comment.body}\n\n--- Review Comment Context ---\n${codeContext.join('\n')}`;
+        }
+    }
+    
+    const unprocessedComment = {
+        id: comment.id,
+        body: enhancedCommentBody,
+        author: commentAuthor,
+        type: (comment.pull_request_review_id || eventType === 'pull_request_review_comment') ? 'review' : 'issue',
+        hasCodeContext: (comment.pull_request_review_id || eventType === 'pull_request_review_comment') && comment.diff_hunk ? true : false
+    };
+    
+    let branchName;
+    if (eventType === 'issue_comment') {
+        const octokit = await getAuthenticatedOctokit();
+        const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+            owner,
+            repo,
+            pull_number: prNumber
+        });
+        branchName = pr.head.ref;
+    } else {
+        branchName = payload.pull_request.head.ref;
+    }
+    
+    const jobData = {
+        pullRequestNumber: prNumber,
+        comments: [unprocessedComment],
+        repoOwner: owner,
+        repoName: repo,
+        branchName: branchName,
+        llm: llm,
+        correlationId: generateCorrelationId(),
+    };
+    
+    const timestamp = Date.now();
+    const jobId = `pr-comments-batch-${owner}-${repo}-${prNumber}-${timestamp}`;
+    
+    try {
+        await issueQueue.add('processPullRequestComment', jobData, { jobId });
+        
+        await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
+        
+        correlatedLogger.info({
+            jobId,
+            pullRequestNumber: prNumber,
+            commentId: comment.id,
+            commentType: unprocessedComment.type
+        }, `Successfully added PR comment job to processing queue`);
+    } catch (error) {
+        if (error.message?.includes('Job already exists')) {
+            correlatedLogger.debug({
+                pullRequestNumber: prNumber,
+            }, 'PR comment job already in queue, skipping');
+        } else {
+            handleError(error, `Failed to add PR comment to queue`, { correlationId });
+        }
     }
 }
 
@@ -592,113 +913,7 @@ async function pollForIssues() {
             
             if (issues.length > 0) {
                 for (const issue of issues) {
-                    const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl)) || primaryProcessingLabels[0];
-                    
-                    correlatedLogger.info({ 
-                        issueId: issue.id, 
-                        issueNumber: issue.number, 
-                        issueTitle: issue.title, 
-                        issueUrl: issue.url,
-                        repository: repoFullName,
-                        targetModels: issue.targetModels,
-                        triggeringLabel: triggeringLabel
-                    }, 'Detected eligible issue');
-                    
-                    // Create separate jobs for each target model
-                    for (const modelName of issue.targetModels) {
-                        // Check if a job for this issue is already active or waiting
-                        const activeJobs = await issueQueue.getActive();
-                        const waitingJobs = await issueQueue.getWaiting();
-                        const existingJobs = [...activeJobs, ...waitingJobs];
-
-                        const jobExists = existingJobs.some(job =>
-                            job.name === 'processGitHubIssue' &&
-                            job.data.number === issue.number &&
-                            job.data.repoOwner === issue.repoOwner &&
-                            job.data.repoName === issue.repoName &&
-                            job.data.modelName === modelName
-                        );
-
-                        if (jobExists) {
-                            correlatedLogger.debug({
-                                issueNumber: issue.number,
-                                repository: repoFullName,
-                                modelName: modelName
-                            }, 'A job for this issue is already active or waiting, skipping duplicate');
-                            continue;
-                        }
-
-                        correlatedLogger.info({
-                            issueId: issue.id,
-                            issueNumber: issue.number,
-                            repository: repoFullName,
-                            modelName: modelName,
-                            triggeringLabel: triggeringLabel
-                        }, `Enqueueing job for model: ${modelName}`);
-
-                        try {
-                            // Include timestamp in jobId to allow reprocessing after AI-done label removal
-                            const timestamp = Date.now();
-                            const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${modelName}-${timestamp}`;
-                            const issueJob = {
-                                repoOwner: issue.repoOwner,
-                                repoName: issue.repoName,
-                                number: issue.number,
-                                modelName: modelName,
-                                triggeringLabel: triggeringLabel,
-                                correlationId: generateCorrelationId() // Each job gets its own correlation ID
-                            };
-                            
-                            const addToQueueWithRetry = () => withRetry(
-                                () => issueQueue.add('processGitHubIssue', issueJob, {
-                                    jobId,
-                                    // Allow reprocessing by using unique jobId with timestamp
-                                    attempts: 3,
-                                    backoff: {
-                                        type: 'exponential',
-                                        delay: 2000,
-                                    },
-                                }),
-                                { ...retryConfigs.redis, correlationId },
-                                `add_issue_to_queue_${issue.number}_${modelName}`
-                            );
-                            
-                            await addToQueueWithRetry();
-                            
-                            // Log activity for dashboard
-                            try {
-                                const activity = {
-                                    id: `activity-${timestamp}-${issue.id}-${modelName}`,
-                                    type: 'issue_created',
-                                    timestamp: new Date().toISOString(),
-                                    repository: repoFullName,
-                                    issueNumber: issue.number,
-                                    description: `New issue #${issue.number} detected for processing with ${modelName}`,
-                                    status: 'info'
-                                };
-                                await redisClient.lpush('system:activity:log', JSON.stringify(activity));
-                                await redisClient.ltrim('system:activity:log', 0, 999); // Keep last 1000 activities
-                            } catch (activityError) {
-                                correlatedLogger.warn({ error: activityError.message }, 'Failed to log activity');
-                            }
-                            
-                            correlatedLogger.info({ 
-                                jobId,
-                                issueNumber: issue.number,
-                                repository: repoFullName,
-                                modelName: modelName,
-                                issueCorrelationId: issueJob.correlationId
-                            }, 'Successfully added issue-model job to processing queue');
-                            
-                        } catch (error) {
-                            // Since we now use unique jobIds with timestamps, this error should not occur
-                            // Log any queue errors that do occur
-                            handleError(error, `Failed to add issue ${issue.number} with model ${modelName} to queue`, { 
-                                correlationId 
-                            });
-                        }
-                    }
-                    
+                    await processDetectedIssue(issue, correlationId);
                     allDetectedIssues.push(issue);
                 }
             }
@@ -843,6 +1058,114 @@ async function resetIssueLabels() {
 }
 
 /**
+ * Verifies GitHub webhook signature
+ * @param {Buffer} buf - Raw request body
+ * @param {string} signature - X-Hub-Signature-256 header value
+ */
+function verifySignature(buf, signature) {
+    if (!WEBHOOK_SECRET) {
+        logger.warn('Webhook secret not configured. Skipping signature verification.');
+        return true;
+    }
+    
+    if (!signature) {
+        throw new Error('No webhook signature provided.');
+    }
+
+    const hmac = crypto.createHmac('sha256', WEBHOOK_SECRET);
+    hmac.update(buf);
+    const computedSignature = `sha256=${hmac.digest('hex')}`;
+
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSignature))) {
+        throw new Error('Webhook signature mismatch.');
+    }
+    
+    return true;
+}
+
+/**
+ * Sets up the Express webhook server
+ */
+async function setupWebhookServer() {
+    const app = express();
+    
+    app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+        const correlationId = generateCorrelationId();
+        const correlatedLogger = logger.withCorrelation(correlationId);
+        
+        try {
+            verifySignature(req.body, req.headers['x-hub-signature-256']);
+            
+            const payload = JSON.parse(req.body.toString());
+            const event = req.headers['x-github-event'];
+            
+            correlatedLogger.info({ event, action: payload.action, repo: payload.repository?.full_name }, 'Webhook event received');
+
+            switch (event) {
+                case 'issues':
+                    if (payload.action === 'labeled') {
+                        const [owner, repo] = payload.repository.full_name.split('/');
+                        const octokit = await getAuthenticatedOctokit();
+                        
+                        const issue = {
+                            id: payload.issue.id,
+                            number: payload.issue.number,
+                            title: payload.issue.title,
+                            url: payload.issue.html_url,
+                            repoOwner: owner,
+                            repoName: repo,
+                            labels: payload.issue.labels.map(l => l.name),
+                            targetModels: [],
+                            createdAt: payload.issue.created_at,
+                            updatedAt: payload.issue.updated_at
+                        };
+                        
+                        const identifiedModels = [];
+                        const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
+                        
+                        for (const label of payload.issue.labels) {
+                            const match = label.name.match(modelLabelRegex);
+                            if (match && match[1]) {
+                                const resolvedModel = resolveModelAlias(match[1]);
+                                identifiedModels.push(resolvedModel);
+                            }
+                        }
+                        
+                        issue.targetModels = identifiedModels.length > 0 ? identifiedModels : [DEFAULT_MODEL_NAME];
+                        
+                        await processDetectedIssue(issue, correlationId);
+                    }
+                    break;
+                    
+                case 'issue_comment':
+                    if (payload.action === 'created' && payload.issue.pull_request) {
+                        await processCommentEvent(payload, 'issue_comment', correlationId);
+                    }
+                    break;
+                    
+                case 'pull_request_review_comment':
+                    if (payload.action === 'created') {
+                        await processCommentEvent(payload, 'pull_request_review_comment', correlationId);
+                    }
+                    break;
+                    
+                default:
+                    correlatedLogger.debug({ event }, 'Ignoring webhook event');
+            }
+            
+            res.status(200).send('Webhook processed.');
+        } catch (error) {
+            correlatedLogger.error({ error: error.message, stack: error.stack }, 'Failed to process webhook');
+            res.status(error.message === 'Webhook signature mismatch.' || error.message === 'No webhook signature provided.' ? 401 : 500).send(error.message);
+        }
+    });
+
+    app.listen(WEBHOOK_PORT, () => {
+        logger.info({ port: WEBHOOK_PORT }, `GitHub Webhook listener started on port ${WEBHOOK_PORT}`);
+    });
+}
+
+/**
  * Starts the daemon with configured polling interval
  */
 async function startDaemon(options = {}) {
@@ -911,25 +1234,47 @@ async function startDaemon(options = {}) {
     // Set up heartbeat interval (every 30 seconds)
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
     
-    logger.info({
-        repositories: repos,
-        pollingInterval: POLLING_INTERVAL_MS,
-        primaryProcessingLabels: primaryProcessingLabels,
-        modelLabelPattern: MODEL_LABEL_PATTERN,
-        defaultModelName: DEFAULT_MODEL_NAME,
-        botUsername: GITHUB_BOT_USERNAME || 'not configured',
-        userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
-        userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
-        prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
-        resetPerformed: !!options.reset
-    }, 'GitHub Issue Detection Daemon starting...');
+    let intervalId = null;
+    
+    if (ENABLE_WEBHOOKS) {
+        logger.info({
+            repositories: repos,
+            webhookPort: WEBHOOK_PORT,
+            webhookSecretConfigured: !!WEBHOOK_SECRET,
+            primaryProcessingLabels: primaryProcessingLabels,
+            modelLabelPattern: MODEL_LABEL_PATTERN,
+            defaultModelName: DEFAULT_MODEL_NAME,
+            botUsername: GITHUB_BOT_USERNAME || 'not configured',
+            userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
+            userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
+            prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
+            resetPerformed: !!options.reset
+        }, 'GitHub Issue Detection Daemon starting in webhook mode...');
+        
+        if (!WEBHOOK_SECRET) {
+            logger.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
+        }
+        
+        await setupWebhookServer();
+    } else {
+        logger.info({
+            repositories: repos,
+            pollingInterval: POLLING_INTERVAL_MS,
+            primaryProcessingLabels: primaryProcessingLabels,
+            modelLabelPattern: MODEL_LABEL_PATTERN,
+            defaultModelName: DEFAULT_MODEL_NAME,
+            botUsername: GITHUB_BOT_USERNAME || 'not configured',
+            userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
+            userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
+            prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
+            resetPerformed: !!options.reset
+        }, 'GitHub Issue Detection Daemon starting in polling mode...');
 
-    // Initial poll
-    const safePoll = withErrorHandling(pollForIssues, 'daemon polling');
-    safePoll();
+        const safePoll = withErrorHandling(pollForIssues, 'daemon polling');
+        safePoll();
 
-    // Set up recurring polling
-    const intervalId = setInterval(safePoll, POLLING_INTERVAL_MS);
+        intervalId = setInterval(safePoll, POLLING_INTERVAL_MS);
+    }
 
     // Set up config reloading (every 5 minutes)
     const configReloadInterval = setInterval(async () => {
@@ -948,7 +1293,7 @@ async function startDaemon(options = {}) {
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
         logger.info('Received SIGINT, shutting down gracefully...');
-        clearInterval(intervalId);
+        if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         await heartbeatRedis.quit();
@@ -959,7 +1304,7 @@ async function startDaemon(options = {}) {
 
     process.on('SIGTERM', async () => {
         logger.info('Received SIGTERM, shutting down gracefully...');
-        clearInterval(intervalId);
+        if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         await heartbeatRedis.quit();

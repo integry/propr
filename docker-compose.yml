@@ -55,6 +55,8 @@ services:
       dockerfile: Dockerfile.node
     container_name: gitfix-daemon
     command: npm run daemon
+    ports:
+      - "${WEBHOOK_PORT:-9090}:${WEBHOOK_PORT:-9090}"
     volumes:
       - ./logs:/usr/src/app/logs
       - /tmp/git-processor:/tmp/git-processor

@@ -74,6 +74,8 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    ports:
+      - "${WEBHOOK_PORT:-9090}:${WEBHOOK_PORT:-9090}"
     environment:
       NODE_ENV: production
       REDIS_HOST: redis
