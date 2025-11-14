@@ -118,7 +118,7 @@ export async function processPullRequestCommentJob(job) {
             pull_number: pullRequestNumber
         });
 
-        const botUsername = process.env.GITHUB_BOT_USERNAME || 'github-actions[bot]';
+        const botUsername = process.env.GITHUB_BOT_USERNAME || 'gitfixio[bot]';
         const prCommentsForValidation = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: repoOwner,
             repo: repoName,
@@ -228,9 +228,7 @@ export async function processPullRequestCommentJob(job) {
 
         unprocessedComments = commentsToProcess.filter(comment => {
             const alreadyProcessed = prCommentsForValidation.some(prComment => {
-                const isBotComment = prComment.user.login === botUsername || 
-                                    prComment.user.type === 'Bot' ||
-                                    prComment.user.login.includes('[bot]');
+                const isBotComment = prComment.user.login === botUsername;
                 
                 if (!isBotComment) return false;
                 
