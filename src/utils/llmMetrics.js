@@ -1,6 +1,7 @@
 import Redis from 'ioredis';
 import logger from './logger.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
+import { analysisQueue } from '../queue/taskQueue.js';
 
 // Redis configuration
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
@@ -284,6 +285,22 @@ export async function recordLLMMetrics(claudeResult, issueRef, jobType = 'issue'
                     taskId,
                     executionId
                 }, 'LLM metrics persisted to database');
+
+                try {
+                    await analysisQueue.add('analyzeExecution', {
+                        taskId,
+                        executionId,
+                        sessionId,
+                        correlationId,
+                    }, {
+                        jobId: `analysis-${executionId}`,
+                        removeOnComplete: true,
+                        removeOnFail: true,
+                    });
+                    logger.debug({ correlationId, taskId, executionId }, 'Enqueued task for execution analysis');
+                } catch (queueError) {
+                    logger.error({ error: queueError.message, correlationId, taskId }, 'Failed to enqueue task for analysis');
+                }
             } catch (error) {
                 logger.error({
                     error: error.message,

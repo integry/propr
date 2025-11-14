@@ -51,6 +51,28 @@ issueQueue.on('error', (err) => {
     logger.error({ queue: GITHUB_ISSUE_QUEUE_NAME, err }, 'Queue error');
 });
 
+export const ANALYSIS_QUEUE_NAME = process.env.ANALYSIS_QUEUE_NAME || 'analysis-processor';
+
+export const analysisQueue = new Queue(ANALYSIS_QUEUE_NAME, {
+    connection: redisConnection,
+    defaultJobOptions: {
+        attempts: 2,
+        backoff: {
+            type: 'exponential',
+            delay: 60000,
+        },
+        removeOnComplete: {
+            age: 24 * 3600,
+            count: 1000,
+        },
+        removeOnFail: true,
+    },
+});
+
+analysisQueue.on('error', (err) => {
+    logger.error({ queue: ANALYSIS_QUEUE_NAME, err }, 'Analysis Queue error');
+});
+
 /**
  * Creates and starts a BullMQ worker
  * @param {string} queueName - The name of the queue to process
@@ -219,6 +241,7 @@ export async function shutdownQueue() {
     
     try {
         await issueQueue.close();
+        await analysisQueue.close();
         await redisConnection.quit();
         logger.info('Queue shutdown complete');
     } catch (err) {
