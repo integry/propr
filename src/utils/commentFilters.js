@@ -26,8 +26,24 @@ export function filterCommentByAuthor(commentAuthor, userType = null, correlatio
     const GITHUB_USER_WHITELIST = (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u);
     const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
 
-    // Filter out bot accounts automatically
-    // Check if username ends with [bot], contains [bot], or user type is Bot
+    // If whitelist is defined, it takes precedence - ONLY process whitelisted users (even if they're bots)
+    if (GITHUB_USER_WHITELIST.length > 0) {
+        if (!GITHUB_USER_WHITELIST.includes(commentAuthor)) {
+            correlatedLogger.debug({ commentAuthor }, 'Comment author not in whitelist, skipping');
+            return { shouldFilter: true, reason: 'not_in_whitelist' };
+        }
+        // User is whitelisted, allow them (even if they're a bot)
+        return { shouldFilter: false, reason: null };
+    }
+
+    // No whitelist - check if this is the bot's own account
+    if (GITHUB_BOT_USERNAME && commentAuthor === GITHUB_BOT_USERNAME) {
+        correlatedLogger.debug({ commentAuthor }, 'Skipping configured bot username');
+        return { shouldFilter: true, reason: 'bot_own_comment' };
+    }
+
+    // Auto-detect bot accounts to prevent self-loops
+    // Only filter bots if they're not explicitly whitelisted (we already checked whitelist above)
     const isBotAccount =
         commentAuthor.endsWith('[bot]') ||
         commentAuthor.includes('[bot]') ||
@@ -38,24 +54,10 @@ export function filterCommentByAuthor(commentAuthor, userType = null, correlatio
         return { shouldFilter: true, reason: 'bot_account' };
     }
 
-    // Also filter if explicitly configured bot username matches
-    if (GITHUB_BOT_USERNAME && commentAuthor === GITHUB_BOT_USERNAME) {
-        correlatedLogger.debug({ commentAuthor }, 'Skipping configured bot username');
-        return { shouldFilter: true, reason: 'bot_own_comment' };
-    }
-
-    // Check whitelist
-    if (GITHUB_USER_WHITELIST.length > 0) {
-        if (!GITHUB_USER_WHITELIST.includes(commentAuthor)) {
-            correlatedLogger.debug({ commentAuthor }, 'Comment author not in whitelist, skipping');
-            return { shouldFilter: true, reason: 'not_in_whitelist' };
-        }
-    } else {
-        // Check blacklist (only if no whitelist)
-        if (GITHUB_USER_BLACKLIST.length > 0 && GITHUB_USER_BLACKLIST.includes(commentAuthor)) {
-            correlatedLogger.debug({ commentAuthor }, 'Comment author in blacklist, skipping');
-            return { shouldFilter: true, reason: 'in_blacklist' };
-        }
+    // Check blacklist
+    if (GITHUB_USER_BLACKLIST.length > 0 && GITHUB_USER_BLACKLIST.includes(commentAuthor)) {
+        correlatedLogger.debug({ commentAuthor }, 'Comment author in blacklist, skipping');
+        return { shouldFilter: true, reason: 'in_blacklist' };
     }
 
     return { shouldFilter: false, reason: null };
