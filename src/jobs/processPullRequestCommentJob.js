@@ -153,14 +153,19 @@ export async function processPullRequestCommentJob(job) {
                 };
             }
             
-            if (currentComment.updated_at !== currentComment.created_at) {
+            // Check if comment was edited AFTER the job was queued
+            // Only restart if the comment's updated_at has changed since we queued the job
+            const commentWasEditedAfterQueuing = comment.updated_at &&
+                currentComment.updated_at !== comment.updated_at;
+
+            if (commentWasEditedAfterQueuing) {
                 correlatedLogger.info({
                     pullRequestNumber,
                     commentId: comment.id,
                     commentAuthor: comment.author,
                     originalUpdatedAt: comment.updated_at,
                     currentUpdatedAt: currentComment.updated_at
-                }, 'Comment has been edited, restarting execution with updated content');
+                }, 'Comment has been edited since job was queued, restarting execution with updated content');
 
                 // Generate a NEW correlation ID for the restarted job to avoid unique constraint violations
                 const newCorrelationId = generateCorrelationId();

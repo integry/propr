@@ -1782,7 +1782,8 @@ async function start() {
             body: comment.body,
             author: comment.user.login,
             type: eventType === 'pull_request_review_comment' ? 'review' : 'issue',
-            hasCodeContext: false  // Webhook payload doesn't include diff_hunk
+            hasCodeContext: false,  // Webhook payload doesn't include diff_hunk
+            updated_at: comment.updated_at  // Track when comment was last updated for edit detection
           };
 
           // Check if there's a delayed job for this PR that we can batch with
