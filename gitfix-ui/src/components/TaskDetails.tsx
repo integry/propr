@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getTaskHistory, getTaskLiveDetails, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution } from '../api/gitfixApi';
+import { getTaskHistory, getTaskLiveDetails, getTaskAnalysis, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution } from '../api/gitfixApi';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
@@ -24,6 +24,8 @@ const TaskDetails: React.FC = () => {
   const [eventsCollapsed, setEventsCollapsed] = useState<boolean>(true);
   const [lastThought, setLastThought] = useState<string | null>(null);
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
+  const [analysis, setAnalysis] = useState<any>(null);
+  const [analysisLoading, setAnalysisLoading] = useState<boolean>(true);
 
   const WORKSPACE_PREFIXES = [
     '/home/node/workspace/',
@@ -298,6 +300,24 @@ const TaskDetails: React.FC = () => {
     };
 
     fetchHistory();
+  }, [taskId]);
+
+  useEffect(() => {
+    const fetchAnalysis = async () => {
+      if (!taskId) return;
+      
+      try {
+        setAnalysisLoading(true);
+        const analysisData = await getTaskAnalysis(taskId);
+        setAnalysis(analysisData.analysis);
+      } catch (err) {
+        console.error('Error fetching analysis:', err);
+      } finally {
+        setAnalysisLoading(false);
+      }
+    };
+
+    fetchAnalysis();
   }, [taskId]);
 
   useEffect(() => {
@@ -745,7 +765,25 @@ const TaskDetails: React.FC = () => {
         </div>
       )}
 
-      {/* 5. Thinking Log */}
+      {/* 5. Execution Analysis */}
+      {analysisLoading ? (
+        <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+          <div className="text-gray-600">Loading automated analysis...</div>
+        </div>
+      ) : analysis ? (
+        <div className="mb-6">
+          <h4 className="text-lg font-semibold text-gray-900 mb-4">Execution Analysis</h4>
+          <div className="space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+            {renderMarkdown(analysis)}
+          </div>
+        </div>
+      ) : (
+        <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+          <div className="text-gray-500 text-sm">Automated analysis is pending...</div>
+        </div>
+      )}
+
+      {/* 6. Thinking Log */}
       {thinkingLogWithTimestamps.length > 0 && (
         <div className="mb-6">
           <h4 className="text-lg font-semibold text-gray-900 mb-4">Thinking Log</h4>
@@ -765,7 +803,7 @@ const TaskDetails: React.FC = () => {
         </div>
       )}
 
-      {/* 6. Full Execution Log (Unaltered, shows all events) */}
+      {/* 7. Full Execution Log (Unaltered, shows all events) */}
       {liveDetails.events.length > 0 && history.length > 0 && (
         <div className="mb-6">
           <div

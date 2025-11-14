@@ -831,6 +831,37 @@ app.get('/api/execution/:sessionId/logs/:type', ensureAuthenticated, async (req,
   }
 });
 
+app.get('/api/task/:taskId/analysis', ensureAuthenticated, async (req, res) => {
+  if (!isDbEnabled || !db) {
+    return res.status(503).json({ error: 'Database persistence is not enabled.' });
+  }
+
+  try {
+    const { taskId } = req.params;
+
+    const latestExecution = await db('llm_executions')
+      .where({ task_id: taskId })
+      .orderBy('start_time', 'desc')
+      .first('execution_id', 'analysis_report');
+
+    if (!latestExecution) {
+      return res.status(404).json({ error: 'No execution data found for this task.' });
+    }
+
+    if (!latestExecution.analysis_report) {
+      return res.status(202).json({ 
+        message: 'Analysis is pending or has not been run for this execution.',
+        analysis: null
+      });
+    }
+
+    res.json({ analysis: latestExecution.analysis_report });
+  } catch (error) {
+    console.error('Error in /api/task/:taskId/analysis:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.get('/api/task/:taskId/docker-info', ensureAuthenticated, async (req, res) => {
   try {
     const { taskId: jobId } = req.params;

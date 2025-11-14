@@ -61,6 +61,15 @@ export const getTaskHistory = async (taskId) => {
   return response.json();
 };
 
+export const getTaskAnalysis = async (taskId) => {
+  const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/analysis`, {
+    credentials: 'include'
+  });
+  if (response.status === 202) return { analysis: null, message: 'Analysis pending...' };
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export const getTaskLiveDetails = async (taskId) => {
   const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/live-details`, {
     credentials: 'include'
