@@ -61,7 +61,8 @@ export async function processWebhookEvent(payload, eventType, correlationId) {
         case 'issue_comment':
             if (payload.action === 'created' && payload.issue.pull_request) {
                 const commentAuthor = payload.comment.user.login;
-                const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
+                const userType = payload.comment.user.type;
+                const filterResult = filterCommentByAuthor(commentAuthor, userType, correlationId);
 
                 if (filterResult.shouldFilter) {
                     return; // Skip this comment
@@ -74,7 +75,8 @@ export async function processWebhookEvent(payload, eventType, correlationId) {
         case 'pull_request_review_comment':
             if (payload.action === 'created') {
                 const commentAuthor = payload.comment.user.login;
-                const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
+                const userType = payload.comment.user.type;
+                const filterResult = filterCommentByAuthor(commentAuthor, userType, correlationId);
 
                 if (filterResult.shouldFilter) {
                     return; // Skip this comment

@@ -8,19 +8,39 @@ import logger from './logger.js';
 /**
  * Check if a comment should be filtered out based on author
  * @param {string} commentAuthor - The comment author's username
+ * @param {string} userType - The user type (e.g., 'Bot', 'User') - optional
  * @param {string} correlationId - Correlation ID for logging
  * @returns {Object} { shouldFilter: boolean, reason: string }
  */
-export function filterCommentByAuthor(commentAuthor, correlationId = null) {
+export function filterCommentByAuthor(commentAuthor, userType = null, correlationId = null) {
+    // Handle overloaded parameters (backwards compatibility)
+    if (typeof userType === 'string' && userType.length === 36 && userType.includes('-')) {
+        // userType is actually correlationId
+        correlationId = userType;
+        userType = null;
+    }
+
     const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
     const GITHUB_BOT_USERNAME = process.env.GITHUB_BOT_USERNAME;
     const GITHUB_USER_WHITELIST = (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u);
     const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
 
-    // Filter out bot's own comments
+    // Filter out bot accounts automatically
+    // Check if username ends with [bot], contains [bot], or user type is Bot
+    const isBotAccount =
+        commentAuthor.endsWith('[bot]') ||
+        commentAuthor.includes('[bot]') ||
+        userType === 'Bot';
+
+    if (isBotAccount) {
+        correlatedLogger.debug({ commentAuthor, userType }, 'Skipping bot account comment');
+        return { shouldFilter: true, reason: 'bot_account' };
+    }
+
+    // Also filter if explicitly configured bot username matches
     if (GITHUB_BOT_USERNAME && commentAuthor === GITHUB_BOT_USERNAME) {
-        correlatedLogger.debug({ commentAuthor }, 'Skipping bot own comment');
+        correlatedLogger.debug({ commentAuthor }, 'Skipping configured bot username');
         return { shouldFilter: true, reason: 'bot_own_comment' };
     }
 
