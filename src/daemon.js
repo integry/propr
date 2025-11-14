@@ -9,6 +9,7 @@ import { resolveModelAlias, getDefaultModel } from './config/modelAliases.js';
 import { loadMonitoredRepos, ensureConfigRepoExists, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from './config/configRepoManager.js';
 import { db, isEnabled as isDbEnabled } from './db/postgres.js';
 import { initializeWebhookHandler } from './webhook/webhookHandler.js';
+import { filterCommentByAuthor, checkCommentTrigger } from './utils/commentFilters.js';
 
 // Create Redis client for activity logging
 const redisClient = new Redis({
@@ -411,36 +412,16 @@ async function processCommentEvent(payload, eventType, correlationId) {
     }
     
     const commentAuthor = comment.user.login;
-    const botUsername = GITHUB_BOT_USERNAME || 'github-actions[bot]';
-    
-    if (GITHUB_BOT_USERNAME && commentAuthor === GITHUB_BOT_USERNAME) {
-        correlatedLogger.debug({ commentAuthor }, 'Skipping bot own comment');
+
+    // Use centralized comment filtering
+    const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
+    if (filterResult.shouldFilter) {
         return;
     }
-    
-    if (GITHUB_USER_WHITELIST.length > 0) {
-        if (!GITHUB_USER_WHITELIST.includes(commentAuthor)) {
-            correlatedLogger.debug({ commentAuthor }, 'Comment author not in whitelist, skipping');
-            return;
-        }
-    } else {
-        if (GITHUB_USER_BLACKLIST.length > 0 && GITHUB_USER_BLACKLIST.includes(commentAuthor)) {
-            correlatedLogger.debug({ commentAuthor }, 'Comment author in blacklist, skipping');
-            return;
-        }
-    }
-    
-    let isTriggered = false;
-    if (comment.body) {
-        if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
-            isTriggered = PR_FOLLOWUP_TRIGGER_KEYWORDS.some(keyword => comment.body.includes(keyword));
-        } else {
-            isTriggered = true;
-        }
-    }
-    
-    if (!isTriggered) {
-        correlatedLogger.debug({ commentId: comment.id }, 'Comment does not contain trigger keywords, skipping');
+
+    // Check if comment triggers processing
+    const triggerResult = checkCommentTrigger(comment.body, correlationId);
+    if (!triggerResult.isTriggered) {
         return;
     }
     
@@ -681,33 +662,20 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
 
             for (const comment of commentsByTime) {
                 const commentAuthor = comment.user.login;
-                let isTriggered = false;
-
-                if (comment.body) {
-                    if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
-                        isTriggered = PR_FOLLOWUP_TRIGGER_KEYWORDS.some(keyword => comment.body.includes(keyword));
-                    } else {
-                        isTriggered = true;
-                    }
+                // Use centralized comment filtering
+                const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
+                if (filterResult.shouldFilter) {
+                    continue;
                 }
 
-                if (isTriggered) {
-                    // Always skip this bot's own comments to prevent infinite loops
-                    if (GITHUB_BOT_USERNAME && commentAuthor === GITHUB_BOT_USERNAME) {
-                        continue;
-                    }
+                // Check if comment triggers processing
+                const triggerResult = checkCommentTrigger(comment.body, correlationId);
+                if (!triggerResult.isTriggered) {
+                    continue;
+                }
 
-                    // If a whitelist is defined, only users in that list are allowed.
-                    if (GITHUB_USER_WHITELIST.length > 0) {
-                        if (!GITHUB_USER_WHITELIST.includes(commentAuthor)) {
-                            continue;
-                        }
-                    } else {
-                        // If no whitelist, check blacklist
-                        if (GITHUB_USER_BLACKLIST.length > 0 && GITHUB_USER_BLACKLIST.includes(commentAuthor)) {
-                            continue;
-                        }
-                    }
+                // Passed filters, process this comment
+                {
 
                     // 4. Check if this comment has already been queued or processed
                     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${pr.number}:${comment.id}`;

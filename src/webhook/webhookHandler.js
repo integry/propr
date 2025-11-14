@@ -1,6 +1,7 @@
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
+import { filterCommentByAuthor } from '../utils/commentFilters.js';
 
 let processDetectedIssue;
 let processCommentEvent;
@@ -21,7 +22,7 @@ export async function processWebhookEvent(payload, eventType, correlationId) {
     
     const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-claude-(.+)$';
     const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || 'claude-3-5-sonnet-20241022';
-    
+
     switch (eventType) {
         case 'issues':
             if (payload.action === 'labeled') {
@@ -59,12 +60,26 @@ export async function processWebhookEvent(payload, eventType, correlationId) {
             
         case 'issue_comment':
             if (payload.action === 'created' && payload.issue.pull_request) {
+                const commentAuthor = payload.comment.user.login;
+                const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
+
+                if (filterResult.shouldFilter) {
+                    return; // Skip this comment
+                }
+
                 await processCommentEvent(payload, 'issue_comment', correlationId);
             }
             break;
-            
+
         case 'pull_request_review_comment':
             if (payload.action === 'created') {
+                const commentAuthor = payload.comment.user.login;
+                const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
+
+                if (filterResult.shouldFilter) {
+                    return; // Skip this comment
+                }
+
                 await processCommentEvent(payload, 'pull_request_review_comment', correlationId);
             }
             break;
