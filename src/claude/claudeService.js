@@ -573,3 +573,37 @@ CRITICAL: Do not modify any files. Do not run any commands. Only output the summ
 export const buildClaudeDockerImage = buildDockerImageInternal;
 
 export { generateTaskImportPrompt };
+
+export async function runLightweightLLMAnalysis(prompt, model, correlationId, worktreePath, githubToken, issueRef) {
+  const correlatedLogger = logger.withCorrelation(correlationId);
+  correlatedLogger.info({ model }, 'Running lightweight LLM analysis via Docker...');
+  
+  try {
+    const analysisPrompt = `${prompt}
+
+CRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`;
+
+    const claudeResult = await executeClaudeCode({
+      worktreePath: worktreePath,
+      issueRef: issueRef,
+      githubToken: githubToken,
+      customPrompt: analysisPrompt,
+      branchName: 'analysis-generation',
+      modelName: model,
+    });
+
+    if (claudeResult.success && (claudeResult.finalResult?.result || claudeResult.summary)) {
+      const analysisText = (claudeResult.finalResult?.result || claudeResult.summary).trim();
+      correlatedLogger.info({ 
+        model, 
+        responseLength: analysisText.length 
+      }, 'Lightweight LLM analysis completed successfully via Docker');
+      return analysisText;
+    }
+    
+    throw new Error(`Invalid analysis response from Claude execution: ${claudeResult.error}`);
+  } catch (error) {
+    correlatedLogger.error({ error: error.message, model }, 'Lightweight LLM analysis failed');
+    throw error;
+  }
+}

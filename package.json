@@ -14,6 +14,8 @@
     "worker:dev": "LOG_LEVEL=debug node src/worker.js",
     "worker:reset": "node src/worker.js --reset",
     "worker:reset:dev": "LOG_LEVEL=debug node src/worker.js --reset",
+    "analysis-worker": "node src/analysis_worker.js",
+    "analysis-worker:dev": "LOG_LEVEL=debug node src/analysis_worker.js",
     "config:repos": "node scripts/list-repo-configs.js",
     "db:migrate": "npx knex migrate:latest --knexfile ./knexfile.js",
     "compose:up": "./scripts/compose.sh up",
