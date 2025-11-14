@@ -28,6 +28,9 @@ redisConnection.on('error', (err) => {
 // Queue configuration
 export const GITHUB_ISSUE_QUEUE_NAME = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
 
+// Comment batching delay in milliseconds (default: 3000ms / 3 seconds)
+export const COMMENT_BATCH_DELAY_MS = parseInt(process.env.COMMENT_BATCH_DELAY_MS || '3000', 10);
+
 // Create the issue processing queue
 export const issueQueue = new Queue(GITHUB_ISSUE_QUEUE_NAME, {
     connection: redisConnection,

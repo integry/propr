@@ -3,7 +3,7 @@ import { getAuthenticatedOctokit } from './auth/githubAuth.js';
 import logger, { generateCorrelationId } from './utils/logger.js';
 import { withErrorHandling, handleError } from './utils/errorHandler.js';
 import { withRetry, retryConfigs } from './utils/retryHandler.js';
-import { issueQueue, shutdownQueue } from './queue/taskQueue.js';
+import { issueQueue, shutdownQueue, COMMENT_BATCH_DELAY_MS } from './queue/taskQueue.js';
 import Redis from 'ioredis';
 import { resolveModelAlias, getDefaultModel } from './config/modelAliases.js';
 import { loadMonitoredRepos, ensureConfigRepoExists, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from './config/configRepoManager.js';
@@ -530,7 +530,10 @@ async function processCommentEvent(payload, eventType, correlationId) {
     const jobId = `pr-comments-batch-${owner}-${repo}-${prNumber}-${timestamp}`;
     
     try {
-        await issueQueue.add('processPullRequestComment', jobData, { jobId });
+        await issueQueue.add('processPullRequestComment', jobData, { 
+            jobId,
+            delay: COMMENT_BATCH_DELAY_MS
+        });
         
         await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
         
@@ -538,8 +541,9 @@ async function processCommentEvent(payload, eventType, correlationId) {
             jobId,
             pullRequestNumber: prNumber,
             commentId: comment.id,
-            commentType: unprocessedComment.type
-        }, `Successfully added PR comment job to processing queue`);
+            commentType: unprocessedComment.type,
+            delayMs: COMMENT_BATCH_DELAY_MS
+        }, `Successfully added PR comment job to processing queue with ${COMMENT_BATCH_DELAY_MS}ms delay for batching`);
     } catch (error) {
         if (error.message?.includes('Job already exists')) {
             correlatedLogger.debug({
@@ -810,7 +814,10 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
                 const jobId = `pr-comments-batch-${owner}-${repo}-${pr.number}-${timestamp}`;
 
                 try {
-                    await issueQueue.add('processPullRequestComment', jobData, { jobId });
+                    await issueQueue.add('processPullRequestComment', jobData, { 
+                        jobId,
+                        delay: COMMENT_BATCH_DELAY_MS
+                    });
 
                     // Mark all comments as queued in Redis with 24 hour expiration
                     const pipeline = redisClient.pipeline();
@@ -825,8 +832,9 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
                         pullRequestNumber: pr.number,
                         commentsCount: unprocessedComments.length,
                         commentIds: unprocessedComments.map(c => c.id),
-                        commentTypes: unprocessedComments.map(c => c.type)
-                    }, `Successfully added batch PR comments job to processing queue (${unprocessedComments.length} comments)`);
+                        commentTypes: unprocessedComments.map(c => c.type),
+                        delayMs: COMMENT_BATCH_DELAY_MS
+                    }, `Successfully added batch PR comments job to processing queue (${unprocessedComments.length} comments) with ${COMMENT_BATCH_DELAY_MS}ms delay for batching`);
                 } catch (error) {
                     if (error.message?.includes('Job already exists')) {
                         correlatedLogger.debug({
