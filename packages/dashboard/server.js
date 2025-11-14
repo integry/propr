@@ -1702,10 +1702,14 @@ async function start() {
     // Import webhook handler module (initialization happens after Redis is ready)
     let webhookModule;
     let initializeWebhookHandler;
+    let daemonModule;
     try {
       webhookModule = await import('../../src/webhook/webhookHandler.js');
       processWebhookEvent = webhookModule.processWebhookEvent;
       initializeWebhookHandler = webhookModule.initializeWebhookHandler;
+      
+      // Import daemon functions for webhook processing
+      daemonModule = await import('../../src/daemon.js');
     } catch (error) {
       console.warn('[webhook] Failed to import webhook handler:', error.message);
     }
@@ -1734,131 +1738,16 @@ async function start() {
       console.warn('Failed to initialize config repository:', error.message);
     }
 
-    // Initialize webhook handler with processor functions
-    if (initializeWebhookHandler && taskQueue) {
+    // Initialize webhook handler with processor functions from daemon
+    if (initializeWebhookHandler && daemonModule) {
       try {
-        // Define processor function for detected issues
-        const processDetectedIssue = async (issue, correlationId) => {
-          console.log(`[webhook] Processing detected issue #${issue.number} for ${issue.repoOwner}/${issue.repoName}`);
-
-          for (const modelName of issue.targetModels) {
-            const jobData = {
-              number: issue.number,
-              repoOwner: issue.repoOwner,
-              repoName: issue.repoName,
-              modelName: modelName,
-              labels: issue.labels,
-              correlationId: correlationId
-            };
-
-            await taskQueue.add('processGitHubIssue', jobData, {
-              jobId: `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${modelName}-${Date.now()}`
-            });
-
-            console.log(`[webhook] Queued job for issue #${issue.number} with model ${modelName}`);
-          }
-        };
-
-        // Define processor function for comment events
-        const processCommentEvent = async (payload, eventType, correlationId) => {
-          const owner = payload.repository.owner.login;
-          const repo = payload.repository.name;
-
-          let prNumber, comment, branchName;
-          if (eventType === 'issue_comment') {
-            prNumber = payload.issue.number;
-            comment = payload.comment;
-            // For issue comments, we need to fetch the PR to get the branch name
-            // For now, set to null - the worker will handle this
-            branchName = null;
-          } else if (eventType === 'pull_request_review_comment') {
-            prNumber = payload.pull_request.number;
-            comment = payload.comment;
-            branchName = payload.pull_request.head.ref;
-          } else {
-            console.warn(`[webhook] Unknown event type: ${eventType}`);
-            return;
-          }
-
-          console.log(`[webhook] Processing comment on PR #${prNumber} in ${owner}/${repo}`);
-
-          // Create unprocessed comment structure matching daemon.js format
-          const newComment = {
-            id: comment.id,
-            body: comment.body,
-            author: comment.user.login,
-            type: eventType === 'pull_request_review_comment' ? 'review' : 'issue',
-            hasCodeContext: false,  // Webhook payload doesn't include diff_hunk
-            updated_at: comment.updated_at  // Track when comment was last updated for edit detection
-          };
-
-          // Check if there's a delayed job for this PR that we can batch with
-          const delayedJobs = await taskQueue.getDelayed();
-          const existingDelayedJob = delayedJobs.find(job =>
-            job.name === 'processPullRequestComment' &&
-            job.data.pullRequestNumber === prNumber &&
-            job.data.repoOwner === owner &&
-            job.data.repoName === repo
-          );
-
-          let commentsToQueue = [newComment];
-          let existingCorrelationId = correlationId;
-
-          if (existingDelayedJob) {
-            // Batch with existing delayed job - remove it and create new one with all comments
-            console.log(`[webhook] Found existing delayed job ${existingDelayedJob.id} for PR #${prNumber}, batching comments together`);
-
-            // Preserve existing comments and correlation ID
-            const existingComments = existingDelayedJob.data.comments || [];
-            commentsToQueue = [...existingComments, newComment];
-            existingCorrelationId = existingDelayedJob.data.correlationId || correlationId;
-
-            // Remove the old delayed job
-            await existingDelayedJob.remove();
-            console.log(`[webhook] Removed old delayed job, creating new batch with ${commentsToQueue.length} comments`);
-          } else {
-            // Check if there's an active or waiting job - if so, skip
-            const activeJobs = await taskQueue.getActive();
-            const waitingJobs = await taskQueue.getWaiting();
-            const runningJobs = [...activeJobs, ...waitingJobs];
-
-            const runningJob = runningJobs.find(job =>
-              job.name === 'processPullRequestComment' &&
-              job.data.pullRequestNumber === prNumber &&
-              job.data.repoOwner === owner &&
-              job.data.repoName === repo
-            );
-
-            if (runningJob) {
-              console.log(`[webhook] Job for PR #${prNumber} is already running/waiting (${runningJob.id}), skipping`);
-              return;
-            }
-          }
-
-          const jobData = {
-            pullRequestNumber: prNumber,
-            comments: commentsToQueue,
-            repoOwner: owner,
-            repoName: repo,
-            branchName: branchName,
-            llm: null,  // No LLM extraction from webhook for now
-            correlationId: existingCorrelationId
-          };
-
-          const timestamp = Date.now();
-          const jobId = `pr-comments-batch-${owner}-${repo}-${prNumber}-${timestamp}`;
-
-          // Add job with delay to allow batching of multiple comments
-          await taskQueue.add('processPullRequestComment', jobData, {
-            jobId,
-            delay: COMMENT_BATCH_DELAY_MS
-          });
-
-          console.log(`[webhook] Queued job for PR #${prNumber} with ${commentsToQueue.length} comment(s) and ${COMMENT_BATCH_DELAY_MS}ms delay for batching`);
-        };
-
-        await initializeWebhookHandler(processDetectedIssue, processCommentEvent, redisClient, taskQueue);
-        console.log('[webhook] Webhook handler initialized with processor functions');
+        await initializeWebhookHandler(
+          daemonModule.processDetectedIssue,
+          daemonModule.processCommentEvent,
+          daemonModule.handleCommentDeleted,
+          daemonModule.handleCommentEdited
+        );
+        console.log('[webhook] Webhook handler initialized with daemon processor functions');
       } catch (error) {
         console.error('[webhook] Failed to initialize webhook handler:', error.message);
       }
