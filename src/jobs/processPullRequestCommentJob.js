@@ -118,7 +118,85 @@ export async function processPullRequestCommentJob(job) {
             pull_number: pullRequestNumber
         });
 
-        // Extract branchName from PR data if not provided in job data
+        const botUsername = process.env.GITHUB_BOT_USERNAME || 'github-actions[bot]';
+        const prCommentsForValidation = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: repoOwner,
+            repo: repoName,
+            issue_number: pullRequestNumber,
+            per_page: 100
+        });
+
+        const reviewCommentsForValidation = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
+            owner: repoOwner,
+            repo: repoName,
+            pull_number: pullRequestNumber,
+            per_page: 100
+        });
+
+        const allCommentsForValidation = [...prCommentsForValidation, ...reviewCommentsForValidation];
+
+        for (const comment of commentsToProcess) {
+            const currentComment = allCommentsForValidation.find(c => c.id === comment.id);
+            
+            if (!currentComment) {
+                correlatedLogger.warn({
+                    pullRequestNumber,
+                    commentId: comment.id,
+                    commentAuthor: comment.author
+                }, 'Comment has been deleted, aborting execution');
+                
+                return {
+                    status: 'aborted',
+                    reason: 'comment_deleted',
+                    pullRequestNumber,
+                    commentId: comment.id
+                };
+            }
+            
+            if (currentComment.updated_at !== currentComment.created_at) {
+                correlatedLogger.info({
+                    pullRequestNumber,
+                    commentId: comment.id,
+                    commentAuthor: comment.author,
+                    originalUpdatedAt: comment.updated_at,
+                    currentUpdatedAt: currentComment.updated_at
+                }, 'Comment has been edited, restarting execution with updated content');
+                
+                const updatedJobData = {
+                    ...job.data,
+                    comments: commentsToProcess.map(c => {
+                        if (c.id === comment.id) {
+                            return {
+                                ...c,
+                                body: currentComment.body,
+                                updated_at: currentComment.updated_at
+                            };
+                        }
+                        return c;
+                    })
+                };
+                
+                const timestamp = Date.now();
+                const newJobId = `pr-comments-restart-${repoOwner}-${repoName}-${pullRequestNumber}-${timestamp}`;
+                
+                await issueQueue.add('processPullRequestComment', updatedJobData, { jobId: newJobId });
+                
+                correlatedLogger.info({
+                    pullRequestNumber,
+                    commentId: comment.id,
+                    newJobId
+                }, 'Requeued job with updated comment content');
+                
+                return {
+                    status: 'restarted',
+                    reason: 'comment_edited',
+                    pullRequestNumber,
+                    commentId: comment.id,
+                    newJobId
+                };
+            }
+        }
+
         const branchName = jobBranchName || prData.data.head.ref;
         if (!jobBranchName) {
             correlatedLogger.debug({ branchName }, 'Extracted branch name from PR data');
@@ -139,16 +217,8 @@ export async function processPullRequestCommentJob(job) {
             };
         }
 
-        const botUsername = process.env.GITHUB_BOT_USERNAME || 'github-actions[bot]';
-        const prComments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: repoOwner,
-            repo: repoName,
-            issue_number: pullRequestNumber,
-            per_page: 100
-        });
-
         unprocessedComments = commentsToProcess.filter(comment => {
-            const alreadyProcessed = prComments.some(prComment => {
+            const alreadyProcessed = prCommentsForValidation.some(prComment => {
                 const isBotComment = prComment.user.login === botUsername || 
                                     prComment.user.type === 'Bot' ||
                                     prComment.user.login.includes('[bot]');

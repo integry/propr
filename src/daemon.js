@@ -1112,7 +1112,7 @@ async function startDaemon(options = {}) {
             logger.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
         }
         
-        await initializeWebhookHandler(processDetectedIssue, processCommentEvent);
+        await initializeWebhookHandler(processDetectedIssue, processCommentEvent, redisClient, issueQueue);
         logger.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');
     } else {
         logger.info({

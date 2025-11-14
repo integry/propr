@@ -1800,7 +1800,7 @@ async function start() {
           console.log(`[webhook] Queued job for PR #${prNumber} comment`);
         };
 
-        await initializeWebhookHandler(processDetectedIssue, processCommentEvent);
+        await initializeWebhookHandler(processDetectedIssue, processCommentEvent, redisClient, taskQueue);
         console.log('[webhook] Webhook handler initialized with processor functions');
       } catch (error) {
         console.error('[webhook] Failed to initialize webhook handler:', error.message);
