@@ -30,7 +30,6 @@
   "description": "Automated GitHub Issue Processor with AI-powered solution generation",
   "dependencies": {
     "@anthropic-ai/claude-code": "^2.0.1",
-    "@anthropic-ai/sdk": "^0.68.0",
     "@octokit/auth-app": "^8.0.1",
     "@octokit/core": "^7.0.2",
     "@octokit/plugin-paginate-rest": "^13.1.1",

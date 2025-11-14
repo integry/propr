@@ -1,7 +1,6 @@
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
-import Anthropic from '@anthropic-ai/sdk';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
@@ -574,10 +573,6 @@ CRITICAL: Do not modify any files. Do not run any commands. Only output the summ
 export const buildClaudeDockerImage = buildDockerImageInternal;
 
 export { generateTaskImportPrompt };
-
-const anthropic = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-});
 
 export async function runLightweightLLMAnalysis(prompt, model, correlationId, worktreePath, githubToken, issueRef) {
   const correlatedLogger = logger.withCorrelation(correlationId);
