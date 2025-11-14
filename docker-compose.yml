@@ -113,7 +113,6 @@ services:
     command: sh -c "cd /usr/src/app/packages/dashboard && node server.js"
     ports:
       - '4000:4000'
-      - "${WEBHOOK_PORT:-9090}:4000"
     volumes:
       - ~/.claude:/root/.claude:ro
       - /tmp/claude-logs:/tmp/claude-logs:ro
