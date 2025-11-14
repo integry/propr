@@ -1,6 +1,5 @@
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
-import { resolveModelAlias } from '../config/modelAliases.js';
 
 let processDetectedIssue;
 let processCommentEvent;
@@ -22,9 +21,6 @@ export async function processWebhookEvent(payload, eventType, correlationId) {
         correlatedLogger.error('Webhook handler not properly initialized');
         throw new Error('Webhook handler not initialized');
     }
-    
-    const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-claude-(.+)$';
-    const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || 'claude-3-5-sonnet-20241022';
 
     switch (eventType) {
         case 'issues':
@@ -39,23 +35,9 @@ export async function processWebhookEvent(payload, eventType, correlationId) {
                     repoOwner: owner,
                     repoName: repo,
                     labels: payload.issue.labels.map(l => l.name),
-                    targetModels: [],
                     createdAt: payload.issue.created_at,
                     updatedAt: payload.issue.updated_at
                 };
-                
-                const identifiedModels = [];
-                const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
-                
-                for (const label of payload.issue.labels) {
-                    const match = label.name.match(modelLabelRegex);
-                    if (match && match[1]) {
-                        const resolvedModel = resolveModelAlias(match[1]);
-                        identifiedModels.push(resolvedModel);
-                    }
-                }
-                
-                issue.targetModels = identifiedModels.length > 0 ? identifiedModels : [DEFAULT_MODEL_NAME];
                 
                 await processDetectedIssue(issue, correlationId);
             }

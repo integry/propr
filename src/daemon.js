@@ -139,7 +139,7 @@ const getRepos = () => {
 
 /**
  * Processes a detected issue by checking labels, finding target models, and enqueueing jobs
- * @param {Object} issue - Issue object with properties: id, number, labels, repoOwner, repoName, targetModels, etc.
+ * @param {Object} issue - Issue object with properties: id, number, labels, repoOwner, repoName, etc.
  * @param {string} correlationId - Correlation ID for tracking
  */
 async function processDetectedIssue(issue, correlationId) {
@@ -162,17 +162,30 @@ async function processDetectedIssue(issue, correlationId) {
     
     const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl)) || primaryProcessingLabels[0];
     
+    const identifiedModels = [];
+    const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
+    
+    for (const label of issue.labels) {
+        const match = label.match(modelLabelRegex);
+        if (match && match[1]) {
+            const resolvedModel = resolveModelAlias(match[1]);
+            identifiedModels.push(resolvedModel);
+        }
+    }
+    
+    const targetModels = identifiedModels.length > 0 ? identifiedModels : [DEFAULT_MODEL_NAME];
+    
     correlatedLogger.info({ 
         issueId: issue.id, 
         issueNumber: issue.number, 
         issueTitle: issue.title, 
         issueUrl: issue.url,
         repository: repoFullName,
-        targetModels: issue.targetModels,
+        targetModels: targetModels,
         triggeringLabel: triggeringLabel
     }, 'Detected eligible issue');
     
-    for (const modelName of issue.targetModels) {
+    for (const modelName of targetModels) {
         const activeJobs = await issueQueue.getActive();
         const waitingJobs = await issueQueue.getWaiting();
         const existingJobs = [...activeJobs, ...waitingJobs];
@@ -342,33 +355,17 @@ async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
             count: response.data.items.length 
         }, `Found ${response.data.items.length} matching issues.`);
 
-        // Transform issues to a simplified format
-        return response.data.items.map(issue => {
-            const identifiedModels = [];
-            const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
-            
-            for (const label of issue.labels) {
-                const match = label.name.match(modelLabelRegex);
-                if (match && match[1]) {
-                    // Resolve model alias to full model ID
-                    const resolvedModel = resolveModelAlias(match[1]);
-                    identifiedModels.push(resolvedModel);
-                }
-            }
-            
-            return {
-                id: issue.id,
-                number: issue.number,
-                title: issue.title,
-                url: issue.html_url,
-                repoOwner: owner,
-                repoName: repo,
-                labels: issue.labels.map(l => l.name),
-                targetModels: identifiedModels.length > 0 ? identifiedModels : [DEFAULT_MODEL_NAME],
-                createdAt: issue.created_at,
-                updatedAt: issue.updated_at
-            };
-        });
+        return response.data.items.map(issue => ({
+            id: issue.id,
+            number: issue.number,
+            title: issue.title,
+            url: issue.html_url,
+            repoOwner: owner,
+            repoName: repo,
+            labels: issue.labels.map(l => l.name),
+            createdAt: issue.created_at,
+            updatedAt: issue.updated_at
+        }));
     } catch (error) {
         handleError(error, `fetch_issues_${repoFullName}`, { correlationId });
 
