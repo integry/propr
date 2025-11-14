@@ -379,6 +379,173 @@ async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
 }
 
 /**
+ * Handles comment deletion by aborting any active jobs
+ * @param {Object} payload - Webhook payload from 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} eventType - Type of event: 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} correlationId - Correlation ID for tracking
+ */
+async function handleCommentDeleted(payload, eventType, correlationId) {
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    
+    const owner = payload.repository.owner.login;
+    const repo = payload.repository.name;
+    const repoFullName = `${owner}/${repo}`;
+    
+    let prNumber, commentId;
+    
+    if (eventType === 'issue_comment') {
+        if (!payload.issue.pull_request) {
+            correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
+            return;
+        }
+        prNumber = payload.issue.number;
+        commentId = payload.comment.id;
+    } else if (eventType === 'pull_request_review_comment') {
+        prNumber = payload.pull_request.number;
+        commentId = payload.comment.id;
+    } else {
+        correlatedLogger.warn({ eventType }, 'Unknown event type for comment deletion');
+        return;
+    }
+    
+    correlatedLogger.info({
+        repository: repoFullName,
+        pullRequestNumber: prNumber,
+        commentId: commentId
+    }, 'Comment deleted, aborting any active jobs for this PR');
+    
+    const activeJobs = await issueQueue.getActive();
+    const waitingJobs = await issueQueue.getWaiting();
+    const allJobs = [...activeJobs, ...waitingJobs];
+    
+    for (const job of allJobs) {
+        if (job.name === 'processPullRequestComment' &&
+            job.data.pullRequestNumber === prNumber &&
+            job.data.repoOwner === owner &&
+            job.data.repoName === repo) {
+            
+            const jobCommentIds = job.data.comments?.map(c => c.id) || [];
+            if (jobCommentIds.includes(commentId)) {
+                correlatedLogger.info({
+                    jobId: job.id,
+                    pullRequestNumber: prNumber,
+                    repository: repoFullName
+                }, 'Aborting job due to comment deletion');
+                
+                const taskId = job.id.startsWith('pr-comments-batch-') ? 
+                    job.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') : 
+                    `${owner}-${repo}-${prNumber}`;
+                
+                const abortKey = `worker:abort:${taskId}`;
+                await redisClient.set(abortKey, JSON.stringify({
+                    timestamp: new Date().toISOString(),
+                    reason: 'comment_deleted',
+                    commentId: commentId
+                }), { EX: 3600 });
+                
+                await job.remove();
+                
+                correlatedLogger.info({
+                    jobId: job.id,
+                    taskId: taskId
+                }, 'Job aborted and removed from queue');
+            }
+        }
+    }
+    
+    const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${commentId}`;
+    await redisClient.del(commentTrackingKey);
+}
+
+/**
+ * Handles comment editing by restarting any active jobs
+ * @param {Object} payload - Webhook payload from 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} eventType - Type of event: 'issue_comment' or 'pull_request_review_comment'
+ * @param {string} correlationId - Correlation ID for tracking
+ */
+async function handleCommentEdited(payload, eventType, correlationId) {
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    
+    const owner = payload.repository.owner.login;
+    const repo = payload.repository.name;
+    const repoFullName = `${owner}/${repo}`;
+    
+    let prNumber, commentId;
+    
+    if (eventType === 'issue_comment') {
+        if (!payload.issue.pull_request) {
+            correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
+            return;
+        }
+        prNumber = payload.issue.number;
+        commentId = payload.comment.id;
+    } else if (eventType === 'pull_request_review_comment') {
+        prNumber = payload.pull_request.number;
+        commentId = payload.comment.id;
+    } else {
+        correlatedLogger.warn({ eventType }, 'Unknown event type for comment edit');
+        return;
+    }
+    
+    correlatedLogger.info({
+        repository: repoFullName,
+        pullRequestNumber: prNumber,
+        commentId: commentId
+    }, 'Comment edited, restarting any active jobs for this PR');
+    
+    const activeJobs = await issueQueue.getActive();
+    const waitingJobs = await issueQueue.getWaiting();
+    const allJobs = [...activeJobs, ...waitingJobs];
+    
+    let foundJob = null;
+    for (const job of allJobs) {
+        if (job.name === 'processPullRequestComment' &&
+            job.data.pullRequestNumber === prNumber &&
+            job.data.repoOwner === owner &&
+            job.data.repoName === repo) {
+            
+            const jobCommentIds = job.data.comments?.map(c => c.id) || [];
+            if (jobCommentIds.includes(commentId)) {
+                foundJob = job;
+                break;
+            }
+        }
+    }
+    
+    if (foundJob) {
+        correlatedLogger.info({
+            jobId: foundJob.id,
+            pullRequestNumber: prNumber,
+            repository: repoFullName
+        }, 'Aborting existing job due to comment edit');
+        
+        const taskId = foundJob.id.startsWith('pr-comments-batch-') ? 
+            foundJob.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') : 
+            `${owner}-${repo}-${prNumber}`;
+        
+        const abortKey = `worker:abort:${taskId}`;
+        await redisClient.set(abortKey, JSON.stringify({
+            timestamp: new Date().toISOString(),
+            reason: 'comment_edited',
+            commentId: commentId
+        }), { EX: 3600 });
+        
+        await foundJob.remove();
+    }
+    
+    const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${commentId}`;
+    await redisClient.del(commentTrackingKey);
+    
+    correlatedLogger.info({
+        pullRequestNumber: prNumber,
+        repository: repoFullName,
+        commentId: commentId
+    }, 'Reprocessing edited comment');
+    
+    await processCommentEvent(payload, eventType, correlationId);
+}
+
+/**
  * Processes a comment event by checking author, trigger keywords, and enqueueing a job
  * @param {Object} payload - Webhook payload from 'issue_comment' or 'pull_request_review_comment'
  * @param {string} eventType - Type of event: 'issue_comment' or 'pull_request_review_comment'
@@ -1115,7 +1282,7 @@ async function startDaemon(options = {}) {
             logger.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
         }
         
-        await initializeWebhookHandler(processDetectedIssue, processCommentEvent, redisClient, issueQueue);
+        await initializeWebhookHandler(processDetectedIssue, processCommentEvent, handleCommentDeleted, handleCommentEdited);
         logger.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');
     } else {
         logger.info({
@@ -1176,7 +1343,18 @@ async function startDaemon(options = {}) {
 }
 
 // Export functions for testing
-export { fetchIssuesForRepo, pollForIssues, pollForPullRequestComments, startDaemon, resetQueues, resetIssueLabels };
+export { 
+    fetchIssuesForRepo, 
+    pollForIssues, 
+    pollForPullRequestComments, 
+    startDaemon, 
+    resetQueues, 
+    resetIssueLabels,
+    processDetectedIssue,
+    processCommentEvent,
+    handleCommentDeleted,
+    handleCommentEdited
+};
 
 /**
  * Parse command line arguments
