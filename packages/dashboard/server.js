@@ -1690,13 +1690,15 @@ async function start() {
 
     configRepoManager = await import('../../src/config/configRepoManager.js');
     
-    // Import webhook processing function
+    // Import webhook handler module (initialization happens after Redis is ready)
+    let webhookModule;
+    let initializeWebhookHandler;
     try {
-      const webhookModule = await import('../../src/webhook/webhookHandler.js');
+      webhookModule = await import('../../src/webhook/webhookHandler.js');
       processWebhookEvent = webhookModule.processWebhookEvent;
-      console.log('[webhook] Webhook handler initialized');
+      initializeWebhookHandler = webhookModule.initializeWebhookHandler;
     } catch (error) {
-      console.warn('[webhook] Failed to initialize webhook handler:', error.message);
+      console.warn('[webhook] Failed to import webhook handler:', error.message);
     }
 
     // Initialize PostgreSQL if enabled
@@ -1721,6 +1723,79 @@ async function start() {
       await configRepoManager.ensureConfigRepoExists();
     } catch (error) {
       console.warn('Failed to initialize config repository:', error.message);
+    }
+
+    // Initialize webhook handler with processor functions
+    if (initializeWebhookHandler && taskQueue) {
+      try {
+        // Define processor function for detected issues
+        const processDetectedIssue = async (issue, correlationId) => {
+          console.log(`[webhook] Processing detected issue #${issue.number} for ${issue.repoOwner}/${issue.repoName}`);
+
+          for (const modelName of issue.targetModels) {
+            const jobData = {
+              number: issue.number,
+              repoOwner: issue.repoOwner,
+              repoName: issue.repoName,
+              modelName: modelName,
+              labels: issue.labels,
+              correlationId: correlationId
+            };
+
+            await taskQueue.add('processGitHubIssue', jobData, {
+              jobId: `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${modelName}-${Date.now()}`
+            });
+
+            console.log(`[webhook] Queued job for issue #${issue.number} with model ${modelName}`);
+          }
+        };
+
+        // Define processor function for comment events
+        const processCommentEvent = async (payload, eventType, correlationId) => {
+          const owner = payload.repository.owner.login;
+          const repo = payload.repository.name;
+
+          let prNumber, comment;
+          if (eventType === 'issue_comment') {
+            prNumber = payload.issue.number;
+            comment = payload.comment;
+          } else if (eventType === 'pull_request_review_comment') {
+            prNumber = payload.pull_request.number;
+            comment = payload.comment;
+          } else {
+            console.warn(`[webhook] Unknown event type: ${eventType}`);
+            return;
+          }
+
+          console.log(`[webhook] Processing comment on PR #${prNumber} in ${owner}/${repo}`);
+
+          const jobData = {
+            owner,
+            repo,
+            prNumber,
+            comment: {
+              id: comment.id,
+              body: comment.body,
+              user: comment.user.login,
+              created_at: comment.created_at,
+              html_url: comment.html_url
+            },
+            eventType,
+            correlationId
+          };
+
+          await taskQueue.add('processPullRequestComment', jobData, {
+            jobId: `pr-comment-${owner}-${repo}-${prNumber}-${comment.id}`
+          });
+
+          console.log(`[webhook] Queued job for PR #${prNumber} comment`);
+        };
+
+        await initializeWebhookHandler(processDetectedIssue, processCommentEvent);
+        console.log('[webhook] Webhook handler initialized with processor functions');
+      } catch (error) {
+        console.error('[webhook] Failed to initialize webhook handler:', error.message);
+      }
     }
 
     app.listen(PORT, () => {
