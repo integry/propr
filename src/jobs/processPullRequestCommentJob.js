@@ -45,7 +45,7 @@ export async function processPullRequestCommentJob(job) {
         commentBody,
         commentAuthor,
         comments,
-        branchName,
+        branchName: jobBranchName,
         repoOwner,
         repoName,
         llm,
@@ -119,8 +119,8 @@ export async function processPullRequestCommentJob(job) {
         });
 
         // Extract branchName from PR data if not provided in job data
-        if (!branchName) {
-            branchName = prData.data.head.ref;
+        const branchName = jobBranchName || prData.data.head.ref;
+        if (!jobBranchName) {
             correlatedLogger.debug({ branchName }, 'Extracted branch name from PR data');
         }
 
