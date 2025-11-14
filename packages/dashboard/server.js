@@ -1368,11 +1368,15 @@ app.get('/api/config/settings', ensureAuthenticated, async (req, res) => {
     const settings = await configRepoManager.loadSettings();
     const envDefaults = {
       worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
-      github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim())
+      github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()),
+      analysis_model_fast: process.env.ANALYSIS_MODEL_FAST || 'claude-3-5-haiku-20241022',
+      analysis_model_advanced: process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514'
     };
     const mergedSettings = {
       worker_concurrency: settings.worker_concurrency || envDefaults.worker_concurrency,
-      github_user_whitelist: settings.github_user_whitelist || envDefaults.github_user_whitelist
+      github_user_whitelist: settings.github_user_whitelist || envDefaults.github_user_whitelist,
+      analysis_model_fast: settings.analysis_model_fast || envDefaults.analysis_model_fast,
+      analysis_model_advanced: settings.analysis_model_advanced || envDefaults.analysis_model_advanced
     };
     res.json(mergedSettings);
   } catch (error) {
