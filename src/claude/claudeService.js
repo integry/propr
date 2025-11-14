@@ -579,30 +579,34 @@ const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-export async function runLightweightLLMAnalysis(prompt, model, correlationId) {
+export async function runLightweightLLMAnalysis(prompt, model, correlationId, worktreePath, githubToken, issueRef) {
   const correlatedLogger = logger.withCorrelation(correlationId);
-  correlatedLogger.info({ model }, 'Running lightweight LLM analysis...');
+  correlatedLogger.info({ model }, 'Running lightweight LLM analysis via Docker...');
   
   try {
-    const response = await anthropic.messages.create({
-      model: model,
-      max_tokens: 4096,
-      messages: [{ role: 'user', content: prompt }],
+    const analysisPrompt = `${prompt}
+
+CRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`;
+
+    const claudeResult = await executeClaudeCode({
+      worktreePath: worktreePath,
+      issueRef: issueRef,
+      githubToken: githubToken,
+      customPrompt: analysisPrompt,
+      branchName: 'analysis-generation',
+      modelName: model,
     });
-    
-    const textContent = response.content.find(block => block.type === 'text');
-    if (!textContent) {
-      throw new Error('No text content in LLM response');
+
+    if (claudeResult.success && (claudeResult.finalResult?.result || claudeResult.summary)) {
+      const analysisText = (claudeResult.finalResult?.result || claudeResult.summary).trim();
+      correlatedLogger.info({ 
+        model, 
+        responseLength: analysisText.length 
+      }, 'Lightweight LLM analysis completed successfully via Docker');
+      return analysisText;
     }
     
-    correlatedLogger.info({ 
-      model, 
-      responseLength: textContent.text.length,
-      inputTokens: response.usage?.input_tokens,
-      outputTokens: response.usage?.output_tokens
-    }, 'Lightweight LLM analysis completed successfully');
-    
-    return textContent.text;
+    throw new Error(`Invalid analysis response from Claude execution: ${claudeResult.error}`);
   } catch (error) {
     correlatedLogger.error({ error: error.message, model }, 'Lightweight LLM analysis failed');
     throw error;

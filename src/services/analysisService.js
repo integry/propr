@@ -16,6 +16,7 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     const promptKey = `execution:prompt:session:${sessionId}`;
     const promptData = JSON.parse(await redis.get(promptKey) || '{}');
     const originalPrompt = promptData.prompt || 'Original prompt not found.';
+    const issueRef = promptData.issueRef;
 
     const conversationLog = await db('llm_execution_details')
       .where({ execution_id: executionId })
@@ -26,9 +27,46 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       return { error: 'No execution details found.' };
     }
 
+    const execution = await db('llm_executions')
+      .where({ execution_id: executionId })
+      .first();
+    
+    if (!execution) {
+      correlatedLogger.warn({ executionId }, 'No execution record found.');
+      return { error: 'No execution record found.' };
+    }
+
+    const task = await db('tasks')
+      .where({ task_id: execution.task_id })
+      .first();
+    
+    if (!task) {
+      correlatedLogger.warn({ executionId, taskId: execution.task_id }, 'No task record found.');
+      return { error: 'No task record found.' };
+    }
+
     const metaPrompt = generateExecutionAnalysisPrompt(originalPrompt, conversationLog, model);
 
-    const analysisText = await runLightweightLLMAnalysis(metaPrompt, model, correlationId);
+    const worktreeKey = `worktree:${task.task_id}`;
+    const worktreeData = JSON.parse(await redis.get(worktreeKey) || '{}');
+    const worktreePath = worktreeData.worktreePath || '/tmp/analysis-worktree';
+
+    const githubTokenKey = `github:token:${task.repository}`;
+    const tokenData = await redis.get(githubTokenKey);
+    const githubToken = tokenData || process.env.GH_TOKEN;
+
+    const analysisText = await runLightweightLLMAnalysis(
+      metaPrompt, 
+      model, 
+      correlationId, 
+      worktreePath, 
+      githubToken,
+      issueRef || { 
+        number: task.issue_number, 
+        repoOwner: task.repository.split('/')[0], 
+        repoName: task.repository.split('/')[1] 
+      }
+    );
     
     const analysisReport = {
       generatedAt: new Date().toISOString(),

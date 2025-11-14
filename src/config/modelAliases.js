@@ -8,7 +8,8 @@ const MODEL_ALIASES = {
     'sonnet-4-0': 'claude-sonnet-4-5-20250929',   // Official alias
     'sonnet37': 'claude-3-7-sonnet-20250219',   // Claude Sonnet 3.7
     'sonnet35': 'claude-3-5-sonnet-20241022',   // Claude Sonnet 3.5
-    'haiku': 'claude-3-5-haiku-20241022',       // Claude Haiku 3.5
+    'haiku': 'claude-haiku-4-5',                // Claude Haiku 4.5 (default)
+    'haiku45': 'claude-haiku-4-5',              // Claude Haiku 4.5
     'haiku35': 'claude-3-5-haiku-20241022',     // Claude Haiku 3.5
     'haiku3': 'claude-3-haiku-20240307',        // Claude Haiku 3
     

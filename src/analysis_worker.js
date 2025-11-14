@@ -12,7 +12,7 @@ async function processAnalysisJob(job) {
 
   try {
     const settings = await loadSettings();
-    const fastModel = settings.analysis_model_fast || 'claude-3-5-haiku-20241022';
+    const fastModel = settings.analysis_model_fast || 'claude-haiku-4-5';
 
     const analysisReport = await getExecutionAnalysis({
       executionId,
