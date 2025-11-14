@@ -9,6 +9,9 @@ require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 const { setupAuth, ensureAuthenticated } = require('./auth');
 const { getLLMMetricsSummary, getLLMMetricsByCorrelationId } = require('./llmMetricsAdapter');
 
+// Comment batching delay in milliseconds (default: 3000ms / 3 seconds)
+const COMMENT_BATCH_DELAY_MS = parseInt(process.env.COMMENT_BATCH_DELAY_MS || '3000', 10);
+
 let generateCorrelationId;
 let configRepoManager;
 let processWebhookEvent;
@@ -1774,7 +1777,7 @@ async function start() {
           console.log(`[webhook] Processing comment on PR #${prNumber} in ${owner}/${repo}`);
 
           // Create unprocessed comment structure matching daemon.js format
-          const unprocessedComment = {
+          const newComment = {
             id: comment.id,
             body: comment.body,
             author: comment.user.login,
@@ -1782,22 +1785,69 @@ async function start() {
             hasCodeContext: false  // Webhook payload doesn't include diff_hunk
           };
 
+          // Check if there's a delayed job for this PR that we can batch with
+          const delayedJobs = await taskQueue.getDelayed();
+          const existingDelayedJob = delayedJobs.find(job =>
+            job.name === 'processPullRequestComment' &&
+            job.data.pullRequestNumber === prNumber &&
+            job.data.repoOwner === owner &&
+            job.data.repoName === repo
+          );
+
+          let commentsToQueue = [newComment];
+          let existingCorrelationId = correlationId;
+
+          if (existingDelayedJob) {
+            // Batch with existing delayed job - remove it and create new one with all comments
+            console.log(`[webhook] Found existing delayed job ${existingDelayedJob.id} for PR #${prNumber}, batching comments together`);
+
+            // Preserve existing comments and correlation ID
+            const existingComments = existingDelayedJob.data.comments || [];
+            commentsToQueue = [...existingComments, newComment];
+            existingCorrelationId = existingDelayedJob.data.correlationId || correlationId;
+
+            // Remove the old delayed job
+            await existingDelayedJob.remove();
+            console.log(`[webhook] Removed old delayed job, creating new batch with ${commentsToQueue.length} comments`);
+          } else {
+            // Check if there's an active or waiting job - if so, skip
+            const activeJobs = await taskQueue.getActive();
+            const waitingJobs = await taskQueue.getWaiting();
+            const runningJobs = [...activeJobs, ...waitingJobs];
+
+            const runningJob = runningJobs.find(job =>
+              job.name === 'processPullRequestComment' &&
+              job.data.pullRequestNumber === prNumber &&
+              job.data.repoOwner === owner &&
+              job.data.repoName === repo
+            );
+
+            if (runningJob) {
+              console.log(`[webhook] Job for PR #${prNumber} is already running/waiting (${runningJob.id}), skipping`);
+              return;
+            }
+          }
+
           const jobData = {
             pullRequestNumber: prNumber,
-            comments: [unprocessedComment],
+            comments: commentsToQueue,
             repoOwner: owner,
             repoName: repo,
             branchName: branchName,
             llm: null,  // No LLM extraction from webhook for now
-            correlationId: correlationId
+            correlationId: existingCorrelationId
           };
 
           const timestamp = Date.now();
           const jobId = `pr-comments-batch-${owner}-${repo}-${prNumber}-${timestamp}`;
 
-          await taskQueue.add('processPullRequestComment', jobData, { jobId });
+          // Add job with delay to allow batching of multiple comments
+          await taskQueue.add('processPullRequestComment', jobData, {
+            jobId,
+            delay: COMMENT_BATCH_DELAY_MS
+          });
 
-          console.log(`[webhook] Queued job for PR #${prNumber} comment`);
+          console.log(`[webhook] Queued job for PR #${prNumber} with ${commentsToQueue.length} comment(s) and ${COMMENT_BATCH_DELAY_MS}ms delay for batching`);
         };
 
         await initializeWebhookHandler(processDetectedIssue, processCommentEvent, redisClient, taskQueue);

@@ -1,4 +1,4 @@
-import logger from '../utils/logger.js';
+import logger, { generateCorrelationId } from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getStateManager, TaskStates } from '../utils/workerStateManager.js';
@@ -161,9 +161,13 @@ export async function processPullRequestCommentJob(job) {
                     originalUpdatedAt: comment.updated_at,
                     currentUpdatedAt: currentComment.updated_at
                 }, 'Comment has been edited, restarting execution with updated content');
-                
+
+                // Generate a NEW correlation ID for the restarted job to avoid unique constraint violations
+                const newCorrelationId = generateCorrelationId();
+
                 const updatedJobData = {
                     ...job.data,
+                    correlationId: newCorrelationId,  // Use new correlation ID
                     comments: commentsToProcess.map(c => {
                         if (c.id === comment.id) {
                             return {
@@ -175,10 +179,10 @@ export async function processPullRequestCommentJob(job) {
                         return c;
                     })
                 };
-                
+
                 const timestamp = Date.now();
                 const newJobId = `pr-comments-restart-${repoOwner}-${repoName}-${pullRequestNumber}-${timestamp}`;
-                
+
                 await issueQueue.add('processPullRequestComment', updatedJobData, { jobId: newJobId });
                 
                 correlatedLogger.info({
