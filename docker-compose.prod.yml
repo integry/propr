@@ -44,6 +44,7 @@ services:
     ports:
       - "80:80"
       - "4000:4000"
+      - "${WEBHOOK_PORT:-9090}:4000"
     environment:
       NODE_ENV: production
       REDIS_HOST: redis
@@ -61,11 +62,14 @@ services:
       DB_USER: ${DB_USER}
       DB_NAME: ${DB_NAME}
       DB_PASSWORD: ${DB_PASSWORD}
+      GH_WEBHOOK_SECRET: ${GH_WEBHOOK_SECRET}
     depends_on:
       redis:
         condition: service_healthy
       db:
         condition: service_healthy
+      daemon:
+        condition: service_started
     networks:
       - gitfix-network
 
@@ -74,8 +78,6 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    ports:
-      - "${WEBHOOK_PORT:-9090}:${WEBHOOK_PORT:-9090}"
     environment:
       NODE_ENV: production
       REDIS_HOST: redis

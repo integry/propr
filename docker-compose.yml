@@ -55,8 +55,6 @@ services:
       dockerfile: Dockerfile.node
     container_name: gitfix-daemon
     command: npm run daemon
-    ports:
-      - "${WEBHOOK_PORT:-9090}:${WEBHOOK_PORT:-9090}"
     volumes:
       - ./logs:/usr/src/app/logs
       - /tmp/git-processor:/tmp/git-processor
@@ -115,6 +113,7 @@ services:
     command: sh -c "cd /usr/src/app/packages/dashboard && node server.js"
     ports:
       - '4000:4000'
+      - "${WEBHOOK_PORT:-9090}:4000"
     volumes:
       - ~/.claude:/root/.claude:ro
       - /tmp/claude-logs:/tmp/claude-logs:ro
@@ -127,6 +126,8 @@ services:
         condition: service_started
       db:
         condition: service_healthy
+      daemon:
+        condition: service_started
     networks:
       - gitfix-net
 

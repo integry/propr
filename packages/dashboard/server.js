@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
 const { createClient } = require('redis');
 const { Queue } = require('bullmq');
 const path = require('path');
@@ -10,6 +11,7 @@ const { getLLMMetricsSummary, getLLMMetricsByCorrelationId } = require('./llmMet
 
 let generateCorrelationId;
 let configRepoManager;
+let processWebhookEvent;
 let db = null;
 let isDbEnabled = false;
 
@@ -20,6 +22,8 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true
 }));
+
+app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
 // Setup authentication
@@ -1565,6 +1569,50 @@ app.post('/api/config/primary-processing-labels', ensureAuthenticated, async (re
   }
 });
 
+app.post('/webhook', async (req, res) => {
+  const correlationId = generateCorrelationId();
+  
+  try {
+    const signature = req.headers['x-hub-signature-256'];
+    const webhookSecret = process.env.GH_WEBHOOK_SECRET;
+    
+    if (webhookSecret) {
+      if (!signature) {
+        console.error('[webhook] No signature provided');
+        return res.status(401).send('No webhook signature provided.');
+      }
+      
+      const hmac = crypto.createHmac('sha256', webhookSecret);
+      hmac.update(req.body);
+      const computedSignature = `sha256=${hmac.digest('hex')}`;
+      
+      if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSignature))) {
+        console.error('[webhook] Signature mismatch');
+        return res.status(401).send('Webhook signature mismatch.');
+      }
+    } else {
+      console.warn('[webhook] Webhook secret not configured. Skipping signature verification.');
+    }
+    
+    const payload = JSON.parse(req.body.toString());
+    const event = req.headers['x-github-event'];
+    
+    console.log(`[webhook] Event received: ${event}, action: ${payload.action}, repo: ${payload.repository?.full_name}`);
+    
+    if (processWebhookEvent) {
+      await processWebhookEvent(payload, event, correlationId);
+    } else {
+      console.warn('[webhook] processWebhookEvent not initialized');
+    }
+    
+    res.status(200).send('Webhook processed.');
+  } catch (error) {
+    console.error('[webhook] Error processing webhook:', error);
+    const statusCode = (error.message === 'Webhook signature mismatch.' || error.message === 'No webhook signature provided.') ? 401 : 500;
+    res.status(statusCode).send(error.message);
+  }
+});
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
@@ -1641,6 +1689,15 @@ async function start() {
     generateCorrelationId = loggerModule.generateCorrelationId;
 
     configRepoManager = await import('../../src/config/configRepoManager.js');
+    
+    // Import webhook processing function
+    try {
+      const webhookModule = await import('../../src/webhook/webhookHandler.js');
+      processWebhookEvent = webhookModule.processWebhookEvent;
+      console.log('[webhook] Webhook handler initialized');
+    } catch (error) {
+      console.warn('[webhook] Failed to initialize webhook handler:', error.message);
+    }
 
     // Initialize PostgreSQL if enabled
     const dbModule = await import('../../src/db/postgres.js');

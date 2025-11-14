@@ -1,6 +1,4 @@
 import 'dotenv/config';
-import express from 'express';
-import crypto from 'crypto';
 import { getAuthenticatedOctokit } from './auth/githubAuth.js';
 import logger, { generateCorrelationId } from './utils/logger.js';
 import { withErrorHandling, handleError } from './utils/errorHandler.js';
@@ -10,6 +8,7 @@ import Redis from 'ioredis';
 import { resolveModelAlias, getDefaultModel } from './config/modelAliases.js';
 import { loadMonitoredRepos, ensureConfigRepoExists, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from './config/configRepoManager.js';
 import { db, isEnabled as isDbEnabled } from './db/postgres.js';
+import { initializeWebhookHandler } from './webhook/webhookHandler.js';
 
 // Create Redis client for activity logging
 const redisClient = new Redis({
@@ -32,10 +31,7 @@ let GITHUB_BOT_USERNAME = process.env.GITHUB_BOT_USERNAME;
 const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
 
-// Webhook configuration
 const ENABLE_WEBHOOKS = process.env.ENABLE_GITHUB_WEBHOOKS === 'true';
-const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 9090;
-const WEBHOOK_SECRET = process.env.GH_WEBHOOK_SECRET;
 
 let monitoredRepos = [];
 let GITHUB_USER_WHITELIST = (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u);
@@ -1057,113 +1053,6 @@ async function resetIssueLabels() {
     }
 }
 
-/**
- * Verifies GitHub webhook signature
- * @param {Buffer} buf - Raw request body
- * @param {string} signature - X-Hub-Signature-256 header value
- */
-function verifySignature(buf, signature) {
-    if (!WEBHOOK_SECRET) {
-        logger.warn('Webhook secret not configured. Skipping signature verification.');
-        return true;
-    }
-    
-    if (!signature) {
-        throw new Error('No webhook signature provided.');
-    }
-
-    const hmac = crypto.createHmac('sha256', WEBHOOK_SECRET);
-    hmac.update(buf);
-    const computedSignature = `sha256=${hmac.digest('hex')}`;
-
-    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computedSignature))) {
-        throw new Error('Webhook signature mismatch.');
-    }
-    
-    return true;
-}
-
-/**
- * Sets up the Express webhook server
- */
-async function setupWebhookServer() {
-    const app = express();
-    
-    app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-        const correlationId = generateCorrelationId();
-        const correlatedLogger = logger.withCorrelation(correlationId);
-        
-        try {
-            verifySignature(req.body, req.headers['x-hub-signature-256']);
-            
-            const payload = JSON.parse(req.body.toString());
-            const event = req.headers['x-github-event'];
-            
-            correlatedLogger.info({ event, action: payload.action, repo: payload.repository?.full_name }, 'Webhook event received');
-
-            switch (event) {
-                case 'issues':
-                    if (payload.action === 'labeled') {
-                        const [owner, repo] = payload.repository.full_name.split('/');
-                        const octokit = await getAuthenticatedOctokit();
-                        
-                        const issue = {
-                            id: payload.issue.id,
-                            number: payload.issue.number,
-                            title: payload.issue.title,
-                            url: payload.issue.html_url,
-                            repoOwner: owner,
-                            repoName: repo,
-                            labels: payload.issue.labels.map(l => l.name),
-                            targetModels: [],
-                            createdAt: payload.issue.created_at,
-                            updatedAt: payload.issue.updated_at
-                        };
-                        
-                        const identifiedModels = [];
-                        const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
-                        
-                        for (const label of payload.issue.labels) {
-                            const match = label.name.match(modelLabelRegex);
-                            if (match && match[1]) {
-                                const resolvedModel = resolveModelAlias(match[1]);
-                                identifiedModels.push(resolvedModel);
-                            }
-                        }
-                        
-                        issue.targetModels = identifiedModels.length > 0 ? identifiedModels : [DEFAULT_MODEL_NAME];
-                        
-                        await processDetectedIssue(issue, correlationId);
-                    }
-                    break;
-                    
-                case 'issue_comment':
-                    if (payload.action === 'created' && payload.issue.pull_request) {
-                        await processCommentEvent(payload, 'issue_comment', correlationId);
-                    }
-                    break;
-                    
-                case 'pull_request_review_comment':
-                    if (payload.action === 'created') {
-                        await processCommentEvent(payload, 'pull_request_review_comment', correlationId);
-                    }
-                    break;
-                    
-                default:
-                    correlatedLogger.debug({ event }, 'Ignoring webhook event');
-            }
-            
-            res.status(200).send('Webhook processed.');
-        } catch (error) {
-            correlatedLogger.error({ error: error.message, stack: error.stack }, 'Failed to process webhook');
-            res.status(error.message === 'Webhook signature mismatch.' || error.message === 'No webhook signature provided.' ? 401 : 500).send(error.message);
-        }
-    });
-
-    app.listen(WEBHOOK_PORT, () => {
-        logger.info({ port: WEBHOOK_PORT }, `GitHub Webhook listener started on port ${WEBHOOK_PORT}`);
-    });
-}
 
 /**
  * Starts the daemon with configured polling interval
@@ -1239,8 +1128,8 @@ async function startDaemon(options = {}) {
     if (ENABLE_WEBHOOKS) {
         logger.info({
             repositories: repos,
-            webhookPort: WEBHOOK_PORT,
-            webhookSecretConfigured: !!WEBHOOK_SECRET,
+            webhookEnabled: true,
+            webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
             primaryProcessingLabels: primaryProcessingLabels,
             modelLabelPattern: MODEL_LABEL_PATTERN,
             defaultModelName: DEFAULT_MODEL_NAME,
@@ -1251,11 +1140,12 @@ async function startDaemon(options = {}) {
             resetPerformed: !!options.reset
         }, 'GitHub Issue Detection Daemon starting in webhook mode...');
         
-        if (!WEBHOOK_SECRET) {
+        if (!process.env.GH_WEBHOOK_SECRET) {
             logger.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
         }
         
-        await setupWebhookServer();
+        await initializeWebhookHandler(processDetectedIssue, processCommentEvent);
+        logger.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');
     } else {
         logger.info({
             repositories: repos,
