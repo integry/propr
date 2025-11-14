@@ -1,7 +1,6 @@
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
-import { filterCommentByAuthor } from '../utils/commentFilters.js';
 
 let processDetectedIssue;
 let processCommentEvent;
@@ -64,52 +63,20 @@ export async function processWebhookEvent(payload, eventType, correlationId) {
             
         case 'issue_comment':
             if (payload.action === 'created' && payload.issue.pull_request) {
-                const commentAuthor = payload.comment.user.login;
-                const userType = payload.comment.user.type;
-                const filterResult = filterCommentByAuthor(commentAuthor, userType, correlationId);
-
-                if (filterResult.shouldFilter) {
-                    return; // Skip this comment
-                }
-
                 await processCommentEvent(payload, 'issue_comment', correlationId);
             } else if (payload.action === 'deleted' && payload.issue.pull_request) {
                 await handleCommentDeleted(payload, 'issue_comment', correlationId);
             } else if (payload.action === 'edited' && payload.issue.pull_request) {
-                const commentAuthor = payload.comment.user.login;
-                const userType = payload.comment.user.type;
-                const filterResult = filterCommentByAuthor(commentAuthor, userType, correlationId);
-
-                if (filterResult.shouldFilter) {
-                    return; // Skip this comment
-                }
-
                 await handleCommentEdited(payload, 'issue_comment', correlationId);
             }
             break;
 
         case 'pull_request_review_comment':
             if (payload.action === 'created') {
-                const commentAuthor = payload.comment.user.login;
-                const userType = payload.comment.user.type;
-                const filterResult = filterCommentByAuthor(commentAuthor, userType, correlationId);
-
-                if (filterResult.shouldFilter) {
-                    return; // Skip this comment
-                }
-
                 await processCommentEvent(payload, 'pull_request_review_comment', correlationId);
             } else if (payload.action === 'deleted') {
                 await handleCommentDeleted(payload, 'pull_request_review_comment', correlationId);
             } else if (payload.action === 'edited') {
-                const commentAuthor = payload.comment.user.login;
-                const userType = payload.comment.user.type;
-                const filterResult = filterCommentByAuthor(commentAuthor, userType, correlationId);
-
-                if (filterResult.shouldFilter) {
-                    return; // Skip this comment
-                }
-
                 await handleCommentEdited(payload, 'pull_request_review_comment', correlationId);
             }
             break;
