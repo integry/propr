@@ -873,11 +873,15 @@ app.post('/api/task/:taskId/deep-dive-analysis', ensureAuthenticated, async (req
     const latestExecution = await db('llm_executions')
       .where({ task_id: taskId })
       .orderBy('start_time', 'desc')
-      .first('execution_id', 'session_id', 'correlation_id');
+      .first('execution_id', 'session_id');
 
     if (!latestExecution) {
       return res.status(404).json({ error: 'No execution data found.' });
     }
+
+    const task = await db('tasks')
+      .where({ task_id: taskId })
+      .first('correlation_id');
 
     const settings = await configRepoManager.loadSettings();
     const advancedModel = settings.analysis_model_advanced || process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514';
@@ -887,7 +891,7 @@ app.post('/api/task/:taskId/deep-dive-analysis', ensureAuthenticated, async (req
     const analysisReport = await getExecutionAnalysis({
       executionId: latestExecution.execution_id,
       sessionId: latestExecution.session_id,
-      correlationId: latestExecution.correlation_id || `deep-dive-${Date.now()}`,
+      correlationId: task?.correlation_id || `deep-dive-${Date.now()}`,
       model: advancedModel,
     });
 
