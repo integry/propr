@@ -802,22 +802,15 @@ const TaskDetails: React.FC = () => {
       )}
 
       {/* 5. Execution Analysis */}
-      {analysisLoading ? (
-        <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
-          <div className="text-gray-600">Loading automated analysis...</div>
-        </div>
-      ) : analysis ? (
-        <div className="mb-6">
-          <h4 className="text-lg font-semibold text-gray-900 mb-4">Execution Analysis</h4>
-          <div className="space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-            {renderMarkdown(analysis)}
-          </div>
-        </div>
-      ) : (
-        <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
-          <div className="text-gray-500 text-sm">Automated analysis is pending...</div>
-        </div>
-      )}
+      <DeepDiveAnalysis
+        analysis={analysis}
+        loading={analysisLoading}
+        renderMarkdown={renderMarkdown}
+        title="Execution Analysis"
+        colorScheme="gray"
+        showButton={false}
+        emptyStateText="Automated analysis is pending..."
+      />
 
       {/* 5a. Deep-Dive Analysis Button and Display */}
       <DeepDiveAnalysis
