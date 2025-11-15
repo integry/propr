@@ -86,6 +86,21 @@ const TaskDetails: React.FC = () => {
   const renderMarkdown = (text) => {
     if (!text) return text;
 
+    // Ensure text is a string
+    if (typeof text !== 'string') {
+      // If it's an object, try to extract a meaningful string
+      if (typeof text === 'object') {
+        // Handle common object structures
+        if (text.report) return renderMarkdown(text.report);
+        if (text.analysis) return renderMarkdown(text.analysis);
+        if (text.content) return renderMarkdown(text.content);
+        // Otherwise convert to JSON string
+        return <pre className="whitespace-pre-wrap font-mono text-sm text-gray-700 bg-gray-50 p-4 rounded-md border border-gray-200">{JSON.stringify(text, null, 2)}</pre>;
+      }
+      // For other types, convert to string
+      return String(text);
+    }
+
     const parts: any[] = [];
     let lastIndex = 0;
 
@@ -151,7 +166,8 @@ const TaskDetails: React.FC = () => {
               </div>
             );
           } else {
-            let formatted = part.content;
+            // Ensure part.content is a string
+            let formatted = typeof part.content === 'string' ? part.content : String(part.content || '');
             // Reduce excessive line breaks (more than 2 newlines become 1)
             formatted = formatted.replace(/\n{3,}/g, '\n\n');
             formatted = formatted.replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h2>');
@@ -220,7 +236,10 @@ const TaskDetails: React.FC = () => {
   const highlightContent = (content) => {
     if (!searchQuery) return content;
 
-    const parts = content.split(new RegExp(`(${searchQuery})`, 'gi'));
+    // Ensure content is a string
+    const contentStr = typeof content === 'string' ? content : String(content);
+
+    const parts = contentStr.split(new RegExp(`(${searchQuery})`, 'gi'));
     let matchCount = 0;
 
     return parts.map((part, index) => {
@@ -879,10 +898,23 @@ const TaskDetails: React.FC = () => {
                         <p className={`font-semibold ${event.isError ? 'text-red-600' : 'text-green-600'}`}>Tool Result {event.isError ? '(Error)' : '(Success)'}</p>
                         <pre className="whitespace-pre-wrap font-mono text-xs text-gray-600 mt-1 max-h-40 overflow-y-auto">
                           {(() => {
-                            let resultText = typeof event.result === 'string'
-                              ? event.result
-                              : JSON.stringify(event.result, null, 2);
-                            
+                            // Ensure we always have a string
+                            let resultText;
+                            if (typeof event.result === 'string') {
+                              resultText = event.result;
+                            } else if (event.result === undefined) {
+                              resultText = '(undefined)';
+                            } else if (event.result === null) {
+                              resultText = '(null)';
+                            } else {
+                              try {
+                                resultText = JSON.stringify(event.result, null, 2);
+                              } catch (e) {
+                                resultText = String(event.result);
+                              }
+                            }
+
+                            // Now safely apply string operations
                             for (const prefix of WORKSPACE_PREFIXES) {
                               if (typeof prefix === 'string') {
                                 resultText = resultText.split(prefix).join('');
@@ -890,7 +922,7 @@ const TaskDetails: React.FC = () => {
                                 resultText = resultText.replace(new RegExp(prefix.source, 'g'), '');
                               }
                             }
-                            
+
                             return resultText;
                           })()}
                         </pre>
