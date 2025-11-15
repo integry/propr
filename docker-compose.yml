@@ -103,6 +103,7 @@ services:
       - ./logs:/usr/src/app/logs
       - /tmp/git-processor:/tmp/git-processor:ro
       - /tmp/claude-logs:/tmp/claude-logs:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
     depends_on:
