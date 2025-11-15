@@ -3,6 +3,8 @@ import { db } from '../db/postgres.js';
 import { generateExecutionAnalysisPrompt } from '../claude/prompts/promptGenerator.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import logger from '../utils/logger.js';
+import fs from 'fs';
+import path from 'path';
 
 const redis = new Redis({
   host: process.env.REDIS_HOST || 'redis',
@@ -49,7 +51,17 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
 
     const worktreeKey = `worktree:${task.task_id}`;
     const worktreeData = JSON.parse(await redis.get(worktreeKey) || '{}');
-    const worktreePath = worktreeData.worktreePath || '/tmp/analysis-worktree';
+
+    // For analysis, we don't actually need the worktree since we're only reading conversation logs
+    // Use the original worktree if available, otherwise create a temporary analysis directory
+    let worktreePath = worktreeData.worktreePath;
+
+    if (!worktreePath || !fs.existsSync(worktreePath)) {
+      // Create a temporary directory for analysis
+      worktreePath = path.join('/tmp', `analysis-${task.task_id}-${Date.now()}`);
+      fs.mkdirSync(worktreePath, { recursive: true });
+      correlatedLogger.info({ worktreePath }, 'Created temporary directory for analysis');
+    }
 
     const githubTokenKey = `github:token:${task.repository}`;
     const tokenData = await redis.get(githubTokenKey);
