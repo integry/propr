@@ -93,6 +93,26 @@ services:
     networks:
       - gitfix-net
 
+  analysis-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    container_name: gitfix-analysis-worker
+    command: npm run analysis-worker
+    volumes:
+      - ./logs:/usr/src/app/logs
+      - /tmp/git-processor:/tmp/git-processor:ro
+      - /tmp/claude-logs:/tmp/claude-logs:ro
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_started
+      db:
+        condition: service_healthy
+    networks:
+      - gitfix-net
+
   web-ui:
     build:
       context: ./gitfix-ui

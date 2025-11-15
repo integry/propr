@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { getTaskHistory, getTaskLiveDetails, getTaskAnalysis, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution, generateDeepDiveAnalysis } from '../api/gitfixApi';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import DeepDiveAnalysis from './DeepDiveAnalysis';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
@@ -800,132 +801,12 @@ const TaskDetails: React.FC = () => {
       )}
 
       {/* 5a. Deep-Dive Analysis Button and Display */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <h4 className="text-lg font-semibold text-gray-900">Deep-Dive Analysis (Advanced Model)</h4>
-          <button
-            onClick={handleDeepDive}
-            disabled={deepDiveLoading}
-            className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
-          >
-            {deepDiveLoading ? 'Analyzing...' : 'Run Deep-Dive Analysis'}
-          </button>
-        </div>
-        {deepDiveLoading && (
-          <div className="p-4 bg-purple-50 rounded-lg border border-purple-200">
-            <div className="text-purple-800">Running deep-dive analysis with advanced model...</div>
-          </div>
-        )}
-        {deepDiveAnalysis && !deepDiveLoading && (
-          <div className="space-y-4 p-4 bg-purple-50 rounded-lg border border-purple-200">
-            {deepDiveAnalysis.error ? (
-              <div className="text-red-600">{deepDiveAnalysis.error}</div>
-            ) : typeof deepDiveAnalysis === 'string' ? (
-              renderMarkdown(deepDiveAnalysis)
-            ) : (
-              <div className="space-y-4">
-                {/* Efficiency Score */}
-                {deepDiveAnalysis.efficiency_score !== undefined && (
-                  <div className="bg-white rounded-lg p-4 border border-purple-300">
-                    <h5 className="font-semibold text-purple-900 mb-2">Efficiency Score</h5>
-                    <div className="flex items-center gap-3">
-                      <div className="text-3xl font-bold text-purple-700">
-                        {deepDiveAnalysis.efficiency_score}/10
-                      </div>
-                      <div className="flex-1 bg-gray-200 rounded-full h-3">
-                        <div 
-                          className="bg-purple-600 h-3 rounded-full transition-all"
-                          style={{ width: `${deepDiveAnalysis.efficiency_score * 10}%` }}
-                        />
-                      </div>
-                    </div>
-                    {deepDiveAnalysis.efficiency_notes && (
-                      <p className="text-gray-700 mt-3 text-sm">{deepDiveAnalysis.efficiency_notes}</p>
-                    )}
-                  </div>
-                )}
-
-                {/* Tool Usage Summary */}
-                {deepDiveAnalysis.tool_usage_summary && (
-                  <div className="bg-white rounded-lg p-4 border border-purple-300">
-                    <h5 className="font-semibold text-purple-900 mb-3">Tool Usage Summary</h5>
-                    {deepDiveAnalysis.tool_usage_summary.most_used_tools && (
-                      <div className="mb-3">
-                        <p className="text-sm font-medium text-gray-700 mb-2">Most Used Tools:</p>
-                        <div className="flex flex-wrap gap-2">
-                          {deepDiveAnalysis.tool_usage_summary.most_used_tools.map((tool, idx) => (
-                            <span key={idx} className="bg-purple-100 text-purple-800 px-3 py-1 rounded-full text-sm font-medium">
-                              {tool}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {deepDiveAnalysis.tool_usage_summary.tool_appropriateness && (
-                      <div>
-                        <p className="text-sm font-medium text-gray-700 mb-1">Tool Appropriateness:</p>
-                        <p className="text-gray-700 text-sm">{deepDiveAnalysis.tool_usage_summary.tool_appropriateness}</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Error Analysis */}
-                {deepDiveAnalysis.error_analysis && (
-                  <div className="bg-white rounded-lg p-4 border border-purple-300">
-                    <h5 className="font-semibold text-purple-900 mb-2">Error Analysis</h5>
-                    <p className="text-gray-700 text-sm">{deepDiveAnalysis.error_analysis}</p>
-                  </div>
-                )}
-
-                {/* Prompt Quality Score */}
-                {deepDiveAnalysis.prompt_quality_score !== undefined && (
-                  <div className="bg-white rounded-lg p-4 border border-purple-300">
-                    <h5 className="font-semibold text-purple-900 mb-2">Prompt Quality Score</h5>
-                    <div className="flex items-center gap-3">
-                      <div className="text-3xl font-bold text-purple-700">
-                        {deepDiveAnalysis.prompt_quality_score}/10
-                      </div>
-                      <div className="flex-1 bg-gray-200 rounded-full h-3">
-                        <div 
-                          className="bg-purple-600 h-3 rounded-full transition-all"
-                          style={{ width: `${deepDiveAnalysis.prompt_quality_score * 10}%` }}
-                        />
-                      </div>
-                    </div>
-                    {deepDiveAnalysis.prompt_improvements && (
-                      <div className="mt-3">
-                        <p className="text-sm font-medium text-gray-700 mb-1">Suggested Improvements:</p>
-                        <p className="text-gray-700 text-sm">{deepDiveAnalysis.prompt_improvements}</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Recommendations */}
-                {deepDiveAnalysis.recommendations && deepDiveAnalysis.recommendations.length > 0 && (
-                  <div className="bg-white rounded-lg p-4 border border-purple-300">
-                    <h5 className="font-semibold text-purple-900 mb-3">Recommendations</h5>
-                    <ul className="space-y-2">
-                      {deepDiveAnalysis.recommendations.map((rec, idx) => (
-                        <li key={idx} className="flex items-start gap-2 text-sm text-gray-700">
-                          <span className="text-purple-600 mt-0.5">•</span>
-                          <span>{rec}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-        {!deepDiveAnalysis && !deepDiveLoading && (
-          <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-            <div className="text-gray-500 text-sm">Click "Run Deep-Dive Analysis" to generate an in-depth analysis using the advanced model.</div>
-          </div>
-        )}
-      </div>
+      <DeepDiveAnalysis
+        analysis={deepDiveAnalysis}
+        loading={deepDiveLoading}
+        onRunAnalysis={handleDeepDive}
+        renderMarkdown={renderMarkdown}
+      />
 
       {/* 6. Thinking Log */}
       {thinkingLogWithTimestamps.length > 0 && (
