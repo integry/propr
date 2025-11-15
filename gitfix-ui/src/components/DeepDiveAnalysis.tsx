@@ -84,7 +84,15 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
   let actualAnalysis = parsedAnalysis;
   if (parsedAnalysis && typeof parsedAnalysis === 'object' && 'report' in parsedAnalysis && parsedAnalysis.report) {
     try {
-      const reportParsed = JSON.parse(parsedAnalysis.report);
+      let reportText = parsedAnalysis.report;
+      
+      // Extract JSON from markdown code fence if present
+      const jsonMatch = reportText.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+      if (jsonMatch) {
+        reportText = jsonMatch[1].trim();
+      }
+      
+      const reportParsed = JSON.parse(reportText);
       actualAnalysis = { ...reportParsed, modelUsed: parsedAnalysis.modelUsed, generatedAt: parsedAnalysis.generatedAt };
     } catch (e) {
       actualAnalysis = parsedAnalysis;
