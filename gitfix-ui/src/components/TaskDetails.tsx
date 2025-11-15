@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getTaskHistory, getTaskLiveDetails, getTaskAnalysis, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution, getDeepDiveAnalysis, generateDeepDiveAnalysis } from '../api/gitfixApi';
+import { getTaskHistory, getTaskLiveDetails, getTaskAnalysis, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution, generateDeepDiveAnalysis } from '../api/gitfixApi';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import DeepDiveAnalysis from './DeepDiveAnalysis';
@@ -27,7 +27,6 @@ const TaskDetails: React.FC = () => {
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
   const [analysis, setAnalysis] = useState<any>(null);
   const [analysisLoading, setAnalysisLoading] = useState<boolean>(true);
-  const [deepDiveAnalysis, setDeepDiveAnalysis] = useState<any>(null);
   const [deepDiveLoading, setDeepDiveLoading] = useState<boolean>(false);
 
   const WORKSPACE_PREFIXES = [
@@ -342,22 +341,6 @@ const TaskDetails: React.FC = () => {
     fetchAnalysis();
   }, [taskId]);
 
-  useEffect(() => {
-    const fetchDeepDive = async () => {
-      if (!taskId) return;
-      
-      try {
-        const deepDiveData = await getDeepDiveAnalysis(taskId);
-        if (deepDiveData.analysis) {
-          setDeepDiveAnalysis(deepDiveData.analysis);
-        }
-      } catch (err) {
-        console.error('Error fetching deep-dive analysis:', err);
-      }
-    };
-
-    fetchDeepDive();
-  }, [taskId]);
 
   useEffect(() => {
     if (!taskId || history.length === 0) return;
@@ -538,12 +521,15 @@ const TaskDetails: React.FC = () => {
   const handleDeepDive = async () => {
     if (!taskId) return;
     setDeepDiveLoading(true);
-    setDeepDiveAnalysis(null);
     try {
       const data = await generateDeepDiveAnalysis(taskId);
-      setDeepDiveAnalysis(data.analysis);
+      setAnalysis(data.analysis);
     } catch (err) {
-      setDeepDiveAnalysis({ error: err.message || 'Failed to run deep-dive analysis.' });
+      if (err.message && err.message.includes('already been run')) {
+        alert('Deep-dive analysis has already been run for this task.');
+      } else {
+        setAnalysis({ error: err.message || 'Failed to run deep-dive analysis.' });
+      }
     } finally {
       setDeepDiveLoading(false);
     }
@@ -821,20 +807,14 @@ const TaskDetails: React.FC = () => {
       {/* 5. Execution Analysis */}
       <DeepDiveAnalysis
         analysis={analysis}
-        loading={analysisLoading}
+        loading={analysisLoading || deepDiveLoading}
         renderMarkdown={renderMarkdown}
         title="Execution Analysis"
         colorScheme="gray"
-        showButton={false}
-        emptyStateText="Automated analysis is pending..."
-      />
-
-      {/* 5a. Deep-Dive Analysis Button and Display */}
-      <DeepDiveAnalysis
-        analysis={deepDiveAnalysis}
-        loading={deepDiveLoading}
+        showButton={true}
+        buttonText="Run Deep-Dive Analysis"
         onRunAnalysis={handleDeepDive}
-        renderMarkdown={renderMarkdown}
+        emptyStateText="Automated analysis is pending..."
       />
 
       {/* 6. Thinking Log */}

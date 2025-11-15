@@ -23,7 +23,7 @@ async function processAnalysisJob(job) {
 
     await db('llm_executions')
       .where({ execution_id: executionId })
-      .update({ analysis_report: JSON.stringify(analysisReport) });
+      .update({ analysis_report: analysisReport });
 
     correlatedLogger.info({ executionId }, 'Execution analysis complete and saved.');
     return { success: true };
