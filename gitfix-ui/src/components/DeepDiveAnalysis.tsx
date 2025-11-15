@@ -67,11 +67,24 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
   let parsedAnalysis: DeepDiveAnalysisData | string | null = analysis;
   if (typeof analysis === 'string') {
     try {
-      parsedAnalysis = JSON.parse(analysis);
+      const firstParse = JSON.parse(analysis);
+      if (typeof firstParse === 'string') {
+        parsedAnalysis = JSON.parse(firstParse);
+      } else {
+        parsedAnalysis = firstParse;
+      }
     } catch (e) {
       parsedAnalysis = analysis;
     }
   }
+
+  const hasStructuredData = parsedAnalysis && typeof parsedAnalysis === 'object' && 
+    !('error' in parsedAnalysis) &&
+    (parsedAnalysis.efficiency_score !== undefined || 
+     parsedAnalysis.tool_usage_summary !== undefined ||
+     parsedAnalysis.error_analysis !== undefined ||
+     parsedAnalysis.prompt_quality_score !== undefined ||
+     parsedAnalysis.recommendations !== undefined);
 
   return (
     <div className="mb-6">
@@ -97,8 +110,8 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
           {typeof parsedAnalysis === 'object' && 'error' in parsedAnalysis && parsedAnalysis.error ? (
             <div className="text-red-600">{parsedAnalysis.error}</div>
           ) : typeof parsedAnalysis === 'string' ? (
-            renderMarkdown(parsedAnalysis)
-          ) : (
+            <div>{renderMarkdown(parsedAnalysis)}</div>
+          ) : hasStructuredData ? (
             <div className="space-y-4">
               {parsedAnalysis.efficiency_score !== undefined && (
                 <div className={`bg-white rounded-lg p-4 border ${scheme.cardBorder}`}>
@@ -187,6 +200,10 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
                   </ul>
                 </div>
               )}
+            </div>
+          ) : (
+            <div className="text-sm text-gray-700">
+              <pre className="whitespace-pre-wrap font-mono">{JSON.stringify(parsedAnalysis, null, 2)}</pre>
             </div>
           )}
         </div>

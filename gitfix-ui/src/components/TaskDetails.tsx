@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getTaskHistory, getTaskLiveDetails, getTaskAnalysis, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution, generateDeepDiveAnalysis } from '../api/gitfixApi';
+import { getTaskHistory, getTaskLiveDetails, getTaskAnalysis, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution, getDeepDiveAnalysis, generateDeepDiveAnalysis } from '../api/gitfixApi';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import DeepDiveAnalysis from './DeepDiveAnalysis';
@@ -340,6 +340,23 @@ const TaskDetails: React.FC = () => {
     };
 
     fetchAnalysis();
+  }, [taskId]);
+
+  useEffect(() => {
+    const fetchDeepDive = async () => {
+      if (!taskId) return;
+      
+      try {
+        const deepDiveData = await getDeepDiveAnalysis(taskId);
+        if (deepDiveData.analysis) {
+          setDeepDiveAnalysis(deepDiveData.analysis);
+        }
+      } catch (err) {
+        console.error('Error fetching deep-dive analysis:', err);
+      }
+    };
+
+    fetchDeepDive();
   }, [taskId]);
 
   useEffect(() => {

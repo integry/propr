@@ -233,6 +233,15 @@ export const stopTaskExecution = async (taskId) => {
   return response.json();
 };
 
+export const getDeepDiveAnalysis = async (taskId) => {
+  const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/deep-dive-analysis`, {
+    credentials: 'include'
+  });
+  if (response.status === 202) return { analysis: null, message: 'Deep-dive analysis not run yet...' };
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export const generateDeepDiveAnalysis = async (taskId) => {
   const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/deep-dive-analysis`, {
     method: 'POST',
