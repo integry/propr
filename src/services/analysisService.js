@@ -82,7 +82,13 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       fs.mkdirSync(worktreePath, { recursive: true });
       correlatedLogger.info({ worktreePath }, 'Created temporary directory for analysis');
     } else {
-      hasValidWorktree = true;
+      const gitPath = path.join(worktreePath, '.git');
+      if (fs.existsSync(gitPath)) {
+        hasValidWorktree = true;
+        correlatedLogger.info({ worktreePath, gitPath }, 'Valid git worktree found');
+      } else {
+        correlatedLogger.warn({ worktreePath, gitPath }, 'Worktree path exists but is not a valid git repository');
+      }
     }
 
     const localDiff = hasValidWorktree ? await getCommitDiff(worktreePath, correlationId) : null;
