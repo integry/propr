@@ -12,25 +12,25 @@ const redis = new Redis({
   port: process.env.REDIS_PORT || 6379,
 });
 
-async function getCommitDiff(worktreePath, correlationId) {
+async function getCommitDiff(worktreePath, commitHash, correlationId) {
   const correlatedLogger = logger.withCorrelation(correlationId);
   try {
-    const { stdout, stderr } = await execa('git', ['show', 'HEAD'], { 
+    const { stdout, stderr } = await execa('git', ['show', commitHash], { 
       cwd: worktreePath, 
       reject: false 
     });
     
     if (stderr) {
-      correlatedLogger.warn({ worktreePath, stderr }, 'git show HEAD reported non-fatal errors.');
+      correlatedLogger.warn({ worktreePath, commitHash, stderr }, `git show ${commitHash} reported non-fatal errors.`);
     }
     
     if (!stdout) {
-        correlatedLogger.warn({ worktreePath }, 'git show HEAD produced no output.');
+        correlatedLogger.warn({ worktreePath, commitHash }, `git show ${commitHash} produced no output.`);
         return null;
     }
     return stdout;
   } catch (error) {
-    correlatedLogger.error({ worktreePath, error: error.message }, 'Exception while running git show HEAD');
+    correlatedLogger.error({ worktreePath, commitHash, error: error.message }, `Exception while running git show ${commitHash}`);
     return null;
   }
 }
@@ -81,10 +81,43 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       reject: false 
     });
 
-    const localDiff = await getCommitDiff(worktreePath, correlationId);
+    const taskHistory = await db('task_history')
+      .where({ task_id: execution.task_id })
+      .whereNotNull('metadata')
+      .orderBy('timestamp', 'desc');
+    
+    let commitHash = null;
+    for (const history of taskHistory) {
+      try {
+        const metadata = JSON.parse(history.metadata || '{}');
+        if (metadata.commitResult?.commitHash) {
+          commitHash = metadata.commitResult.commitHash;
+          break;
+        }
+        if (metadata.commitHash) {
+          commitHash = metadata.commitHash;
+          break;
+        }
+        if (metadata.prResult?.commitHash) {
+          commitHash = metadata.prResult.commitHash;
+          break;
+        }
+      } catch (parseError) {
+        correlatedLogger.warn({ taskId: execution.task_id, error: parseError.message }, 'Failed to parse task history metadata');
+      }
+    }
+
+    let localDiff = null;
+    if (commitHash) {
+      correlatedLogger.info({ commitHash, taskId: execution.task_id }, 'Found commit hash in task history');
+      localDiff = await getCommitDiff(worktreePath, commitHash, correlationId);
+    } else {
+      correlatedLogger.warn({ taskId: execution.task_id }, 'No commit hash found in task history, commit diff will not be included');
+    }
     
     correlatedLogger.info({ 
-      worktreePath, 
+      worktreePath,
+      commitHash,
       hasCommitDiff: !!localDiff,
       diffLength: localDiff?.length 
     }, 'Commit diff retrieval result');

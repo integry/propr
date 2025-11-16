@@ -358,7 +358,8 @@ export class WorkerStateManager {
                 pr: (result.prUrl && result.prNumber) ? {
                     number: result.prNumber,
                     url: result.prUrl
-                } : null
+                } : null,
+                commitResult: result.commitResult || null
             }
         };
         

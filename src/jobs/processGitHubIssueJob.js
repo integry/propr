@@ -1041,7 +1041,11 @@ This is an emergency retry - the main implementation is complete, you just need 
                 claudeSuccess: claudeResult?.success || false,
                 prCreated: !!postProcessingResult?.pr,
                 prNumber: postProcessingResult?.pr?.number || null,
-                prUrl: postProcessingResult?.pr?.url || null
+                prUrl: postProcessingResult?.pr?.url || null,
+                commitResult: commitResult ? {
+                    commitHash: commitResult.commitHash,
+                    commitMessage: commitResult.commitMessage
+                } : null
             });
         } catch (stateError) {
             correlatedLogger.warn({ error: stateError.message }, 'Failed to update task state to completed');
