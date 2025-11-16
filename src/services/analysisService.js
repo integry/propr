@@ -75,14 +75,27 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     const worktreeData = JSON.parse(await redis.get(worktreeKey) || '{}');
 
     let worktreePath = worktreeData.worktreePath;
+    let hasValidWorktree = false;
 
     if (!worktreePath || !fs.existsSync(worktreePath)) {
       worktreePath = path.join('/tmp', `analysis-${task.task_id}-${Date.now()}`);
       fs.mkdirSync(worktreePath, { recursive: true });
       correlatedLogger.info({ worktreePath }, 'Created temporary directory for analysis');
+    } else {
+      hasValidWorktree = true;
     }
 
-    const localDiff = await getCommitDiff(worktreePath, correlationId);
+    const localDiff = hasValidWorktree ? await getCommitDiff(worktreePath, correlationId) : null;
+    
+    if (hasValidWorktree) {
+      correlatedLogger.info({ 
+        worktreePath, 
+        hasCommitDiff: !!localDiff,
+        diffLength: localDiff?.length 
+      }, 'Commit diff retrieval result');
+    } else {
+      correlatedLogger.warn({ worktreePath }, 'Skipping commit diff retrieval - worktree path is not valid');
+    }
 
     const metaPrompt = generateExecutionAnalysisPrompt(
       originalPrompt, 
