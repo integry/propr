@@ -71,37 +71,23 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       return { error: 'No task record found.' };
     }
 
-    const worktreeKey = `worktree:${task.task_id}`;
-    const worktreeData = JSON.parse(await redis.get(worktreeKey) || '{}');
-
-    let worktreePath = worktreeData.worktreePath;
-    let hasValidWorktree = false;
-
-    if (!worktreePath || !fs.existsSync(worktreePath)) {
-      worktreePath = path.join('/tmp', `analysis-${task.task_id}-${Date.now()}`);
-      fs.mkdirSync(worktreePath, { recursive: true });
-      correlatedLogger.info({ worktreePath }, 'Created temporary directory for analysis');
-    } else {
-      const gitPath = path.join(worktreePath, '.git');
-      if (fs.existsSync(gitPath)) {
-        hasValidWorktree = true;
-        correlatedLogger.info({ worktreePath, gitPath }, 'Valid git worktree found');
-      } else {
-        correlatedLogger.warn({ worktreePath, gitPath }, 'Worktree path exists but is not a valid git repository');
-      }
-    }
-
-    const localDiff = hasValidWorktree ? await getCommitDiff(worktreePath, correlationId) : null;
+    const mainRepoPath = '/home/node/workspace';
+    const worktreePath = mainRepoPath;
     
-    if (hasValidWorktree) {
-      correlatedLogger.info({ 
-        worktreePath, 
-        hasCommitDiff: !!localDiff,
-        diffLength: localDiff?.length 
-      }, 'Commit diff retrieval result');
-    } else {
-      correlatedLogger.warn({ worktreePath }, 'Skipping commit diff retrieval - worktree path is not valid');
-    }
+    correlatedLogger.info({ worktreePath }, 'Using main repository for commit diff retrieval');
+    
+    await execa('git', ['fetch', 'origin'], { 
+      cwd: worktreePath, 
+      reject: false 
+    });
+
+    const localDiff = await getCommitDiff(worktreePath, correlationId);
+    
+    correlatedLogger.info({ 
+      worktreePath, 
+      hasCommitDiff: !!localDiff,
+      diffLength: localDiff?.length 
+    }, 'Commit diff retrieval result');
 
     const metaPrompt = generateExecutionAnalysisPrompt(
       originalPrompt, 
