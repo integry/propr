@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getTaskHistory, getTaskLiveDetails, getTaskAnalysis, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution } from '../api/gitfixApi';
+import { getTaskHistory, getTaskLiveDetails, getTaskAnalysis, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution, generateDeepDiveAnalysis } from '../api/gitfixApi';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import DeepDiveAnalysis from './DeepDiveAnalysis';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
@@ -26,6 +27,7 @@ const TaskDetails: React.FC = () => {
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
   const [analysis, setAnalysis] = useState<any>(null);
   const [analysisLoading, setAnalysisLoading] = useState<boolean>(true);
+  const [deepDiveLoading, setDeepDiveLoading] = useState<boolean>(false);
 
   const WORKSPACE_PREFIXES = [
     '/home/node/workspace/',
@@ -82,6 +84,21 @@ const TaskDetails: React.FC = () => {
 
   const renderMarkdown = (text) => {
     if (!text) return text;
+
+    // Ensure text is a string
+    if (typeof text !== 'string') {
+      // If it's an object, try to extract a meaningful string
+      if (typeof text === 'object') {
+        // Handle common object structures
+        if (text.report) return renderMarkdown(text.report);
+        if (text.analysis) return renderMarkdown(text.analysis);
+        if (text.content) return renderMarkdown(text.content);
+        // Otherwise convert to JSON string
+        return <pre className="whitespace-pre-wrap font-mono text-sm text-gray-700 bg-gray-50 p-4 rounded-md border border-gray-200">{JSON.stringify(text, null, 2)}</pre>;
+      }
+      // For other types, convert to string
+      return String(text);
+    }
 
     const parts: any[] = [];
     let lastIndex = 0;
@@ -148,7 +165,8 @@ const TaskDetails: React.FC = () => {
               </div>
             );
           } else {
-            let formatted = part.content;
+            // Ensure part.content is a string
+            let formatted = typeof part.content === 'string' ? part.content : String(part.content || '');
             // Reduce excessive line breaks (more than 2 newlines become 1)
             formatted = formatted.replace(/\n{3,}/g, '\n\n');
             formatted = formatted.replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h2>');
@@ -217,7 +235,10 @@ const TaskDetails: React.FC = () => {
   const highlightContent = (content) => {
     if (!searchQuery) return content;
 
-    const parts = content.split(new RegExp(`(${searchQuery})`, 'gi'));
+    // Ensure content is a string
+    const contentStr = typeof content === 'string' ? content : String(content);
+
+    const parts = contentStr.split(new RegExp(`(${searchQuery})`, 'gi'));
     let matchCount = 0;
 
     return parts.map((part, index) => {
@@ -319,6 +340,7 @@ const TaskDetails: React.FC = () => {
 
     fetchAnalysis();
   }, [taskId]);
+
 
   useEffect(() => {
     if (!taskId || history.length === 0) return;
@@ -493,6 +515,23 @@ const TaskDetails: React.FC = () => {
       console.error('Error stopping execution:', err);
       alert(`Failed to stop execution: ${err.message || 'Unknown error'}`);
       setStoppingExecution(false);
+    }
+  };
+
+  const handleDeepDive = async () => {
+    if (!taskId) return;
+    setDeepDiveLoading(true);
+    try {
+      const data = await generateDeepDiveAnalysis(taskId);
+      setAnalysis(data.analysis);
+    } catch (err) {
+      if (err.message && err.message.includes('already been run')) {
+        alert('Deep-dive analysis has already been run for this task.');
+      } else {
+        setAnalysis({ error: err.message || 'Failed to run deep-dive analysis.' });
+      }
+    } finally {
+      setDeepDiveLoading(false);
     }
   };
 
@@ -766,22 +805,17 @@ const TaskDetails: React.FC = () => {
       )}
 
       {/* 5. Execution Analysis */}
-      {analysisLoading ? (
-        <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
-          <div className="text-gray-600">Loading automated analysis...</div>
-        </div>
-      ) : analysis ? (
-        <div className="mb-6">
-          <h4 className="text-lg font-semibold text-gray-900 mb-4">Execution Analysis</h4>
-          <div className="space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-            {renderMarkdown(analysis)}
-          </div>
-        </div>
-      ) : (
-        <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
-          <div className="text-gray-500 text-sm">Automated analysis is pending...</div>
-        </div>
-      )}
+      <DeepDiveAnalysis
+        analysis={analysis}
+        loading={analysisLoading || deepDiveLoading}
+        renderMarkdown={renderMarkdown}
+        title="Execution Analysis"
+        colorScheme="gray"
+        showButton={true}
+        buttonText="Run Deep-Dive Analysis"
+        onRunAnalysis={handleDeepDive}
+        emptyStateText="Automated analysis is pending..."
+      />
 
       {/* 6. Thinking Log */}
       {thinkingLogWithTimestamps.length > 0 && (
@@ -854,10 +888,23 @@ const TaskDetails: React.FC = () => {
                         <p className={`font-semibold ${event.isError ? 'text-red-600' : 'text-green-600'}`}>Tool Result {event.isError ? '(Error)' : '(Success)'}</p>
                         <pre className="whitespace-pre-wrap font-mono text-xs text-gray-600 mt-1 max-h-40 overflow-y-auto">
                           {(() => {
-                            let resultText = typeof event.result === 'string'
-                              ? event.result
-                              : JSON.stringify(event.result, null, 2);
-                            
+                            // Ensure we always have a string
+                            let resultText;
+                            if (typeof event.result === 'string') {
+                              resultText = event.result;
+                            } else if (event.result === undefined) {
+                              resultText = '(undefined)';
+                            } else if (event.result === null) {
+                              resultText = '(null)';
+                            } else {
+                              try {
+                                resultText = JSON.stringify(event.result, null, 2);
+                              } catch (e) {
+                                resultText = String(event.result);
+                              }
+                            }
+
+                            // Now safely apply string operations
                             for (const prefix of WORKSPACE_PREFIXES) {
                               if (typeof prefix === 'string') {
                                 resultText = resultText.split(prefix).join('');
@@ -865,7 +912,7 @@ const TaskDetails: React.FC = () => {
                                 resultText = resultText.replace(new RegExp(prefix.source, 'g'), '');
                               }
                             }
-                            
+
                             return resultText;
                           })()}
                         </pre>

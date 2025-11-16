@@ -862,6 +862,55 @@ app.get('/api/task/:taskId/analysis', ensureAuthenticated, async (req, res) => {
   }
 });
 
+
+app.post('/api/task/:taskId/deep-dive-analysis', ensureAuthenticated, async (req, res) => {
+  if (!isDbEnabled || !db) {
+    return res.status(503).json({ error: 'Database persistence is not enabled.' });
+  }
+
+  try {
+    const { taskId } = req.params;
+
+    const latestExecution = await db('llm_executions')
+      .where({ task_id: taskId })
+      .orderBy('start_time', 'desc')
+      .first('execution_id', 'session_id', 'analysis_report');
+
+    if (!latestExecution) {
+      return res.status(404).json({ error: 'No execution data found.' });
+    }
+
+    if (latestExecution.analysis_report && latestExecution.analysis_report.modelUsed !== 'claude-haiku-4-5') {
+      return res.status(400).json({ error: 'Deep-dive analysis has already been run for this task.' });
+    }
+
+    const task = await db('tasks')
+      .where({ task_id: taskId })
+      .first('correlation_id');
+
+    const settings = await configRepoManager.loadSettings();
+    const advancedModel = settings.analysis_model_advanced || process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514';
+
+    const { getExecutionAnalysis } = await import('../../src/services/analysisService.js');
+    
+    const analysisReport = await getExecutionAnalysis({
+      executionId: latestExecution.execution_id,
+      sessionId: latestExecution.session_id,
+      correlationId: task?.correlation_id || `deep-dive-${Date.now()}`,
+      model: advancedModel,
+    });
+
+    await db('llm_executions')
+      .where({ execution_id: latestExecution.execution_id })
+      .update({ analysis_report: analysisReport });
+
+    res.json({ analysis: analysisReport });
+  } catch (error) {
+    console.error('Error in /api/task/:taskId/deep-dive-analysis:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.get('/api/task/:taskId/docker-info', ensureAuthenticated, async (req, res) => {
   try {
     const { taskId: jobId } = req.params;

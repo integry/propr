@@ -232,3 +232,12 @@ export const stopTaskExecution = async (taskId) => {
   await handleApiResponse(response);
   return response.json();
 };
+
+export const generateDeepDiveAnalysis = async (taskId) => {
+  const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/deep-dive-analysis`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
