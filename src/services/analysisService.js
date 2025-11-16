@@ -4,12 +4,36 @@ import { generateExecutionAnalysisPrompt } from '../claude/prompts/promptGenerat
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import logger from '../utils/logger.js';
 import fs from 'fs';
+import { execa } from 'execa';
 import path from 'path';
 
 const redis = new Redis({
   host: process.env.REDIS_HOST || 'redis',
   port: process.env.REDIS_PORT || 6379,
 });
+
+async function getCommitDiff(worktreePath, correlationId) {
+  const correlatedLogger = logger.withCorrelation(correlationId);
+  try {
+    const { stdout, stderr } = await execa('git', ['show', 'HEAD'], { 
+      cwd: worktreePath, 
+      reject: false 
+    });
+    
+    if (stderr) {
+      correlatedLogger.warn({ worktreePath, stderr }, 'git show HEAD reported non-fatal errors.');
+    }
+    
+    if (!stdout) {
+        correlatedLogger.warn({ worktreePath }, 'git show HEAD produced no output.');
+        return null;
+    }
+    return stdout;
+  } catch (error) {
+    correlatedLogger.error({ worktreePath, error: error.message }, 'Exception while running git show HEAD');
+    return null;
+  }
+}
 
 export async function getExecutionAnalysis({ executionId, sessionId, correlationId, model }) {
   const correlatedLogger = logger.withCorrelation(correlationId);
@@ -47,21 +71,25 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       return { error: 'No task record found.' };
     }
 
-    const metaPrompt = generateExecutionAnalysisPrompt(originalPrompt, conversationLog, model);
-
     const worktreeKey = `worktree:${task.task_id}`;
     const worktreeData = JSON.parse(await redis.get(worktreeKey) || '{}');
 
-    // For analysis, we don't actually need the worktree since we're only reading conversation logs
-    // Use the original worktree if available, otherwise create a temporary analysis directory
     let worktreePath = worktreeData.worktreePath;
 
     if (!worktreePath || !fs.existsSync(worktreePath)) {
-      // Create a temporary directory for analysis
       worktreePath = path.join('/tmp', `analysis-${task.task_id}-${Date.now()}`);
       fs.mkdirSync(worktreePath, { recursive: true });
       correlatedLogger.info({ worktreePath }, 'Created temporary directory for analysis');
     }
+
+    const localDiff = await getCommitDiff(worktreePath, correlationId);
+
+    const metaPrompt = generateExecutionAnalysisPrompt(
+      originalPrompt, 
+      conversationLog, 
+      model,
+      localDiff
+    );
 
     const githubTokenKey = `github:token:${task.repository}`;
     const tokenData = await redis.get(githubTokenKey);
