@@ -10,6 +10,8 @@ interface DeepDiveAnalysisData {
   error_analysis?: string;
   prompt_quality_score?: number;
   prompt_improvements?: string;
+  implementation_critique?: string;
+  implementation_critique_score?: number;
   recommendations?: string[];
   error?: string;
   report?: string;
@@ -99,12 +101,13 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
     }
   }
 
-  const hasStructuredData = actualAnalysis && typeof actualAnalysis === 'object' && 
+  const hasStructuredData = actualAnalysis && typeof actualAnalysis === 'object' &&
     !('error' in actualAnalysis) &&
-    (actualAnalysis.efficiency_score !== undefined || 
+    (actualAnalysis.efficiency_score !== undefined ||
      actualAnalysis.tool_usage_summary !== undefined ||
      actualAnalysis.error_analysis !== undefined ||
      actualAnalysis.prompt_quality_score !== undefined ||
+     actualAnalysis.implementation_critique !== undefined ||
      actualAnalysis.recommendations !== undefined);
 
   const isAdvancedModel = parsedAnalysis && typeof parsedAnalysis === 'object' && 
@@ -155,26 +158,72 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
             <div>{renderMarkdown(actualAnalysis)}</div>
           ) : hasStructuredData ? (
             <div className="space-y-4">
-              {actualAnalysis.efficiency_score !== undefined && (
+              {/* 1. Implementation Critique */}
+              {actualAnalysis.implementation_critique && (
                 <div className={`bg-white rounded-lg p-4 border ${scheme.cardBorder}`}>
-                  <h5 className={`font-semibold mb-2 ${scheme.heading}`}>Efficiency Score</h5>
-                  <div className="flex items-center gap-3">
-                    <div className={`text-3xl font-bold ${scheme.heading}`}>
-                      {actualAnalysis.efficiency_score}/10
-                    </div>
-                    <div className="flex-1 bg-gray-200 rounded-full h-3">
-                      <div 
-                        className={`h-3 rounded-full transition-all ${scheme.progress}`}
-                        style={{ width: `${actualAnalysis.efficiency_score * 10}%` }}
-                      />
-                    </div>
+                  <div className="flex items-center gap-3 mb-2">
+                    {actualAnalysis.implementation_critique_score !== undefined && (
+                      <span className={`px-2 py-1 text-xs font-bold rounded ${scheme.badge}`}>
+                        {actualAnalysis.implementation_critique_score}/10
+                      </span>
+                    )}
+                    <h5 className={`font-semibold ${scheme.heading}`}>Implementation Critique</h5>
                   </div>
-                  {actualAnalysis.efficiency_notes && (
-                    <p className="text-gray-700 mt-3 text-sm">{actualAnalysis.efficiency_notes}</p>
+                  <div className="text-gray-700 text-sm prose prose-sm max-w-none">
+                    {renderMarkdown(actualAnalysis.implementation_critique)}
+                  </div>
+                </div>
+              )}
+
+              {/* 2. Prompt Quality */}
+              {actualAnalysis.prompt_quality_score !== undefined && (
+                <div className={`bg-white rounded-lg p-4 border ${scheme.cardBorder}`}>
+                  <div className="flex items-center gap-3 mb-2">
+                    <span className={`px-2 py-1 text-xs font-bold rounded ${scheme.badge}`}>
+                      {actualAnalysis.prompt_quality_score}/10
+                    </span>
+                    <h5 className={`font-semibold ${scheme.heading}`}>Prompt Quality</h5>
+                  </div>
+                  {actualAnalysis.prompt_improvements && (
+                    <div>
+                      <p className="text-sm font-medium text-gray-700 mb-1">Suggested Improvements:</p>
+                      <p className="text-gray-700 text-sm">{actualAnalysis.prompt_improvements}</p>
+                    </div>
                   )}
                 </div>
               )}
 
+              {/* 3. Efficiency Score */}
+              {actualAnalysis.efficiency_score !== undefined && (
+                <div className={`bg-white rounded-lg p-4 border ${scheme.cardBorder}`}>
+                  <div className="flex items-center gap-3 mb-2">
+                    <span className={`px-2 py-1 text-xs font-bold rounded ${scheme.badge}`}>
+                      {actualAnalysis.efficiency_score}/10
+                    </span>
+                    <h5 className={`font-semibold ${scheme.heading}`}>Efficiency</h5>
+                  </div>
+                  {actualAnalysis.efficiency_notes && (
+                    <p className="text-gray-700 text-sm">{actualAnalysis.efficiency_notes}</p>
+                  )}
+                </div>
+              )}
+
+              {/* 4. Recommendations */}
+              {actualAnalysis.recommendations && actualAnalysis.recommendations.length > 0 && (
+                <div className={`bg-white rounded-lg p-4 border ${scheme.cardBorder}`}>
+                  <h5 className={`font-semibold mb-3 ${scheme.heading}`}>Recommendations</h5>
+                  <ul className="space-y-2">
+                    {actualAnalysis.recommendations.map((rec, idx) => (
+                      <li key={idx} className="flex items-start gap-2 text-sm text-gray-700">
+                        <span className={`mt-0.5 ${scheme.bullet}`}>•</span>
+                        <span>{rec}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* 5. Tool Usage */}
               {actualAnalysis.tool_usage_summary && (
                 <div className={`bg-white rounded-lg p-4 border ${scheme.cardBorder}`}>
                   <h5 className={`font-semibold mb-3 ${scheme.heading}`}>Tool Usage Summary</h5>
@@ -199,47 +248,11 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
                 </div>
               )}
 
+              {/* 6. Errors */}
               {actualAnalysis.error_analysis && (
                 <div className={`bg-white rounded-lg p-4 border ${scheme.cardBorder}`}>
                   <h5 className={`font-semibold mb-2 ${scheme.heading}`}>Error Analysis</h5>
                   <p className="text-gray-700 text-sm">{actualAnalysis.error_analysis}</p>
-                </div>
-              )}
-
-              {actualAnalysis.prompt_quality_score !== undefined && (
-                <div className={`bg-white rounded-lg p-4 border ${scheme.cardBorder}`}>
-                  <h5 className={`font-semibold mb-2 ${scheme.heading}`}>Prompt Quality Score</h5>
-                  <div className="flex items-center gap-3">
-                    <div className={`text-3xl font-bold ${scheme.heading}`}>
-                      {actualAnalysis.prompt_quality_score}/10
-                    </div>
-                    <div className="flex-1 bg-gray-200 rounded-full h-3">
-                      <div 
-                        className={`h-3 rounded-full transition-all ${scheme.progress}`}
-                        style={{ width: `${actualAnalysis.prompt_quality_score * 10}%` }}
-                      />
-                    </div>
-                  </div>
-                  {actualAnalysis.prompt_improvements && (
-                    <div className="mt-3">
-                      <p className="text-sm font-medium text-gray-700 mb-1">Suggested Improvements:</p>
-                      <p className="text-gray-700 text-sm">{actualAnalysis.prompt_improvements}</p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {actualAnalysis.recommendations && actualAnalysis.recommendations.length > 0 && (
-                <div className={`bg-white rounded-lg p-4 border ${scheme.cardBorder}`}>
-                  <h5 className={`font-semibold mb-3 ${scheme.heading}`}>Recommendations</h5>
-                  <ul className="space-y-2">
-                    {actualAnalysis.recommendations.map((rec, idx) => (
-                      <li key={idx} className="flex items-start gap-2 text-sm text-gray-700">
-                        <span className={`mt-0.5 ${scheme.bullet}`}>•</span>
-                        <span>{rec}</span>
-                      </li>
-                    ))}
-                  </ul>
                 </div>
               )}
             </div>

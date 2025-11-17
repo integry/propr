@@ -4,12 +4,41 @@ import { generateExecutionAnalysisPrompt } from '../claude/prompts/promptGenerat
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import logger from '../utils/logger.js';
 import fs from 'fs';
+import { execa } from 'execa';
 import path from 'path';
 
 const redis = new Redis({
   host: process.env.REDIS_HOST || 'redis',
   port: process.env.REDIS_PORT || 6379,
 });
+
+async function getCommitDiff(worktreePath, commitHash, correlationId) {
+  const correlatedLogger = logger.withCorrelation(correlationId);
+  try {
+    // Add the directory to git's safe.directory list to avoid dubious ownership errors
+    await execa('git', ['config', '--global', '--add', 'safe.directory', worktreePath], {
+      reject: false
+    });
+
+    const { stdout, stderr } = await execa('git', ['show', commitHash], {
+      cwd: worktreePath,
+      reject: false
+    });
+
+    if (stderr && !stdout) {
+      correlatedLogger.warn({ worktreePath, commitHash, stderr }, `git show ${commitHash} reported errors.`);
+    }
+
+    if (!stdout) {
+        correlatedLogger.warn({ worktreePath, commitHash }, `git show ${commitHash} produced no output.`);
+        return null;
+    }
+    return stdout;
+  } catch (error) {
+    correlatedLogger.error({ worktreePath, commitHash, error: error.message }, `Exception while running git show ${commitHash}`);
+    return null;
+  }
+}
 
 export async function getExecutionAnalysis({ executionId, sessionId, correlationId, model }) {
   const correlatedLogger = logger.withCorrelation(correlationId);
@@ -41,27 +70,88 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     const task = await db('tasks')
       .where({ task_id: execution.task_id })
       .first();
-    
+
     if (!task) {
       correlatedLogger.warn({ executionId, taskId: execution.task_id }, 'No task record found.');
       return { error: 'No task record found.' };
     }
 
-    const metaPrompt = generateExecutionAnalysisPrompt(originalPrompt, conversationLog, model);
+    // Construct the path to the cloned repository
+    // task.repository is in format "owner/repo", e.g., "integry/gitfix"
+    const worktreePath = `/tmp/git-processor/clones/${task.repository}`;
 
-    const worktreeKey = `worktree:${task.task_id}`;
-    const worktreeData = JSON.parse(await redis.get(worktreeKey) || '{}');
+    correlatedLogger.info({ worktreePath, repository: task.repository }, 'Using cloned repository for commit diff retrieval');
 
-    // For analysis, we don't actually need the worktree since we're only reading conversation logs
-    // Use the original worktree if available, otherwise create a temporary analysis directory
-    let worktreePath = worktreeData.worktreePath;
-
-    if (!worktreePath || !fs.existsSync(worktreePath)) {
-      // Create a temporary directory for analysis
-      worktreePath = path.join('/tmp', `analysis-${task.task_id}-${Date.now()}`);
-      fs.mkdirSync(worktreePath, { recursive: true });
-      correlatedLogger.info({ worktreePath }, 'Created temporary directory for analysis');
+    // Check if the repository path exists
+    if (!fs.existsSync(worktreePath)) {
+      correlatedLogger.warn({ worktreePath }, 'Repository path does not exist, commit diff will not be available');
+    } else {
+      // Fetch latest changes to ensure commit is available
+      await execa('git', ['fetch', 'origin'], {
+        cwd: worktreePath,
+        reject: false
+      });
     }
+
+    const taskHistory = await db('task_history')
+      .where({ task_id: execution.task_id })
+      .whereNotNull('metadata')
+      .orderBy('timestamp', 'desc');
+    
+    let commitHash = null;
+    for (const history of taskHistory) {
+      try {
+        // metadata is already an object when using JSONB column type
+        const metadata = typeof history.metadata === 'string'
+          ? JSON.parse(history.metadata)
+          : (history.metadata || {});
+        if (metadata.commitResult?.commitHash) {
+          commitHash = metadata.commitResult.commitHash;
+          break;
+        }
+        if (metadata.commitHash) {
+          commitHash = metadata.commitHash;
+          break;
+        }
+        if (metadata.prResult?.commitHash) {
+          commitHash = metadata.prResult.commitHash;
+          break;
+        }
+        // Fallback: try to extract commit hash from GitHub comment body
+        if (metadata.githubComment?.body) {
+          const match = metadata.githubComment.body.match(/\bcommit ([a-f0-9]{7,40})\b/i);
+          if (match) {
+            commitHash = match[1];
+            correlatedLogger.info({ taskId: execution.task_id, commitHash }, 'Extracted commit hash from GitHub comment body');
+            break;
+          }
+        }
+      } catch (parseError) {
+        correlatedLogger.warn({ taskId: execution.task_id, error: parseError.message }, 'Failed to parse task history metadata');
+      }
+    }
+
+    let localDiff = null;
+    if (commitHash) {
+      correlatedLogger.info({ commitHash, taskId: execution.task_id }, 'Found commit hash in task history');
+      localDiff = await getCommitDiff(worktreePath, commitHash, correlationId);
+    } else {
+      correlatedLogger.warn({ taskId: execution.task_id }, 'No commit hash found in task history, commit diff will not be included');
+    }
+    
+    correlatedLogger.info({ 
+      worktreePath,
+      commitHash,
+      hasCommitDiff: !!localDiff,
+      diffLength: localDiff?.length 
+    }, 'Commit diff retrieval result');
+
+    const metaPrompt = generateExecutionAnalysisPrompt(
+      originalPrompt, 
+      conversationLog, 
+      model,
+      localDiff
+    );
 
     const githubTokenKey = `github:token:${task.repository}`;
     const tokenData = await redis.get(githubTokenKey);

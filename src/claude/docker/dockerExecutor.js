@@ -1,4 +1,5 @@
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
+import fs from 'fs';
 import logger from '../../utils/logger.js';
 
 const CLAUDE_DOCKER_IMAGE = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
@@ -7,14 +8,51 @@ export function executeDockerCommand(command, args, options = {}) {
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath } = options;
 
-        // Use full path for docker command to avoid PATH resolution issues
-        const executablePath = command === 'docker' ? '/usr/bin/docker' : command;
+        let executablePath = command;
+        if (command === 'docker') {
+            const possiblePaths = [
+                '/usr/bin/docker',
+                '/usr/local/bin/docker',
+                '/bin/docker'
+            ];
 
-        const child = spawn(executablePath, args, {
-            cwd,
+            // Try to find docker at known locations
+            let found = false;
+            for (const dockerPath of possiblePaths) {
+                try {
+                    if (fs.existsSync(dockerPath)) {
+                        // Check if it's executable
+                        fs.accessSync(dockerPath, fs.constants.X_OK);
+                        executablePath = dockerPath;
+                        found = true;
+                        logger.debug({ dockerPath }, 'Found docker executable');
+                        break;
+                    }
+                } catch (err) {
+                    // Continue to next path
+                }
+            }
+
+            // Fall back to 'docker' in PATH
+            if (!found) {
+                executablePath = 'docker';
+                logger.debug('Using docker from PATH');
+            }
+        }
+
+        // Check if cwd exists before using it
+        const spawnOptions = {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: process.env
-        });
+        };
+
+        if (cwd && fs.existsSync(cwd)) {
+            spawnOptions.cwd = cwd;
+        } else if (cwd) {
+            logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
+        }
+
+        const child = spawn(executablePath, args, spawnOptions);
 
         let stdout = '';
         let stderr = '';
@@ -38,7 +76,6 @@ export function executeDockerCommand(command, args, options = {}) {
             setTimeout(async () => {
                 if (!containerIdDetected) {
                     try {
-                        const { execSync } = await import('child_process');
                         const containersOutput = execSync(
                             `/usr/bin/docker ps --filter "volume=${worktreePath}" --format "{{.ID}}:{{.Names}}" --latest`,
                             { encoding: 'utf8', timeout: 5000 }

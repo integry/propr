@@ -190,7 +190,8 @@ export class WorkerStateManager {
                         error: metadata.error,
                         worktreeInfo: metadata.worktreeInfo,
                         claudeResult: metadata.claudeResult,
-                        prResult: metadata.prResult
+                        prResult: metadata.prResult,
+                        commitHash: metadata.commitHash
                     })
                 };
                 
@@ -358,7 +359,8 @@ export class WorkerStateManager {
                 pr: (result.prUrl && result.prNumber) ? {
                     number: result.prNumber,
                     url: result.prUrl
-                } : null
+                } : null,
+                commitResult: result.commitResult || null
             }
         };
         
