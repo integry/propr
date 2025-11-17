@@ -40,11 +40,19 @@ export function executeDockerCommand(command, args, options = {}) {
             }
         }
 
-        const child = spawn(executablePath, args, {
-            cwd,
+        // Check if cwd exists before using it
+        const spawnOptions = {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: process.env
-        });
+        };
+
+        if (cwd && fs.existsSync(cwd)) {
+            spawnOptions.cwd = cwd;
+        } else if (cwd) {
+            logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
+        }
+
+        const child = spawn(executablePath, args, spawnOptions);
 
         let stdout = '';
         let stderr = '';
