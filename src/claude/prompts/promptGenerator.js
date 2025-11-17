@@ -138,6 +138,7 @@ Provide your analysis in JSON format:
   "prompt_quality_score": <1-10>,
   "prompt_improvements": "<suggestions>",
   "implementation_critique": "<code review of the commit diff>",
+  "implementation_critique_score": <1-10>,
   "recommendations": [
     "<recommendation 1>",
     "<recommendation 2>",
