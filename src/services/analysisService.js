@@ -105,6 +105,15 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
           commitHash = metadata.prResult.commitHash;
           break;
         }
+        // Fallback: try to extract commit hash from GitHub comment body
+        if (metadata.githubComment?.body) {
+          const match = metadata.githubComment.body.match(/\bcommit ([a-f0-9]{7,40})\b/i);
+          if (match) {
+            commitHash = match[1];
+            correlatedLogger.info({ taskId: execution.task_id, commitHash }, 'Extracted commit hash from GitHub comment body');
+            break;
+          }
+        }
       } catch (parseError) {
         correlatedLogger.warn({ taskId: execution.task_id, error: parseError.message }, 'Failed to parse task history metadata');
       }
