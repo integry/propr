@@ -75,6 +75,13 @@ const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 10
 const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || (2 * 60 * 1000), 10);
 
 async function processGitHubIssueJob(job) {
+    // --- Matrix Dispatcher Check ---
+    if (!job.data.isChildJob) {
+        // This is an original job, act as dispatcher
+        return await handleDispatch(job);
+    }
+    // --- Child Job Execution ---
+    // All existing code now only runs for child jobs
     const { id: jobId, name: jobName, data: issueRef } = job;
     const correlationId = issueRef.correlationId || generateCorrelationId();
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -1226,6 +1233,97 @@ The job has been automatically rescheduled and will restart ${readableResetTime}
             
             throw error;
         }
+    }
+}
+
+/**
+ * Handles the dispatching of matrix jobs based on issue labels.
+ * This function is called for "original" jobs (isChildJob: false).
+ */
+async function handleDispatch(job) {
+    const { id: jobId, name: jobName, data: issueRef } = job;
+    const correlationId = issueRef.correlationId || generateCorrelationId();
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    correlatedLogger.info({ jobId, issueRef: issueRef.number }, 'Running as matrix dispatcher...');
+
+    let octokit;
+    let currentIssueData;
+    let repoValidation;
+
+    try {
+        // 1. Authenticate
+        octokit = await withRetry(
+            () => getAuthenticatedOctokit(),
+            { ...retryConfigs.githubApi, correlationId },
+            'get_authenticated_octokit_dispatcher'
+        );
+
+        // 2. Fetch Issue to read labels
+        currentIssueData = await withRetry(
+            () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner: issueRef.repoOwner,
+                repo: issueRef.repoName,
+                issue_number: issueRef.number,
+            }),
+            { ...retryConfigs.githubApi, correlationId },
+            `get_issue_${issueRef.number}_dispatcher`
+        );
+
+        // 3. Fetch Repo info for default branch
+        repoValidation = await validateRepositoryInfo(issueRef, octokit, correlationId);
+        if (!repoValidation.isValid) {
+            throw new Error('Repository validation failed for dispatcher.');
+        }
+
+        // 4. Determine Matrix Axes
+        const defaultBranch = repoValidation.repoData.defaultBranch;
+        const defaultModel = DEFAULT_MODEL_NAME;
+        const labels = currentIssueData.data.labels.map(l => l.name);
+
+        const baseLabels = labels.filter(l => l.startsWith('base-'));
+        const llmLabels = labels.filter(l => l.startsWith('llm-'));
+
+        // If no 'base-*' labels, use default. Otherwise, use found labels.
+        const basesToProcess = baseLabels.length > 0
+            ? baseLabels.map(l => ({ branch: l.substring('base-'.length), label: l }))
+            : [{ branch: defaultBranch, label: null }];
+
+        // If no 'llm-*' labels, use default. Otherwise, use found labels.
+        const modelsToProcess = llmLabels.length > 0
+            ? llmLabels.map(l => ({ model: l.substring('llm-'.length), label: l }))
+            : [{ model: defaultModel, label: null }];
+
+        // 5. Create and Enqueue Child Jobs (Cartesian Product)
+        let jobsEnqueued = 0;
+        for (const base of basesToProcess) {
+            for (const model of modelsToProcess) {
+                const newJobData = {
+                    ...issueRef,
+                    baseBranch: base.branch,
+                    baseLabel: base.label,
+                    modelName: model.model,
+                    modelLabel: model.label,
+                    isChildJob: true,
+                    issuePayload: currentIssueData.data,
+                    repoPayload: repoValidation.repoData
+                };
+
+                await issueQueue.add(jobName, newJobData);
+                jobsEnqueued++;
+                correlatedLogger.info({ jobId, issue: issueRef.number, base: base.branch, model: model.model }, 'Enqueued child job');
+            }
+        }
+
+        correlatedLogger.info({ jobId, issue: issueRef.number, jobsEnqueued }, 'Matrix dispatcher job complete.');
+
+    } catch (error) {
+        correlatedLogger.error({ 
+            jobId, 
+            issue: issueRef.number,
+            errMessage: error.message, 
+            stack: error.stack
+        }, 'Error in matrix dispatcher, job will fail and not dispatch children');
+        throw error;
     }
 }
 
