@@ -15,15 +15,20 @@ const redis = new Redis({
 async function getCommitDiff(worktreePath, commitHash, correlationId) {
   const correlatedLogger = logger.withCorrelation(correlationId);
   try {
-    const { stdout, stderr } = await execa('git', ['show', commitHash], { 
-      cwd: worktreePath, 
-      reject: false 
+    // Add the directory to git's safe.directory list to avoid dubious ownership errors
+    await execa('git', ['config', '--global', '--add', 'safe.directory', worktreePath], {
+      reject: false
     });
-    
-    if (stderr) {
-      correlatedLogger.warn({ worktreePath, commitHash, stderr }, `git show ${commitHash} reported non-fatal errors.`);
+
+    const { stdout, stderr } = await execa('git', ['show', commitHash], {
+      cwd: worktreePath,
+      reject: false
+    });
+
+    if (stderr && !stdout) {
+      correlatedLogger.warn({ worktreePath, commitHash, stderr }, `git show ${commitHash} reported errors.`);
     }
-    
+
     if (!stdout) {
         correlatedLogger.warn({ worktreePath, commitHash }, `git show ${commitHash} produced no output.`);
         return null;
@@ -65,21 +70,28 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     const task = await db('tasks')
       .where({ task_id: execution.task_id })
       .first();
-    
+
     if (!task) {
       correlatedLogger.warn({ executionId, taskId: execution.task_id }, 'No task record found.');
       return { error: 'No task record found.' };
     }
 
-    const mainRepoPath = '/home/node/workspace';
-    const worktreePath = mainRepoPath;
-    
-    correlatedLogger.info({ worktreePath }, 'Using main repository for commit diff retrieval');
-    
-    await execa('git', ['fetch', 'origin'], { 
-      cwd: worktreePath, 
-      reject: false 
-    });
+    // Construct the path to the cloned repository
+    // task.repository is in format "owner/repo", e.g., "integry/gitfix"
+    const worktreePath = `/tmp/git-processor/clones/${task.repository}`;
+
+    correlatedLogger.info({ worktreePath, repository: task.repository }, 'Using cloned repository for commit diff retrieval');
+
+    // Check if the repository path exists
+    if (!fs.existsSync(worktreePath)) {
+      correlatedLogger.warn({ worktreePath }, 'Repository path does not exist, commit diff will not be available');
+    } else {
+      // Fetch latest changes to ensure commit is available
+      await execa('git', ['fetch', 'origin'], {
+        cwd: worktreePath,
+        reject: false
+      });
+    }
 
     const taskHistory = await db('task_history')
       .where({ task_id: execution.task_id })
