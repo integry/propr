@@ -145,13 +145,18 @@ const getRepos = () => {
 async function processDetectedIssue(issue, correlationId) {
     const correlatedLogger = logger.withCorrelation(correlationId);
     const repoFullName = `${issue.repoOwner}/${issue.repoName}`;
-    
+
+    // Load primary processing labels if not already loaded (for webhook mode)
+    if (primaryProcessingLabels.length === 0) {
+        await loadPrimaryProcessingLabelsFromConfig();
+    }
+
     const allExcludeLabels = [];
     for (const label of primaryProcessingLabels) {
         allExcludeLabels.push(`${label}-processing`);
         allExcludeLabels.push(`${label}-done`);
     }
-    
+
     if (allExcludeLabels.some(excludeLabel => issue.labels.includes(excludeLabel))) {
         correlatedLogger.debug({
             issueNumber: issue.number,
@@ -159,11 +164,11 @@ async function processDetectedIssue(issue, correlationId) {
         }, 'Issue has exclude labels, skipping');
         return;
     }
-    
+
     const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl));
 
     if (!triggeringLabel) {
-        correlatedLogger.debug({
+        correlatedLogger.info({
             issueNumber: issue.number,
             repository: repoFullName,
             issueLabels: issue.labels,
