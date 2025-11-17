@@ -160,8 +160,18 @@ async function processDetectedIssue(issue, correlationId) {
         return;
     }
     
-    const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl)) || primaryProcessingLabels[0];
-    
+    const triggeringLabel = primaryProcessingLabels.find(pl => issue.labels.includes(pl));
+
+    if (!triggeringLabel) {
+        correlatedLogger.debug({
+            issueNumber: issue.number,
+            repository: repoFullName,
+            issueLabels: issue.labels,
+            expectedLabels: primaryProcessingLabels
+        }, 'Issue does not have any primary processing label, skipping');
+        return;
+    }
+
     const identifiedModels = [];
     const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
     

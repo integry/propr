@@ -94,7 +94,7 @@ async function processGitHubIssueJob(job) {
     const AI_PRIMARY_TAG = triggeringLabel;
     const PR_LABEL = await getPrLabel();
     
-    const modelName = issueRef.modelName || 'default';
+    const modelName = issueRef.modelName || DEFAULT_MODEL_NAME;
     await addModelSpecificDelay(modelName);
     
     correlatedLogger.debug({ 
@@ -157,15 +157,16 @@ async function processGitHubIssueJob(job) {
             reason: 'Starting issue processing'
         });
         
-        const currentIssueData = await withRetry(
-            () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-                owner: issueRef.repoOwner,
-                repo: issueRef.repoName,
-                issue_number: issueRef.number,
-            }),
-            { ...retryConfigs.githubApi, correlationId },
-            `get_issue_${issueRef.number}`
-        );
+        const currentIssueData = issueRef.issuePayload ? { data: issueRef.issuePayload } :
+            await withRetry(
+                () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                    owner: issueRef.repoOwner,
+                    repo: issueRef.repoName,
+                    issue_number: issueRef.number,
+                }),
+                { ...retryConfigs.githubApi, correlationId },
+                `get_issue_${issueRef.number}`
+            );
 
         const currentLabels = currentIssueData.data.labels.map(label => label.name);
         const hasProcessingTag = currentLabels.includes(AI_PROCESSING_TAG);
@@ -257,7 +258,8 @@ async function processGitHubIssueJob(job) {
             repo: issueRef.repoName 
         }, 'Validating repository access...');
         
-        const repoValidation = await validateRepositoryInfo(issueRef, octokit, correlationId);
+        const repoValidation = issueRef.repoPayload ? { isValid: true, repoData: issueRef.repoPayload } :
+            await validateRepositoryInfo(issueRef, octokit, correlationId);
         
         const githubToken = await octokit.auth();
         const repoUrl = getRepoUrl(issueRef);
@@ -294,7 +296,7 @@ async function processGitHubIssueJob(job) {
                 currentIssueData.data.title,
                 issueRef.repoOwner,
                 issueRef.repoName,
-                null,
+                issueRef.baseBranch || null,
                 octokit,
                 modelName
             );
@@ -646,7 +648,7 @@ ${completionComment}
                         repo: issueRef.repoName,
                         title: prTitle,
                         head: worktreeInfo.branchName,
-                        base: repoValidation.repoData.defaultBranch,
+                        base: issueRef.baseBranch || repoValidation.repoData.defaultBranch,
                         body: prBody,
                         draft: false
                     });
@@ -658,11 +660,17 @@ ${completionComment}
                         prUrl: prResponse.data.html_url
                     }, 'PR created successfully');
 
+                    const labelsToAdd = [PR_LABEL];
+                    if (issueRef.baseLabel) labelsToAdd.push(issueRef.baseLabel);
+                    if (issueRef.modelLabel) labelsToAdd.push(issueRef.modelLabel);
+
+                    correlatedLogger.info({ jobId, prNumber: prResponse.data.number, labels: labelsToAdd }, 'Adding labels to new PR');
+
                     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
                         owner: issueRef.repoOwner,
                         repo: issueRef.repoName,
                         issue_number: prResponse.data.number,
-                        labels: [PR_LABEL]
+                        labels: labelsToAdd
                     });
 
                     postProcessingResult = {
