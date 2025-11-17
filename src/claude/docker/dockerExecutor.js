@@ -7,8 +7,28 @@ export function executeDockerCommand(command, args, options = {}) {
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath } = options;
 
-        // Use full path for docker command to avoid PATH resolution issues
-        const executablePath = command === 'docker' ? '/usr/bin/docker' : command;
+        let executablePath = command;
+        if (command === 'docker') {
+            const possiblePaths = [
+                '/usr/bin/docker',
+                '/usr/local/bin/docker',
+                '/bin/docker',
+                'docker'
+            ];
+            
+            const { execSync } = require('child_process');
+            for (const dockerPath of possiblePaths) {
+                try {
+                    execSync(`which ${dockerPath}`, { stdio: 'ignore' });
+                    executablePath = dockerPath;
+                    break;
+                } catch (err) {
+                    if (dockerPath === possiblePaths[possiblePaths.length - 1]) {
+                        executablePath = 'docker';
+                    }
+                }
+            }
+        }
 
         const child = spawn(executablePath, args, {
             cwd,
