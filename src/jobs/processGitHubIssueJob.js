@@ -76,8 +76,15 @@ const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || (2 * 60 * 10
 
 async function processGitHubIssueJob(job) {
     // --- Matrix Dispatcher Check ---
+    logger.debug({
+        jobId: job.id,
+        isChildJob: job.data.isChildJob,
+        hasModelName: !!job.data.modelName
+    }, 'Checking if job should be dispatched');
+
     if (!job.data.isChildJob) {
         // This is an original job, act as dispatcher
+        logger.info({ jobId: job.id }, 'Running as matrix dispatcher');
         return await handleDispatch(job);
     }
     // --- Child Job Execution ---
@@ -314,7 +321,7 @@ async function processGitHubIssueJob(job) {
                 owner: issueRef.repoOwner,
                 repo: issueRef.repoName,
                 issue_number: issueRef.number,
-                body: `🤖 AI processing has started for this issue using **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${repoValidation.repoData.defaultBranch}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\``,
+                body: `🤖 AI processing has started for this issue using **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData.defaultBranch}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\``,
             });
             
             logger.info({ 
