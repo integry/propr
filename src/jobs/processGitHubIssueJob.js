@@ -25,7 +25,7 @@ import {
     validateRepositoryInfo 
 } from '../utils/prValidation.js';
 import Redis from 'ioredis';
-import { getDefaultModel } from '../config/modelAliases.js';
+import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import { issueQueue } from '../queue/taskQueue.js';
 import { ErrorCategories } from '../utils/errorHandler.js';
@@ -1298,7 +1298,10 @@ async function handleDispatch(job) {
 
         // If no 'llm-*' labels, use default. Otherwise, use found labels.
         const modelsToProcess = llmLabels.length > 0
-            ? llmLabels.map(l => ({ model: l.substring('llm-'.length), label: l }))
+            ? llmLabels.map(l => ({
+                model: resolveModelAlias(l.substring('llm-'.length)),
+                label: l
+              }))
             : [{ model: defaultModel, label: null }];
 
         // 5. Create and Enqueue Child Jobs (Cartesian Product)
