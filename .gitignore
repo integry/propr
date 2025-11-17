@@ -18,3 +18,4 @@ coverage/
 *.swp
 *.swo
 *~
+.config_repo/

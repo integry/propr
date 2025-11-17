@@ -89,7 +89,10 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     let commitHash = null;
     for (const history of taskHistory) {
       try {
-        const metadata = JSON.parse(history.metadata || '{}');
+        // metadata is already an object when using JSONB column type
+        const metadata = typeof history.metadata === 'string'
+          ? JSON.parse(history.metadata)
+          : (history.metadata || {});
         if (metadata.commitResult?.commitHash) {
           commitHash = metadata.commitResult.commitHash;
           break;

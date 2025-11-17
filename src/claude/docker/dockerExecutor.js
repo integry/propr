@@ -1,4 +1,5 @@
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
+import fs from 'fs';
 import logger from '../../utils/logger.js';
 
 const CLAUDE_DOCKER_IMAGE = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
@@ -12,21 +13,30 @@ export function executeDockerCommand(command, args, options = {}) {
             const possiblePaths = [
                 '/usr/bin/docker',
                 '/usr/local/bin/docker',
-                '/bin/docker',
-                'docker'
+                '/bin/docker'
             ];
-            
-            const { execSync } = require('child_process');
+
+            // Try to find docker at known locations
+            let found = false;
             for (const dockerPath of possiblePaths) {
                 try {
-                    execSync(`which ${dockerPath}`, { stdio: 'ignore' });
-                    executablePath = dockerPath;
-                    break;
-                } catch (err) {
-                    if (dockerPath === possiblePaths[possiblePaths.length - 1]) {
-                        executablePath = 'docker';
+                    if (fs.existsSync(dockerPath)) {
+                        // Check if it's executable
+                        fs.accessSync(dockerPath, fs.constants.X_OK);
+                        executablePath = dockerPath;
+                        found = true;
+                        logger.debug({ dockerPath }, 'Found docker executable');
+                        break;
                     }
+                } catch (err) {
+                    // Continue to next path
                 }
+            }
+
+            // Fall back to 'docker' in PATH
+            if (!found) {
+                executablePath = 'docker';
+                logger.debug('Using docker from PATH');
             }
         }
 
@@ -58,7 +68,6 @@ export function executeDockerCommand(command, args, options = {}) {
             setTimeout(async () => {
                 if (!containerIdDetected) {
                     try {
-                        const { execSync } = await import('child_process');
                         const containersOutput = execSync(
                             `/usr/bin/docker ps --filter "volume=${worktreePath}" --format "{{.ID}}:{{.Names}}" --latest`,
                             { encoding: 'utf8', timeout: 5000 }
