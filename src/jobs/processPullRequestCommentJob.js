@@ -73,6 +73,26 @@ export async function processPullRequestCommentJob(job) {
     const taskId = job.id;
     const stateManager = getStateManager();
     
+    const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
+    const lockTtlSeconds = 3600;
+    
+    const currentLock = await stateManager.redis.get(lockKey);
+    
+    if (currentLock && currentLock !== correlationId) {
+        correlatedLogger.info({ 
+            lockOwner: currentLock 
+        }, 'PR is currently being processed by another job. Rescheduling...');
+        
+        await issueQueue.add(job.name, job.data, { delay: 10000 });
+        
+        return { 
+            status: 'rescheduled', 
+            reason: 'pr_locked_by_other_job' 
+        };
+    }
+    
+    await stateManager.redis.set(lockKey, correlationId, 'EX', lockTtlSeconds);
+    
     try {
         await stateManager.createTaskState(taskId, {
             number: pullRequestNumber,
@@ -782,6 +802,12 @@ Please check the logs for more details.`,
             throw error;
         }
     } finally {
+        const lockOwner = await stateManager.redis.get(lockKey);
+        if (lockOwner === correlationId) {
+            await stateManager.redis.del(lockKey);
+            correlatedLogger.debug('Released PR processing lock');
+        }
+        
         if (localRepoPath && worktreeInfo) {
             try {
                 await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
