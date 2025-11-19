@@ -189,13 +189,18 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
 
     const compactedLog = compactConversationLog(conversationLog);
 
+    const originalLogString = JSON.stringify(conversationLog);
     const compactedLogString = JSON.stringify(compactedLog);
     correlatedLogger.info({ 
+      originalLogLength: originalLogString.length,
+      originalLogSizeKB: (originalLogString.length / 1024).toFixed(2),
       compactedLogLength: compactedLogString.length,
       compactedLogSizeKB: (compactedLogString.length / 1024).toFixed(2),
       originalEntries: conversationLog.length,
       compactedEntries: compactedLog.length
-    }, 'Compacted conversation log size');
+    }, 'Conversation log compaction stats');
+
+    correlatedLogger.info({ compactedLog: compactedLogString }, 'Compacted conversation log output');
 
     const metaPrompt = generateExecutionAnalysisPrompt(
       originalPrompt, 
