@@ -23,12 +23,14 @@ export function filterCommentByAuthor(commentAuthor, userType = null, correlatio
     const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
     const GITHUB_BOT_USERNAME = process.env.GITHUB_BOT_USERNAME;
-    const GITHUB_USER_WHITELIST = (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u);
-    const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
+    const GITHUB_USER_WHITELIST = (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u).map(u => u.trim());
+    const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u).map(u => u.trim());
 
     // If whitelist is defined, it takes precedence - ONLY process whitelisted users (even if they're bots)
     if (GITHUB_USER_WHITELIST.length > 0) {
-        if (!GITHUB_USER_WHITELIST.includes(commentAuthor)) {
+        const normalizedAuthor = commentAuthor.replace('[bot]', '');
+        
+        if (!GITHUB_USER_WHITELIST.includes(commentAuthor) && !GITHUB_USER_WHITELIST.includes(normalizedAuthor)) {
             correlatedLogger.debug({ commentAuthor }, 'Comment author not in whitelist, skipping');
             return { shouldFilter: true, reason: 'not_in_whitelist' };
         }
