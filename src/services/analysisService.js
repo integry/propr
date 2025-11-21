@@ -40,6 +40,47 @@ async function getCommitDiff(worktreePath, commitHash, correlationId) {
   }
 }
 
+function compactConversationLog(conversationLog) {
+  if (!Array.isArray(conversationLog)) {
+    return [];
+  }
+
+  const toolUseMap = new Map();
+  conversationLog.forEach(entry => {
+    if (entry.type === 'tool_use' && entry.id && entry.name) {
+      toolUseMap.set(entry.id, entry.name);
+    }
+  });
+
+  return conversationLog.map(entry => {
+    if (entry.type === 'text' || entry.type === 'tool_use') {
+      return entry;
+    }
+
+    if (entry.type === 'tool_result') {
+      if (entry.is_error) {
+        return entry;
+      }
+
+      const toolName = toolUseMap.get(entry.tool_use_id);
+      const content = entry.content || '';
+
+      if (toolName === 'Read' || toolName === 'Grep' || toolName === 'Glob') {
+        if (content.startsWith('No files found')) {
+          return entry;
+        }
+        const lines = content.split('\n');
+        const summary = `[Content from ${toolName}: ${lines.length} lines. Content omitted for analysis.]`;
+        return { ...entry, content: summary, compacted: true };
+      }
+
+      return entry;
+    }
+
+    return entry;
+  });
+}
+
 export async function getExecutionAnalysis({ executionId, sessionId, correlationId, model }) {
   const correlatedLogger = logger.withCorrelation(correlationId);
 
@@ -105,14 +146,23 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
         const metadata = typeof history.metadata === 'string'
           ? JSON.parse(history.metadata)
           : (history.metadata || {});
+
+        // Check nested historyMetadata.commitResult first (from markTaskCompleted)
+        if (metadata.historyMetadata?.commitResult?.commitHash) {
+          commitHash = metadata.historyMetadata.commitResult.commitHash;
+          break;
+        }
+        // Check top-level commitResult
         if (metadata.commitResult?.commitHash) {
           commitHash = metadata.commitResult.commitHash;
           break;
         }
+        // Check direct commitHash
         if (metadata.commitHash) {
           commitHash = metadata.commitHash;
           break;
         }
+        // Check prResult
         if (metadata.prResult?.commitHash) {
           commitHash = metadata.prResult.commitHash;
           break;
@@ -146,9 +196,24 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       diffLength: localDiff?.length 
     }, 'Commit diff retrieval result');
 
+    const compactedLog = compactConversationLog(conversationLog);
+
+    const originalLogString = JSON.stringify(conversationLog);
+    const compactedLogString = JSON.stringify(compactedLog);
+    correlatedLogger.info({ 
+      originalLogLength: originalLogString.length,
+      originalLogSizeKB: (originalLogString.length / 1024).toFixed(2),
+      compactedLogLength: compactedLogString.length,
+      compactedLogSizeKB: (compactedLogString.length / 1024).toFixed(2),
+      originalEntries: conversationLog.length,
+      compactedEntries: compactedLog.length
+    }, 'Conversation log compaction stats');
+
+    correlatedLogger.info({ compactedLog: compactedLogString }, 'Compacted conversation log output');
+
     const metaPrompt = generateExecutionAnalysisPrompt(
       originalPrompt, 
-      conversationLog, 
+      compactedLog, 
       model,
       localDiff
     );
