@@ -16,7 +16,8 @@ const MODEL_ALIASES = {
     'haiku45': 'claude-haiku-4-5',              // Claude Haiku 4.5
     'haiku4': 'claude-haiku-4-5',               // Claude Haiku 4.5
     'claude-haiku': 'claude-haiku-4-5',         // From llm-claude-haiku label
-    'claude-haiku-4-0': 'claude-haiku-4-5'      // Official alias
+    'claude-haiku-4-0': 'claude-haiku-4-5',     // Official alias
+    'claude-4-5-haiku': 'claude-haiku-4-5'      // Incorrect order variant (from settings)
 };
 
 // Default model to use when none specified

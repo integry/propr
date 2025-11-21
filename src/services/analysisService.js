@@ -146,14 +146,23 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
         const metadata = typeof history.metadata === 'string'
           ? JSON.parse(history.metadata)
           : (history.metadata || {});
+
+        // Check nested historyMetadata.commitResult first (from markTaskCompleted)
+        if (metadata.historyMetadata?.commitResult?.commitHash) {
+          commitHash = metadata.historyMetadata.commitResult.commitHash;
+          break;
+        }
+        // Check top-level commitResult
         if (metadata.commitResult?.commitHash) {
           commitHash = metadata.commitResult.commitHash;
           break;
         }
+        // Check direct commitHash
         if (metadata.commitHash) {
           commitHash = metadata.commitHash;
           break;
         }
+        // Check prResult
         if (metadata.prResult?.commitHash) {
           commitHash = metadata.prResult.commitHash;
           break;

@@ -4,6 +4,7 @@ import logger, { generateCorrelationId } from './utils/logger.js';
 import { db } from './db/postgres.js';
 import { getExecutionAnalysis } from './services/analysisService.js';
 import { loadSettings } from './config/configRepoManager.js';
+import { resolveModelAlias } from './config/modelAliases.js';
 
 async function processAnalysisJob(job) {
   const { executionId, sessionId, correlationId } = job.data;
@@ -12,7 +13,8 @@ async function processAnalysisJob(job) {
 
   try {
     const settings = await loadSettings();
-    const fastModel = settings.analysis_model_fast || 'claude-haiku-4-5';
+    const configuredModel = settings.analysis_model_fast || 'haiku';
+    const fastModel = resolveModelAlias(configuredModel);
 
     const analysisReport = await getExecutionAnalysis({
       executionId,
