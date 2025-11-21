@@ -296,8 +296,9 @@ export async function recordLLMMetrics(claudeResult, issueRef, jobType = 'issue'
                         jobId: `analysis-${executionId}`,
                         removeOnComplete: true,
                         removeOnFail: true,
+                        delay: 10000, // Wait 10 seconds for commit to be created and task to be marked complete
                     });
-                    logger.debug({ correlationId, taskId, executionId }, 'Enqueued task for execution analysis');
+                    logger.debug({ correlationId, taskId, executionId }, 'Enqueued task for execution analysis (with 10s delay)');
                 } catch (queueError) {
                     logger.error({ error: queueError.message, correlationId, taskId }, 'Failed to enqueue task for analysis');
                 }

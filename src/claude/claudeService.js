@@ -576,8 +576,13 @@ export { generateTaskImportPrompt };
 
 export async function runLightweightLLMAnalysis(prompt, model, correlationId, worktreePath, githubToken, issueRef) {
   const correlatedLogger = logger.withCorrelation(correlationId);
-  correlatedLogger.info({ model }, 'Running lightweight LLM analysis via Docker...');
-  
+
+  // Resolve model alias to actual model ID
+  const { resolveModelAlias } = await import('../config/modelAliases.js');
+  const resolvedModel = resolveModelAlias(model);
+
+  correlatedLogger.info({ model, resolvedModel }, 'Running lightweight LLM analysis via Docker...');
+
   try {
     const analysisPrompt = `${prompt}
 
@@ -589,7 +594,7 @@ CRITICAL: Do not modify any files. Do not run any commands. Only provide your an
       githubToken: githubToken,
       customPrompt: analysisPrompt,
       branchName: 'analysis-generation',
-      modelName: model,
+      modelName: resolvedModel,
     });
 
     if (claudeResult.success && (claudeResult.finalResult?.result || claudeResult.summary)) {
