@@ -20,12 +20,13 @@ import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { handleError } from '../utils/errorHandler.js';
 import { issueQueue } from '../queue/taskQueue.js';
 import Redis from 'ioredis';
-import { getDefaultModel } from '../config/modelAliases.js';
+import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { loadPrLabel } from '../config/configRepoManager.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10);
 const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || (2 * 60 * 1000), 10);
+const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-claude-(.+)$';
 
 async function getPrLabel() {
     try {
@@ -48,9 +49,11 @@ export async function processPullRequestCommentJob(job) {
         branchName: jobBranchName,
         repoOwner,
         repoName,
-        llm,
+        llm: jobLlm,
         correlationId
     } = job.data;
+    // Model can be overridden by PR labels at processing time
+    let llm = jobLlm;
     const correlatedLogger = logger.withCorrelation(correlationId);
     
     const PR_LABEL = await getPrLabel();
@@ -232,18 +235,37 @@ export async function processPullRequestCommentJob(job) {
         }
 
         const hasRequiredLabel = prData.data.labels.some(label => label.name === PR_LABEL);
-        
+
         if (!hasRequiredLabel) {
             correlatedLogger.info({
                 pullRequestNumber,
                 requiredLabel: PR_LABEL
             }, 'PR does not have the required label, skipping follow-up comment processing');
-            
-            return { 
-                status: 'skipped', 
+
+            return {
+                status: 'skipped',
                 reason: 'missing_required_label',
-                pullRequestNumber 
+                pullRequestNumber
             };
+        }
+
+        // Extract model from PR labels (refreshed at processing time)
+        // This overrides any model specified when the job was queued
+        if (prData.data.labels && Array.isArray(prData.data.labels)) {
+            const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
+            for (const label of prData.data.labels) {
+                const labelName = typeof label === 'string' ? label : label.name;
+                const match = labelName.match(modelLabelRegex);
+                if (match) {
+                    llm = resolveModelAlias(match[1]);
+                    correlatedLogger.info({
+                        pullRequestNumber,
+                        label: labelName,
+                        resolvedModel: llm
+                    }, 'Using model from PR label');
+                    break;
+                }
+            }
         }
 
         unprocessedComments = commentsToProcess.filter(comment => {
