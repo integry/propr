@@ -1,10 +1,10 @@
 const MODEL_ALIASES = {
     // Aliases to full model IDs (Claude 4.x models only)
-    'opus': 'claude-opus-4-1',                  // Claude Opus 4.1
-    'opus4': 'claude-opus-4-1',                 // Claude Opus 4.1
-    'opus-4-0': 'claude-opus-4-1',              // Official alias
-    'claude-opus': 'claude-opus-4-1',           // From llm-claude-opus label
-    'claude-opus-4-0': 'claude-opus-4-1',       // Official alias
+    'opus': 'claude-opus-4-5',                  // Claude Opus 4.5
+    'opus4': 'claude-opus-4-5',                 // Claude Opus 4.5
+    'opus-4-0': 'claude-opus-4-5',              // Official alias
+    'claude-opus': 'claude-opus-4-5',           // From llm-claude-opus label
+    'claude-opus-4-0': 'claude-opus-4-5',       // Official alias
 
     'sonnet': 'claude-sonnet-4-5',              // Claude Sonnet 4.5 (default)
     'sonnet4': 'claude-sonnet-4-5',             // Claude Sonnet 4.5
