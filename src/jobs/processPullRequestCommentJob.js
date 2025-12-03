@@ -369,8 +369,12 @@ export async function processPullRequestCommentJob(job) {
 
         let commentHistory = '';
         const reversedComments = [...commentsByTime].reverse();
-        if (reversedComments.length > 0) {
+
+        if (reversedComments.length > 0 || prData.data.body) {
             commentHistory += 'Here is the recent comment history on this PR (newest first) for context:\n\n';
+        }
+        
+        if (reversedComments.length > 0) {
             for (const comment of reversedComments) {
                 const author = comment.user.login;
                 const body = formatCommentForPrompt(comment.body);
@@ -381,6 +385,19 @@ export async function processPullRequestCommentJob(job) {
 ${body}
 ---\n`;
             }
+        }
+
+        if (prData.data.body) {
+            const author = prData.data.user.login;
+            const body = formatCommentForPrompt(prData.data.body);
+            commentHistory += `---
+**Author:** @${author} (Original Task Description)
+**Comment:**
+${body}
+---\n`;
+        }
+
+        if (commentHistory) {
             commentHistory += '\n';
         }
 
