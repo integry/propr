@@ -23,12 +23,6 @@ const OPENROUTER_MODEL_MAP = {
     'claude-opus-4-5': 'anthropic/claude-opus-4.5',
     'claude-sonnet-4-5': 'anthropic/claude-sonnet-4.5',
     'claude-haiku-4-5': 'anthropic/claude-haiku-4.5',
-
-    'gpt-4o': 'openai/gpt-4o',
-    'gpt-4o-mini': 'openai/gpt-4o-mini',
-    'o1': 'openai/o1',
-    'o1-mini': 'openai/o1-mini',
-    'o3-mini': 'openai/o3-mini',
 };
 
 function getOpenRouterId(internalModelId) {
