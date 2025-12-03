@@ -2,8 +2,18 @@
 @tailwind components;
 @tailwind utilities;
 
+@keyframes blink {
+  0%, 50% {
+    opacity: 1;
+  }
+  51%, 100% {
+    opacity: 0;
+  }
+}
+
 body {
   @apply bg-light-100;
   color: #FF69B4;
   font-family: 'Comic Sans MS', cursive, sans-serif;
+  animation: blink 1s infinite;
 }
