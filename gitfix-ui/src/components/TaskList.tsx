@@ -104,7 +104,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
       case 'active':
       case 'claude_execution':
       case 'processing':
-        return 'bg-blue-500 animate-pulse';
+        return 'bg-orange-500 animate-pulse';
       case 'waiting':
       case 'pending':
         return 'bg-purple-500';
