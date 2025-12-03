@@ -123,7 +123,7 @@ const RepositoriesPage: React.FC = () => {
           className={`px-4 py-2 font-medium rounded-md transition-colors ${
             !newRepo || repos.some(r => r.name === newRepo)
               ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
-              : 'bg-blue-600 text-white hover:bg-blue-700 cursor-pointer'
+              : 'bg-green-600 text-white hover:bg-green-700 cursor-pointer'
           }`}
         >
           Add Repository
@@ -184,7 +184,7 @@ const RepositoriesPage: React.FC = () => {
       )}
       
       {success && (
-        <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-md text-blue-700">
+        <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-md text-green-700">
           {success}
         </div>
       )}

@@ -53,7 +53,7 @@ const SystemStatus: React.FC = () => {
       case 'connected':
       case 'authenticated':
       case 'active':
-        return '#2563EB'; // blue-600
+        return '#16A34A'; // green-600
       case 'stopped':
       case 'disconnected':
       case 'failed':

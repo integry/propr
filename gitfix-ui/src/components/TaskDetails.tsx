@@ -641,7 +641,7 @@ const TaskDetails: React.FC = () => {
           {historyItemWithPaths?.logsPath && (
             <button
               onClick={() => fetchLogFiles(historyItemWithPaths.logsPath)}
-              className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
+              className="px-3 py-1.5 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 transition-colors"
             >
               View Log Files
             </button>
@@ -885,7 +885,7 @@ const TaskDetails: React.FC = () => {
                     )}
                     {event.type === 'tool_result' && (
                       <div className={`text-sm p-2 rounded ${event.isError ? 'bg-red-50 border border-red-200' : 'bg-gray-50 border border-gray-200'}`}>
-                        <p className={`font-semibold ${event.isError ? 'text-red-600' : 'text-blue-600'}`}>Tool Result {event.isError ? '(Error)' : '(Success)'}</p>
+                        <p className={`font-semibold ${event.isError ? 'text-red-600' : 'text-green-600'}`}>Tool Result {event.isError ? '(Error)' : '(Success)'}</p>
                         <pre className="whitespace-pre-wrap font-mono text-xs text-gray-600 mt-1 max-h-40 overflow-y-auto">
                           {(() => {
                             // Ensure we always have a string

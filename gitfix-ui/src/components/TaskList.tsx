@@ -98,7 +98,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   const getStatusDotClass = (status: string): string => {
     switch (status) {
       case 'completed':
-        return 'bg-blue-500';
+        return 'bg-green-500';
       case 'failed':
         return 'bg-red-500';
       case 'active':
