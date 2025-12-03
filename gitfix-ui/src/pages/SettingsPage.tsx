@@ -256,7 +256,7 @@ const SettingsPage: React.FC = () => {
         )}
         
         {success && (
-          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-md text-green-700">
+          <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-md text-blue-700">
             {success}
           </div>
         )}
@@ -363,7 +363,7 @@ const SettingsPage: React.FC = () => {
         )}
         
         {prLabelSuccess && (
-          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-md text-green-700">
+          <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-md text-blue-700">
             {prLabelSuccess}
           </div>
         )}
@@ -422,7 +422,7 @@ const SettingsPage: React.FC = () => {
         )}
         
         {primaryLabelsSuccess && (
-          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-md text-green-700">
+          <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-md text-blue-700">
             {primaryLabelsSuccess}
           </div>
         )}
@@ -445,7 +445,7 @@ const SettingsPage: React.FC = () => {
                 className={`px-4 py-2 font-medium rounded-md transition-colors ${
                   !newPrimaryLabel || primaryLabels.includes(newPrimaryLabel)
                     ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
-                    : 'bg-green-600 text-white hover:bg-green-700 cursor-pointer'
+                    : 'bg-blue-600 text-white hover:bg-blue-700 cursor-pointer'
                 }`}
               >
                 Add Label
@@ -508,7 +508,7 @@ const SettingsPage: React.FC = () => {
         )}
         
         {keywordsSuccess && (
-          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-md text-green-700">
+          <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-md text-blue-700">
             {keywordsSuccess}
           </div>
         )}
@@ -531,7 +531,7 @@ const SettingsPage: React.FC = () => {
                 className={`px-4 py-2 font-medium rounded-md transition-colors ${
                   !newKeyword || keywords.includes(newKeyword)
                     ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
-                    : 'bg-green-600 text-white hover:bg-green-700 cursor-pointer'
+                    : 'bg-blue-600 text-white hover:bg-blue-700 cursor-pointer'
                 }`}
               >
                 Add Keyword
