@@ -22,6 +22,7 @@ import { issueQueue } from '../queue/taskQueue.js';
 import Redis from 'ioredis';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { loadPrLabel } from '../config/configRepoManager.js';
+import { filterCommentByAuthor } from '../utils/commentFilters.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10);
@@ -388,8 +389,8 @@ export async function processPullRequestCommentJob(job) {
                 });
                 
                 const qualifyingComments = linkedIssueComments.filter(comment => {
-                    const isBot = comment.user.login === botUsername;
-                    return !isBot;
+                    const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type, correlationId);
+                    return !filterResult.shouldFilter;
                 });
                 
                 originalTaskSpec += `Here is the original task specification (GitHub Issue #${linkedIssueNumber}):\n\n`;
@@ -436,6 +437,10 @@ export async function processPullRequestCommentJob(job) {
         
         if (reversedComments.length > 0) {
             for (const comment of reversedComments) {
+                const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type, correlationId);
+                if (filterResult.shouldFilter) {
+                    continue;
+                }
                 const author = comment.user.login;
                 const body = formatCommentForPrompt(comment.body);
                 const commentType = comment.pull_request_review_id ? 'Review Comment' : 'General Comment';
