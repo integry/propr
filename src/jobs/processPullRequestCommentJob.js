@@ -388,7 +388,7 @@ export async function processPullRequestCommentJob(job) {
                     per_page: 100
                 });
                 
-                const qualifyingComments = linkedIssueComments.filter(comment => {
+                const clarifyingComments = linkedIssueComments.filter(comment => {
                     const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type, correlationId);
                     return !filterResult.shouldFilter;
                 });
@@ -400,9 +400,9 @@ export async function processPullRequestCommentJob(job) {
                 originalTaskSpec += `**Body:**\n${formatCommentForPrompt(linkedIssueData.data.body)}\n`;
                 originalTaskSpec += `---\n`;
                 
-                if (qualifyingComments.length > 0) {
-                    originalTaskSpec += `\n**Qualifying Comments on Issue #${linkedIssueNumber}:**\n\n`;
-                    for (const comment of qualifyingComments) {
+                if (clarifyingComments.length > 0) {
+                    originalTaskSpec += `\n**Clarifying Comments on Issue #${linkedIssueNumber}:**\n\n`;
+                    for (const comment of clarifyingComments) {
                         originalTaskSpec += `---\n`;
                         originalTaskSpec += `**Author:** @${comment.user.login}\n`;
                         originalTaskSpec += `**Comment:**\n${formatCommentForPrompt(comment.body)}\n`;
