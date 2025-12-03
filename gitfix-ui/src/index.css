@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 body {
-  @apply bg-light-100 text-gray-800;
+  @apply bg-light-100;
+  color: #FF69B4;
   font-family: 'Comic Sans MS', cursive, sans-serif;
 }
