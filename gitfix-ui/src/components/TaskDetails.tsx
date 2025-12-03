@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { getTaskHistory, getTaskLiveDetails, getTaskAnalysis, fetchPrompt as apiFetchPrompt, fetchLogFiles as apiFetchLogFiles, fetchLogFile as apiFetchLogFile, stopTaskExecution, generateDeepDiveAnalysis } from '../api/gitfixApi';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -7,25 +7,24 @@ import DeepDiveAnalysis from './DeepDiveAnalysis';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
-  const navigate = useNavigate();
-  const [history, setHistory] = useState<any[]>([]);
-  const [taskInfo, setTaskInfo] = useState<any>(null);
+  const [history, setHistory] = useState<unknown[]>([]);
+  const [taskInfo, setTaskInfo] = useState<unknown>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedPrompt, setSelectedPrompt] = useState<any>(null);
+  const [selectedPrompt, setSelectedPrompt] = useState<unknown>(null);
   const [loadingPrompt, setLoadingPrompt] = useState<boolean>(false);
-  const [logFiles, setLogFiles] = useState<any>(null);
-  const [selectedLogFile, setSelectedLogFile] = useState<any>(null);
+  const [logFiles, setLogFiles] = useState<unknown>(null);
+  const [selectedLogFile, setSelectedLogFile] = useState<unknown>(null);
   const [loadingLogFile, setLoadingLogFile] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [searchMatches, setSearchMatches] = useState<any[]>([]);
+  const [searchMatches, setSearchMatches] = useState<unknown[]>([]);
   const [currentMatchIndex, setCurrentMatchIndex] = useState<number>(0);
   const logContentRef = useRef<HTMLPreElement | null>(null);
-  const [liveDetails, setLiveDetails] = useState<{ events: any[]; todos: any[]; currentTask: any }>({ events: [], todos: [], currentTask: null });
+  const [liveDetails, setLiveDetails] = useState<{ events: unknown[]; todos: unknown[]; currentTask: unknown }>({ events: [], todos: [], currentTask: null });
   const [eventsCollapsed, setEventsCollapsed] = useState<boolean>(true);
   const [lastThought, setLastThought] = useState<string | null>(null);
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
-  const [analysis, setAnalysis] = useState<any>(null);
+  const [analysis, setAnalysis] = useState<unknown>(null);
   const [analysisLoading, setAnalysisLoading] = useState<boolean>(true);
   const [deepDiveLoading, setDeepDiveLoading] = useState<boolean>(false);
 
@@ -57,11 +56,6 @@ const TaskDetails: React.FC = () => {
     return new Date(dateString).toLocaleString();
   };
 
-  const formatPath = (path) => {
-    if (!path) return 'N/A';
-    const match = path.match(/\/tasks\/(.+)/);
-    return match ? match[1] : path;
-  };
 
   const formatModelName = (modelId) => {
     if (!modelId) return 'Unknown Model';
@@ -100,7 +94,7 @@ const TaskDetails: React.FC = () => {
       return String(text);
     }
 
-    const parts: any[] = [];
+    const parts: unknown[] = [];
     let lastIndex = 0;
 
     const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
@@ -899,7 +893,7 @@ const TaskDetails: React.FC = () => {
                             } else {
                               try {
                                 resultText = JSON.stringify(event.result, null, 2);
-                              } catch (e) {
+                              } catch {
                                 resultText = String(event.result);
                               }
                             }
