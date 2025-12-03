@@ -614,11 +614,14 @@ async function processCommentEvent(payload, eventType, correlationId) {
     );
     
     if (jobExists) {
+        // Don't skip - queue the comment for later processing
+        // The sequential processing lock in the worker will handle ordering
         correlatedLogger.info({
             pullRequestNumber: prNumber,
-            repository: repoFullName
-        }, 'A job for this PR is already active or waiting, skipping new job creation.');
-        return;
+            repository: repoFullName,
+            commentId: comment.id
+        }, 'A job for this PR is already active or waiting, queuing comment for later processing');
+        // Continue to queue the job - don't return
     }
     
     let llm = null;
