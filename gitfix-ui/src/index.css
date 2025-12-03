@@ -5,4 +5,9 @@
 body {
   @apply bg-light-100 text-gray-800;
   font-family: 'Inter', sans-serif;
+  background-image: url('https://upload.wikimedia.org/wikipedia/commons/5/56/Donald_Trump_official_portrait.jpg');
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
 }
