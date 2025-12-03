@@ -614,14 +614,36 @@ async function processCommentEvent(payload, eventType, correlationId) {
     );
     
     if (jobExists) {
-        // Don't skip - queue the comment for later processing
-        // The sequential processing lock in the worker will handle ordering
+        // Store comment in Redis for batch pickup by the next job
+        const pendingCommentsKey = `pending-pr-comments:${owner}:${repo}:${prNumber}`;
+
+        let enhancedCommentBody = comment.body;
+        if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
+            for (const keyword of PR_FOLLOWUP_TRIGGER_KEYWORDS) {
+                const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                enhancedCommentBody = enhancedCommentBody.replace(new RegExp(`${escapedKeyword}(:\\w+)?`, 'g'), '');
+            }
+        }
+        enhancedCommentBody = enhancedCommentBody.trim();
+
+        const pendingComment = {
+            id: comment.id,
+            body: enhancedCommentBody,
+            author: commentAuthor,
+            type: (comment.pull_request_review_id || eventType === 'pull_request_review_comment') ? 'review' : 'issue',
+            hasCodeContext: false
+        };
+
+        // Add to Redis list with 1 hour expiry
+        await redisClient.rpush(pendingCommentsKey, JSON.stringify(pendingComment));
+        await redisClient.expire(pendingCommentsKey, 3600);
+
         correlatedLogger.info({
             pullRequestNumber: prNumber,
             repository: repoFullName,
             commentId: comment.id
-        }, 'A job for this PR is already active or waiting, queuing comment for later processing');
-        // Continue to queue the job - don't return
+        }, 'A job for this PR is already active or waiting, stored comment for batch processing');
+        return;
     }
     
     let llm = null;
