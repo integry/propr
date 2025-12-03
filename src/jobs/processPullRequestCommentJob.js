@@ -548,7 +548,7 @@ ${body}
 **New Request${unprocessedComments.length > 1 ? 's' : ''}:**
 ${combinedCommentBody.replace(/^/gm, '> ')}
 
-${originalTaskSpec}${commentHistory}
+${commentHistory}${originalTaskSpec}
 
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}
