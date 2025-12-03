@@ -388,7 +388,8 @@ export async function processPullRequestCommentJob(job) {
                 });
                 
                 const qualifyingComments = linkedIssueComments.filter(comment => {
-                    return comment.user.login !== botUsername;
+                    const isBot = comment.user.login === botUsername;
+                    return !isBot;
                 });
                 
                 originalTaskSpec += `Here is the original task specification (GitHub Issue #${linkedIssueNumber}):\n\n`;
