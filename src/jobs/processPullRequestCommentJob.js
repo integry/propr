@@ -22,6 +22,7 @@ import { issueQueue } from '../queue/taskQueue.js';
 import Redis from 'ioredis';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { loadPrLabel } from '../config/configRepoManager.js';
+import { filterCommentByAuthor } from '../utils/commentFilters.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10);
@@ -367,11 +368,79 @@ export async function processPullRequestCommentJob(job) {
             new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
         );
 
+        let originalTaskSpec = '';
+        const linkedIssueMatch = prData.data.body?.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
+        if (linkedIssueMatch) {
+            const linkedIssueNumber = parseInt(linkedIssueMatch[1], 10);
+            correlatedLogger.info({ pullRequestNumber, linkedIssueNumber }, 'Found linked issue in PR body');
+            
+            try {
+                const linkedIssueData = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                    owner: repoOwner,
+                    repo: repoName,
+                    issue_number: linkedIssueNumber
+                });
+                
+                const linkedIssueComments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                    owner: repoOwner,
+                    repo: repoName,
+                    issue_number: linkedIssueNumber,
+                    per_page: 100
+                });
+                
+                const clarifyingComments = linkedIssueComments.filter(comment => {
+                    const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type, correlationId);
+                    return !filterResult.shouldFilter;
+                });
+                
+                originalTaskSpec += `Here is the original task specification (GitHub Issue #${linkedIssueNumber}):\n\n`;
+                originalTaskSpec += `---\n`;
+                originalTaskSpec += `**Issue Title:** ${linkedIssueData.data.title}\n`;
+                originalTaskSpec += `**Author:** @${linkedIssueData.data.user.login}\n`;
+                originalTaskSpec += `**Body:**\n${formatCommentForPrompt(linkedIssueData.data.body)}\n`;
+                originalTaskSpec += `---\n`;
+                
+                if (clarifyingComments.length > 0) {
+                    originalTaskSpec += `\n**Clarifying Comments on Issue #${linkedIssueNumber}:**\n\n`;
+                    for (const comment of clarifyingComments) {
+                        originalTaskSpec += `---\n`;
+                        originalTaskSpec += `**Author:** @${comment.user.login}\n`;
+                        originalTaskSpec += `**Comment:**\n${formatCommentForPrompt(comment.body)}\n`;
+                        originalTaskSpec += `---\n`;
+                    }
+                }
+                
+                originalTaskSpec += '\n';
+                
+                correlatedLogger.info({
+                    pullRequestNumber,
+                    linkedIssueNumber,
+                    issueTitle: linkedIssueData.data.title,
+                    clarifyingCommentsCount: clarifyingComments.length
+                }, 'Fetched original task spec from linked issue');
+                
+            } catch (issueError) {
+                correlatedLogger.warn({
+                    pullRequestNumber,
+                    linkedIssueNumber,
+                    error: issueError.message
+                }, 'Failed to fetch linked issue data, continuing without it');
+            }
+        }
+
         let commentHistory = '';
         const reversedComments = [...commentsByTime].reverse();
-        if (reversedComments.length > 0) {
+
+        if (reversedComments.length > 0 || prData.data.body) {
             commentHistory += 'Here is the recent comment history on this PR (newest first) for context:\n\n';
+        }
+        
+        if (reversedComments.length > 0) {
             for (const comment of reversedComments) {
+                const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type, correlationId);
+                if (filterResult.shouldFilter) {
+                    continue;
+                }
                 const author = comment.user.login;
                 const body = formatCommentForPrompt(comment.body);
                 const commentType = comment.pull_request_review_id ? 'Review Comment' : 'General Comment';
@@ -381,6 +450,19 @@ export async function processPullRequestCommentJob(job) {
 ${body}
 ---\n`;
             }
+        }
+
+        if (prData.data.body) {
+            const author = prData.data.user.login;
+            const body = formatCommentForPrompt(prData.data.body);
+            commentHistory += `---
+**Author:** @${author} (Original Task Description)
+**Comment:**
+${body}
+---\n`;
+        }
+
+        if (commentHistory) {
             commentHistory += '\n';
         }
 
@@ -466,7 +548,7 @@ ${body}
 **New Request${unprocessedComments.length > 1 ? 's' : ''}:**
 ${combinedCommentBody.replace(/^/gm, '> ')}
 
-${commentHistory}
+${commentHistory}${originalTaskSpec}
 
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}

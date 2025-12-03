@@ -30,6 +30,7 @@ import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import { issueQueue } from '../queue/taskQueue.js';
 import { ErrorCategories } from '../utils/errorHandler.js';
 import { loadAiPrimaryTag, loadPrLabel, loadPrimaryProcessingLabels } from '../config/configRepoManager.js';
+import { filterCommentByAuthor } from '../utils/commentFilters.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
@@ -369,10 +370,9 @@ async function processGitHubIssueJob(job) {
                     per_page: 100
                 });
                 
-                const botUsername = process.env.GITHUB_BOT_USERNAME || 'gitfixio[bot]';
                 issueComments = allComments.filter(comment => {
-                    const isBot = comment.user.login === botUsername;
-                    return !isBot;
+                    const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type, correlationId);
+                    return !filterResult.shouldFilter;
                 });
                 
                 correlatedLogger.info({
