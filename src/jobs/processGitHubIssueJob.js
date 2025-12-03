@@ -1,7 +1,5 @@
-import path from 'path';
 import logger, { generateCorrelationId } from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getStateManager, TaskStates } from '../utils/workerStateManager.js';
 import { 
@@ -15,13 +13,12 @@ import {
 import { formatResetTime, addModelSpecificDelay } from '../utils/scheduling.js';
 import { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from '../utils/github/labelOperations.js';
 import { ensureGitRepository } from '../utils/git/gitValidation.js';
-import { createLogFiles, generateCompletionComment } from '../utils/github/logFiles.js';
+import { generateCompletionComment } from '../utils/github/logFiles.js';
 import fs from 'fs-extra';
 import { executeClaudeCode, UsageLimitError } from '../claude/claudeService.js';
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { 
     validatePRCreation, 
-    generateEnhancedClaudePrompt, 
     validateRepositoryInfo 
 } from '../utils/prValidation.js';
 import Redis from 'ioredis';

@@ -1,7 +1,5 @@
 import logger from '../utils/logger.js';
 
-const GIT_DEFAULT_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
-
 export function getRepoConfigKey(owner, repoName) {
     const cleanOwner = owner.toUpperCase().replace(/[^A-Z0-9]/g, '_');
     const cleanRepoName = repoName.toUpperCase().replace(/[^A-Z0-9]/g, '_');

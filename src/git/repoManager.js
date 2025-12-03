@@ -1,7 +1,6 @@
 import simpleGit from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
