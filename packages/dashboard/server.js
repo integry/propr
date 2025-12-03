@@ -1822,6 +1822,15 @@ async function start() {
       console.warn('Failed to initialize config repository:', error.message);
     }
 
+    // Load settings from config repo (whitelist, blacklist, etc.)
+    if (daemonModule && daemonModule.loadSettingsFromConfig) {
+      try {
+        await daemonModule.loadSettingsFromConfig();
+      } catch (error) {
+        console.warn('Failed to load settings from config repo:', error.message);
+      }
+    }
+
     // Initialize webhook handler with processor functions from daemon
     if (initializeWebhookHandler && daemonModule) {
       try {

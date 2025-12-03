@@ -20,12 +20,21 @@ import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { handleError } from '../utils/errorHandler.js';
 import { issueQueue } from '../queue/taskQueue.js';
 import Redis from 'ioredis';
-import { getDefaultModel } from '../config/modelAliases.js';
+import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { loadPrLabel } from '../config/configRepoManager.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10);
 const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || (2 * 60 * 1000), 10);
+const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-claude-(.+)$';
+
+// Redis client for pending comments
+const redisClient = new Redis({
+    host: process.env.REDIS_HOST || '127.0.0.1',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+});
 
 async function getPrLabel() {
     try {
@@ -48,20 +57,52 @@ export async function processPullRequestCommentJob(job) {
         branchName: jobBranchName,
         repoOwner,
         repoName,
-        llm,
+        llm: jobLlm,
         correlationId
     } = job.data;
+    // Model can be overridden by PR labels at processing time
+    let llm = jobLlm;
     const correlatedLogger = logger.withCorrelation(correlationId);
     
     const PR_LABEL = await getPrLabel();
     
     const isBatchJob = !!comments && Array.isArray(comments);
-    const commentsToProcess = isBatchJob ? comments : [{
+    let commentsToProcess = isBatchJob ? [...comments] : [{
         id: commentId,
         body: commentBody,
         author: commentAuthor
     }];
-    
+
+    // Pick up any pending comments from Redis that were queued while another job was active
+    const pendingCommentsKey = `pending-pr-comments:${repoOwner}:${repoName}:${pullRequestNumber}`;
+    try {
+        const pendingComments = await redisClient.lrange(pendingCommentsKey, 0, -1);
+        if (pendingComments.length > 0) {
+            // Clear the pending list
+            await redisClient.del(pendingCommentsKey);
+
+            // Parse and add to comments to process
+            for (const commentJson of pendingComments) {
+                try {
+                    const pendingComment = JSON.parse(commentJson);
+                    // Only add if not already in the list
+                    if (!commentsToProcess.some(c => c.id === pendingComment.id)) {
+                        commentsToProcess.push(pendingComment);
+                    }
+                } catch (parseError) {
+                    correlatedLogger.warn({ error: parseError.message }, 'Failed to parse pending comment');
+                }
+            }
+            correlatedLogger.info({
+                pullRequestNumber,
+                pendingCount: pendingComments.length,
+                totalCount: commentsToProcess.length
+            }, 'Picked up pending comments from Redis');
+        }
+    } catch (redisError) {
+        correlatedLogger.warn({ error: redisError.message }, 'Failed to fetch pending comments from Redis');
+    }
+
     correlatedLogger.info({
         pullRequestNumber,
         branchName: jobBranchName,
@@ -72,6 +113,26 @@ export async function processPullRequestCommentJob(job) {
 
     const taskId = job.id;
     const stateManager = getStateManager();
+    
+    const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
+    const lockTtlSeconds = 3600;
+    
+    const currentLock = await stateManager.redis.get(lockKey);
+    
+    if (currentLock && currentLock !== correlationId) {
+        correlatedLogger.info({ 
+            lockOwner: currentLock 
+        }, 'PR is currently being processed by another job. Rescheduling...');
+        
+        await issueQueue.add(job.name, job.data, { delay: 10000 });
+        
+        return { 
+            status: 'rescheduled', 
+            reason: 'pr_locked_by_other_job' 
+        };
+    }
+    
+    await stateManager.redis.set(lockKey, correlationId, 'EX', lockTtlSeconds);
     
     try {
         await stateManager.createTaskState(taskId, {
@@ -135,26 +196,22 @@ export async function processPullRequestCommentJob(job) {
 
         const allCommentsForValidation = [...prCommentsForValidation, ...reviewCommentsForValidation];
 
+        // Filter out deleted comments and update edited ones
+        const validatedComments = [];
         for (const comment of commentsToProcess) {
             const currentComment = allCommentsForValidation.find(c => c.id === comment.id);
-            
+
             if (!currentComment) {
                 correlatedLogger.warn({
                     pullRequestNumber,
                     commentId: comment.id,
                     commentAuthor: comment.author
-                }, 'Comment has been deleted, aborting execution');
-                
-                return {
-                    status: 'aborted',
-                    reason: 'comment_deleted',
-                    pullRequestNumber,
-                    commentId: comment.id
-                };
+                }, 'Comment has been deleted, skipping');
+                continue; // Skip deleted comments instead of aborting
             }
             
             // Check if comment was edited AFTER the job was queued
-            // Only restart if the comment's updated_at has changed since we queued the job
+            // Update the comment body inline instead of restarting
             const commentWasEditedAfterQueuing = comment.updated_at &&
                 currentComment.updated_at !== comment.updated_at;
 
@@ -165,46 +222,40 @@ export async function processPullRequestCommentJob(job) {
                     commentAuthor: comment.author,
                     originalUpdatedAt: comment.updated_at,
                     currentUpdatedAt: currentComment.updated_at
-                }, 'Comment has been edited since job was queued, restarting execution with updated content');
+                }, 'Comment has been edited since job was queued, using updated content');
 
-                // Generate a NEW correlation ID for the restarted job to avoid unique constraint violations
-                const newCorrelationId = generateCorrelationId();
-
-                const updatedJobData = {
-                    ...job.data,
-                    correlationId: newCorrelationId,  // Use new correlation ID
-                    comments: commentsToProcess.map(c => {
-                        if (c.id === comment.id) {
-                            return {
-                                ...c,
-                                body: currentComment.body,
-                                updated_at: currentComment.updated_at
-                            };
-                        }
-                        return c;
-                    })
-                };
-
-                const timestamp = Date.now();
-                const newJobId = `pr-comments-restart-${repoOwner}-${repoName}-${pullRequestNumber}-${timestamp}`;
-
-                await issueQueue.add('processPullRequestComment', updatedJobData, { jobId: newJobId });
-                
-                correlatedLogger.info({
-                    pullRequestNumber,
-                    commentId: comment.id,
-                    newJobId
-                }, 'Requeued job with updated comment content');
-                
-                return {
-                    status: 'restarted',
-                    reason: 'comment_edited',
-                    pullRequestNumber,
-                    commentId: comment.id,
-                    newJobId
-                };
+                // Add the comment with updated body
+                validatedComments.push({
+                    ...comment,
+                    body: currentComment.body,
+                    updated_at: currentComment.updated_at
+                });
+            } else {
+                // Comment is unchanged, add as-is
+                validatedComments.push(comment);
             }
         }
+
+        // Check if any valid comments remain after filtering
+        if (validatedComments.length === 0) {
+            correlatedLogger.info({
+                pullRequestNumber,
+                originalCount: commentsToProcess.length
+            }, 'All comments were deleted, nothing to process');
+
+            return {
+                status: 'skipped',
+                reason: 'all_comments_deleted',
+                pullRequestNumber
+            };
+        }
+
+        // Use validated comments for the rest of processing
+        commentsToProcess = validatedComments;
+        correlatedLogger.info({
+            pullRequestNumber,
+            validatedCount: validatedComments.length
+        }, 'Comments validated and ready for processing');
 
         const branchName = jobBranchName || prData.data.head.ref;
         if (!jobBranchName) {
@@ -212,18 +263,37 @@ export async function processPullRequestCommentJob(job) {
         }
 
         const hasRequiredLabel = prData.data.labels.some(label => label.name === PR_LABEL);
-        
+
         if (!hasRequiredLabel) {
             correlatedLogger.info({
                 pullRequestNumber,
                 requiredLabel: PR_LABEL
             }, 'PR does not have the required label, skipping follow-up comment processing');
-            
-            return { 
-                status: 'skipped', 
+
+            return {
+                status: 'skipped',
                 reason: 'missing_required_label',
-                pullRequestNumber 
+                pullRequestNumber
             };
+        }
+
+        // Extract model from PR labels (refreshed at processing time)
+        // This overrides any model specified when the job was queued
+        if (prData.data.labels && Array.isArray(prData.data.labels)) {
+            const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
+            for (const label of prData.data.labels) {
+                const labelName = typeof label === 'string' ? label : label.name;
+                const match = labelName.match(modelLabelRegex);
+                if (match) {
+                    llm = resolveModelAlias(match[1]);
+                    correlatedLogger.info({
+                        pullRequestNumber,
+                        label: labelName,
+                        resolvedModel: llm
+                    }, 'Using model from PR label');
+                    break;
+                }
+            }
         }
 
         unprocessedComments = commentsToProcess.filter(comment => {
@@ -782,6 +852,12 @@ Please check the logs for more details.`,
             throw error;
         }
     } finally {
+        const lockOwner = await stateManager.redis.get(lockKey);
+        if (lockOwner === correlationId) {
+            await stateManager.redis.del(lockKey);
+            correlatedLogger.debug('Released PR processing lock');
+        }
+
         if (localRepoPath && worktreeInfo) {
             try {
                 await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
@@ -791,6 +867,41 @@ Please check the logs for more details.`,
             } catch (cleanupError) {
                 correlatedLogger.warn({ error: cleanupError.message }, 'Failed to cleanup worktree');
             }
+        }
+
+        // Check if there are pending comments that arrived during processing
+        // and queue a follow-up job to handle them
+        try {
+            const remainingPendingComments = await redisClient.llen(pendingCommentsKey);
+            if (remainingPendingComments > 0) {
+                correlatedLogger.info({
+                    pullRequestNumber,
+                    pendingCount: remainingPendingComments
+                }, 'Found pending comments that arrived during processing, queuing follow-up job');
+
+                const followUpJobData = {
+                    pullRequestNumber,
+                    comments: [], // Will be populated from Redis by the job
+                    repoOwner,
+                    repoName,
+                    branchName: jobBranchName,
+                    llm: jobLlm,
+                    correlationId: generateCorrelationId(),
+                };
+
+                const followUpJobId = `pr-comments-batch-${repoOwner}-${repoName}-${pullRequestNumber}-${Date.now()}`;
+                await issueQueue.add('processPullRequestComment', followUpJobData, {
+                    jobId: followUpJobId,
+                    delay: 3000 // Small delay to allow for batching
+                });
+
+                correlatedLogger.info({
+                    jobId: followUpJobId,
+                    pullRequestNumber
+                }, 'Queued follow-up job for pending comments');
+            }
+        } catch (pendingCheckError) {
+            correlatedLogger.warn({ error: pendingCheckError.message }, 'Failed to check/queue pending comments');
         }
     }
 }

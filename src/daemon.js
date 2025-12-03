@@ -82,6 +82,8 @@ async function loadSettingsFromConfig() {
             
             if (settings.github_user_whitelist && Array.isArray(settings.github_user_whitelist)) {
                 GITHUB_USER_WHITELIST = settings.github_user_whitelist;
+                // Sync to process.env so commentFilters.js can access it
+                process.env.GITHUB_USER_WHITELIST = settings.github_user_whitelist.join(',');
                 logger.info({ whitelist: GITHUB_USER_WHITELIST }, 'Successfully loaded github_user_whitelist from config repo');
             } else if (process.env.GITHUB_USER_WHITELIST) {
                 GITHUB_USER_WHITELIST = (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u);
@@ -612,10 +614,35 @@ async function processCommentEvent(payload, eventType, correlationId) {
     );
     
     if (jobExists) {
+        // Store comment in Redis for batch pickup by the next job
+        const pendingCommentsKey = `pending-pr-comments:${owner}:${repo}:${prNumber}`;
+
+        let enhancedCommentBody = comment.body;
+        if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
+            for (const keyword of PR_FOLLOWUP_TRIGGER_KEYWORDS) {
+                const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                enhancedCommentBody = enhancedCommentBody.replace(new RegExp(`${escapedKeyword}(:\\w+)?`, 'g'), '');
+            }
+        }
+        enhancedCommentBody = enhancedCommentBody.trim();
+
+        const pendingComment = {
+            id: comment.id,
+            body: enhancedCommentBody,
+            author: commentAuthor,
+            type: (comment.pull_request_review_id || eventType === 'pull_request_review_comment') ? 'review' : 'issue',
+            hasCodeContext: false
+        };
+
+        // Add to Redis list with 1 hour expiry
+        await redisClient.rpush(pendingCommentsKey, JSON.stringify(pendingComment));
+        await redisClient.expire(pendingCommentsKey, 3600);
+
         correlatedLogger.info({
             pullRequestNumber: prNumber,
-            repository: repoFullName
-        }, 'A job for this PR is already active or waiting, skipping new job creation.');
+            repository: repoFullName,
+            commentId: comment.id
+        }, 'A job for this PR is already active or waiting, stored comment for batch processing');
         return;
     }
     
@@ -666,6 +693,7 @@ async function processCommentEvent(payload, eventType, correlationId) {
     };
     
     let branchName;
+    let prLabels = [];
     if (eventType === 'issue_comment') {
         const octokit = await getAuthenticatedOctokit();
         const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
@@ -674,10 +702,31 @@ async function processCommentEvent(payload, eventType, correlationId) {
             pull_number: prNumber
         });
         branchName = pr.head.ref;
+        prLabels = pr.labels || [];
     } else {
         branchName = payload.pull_request.head.ref;
+        prLabels = payload.pull_request.labels || [];
     }
-    
+
+    // Extract model from PR labels if not specified in comment body
+    if (!llm && prLabels.length > 0) {
+        const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
+        for (const label of prLabels) {
+            const labelName = typeof label === 'string' ? label : label.name;
+            const match = labelName.match(modelLabelRegex);
+            if (match) {
+                llm = resolveModelAlias(match[1]);
+                correlatedLogger.debug({
+                    repository: repoFullName,
+                    pullRequestNumber: prNumber,
+                    label: labelName,
+                    resolvedModel: llm
+                }, 'Extracted model from PR label (webhook)');
+                break;
+            }
+        }
+    }
+
     const jobData = {
         pullRequestNumber: prNumber,
         comments: [unprocessedComment],
@@ -826,6 +875,25 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
             const unprocessedComments = [];
             let selectedLlm = null;
 
+            // Extract model from PR labels (llm-* labels like llm-claude-opus)
+            if (pr.labels && Array.isArray(pr.labels)) {
+                const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
+                for (const label of pr.labels) {
+                    const labelName = typeof label === 'string' ? label : label.name;
+                    const match = labelName.match(modelLabelRegex);
+                    if (match) {
+                        selectedLlm = resolveModelAlias(match[1]);
+                        correlatedLogger.debug({
+                            repository: repoFullName,
+                            pullRequestNumber: pr.number,
+                            label: labelName,
+                            resolvedModel: selectedLlm
+                        }, 'Extracted model from PR label');
+                        break;
+                    }
+                }
+            }
+
             for (const comment of commentsByTime) {
                 const commentAuthor = comment.user.login;
                 // Use centralized comment filtering
@@ -890,9 +958,9 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
                             if (llm) break;
                         }
                     }
-                    
-                    // Use the first specified LLM, or fallback to the last one found
-                    if (llm && !selectedLlm) {
+
+                    // Comment body model overrides PR label model (more specific)
+                    if (llm) {
                         selectedLlm = llm;
                     }
 
@@ -1341,17 +1409,18 @@ async function startDaemon(options = {}) {
 }
 
 // Export functions for testing
-export { 
-    fetchIssuesForRepo, 
-    pollForIssues, 
-    pollForPullRequestComments, 
-    startDaemon, 
-    resetQueues, 
+export {
+    fetchIssuesForRepo,
+    pollForIssues,
+    pollForPullRequestComments,
+    startDaemon,
+    resetQueues,
     resetIssueLabels,
     processDetectedIssue,
     processCommentEvent,
     handleCommentDeleted,
-    handleCommentEdited
+    handleCommentEdited,
+    loadSettingsFromConfig
 };
 
 /**
