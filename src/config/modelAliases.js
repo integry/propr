@@ -1,23 +1,38 @@
 const MODEL_ALIASES = {
-    // Aliases to full model IDs (Claude 4.x models only)
-    'opus': 'claude-opus-4-1',                  // Claude Opus 4.1
-    'opus4': 'claude-opus-4-1',                 // Claude Opus 4.1
-    'opus-4-0': 'claude-opus-4-1',              // Official alias
-    'claude-opus': 'claude-opus-4-1',           // From llm-claude-opus label
-    'claude-opus-4-0': 'claude-opus-4-1',       // Official alias
+    'opus': 'claude-opus-4-1',
+    'opus4': 'claude-opus-4-1',
+    'opus-4-0': 'claude-opus-4-1',
+    'claude-opus': 'claude-opus-4-1',
+    'claude-opus-4-0': 'claude-opus-4-1',
 
-    'sonnet': 'claude-sonnet-4-5',              // Claude Sonnet 4.5 (default)
-    'sonnet4': 'claude-sonnet-4-5',             // Claude Sonnet 4.5
-    'sonnet-4-0': 'claude-sonnet-4-5',          // Official alias
-    'claude-sonnet': 'claude-sonnet-4-5',       // From llm-claude-sonnet label
-    'claude-sonnet-4-0': 'claude-sonnet-4-5',   // Official alias
+    'sonnet': 'claude-sonnet-4-5',
+    'sonnet4': 'claude-sonnet-4-5',
+    'sonnet-4-0': 'claude-sonnet-4-5',
+    'claude-sonnet': 'claude-sonnet-4-5',
+    'claude-sonnet-4-0': 'claude-sonnet-4-5',
 
-    'haiku': 'claude-haiku-4-5',                // Claude Haiku 4.5 (default)
-    'haiku45': 'claude-haiku-4-5',              // Claude Haiku 4.5
-    'haiku4': 'claude-haiku-4-5',               // Claude Haiku 4.5
-    'claude-haiku': 'claude-haiku-4-5',         // From llm-claude-haiku label
-    'claude-haiku-4-0': 'claude-haiku-4-5',     // Official alias
-    'claude-4-5-haiku': 'claude-haiku-4-5'      // Incorrect order variant (from settings)
+    'haiku': 'claude-haiku-4-5',
+    'haiku45': 'claude-haiku-4-5',
+    'haiku4': 'claude-haiku-4-5',
+    'claude-haiku': 'claude-haiku-4-5',
+    'claude-haiku-4-0': 'claude-haiku-4-5',
+    'claude-4-5-haiku': 'claude-haiku-4-5'
+};
+
+const OPENROUTER_MODEL_MAP = {
+    'claude-opus-4-1': 'anthropic/claude-opus-4',
+    'claude-opus-4-5': 'anthropic/claude-opus-4',
+    'claude-sonnet-4-5': 'anthropic/claude-sonnet-4',
+    'claude-sonnet-4-0': 'anthropic/claude-sonnet-4',
+    'claude-haiku-4-5': 'anthropic/claude-haiku-4',
+    'claude-haiku-4-0': 'anthropic/claude-haiku-4',
+    'claude-3-5-sonnet-20241022': 'anthropic/claude-3.5-sonnet',
+    'claude-3-5-haiku-20241022': 'anthropic/claude-3.5-haiku',
+    'claude-3-opus-20240229': 'anthropic/claude-3-opus',
+    'claude-3-sonnet-20240229': 'anthropic/claude-3-sonnet',
+    'claude-3-haiku-20240307': 'anthropic/claude-3-haiku',
+    'claude-3-7-sonnet-20250219': 'anthropic/claude-3.7-sonnet',
+    'claude-sonnet-4-5-20250929': 'anthropic/claude-sonnet-4',
 };
 
 // Default model to use when none specified
@@ -42,9 +57,15 @@ function getDefaultModel() {
     return MODEL_ALIASES[DEFAULT_MODEL_ALIAS];
 }
 
+function getOpenRouterId(internalModelId) {
+    return OPENROUTER_MODEL_MAP[internalModelId] || internalModelId;
+}
+
 export {
     MODEL_ALIASES,
     DEFAULT_MODEL_ALIAS,
+    OPENROUTER_MODEL_MAP,
     resolveModelAlias,
-    getDefaultModel
+    getDefaultModel,
+    getOpenRouterId
 };

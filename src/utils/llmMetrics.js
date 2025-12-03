@@ -2,6 +2,8 @@ import Redis from 'ioredis';
 import logger from './logger.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import { analysisQueue } from '../queue/taskQueue.js';
+import { getOpenRouterId } from '../config/modelAliases.js';
+import { getModelPricing } from '../services/pricingService.js';
 
 // Redis configuration
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
@@ -45,10 +47,38 @@ export async function recordLLMMetrics(claudeResult, issueRef, jobType = 'issue'
         const executionTimeMs = claudeResult?.executionTime || 0;
         const executionTimeSec = Math.round(executionTimeMs / 1000);
         const numTurns = claudeResult?.finalResult?.num_turns || 0;
-        const costUsd = claudeResult?.finalResult?.cost_usd ||
-                       claudeResult?.finalResult?.total_cost_usd || 0;
         const sessionId = claudeResult?.sessionId || 'unknown';
         const conversationId = claudeResult?.conversationId || null;
+
+        let totalInputTokens = 0;
+        let totalOutputTokens = 0;
+        
+        if (claudeResult?.conversationLog && Array.isArray(claudeResult.conversationLog)) {
+            claudeResult.conversationLog.forEach(step => {
+                totalInputTokens += step.message?.usage?.input_tokens || 0;
+                totalOutputTokens += step.message?.usage?.output_tokens || 0;
+            });
+        }
+
+        let calculatedCostUsd = 0;
+        const openRouterId = getOpenRouterId(model);
+        const pricing = await getModelPricing(openRouterId);
+
+        if (pricing) {
+            calculatedCostUsd = (totalInputTokens * pricing.prompt) + (totalOutputTokens * pricing.completion);
+            logger.debug({ 
+                model, 
+                openRouterId, 
+                pricing, 
+                totalInputTokens, 
+                totalOutputTokens, 
+                calculatedCostUsd 
+            }, 'Calculated dynamic cost from OpenRouter pricing');
+        }
+
+        const costUsd = calculatedCostUsd > 0 
+            ? calculatedCostUsd 
+            : (claudeResult?.finalResult?.cost_usd || claudeResult?.finalResult?.total_cost_usd || 0);
         
         // Store detailed LLM metrics
         const llmMetricsKey = `llm:metrics:${correlationId}`;
