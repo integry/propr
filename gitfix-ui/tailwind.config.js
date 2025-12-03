@@ -12,7 +12,7 @@ export default {
           '600': '#C53030',
         },
         light: {
-          '100': '#FFFF00',
+          '100': '#FFC0CB',
           '200': '#EDF2F7',
         }
       }
