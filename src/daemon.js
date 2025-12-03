@@ -604,8 +604,9 @@ async function processCommentEvent(payload, eventType, correlationId) {
     
     const activeJobs = await issueQueue.getActive();
     const waitingJobs = await issueQueue.getWaiting();
-    const existingJobs = [...activeJobs, ...waitingJobs];
-    
+    const delayedJobs = await issueQueue.getDelayed();
+    const existingJobs = [...activeJobs, ...waitingJobs, ...delayedJobs];
+
     const jobExists = existingJobs.some(job =>
         job.name === 'processPullRequestComment' &&
         job.data.pullRequestNumber === prNumber &&
@@ -1008,10 +1009,11 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
 
             // If we have unprocessed comments, create a single batch job
             if (unprocessedComments.length > 0) {
-                // Check if a job for this PR is already active or waiting
+                // Check if a job for this PR is already active, waiting, or delayed
                 const activeJobs = await issueQueue.getActive();
                 const waitingJobs = await issueQueue.getWaiting();
-                const existingJobs = [...activeJobs, ...waitingJobs];
+                const delayedJobs = await issueQueue.getDelayed();
+                const existingJobs = [...activeJobs, ...waitingJobs, ...delayedJobs];
 
                 const jobExists = existingJobs.some(job =>
                     job.name === 'processPullRequestComment' &&
@@ -1024,7 +1026,7 @@ async function pollForPullRequestComments(octokit, repoFullName, correlationId) 
                     correlatedLogger.info({
                         pullRequestNumber: pr.number,
                         repository: repoFullName
-                    }, 'A job for this PR is already active or waiting, skipping new job creation.');
+                    }, 'A job for this PR is already active, waiting, or delayed, skipping new job creation.');
                     continue;
                 }
                 const jobData = {
