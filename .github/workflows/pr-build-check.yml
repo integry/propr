@@ -54,78 +54,102 @@ jobs:
           # --- CORE ---
           if [ "${{ steps.filter.outputs.core }}" == 'true' ]; then
             echo -e "\n--- Core Service: Build ---" >> build_log.txt
-            if docker build -t gitfix-core -f Dockerfile . >> build_log.txt 2>&1; then
-              echo "✅ Core Build passed" >> build_log.txt
-            else
+            BUILD_OUTPUT=$(docker build -t gitfix-core -f Dockerfile . 2>&1) || {
               echo "❌ Core Build FAILED" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
               EXIT_CODE=1
+            }
+            if [ $EXIT_CODE -eq 0 ] || [ -z "$BUILD_OUTPUT" ]; then
+              echo "✅ Core Build passed" >> build_log.txt
             fi
           fi
 
           # --- UI ---
           if [ "${{ steps.filter.outputs.ui }}" == 'true' ]; then
             echo -e "\n--- UI: Lint & Build ---" >> build_log.txt
+            UI_FAILED=0
             
             # Install & Lint
             cd gitfix-ui
-            if npm ci >> ../build_log.txt 2>&1; then
-              echo "Installing UI dependencies..."
-              # Strict Lint: Fail on any warning
-              if npm run lint -- --max-warnings 0 >> ../build_log.txt 2>&1; then
-                echo "✅ UI Lint passed" >> ../build_log.txt
-              else
-                echo "❌ UI Lint FAILED" >> ../build_log.txt
-                EXIT_CODE=1
-              fi
-            else
+            INSTALL_OUTPUT=$(npm ci 2>&1) || {
               echo "❌ UI Dependency Install FAILED" >> ../build_log.txt
+              echo "$INSTALL_OUTPUT" | tail -50 >> ../build_log.txt
+              UI_FAILED=1
               EXIT_CODE=1
+            }
+            
+            if [ $UI_FAILED -eq 0 ]; then
+              LINT_OUTPUT=$(npm run lint -- --max-warnings 0 2>&1) || {
+                echo "❌ UI Lint FAILED" >> ../build_log.txt
+                echo "$LINT_OUTPUT" >> ../build_log.txt
+                UI_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $UI_FAILED -eq 0 ]; then
+                echo "✅ UI Lint passed" >> ../build_log.txt
+              fi
             fi
             cd ..
 
             # Docker Build
-            if docker build -t gitfix-ui ./gitfix-ui >> build_log.txt 2>&1; then
-              echo "✅ UI Build passed" >> build_log.txt
-            else
+            BUILD_OUTPUT=$(docker build -t gitfix-ui ./gitfix-ui 2>&1) || {
               echo "❌ UI Build FAILED" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
               EXIT_CODE=1
+              UI_FAILED=1
+            }
+            if [ $UI_FAILED -eq 0 ]; then
+              echo "✅ UI Build passed" >> build_log.txt
             fi
           fi
 
           # --- DOCS ---
           if [ "${{ steps.filter.outputs.docs }}" == 'true' ]; then
             echo -e "\n--- Docs: Typecheck & Build ---" >> build_log.txt
+            DOCS_FAILED=0
             
             cd docs
-            if npm ci >> ../build_log.txt 2>&1; then
-              if npm run typecheck >> ../build_log.txt 2>&1; then
-                echo "✅ Docs Typecheck passed" >> ../build_log.txt
-              else
+            INSTALL_OUTPUT=$(npm ci 2>&1) || {
+              echo "❌ Docs Dependency Install FAILED" >> ../build_log.txt
+              echo "$INSTALL_OUTPUT" | tail -50 >> ../build_log.txt
+              DOCS_FAILED=1
+              EXIT_CODE=1
+            }
+            
+            if [ $DOCS_FAILED -eq 0 ]; then
+              TYPECHECK_OUTPUT=$(npm run typecheck 2>&1) || {
                 echo "❌ Docs Typecheck FAILED" >> ../build_log.txt
+                echo "$TYPECHECK_OUTPUT" >> ../build_log.txt
+                DOCS_FAILED=1
                 EXIT_CODE=1
+              }
+              if [ $DOCS_FAILED -eq 0 ]; then
+                echo "✅ Docs Typecheck passed" >> ../build_log.txt
               fi
-            else
-               echo "❌ Docs Dependency Install FAILED" >> ../build_log.txt
-               EXIT_CODE=1
             fi
             cd ..
 
-            if docker build -t gitfix-docs ./docs >> build_log.txt 2>&1; then
-               echo "✅ Docs Build passed" >> build_log.txt
-            else
-               echo "❌ Docs Build FAILED" >> build_log.txt
-               EXIT_CODE=1
+            BUILD_OUTPUT=$(docker build -t gitfix-docs ./docs 2>&1) || {
+              echo "❌ Docs Build FAILED" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
+              DOCS_FAILED=1
+              EXIT_CODE=1
+            }
+            if [ $DOCS_FAILED -eq 0 ]; then
+              echo "✅ Docs Build passed" >> build_log.txt
             fi
           fi
 
           # --- DASHBOARD ---
           if [ "${{ steps.filter.outputs.dashboard }}" == 'true' ]; then
             echo -e "\n--- Dashboard: Build ---" >> build_log.txt
-            if docker build -t gitfix-dashboard -f packages/dashboard/Dockerfile.prod ./packages/dashboard >> build_log.txt 2>&1; then
-              echo "✅ Dashboard Build passed" >> build_log.txt
-            else
+            BUILD_OUTPUT=$(docker build -t gitfix-dashboard -f packages/dashboard/Dockerfile.prod ./packages/dashboard 2>&1) || {
               echo "❌ Dashboard Build FAILED" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
               EXIT_CODE=1
+            }
+            if [ $? -eq 0 ] && [ $EXIT_CODE -eq 0 ]; then
+              echo "✅ Dashboard Build passed" >> build_log.txt
             fi
           fi
 
@@ -144,8 +168,8 @@ jobs:
             try { log = fs.readFileSync('build_log.txt', 'utf8'); } 
             catch (e) { log = 'Log file missing.'; }
 
-            if (log.length > 15000) {
-              log = log.substring(0, 15000) + "\n\n...(truncated)";
+            if (log.length > 60000) {
+              log = log.substring(0, 60000) + "\n\n...(truncated)";
             }
 
             const body = [
