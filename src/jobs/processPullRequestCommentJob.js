@@ -367,6 +367,65 @@ export async function processPullRequestCommentJob(job) {
             new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
         );
 
+        let originalTaskSpec = '';
+        const linkedIssueMatch = prData.data.body?.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
+        if (linkedIssueMatch) {
+            const linkedIssueNumber = parseInt(linkedIssueMatch[1], 10);
+            correlatedLogger.info({ pullRequestNumber, linkedIssueNumber }, 'Found linked issue in PR body');
+            
+            try {
+                const linkedIssueData = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                    owner: repoOwner,
+                    repo: repoName,
+                    issue_number: linkedIssueNumber
+                });
+                
+                const linkedIssueComments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                    owner: repoOwner,
+                    repo: repoName,
+                    issue_number: linkedIssueNumber,
+                    per_page: 100
+                });
+                
+                const qualifyingComments = linkedIssueComments.filter(comment => {
+                    return comment.user.login !== botUsername;
+                });
+                
+                originalTaskSpec += `Here is the original task specification (GitHub Issue #${linkedIssueNumber}):\n\n`;
+                originalTaskSpec += `---\n`;
+                originalTaskSpec += `**Issue Title:** ${linkedIssueData.data.title}\n`;
+                originalTaskSpec += `**Author:** @${linkedIssueData.data.user.login}\n`;
+                originalTaskSpec += `**Body:**\n${formatCommentForPrompt(linkedIssueData.data.body)}\n`;
+                originalTaskSpec += `---\n`;
+                
+                if (qualifyingComments.length > 0) {
+                    originalTaskSpec += `\n**Qualifying Comments on Issue #${linkedIssueNumber}:**\n\n`;
+                    for (const comment of qualifyingComments) {
+                        originalTaskSpec += `---\n`;
+                        originalTaskSpec += `**Author:** @${comment.user.login}\n`;
+                        originalTaskSpec += `**Comment:**\n${formatCommentForPrompt(comment.body)}\n`;
+                        originalTaskSpec += `---\n`;
+                    }
+                }
+                
+                originalTaskSpec += '\n';
+                
+                correlatedLogger.info({
+                    pullRequestNumber,
+                    linkedIssueNumber,
+                    issueTitle: linkedIssueData.data.title,
+                    qualifyingCommentsCount: qualifyingComments.length
+                }, 'Fetched original task spec from linked issue');
+                
+            } catch (issueError) {
+                correlatedLogger.warn({
+                    pullRequestNumber,
+                    linkedIssueNumber,
+                    error: issueError.message
+                }, 'Failed to fetch linked issue data, continuing without it');
+            }
+        }
+
         let commentHistory = '';
         const reversedComments = [...commentsByTime].reverse();
 
@@ -483,7 +542,7 @@ ${body}
 **New Request${unprocessedComments.length > 1 ? 's' : ''}:**
 ${combinedCommentBody.replace(/^/gm, '> ')}
 
-${commentHistory}
+${originalTaskSpec}${commentHistory}
 
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}
