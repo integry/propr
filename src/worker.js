@@ -1,37 +1,21 @@
 import 'dotenv/config';
-import path from 'path';
 import { GITHUB_ISSUE_QUEUE_NAME, createWorker, issueQueue } from './queue/taskQueue.js';
 import logger, { generateCorrelationId } from './utils/logger.js';
 import { getAuthenticatedOctokit } from './auth/githubAuth.js';
-import { withErrorHandling, handleError, ErrorCategories } from './utils/errorHandler.js';
+import { handleError } from './utils/errorHandler.js';
 import { withRetry, retryConfigs } from './utils/retryHandler.js';
 import { getStateManager, TaskStates } from './utils/workerStateManager.js';
 import { db, isEnabled as isDbEnabled } from './db/postgres.js';
 import { 
     ensureRepoCloned, 
     createWorktreeForIssue,
-    createWorktreeFromExistingBranch,
     cleanupWorktree,
-    getRepoUrl,
-    commitChanges,
-    pushBranch
+    getRepoUrl
 } from './git/repoManager.js';
-import { formatResetTime, addModelSpecificDelay } from './utils/scheduling.js';
-import { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from './utils/github/labelOperations.js';
 import { ensureGitRepository } from './utils/git/gitValidation.js';
-import { createLogFiles, generateCompletionComment } from './utils/github/logFiles.js';
-import fs from 'fs-extra';
-import { completePostProcessing } from './githubService.js';
-import { executeClaudeCode, buildClaudeDockerImage, UsageLimitError, generateTaskSummary } from './claude/claudeService.js';
+import { executeClaudeCode, buildClaudeDockerImage, UsageLimitError } from './claude/claudeService.js';
 import { generateTaskImportPrompt } from './claude/prompts/promptGenerator.js';
-import { recordLLMMetrics } from './utils/llmMetrics.js';
-import { 
-    validatePRCreation, 
-    generateEnhancedClaudePrompt, 
-    validateRepositoryInfo 
-} from './utils/prValidation.js';
 import Redis from 'ioredis';
-import { getDefaultModel } from './config/modelAliases.js';
 import { loadSettings, loadAiPrimaryTag, loadPrLabel } from './config/configRepoManager.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
 import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJob.js';
@@ -39,7 +23,6 @@ import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJo
 // Configuration
 const AI_PROCESSING_TAG = process.env.AI_PROCESSING_TAG || 'AI-processing';
 const AI_DONE_TAG = process.env.AI_DONE_TAG || 'AI-done';
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
 async function getAiPrimaryTag() {
     try {
