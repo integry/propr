@@ -23,12 +23,6 @@ const OPENROUTER_MODEL_MAP = {
     'claude-opus-4-5': 'anthropic/claude-opus-4.5',
     'claude-sonnet-4-5': 'anthropic/claude-sonnet-4.5',
     'claude-haiku-4-5': 'anthropic/claude-haiku-4.5',
-    'claude-3-5-sonnet-20241022': 'anthropic/claude-3.5-sonnet',
-    'claude-3-5-haiku-20241022': 'anthropic/claude-3.5-haiku',
-    'claude-3-opus-20240229': 'anthropic/claude-3-opus',
-    'claude-3-sonnet-20240229': 'anthropic/claude-3-sonnet',
-    'claude-3-haiku-20240307': 'anthropic/claude-3-haiku',
-    'claude-3-7-sonnet-20250219': 'anthropic/claude-3.7-sonnet',
 };
 
 function getOpenRouterId(internalModelId) {
