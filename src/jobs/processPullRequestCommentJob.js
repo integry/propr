@@ -416,7 +416,7 @@ export async function processPullRequestCommentJob(job) {
                     pullRequestNumber,
                     linkedIssueNumber,
                     issueTitle: linkedIssueData.data.title,
-                    qualifyingCommentsCount: qualifyingComments.length
+                    clarifyingCommentsCount: clarifyingComments.length
                 }, 'Fetched original task spec from linked issue');
                 
             } catch (issueError) {
