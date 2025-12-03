@@ -213,7 +213,7 @@ const TaskDetails: React.FC = () => {
         href={`${REPO_BASE_URL}/${cleanPath}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="font-mono text-red-600 hover:text-red-700 underline"
+        className="font-mono text-blue-600 hover:text-blue-700 underline"
       >
         {cleanPath}
       </a>
@@ -593,7 +593,7 @@ const TaskDetails: React.FC = () => {
                 href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-red-600 hover:text-red-700 underline"
+                className="text-blue-600 hover:text-blue-700 underline"
               >
                 {taskInfo.repoOwner}/{taskInfo.repoName}
               </a>
@@ -605,7 +605,7 @@ const TaskDetails: React.FC = () => {
                 href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/${taskInfo.type === 'pr-comment' ? 'pull' : 'issues'}/${taskInfo.number}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-red-600 hover:text-red-700 underline"
+                className="text-blue-600 hover:text-blue-700 underline"
               >
                 #{taskInfo.number}
               </a>
@@ -613,7 +613,7 @@ const TaskDetails: React.FC = () => {
           )}
           <span className="text-gray-400">•</span>
           <span className="text-gray-700 font-semibold">Model:</span>
-          <span className="text-red-600">{modelName}</span>
+          <span className="text-blue-600">{modelName}</span>
           {prInfo?.url && (
             <>
               <span className="text-gray-400">•</span>
@@ -622,7 +622,7 @@ const TaskDetails: React.FC = () => {
                 href={prInfo.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-red-600 hover:text-red-700 underline"
+                className="text-blue-600 hover:text-blue-700 underline"
               >
                 #{prInfo.number}
               </a>
@@ -633,7 +633,7 @@ const TaskDetails: React.FC = () => {
           {historyItemWithPaths?.promptPath && (
             <button
               onClick={() => fetchPrompt(historyItemWithPaths.promptPath)}
-              className="px-3 py-1.5 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 transition-colors"
+              className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
             >
               View Prompt
             </button>
@@ -720,7 +720,7 @@ const TaskDetails: React.FC = () => {
                               href={itemPrInfo.url}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="text-red-600 hover:text-red-700 underline ml-2"
+                              className="text-blue-600 hover:text-blue-700 underline ml-2"
                             >
                               (View PR #{itemPrInfo.number})
                             </a>
@@ -738,7 +738,7 @@ const TaskDetails: React.FC = () => {
                           <td className="py-2 text-gray-600 text-xs text-right">
                             {isRunning ? (
                               <span className="inline-flex items-center gap-1">
-                                <svg className="animate-spin h-3 w-3 text-red-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <svg className="animate-spin h-3 w-3 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                                 </svg>
@@ -765,27 +765,27 @@ const TaskDetails: React.FC = () => {
 
       {/* 4. To-do List */}
       {liveDetails.todos.length > 0 && history.length > 0 && (
-        <div className="mb-6 p-4 bg-red-50 rounded-lg border border-red-200">
+        <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
           {!['COMPLETED', 'FAILED'].includes(history[history.length - 1]?.state?.toUpperCase()) ? (
             <>
-              <h4 className="mt-0 text-red-900 flex items-center gap-2">
+              <h4 className="mt-0 text-blue-900 flex items-center gap-2">
                 <span className="text-xl">⚡</span>
                 Live Task Progress
               </h4>
               {liveDetails.currentTask && (
-                <p className="mb-4 p-3 bg-red-100 rounded-md border-l-4 border-red-500">
-                  <strong className="text-red-900">Current Task:</strong> {liveDetails.currentTask}
+                <p className="mb-4 p-3 bg-blue-100 rounded-md border-l-4 border-blue-500">
+                  <strong className="text-blue-900">Current Task:</strong> {liveDetails.currentTask}
                 </p>
               )}
             </>
           ) : null}
-          <h5 className="mt-4 mb-2 text-red-900">To-do List:</h5>
+          <h5 className="mt-4 mb-2 text-blue-900">To-do List:</h5>
           <ul className="list-none pl-0 m-0">
             {liveDetails.todos.map(todo => (
               <li 
                 key={todo.id} 
                 className={`flex items-center mb-2 p-2 rounded transition-colors ${
-                  todo.status === 'in_progress' ? 'bg-red-100' : ''
+                  todo.status === 'in_progress' ? 'bg-blue-100' : ''
                 }`}
               >
                 <span className="mr-2 text-lg">
@@ -794,7 +794,7 @@ const TaskDetails: React.FC = () => {
                 <span className={`${
                   todo.status === 'completed' ? 'text-gray-500' : 'text-gray-700'
                 } ${
-                  todo.status === 'in_progress' ? 'font-bold text-red-800' : 'font-normal'
+                  todo.status === 'in_progress' ? 'font-bold text-blue-800' : 'font-normal'
                 }`}>
                   {todo.content}
                 </span>
@@ -963,7 +963,7 @@ const TaskDetails: React.FC = () => {
                             <tr className="border-b border-gray-200">
                               <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Model:</td>
                               <td className="py-2 text-gray-700">
-                                <div className="text-red-600 font-medium">{formatModelName(selectedPrompt.model)}</div>
+                                <div className="text-blue-600 font-medium">{formatModelName(selectedPrompt.model)}</div>
                                 <div className="text-xs text-gray-500 mt-1">{selectedPrompt.model}</div>
                               </td>
                             </tr>
@@ -1048,7 +1048,7 @@ const TaskDetails: React.FC = () => {
                           onClick={() => fetchLogFile(file.name)}
                           className={`text-left p-3 rounded-md transition-colors border ${
                             selectedLogFile?.name === file.name
-                              ? 'bg-red-600 text-white border-red-600'
+                              ? 'bg-blue-600 text-white border-blue-600'
                               : 'bg-white text-gray-700 hover:bg-gray-100 border-gray-300'
                           }`}
                         >
@@ -1056,7 +1056,7 @@ const TaskDetails: React.FC = () => {
                             {file.name}
                           </div>
                           <div className={`text-xs ${
-                            selectedLogFile?.name === file.name ? 'text-red-100' : 'text-gray-500'
+                            selectedLogFile?.name === file.name ? 'text-blue-100' : 'text-gray-500'
                           }`}>
                             {Math.round(file.size / 1024)} KB
                           </div>
@@ -1077,7 +1077,7 @@ const TaskDetails: React.FC = () => {
                               placeholder="Search..."
                               value={searchQuery}
                               onChange={(e) => setSearchQuery(e.target.value)}
-                              className="px-3 py-1 bg-white text-gray-900 rounded-md text-sm border border-gray-300 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                              className="px-3 py-1 bg-white text-gray-900 rounded-md text-sm border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:outline-none"
                             />
                             {searchMatches.length > 0 && (
                               <div className="flex items-center gap-2">

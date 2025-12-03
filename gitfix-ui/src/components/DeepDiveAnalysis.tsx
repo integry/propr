@@ -129,7 +129,7 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
         <div className="flex items-center gap-3">
           <h4 className="text-lg font-semibold text-gray-900">{title}</h4>
           {parsedAnalysis && typeof parsedAnalysis === 'object' && parsedAnalysis.modelUsed && (
-            <span className="text-xs px-2 py-1 rounded bg-red-100 text-red-800 font-medium">
+            <span className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-800 font-medium">
               {formatModelName(parsedAnalysis.modelUsed)}
             </span>
           )}
