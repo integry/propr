@@ -1,5 +1,5 @@
 import Redis from 'ioredis';
-import logger from '../logger.js';
+import logger from '../logger.js'; 
 
 export async function createLogFiles(claudeResult, issueRef) {
     const fs = await import('fs');
