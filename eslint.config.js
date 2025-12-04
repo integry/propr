@@ -15,10 +15,10 @@ export default [
     rules: {
       ...js.configs.recommended.rules,
       'no-unused-vars': ['error', { varsIgnorePattern: '^_', argsIgnorePattern: '^_' }],
-      'max-lines': ['warn', { max: 1200, skipBlankLines: true, skipComments: true }],
-      'complexity': ['warn', { max: 200 }],
-      'max-depth': ['warn', { max: 8 }],
-      'max-params': ['warn', { max: 8 }],
+      'max-lines': ['warn', { max: 800, skipBlankLines: true, skipComments: true }],
+      'complexity': ['warn', { max: 100 }],
+      'max-depth': ['warn', { max: 6 }],
+      'max-params': ['warn', { max: 7 }],
     },
   },
 ]
