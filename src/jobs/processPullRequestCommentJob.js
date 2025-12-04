@@ -782,6 +782,20 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
             if (claudeResult.executionTime) {
                 prCommentBody += `- Execution time: ${Math.round(claudeResult.executionTime / 1000)}s\n`;
             }
+            let inputTokens = 0;
+            let outputTokens = 0;
+            if (claudeResult.conversationLog) {
+                claudeResult.conversationLog.forEach(msg => {
+                    if (msg.message?.usage) {
+                        inputTokens += (msg.message.usage.input_tokens || 0);
+                        outputTokens += (msg.message.usage.output_tokens || 0);
+                    }
+                });
+            }
+            const totalTokens = inputTokens + outputTokens;
+            if (totalTokens > 0) {
+                prCommentBody += `- Tokens used: ${totalTokens.toLocaleString()} [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
+            }
             const cost = claudeResult.finalResult?.cost_usd || claudeResult.finalResult?.total_cost_usd;
             if (cost != null) {
                 prCommentBody += `- Cost: $${cost.toFixed(2)}\n`;
@@ -814,6 +828,20 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
             noChangesBody += `- Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}\n`;
             if (claudeResult.executionTime) {
                 noChangesBody += `- Analysis time: ${Math.round(claudeResult.executionTime / 1000)}s\n`;
+            }
+            let analysisInputTokens = 0;
+            let analysisOutputTokens = 0;
+            if (claudeResult.conversationLog) {
+                claudeResult.conversationLog.forEach(msg => {
+                    if (msg.message?.usage) {
+                        analysisInputTokens += (msg.message.usage.input_tokens || 0);
+                        analysisOutputTokens += (msg.message.usage.output_tokens || 0);
+                    }
+                });
+            }
+            const analysisTotalTokens = analysisInputTokens + analysisOutputTokens;
+            if (analysisTotalTokens > 0) {
+                noChangesBody += `- Tokens used: ${analysisTotalTokens.toLocaleString()} [${analysisInputTokens.toLocaleString()} input + ${analysisOutputTokens.toLocaleString()} output]\n`;
             }
             const analysisCost = claudeResult.finalResult?.total_cost_usd || claudeResult.finalResult?.cost_usd;
             if (analysisCost) {
