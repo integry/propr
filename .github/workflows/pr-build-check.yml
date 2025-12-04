@@ -53,13 +53,35 @@ jobs:
 
           # --- CORE ---
           if [ "${{ steps.filter.outputs.core }}" == 'true' ]; then
-            echo -e "\n--- Core Service: Build ---" >> build_log.txt
+            echo -e "\n--- Core Service: Lint & Build ---" >> build_log.txt
+            CORE_FAILED=0
+            
+            INSTALL_OUTPUT=$(npm ci 2>&1) || {
+              echo "❌ Core Dependency Install FAILED" >> build_log.txt
+              echo "$INSTALL_OUTPUT" | tail -50 >> build_log.txt
+              CORE_FAILED=1
+              EXIT_CODE=1
+            }
+            
+            if [ $CORE_FAILED -eq 0 ]; then
+              LINT_OUTPUT=$(npm run lint -- --max-warnings 0 2>&1) || {
+                echo "❌ Core Lint FAILED" >> build_log.txt
+                echo "$LINT_OUTPUT" >> build_log.txt
+                CORE_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $CORE_FAILED -eq 0 ]; then
+                echo "✅ Core Lint passed" >> build_log.txt
+              fi
+            fi
+
             BUILD_OUTPUT=$(docker build -t gitfix-core -f Dockerfile . 2>&1) || {
               echo "❌ Core Build FAILED" >> build_log.txt
               echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
+              CORE_FAILED=1
               EXIT_CODE=1
             }
-            if [ $EXIT_CODE -eq 0 ] || [ -z "$BUILD_OUTPUT" ]; then
+            if [ $CORE_FAILED -eq 0 ]; then
               echo "✅ Core Build passed" >> build_log.txt
             fi
           fi
