@@ -1,9 +1,31 @@
 const MAX_COMMENT_LENGTH = 65000;
 
+function getUsageStats(claudeResult) {
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    if (claudeResult?.conversationLog) {
+        claudeResult.conversationLog.forEach(msg => {
+            if (msg.message?.usage) {
+                inputTokens += (msg.message.usage.input_tokens || 0);
+                outputTokens += (msg.message.usage.output_tokens || 0);
+            }
+        });
+    }
+
+    return {
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens
+    };
+}
+
 export function generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult) {
     const timestamp = new Date().toISOString();
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
+    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
+    const cost = claudeResult?.finalResult?.cost_usd || 0;
 
     let body = `## 🤖 AI-Generated Solution\n\n`;
     body += `Resolves #${issueNumber}.\n\n`;
@@ -12,12 +34,11 @@ export function generatePRBody(issueNumber, issueTitle, commitMessage, claudeRes
     body += `### 📋 Execution Summary\n\n`;
     body += `- **Status**: ${isSuccess ? '✅ Success' : '❌ Failed'}\n`;
     body += `- **Execution Time**: ${executionTime}s\n`;
+    body += `- **Tokens used**: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
+    body += `- **API cost**: $${cost}\n`;
     body += `- **Generated**: ${timestamp}\n`;
     
     if (claudeResult?.finalResult) {
-        const result = claudeResult.finalResult;
-        body += `- **Claude Turns**: ${result.num_turns || 'unknown'}\n`;
-        body += `- **Cost**: $${result.cost_usd || 'unknown'}\n`;
         body += `- **Session ID**: \`${claudeResult.sessionId || 'unknown'}\`\n`;
     }
     
@@ -49,11 +70,13 @@ export function generateClaudeLogsComment(claudeResult, issueNumber) {
 
     if (claudeResult?.finalResult) {
         const result = claudeResult.finalResult;
+        const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
+        
         comment += `### 📊 Execution Statistics\n\n`;
         comment += `- **Success**: ${claudeResult.success ? 'Yes' : 'No'}\n`;
-        comment += `- **Total Turns**: ${result.num_turns || 'unknown'}\n`;
+        comment += `- **Tokens used**: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
+        comment += `- **API cost**: $${result.cost_usd || 'unknown'}\n`;
         comment += `- **Execution Time**: ${Math.round((claudeResult.executionTime || 0) / 1000)}s\n`;
-        comment += `- **Cost**: $${result.cost_usd || 'unknown'}\n`;
         comment += `- **Exit Code**: ${claudeResult.exitCode || 'unknown'}\n\n`;
 
         if (result.subtype === 'error_max_turns') {
@@ -86,20 +109,6 @@ export function generateClaudeLogsComment(claudeResult, issueNumber) {
 
         comment += conversationSnippet;
         comment += `\n</details>\n\n`;
-    }
-
-    if (claudeResult?.rawOutput) {
-        const outputLength = claudeResult.rawOutput.length;
-        comment += `### 📄 Raw Output\n\n`;
-        comment += `- **Output Length**: ${outputLength.toLocaleString()} characters\n`;
-        
-        if (outputLength > 2000) {
-            comment += `- **Preview** (first 2000 chars):\n\n`;
-            comment += `\`\`\`\n${claudeResult.rawOutput.substring(0, 2000)}\n...\n[Output truncated]\n\`\`\`\n\n`;
-        } else {
-            comment += `- **Full Output**:\n\n`;
-            comment += `\`\`\`\n${claudeResult.rawOutput}\n\`\`\`\n\n`;
-        }
     }
 
     if (claudeResult?.modifiedFiles && claudeResult.modifiedFiles.length > 0) {
