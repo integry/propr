@@ -241,3 +241,15 @@ export const generateDeepDiveAnalysis = async (taskId) => {
   await handleApiResponse(response);
   return response.json();
 };
+
+export const getCurrentUser = async () => {
+  const response = await fetch(`${API_BASE_URL}/api/auth/user`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const logout = () => {
+  window.location.href = `${API_BASE_URL}/api/auth/logout`;
+};
