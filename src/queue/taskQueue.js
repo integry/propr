@@ -1,4 +1,4 @@
-import { Queue, Worker } from 'bullmq';
+import { Queue, Worker } from 'bullmq'; 
 import Redis from 'ioredis';
 import logger from '../utils/logger.js';
 import 'dotenv/config';

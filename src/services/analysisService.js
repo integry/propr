@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import Redis from 'ioredis'; 
 import { db } from '../db/postgres.js';
 import { generateExecutionAnalysisPrompt } from '../claude/prompts/promptGenerator.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';

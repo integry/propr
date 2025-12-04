@@ -1,4 +1,4 @@
-import knex from 'knex';
+import knex from 'knex'; 
 import knexConfig from '../../knexfile.js';
 import logger from '../utils/logger.js';
 

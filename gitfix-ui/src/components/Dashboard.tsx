@@ -1,4 +1,4 @@
-import React from 'react';
+import React from 'react'; 
 import SystemStatus from './SystemStatus';
 import TaskQueueStats from './TaskQueueStats';
 import TaskList from './TaskList';

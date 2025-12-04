@@ -1,4 +1,4 @@
-import simpleGit from 'simple-git';
+import simpleGit from 'simple-git'; 
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';

@@ -30,6 +30,10 @@ export default [
         { allowConstantExport: true },
       ],
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'max-lines': ['warn', { max: 400, skipBlankLines: true, skipComments: true }],
+      'complexity': ['warn', { max: 20 }],
+      'max-depth': ['warn', { max: 4 }],
+      'max-params': ['warn', { max: 5 }],
     },
   },
   {
@@ -57,6 +61,10 @@ export default [
       ],
       '@typescript-eslint/no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
       '@typescript-eslint/no-explicit-any': 'warn',
+      'max-lines': ['warn', { max: 400, skipBlankLines: true, skipComments: true }],
+      'complexity': ['warn', { max: 20 }],
+      'max-depth': ['warn', { max: 4 }],
+      'max-params': ['warn', { max: 5 }],
     },
   },
 ]
