@@ -2,7 +2,6 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import logger from '../utils/logger.js';
-import { handleError } from '../utils/errorHandler.js';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { generateClaudePrompt, generateTaskImportPrompt } from './prompts/promptGenerator.js';
 import { executeDockerCommand, buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.js';
@@ -337,7 +336,7 @@ export async function executeClaudeCode({ worktreePath, issueRef, githubToken, c
                             claudeOutput.conversationId = jsonLine.conversation_id;
                         }
                     }
-                } catch (parseError) {
+                } catch {
                     // Skip non-JSON lines (like entrypoint output)
                     continue;
                 }

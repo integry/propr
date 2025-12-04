@@ -1,7 +1,6 @@
-import path from 'path';
 import logger, { generateCorrelationId } from '../utils/logger.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { handleError } from '../utils/errorHandler.js';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getStateManager, TaskStates } from '../utils/workerStateManager.js';
 import { 
@@ -15,13 +14,12 @@ import {
 import { formatResetTime, addModelSpecificDelay } from '../utils/scheduling.js';
 import { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from '../utils/github/labelOperations.js';
 import { ensureGitRepository } from '../utils/git/gitValidation.js';
-import { createLogFiles, generateCompletionComment } from '../utils/github/logFiles.js';
+import { generateCompletionComment } from '../utils/github/logFiles.js';
 import fs from 'fs-extra';
 import { executeClaudeCode, UsageLimitError } from '../claude/claudeService.js';
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { 
     validatePRCreation, 
-    generateEnhancedClaudePrompt, 
     validateRepositoryInfo 
 } from '../utils/prValidation.js';
 import Redis from 'ioredis';
@@ -29,21 +27,10 @@ import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import { issueQueue } from '../queue/taskQueue.js';
 import { ErrorCategories } from '../utils/errorHandler.js';
-import { loadAiPrimaryTag, loadPrLabel, loadPrimaryProcessingLabels } from '../config/configRepoManager.js';
+import { loadPrLabel, loadPrimaryProcessingLabels } from '../config/configRepoManager.js';
 import { filterCommentByAuthor } from '../utils/commentFilters.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
-
-async function getAiPrimaryTag() {
-    try {
-        if (process.env.CONFIG_REPO) {
-            return await loadAiPrimaryTag();
-        }
-    } catch (error) {
-        logger.warn({ error: error.message }, 'Failed to load AI primary tag from config, using fallback');
-    }
-    return process.env.AI_PRIMARY_TAG || 'AI';
-}
 
 async function getPrimaryProcessingLabels() {
     try {
@@ -740,7 +727,7 @@ ${completionComment}
                         } else {
                             throw prError;
                         }
-                    } catch (checkError) {
+                    } catch {
                         throw prError;
                     }
                 }

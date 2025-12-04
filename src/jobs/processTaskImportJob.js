@@ -7,7 +7,6 @@ import {
     cleanupWorktree,
     getRepoUrl
 } from '../git/repoManager.js';
-import { formatResetTime } from '../utils/scheduling.js';
 import { ensureGitRepository } from '../utils/git/gitValidation.js';
 import { executeClaudeCode, UsageLimitError } from '../claude/claudeService.js';
 import { generateTaskImportPrompt } from '../claude/prompts/promptGenerator.js';
@@ -66,8 +65,6 @@ export async function processTaskImportJob(job) {
         localRepoPath = await ensureRepoCloned(repoUrl, repoOwner, repoName, githubToken.token);
 
         await stateManager.updateState(TaskStates.SETUP, 'Creating worktree for analysis');
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-        const worktreeDirName = `task-import-${timestamp}`;
 
         worktreeInfo = await createWorktreeForIssue(
             localRepoPath,

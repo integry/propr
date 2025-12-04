@@ -64,7 +64,6 @@ export async function createPullRequestRobust(params) {
         await new Promise(resolve => setTimeout(resolve, 3000)); // 3 second delay
         
         // Step 2: Verify branch exists on remote with retry logic
-        let branchExists = false;
         const maxRetries = 5;
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
@@ -74,7 +73,6 @@ export async function createPullRequestRobust(params) {
                     branch: branchName
                 });
                 logger.debug({ branchName, attempt }, 'Confirmed branch exists on remote');
-                branchExists = true;
                 break;
             } catch (branchCheckError) {
                 if (attempt === maxRetries) {
@@ -565,7 +563,7 @@ function generateClaudeLogsComment(claudeResult, issueNumber) {
         comment += `<details>\n<summary>🗨️ Recent Conversation (Last 5 messages)</summary>\n\n`;
         
         let conversationSnippet = '';
-        recentMessages.forEach((msg, index) => {
+        recentMessages.forEach((msg) => {
             if (msg.type === 'user') {
                 const content = msg.message?.content || '[content unavailable]';
                 conversationSnippet += `**User**: ${content.substring(0, 300)}${content.length > 300 ? '...' : ''}\n\n`;

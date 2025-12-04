@@ -425,7 +425,7 @@ export async function getLLMMetricsSummary() {
         const parsedAlerts = highCostAlerts.map(alert => {
             try {
                 return JSON.parse(alert);
-            } catch (e) {
+            } catch {
                 return null;
             }
         }).filter(Boolean);

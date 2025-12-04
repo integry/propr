@@ -1,10 +1,9 @@
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
-import { handleError } from '../utils/errorHandler.js';
 import { ensureBranchAndPush } from '../git/repoManager.js';
+import { handleError } from '../utils/errorHandler.js';
 
 const DEFAULT_BASE_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
-const MAX_COMMENT_LENGTH = 65000;
 
 export async function createPullRequestRobust(params) {
     const { 
@@ -45,7 +44,6 @@ export async function createPullRequestRobust(params) {
         logger.debug({ branchName }, 'Waiting for GitHub to propagate branch data...');
         await new Promise(resolve => setTimeout(resolve, 3000));
         
-        let branchExists = false;
         const maxRetries = 5;
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
@@ -55,7 +53,6 @@ export async function createPullRequestRobust(params) {
                     branch: branchName
                 });
                 logger.debug({ branchName, attempt }, 'Confirmed branch exists on remote');
-                branchExists = true;
                 break;
             } catch (branchCheckError) {
                 if (attempt === maxRetries) {
