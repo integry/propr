@@ -18,7 +18,7 @@ export default [
       'max-lines': ['warn', { max: 800, skipBlankLines: true, skipComments: true }],
       'complexity': ['warn', { max: 100 }],
       'max-depth': ['warn', { max: 6 }],
-      'max-params': ['warn', { max: 7 }],
+      'max-params': ['warn', { max: 6 }],
     },
   },
 ]
