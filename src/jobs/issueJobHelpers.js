@@ -287,7 +287,8 @@ async function findExistingPR(octokit, issueRef, worktreeInfo, prError, correlat
     }
 }
 
-export function buildFinalResult(issueRef, localRepoPath, worktreeInfo, claudeResult, postProcessingResult, _commitResult) {
+export function buildFinalResult(issueRef, localRepoPath, results) {
+    const { worktreeInfo, claudeResult, postProcessingResult, commitResult: _commitResult } = results;
     const finalStatus = claudeResult?.success ? 
         (postProcessingResult?.pr ? 'complete_with_pr' : 'claude_success_no_changes') : 
         'claude_processing_failed';

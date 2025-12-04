@@ -112,7 +112,7 @@ async function processPullRequestComments(octokit, pr, repoContext, config) {
 
     if (unprocessedComments.length > 0) {
         await enqueuePRCommentJob(
-            unprocessedComments, selectedLlm, pr, owner, repo, 
+            { unprocessedComments, selectedLlm, pr, owner, repo },
             { repoFullName, correlationId, redisClient: config.redisClient }
         );
     }
@@ -236,7 +236,8 @@ function buildEnhancedCommentBody(comment, triggerKeywords) {
     return enhancedCommentBody;
 }
 
-async function enqueuePRCommentJob(unprocessedComments, selectedLlm, pr, owner, repo, options) {
+async function enqueuePRCommentJob(jobDetails, options) {
+    const { unprocessedComments, selectedLlm, pr, owner, repo } = jobDetails;
     const { repoFullName, correlationId, redisClient } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 

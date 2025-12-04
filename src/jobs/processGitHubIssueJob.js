@@ -170,8 +170,8 @@ async function processGitHubIssueJob(job) {
             await job.updateProgress(50);
             
             worktreeInfo = await createWorktreeForIssue(
-                localRepoPath, issueRef.number, currentIssueData.data.title,
-                issueRef.repoOwner, issueRef.repoName,
+                localRepoPath,
+                { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName },
                 { baseBranch: issueRef.baseBranch || null, octokit, modelName }
             );
             
@@ -270,7 +270,7 @@ async function processGitHubIssueJob(job) {
             correlatedLogger.warn({ error: stateError.message }, 'Failed to update task state to completed');
         }
 
-        return buildFinalResult(issueRef, localRepoPath, worktreeInfo, claudeResult, postProcessingResult, commitResult);
+        return buildFinalResult(issueRef, localRepoPath, { worktreeInfo, claudeResult, postProcessingResult, commitResult });
 
     } catch (error) {
         if (error instanceof UsageLimitError) {

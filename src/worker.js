@@ -117,13 +117,8 @@ async function processTaskImportJob(job) {
         // Use placeholder values for issue-specific parameters
         worktreeInfo = await createWorktreeForIssue(
             localRepoPath,
-            'import', // issueNumber placeholder
-            'Task Import Analysis', // title
-            repoOwner,
-            repoName,
-            null, // Use auto-detected default branch
-            octokit,
-            'planner' // modelName placeholder
+            { issueId: 'import', issueTitle: 'Task Import Analysis', owner: repoOwner, repoName },
+            { baseBranch: null, octokit, modelName: 'planner' }
         );
 
         correlatedLogger.info({ 

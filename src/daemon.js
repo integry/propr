@@ -424,6 +424,57 @@ async function resetQueues() {
     }
 }
 
+async function removeProcessingLabelFromIssue(octokit, issue, processingLabel, repoFullName) {
+    const [owner, repo] = repoFullName.split('/');
+    const currentLabels = issue.labels.map(label => label.name);
+    
+    if (!currentLabels.includes(processingLabel)) {
+        return false;
+    }
+    
+    logger.info({
+        repository: repoFullName,
+        issueNumber: issue.number,
+        labelToRemove: processingLabel
+    }, 'Removing processing label from issue (preserving done labels)');
+
+    await octokit.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
+        owner,
+        repo,
+        issue_number: issue.number,
+        name: processingLabel
+    });
+    return true;
+}
+
+async function processRepoLabelReset(octokit, repoFullName) {
+    const [owner, repo] = repoFullName.split('/');
+    if (!owner || !repo) return 0;
+
+    logger.info({ repository: repoFullName }, 'Checking for issues with processing labels...');
+    let repoResetCount = 0;
+
+    for (const primaryLabel of primaryProcessingLabels) {
+        const processingLabel = `${primaryLabel}-processing`;
+        
+        const issues = await octokit.paginate('GET /repos/{owner}/{repo}/issues', {
+            owner,
+            repo,
+            state: 'open',
+            labels: processingLabel,
+            per_page: 100
+        });
+
+        for (const issue of issues) {
+            const wasRemoved = await removeProcessingLabelFromIssue(octokit, issue, processingLabel, repoFullName);
+            if (wasRemoved) repoResetCount++;
+        }
+    }
+
+    logger.info({ repository: repoFullName }, 'Processed repository for label reset');
+    return repoResetCount;
+}
+
 async function resetIssueLabels() {
     logger.info('Resetting issue labels...');
     
@@ -438,46 +489,8 @@ async function resetIssueLabels() {
         let totalReset = 0;
 
         for (const repoFullName of repos) {
-            const [owner, repo] = repoFullName.split('/');
-            if (!owner || !repo) continue;
-
-            logger.info({ repository: repoFullName }, 'Checking for issues with processing labels...');
-
             try {
-                for (const primaryLabel of primaryProcessingLabels) {
-                    const processingLabel = `${primaryLabel}-processing`;
-                    
-                    const issues = await octokit.paginate('GET /repos/{owner}/{repo}/issues', {
-                        owner,
-                        repo,
-                        state: 'open',
-                        labels: processingLabel,
-                        per_page: 100
-                    });
-
-                    for (const issue of issues) {
-                        const currentLabels = issue.labels.map(label => label.name);
-                        
-                        if (currentLabels.includes(processingLabel)) {
-                            logger.info({
-                                repository: repoFullName,
-                                issueNumber: issue.number,
-                                labelToRemove: processingLabel
-                            }, 'Removing processing label from issue (preserving done labels)');
-
-                            await octokit.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
-                                owner,
-                                repo,
-                                issue_number: issue.number,
-                                name: processingLabel
-                            });
-                            totalReset++;
-                        }
-                    }
-                }
-
-                logger.info({ repository: repoFullName }, 'Processed repository for label reset');
-
+                totalReset += await processRepoLabelReset(octokit, repoFullName);
             } catch (repoError) {
                 logger.error({ repository: repoFullName, error: repoError.message }, 'Failed to reset labels for repository');
             }

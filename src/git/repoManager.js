@@ -232,7 +232,8 @@ export function listRepositoryBranchConfigurations() {
     return configs;
 }
 
-export async function createWorktreeForIssue(localRepoPath, issueId, issueTitle, owner, repoName, options = {}) {
+export async function createWorktreeForIssue(localRepoPath, issueInfo, options = {}) {
+    const { issueId, issueTitle, owner, repoName } = issueInfo;
     const { baseBranch = null, octokit = null, modelName = null } = options;
     
     const sanitizedTitle = issueTitle
@@ -305,6 +306,28 @@ export async function createWorktreeForIssue(localRepoPath, issueId, issueTitle,
     }
 }
 
+async function removeWorktreeForBranch(git, worktreeLines, branchName) {
+    for (let i = 0; i < worktreeLines.length; i++) {
+        const line = worktreeLines[i];
+        if (!line.startsWith('worktree ')) continue;
+        
+        const wtPath = line.substring('worktree '.length);
+        const branchLine = worktreeLines[i + 1];
+        const isBranchMatch = branchLine && 
+            branchLine.startsWith('branch ') && 
+            branchLine.substring('branch refs/heads/'.length) === branchName;
+        
+        if (isBranchMatch) {
+            logger.info({ worktreePath: wtPath, branchName }, 'Removing existing worktree for branch');
+            try {
+                await git.raw(['worktree', 'remove', wtPath, '--force']);
+            } catch (removeError) {
+                logger.warn({ worktreePath: wtPath, error: removeError.message }, 'Failed to remove existing worktree');
+            }
+        }
+    }
+}
+
 async function cleanupExistingBranch(git, branchName) {
     try {
         await git.revparse([branchName]);
@@ -313,23 +336,7 @@ async function cleanupExistingBranch(git, branchName) {
         try {
             const worktreeList = await git.raw(['worktree', 'list', '--porcelain']);
             const worktreeLines = worktreeList.split('\n');
-            
-            for (let i = 0; i < worktreeLines.length; i++) {
-                const line = worktreeLines[i];
-                if (line.startsWith('worktree ')) {
-                    const wtPath = line.substring('worktree '.length);
-                    const branchLine = worktreeLines[i + 1];
-                    if (branchLine && branchLine.startsWith('branch ') && 
-                        branchLine.substring('branch refs/heads/'.length) === branchName) {
-                        logger.info({ worktreePath: wtPath, branchName }, 'Removing existing worktree for branch');
-                        try {
-                            await git.raw(['worktree', 'remove', wtPath, '--force']);
-                        } catch (removeError) {
-                            logger.warn({ worktreePath: wtPath, error: removeError.message }, 'Failed to remove existing worktree');
-                        }
-                    }
-                }
-            }
+            await removeWorktreeForBranch(git, worktreeLines, branchName);
         } catch (listError) {
             logger.debug({ error: listError.message }, 'Failed to list worktrees');
         }

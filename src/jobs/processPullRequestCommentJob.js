@@ -173,7 +173,7 @@ export async function processPullRequestCommentJob(job) {
         }
 
         const changesSummary = claudeResult.summary || claudeResult.finalResult?.result || '';
-        const commitMessage = buildCommitMessage(changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText);
+        const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText });
 
         const commitResult = await commitChanges(worktreeInfo.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, pullRequestNumber, 'Follow-up changes');
 
@@ -313,7 +313,8 @@ ${commentHistory}${originalTaskSpec}
 - Make sure your changes are compatible with the existing modifications on this branch.`;
 }
 
-function buildCommitMessage(changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText) {
+function buildCommitMessage(options) {
+    const { changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText } = options;
     let commitDetails = '';
     if (changesSummary) {
         const lines = changesSummary.split('\n');

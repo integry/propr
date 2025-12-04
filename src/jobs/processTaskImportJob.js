@@ -76,13 +76,8 @@ export async function processTaskImportJob(job) {
 
         worktreeInfo = await createWorktreeForIssue(
             localRepoPath,
-            'import',
-            'Task Import Analysis',
-            repoOwner,
-            repoName,
-            null,
-            octokit,
-            'planner'
+            { issueId: 'import', issueTitle: 'Task Import Analysis', owner: repoOwner, repoName },
+            { baseBranch: null, octokit, modelName: 'planner' }
         );
 
         correlatedLogger.info({ 
