@@ -6,6 +6,7 @@ import RepositoriesPage from './pages/RepositoriesPage'
 import TasksPage from './pages/TasksPage'
 import AiToolsPage from './pages/AiToolsPage'
 import SettingsPage from './pages/SettingsPage'
+import LoginPage from './pages/LoginPage'
 import './App.css'
 import { getSystemStatus } from './api/gitfixApi'
 
@@ -39,6 +40,7 @@ const App: React.FC = () => {
   return (
     <Router>
       <Routes>
+        <Route path="/login" element={<LoginPage />} />
         <Route
           path="/"
           element={

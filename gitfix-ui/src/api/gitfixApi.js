@@ -5,8 +5,11 @@ const API_BASE_URL = 'https://api.gitfix.dev';
 // Helper function to handle API responses and auth
 const handleApiResponse = async (response) => {
   if (response.status === 401) {
-    // Redirect to GitHub OAuth login
-    window.location.href = `${API_BASE_URL}/api/auth/github`;
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('logged_out') === 'true') {
+      throw new Error('Authentication required');
+    }
+    window.location.href = '/login';
     throw new Error('Authentication required');
   }
   if (!response.ok) {
