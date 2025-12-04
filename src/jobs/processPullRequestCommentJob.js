@@ -13,6 +13,7 @@ import {
 import { formatResetTime } from '../utils/scheduling.js';
 import { ensureGitRepository } from '../utils/git/gitValidation.js';
 import { createLogFiles } from '../utils/github/logFiles.js';
+import { getUsageStats } from '../utils/tokenCalculation.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import fs from 'fs-extra';
 import { executeClaudeCode, UsageLimitError, generateTaskSummary } from '../claude/claudeService.js';
@@ -782,6 +783,10 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
             if (claudeResult.executionTime) {
                 prCommentBody += `- Execution time: ${Math.round(claudeResult.executionTime / 1000)}s\n`;
             }
+            const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
+            if (totalTokens > 0) {
+                prCommentBody += `- Tokens used: ${totalTokens.toLocaleString()} [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
+            }
             const cost = claudeResult.finalResult?.cost_usd || claudeResult.finalResult?.total_cost_usd;
             if (cost != null) {
                 prCommentBody += `- Cost: $${cost.toFixed(2)}\n`;
@@ -814,6 +819,10 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
             noChangesBody += `- Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}\n`;
             if (claudeResult.executionTime) {
                 noChangesBody += `- Analysis time: ${Math.round(claudeResult.executionTime / 1000)}s\n`;
+            }
+            const { inputTokens: analysisInputTokens, outputTokens: analysisOutputTokens, totalTokens: analysisTotalTokens } = getUsageStats(claudeResult);
+            if (analysisTotalTokens > 0) {
+                noChangesBody += `- Tokens used: ${analysisTotalTokens.toLocaleString()} [${analysisInputTokens.toLocaleString()} input + ${analysisOutputTokens.toLocaleString()} output]\n`;
             }
             const analysisCost = claudeResult.finalResult?.total_cost_usd || claudeResult.finalResult?.cost_usd;
             if (analysisCost) {

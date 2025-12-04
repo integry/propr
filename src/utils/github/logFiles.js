@@ -1,5 +1,6 @@
 import Redis from 'ioredis';
 import logger from '../logger.js';
+import { getUsageStats } from '../tokenCalculation.js'; 
 
 export async function createLogFiles(claudeResult, issueRef) {
     const fs = await import('fs');
@@ -89,6 +90,8 @@ export async function generateCompletionComment(claudeResult, issueRef) {
     const timestamp = new Date().toISOString();
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
+    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
+    const cost = claudeResult?.finalResult?.cost_usd || 0;
     
     let comment = `🤖 **AI Processing ${isSuccess ? 'Completed' : 'Failed'}**\n\n`;
     comment += `**Execution Details:**\n`;
@@ -96,6 +99,8 @@ export async function generateCompletionComment(claudeResult, issueRef) {
     comment += `- Repository: ${issueRef.repoOwner}/${issueRef.repoName}\n`;
     comment += `- Status: ${isSuccess ? '✅ Success' : '❌ Failed'}\n`;
     comment += `- Execution Time: ${executionTime}s\n`;
+    comment += `- Tokens used: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
+    comment += `- API cost: $${cost}\n`;
     comment += `- Timestamp: ${timestamp}\n`;
     
     if (claudeResult?.conversationId) {
@@ -114,10 +119,6 @@ export async function generateCompletionComment(claudeResult, issueRef) {
     
     if (claudeResult?.finalResult) {
         const result = claudeResult.finalResult;
-        comment += `**Claude Code Results:**\n`;
-        comment += `- Turns Used: ${result.num_turns || 'unknown'}\n`;
-        comment += `- Cost: $${result.cost_usd != null ? result.cost_usd.toFixed(2) : 'unknown'}\n`;
-        comment += `- Session ID: \`${claudeResult.sessionId || 'unknown'}\`\n\n`;
         
         if (result.subtype === 'error_max_turns') {
             comment += `⚠️ **Max Turns Reached**: Claude reached the maximum number of conversation turns (${result.num_turns}) before completing all tasks. Consider increasing the turn limit or breaking down the task into smaller parts.\n\n`;
@@ -129,15 +130,10 @@ export async function generateCompletionComment(claudeResult, issueRef) {
         
         if (Object.keys(logFiles).length > 0) {
             comment += `**📁 Detailed Logs:**\n`;
-            comment += `Execution logs generated:\n`;
             
             if (logFiles.conversation && claudeResult.conversationLog?.length > 0) {
                 comment += `- Conversation: ${claudeResult.conversationLog.length} messages\n`;
                 comment += `- Session: \`${claudeResult.sessionId}\`\n`;
-            }
-            
-            if (logFiles.output) {
-                comment += `- Raw Output: ${(claudeResult.rawOutput?.length || 0).toLocaleString()} characters\n`;
             }
             
             comment += `\nLog files stored at:\n`;
