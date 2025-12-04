@@ -13,6 +13,7 @@ import {
 import { formatResetTime } from '../utils/scheduling.js';
 import { ensureGitRepository } from '../utils/git/gitValidation.js';
 import { createLogFiles } from '../utils/github/logFiles.js';
+import { getUsageStats } from '../utils/tokenCalculation.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import fs from 'fs-extra';
 import { executeClaudeCode, UsageLimitError, generateTaskSummary } from '../claude/claudeService.js';
@@ -782,20 +783,7 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
             if (claudeResult.executionTime) {
                 prCommentBody += `- Execution time: ${Math.round(claudeResult.executionTime / 1000)}s\n`;
             }
-            let inputTokens = 0;
-            let outputTokens = 0;
-            if (claudeResult.conversationLog) {
-                claudeResult.conversationLog.forEach(msg => {
-                    if (msg.message?.usage) {
-                        const usage = msg.message.usage;
-                        inputTokens += (usage.input_tokens || 0);
-                        inputTokens += (usage.cache_creation_input_tokens || 0);
-                        inputTokens += (usage.cache_read_input_tokens || 0);
-                        outputTokens += (usage.output_tokens || 0);
-                    }
-                });
-            }
-            const totalTokens = inputTokens + outputTokens;
+            const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
             if (totalTokens > 0) {
                 prCommentBody += `- Tokens used: ${totalTokens.toLocaleString()} [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
             }
@@ -832,20 +820,7 @@ Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME}`;
             if (claudeResult.executionTime) {
                 noChangesBody += `- Analysis time: ${Math.round(claudeResult.executionTime / 1000)}s\n`;
             }
-            let analysisInputTokens = 0;
-            let analysisOutputTokens = 0;
-            if (claudeResult.conversationLog) {
-                claudeResult.conversationLog.forEach(msg => {
-                    if (msg.message?.usage) {
-                        const usage = msg.message.usage;
-                        analysisInputTokens += (usage.input_tokens || 0);
-                        analysisInputTokens += (usage.cache_creation_input_tokens || 0);
-                        analysisInputTokens += (usage.cache_read_input_tokens || 0);
-                        analysisOutputTokens += (usage.output_tokens || 0);
-                    }
-                });
-            }
-            const analysisTotalTokens = analysisInputTokens + analysisOutputTokens;
+            const { inputTokens: analysisInputTokens, outputTokens: analysisOutputTokens, totalTokens: analysisTotalTokens } = getUsageStats(claudeResult);
             if (analysisTotalTokens > 0) {
                 noChangesBody += `- Tokens used: ${analysisTotalTokens.toLocaleString()} [${analysisInputTokens.toLocaleString()} input + ${analysisOutputTokens.toLocaleString()} output]\n`;
             }
