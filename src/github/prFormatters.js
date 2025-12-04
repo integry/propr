@@ -1,4 +1,4 @@
-const MAX_COMMENT_LENGTH = 65000;
+const MAX_COMMENT_LENGTH = 65000; 
 
 function getUsageStats(claudeResult) {
     let inputTokens = 0;
