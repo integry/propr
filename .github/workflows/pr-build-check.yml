@@ -64,7 +64,7 @@ jobs:
             }
             
             if [ $CORE_FAILED -eq 0 ]; then
-              LINT_OUTPUT=$(npm run lint 2>&1) || {
+              LINT_OUTPUT=$(npm run lint -- --max-warnings 0 2>&1) || {
                 echo "❌ Core Lint FAILED" >> build_log.txt
                 echo "$LINT_OUTPUT" >> build_log.txt
                 CORE_FAILED=1
@@ -101,7 +101,7 @@ jobs:
             }
             
             if [ $UI_FAILED -eq 0 ]; then
-              LINT_OUTPUT=$(npm run lint 2>&1) || {
+              LINT_OUTPUT=$(npm run lint -- --max-warnings 0 2>&1) || {
                 echo "❌ UI Lint FAILED" >> ../build_log.txt
                 echo "$LINT_OUTPUT" >> ../build_log.txt
                 UI_FAILED=1
