@@ -92,8 +92,11 @@ function getUsageStats(claudeResult) {
     if (claudeResult?.conversationLog) {
         claudeResult.conversationLog.forEach(msg => {
             if (msg.message?.usage) {
-                inputTokens += (msg.message.usage.input_tokens || 0);
-                outputTokens += (msg.message.usage.output_tokens || 0);
+                const usage = msg.message.usage;
+                inputTokens += (usage.input_tokens || 0);
+                inputTokens += (usage.cache_creation_input_tokens || 0);
+                inputTokens += (usage.cache_read_input_tokens || 0);
+                outputTokens += (usage.output_tokens || 0);
             }
         });
     }
