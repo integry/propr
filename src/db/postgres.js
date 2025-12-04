@@ -45,7 +45,7 @@ if (!isEnabled) {
 }
 
 export { db, isEnabled };
-
+ 
 export async function closeConnection() {
   if (db) {
     try {

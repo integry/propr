@@ -453,7 +453,7 @@ async function startWorker(options = {}) {
 
 // Export for testing
 export { processGitHubIssueJob, processPullRequestCommentJob, processTaskImportJob, startWorker };
-
+ 
 // Start worker if this is the main module
 if (import.meta.url === `file://${process.argv[1]}`) {
     const options = parseArguments();

@@ -572,7 +572,7 @@ CRITICAL: Do not modify any files. Do not run any commands. Only output the summ
 export const buildClaudeDockerImage = buildDockerImageInternal;
 
 export { generateTaskImportPrompt };
-
+ 
 export async function runLightweightLLMAnalysis(prompt, model, correlationId, worktreePath, githubToken, issueRef) {
   const correlatedLogger = logger.withCorrelation(correlationId);
 
