@@ -6,6 +6,7 @@ import RepositoriesPage from './pages/RepositoriesPage'
 import TasksPage from './pages/TasksPage'
 import AiToolsPage from './pages/AiToolsPage'
 import SettingsPage from './pages/SettingsPage'
+import LoginPage from './pages/LoginPage'
 import './App.css'
 import { getSystemStatus } from './api/gitfixApi'
 
@@ -16,6 +17,12 @@ const App: React.FC = () => {
     const loadingFavicon = '/logo-loading.png';
 
     const updateFavicon = async () => {
+      if (window.location.pathname === '/login') {
+        if (favicon) {
+          favicon.href = defaultFavicon;
+        }
+        return;
+      }
       try {
         const status = await getSystemStatus();
         const isTaskRunning = status.workers.some((w: { status: string }) => w.status === 'active');
@@ -39,6 +46,7 @@ const App: React.FC = () => {
   return (
     <Router>
       <Routes>
+        <Route path="/login" element={<LoginPage />} />
         <Route
           path="/"
           element={

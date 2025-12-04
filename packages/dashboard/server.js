@@ -21,8 +21,13 @@ let isDbEnabled = false;
 const app = express();
 const PORT = process.env.DASHBOARD_API_PORT || 4000;
 
+if (!process.env.FRONTEND_URL) {
+  console.error('FRONTEND_URL environment variable is required');
+  process.exit(1);
+}
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: process.env.FRONTEND_URL,
   credentials: true
 }));
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { getQueueStats } from '../api/gitfixApi';
+import { getQueueStats, getCurrentUser, logout } from '../api/gitfixApi';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -12,9 +12,17 @@ interface NavItem {
   icon: React.FC<{ className?: string }>;
 }
 
+interface User {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarUrl?: string;
+}
+
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
+  const [user, setUser] = useState<User | null>(null);
 
   const navigation: NavItem[] = [
     { name: 'Dashboard', href: '/', icon: HomeIcon },
@@ -37,7 +45,17 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       }
     };
 
+    const fetchUser = async () => {
+      try {
+        const userData = await getCurrentUser();
+        setUser(userData);
+      } catch (err) {
+        console.error('Error fetching user:', err);
+      }
+    };
+
     fetchStats();
+    fetchUser();
     const interval = setInterval(fetchStats, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -72,8 +90,42 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         </nav>
       </aside>
 
-      {/* Main content */}
+      {/* Main content wrapper */}
       <div className="flex-1 flex flex-col">
+        <header className="bg-white border-b border-gray-200 h-16 flex items-center justify-end px-8 shadow-sm z-10">
+          {user && (
+            <div className="flex items-center gap-4">
+              <div className="flex flex-col items-end hidden sm:flex">
+                <span className="text-sm font-semibold text-gray-700">
+                  {user.displayName || user.username}
+                </span>
+                <span className="text-xs text-gray-500">@{user.username}</span>
+              </div>
+              
+              {user.avatarUrl ? (
+                <img 
+                  src={user.avatarUrl} 
+                  alt={user.username} 
+                  className="w-8 h-8 rounded-full border border-gray-200"
+                />
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs">
+                  {user.username.slice(0, 2).toUpperCase()}
+                </div>
+              )}
+
+              <div className="h-6 w-px bg-gray-200 mx-1"></div>
+
+              <button
+                onClick={logout}
+                className="text-sm text-gray-500 hover:text-red-600 font-medium transition-colors"
+              >
+                Logout
+              </button>
+            </div>
+          )}
+        </header>
+
         <main className="flex-1 p-8 overflow-y-auto">
           {children}
         </main>

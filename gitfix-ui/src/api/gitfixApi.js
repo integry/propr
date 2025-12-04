@@ -1,12 +1,14 @@
 // API for fetching system data from backend
 
-const API_BASE_URL = 'https://api.gitfix.dev';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 // Helper function to handle API responses and auth
 const handleApiResponse = async (response) => {
   if (response.status === 401) {
-    // Redirect to GitHub OAuth login
-    window.location.href = `${API_BASE_URL}/api/auth/github`;
+    if (window.location.pathname === '/login') {
+      throw new Error('Authentication required');
+    }
+    window.location.href = '/login';
     throw new Error('Authentication required');
   }
   if (!response.ok) {
@@ -240,4 +242,16 @@ export const generateDeepDiveAnalysis = async (taskId) => {
   });
   await handleApiResponse(response);
   return response.json();
+};
+
+export const getCurrentUser = async () => {
+  const response = await fetch(`${API_BASE_URL}/api/auth/user`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const logout = () => {
+  window.location.href = `${API_BASE_URL}/api/auth/logout`;
 };
