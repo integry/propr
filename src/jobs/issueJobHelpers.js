@@ -9,7 +9,8 @@ import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10);
 const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || (2 * 60 * 1000), 10);
 
-export async function handleUsageLimitError(error, job, issueRef, octokit, correlatedLogger, stateManager, taskId) {
+export async function handleUsageLimitError(error, job, issueRef, options = {}) {
+    const { octokit, correlatedLogger, stateManager, taskId } = options;
     const jobId = job.id;
     
     correlatedLogger.warn({

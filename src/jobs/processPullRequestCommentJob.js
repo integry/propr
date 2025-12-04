@@ -119,7 +119,7 @@ export async function processPullRequestCommentJob(job) {
 
         const allComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
         const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-        const originalTaskSpec = await fetchLinkedIssueContext(octokit, prData, repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger);
+        const originalTaskSpec = await fetchLinkedIssueContext(octokit, prData, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
         const commentHistory = buildCommentHistory(commentsByTime, prData, correlationId);
         
         startingWorkComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -155,7 +155,7 @@ export async function processPullRequestCommentJob(job) {
             customPrompt: prompt,
             branchName: worktreeInfo.branchName,
             modelName: llm || DEFAULT_MODEL_NAME,
-            onSessionId: createSessionIdCallbackForPR(taskId, pullRequestNumber, repoOwner, repoName, llm || DEFAULT_MODEL_NAME, stateManager, correlatedLogger),
+            onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: llm || DEFAULT_MODEL_NAME, stateManager, correlatedLogger }),
             onContainerId: createContainerIdCallbackForPR(taskId, stateManager)
         });
 
@@ -185,14 +185,14 @@ export async function processPullRequestCommentJob(job) {
                 correlationId
             });
             
-            const prCommentBody = buildCompletionComment(commitResult, unprocessedComments, changesSummary, commitMessage, claudeResult, llm, authorsText);
+            const prCommentBody = buildCompletionComment(commitResult, unprocessedComments, { changesSummary, commitMessage, llm, authorsText }, claudeResult);
             completionComment = await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id, body: prCommentBody,
             });
 
             correlatedLogger.info({ pullRequestNumber, commitHash: commitResult.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
         } else {
-            const noChangesBody = buildCompletionComment(null, unprocessedComments, changesSummary, commitMessage, claudeResult, llm, authorsText);
+            const noChangesBody = buildCompletionComment(null, unprocessedComments, { changesSummary, commitMessage, llm, authorsText }, claudeResult);
             completionComment = await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id, body: noChangesBody,
             });

@@ -35,7 +35,7 @@ export async function pollForPullRequestComments(octokit, repoFullName, correlat
 
         for (const pr of prs) {
             await processPullRequestComments(
-                octokit, pr, owner, repo, repoFullName, correlationId, config
+                octokit, pr, { owner, repo, repoFullName, correlationId }, config
             );
         }
     } catch (error) {
@@ -43,7 +43,8 @@ export async function pollForPullRequestComments(octokit, repoFullName, correlat
     }
 }
 
-async function processPullRequestComments(octokit, pr, owner, repo, repoFullName, correlationId, config) {
+async function processPullRequestComments(octokit, pr, repoContext, config) {
+    const { owner, repo, repoFullName, correlationId } = repoContext;
     const { GITHUB_BOT_USERNAME, PR_FOLLOWUP_TRIGGER_KEYWORDS } = config;
     
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -106,7 +107,7 @@ async function processPullRequestComments(octokit, pr, owner, repo, repoFullName
     }
 
     const { unprocessedComments, selectedLlm } = await collectUnprocessedComments(
-        commentsByTime, pr, owner, repo, botUsername, correlationId, config
+        commentsByTime, pr, { owner, repo, botUsername, correlationId }, config
     );
 
     if (unprocessedComments.length > 0) {
@@ -117,7 +118,8 @@ async function processPullRequestComments(octokit, pr, owner, repo, repoFullName
     }
 }
 
-async function collectUnprocessedComments(commentsByTime, pr, owner, repo, botUsername, correlationId, config) {
+async function collectUnprocessedComments(commentsByTime, pr, commentContext, config) {
+    const { owner, repo, botUsername, correlationId } = commentContext;
     const { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN } = config;
     
     const correlatedLogger = logger.withCorrelation(correlationId);

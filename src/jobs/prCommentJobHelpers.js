@@ -44,7 +44,9 @@ export function filterUnprocessedComments(commentsToProcess, prCommentsForValida
     });
 }
 
-export async function fetchLinkedIssueContext(octokit, prData, repoOwner, repoName, pullRequestNumber, correlationId, correlatedLogger) {
+export async function fetchLinkedIssueContext(octokit, prData, repoContext, options = {}) {
+    const { repoOwner, repoName, pullRequestNumber } = repoContext;
+    const { correlationId, correlatedLogger } = options;
     let originalTaskSpec = '';
     const linkedIssueMatch = prData.data.body?.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
     
@@ -121,7 +123,9 @@ export function buildCommentHistory(commentsByTime, prData, correlationId) {
     return commentHistory;
 }
 
-export function createSessionIdCallbackForPR(taskId, pullRequestNumber, repoOwner, repoName, llm, stateManager, correlatedLogger) {
+export function createSessionIdCallbackForPR(taskId, prContext, options = {}) {
+    const { pullRequestNumber, repoOwner, repoName } = prContext;
+    const { llm, stateManager, correlatedLogger } = options;
     return async (sessionId, conversationId) => {
         try {
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
@@ -191,7 +195,8 @@ export async function updateTaskTitleForPR(taskId, jobData, stateManager, correl
     }
 }
 
-export function buildCompletionComment(commitResult, unprocessedComments, changesSummary, commitMessage, claudeResult, llm, authorsText) {
+export function buildCompletionComment(commitResult, unprocessedComments, commentContext, claudeResult) {
+    const { changesSummary, commitMessage, llm, authorsText } = commentContext;
     
     if (commitResult) {
         let prCommentBody = `✅ **Applied the requested follow-up changes** in commit ${commitResult.commitHash.substring(0, 7)}\n\n`;

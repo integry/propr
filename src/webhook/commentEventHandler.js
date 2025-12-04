@@ -211,7 +211,7 @@ export async function processCommentEvent(payload, eventType, correlationId, con
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     
     if (existingJob) {
-        await storeCommentForBatch(comment, commentAuthor, eventType, prNumber, owner, repo, config);
+        await storeCommentForBatch(comment, commentAuthor, { eventType, prNumber, owner, repo }, config);
         correlatedLogger.info({
             pullRequestNumber: prNumber,
             repository: repoFullName,
@@ -220,7 +220,7 @@ export async function processCommentEvent(payload, eventType, correlationId, con
         return;
     }
     
-    await enqueueNewCommentJob(comment, commentAuthor, eventType, prNumber, owner, repo, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId });
+    await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId });
 }
 
 async function checkExistingJob(prNumber, owner, repo) {
@@ -237,7 +237,8 @@ async function checkExistingJob(prNumber, owner, repo) {
     );
 }
 
-async function storeCommentForBatch(comment, commentAuthor, eventType, prNumber, owner, repo, config) {
+async function storeCommentForBatch(comment, commentAuthor, eventContext, config) {
+    const { eventType, prNumber, owner, repo } = eventContext;
     const { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS } = config;
     const pendingCommentsKey = `pending-pr-comments:${owner}:${repo}:${prNumber}`;
 
@@ -264,7 +265,8 @@ async function storeCommentForBatch(comment, commentAuthor, eventType, prNumber,
 
 const DEFAULT_MODEL_LABEL_PATTERN = '^llm-claude-(.+)$';
 
-async function enqueueNewCommentJob(comment, commentAuthor, eventType, prNumber, owner, repo, options) {
+async function enqueueNewCommentJob(comment, commentAuthor, eventContext, options) {
+    const { eventType, prNumber, owner, repo } = eventContext;
     const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = DEFAULT_MODEL_LABEL_PATTERN } = options;
     
     const correlatedLogger = logger.withCorrelation(correlationId);

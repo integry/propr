@@ -274,7 +274,7 @@ async function processGitHubIssueJob(job) {
 
     } catch (error) {
         if (error instanceof UsageLimitError) {
-            await handleUsageLimitError(error, job, issueRef, octokit, correlatedLogger, stateManager, taskId);
+            await handleUsageLimitError(error, job, issueRef, { octokit, correlatedLogger, stateManager, taskId });
         } else {
             await handleGenericError(error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
             throw error;
