@@ -1,11 +1,32 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-// Test comment generation with enhanced execution details
+function getUsageStats(claudeResult) {
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    if (claudeResult?.conversationLog) {
+        claudeResult.conversationLog.forEach(msg => {
+            if (msg.message?.usage) {
+                inputTokens += (msg.message.usage.input_tokens || 0);
+                outputTokens += (msg.message.usage.output_tokens || 0);
+            }
+        });
+    }
+
+    return {
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens
+    };
+}
+
 function generateMockCompletionComment(claudeResult, issueRef) {
     const timestamp = new Date().toISOString();
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
+    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
+    const cost = claudeResult?.finalResult?.cost_usd || 0;
     
     function extractModelDisplayName(modelId) {
         if (!modelId || typeof modelId !== 'string') {
@@ -33,14 +54,14 @@ function generateMockCompletionComment(claudeResult, issueRef) {
     comment += `- Repository: ${issueRef.repoOwner}/${issueRef.repoName}\n`;
     comment += `- Status: ${isSuccess ? '✅ Success' : '❌ Failed'}\n`;
     comment += `- Execution Time: ${executionTime}s\n`;
+    comment += `- Tokens used: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
+    comment += `- API cost: $${cost}\n`;
     comment += `- Timestamp: ${timestamp}\n`;
     
-    // Add conversation ID if available
     if (claudeResult?.conversationId) {
         comment += `- Conversation ID: \`${claudeResult.conversationId}\`\n`;
     }
     
-    // Add model information if available
     if (claudeResult?.model) {
         const modelName = extractModelDisplayName(claudeResult.model);
         comment += `- LLM Model: ${modelName}\n`;
@@ -48,26 +69,21 @@ function generateMockCompletionComment(claudeResult, issueRef) {
     
     comment += `\n`;
     
-    if (claudeResult?.finalResult) {
-        const result = claudeResult.finalResult;
-        comment += `**Claude Code Results:**\n`;
-        comment += `- Turns Used: ${result.num_turns || 'unknown'}\n`;
-        comment += `- Cost: $${result.cost_usd != null ? result.cost_usd.toFixed(2) : (result.total_cost_usd != null ? result.total_cost_usd.toFixed(2) : 'unknown')}\n`;
-        comment += `- Session ID: \`${claudeResult.sessionId || 'unknown'}\`\n\n`;
-    }
-    
     return comment;
 }
 
 test('Enhanced GitHub comment includes conversation ID and model', () => {
     const mockClaudeResult = {
         success: true,
-        executionTime: 127000, // 127 seconds in milliseconds
+        executionTime: 127000,
         conversationId: 'conv_abc123xyz789',
         sessionId: 'session_def456',
         model: 'claude-3-5-sonnet-20241022',
+        conversationLog: [
+            { message: { usage: { input_tokens: 5000, output_tokens: 2000 } } },
+            { message: { usage: { input_tokens: 2000, output_tokens: 1123 } } }
+        ],
         finalResult: {
-            num_turns: 15,
             cost_usd: 0.42
         }
     };
@@ -80,7 +96,6 @@ test('Enhanced GitHub comment includes conversation ID and model', () => {
     
     const comment = generateMockCompletionComment(mockClaudeResult, mockIssueRef);
     
-    // Verify key components are present
     assert.ok(comment.includes('🤖 **AI Processing Completed**'));
     assert.ok(comment.includes('- Issue: #344'));
     assert.ok(comment.includes('- Repository: integry/forex'));
@@ -88,16 +103,14 @@ test('Enhanced GitHub comment includes conversation ID and model', () => {
     assert.ok(comment.includes('- Execution Time: 127s'));
     assert.ok(comment.includes('- Conversation ID: `conv_abc123xyz789`'));
     assert.ok(comment.includes('- LLM Model: Claude 3.5 Sonnet'));
-    assert.ok(comment.includes('- Turns Used: 15'));
-    assert.ok(comment.includes('- Cost: $0.42'));
-    assert.ok(comment.includes('- Session ID: `session_def456`'));
+    assert.ok(comment.includes('- Tokens used: 10,123 tokens [7,000 input + 3,123 output]'));
+    assert.ok(comment.includes('- API cost: $0.42'));
 });
 
 test('GitHub comment gracefully handles missing optional fields', () => {
     const mockClaudeResult = {
         success: false,
-        executionTime: 5000, // 5 seconds
-        // No conversationId, model, or finalResult
+        executionTime: 5000,
     };
     
     const mockIssueRef = {
@@ -108,15 +121,14 @@ test('GitHub comment gracefully handles missing optional fields', () => {
     
     const comment = generateMockCompletionComment(mockClaudeResult, mockIssueRef);
     
-    // Verify it handles missing fields gracefully
     assert.ok(comment.includes('🤖 **AI Processing Failed**'));
     assert.ok(comment.includes('- Status: ❌ Failed'));
     assert.ok(comment.includes('- Execution Time: 5s'));
+    assert.ok(comment.includes('- Tokens used: 0 tokens [0 input + 0 output]'));
+    assert.ok(comment.includes('- API cost: $0'));
     
-    // Should not include conversation ID or model if not available
     assert.ok(!comment.includes('Conversation ID:'));
     assert.ok(!comment.includes('LLM Model:'));
-    assert.ok(!comment.includes('Claude Code Results:'));
 });
 
 test('GitHub comment handles different model types correctly', () => {
@@ -158,16 +170,19 @@ test('GitHub comment handles different model types correctly', () => {
     });
 });
 
-test('GitHub comment correctly displays cost when total_cost_usd is present', () => {
+test('GitHub comment correctly displays token usage with conversationLog', () => {
     const mockClaudeResult = {
         success: true,
         executionTime: 95000,
         conversationId: 'conv_test123',
         sessionId: 'session_test456',
         model: 'claude-3-5-sonnet-20241022',
+        conversationLog: [
+            { message: { usage: { input_tokens: 3000, output_tokens: 1500 } } },
+            { message: { usage: { input_tokens: 2000, output_tokens: 1000 } } }
+        ],
         finalResult: {
-            num_turns: 12,
-            total_cost_usd: 0.35
+            cost_usd: 0.35
         }
     };
     
@@ -181,6 +196,6 @@ test('GitHub comment correctly displays cost when total_cost_usd is present', ()
     
     assert.ok(comment.includes('🤖 **AI Processing Completed**'));
     assert.ok(comment.includes('- Issue: #456'));
-    assert.ok(comment.includes('- Turns Used: 12'));
-    assert.ok(comment.includes('- Cost: $0.35'));
+    assert.ok(comment.includes('- Tokens used: 7,500 tokens [5,000 input + 2,500 output]'));
+    assert.ok(comment.includes('- API cost: $0.35'));
 });
