@@ -21,7 +21,6 @@ async function setupAuthenticatedRemote(git, repoUrl, authToken) {
 // Configuration from environment variables
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
-const _GIT_DEFAULT_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
 const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
 
 /**
