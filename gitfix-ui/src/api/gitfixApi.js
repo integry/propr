@@ -5,8 +5,7 @@ const API_BASE_URL = 'https://api.gitfix.dev';
 // Helper function to handle API responses and auth
 const handleApiResponse = async (response) => {
   if (response.status === 401) {
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('logged_out') === 'true') {
+    if (window.location.pathname === '/login') {
       throw new Error('Authentication required');
     }
     window.location.href = '/login';

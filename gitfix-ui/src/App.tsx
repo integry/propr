@@ -17,6 +17,12 @@ const App: React.FC = () => {
     const loadingFavicon = '/logo-loading.png';
 
     const updateFavicon = async () => {
+      if (window.location.pathname === '/login') {
+        if (favicon) {
+          favicon.href = defaultFavicon;
+        }
+        return;
+      }
       try {
         const status = await getSystemStatus();
         const isTaskRunning = status.workers.some((w: { status: string }) => w.status === 'active');
