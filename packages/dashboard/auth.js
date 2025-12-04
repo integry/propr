@@ -56,8 +56,14 @@ function setupAuth(app) {
             if (err) {
                 console.error('Logout error:', err);
             }
-            const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-            res.redirect(`${frontendUrl}/login`);
+            req.session.destroy((sessionErr) => {
+                if (sessionErr) {
+                    console.error('Session destroy error:', sessionErr);
+                }
+                res.clearCookie('connect.sid');
+                const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+                res.redirect(`${frontendUrl}/`);
+            });
         });
     });
 
