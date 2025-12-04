@@ -1,0 +1,221 @@
+name: Build & Lint Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  validate:
+    name: Validate Changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            gitfix-ui/package-lock.json
+            docs/package-lock.json
+
+      - name: Detect Changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            core:
+              - 'src/**'
+              - 'Dockerfile*'
+              - 'package*.json'
+            ui:
+              - 'gitfix-ui/**'
+            docs:
+              - 'docs/**'
+            dashboard:
+              - 'packages/dashboard/**'
+
+      - name: Run Checks
+        id: build
+        continue-on-error: true
+        run: |
+          # Initialize log
+          touch build_log.txt
+          EXIT_CODE=0
+          echo "Starting validation process..." > build_log.txt
+
+          # --- CORE ---
+          if [ "${{ steps.filter.outputs.core }}" == 'true' ]; then
+            echo -e "\n--- Core Service: Lint & Build ---" >> build_log.txt
+            CORE_FAILED=0
+            
+            INSTALL_OUTPUT=$(npm ci 2>&1) || {
+              echo "❌ Core Dependency Install FAILED" >> build_log.txt
+              echo "$INSTALL_OUTPUT" | tail -50 >> build_log.txt
+              CORE_FAILED=1
+              EXIT_CODE=1
+            }
+            
+            if [ $CORE_FAILED -eq 0 ]; then
+              LINT_OUTPUT=$(npm run lint -- --max-warnings 0 2>&1) || {
+                echo "❌ Core Lint FAILED" >> build_log.txt
+                echo "$LINT_OUTPUT" >> build_log.txt
+                CORE_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $CORE_FAILED -eq 0 ]; then
+                echo "✅ Core Lint passed" >> build_log.txt
+              fi
+            fi
+
+            BUILD_OUTPUT=$(docker build -t gitfix-core -f Dockerfile . 2>&1) || {
+              echo "❌ Core Build FAILED" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
+              CORE_FAILED=1
+              EXIT_CODE=1
+            }
+            if [ $CORE_FAILED -eq 0 ]; then
+              echo "✅ Core Build passed" >> build_log.txt
+            fi
+          fi
+
+          # --- UI ---
+          if [ "${{ steps.filter.outputs.ui }}" == 'true' ]; then
+            echo -e "\n--- UI: Lint & Build ---" >> build_log.txt
+            UI_FAILED=0
+            
+            # Install & Lint
+            cd gitfix-ui
+            INSTALL_OUTPUT=$(npm ci 2>&1) || {
+              echo "❌ UI Dependency Install FAILED" >> ../build_log.txt
+              echo "$INSTALL_OUTPUT" | tail -50 >> ../build_log.txt
+              UI_FAILED=1
+              EXIT_CODE=1
+            }
+            
+            if [ $UI_FAILED -eq 0 ]; then
+              LINT_OUTPUT=$(npm run lint -- --max-warnings 0 2>&1) || {
+                echo "❌ UI Lint FAILED" >> ../build_log.txt
+                echo "$LINT_OUTPUT" >> ../build_log.txt
+                UI_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $UI_FAILED -eq 0 ]; then
+                echo "✅ UI Lint passed" >> ../build_log.txt
+              fi
+            fi
+            cd ..
+
+            # Docker Build
+            BUILD_OUTPUT=$(docker build -t gitfix-ui ./gitfix-ui 2>&1) || {
+              echo "❌ UI Build FAILED" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
+              EXIT_CODE=1
+              UI_FAILED=1
+            }
+            if [ $UI_FAILED -eq 0 ]; then
+              echo "✅ UI Build passed" >> build_log.txt
+            fi
+          fi
+
+          # --- DOCS ---
+          if [ "${{ steps.filter.outputs.docs }}" == 'true' ]; then
+            echo -e "\n--- Docs: Typecheck & Build ---" >> build_log.txt
+            DOCS_FAILED=0
+            
+            cd docs
+            INSTALL_OUTPUT=$(npm ci 2>&1) || {
+              echo "❌ Docs Dependency Install FAILED" >> ../build_log.txt
+              echo "$INSTALL_OUTPUT" | tail -50 >> ../build_log.txt
+              DOCS_FAILED=1
+              EXIT_CODE=1
+            }
+            
+            if [ $DOCS_FAILED -eq 0 ]; then
+              TYPECHECK_OUTPUT=$(npm run typecheck 2>&1) || {
+                echo "❌ Docs Typecheck FAILED" >> ../build_log.txt
+                echo "$TYPECHECK_OUTPUT" >> ../build_log.txt
+                DOCS_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $DOCS_FAILED -eq 0 ]; then
+                echo "✅ Docs Typecheck passed" >> ../build_log.txt
+              fi
+            fi
+            cd ..
+
+            BUILD_OUTPUT=$(docker build -t gitfix-docs ./docs 2>&1) || {
+              echo "❌ Docs Build FAILED" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
+              DOCS_FAILED=1
+              EXIT_CODE=1
+            }
+            if [ $DOCS_FAILED -eq 0 ]; then
+              echo "✅ Docs Build passed" >> build_log.txt
+            fi
+          fi
+
+          # --- DASHBOARD ---
+          if [ "${{ steps.filter.outputs.dashboard }}" == 'true' ]; then
+            echo -e "\n--- Dashboard: Build ---" >> build_log.txt
+            BUILD_OUTPUT=$(docker build -t gitfix-dashboard -f packages/dashboard/Dockerfile.prod ./packages/dashboard 2>&1) || {
+              echo "❌ Dashboard Build FAILED" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
+              EXIT_CODE=1
+            }
+            if [ $? -eq 0 ] && [ $EXIT_CODE -eq 0 ]; then
+              echo "✅ Dashboard Build passed" >> build_log.txt
+            fi
+          fi
+
+          exit $EXIT_CODE
+
+      - name: Post Failure Comment
+        if: steps.build.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const prNumber = context.issue.number;
+            const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
+            
+            let log = '';
+            try { log = fs.readFileSync('build_log.txt', 'utf8'); } 
+            catch (e) { log = 'Log file missing.'; }
+
+            if (log.length > 60000) {
+              log = log.substring(0, 60000) + "\n\n...(truncated)";
+            }
+
+            const body = [
+              '### ❌ Checks Failed',
+              'Linting or Build errors were detected.',
+              '',
+              '<details>',
+              '<summary>View Logs</summary>',
+              '',
+              '~~~text',
+              log,
+              '~~~',
+              '</details>',
+              '',
+              '**[View Workflow](' + runUrl + ')**'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body
+            });
+
+      - name: Fail Job
+        if: steps.build.outcome == 'failure'
+        run: exit 1

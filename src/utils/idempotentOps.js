@@ -1,6 +1,6 @@
 import logger from './logger.js';
 import { withRetry, retryConfigs } from './retryHandler.js';
-import { handleError, makeIdempotent } from './errorHandler.js';
+import { makeIdempotent } from './errorHandler.js';
 
 /**
  * Idempotent GitHub label operations
@@ -29,7 +29,7 @@ export class IdempotentGitHubOps {
                     issue_number: issueNumber,
                 });
                 return issue.data.labels.some(l => l.name === label);
-            } catch (error) {
+            } catch {
                 return false; // Assume label doesn't exist if we can't check
             }
         };
@@ -91,7 +91,7 @@ export class IdempotentGitHubOps {
                     issue_number: issueNumber,
                 });
                 return !issue.data.labels.some(l => l.name === label);
-            } catch (error) {
+            } catch {
                 return true; // Assume label doesn't exist if we can't check
             }
         };
@@ -176,7 +176,7 @@ export class IdempotentGitHubOps {
                 // Check if a comment with the idempotency key already exists
                 const keyPattern = `<!-- idempotency-key: ${idempotencyKey} -->`;
                 return comments.find(comment => comment.body.includes(keyPattern));
-            } catch (error) {
+            } catch {
                 return null; // Assume comment doesn't exist if we can't check
             }
         };
@@ -280,7 +280,7 @@ export class IdempotentGitOps {
             try {
                 const gitDir = path.join(localPath, '.git');
                 return fs.existsSync(gitDir);
-            } catch (error) {
+            } catch {
                 return false;
             }
         };
@@ -311,7 +311,7 @@ export class IdempotentGitOps {
         const checkWorktreeExists = async () => {
             try {
                 return fs.existsSync(worktreePath);
-            } catch (error) {
+            } catch {
                 return false;
             }
         };

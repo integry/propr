@@ -92,7 +92,7 @@ export function generateClaudeLogsComment(claudeResult, issueNumber) {
         comment += `<details>\n<summary>🗨️ Recent Conversation (Last 5 messages)</summary>\n\n`;
         
         let conversationSnippet = '';
-        recentMessages.forEach((msg, index) => {
+        recentMessages.forEach((msg) => {
             if (msg.type === 'user') {
                 const content = msg.message?.content || '[content unavailable]';
                 conversationSnippet += `**User**: ${content.substring(0, 300)}${content.length > 300 ? '...' : ''}\n\n`;

@@ -1,7 +1,5 @@
 import logger from '../utils/logger.js';
 
-const GIT_DEFAULT_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
-
 export function getRepoConfigKey(owner, repoName) {
     const cleanOwner = owner.toUpperCase().replace(/[^A-Z0-9]/g, '_');
     const cleanRepoName = repoName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
@@ -105,7 +103,7 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
                 defaultBranch: branch 
             }, `Using branch '${branch}' as default (found in common branches)`);
             return branch;
-        } catch (error) {
+        } catch {
             logger.debug({ 
                 repo: `${owner}/${repoName}`, 
                 branch 
@@ -154,9 +152,6 @@ export function listRepositoryBranchConfigurations() {
                 for (let i = 0; i < parts.length; i++) {
                     if (!foundSeparator) {
                         ownerParts.push(parts[i]);
-                        const potentialOwner = ownerParts.join('_').toLowerCase();
-                        const potentialRepo = parts.slice(i + 1).join('_').toLowerCase();
-                        
                         if (i > 0 && parts.length > i + 1) {
                             foundSeparator = true;
                             repoParts = parts.slice(i + 1);

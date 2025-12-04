@@ -78,7 +78,7 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
       } else {
         parsedAnalysis = firstParse;
       }
-    } catch (e) {
+    } catch {
       parsedAnalysis = analysis;
     }
   }
@@ -96,7 +96,7 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
       
       const reportParsed = JSON.parse(reportText);
       actualAnalysis = { ...reportParsed, modelUsed: parsedAnalysis.modelUsed, generatedAt: parsedAnalysis.generatedAt };
-    } catch (e) {
+    } catch {
       actualAnalysis = parsedAnalysis;
     }
   }

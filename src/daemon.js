@@ -6,7 +6,7 @@ import { withRetry, retryConfigs } from './utils/retryHandler.js';
 import { issueQueue, shutdownQueue, COMMENT_BATCH_DELAY_MS } from './queue/taskQueue.js';
 import Redis from 'ioredis';
 import { resolveModelAlias, getDefaultModel } from './config/modelAliases.js';
-import { loadMonitoredRepos, ensureConfigRepoExists, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from './config/configRepoManager.js';
+import { loadMonitoredRepos, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from './config/configRepoManager.js';
 import { db, isEnabled as isDbEnabled } from './db/postgres.js';
 import { initializeWebhookHandler } from './webhook/webhookHandler.js';
 import { filterCommentByAuthor, checkCommentTrigger } from './utils/commentFilters.js';

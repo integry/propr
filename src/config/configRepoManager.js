@@ -101,7 +101,8 @@ export async function saveFollowupKeywords(keywords, commitMessage = 'Update fol
         try {
             await git.addConfig('user.email', 'gitfix@example.com');
             await git.addConfig('user.name', 'GitFix Bot');
-        } catch (e) {
+        } catch {
+            // Ignore git config errors
         }
 
         await git.add('config.json');
@@ -133,7 +134,8 @@ export async function saveMonitoredRepos(repos, commitMessage = 'Update monitore
         try {
             await git.addConfig('user.email', 'gitfix@example.com');
             await git.addConfig('user.name', 'GitFix Bot');
-        } catch (e) {
+        } catch {
+            // Ignore git config errors
         }
 
         await git.add('config.json');
@@ -229,7 +231,8 @@ export async function savePrLabel(prLabel, commitMessage = 'Update PR label via 
         try {
             await git.addConfig('user.email', 'gitfix@example.com');
             await git.addConfig('user.name', 'GitFix Bot');
-        } catch (e) {
+        } catch {
+            // Ignore git config errors
         }
 
         await git.add('config.json');
@@ -261,7 +264,8 @@ export async function saveSettings(settings, commitMessage = 'Update settings vi
         try {
             await git.addConfig('user.email', 'gitfix@example.com');
             await git.addConfig('user.name', 'GitFix Bot');
-        } catch (e) {
+        } catch {
+            // Ignore git config errors
         }
 
         await git.add('config.json');
@@ -308,7 +312,8 @@ export async function saveAiPrimaryTag(aiPrimaryTag, commitMessage = 'Update AI 
         try {
             await git.addConfig('user.email', 'gitfix@example.com');
             await git.addConfig('user.name', 'GitFix Bot');
-        } catch (e) {
+        } catch {
+            // Ignore git config errors
         }
 
         await git.add('config.json');
@@ -367,7 +372,8 @@ export async function savePrimaryProcessingLabels(primaryLabels, commitMessage =
         try {
             await git.addConfig('user.email', 'gitfix@example.com');
             await git.addConfig('user.name', 'GitFix Bot');
-        } catch (e) {
+        } catch {
+            // Ignore git config errors
         }
 
         await git.add('config.json');
