@@ -1,42 +1,18 @@
 import { getAuthenticatedOctokit } from './auth/githubAuth.js';
 import logger from './utils/logger.js';
 import { handleError } from './utils/errorHandler.js';
-import { ensureBranchAndPush } from './git/repoManager.js';
-import { generatePRBody, generateClaudeLogsComment } from './github/prFormatters.js';
+import { generatePRBody } from './github/prFormatters.js';
+import {
+    createPullRequestRobust as createPullRequestRobustOps,
+    createPullRequest as createPullRequestOps,
+    addClaudeLogsComment as addClaudeLogsCommentOps,
+    updateIssueLabels as updateIssueLabelsOps
+} from './github/prOperations.js';
 
-const DEFAULT_BASE_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
-
-async function findExistingPRHelper(octokit, repoContext, errorMessage) {
-    const { owner, repoName, branchName } = repoContext;
-    logger.info({ owner, repoName, branchName, error: errorMessage }, 'PR already exists for this branch, attempting to find existing PR');
-    
-    try {
-        const existingPRs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
-            owner,
-            repo: repoName,
-            head: `${owner}:${branchName}`,
-            state: 'open'
-        });
-        
-        if (existingPRs.data.length > 0) {
-            const existingPR = existingPRs.data[0];
-            logger.info({ owner, repoName, branchName, prNumber: existingPR.number, prUrl: existingPR.html_url }, 'Found existing PR for branch');
-            
-            return {
-                success: true,
-                pr: {
-                    number: existingPR.number,
-                    url: existingPR.html_url,
-                    title: existingPR.title,
-                    state: existingPR.state
-                }
-            };
-        }
-    } catch (findError) {
-        logger.warn({ error: findError.message }, 'Failed to find existing PR');
-    }
-    return null;
-}
+export const createPullRequestRobust = createPullRequestRobustOps;
+export const createPullRequest = createPullRequestOps;
+export const addClaudeLogsComment = addClaudeLogsCommentOps;
+export const updateIssueLabels = updateIssueLabelsOps;
 
 function handlePrResult(prResult, logContext) {
     if (prResult.skipPR) {
@@ -61,427 +37,7 @@ async function createNewPRForIssue(prContext, claudeResult) {
     }
     return createPullRequest({ owner, repoName, branchName, issueNumber, issueTitle, commitMessage, claudeResult });
 }
- 
 
-/**
- * Creates a Pull Request with robust git operations ensuring proper branch history
- * @param {Object} params - PR creation parameters
- * @param {string} params.owner - Repository owner
- * @param {string} params.repoName - Repository name
- * @param {string} params.branchName - Feature branch name
- * @param {string} params.baseBranch - Base branch name
- * @param {number} params.issueNumber - Issue number
- * @param {string} params.prTitle - PR title
- * @param {string} params.prBody - PR body
- * @param {string} params.worktreePath - Path to the worktree
- * @param {string} params.repoUrl - Repository URL
- * @param {string} params.authToken - GitHub auth token
- * @returns {Promise<Object>} Created PR data
- */
-export async function createPullRequestRobust(params) {
-    const { 
-        owner, 
-        repoName, 
-        branchName, 
-        baseBranch, 
-        issueNumber, 
-        prTitle, 
-        prBody,
-        worktreePath,
-        repoUrl,
-        authToken
-    } = params;
-    
-    const octokit = await getAuthenticatedOctokit();
-    
-    try {
-        logger.info({
-            owner,
-            repoName,
-            branchName,
-            baseBranch,
-            issueNumber,
-            prTitle
-        }, 'Creating pull request with robust git operations...');
-        
-        // Step 1: Ensure branch is properly pushed to remote
-        await ensureBranchAndPush(worktreePath, branchName, baseBranch, {
-            repoUrl,
-            authToken,
-            tokenRefreshFn: async () => {
-                const newAuth = await octokit.auth();
-                return newAuth.token;
-            },
-            correlationId: params.correlationId || 'unknown'
-        });
-        
-        // Step 1.5: Wait for GitHub to propagate branch data (timing fix)
-        logger.debug({ branchName }, 'Waiting for GitHub to propagate branch data...');
-        await new Promise(resolve => setTimeout(resolve, 3000)); // 3 second delay
-        
-        // Step 2: Verify branch exists on remote with retry logic
-        const maxRetries = 5;
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                await octokit.request('GET /repos/{owner}/{repo}/branches/{branch}', {
-                    owner,
-                    repo: repoName,
-                    branch: branchName
-                });
-                logger.debug({ branchName, attempt }, 'Confirmed branch exists on remote');
-                break;
-            } catch (branchCheckError) {
-                if (attempt === maxRetries) {
-                    throw new Error(`Branch '${branchName}' does not exist on remote after ${maxRetries} attempts: ${branchCheckError.message}`);
-                }
-                
-                const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000); // Exponential backoff, max 10s
-                logger.debug({ 
-                    branchName, 
-                    attempt, 
-                    delay,
-                    error: branchCheckError.message 
-                }, 'Branch not found, retrying...');
-                await new Promise(resolve => setTimeout(resolve, delay));
-            }
-        }
-        
-        // Step 2.5: Check if there are actual commits between base and head branches
-        try {
-            const compareResult = await octokit.request('GET /repos/{owner}/{repo}/compare/{base}...{head}', {
-                owner,
-                repo: repoName,
-                base: baseBranch,
-                head: branchName
-            });
-            
-            if (compareResult.data.ahead_by === 0) {
-                logger.warn({
-                    owner,
-                    repoName,
-                    branchName,
-                    baseBranch,
-                    aheadBy: compareResult.data.ahead_by
-                }, 'No commits found between base and head branch - skipping PR creation');
-                
-                return {
-                    success: false,
-                    error: 'No commits between base and head branch',
-                    skipPR: true
-                };
-            }
-            
-            logger.debug({
-                branchName,
-                baseBranch,
-                aheadBy: compareResult.data.ahead_by,
-                behindBy: compareResult.data.behind_by
-            }, 'Confirmed commits exist between branches');
-            
-        } catch (compareError) {
-            logger.warn({
-                branchName,
-                baseBranch,
-                error: compareError.message
-            }, 'Could not compare branches, proceeding with PR creation anyway');
-        }
-        
-        // Step 3: Create the pull request
-        let response;
-        try {
-            response = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
-                owner,
-                repo: repoName,
-                title: prTitle,
-                head: branchName,
-                base: baseBranch,
-                body: prBody,
-                draft: false
-            });
-        } catch (prCreateError) {
-            if (prCreateError.status === 422 && prCreateError.message?.includes('A pull request already exists')) {
-                const existingResult = await findExistingPRHelper(octokit, { owner, repoName, branchName }, prCreateError.message);
-                if (existingResult) return existingResult;
-            }
-            
-            // Handle "no history in common" and "no commits between" GraphQL errors with retry logic
-            if ((prCreateError.status === 422 || prCreateError.status === 400) && 
-                (prCreateError.message?.includes('no history in common') || 
-                 prCreateError.message?.includes('does not have any commits') ||
-                 prCreateError.message?.includes('No commits between') ||
-                 prCreateError.message?.includes('Head sha can\'t be blank') ||
-                 prCreateError.message?.includes('Base sha can\'t be blank'))) {
-                
-                logger.warn({
-                    owner,
-                    repoName,
-                    branchName,
-                    baseBranch,
-                    error: prCreateError.message
-                }, 'Branch has no history in common with base branch, waiting for GitHub sync...');
-                
-                // Wait longer for GitHub's internal sync and retry once
-                await new Promise(resolve => setTimeout(resolve, 10000)); // 10 second delay
-                
-                try {
-                    response = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
-                        owner,
-                        repo: repoName,
-                        title: prTitle,
-                        head: branchName,
-                        base: baseBranch,
-                        body: prBody,
-                        draft: false
-                    });
-                    
-                    logger.info({
-                        owner,
-                        repoName,
-                        branchName,
-                        baseBranch
-                    }, 'PR creation succeeded after retry for history sync issue');
-                    
-                } catch (retryError) {
-                    logger.error({
-                        owner,
-                        repoName,
-                        branchName,
-                        baseBranch,
-                        originalError: prCreateError.message,
-                        retryError: retryError.message
-                    }, 'PR creation failed even after retry for history sync issue');
-                    throw retryError;
-                }
-            } else {
-                throw prCreateError; // Re-throw if we can't handle it
-            }
-        }
-        
-        const prData = response.data;
-        
-        logger.info({
-            owner,
-            repoName,
-            issueNumber,
-            prNumber: prData.number,
-            prUrl: prData.html_url,
-            branchName,
-            baseBranch
-        }, 'Pull request created successfully');
-        
-        return {
-            success: true,
-            pr: {
-                number: prData.number,
-                url: prData.html_url,
-                title: prData.title,
-                state: prData.state
-            }
-        };
-        
-    } catch (error) {
-        logger.error({
-            owner,
-            repoName,
-            branchName,
-            baseBranch,
-            issueNumber,
-            error: error.message
-        }, 'Failed to create pull request');
-        
-        handleError(error, `Failed to create pull request for ${owner}/${repoName}#${issueNumber}`);
-        throw error;
-    }
-}
-
-/**
- * Creates a Pull Request for the given branch and issue
- * @param {Object} options - PR creation options
- * @param {string} options.owner - Repository owner
- * @param {string} options.repoName - Repository name
- * @param {string} options.branchName - Head branch name
- * @param {string} options.baseBranch - Base branch name (optional, defaults to main)
- * @param {number} options.issueNumber - Original issue number
- * @param {string} options.issueTitle - Original issue title
- * @param {string} options.commitMessage - The commit message used
- * @param {Object} options.claudeResult - Claude execution result with logs
- * @returns {Promise<{number: number, url: string, title: string}>} PR details
- */
-export async function createPullRequest(options) {
-    const {
-        owner,
-        repoName,
-        branchName,
-        baseBranch = DEFAULT_BASE_BRANCH,
-        issueNumber,
-        issueTitle,
-        commitMessage,
-        claudeResult
-    } = options;
-
-    try {
-        const octokit = await getAuthenticatedOctokit();
-
-        // Generate PR title and body
-        const prTitle = `AI Fix for Issue #${issueNumber}: ${issueTitle}`;
-        const prBody = generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult);
-
-        logger.info({ owner, repoName, branchName, baseBranch, issueNumber, prTitle }, 'Creating pull request...');
-
-        // Create the pull request
-        const response = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
-            owner,
-            repo: repoName,
-            title: prTitle,
-            head: branchName,
-            base: baseBranch,
-            body: prBody,
-            draft: false
-        });
-
-        const prData = response.data;
-
-        logger.info({ owner, repoName, issueNumber, prNumber: prData.number, prUrl: prData.html_url, branchName }, 'Pull request created successfully');
-
-        return {
-            number: prData.number,
-            url: prData.html_url,
-            title: prData.title
-        };
-
-    } catch (error) {
-        handleError(error, `Failed to create pull request for issue #${issueNumber}`);
-        throw error;
-    }
-}
-
-/**
- * Adds Claude execution logs as a comment to the Pull Request
- * @param {Object} options - Comment options
- * @param {string} options.owner - Repository owner
- * @param {string} options.repoName - Repository name
- * @param {number} options.prNumber - Pull request number
- * @param {Object} options.claudeResult - Claude execution result with logs
- * @param {number} options.issueNumber - Original issue number
- * @returns {Promise<void>}
- */
-export async function addClaudeLogsComment(options) {
-    const {
-        owner,
-        repoName,
-        prNumber,
-        claudeResult,
-        issueNumber
-    } = options;
-
-    try {
-        const octokit = await getAuthenticatedOctokit();
-
-        // Generate the comment content
-        const commentBody = generateClaudeLogsComment(claudeResult, issueNumber);
-
-        logger.info({ owner, repoName, prNumber, issueNumber, commentLength: commentBody.length }, 'Adding Claude logs comment to PR...');
-
-        // Add comment to the PR
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner,
-            repo: repoName,
-            issue_number: prNumber,
-            body: commentBody
-        });
-
-        logger.info({ owner, repoName, prNumber, issueNumber }, 'Claude logs comment added successfully');
-
-    } catch (error) {
-        handleError(error, `Failed to add Claude logs comment to PR #${prNumber}`);
-        throw error;
-    }
-}
-
-/**
- * Updates GitHub issue labels atomically
- * @param {Object} options - Label update options
- * @param {string} options.owner - Repository owner
- * @param {string} options.repoName - Repository name
- * @param {number} options.issueNumber - Issue number
- * @param {string[]} options.labelsToRemove - Labels to remove
- * @param {string[]} options.labelsToAdd - Labels to add
- * @returns {Promise<string[]>} Updated labels list
- */
-export async function updateIssueLabels(options) {
-    const {
-        owner,
-        repoName,
-        issueNumber,
-        labelsToRemove = [],
-        labelsToAdd = []
-    } = options;
-
-    try {
-        const octokit = await getAuthenticatedOctokit();
-
-        // Get current issue labels
-        const issueResponse = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-            owner,
-            repo: repoName,
-            issue_number: issueNumber
-        });
-
-        const currentLabels = issueResponse.data.labels.map(label => label.name);
-
-        // Calculate new labels set
-        const updatedLabels = [
-            ...currentLabels.filter(label => !labelsToRemove.includes(label)),
-            ...labelsToAdd.filter(label => !currentLabels.includes(label))
-        ];
-
-        logger.info({
-            owner,
-            repoName,
-            issueNumber,
-            currentLabels,
-            labelsToRemove,
-            labelsToAdd,
-            updatedLabels
-        }, 'Updating issue labels...');
-
-        // Update labels atomically
-        await octokit.request('PUT /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner,
-            repo: repoName,
-            issue_number: issueNumber,
-            labels: updatedLabels
-        });
-
-        logger.info({
-            owner,
-            repoName,
-            issueNumber,
-            updatedLabels
-        }, 'Issue labels updated successfully');
-
-        return updatedLabels;
-
-    } catch (error) {
-        handleError(error, `Failed to update labels for issue #${issueNumber}`);
-        throw error;
-    }
-}
-
-/**
- * Complete post-processing workflow for successful Claude execution
- * @param {Object} options - Post-processing options
- * @param {string} options.owner - Repository owner
- * @param {string} options.repoName - Repository name
- * @param {string} options.branchName - Branch name
- * @param {number} options.issueNumber - Issue number
- * @param {string} options.issueTitle - Issue title
- * @param {string} options.commitMessage - Commit message used
- * @param {Object} options.claudeResult - Claude execution result
- * @param {string[]} options.processingTags - Tags to remove (e.g., ['AI-processing'])
- * @param {string[]} options.completionTags - Tags to add (e.g., ['AI-done'])
- * @returns {Promise<{pr: Object, updatedLabels: string[]}>} Post-processing results
- */
 export async function completePostProcessing(options) {
     const {
         owner,
@@ -510,8 +66,6 @@ export async function completePostProcessing(options) {
             branchName
         }, 'Starting post-processing workflow...');
 
-        // Step 1: Create Pull Request with robust git operations
-        // First check if Claude already created a PR for this branch
         logger.info({
             owner,
             repoName,
@@ -541,7 +95,6 @@ export async function completePostProcessing(options) {
             prInfo = await createNewPRForIssue(prContext, claudeResult);
         }
 
-        // Step 2: Add Claude logs as PR comment
         await addClaudeLogsComment({
             owner,
             repoName,
@@ -550,7 +103,6 @@ export async function completePostProcessing(options) {
             issueNumber
         });
 
-        // Step 3: Update issue labels
         updatedLabels = await updateIssueLabels({
             owner,
             repoName,
@@ -573,7 +125,6 @@ export async function completePostProcessing(options) {
         };
 
     } catch (error) {
-        // If post-processing fails, try to update labels to indicate failure
         try {
             await updateIssueLabels({
                 owner,
