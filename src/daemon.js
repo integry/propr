@@ -645,6 +645,14 @@ async function startDaemon(options = {}) {
     });
 }
 
+// Wrapper functions for webhook handler initialization (inject config)
+const processCommentEventWrapper = (payload, eventType, correlationId) =>
+    processCommentEvent(payload, eventType, correlationId, getCommentConfig());
+const handleCommentDeletedWrapper = (payload, eventType, correlationId) =>
+    handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
+const handleCommentEditedWrapper = (payload, eventType, correlationId) =>
+    handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
+
 export {
     fetchIssuesForRepo,
     pollForIssues,
@@ -652,7 +660,10 @@ export {
     resetQueues,
     resetIssueLabels,
     processDetectedIssue,
-    loadSettingsFromConfig
+    loadSettingsFromConfig,
+    processCommentEventWrapper as processCommentEvent,
+    handleCommentDeletedWrapper as handleCommentDeleted,
+    handleCommentEditedWrapper as handleCommentEdited
 };
 
 function parseArgs() {
