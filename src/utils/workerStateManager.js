@@ -1,6 +1,5 @@
 import Redis from 'ioredis';
 import logger, { generateCorrelationId } from './logger.js';
-import { handleError } from './errorHandler.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 
 /**

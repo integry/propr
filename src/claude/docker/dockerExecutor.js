@@ -28,7 +28,7 @@ export function executeDockerCommand(command, args, options = {}) {
                         logger.debug({ dockerPath }, 'Found docker executable');
                         break;
                     }
-                } catch (err) {
+                } catch {
                     // Continue to next path
                 }
             }
@@ -122,7 +122,7 @@ export function executeDockerCommand(command, args, options = {}) {
                             sessionIdDetected = true;
                             onSessionId(jsonLine.session_id, jsonLine.conversation_id);
                         }
-                    } catch (e) {
+                    } catch {
                         // Not JSON, skip
                     }
                 }

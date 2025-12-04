@@ -253,7 +253,7 @@ export async function validateRepositoryInfo(issueRef, octokit, correlationId) {
         const repoData = repoResponse.data;
         
         // Verify issue exists in this repository
-        const issueResponse = await withRetry(
+        await withRetry(
             () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
                 owner: issueRef.repoOwner,
                 repo: issueRef.repoName,

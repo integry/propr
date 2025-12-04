@@ -727,7 +727,7 @@ ${completionComment}
                         } else {
                             throw prError;
                         }
-                    } catch (checkError) {
+                    } catch {
                         throw prError;
                     }
                 }

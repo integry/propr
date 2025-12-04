@@ -336,7 +336,7 @@ export async function executeClaudeCode({ worktreePath, issueRef, githubToken, c
                             claudeOutput.conversationId = jsonLine.conversation_id;
                         }
                     }
-                } catch (parseError) {
+                } catch {
                     // Skip non-JSON lines (like entrypoint output)
                     continue;
                 }

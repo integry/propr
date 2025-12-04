@@ -16,7 +16,7 @@ import { ensureGitRepository } from './utils/git/gitValidation.js';
 import { executeClaudeCode, buildClaudeDockerImage, UsageLimitError } from './claude/claudeService.js';
 import { generateTaskImportPrompt } from './claude/prompts/promptGenerator.js';
 import Redis from 'ioredis';
-import { loadSettings, loadAiPrimaryTag, loadPrLabel } from './config/configRepoManager.js';
+import { loadAiPrimaryTag, loadSettings } from './config/configRepoManager.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
 import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJob.js';
 
@@ -35,16 +35,6 @@ async function getAiPrimaryTag() {
     return process.env.AI_PRIMARY_TAG || 'AI';
 }
 
-async function getPrLabel() {
-    try {
-        if (process.env.CONFIG_REPO) {
-            return await loadPrLabel();
-        }
-    } catch (error) {
-        logger.warn({ error: error.message }, 'Failed to load PR label from config, using fallback');
-    }
-    return process.env.PR_LABEL || 'gitfix';
-}
 
 // Buffer to add AFTER the reset timestamp to ensure limit is reset
 const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10); // 5 minutes buffer
@@ -116,8 +106,6 @@ async function processTaskImportJob(job) {
 
         // Step 2: Create a worktree for the task import analysis
         await stateManager.updateState(TaskStates.SETUP, 'Creating worktree for analysis');
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-        const worktreeDirName = `task-import-${timestamp}`;
 
         // Use placeholder values for issue-specific parameters
         worktreeInfo = await createWorktreeForIssue(

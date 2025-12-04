@@ -5,7 +5,6 @@ import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import logger from '../utils/logger.js';
 import fs from 'fs';
 import { execa } from 'execa';
-import path from 'path';
 
 const redis = new Redis({
   host: process.env.REDIS_HOST || 'redis',

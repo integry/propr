@@ -103,7 +103,7 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
                 defaultBranch: branch 
             }, `Using branch '${branch}' as default (found in common branches)`);
             return branch;
-        } catch (error) {
+        } catch {
             logger.debug({ 
                 repo: `${owner}/${repoName}`, 
                 branch 
@@ -152,9 +152,6 @@ export function listRepositoryBranchConfigurations() {
                 for (let i = 0; i < parts.length; i++) {
                     if (!foundSeparator) {
                         ownerParts.push(parts[i]);
-                        const potentialOwner = ownerParts.join('_').toLowerCase();
-                        const potentialRepo = parts.slice(i + 1).join('_').toLowerCase();
-                        
                         if (i > 0 && parts.length > i + 1) {
                             foundSeparator = true;
                             repoParts = parts.slice(i + 1);

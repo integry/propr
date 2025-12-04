@@ -21,7 +21,7 @@ async function setupAuthenticatedRemote(git, repoUrl, authToken) {
 // Configuration from environment variables
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
-const GIT_DEFAULT_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
+const _GIT_DEFAULT_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
 const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
 
 /**
@@ -297,7 +297,7 @@ async function detectDefaultBranch(git, owner, repoName, octokit = null) {
                 defaultBranch: branch 
             }, `Using branch '${branch}' as default (found in common branches)`);
             return branch;
-        } catch (error) {
+        } catch {
             logger.debug({ 
                 repo: `${owner}/${repoName}`, 
                 branch 
@@ -353,10 +353,6 @@ export function listRepositoryBranchConfigurations() {
                 for (let i = 0; i < parts.length; i++) {
                     if (!foundSeparator) {
                         ownerParts.push(parts[i]);
-                        // Try to see if this creates a valid split
-                        const potentialOwner = ownerParts.join('_').toLowerCase();
-                        const potentialRepo = parts.slice(i + 1).join('_').toLowerCase();
-                        
                         // Simple heuristic: if we have at least one part for repo, consider it
                         if (i > 0 && parts.length > i + 1) {
                             foundSeparator = true;
@@ -407,7 +403,7 @@ export async function createWorktreeForIssue(localRepoPath, issueId, issueTitle,
     // Sanitize issue title for branch name
     const sanitizedTitle = issueTitle
         .toLowerCase()
-        .replace(/[^a-z0-9_\-]/g, '-')
+        .replace(/[^a-z0-9_-]/g, '-')
         .replace(/-+/g, '-')
         .replace(/^-|-$/g, '')
         .substring(0, 25); // Reduced to make room for modelName and random string
@@ -526,7 +522,7 @@ export async function createWorktreeForIssue(localRepoPath, issueId, issueTitle,
                     error: deleteError.message 
                 }, 'Failed to delete existing branch, continuing anyway');
             }
-        } catch (revparseError) {
+        } catch {
             // Branch doesn't exist, which is what we want
             logger.debug({ branchName }, 'Branch does not exist, will create new one');
         }
@@ -1076,7 +1072,6 @@ export async function ensureBranchAndPush(worktreePath, branchName, baseBranch, 
     
     try {
         let currentToken = authToken;
-        let lastError;
         
         // Wrap the push operation with retry logic
         await withRetry(
@@ -1084,7 +1079,6 @@ export async function ensureBranchAndPush(worktreePath, branchName, baseBranch, 
                 try {
                     await pushOperation(currentToken);
                 } catch (error) {
-                    lastError = error;
                     
                     // Check if it's an authentication error and we can refresh the token
                     if (tokenRefreshFn && 
@@ -1323,7 +1317,7 @@ export async function createWorktreeFromExistingBranch(localRepoPath, branchName
                         // Branch exists but some other error occurred
                         throw new Error(`Cannot create worktree: ${error.message}`);
                     }
-                } catch (branchCheckError) {
+                } catch {
                     // If we can't even check branches, throw the original error
                     throw new Error(`Cannot create worktree: ${error.message}`);
                 }

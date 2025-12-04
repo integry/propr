@@ -154,7 +154,6 @@ export async function processPullRequestCommentJob(job) {
     let worktreeInfo;
     let claudeResult = null;
     let authorsText = '';
-    let commentIds = '';
     let unprocessedComments = [];
     let startingWorkComment = null;
 
@@ -466,7 +465,6 @@ ${body}
             commentHistory += '\n';
         }
 
-        commentIds = unprocessedComments.map(c => c.id).join(', ');
         authorsText = commentAuthors.map(a => `@${a}`).join(', ');
         
         startingWorkComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
