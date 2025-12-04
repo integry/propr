@@ -3,6 +3,12 @@ const { Strategy: GitHubStrategy } = require('passport-github2');
 const session = require('express-session');
 
 function setupAuth(app) {
+    const requiredEnvVars = ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL'];
+    const missingVars = requiredEnvVars.filter(v => !process.env[v]);
+    if (missingVars.length > 0) {
+        throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+    }
+
     app.use(session({
         secret: process.env.SESSION_SECRET || 'your-secret-key-here',
         resave: false,
@@ -19,7 +25,7 @@ function setupAuth(app) {
     passport.use(new GitHubStrategy({
         clientID: process.env.GH_OAUTH_CLIENT_ID,
         clientSecret: process.env.GH_OAUTH_CLIENT_SECRET,
-        callbackURL: process.env.GH_OAUTH_CALLBACK_URL || 'http://localhost:4000/api/auth/github/callback',
+        callbackURL: process.env.GH_OAUTH_CALLBACK_URL,
     },
     (accessToken, refreshToken, profile, done) => {
         // Here you would find or create a user in your database.
@@ -46,8 +52,7 @@ function setupAuth(app) {
         passport.authenticate('github', { failureRedirect: '/login' }),
         (req, res) => {
             // Successful authentication, redirect to the dashboard.
-            const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-            res.redirect(`${frontendUrl}/`);
+            res.redirect(`${process.env.FRONTEND_URL}/`);
         }
     );
 
@@ -61,8 +66,7 @@ function setupAuth(app) {
                     console.error('Session destroy error:', sessionErr);
                 }
                 res.clearCookie('connect.sid');
-                const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-                res.redirect(`${frontendUrl}/login?logged_out=true`);
+                res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
             });
         });
     });
