@@ -28,7 +28,8 @@ export async function validateAndFilterComments(commentsToProcess, allCommentsFo
     return validatedComments;
 }
 
-export function filterUnprocessedComments(commentsToProcess, prCommentsForValidation, botUsername, pullRequestNumber, correlatedLogger) {
+export function filterUnprocessedComments(commentsToProcess, prCommentsForValidation, botUsername, options = {}) {
+    const { pullRequestNumber, correlatedLogger } = options;
     return commentsToProcess.filter(comment => {
         const alreadyProcessed = prCommentsForValidation.some(prComment => {
             const isBotComment = prComment.user.login === botUsername;

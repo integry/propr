@@ -54,7 +54,7 @@ export async function processPullRequestCommentJob(job) {
     const isBatchJob = !!comments && Array.isArray(comments);
     let commentsToProcess = isBatchJob ? [...comments] : [{ id: commentId, body: commentBody, author: commentAuthor }];
 
-    commentsToProcess = await pickUpPendingComments(commentsToProcess, repoOwner, repoName, pullRequestNumber, correlatedLogger);
+    commentsToProcess = await pickUpPendingComments(commentsToProcess, repoOwner, repoName, { pullRequestNumber, correlatedLogger });
 
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
 
@@ -107,7 +107,7 @@ export async function processPullRequestCommentJob(job) {
 
         llm = extractModelFromLabels(prData.data.labels, llm, pullRequestNumber, correlatedLogger);
 
-        unprocessedComments = filterUnprocessedComments(commentsToProcess, prCommentsForValidation, botUsername, pullRequestNumber, correlatedLogger);
+        unprocessedComments = filterUnprocessedComments(commentsToProcess, prCommentsForValidation, botUsername, { pullRequestNumber, correlatedLogger });
 
         if (unprocessedComments.length === 0) {
             correlatedLogger.info({ pullRequestNumber, originalCount: commentsToProcess.length }, 'All PR comments have already been processed, skipping');
@@ -138,7 +138,7 @@ export async function processPullRequestCommentJob(job) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
         const worktreeDirName = `pr-${pullRequestNumber}-followup-${timestamp}`;
 
-        worktreeInfo = await createWorktreeFromExistingBranch(localRepoPath, branchName, worktreeDirName, repoOwner, repoName);
+        worktreeInfo = await createWorktreeFromExistingBranch(localRepoPath, branchName, { worktreeDirName, owner: repoOwner, repoName });
         correlatedLogger.info({ worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName }, 'Created worktree from existing PR branch');
 
         const summaryTitle = await generateSummaryTitle({ combinedCommentBody, worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger });
@@ -159,7 +159,7 @@ export async function processPullRequestCommentJob(job) {
             onContainerId: createContainerIdCallbackForPR(taskId, stateManager)
         });
 
-        await recordLLMMetrics(claudeResult, { number: pullRequestNumber, repoOwner, repoName }, 'pr_comment', correlationId, taskId);
+        await recordLLMMetrics(claudeResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
         await createLogFiles(claudeResult, { number: pullRequestNumber, repoOwner, repoName });
 
         await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
@@ -175,7 +175,7 @@ export async function processPullRequestCommentJob(job) {
         const changesSummary = claudeResult.summary || claudeResult.finalResult?.result || '';
         const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText });
 
-        const commitResult = await commitChanges(worktreeInfo.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, pullRequestNumber, 'Follow-up changes');
+        const commitResult = await commitChanges(worktreeInfo.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: pullRequestNumber, issueTitle: 'Follow-up changes' });
 
         let completionComment;
         if (commitResult) {
@@ -214,22 +214,32 @@ export async function processPullRequestCommentJob(job) {
     }
 }
 
-async function pickUpPendingComments(commentsToProcess, repoOwner, repoName, pullRequestNumber, correlatedLogger) {
+function parsePendingComment(commentJson, correlatedLogger) {
+    try {
+        return JSON.parse(commentJson);
+    } catch (parseError) {
+        correlatedLogger.warn({ error: parseError.message }, 'Failed to parse pending comment');
+        return null;
+    }
+}
+
+function processPendingComments(commentsToProcess, pendingComments, correlatedLogger) {
+    for (const commentJson of pendingComments) {
+        const pendingComment = parsePendingComment(commentJson, correlatedLogger);
+        if (pendingComment && !commentsToProcess.some(c => c.id === pendingComment.id)) {
+            commentsToProcess.push(pendingComment);
+        }
+    }
+}
+
+async function pickUpPendingComments(commentsToProcess, repoOwner, repoName, options = {}) {
+    const { pullRequestNumber, correlatedLogger } = options;
     const pendingCommentsKey = `pending-pr-comments:${repoOwner}:${repoName}:${pullRequestNumber}`;
     try {
         const pendingComments = await redisClient.lrange(pendingCommentsKey, 0, -1);
         if (pendingComments.length > 0) {
             await redisClient.del(pendingCommentsKey);
-            for (const commentJson of pendingComments) {
-                try {
-                    const pendingComment = JSON.parse(commentJson);
-                    if (!commentsToProcess.some(c => c.id === pendingComment.id)) {
-                        commentsToProcess.push(pendingComment);
-                    }
-                } catch (parseError) {
-                    correlatedLogger.warn({ error: parseError.message }, 'Failed to parse pending comment');
-                }
-            }
+            processPendingComments(commentsToProcess, pendingComments, correlatedLogger);
             correlatedLogger.info({ pullRequestNumber, pendingCount: pendingComments.length, totalCount: commentsToProcess.length }, 'Picked up pending comments from Redis');
         }
     } catch (redisError) {
@@ -363,7 +373,7 @@ async function handleJobError(error, job, options) {
         
         if (claudeResult) {
             try {
-                await recordLLMMetrics(claudeResult, { number: pullRequestNumber, repoOwner, repoName }, 'pr_comment', correlationId, taskId);
+                await recordLLMMetrics(claudeResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
             } catch (metricsError) {
                 correlatedLogger.error({ error: metricsError.message, correlationId }, 'Failed to record LLM metrics for failed PR comment job');
             }

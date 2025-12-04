@@ -87,7 +87,7 @@ export async function handleGenericError(error, job, issueRef, options = {}) {
     
     if (claudeResult) {
         try {
-            await recordLLMMetrics(claudeResult, issueRef, 'issue', correlationId, taskId);
+            await recordLLMMetrics(claudeResult, issueRef, { jobType: 'issue', correlationId, taskId });
             correlatedLogger.info({ correlationId, issueNumber: issueRef.number }, 'LLM metrics recorded for failed job');
         } catch (metricsError) {
             correlatedLogger.error({ error: metricsError.message, correlationId }, 'Failed to record LLM metrics for failed job');
@@ -249,11 +249,12 @@ ${completionComment}
             error: prError.message
         }, 'Direct PR creation failed, checking if PR already exists...');
 
-        return await findExistingPR(octokit, issueRef, worktreeInfo, prError, correlatedLogger);
+        return await findExistingPR(octokit, issueRef, worktreeInfo, { prError, correlatedLogger });
     }
 }
 
-async function findExistingPR(octokit, issueRef, worktreeInfo, prError, correlatedLogger) {
+async function findExistingPR(octokit, issueRef, worktreeInfo, options = {}) {
+    const { prError, correlatedLogger } = options;
     try {
         const existingPRs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
             owner: issueRef.repoOwner,

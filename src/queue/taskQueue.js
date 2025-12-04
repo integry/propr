@@ -99,7 +99,8 @@ function buildAiMetrics(job, result, repoFullName, status) {
     };
 }
 
-async function updateCompletedMetrics(metricsRedis, job, result, duration, repoFullName) {
+async function updateCompletedMetrics(metricsRedis, job, result, options = {}) {
+    const { duration, repoFullName } = options;
     const dateKey = new Date().toISOString().split('T')[0];
     await metricsRedis.incr('metrics:jobs:processed');
     await metricsRedis.incr(`metrics:daily:${dateKey}:processed`);
@@ -156,7 +157,7 @@ export function createWorker(queueName, processorFunction, options = {}) {
         try {
             const metricsRedis = new Redis(connectionOptions);
             const repoFullName = getRepoFullName(job);
-            await updateCompletedMetrics(metricsRedis, job, result, duration, repoFullName);
+            await updateCompletedMetrics(metricsRedis, job, result, { duration, repoFullName });
             const activity = {
                 id: `activity-${Date.now()}-${job.id}`,
                 type: job.name === 'processGitHubIssue' ? 'issue_processed' : 'pr_processed',

@@ -188,44 +188,54 @@ async function detectDefaultBranch(git, owner, repoName, octokit = null) {
     throw new Error(`Unable to detect default branch for repository ${owner}/${repoName}`);
 }
 
+function parseRepoKeyParts(parts) {
+    let ownerParts = [];
+    let repoParts = [];
+    let foundSeparator = false;
+    
+    for (let i = 0; i < parts.length; i++) {
+        if (!foundSeparator) {
+            ownerParts.push(parts[i]);
+            if (i > 0 && parts.length > i + 1) {
+                foundSeparator = true;
+                repoParts = parts.slice(i + 1);
+                break;
+            }
+        }
+    }
+    
+    if (!foundSeparator && parts.length === 2) {
+        ownerParts = [parts[0]];
+        repoParts = [parts[1]];
+    }
+    
+    return { ownerParts, repoParts };
+}
+
+function processEnvKeyForConfig(key, prefix, configs) {
+    const repoKey = key.substring(prefix.length);
+    const parts = repoKey.split('_');
+    
+    if (parts.length < 2) return;
+    
+    const { ownerParts, repoParts } = parseRepoKeyParts(parts);
+    
+    if (ownerParts.length > 0 && repoParts.length > 0) {
+        const owner = ownerParts.join('_').toLowerCase();
+        const repo = repoParts.join('_').toLowerCase();
+        const branch = process.env[key];
+        
+        configs[`${owner}/${repo}`] = { owner, repo, branch, envKey: key };
+    }
+}
+
 export function listRepositoryBranchConfigurations() {
     const configs = {};
     const prefix = 'GIT_DEFAULT_BRANCH_';
     
     Object.keys(process.env).forEach(key => {
         if (key.startsWith(prefix)) {
-            const repoKey = key.substring(prefix.length);
-            const parts = repoKey.split('_');
-            
-            if (parts.length >= 2) {
-                let ownerParts = [];
-                let repoParts = [];
-                let foundSeparator = false;
-                
-                for (let i = 0; i < parts.length; i++) {
-                    if (!foundSeparator) {
-                        ownerParts.push(parts[i]);
-                        if (i > 0 && parts.length > i + 1) {
-                            foundSeparator = true;
-                            repoParts = parts.slice(i + 1);
-                            break;
-                        }
-                    }
-                }
-                
-                if (!foundSeparator && parts.length === 2) {
-                    ownerParts = [parts[0]];
-                    repoParts = [parts[1]];
-                }
-                
-                if (ownerParts.length > 0 && repoParts.length > 0) {
-                    const owner = ownerParts.join('_').toLowerCase();
-                    const repo = repoParts.join('_').toLowerCase();
-                    const branch = process.env[key];
-                    
-                    configs[`${owner}/${repo}`] = { owner, repo, branch, envKey: key };
-                }
-            }
+            processEnvKeyForConfig(key, prefix, configs);
         }
     });
     
@@ -294,7 +304,7 @@ export async function createWorktreeForIssue(localRepoPath, issueInfo, options =
         await git.raw(['worktree', 'add', worktreePath, '-b', branchName, `origin/${resolvedBaseBranch}`]);
         
         await setupWorktreePermissions(worktreePath, branchName, issueId);
-        await addToSafeDirectories(git, worktreePath, localRepoPath, branchName, issueId);
+        await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId });
         
         logger.info({ worktreePath, branchName, issueId }, 'Git worktree created successfully');
         
@@ -356,7 +366,8 @@ export function getRepoUrl(issue) {
     return `https://github.com/${issue.repoOwner}/${issue.repoName}.git`;
 }
 
-export async function commitChanges(worktreePath, commitMessage, author, issueNumber, issueTitle) {
+export async function commitChanges(worktreePath, commitMessage, author, options = {}) {
+    const { issueNumber, issueTitle } = options;
     try {
         const gitPath = path.join(worktreePath, '.git');
         const worktreeExists = await fs.pathExists(worktreePath);
@@ -508,7 +519,8 @@ export async function ensureBranchAndPush(worktreePath, branchName, baseBranch, 
     }
 }
 
-export async function createWorktreeFromExistingBranch(localRepoPath, branchName, worktreeDirName, owner, repoName) {
+export async function createWorktreeFromExistingBranch(localRepoPath, branchName, options = {}) {
+    const { worktreeDirName, owner, repoName } = options;
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
     
     try {
@@ -529,7 +541,7 @@ export async function createWorktreeFromExistingBranch(localRepoPath, branchName
         
         await verifyWorktreeCreation(worktreePath);
         await setupWorktreePermissions(worktreePath, branchName, null);
-        await addToSafeDirectories(git, worktreePath, localRepoPath, branchName, null);
+        await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId: null });
         
         const worktreeGit = simpleGit({ baseDir: worktreePath });
         await setupWorktreeRemote(worktreeGit, git, worktreePath);

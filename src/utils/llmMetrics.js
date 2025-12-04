@@ -220,7 +220,8 @@ async function persistToDatabase(claudeResult, taskId, metrics, correlationId) {
  * @param {string} correlationId - Correlation ID for tracking
  * @param {string} taskId - Task identifier for database persistence
  */
-export async function recordLLMMetrics(claudeResult, issueRef, jobType = 'issue', correlationId, taskId = null) {
+export async function recordLLMMetrics(claudeResult, issueRef, options = {}) {
+    const { jobType = 'issue', correlationId, taskId = null } = options;
     const metricsRedis = new Redis(connectionOptions);
     logger.info({
         correlationId,

@@ -188,7 +188,8 @@ export async function setupWorktreePermissions(worktreePath, branchName, issueId
     }
 }
 
-export async function addToSafeDirectories(git, worktreePath, localRepoPath, branchName, issueId) {
+export async function addToSafeDirectories(git, worktreePath, localRepoPath, options = {}) {
+    const { branchName, issueId } = options;
     try {
         await git.raw(['config', '--global', '--add', 'safe.directory', worktreePath]);
         await git.raw(['config', '--global', '--add', 'safe.directory', localRepoPath]);

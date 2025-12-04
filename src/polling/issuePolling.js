@@ -104,7 +104,8 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
     }
 }
 
-async function enqueueIssueForModel(issue, modelName, repoFullName, correlationId, correlatedLogger) {
+async function enqueueIssueForModel(issue, modelName, repoFullName, options = {}) {
+    const { correlationId, correlatedLogger } = options;
     const timestamp = Date.now();
     const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${modelName}-${timestamp}`;
     const issueJob = {
@@ -155,7 +156,7 @@ async function processIssue(issue, repoFullName, correlationId, correlatedLogger
     for (const modelName of issue.targetModels) {
         correlatedLogger.info({ issueId: issue.id, issueNumber: issue.number, repository: repoFullName, modelName }, `Enqueueing job for model: ${modelName}`);
         try {
-            await enqueueIssueForModel(issue, modelName, repoFullName, correlationId, correlatedLogger);
+            await enqueueIssueForModel(issue, modelName, repoFullName, { correlationId, correlatedLogger });
         } catch (error) {
             handleError(error, `Failed to add issue ${issue.number} with model ${modelName} to queue`, { correlationId });
         }

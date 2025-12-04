@@ -156,7 +156,9 @@ export class IdempotentGitHubOps {
      * @param {string} idempotencyKey - Unique key to prevent duplicate comments
      * @returns {Promise<object>} Comment data
      */
-    async addComment(owner, repo, issueNumber, body, idempotencyKey = null) {
+    async addComment(owner, repo, issueNumber, options = {}) {
+        const { body, idempotencyKey: providedIdempotencyKey = null } = options;
+        let idempotencyKey = providedIdempotencyKey;
         // If no idempotency key provided, use a hash of the comment body
         if (!idempotencyKey) {
             const crypto = await import('crypto');

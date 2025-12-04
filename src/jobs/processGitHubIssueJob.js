@@ -225,7 +225,7 @@ async function processGitHubIssueJob(job) {
                     updated_at: currentIssueData.data.updated_at,
                     user: currentIssueData.data.user
                 },
-                onSessionId: createSessionIdCallback(taskId, issueRef, modelName, stateManager, correlatedLogger),
+                onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger }),
                 onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger)
             });
             
@@ -235,7 +235,7 @@ async function processGitHubIssueJob(job) {
                 historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model }
             });
             
-            await recordLLMMetrics(claudeResult, issueRef, 'issue', correlationId, taskId);
+            await recordLLMMetrics(claudeResult, issueRef, { jobType: 'issue', correlationId, taskId });
 
             const postProcessResult = await performPostProcessing({
                 octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, 
@@ -282,7 +282,8 @@ async function processGitHubIssueJob(job) {
     }
 }
 
-function createSessionIdCallback(taskId, issueRef, modelName, stateManager, correlatedLogger) {
+function createSessionIdCallback(taskId, issueRef, options = {}) {
+    const { modelName, stateManager, correlatedLogger } = options;
     return async (sessionId, conversationId) => {
         try {
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
@@ -346,7 +347,7 @@ async function performPostProcessing(options) {
         commitResult = await commitChanges(
             worktreeInfo.worktreePath, commitMessage,
             { name: 'Claude Code', email: 'claude-code@anthropic.com' },
-            issueRef.number, currentIssueData.data.title
+            { issueNumber: issueRef.number, issueTitle: currentIssueData.data.title }
         );
 
         await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });

@@ -5,6 +5,38 @@ import { handleError } from '../utils/errorHandler.js';
 
 const DEFAULT_BASE_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
 
+async function findExistingPRForBranch(octokit, repoContext, errorMessage) {
+    const { owner, repoName, branchName } = repoContext;
+    logger.info({ owner, repoName, branchName, error: errorMessage }, 'PR already exists for this branch, attempting to find existing PR');
+    
+    try {
+        const existingPRs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+            owner,
+            repo: repoName,
+            head: `${owner}:${branchName}`,
+            state: 'open'
+        });
+        
+        if (existingPRs.data.length > 0) {
+            const existingPR = existingPRs.data[0];
+            logger.info({ owner, repoName, branchName, prNumber: existingPR.number, prUrl: existingPR.html_url }, 'Found existing PR for branch');
+            
+            return {
+                success: true,
+                pr: {
+                    number: existingPR.number,
+                    url: existingPR.html_url,
+                    title: existingPR.title,
+                    state: existingPR.state
+                }
+            };
+        }
+    } catch (findError) {
+        logger.warn({ error: findError.message }, 'Failed to find existing PR');
+    }
+    return null;
+}
+
 export async function createPullRequestRobust(params) {
     const { 
         owner, 
@@ -122,46 +154,8 @@ export async function createPullRequestRobust(params) {
             });
         } catch (prCreateError) {
             if (prCreateError.status === 422 && prCreateError.message?.includes('A pull request already exists')) {
-                logger.info({
-                    owner,
-                    repoName,
-                    branchName,
-                    error: prCreateError.message
-                }, 'PR already exists for this branch, attempting to find existing PR');
-                
-                try {
-                    const existingPRs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
-                        owner,
-                        repo: repoName,
-                        head: `${owner}:${branchName}`,
-                        state: 'open'
-                    });
-                    
-                    if (existingPRs.data.length > 0) {
-                        const existingPR = existingPRs.data[0];
-                        logger.info({
-                            owner,
-                            repoName,
-                            branchName,
-                            prNumber: existingPR.number,
-                            prUrl: existingPR.html_url
-                        }, 'Found existing PR for branch');
-                        
-                        return {
-                            success: true,
-                            pr: {
-                                number: existingPR.number,
-                                url: existingPR.html_url,
-                                title: existingPR.title,
-                                state: existingPR.state
-                            }
-                        };
-                    }
-                } catch (findError) {
-                    logger.warn({
-                        error: findError.message
-                    }, 'Failed to find existing PR');
-                }
+                const existingResult = await findExistingPRForBranch(octokit, { owner, repoName, branchName }, prCreateError.message);
+                if (existingResult) return existingResult;
             }
             
             if ((prCreateError.status === 422 || prCreateError.status === 400) && 
