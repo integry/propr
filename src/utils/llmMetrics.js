@@ -104,26 +104,29 @@ function extractToolUsage(messageContent) {
     return { toolName: toolUse.name, toolInput: toolUse.input, toolUseId: toolUse.id };
 }
 
-function buildConversationDetail(step, index, executionId, conversationLog, totalTokens, costUsd) {
+function calculateMessageCost(messageTokens, totalTokens, costUsd) {
+    return totalTokens > 0 && costUsd > 0 ? (messageTokens / totalTokens) * costUsd : null;
+}
+
+function calculateDurationMs(step, index, conversationLog) {
+    if (index <= 0 || !step.timestamp || !conversationLog[index - 1].timestamp) return null;
+    return new Date(step.timestamp).getTime() - new Date(conversationLog[index - 1].timestamp).getTime();
+}
+
+function buildConversationDetail(params) {
+    const { step, index, executionId, conversationLog, totalTokens, costUsd } = params;
     const { toolName, toolInput, toolUseId } = extractToolUsage(step.message?.content);
     const messageTokens = (step.message?.usage?.input_tokens || 0) + (step.message?.usage?.output_tokens || 0);
-    const messageCost = totalTokens > 0 && costUsd > 0 ? (messageTokens / totalTokens) * costUsd : null;
-    let durationMs = null;
-    if (index > 0 && step.timestamp && conversationLog[index - 1].timestamp) {
-        const currentTime = new Date(step.timestamp).getTime();
-        const previousTime = new Date(conversationLog[index - 1].timestamp).getTime();
-        durationMs = currentTime - previousTime;
-    }
     return {
         execution_id: executionId,
         sequence_number: index,
         event_timestamp: step.timestamp || new Date().toISOString(),
         event_type: step.type || 'unknown',
         content: step.message ? JSON.stringify(step.message) : null,
-        duration_ms: durationMs,
+        duration_ms: calculateDurationMs(step, index, conversationLog),
         token_count_input: step.message?.usage?.input_tokens || null,
         token_count_output: step.message?.usage?.output_tokens || null,
-        cost_usd: messageCost,
+        cost_usd: calculateMessageCost(messageTokens, totalTokens, costUsd),
         is_error: step.isError || false,
         tool_name: toolName,
         tool_input: toolInput ? JSON.stringify(toolInput) : null,
@@ -168,7 +171,7 @@ async function persistToDatabase(claudeResult, taskId, metrics, correlationId) {
                 totalTokens += (step.message?.usage?.input_tokens || 0) + (step.message?.usage?.output_tokens || 0);
             });
             const detailsArray = claudeResult.conversationLog.map((step, index) =>
-                buildConversationDetail(step, index, executionId, claudeResult.conversationLog, totalTokens, costUsd)
+                buildConversationDetail({ step, index, executionId, conversationLog: claudeResult.conversationLog, totalTokens, costUsd })
             );
             if (detailsArray.length > 0) {
                 logger.info({

@@ -80,6 +80,25 @@ function getRepoFullName(job) {
     return job?.data?.repository || (job?.data?.repoOwner && job?.data?.repoName ? `${job.data.repoOwner}/${job.data.repoName}` : null);
 }
 
+function extractCostFromResult(result) {
+    return result?.claudeResult?.claudeCostUsd || result?.claudeResult?.costUsd || result?.claudeResult?.finalResult?.cost_usd || 0;
+}
+
+function buildAiMetrics(job, result, repoFullName, status) {
+    const cost = extractCostFromResult(result);
+    return {
+        timestamp: job.timestamp,
+        cost: typeof cost === 'string' ? parseFloat(cost) : cost,
+        model: result?.claudeResult?.model || job.data?.modelName || 'unknown',
+        turns: result?.claudeResult?.claudeNumTurns || result?.claudeResult?.finalResult?.num_turns || 0,
+        executionTimeMs: result?.claudeResult?.executionTime || 0,
+        issueNumber: job.data?.number,
+        repo: repoFullName,
+        status,
+        correlationId: job.data?.correlationId || result?.correlationId,
+    };
+}
+
 async function updateCompletedMetrics(metricsRedis, job, result, duration, repoFullName) {
     const dateKey = new Date().toISOString().split('T')[0];
     await metricsRedis.incr('metrics:jobs:processed');
@@ -90,16 +109,7 @@ async function updateCompletedMetrics(metricsRedis, job, result, duration, repoF
     await metricsRedis.set('metrics:jobs:avgTime', newAvg.toFixed(2));
     if (repoFullName) await metricsRedis.sadd('active:repositories', repoFullName);
     if (result?.claudeResult) {
-        const cost = result.claudeResult.claudeCostUsd || result.claudeResult.costUsd || result.claudeResult.finalResult?.cost_usd || 0;
-        const aiMetrics = {
-            timestamp: job.timestamp,
-            cost: typeof cost === 'string' ? parseFloat(cost) : cost,
-            model: result.claudeResult.model || job.data?.modelName || 'unknown',
-            turns: result.claudeResult.claudeNumTurns || result.claudeResult.finalResult?.num_turns || 0,
-            executionTimeMs: result.claudeResult.executionTime || 0,
-            issueNumber: job.data?.number, repo: repoFullName, status: 'success',
-            correlationId: job.data?.correlationId || result.correlationId,
-        };
+        const aiMetrics = buildAiMetrics(job, result, repoFullName, 'success');
         await metricsRedis.zadd('metrics:ai:log:v1', job.timestamp, JSON.stringify(aiMetrics));
     }
 }

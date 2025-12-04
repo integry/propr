@@ -211,18 +211,18 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     const tokenData = await redis.get(githubTokenKey);
     const githubToken = tokenData || process.env.GH_TOKEN;
 
-    const analysisText = await runLightweightLLMAnalysis(
-      metaPrompt, 
+    const analysisText = await runLightweightLLMAnalysis({
+      prompt: metaPrompt, 
       model, 
       correlationId, 
       worktreePath, 
       githubToken,
-      issueRef || { 
+      issueRef: issueRef || { 
         number: task.issue_number, 
         repoOwner: task.repository.split('/')[0], 
         repoName: task.repository.split('/')[1] 
       }
-    );
+    });
     
     const analysisReport = {
       generatedAt: new Date().toISOString(),

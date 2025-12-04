@@ -505,7 +505,7 @@ ${body}
         let summaryTitle = '';
         try {
             const summaryRequest = `Summarize this change request in one sentence, focusing on the main action: ${combinedCommentBody}`;
-            summaryTitle = await generateTaskSummary(summaryRequest, worktreeInfo.worktreePath, githubToken.token, { number: pullRequestNumber, repoOwner, repoName }, correlationId, 'haiku');
+            summaryTitle = await generateTaskSummary({ summaryRequest, worktreePath: worktreeInfo.worktreePath, githubToken: githubToken.token, issueRef: { number: pullRequestNumber, repoOwner, repoName }, correlationId, modelAlias: 'haiku' });
             correlatedLogger.info({ taskId, summaryTitle }, 'Generated AI summary for follow-up task');
         } catch (summaryError) {
             correlatedLogger.warn({ taskId, error: summaryError.message }, 'Failed to generate AI summary, falling back to truncation.');
