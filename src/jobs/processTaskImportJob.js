@@ -16,6 +16,14 @@ import { issueQueue } from '../queue/taskQueue.js';
 const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10);
 const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || (2 * 60 * 1000), 10);
 
+async function handleUsageLimitError(error, job, correlatedLogger, repository) {
+    correlatedLogger.warn({ repository, resetTimestamp: error.resetTimestamp }, 'Claude usage limit hit during task import processing. Requeueing job.');
+    const resetTimeUTC = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
+    const delay = (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
+    await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
+    return { status: 'requeued', repository, delay };
+}
+
 export async function processTaskImportJob(job) {
     const { id: jobId, name: jobName, data } = job;
     const {
@@ -139,32 +147,12 @@ export async function processTaskImportJob(job) {
 
     } catch (error) {
         if (error instanceof UsageLimitError) {
-            correlatedLogger.warn({
-                repository,
-                resetTimestamp: error.resetTimestamp
-            }, 'Claude usage limit hit during task import processing. Requeueing job.');
-
-            const resetTimeUTC = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
-            const delay = (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
-
-            await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
-            
-            return { 
-                status: 'requeued', 
-                repository,
-                delay
-            };
-        } else {
-            correlatedLogger.error({
-                error: error.message,
-                stack: error.stack
-            }, 'Task import job failed');
-            
-            await stateManager.updateState(TaskStates.FAILED, `Task import failed: ${error.message}`);
-            
-            handleError(error, 'Failed to process task import job', { correlationId });
-            throw error;
+            return handleUsageLimitError(error, job, correlatedLogger, repository);
         }
+        correlatedLogger.error({ error: error.message, stack: error.stack }, 'Task import job failed');
+        await stateManager.updateState(TaskStates.FAILED, `Task import failed: ${error.message}`);
+        handleError(error, 'Failed to process task import job', { correlationId });
+        throw error;
     } finally {
         if (localRepoPath && worktreeInfo) {
             try {

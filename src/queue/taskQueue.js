@@ -76,6 +76,54 @@ analysisQueue.on('error', (err) => {
     logger.error({ queue: ANALYSIS_QUEUE_NAME, err }, 'Analysis Queue error');
 });
 
+function getRepoFullName(job) {
+    return job?.data?.repository || (job?.data?.repoOwner && job?.data?.repoName ? `${job.data.repoOwner}/${job.data.repoName}` : null);
+}
+
+async function updateCompletedMetrics(metricsRedis, job, result, duration, repoFullName) {
+    const dateKey = new Date().toISOString().split('T')[0];
+    await metricsRedis.incr('metrics:jobs:processed');
+    await metricsRedis.incr(`metrics:daily:${dateKey}:processed`);
+    const totalProcessed = await metricsRedis.get('metrics:jobs:processed') || '1';
+    const currentAvg = parseFloat(await metricsRedis.get('metrics:jobs:avgTime') || '0');
+    const newAvg = ((currentAvg * (parseInt(totalProcessed) - 1)) + (duration / 1000)) / parseInt(totalProcessed);
+    await metricsRedis.set('metrics:jobs:avgTime', newAvg.toFixed(2));
+    if (repoFullName) await metricsRedis.sadd('active:repositories', repoFullName);
+    if (result?.claudeResult) {
+        const cost = result.claudeResult.claudeCostUsd || result.claudeResult.costUsd || result.claudeResult.finalResult?.cost_usd || 0;
+        const aiMetrics = {
+            timestamp: job.timestamp,
+            cost: typeof cost === 'string' ? parseFloat(cost) : cost,
+            model: result.claudeResult.model || job.data?.modelName || 'unknown',
+            turns: result.claudeResult.claudeNumTurns || result.claudeResult.finalResult?.num_turns || 0,
+            executionTimeMs: result.claudeResult.executionTime || 0,
+            issueNumber: job.data?.number, repo: repoFullName, status: 'success',
+            correlationId: job.data?.correlationId || result.correlationId,
+        };
+        await metricsRedis.zadd('metrics:ai:log:v1', job.timestamp, JSON.stringify(aiMetrics));
+    }
+}
+
+async function logActivity(metricsRedis, activity) {
+    await metricsRedis.lpush('system:activity:log', JSON.stringify(activity));
+    await metricsRedis.ltrim('system:activity:log', 0, 999);
+}
+
+async function updateFailedMetrics(metricsRedis, job, err, repoFullName) {
+    const dateKey = new Date().toISOString().split('T')[0];
+    await metricsRedis.incr('metrics:jobs:failed');
+    await metricsRedis.incr(`metrics:daily:${dateKey}:failed`);
+    if (job?.timestamp) {
+        const aiMetrics = {
+            timestamp: job.timestamp, cost: 0, model: job.data?.modelName || 'unknown', turns: 0,
+            executionTimeMs: (job.finishedOn || Date.now()) - (job.timestamp || Date.now()),
+            issueNumber: job.data?.number, repo: repoFullName, status: 'failed',
+            correlationId: job.data?.correlationId, error: err.message.substring(0, 100),
+        };
+        await metricsRedis.zadd('metrics:ai:log:v1', job.timestamp, JSON.stringify(aiMetrics));
+    }
+}
+
 /**
  * Creates and starts a BullMQ worker
  * @param {string} queueName - The name of the queue to process
@@ -94,66 +142,19 @@ export function createWorker(queueName, processorFunction, options = {}) {
 
     worker.on('completed', async (job, result) => {
         const duration = Date.now() - job.timestamp;
-        logger.info({ 
-            jobId: job.id, 
-            jobName: job.name, 
-            result,
-            duration
-        }, 'Job completed successfully');
-        
-        // Update metrics
+        logger.info({ jobId: job.id, jobName: job.name, result, duration }, 'Job completed successfully');
         try {
             const metricsRedis = new Redis(connectionOptions);
-            const dateKey = new Date().toISOString().split('T')[0];
-            
-            // Update overall metrics
-            await metricsRedis.incr('metrics:jobs:processed');
-            await metricsRedis.incr(`metrics:daily:${dateKey}:processed`);
-            
-            // Update average processing time
-            const totalProcessed = await metricsRedis.get('metrics:jobs:processed') || '1';
-            const currentAvg = parseFloat(await metricsRedis.get('metrics:jobs:avgTime') || '0');
-            const newAvg = ((currentAvg * (parseInt(totalProcessed) - 1)) + (duration / 1000)) / parseInt(totalProcessed);
-            await metricsRedis.set('metrics:jobs:avgTime', newAvg.toFixed(2));
-            
-            // Track active repository
-            const repoFullName = job.data?.repository || (job.data?.repoOwner && job.data?.repoName ? `${job.data.repoOwner}/${job.data.repoName}` : null);
-            if (repoFullName) {
-                await metricsRedis.sadd('active:repositories', repoFullName);
-            }
-            
-            // Log activity
+            const repoFullName = getRepoFullName(job);
+            await updateCompletedMetrics(metricsRedis, job, result, duration, repoFullName);
             const activity = {
                 id: `activity-${Date.now()}-${job.id}`,
                 type: job.name === 'processGitHubIssue' ? 'issue_processed' : 'pr_processed',
-                timestamp: new Date().toISOString(),
-                repository: repoFullName,
-                issueNumber: job.data?.issueNumber,
+                timestamp: new Date().toISOString(), repository: repoFullName, issueNumber: job.data?.issueNumber,
                 description: `Successfully processed ${job.name === 'processGitHubIssue' ? 'issue' : 'PR'} #${job.data?.issueNumber || 'unknown'}`,
                 status: 'success'
             };
-
-            // Store detailed AI metrics in a Sorted Set for time-based querying
-            if (result?.claudeResult) {
-                const cost = result.claudeResult.claudeCostUsd || result.claudeResult.costUsd || result.claudeResult.finalResult?.cost_usd || 0;
-                const aiMetrics = {
-                    timestamp: job.timestamp, // Use job start time
-                    cost: typeof cost === 'string' ? parseFloat(cost) : cost,
-                    model: result.claudeResult.model || job.data?.modelName || 'unknown',
-                    turns: result.claudeResult.claudeNumTurns || result.claudeResult.finalResult?.num_turns || 0,
-                    executionTimeMs: result.claudeResult.executionTime || 0,
-                    issueNumber: job.data?.number,
-                    repo: repoFullName,
-                    status: 'success',
-                    correlationId: job.data?.correlationId || result.correlationId,
-                };
-                // Use timestamp as score for the sorted set
-                await metricsRedis.zadd('metrics:ai:log:v1', job.timestamp, JSON.stringify(aiMetrics));
-            }
-
-            await metricsRedis.lpush('system:activity:log', JSON.stringify(activity));
-            await metricsRedis.ltrim('system:activity:log', 0, 999); // Keep last 1000 activities
-            
+            await logActivity(metricsRedis, activity);
             await metricsRedis.quit();
         } catch (error) {
             logger.error({ error: error.message }, 'Failed to update metrics');
@@ -161,56 +162,18 @@ export function createWorker(queueName, processorFunction, options = {}) {
     });
 
     worker.on('failed', async (job, err) => {
-        logger.error({ 
-            jobId: job?.id, 
-            jobName: job?.name, 
-            data: job?.data, 
-            errMessage: err.message, 
-            stack: err.stack,
-            attemptsMade: job?.attemptsMade
-        }, 'Job failed');
-        
-        // Update failure metrics
+        logger.error({ jobId: job?.id, jobName: job?.name, data: job?.data, errMessage: err.message, stack: err.stack, attemptsMade: job?.attemptsMade }, 'Job failed');
         try {
             const metricsRedis = new Redis(connectionOptions);
-            const dateKey = new Date().toISOString().split('T')[0];
-            
-            // Update failure metrics
-            await metricsRedis.incr('metrics:jobs:failed');
-            await metricsRedis.incr(`metrics:daily:${dateKey}:failed`);
-            
-            // Log failed AI metrics to sorted set for complete statistics
-            const repoFullName = job?.data?.repository || (job?.data?.repoOwner && job?.data?.repoName ? `${job.data.repoOwner}/${job.data.repoName}` : null);
-            const aiMetrics = {
-                timestamp: job.timestamp,
-                cost: 0, // Failed jobs may still incur cost, but we log 0 for aggregation logic
-                model: job.data?.modelName || 'unknown',
-                turns: 0,
-                executionTimeMs: (job.finishedOn ? job.finishedOn : Date.now()) - (job.timestamp || Date.now()),
-                issueNumber: job.data?.number,
-                repo: repoFullName,
-                status: 'failed',
-                correlationId: job.data?.correlationId,
-                error: err.message.substring(0, 100), // Log snippet of error
-            };
-            // Use timestamp as score
-            if (job.timestamp) { // Ensure timestamp exists
-                 await metricsRedis.zadd('metrics:ai:log:v1', job.timestamp, JSON.stringify(aiMetrics));
-            }
-
-            // Log activity
+            const repoFullName = getRepoFullName(job);
+            await updateFailedMetrics(metricsRedis, job, err, repoFullName);
             const activity = {
-                id: `activity-${Date.now()}-${job?.id || 'unknown'}`,
-                type: 'error',
-                timestamp: new Date().toISOString(),
-                repository: repoFullName,
-                issueNumber: job?.data?.issueNumber,
+                id: `activity-${Date.now()}-${job?.id || 'unknown'}`, type: 'error',
+                timestamp: new Date().toISOString(), repository: repoFullName, issueNumber: job?.data?.issueNumber,
                 description: `Failed to process ${job?.name === 'processGitHubIssue' ? 'issue' : 'PR'} #${job?.data?.issueNumber || 'unknown'}: ${err.message}`,
                 status: 'error'
             };
-            await metricsRedis.lpush('system:activity:log', JSON.stringify(activity));
-            await metricsRedis.ltrim('system:activity:log', 0, 999); // Keep last 1000 activities
-            
+            await logActivity(metricsRedis, activity);
             await metricsRedis.quit();
         } catch (error) {
             logger.error({ error: error.message }, 'Failed to update failure metrics');

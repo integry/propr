@@ -104,6 +104,64 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
     }
 }
 
+async function enqueueIssueForModel(issue, modelName, repoFullName, correlationId, correlatedLogger) {
+    const timestamp = Date.now();
+    const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${modelName}-${timestamp}`;
+    const issueJob = {
+        repoOwner: issue.repoOwner,
+        repoName: issue.repoName,
+        number: issue.number,
+        modelName: modelName,
+        correlationId: generateCorrelationId()
+    };
+    
+    const addToQueueWithRetry = () => withRetry(
+        () => issueQueue.add('processGitHubIssue', issueJob, {
+            jobId,
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2000 },
+        }),
+        { ...retryConfigs.redis, correlationId },
+        `add_issue_to_queue_${issue.number}_${modelName}`
+    );
+    
+    await addToQueueWithRetry();
+    
+    try {
+        const activity = {
+            id: `activity-${timestamp}-${issue.id}-${modelName}`,
+            type: 'issue_created',
+            timestamp: new Date().toISOString(),
+            repository: repoFullName,
+            issueNumber: issue.number,
+            description: `New issue #${issue.number} detected for processing with ${modelName}`,
+            status: 'info'
+        };
+        await redisClient.lpush('system:activity:log', JSON.stringify(activity));
+        await redisClient.ltrim('system:activity:log', 0, 999);
+    } catch (activityError) {
+        correlatedLogger.warn({ error: activityError.message }, 'Failed to log activity');
+    }
+    
+    correlatedLogger.info({ jobId, issueNumber: issue.number, repository: repoFullName, modelName, issueCorrelationId: issueJob.correlationId }, 'Successfully added issue-model job to processing queue');
+}
+
+async function processIssue(issue, repoFullName, correlationId, correlatedLogger) {
+    correlatedLogger.info({ 
+        issueId: issue.id, issueNumber: issue.number, issueTitle: issue.title, 
+        issueUrl: issue.url, repository: repoFullName, targetModels: issue.targetModels
+    }, 'Detected eligible issue');
+    
+    for (const modelName of issue.targetModels) {
+        correlatedLogger.info({ issueId: issue.id, issueNumber: issue.number, repository: repoFullName, modelName }, `Enqueueing job for model: ${modelName}`);
+        try {
+            await enqueueIssueForModel(issue, modelName, repoFullName, correlationId, correlatedLogger);
+        } catch (error) {
+            handleError(error, `Failed to add issue ${issue.number} with model ${modelName} to queue`, { correlationId });
+        }
+    }
+}
+
 export async function pollForIssues(octokit, repos) {
     const correlationId = generateCorrelationId();
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -118,84 +176,9 @@ export async function pollForIssues(octokit, repos) {
         try {
             const issues = await fetchIssuesForRepo(octokit, repoFullName, correlationId);
             
-            if (issues.length > 0) {
-                for (const issue of issues) {
-                    correlatedLogger.info({ 
-                        issueId: issue.id, 
-                        issueNumber: issue.number, 
-                        issueTitle: issue.title, 
-                        issueUrl: issue.url,
-                        repository: repoFullName,
-                        targetModels: issue.targetModels
-                    }, 'Detected eligible issue');
-                    
-                    for (const modelName of issue.targetModels) {
-                        correlatedLogger.info({ 
-                            issueId: issue.id, 
-                            issueNumber: issue.number, 
-                            repository: repoFullName,
-                            modelName: modelName
-                        }, `Enqueueing job for model: ${modelName}`);
-                        
-                        try {
-                            const timestamp = Date.now();
-                            const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${modelName}-${timestamp}`;
-                            const issueJob = {
-                                repoOwner: issue.repoOwner,
-                                repoName: issue.repoName,
-                                number: issue.number,
-                                modelName: modelName,
-                                correlationId: generateCorrelationId()
-                            };
-                            
-                            const addToQueueWithRetry = () => withRetry(
-                                () => issueQueue.add('processGitHubIssue', issueJob, {
-                                    jobId,
-                                    attempts: 3,
-                                    backoff: {
-                                        type: 'exponential',
-                                        delay: 2000,
-                                    },
-                                }),
-                                { ...retryConfigs.redis, correlationId },
-                                `add_issue_to_queue_${issue.number}_${modelName}`
-                            );
-                            
-                            await addToQueueWithRetry();
-                            
-                            try {
-                                const activity = {
-                                    id: `activity-${timestamp}-${issue.id}-${modelName}`,
-                                    type: 'issue_created',
-                                    timestamp: new Date().toISOString(),
-                                    repository: repoFullName,
-                                    issueNumber: issue.number,
-                                    description: `New issue #${issue.number} detected for processing with ${modelName}`,
-                                    status: 'info'
-                                };
-                                await redisClient.lpush('system:activity:log', JSON.stringify(activity));
-                                await redisClient.ltrim('system:activity:log', 0, 999);
-                            } catch (activityError) {
-                                correlatedLogger.warn({ error: activityError.message }, 'Failed to log activity');
-                            }
-                            
-                            correlatedLogger.info({ 
-                                jobId,
-                                issueNumber: issue.number,
-                                repository: repoFullName,
-                                modelName: modelName,
-                                issueCorrelationId: issueJob.correlationId
-                            }, 'Successfully added issue-model job to processing queue');
-                            
-                        } catch (error) {
-                            handleError(error, `Failed to add issue ${issue.number} with model ${modelName} to queue`, { 
-                                correlationId 
-                            });
-                        }
-                    }
-                    
-                    allDetectedIssues.push(issue);
-                }
+            for (const issue of issues) {
+                await processIssue(issue, repoFullName, correlationId, correlatedLogger);
+                allDetectedIssues.push(issue);
             }
             
         } catch (error) {

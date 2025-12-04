@@ -41,6 +41,49 @@ function generateFailureLabel(triggeringLabel, errorCategory) {
     return suffix ? `${triggeringLabel}-failed-${suffix}` : `${triggeringLabel}-failed`;
 }
 
+const NETWORK_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND']);
+
+const MESSAGE_CATEGORY_MAP = [
+    ['docker', ErrorCategories.DOCKER_OPERATION],
+    ['claude', ErrorCategories.CLAUDE_EXECUTION],
+    ['git', ErrorCategories.GIT_OPERATION],
+    ['repository', ErrorCategories.GIT_OPERATION],
+    ['redis', ErrorCategories.REDIS_OPERATION],
+    ['github', ErrorCategories.GITHUB_API],
+    ['api', ErrorCategories.GITHUB_API],
+    ['auth', ErrorCategories.AUTHENTICATION],
+];
+
+const CONTEXT_CATEGORY_MAP = [
+    ['claude', ErrorCategories.CLAUDE_EXECUTION],
+    ['git', ErrorCategories.GIT_OPERATION],
+    ['github', ErrorCategories.GITHUB_API],
+    ['api', ErrorCategories.GITHUB_API],
+    ['post', ErrorCategories.POST_PROCESSING],
+];
+
+function categorizeByErrorCode(error) {
+    if (!error.code) return null;
+    if (NETWORK_CODES.has(error.code)) return ErrorCategories.NETWORK;
+    if (error.code.includes('GIT')) return ErrorCategories.GIT_OPERATION;
+    return null;
+}
+
+function categorizeByHttpStatus(error) {
+    if (!error.status) return null;
+    if (error.status === 401 || error.status === 403) return ErrorCategories.AUTHENTICATION;
+    if (error.status >= 400 && error.status < 500) return ErrorCategories.GITHUB_API;
+    return null;
+}
+
+function categorizeByText(text, categoryMap) {
+    const textLower = text.toLowerCase();
+    for (const [keyword, category] of categoryMap) {
+        if (textLower.includes(keyword)) return category;
+    }
+    return null;
+}
+
 /**
  * Categorizes an error based on its properties
  * @param {Error} error - The error to categorize
@@ -48,63 +91,11 @@ function generateFailureLabel(triggeringLabel, errorCategory) {
  * @returns {string} Error category
  */
 export function categorizeError(error, context = '') {
-    // Check error codes
-    if (error.code) {
-        if (['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND'].includes(error.code)) {
-            return ErrorCategories.NETWORK;
-        }
-        if (error.code.includes('GIT')) {
-            return ErrorCategories.GIT_OPERATION;
-        }
-    }
-    
-    // Check HTTP status codes for GitHub API errors
-    if (error.status) {
-        if (error.status === 401 || error.status === 403) {
-            return ErrorCategories.AUTHENTICATION;
-        }
-        if (error.status >= 400 && error.status < 500) {
-            return ErrorCategories.GITHUB_API;
-        }
-    }
-    
-    // Check error messages
-    const message = error.message?.toLowerCase() || '';
-    if (message.includes('docker')) {
-        return ErrorCategories.DOCKER_OPERATION;
-    }
-    if (message.includes('claude')) {
-        return ErrorCategories.CLAUDE_EXECUTION;
-    }
-    if (message.includes('git') || message.includes('repository')) {
-        return ErrorCategories.GIT_OPERATION;
-    }
-    if (message.includes('redis')) {
-        return ErrorCategories.REDIS_OPERATION;
-    }
-    if (message.includes('github') || message.includes('api')) {
-        return ErrorCategories.GITHUB_API;
-    }
-    if (message.includes('auth')) {
-        return ErrorCategories.AUTHENTICATION;
-    }
-    
-    // Check context
-    const contextLower = context.toLowerCase();
-    if (contextLower.includes('claude')) {
-        return ErrorCategories.CLAUDE_EXECUTION;
-    }
-    if (contextLower.includes('git')) {
-        return ErrorCategories.GIT_OPERATION;
-    }
-    if (contextLower.includes('github') || contextLower.includes('api')) {
-        return ErrorCategories.GITHUB_API;
-    }
-    if (contextLower.includes('post')) {
-        return ErrorCategories.POST_PROCESSING;
-    }
-    
-    return ErrorCategories.UNKNOWN;
+    return categorizeByErrorCode(error)
+        || categorizeByHttpStatus(error)
+        || categorizeByText(error.message || '', MESSAGE_CATEGORY_MAP)
+        || categorizeByText(context, CONTEXT_CATEGORY_MAP)
+        || ErrorCategories.UNKNOWN;
 }
 
 /**

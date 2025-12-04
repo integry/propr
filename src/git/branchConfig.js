@@ -135,50 +135,37 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
     throw new Error(`Unable to detect default branch for repository ${owner}/${repoName}`);
 }
 
+function parseOwnerRepoParts(parts) {
+    let ownerParts = [];
+    let repoParts = [];
+    for (let i = 0; i < parts.length; i++) {
+        ownerParts.push(parts[i]);
+        if (i > 0 && parts.length > i + 1) {
+            repoParts = parts.slice(i + 1);
+            break;
+        }
+    }
+    if (repoParts.length === 0 && parts.length === 2) {
+        ownerParts = [parts[0]];
+        repoParts = [parts[1]];
+    }
+    return { ownerParts, repoParts };
+}
+
 export function listRepositoryBranchConfigurations() {
     const configs = {};
     const prefix = 'GIT_DEFAULT_BRANCH_';
     
     Object.keys(process.env).forEach(key => {
-        if (key.startsWith(prefix)) {
-            const repoKey = key.substring(prefix.length);
-            const parts = repoKey.split('_');
-            
-            if (parts.length >= 2) {
-                let ownerParts = [];
-                let repoParts = [];
-                let foundSeparator = false;
-                
-                for (let i = 0; i < parts.length; i++) {
-                    if (!foundSeparator) {
-                        ownerParts.push(parts[i]);
-                        if (i > 0 && parts.length > i + 1) {
-                            foundSeparator = true;
-                            repoParts = parts.slice(i + 1);
-                            break;
-                        }
-                    }
-                }
-                
-                if (!foundSeparator && parts.length === 2) {
-                    ownerParts = [parts[0]];
-                    repoParts = [parts[1]];
-                }
-                
-                if (ownerParts.length > 0 && repoParts.length > 0) {
-                    const owner = ownerParts.join('_').toLowerCase();
-                    const repo = repoParts.join('_').toLowerCase();
-                    const branch = process.env[key];
-                    
-                    configs[`${owner}/${repo}`] = {
-                        owner,
-                        repo,
-                        branch,
-                        envKey: key
-                    };
-                }
-            }
-        }
+        if (!key.startsWith(prefix)) return;
+        const repoKey = key.substring(prefix.length);
+        const parts = repoKey.split('_');
+        if (parts.length < 2) return;
+        const { ownerParts, repoParts } = parseOwnerRepoParts(parts);
+        if (ownerParts.length === 0 || repoParts.length === 0) return;
+        const owner = ownerParts.join('_').toLowerCase();
+        const repo = repoParts.join('_').toLowerCase();
+        configs[`${owner}/${repo}`] = { owner, repo, branch: process.env[key], envKey: key };
     });
     
     return configs;

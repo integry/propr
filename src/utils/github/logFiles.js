@@ -86,84 +86,71 @@ export async function createLogFiles(claudeResult, issueRef) {
     return files;
 }
 
-export async function generateCompletionComment(claudeResult, issueRef) {
-    const timestamp = new Date().toISOString();
+function buildExecutionDetails(claudeResult, issueRef, timestamp) {
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
     const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
     const cost = claudeResult?.finalResult?.cost_usd || 0;
-    
-    let comment = `🤖 **AI Processing ${isSuccess ? 'Completed' : 'Failed'}**\n\n`;
-    comment += `**Execution Details:**\n`;
-    comment += `- Issue: #${issueRef.number}\n`;
-    comment += `- Repository: ${issueRef.repoOwner}/${issueRef.repoName}\n`;
-    comment += `- Status: ${isSuccess ? '✅ Success' : '❌ Failed'}\n`;
-    comment += `- Execution Time: ${executionTime}s\n`;
-    comment += `- Tokens used: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
-    comment += `- API cost: $${cost}\n`;
-    comment += `- Timestamp: ${timestamp}\n`;
-    
-    if (claudeResult?.conversationId) {
-        comment += `- Conversation ID: \`${claudeResult.conversationId}\`\n`;
+    const lines = [
+        `🤖 **AI Processing ${isSuccess ? 'Completed' : 'Failed'}**\n`,
+        `**Execution Details:**`,
+        `- Issue: #${issueRef.number}`,
+        `- Repository: ${issueRef.repoOwner}/${issueRef.repoName}`,
+        `- Status: ${isSuccess ? '✅ Success' : '❌ Failed'}`,
+        `- Execution Time: ${executionTime}s`,
+        `- Tokens used: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]`,
+        `- API cost: $${cost}`,
+        `- Timestamp: ${timestamp}`,
+    ];
+    if (claudeResult?.conversationId) lines.push(`- Conversation ID: \`${claudeResult.conversationId}\``);
+    if (claudeResult?.model) lines.push(`- LLM Model: ${claudeResult.model}`);
+    return lines.join('\n') + '\n\n';
+}
+
+function buildSummarySection(claudeResult) {
+    let section = '';
+    if (claudeResult?.summary) section += `**Summary:**\n${claudeResult.summary}\n\n`;
+    if (claudeResult?.finalResult?.subtype === 'error_max_turns') {
+        section += `⚠️ **Max Turns Reached**: Claude reached the maximum number of conversation turns (${claudeResult.finalResult.num_turns}) before completing all tasks. Consider increasing the turn limit or breaking down the task into smaller parts.\n\n`;
     }
-    
-    if (claudeResult?.model) {
-        comment += `- LLM Model: ${claudeResult.model}\n`;
+    return section;
+}
+
+function buildLogFilesSection(logFiles, claudeResult) {
+    if (Object.keys(logFiles).length === 0) return '';
+    const lines = ['**📁 Detailed Logs:**'];
+    if (logFiles.conversation && claudeResult.conversationLog?.length > 0) {
+        lines.push(`- Conversation: ${claudeResult.conversationLog.length} messages`);
+        lines.push(`- Session: \`${claudeResult.sessionId}\``);
     }
-    
-    comment += `\n`;
-    
-    if (claudeResult?.summary) {
-        comment += `**Summary:**\n${claudeResult.summary}\n\n`;
+    lines.push('\nLog files stored at:');
+    Object.entries(logFiles).forEach(([type, path]) => lines.push(`- ${type}: \`${path}\``));
+    lines.push('\n<details>\n<summary>💬 Latest Conversation Messages</summary>\n');
+    if (claudeResult.conversationLog?.length > 0) {
+        lines.push('```');
+        claudeResult.conversationLog.slice(-3).forEach(msg => {
+            if (msg.type === 'assistant') {
+                const content = msg.message?.content?.[0]?.text || '[content unavailable]';
+                const preview = content.substring(0, 200);
+                lines.push(`ASSISTANT: ${preview}${content.length > 200 ? '...' : ''}\n`);
+            }
+        });
+        lines.push('```');
     }
-    
-    if (claudeResult?.finalResult) {
-        const result = claudeResult.finalResult;
-        
-        if (result.subtype === 'error_max_turns') {
-            comment += `⚠️ **Max Turns Reached**: Claude reached the maximum number of conversation turns (${result.num_turns}) before completing all tasks. Consider increasing the turn limit or breaking down the task into smaller parts.\n\n`;
-        }
-    }
-    
+    lines.push('</details>\n');
+    return lines.join('\n') + '\n';
+}
+
+export async function generateCompletionComment(claudeResult, issueRef) {
+    const timestamp = new Date().toISOString();
+    let comment = buildExecutionDetails(claudeResult, issueRef, timestamp);
+    comment += buildSummarySection(claudeResult);
     try {
         const logFiles = await createLogFiles(claudeResult, issueRef);
-        
-        if (Object.keys(logFiles).length > 0) {
-            comment += `**📁 Detailed Logs:**\n`;
-            
-            if (logFiles.conversation && claudeResult.conversationLog?.length > 0) {
-                comment += `- Conversation: ${claudeResult.conversationLog.length} messages\n`;
-                comment += `- Session: \`${claudeResult.sessionId}\`\n`;
-            }
-            
-            comment += `\nLog files stored at:\n`;
-            Object.entries(logFiles).forEach(([type, path]) => {
-                comment += `- ${type}: \`${path}\`\n`;
-            });
-            
-            comment += `\n<details>\n<summary>💬 Latest Conversation Messages</summary>\n\n`;
-            if (claudeResult.conversationLog && claudeResult.conversationLog.length > 0) {
-                const lastMessages = claudeResult.conversationLog.slice(-3);
-                comment += `\`\`\`\n`;
-                lastMessages.forEach(msg => {
-                    if (msg.type === 'assistant') {
-                        const content = msg.message?.content?.[0]?.text || '[content unavailable]';
-                        const preview = content.substring(0, 200);
-                        comment += `ASSISTANT: ${preview}${content.length > 200 ? '...' : ''}\n\n`;
-                    }
-                });
-                comment += `\`\`\`\n`;
-            }
-            comment += `</details>\n\n`;
-        }
+        comment += buildLogFilesSection(logFiles, claudeResult);
     } catch (logError) {
-        logger.warn({
-            issueNumber: issueRef.number,
-            error: logError.message
-        }, 'Failed to create log files');
+        logger.warn({ issueNumber: issueRef.number, error: logError.message }, 'Failed to create log files');
     }
-    
     comment += `---\n*Powered by Claude Code v${process.env.npm_package_version || 'unknown'}*`;
-    
     return comment;
 }

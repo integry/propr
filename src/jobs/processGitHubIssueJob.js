@@ -198,7 +198,7 @@ async function processGitHubIssueJob(job) {
                 issueNumber: issueRef.number 
             }, `Adding '${AI_PROCESSING_TAG}' tag to issue`);
             
-            await safeAddLabel(octokit, issueRef.repoOwner, issueRef.repoName, issueRef.number, AI_PROCESSING_TAG, correlatedLogger);
+            await safeAddLabel({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, AI_PROCESSING_TAG);
             
             logger.info({ 
                 jobId, 
@@ -733,13 +733,9 @@ ${completionComment}
                 }
 
                 await safeUpdateLabels(
-                    octokit, 
-                    issueRef.repoOwner, 
-                    issueRef.repoName, 
-                    issueRef.number,
+                    { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
                     [AI_PROCESSING_TAG],
-                    [AI_DONE_TAG],
-                    correlatedLogger
+                    [AI_DONE_TAG]
                 );
 
                 logger.info({
@@ -1208,12 +1204,8 @@ The job has been automatically rescheduled and will restart ${readableResetTime}
                     });
                     
                     await safeRemoveLabel(
-                        octokit,
-                        issueRef.repoOwner,
-                        issueRef.repoName,
-                        issueRef.number,
-                        AI_PROCESSING_TAG,
-                        correlatedLogger
+                        { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
+                        AI_PROCESSING_TAG
                     );
                     
                 } catch (commentError) {
