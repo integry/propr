@@ -10,7 +10,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': {
-        target: process.env.VITE_API_URL || 'http://dashboard-api:4000',
+        target: process.env.VITE_API_URL,
         changeOrigin: true
       }
     }

@@ -1,7 +1,7 @@
 import React from 'react';
 import { useSearchParams } from 'react-router-dom';
 
-const API_BASE_URL = 'https://api.gitfix.dev';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 const LoginPage: React.FC = () => {
   const [searchParams] = useSearchParams();

@@ -1,6 +1,6 @@
 // API for fetching system data from backend
 
-const API_BASE_URL = 'https://api.gitfix.dev';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 // Helper function to handle API responses and auth
 const handleApiResponse = async (response) => {
