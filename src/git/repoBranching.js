@@ -22,7 +22,22 @@ export async function ensureBranchAndPush(worktreePath, branchName, baseBranch, 
         const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
         const actualBranch = currentBranch.trim();
         
-        if (actualBranch !== branchName) throw new Error(`Expected to be on branch '${branchName}' but currently on '${actualBranch}'`);
+        if (actualBranch !== branchName) {
+            logger.warn({ worktreePath, currentBranch: actualBranch, expectedBranch: branchName }, 'Branch mismatch detected, attempting to checkout correct branch');
+            
+            const branches = await git.branchLocal();
+            logger.debug({ worktreePath, branchName, branchExists: branches.all.includes(branchName), localBranches: branches.all, currentBranch: branches.current }, 'Checking local branches before checkout');
+            
+            await git.checkout(branchName);
+            
+            const newBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
+            const checkedOutBranch = newBranch.trim();
+            logger.info({ worktreePath, previousBranch: actualBranch, newBranch: checkedOutBranch, expectedBranch: branchName, checkoutSuccess: checkedOutBranch === branchName }, 'Branch checkout completed');
+            
+            if (checkedOutBranch !== branchName) {
+                throw new Error(`Failed to checkout branch '${branchName}', still on '${checkedOutBranch}'`);
+            }
+        }
         
         try {
             const diffResult = await git.raw(['diff', '--name-only', `origin/${baseBranch}...HEAD`]);
