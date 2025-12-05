@@ -1,4 +1,4 @@
-import logger from '../utils/logger.js'; 
+import logger from '../utils/logger.js';
 
 let processDetectedIssue;
 let processCommentEvent;
@@ -15,7 +15,7 @@ export async function initializeWebhookHandler(issueProcessor, commentProcessor,
 
 export async function processWebhookEvent(payload, eventType, correlationId) {
     const correlatedLogger = logger.withCorrelation(correlationId);
-    
+
     if (!processDetectedIssue || !processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
         correlatedLogger.error('Webhook handler not properly initialized');
         throw new Error('Webhook handler not initialized');
@@ -25,7 +25,7 @@ export async function processWebhookEvent(payload, eventType, correlationId) {
         case 'issues':
             if (payload.action === 'labeled') {
                 const [owner, repo] = payload.repository.full_name.split('/');
-                
+
                 const issue = {
                     id: payload.issue.id,
                     number: payload.issue.number,
@@ -37,11 +37,11 @@ export async function processWebhookEvent(payload, eventType, correlationId) {
                     createdAt: payload.issue.created_at,
                     updatedAt: payload.issue.updated_at
                 };
-                
+
                 await processDetectedIssue(issue, correlationId);
             }
             break;
-            
+
         case 'issue_comment':
             if (payload.action === 'created' && payload.issue.pull_request) {
                 await processCommentEvent(payload, 'issue_comment', correlationId);
@@ -61,7 +61,7 @@ export async function processWebhookEvent(payload, eventType, correlationId) {
                 await handleCommentEdited(payload, 'pull_request_review_comment', correlationId);
             }
             break;
-            
+
         default:
             correlatedLogger.debug({ event: eventType }, 'Ignoring webhook event');
     }

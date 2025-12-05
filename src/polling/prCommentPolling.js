@@ -5,7 +5,7 @@ import { filterCommentByAuthor, checkCommentTrigger } from '../utils/commentFilt
 import { resolveModelAlias } from '../config/modelAliases.js';
 
 export async function pollForPullRequestComments(octokit, repoFullName, correlationId, config) {
-    
+
     const correlatedLogger = logger.withCorrelation(correlationId);
     const [owner, repo] = repoFullName.split('/');
 
@@ -46,9 +46,9 @@ export async function pollForPullRequestComments(octokit, repoFullName, correlat
 async function processPullRequestComments(octokit, pr, repoContext, config) {
     const { owner, repo, repoFullName, correlationId } = repoContext;
     const { GITHUB_BOT_USERNAME, PR_FOLLOWUP_TRIGGER_KEYWORDS } = config;
-    
+
     const correlatedLogger = logger.withCorrelation(correlationId);
-    
+
     correlatedLogger.debug({
         repository: repoFullName,
         pullRequestNumber: pr.number,
@@ -72,7 +72,7 @@ async function processPullRequestComments(octokit, pr, repoContext, config) {
 
     const allComments = [...issueComments, ...reviewComments];
     const botUsername = GITHUB_BOT_USERNAME || 'gitfixio[bot]';
-    const commentsByTime = allComments.sort((a, b) => 
+    const commentsByTime = allComments.sort((a, b) =>
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
 
@@ -83,7 +83,7 @@ async function processPullRequestComments(octokit, pr, repoContext, config) {
         }
         return true;
     });
-    
+
     correlatedLogger.debug({
         repository: repoFullName,
         pullRequestNumber: pr.number,
@@ -121,7 +121,7 @@ async function processPullRequestComments(octokit, pr, repoContext, config) {
 async function collectUnprocessedComments(commentsByTime, pr, commentContext, config) {
     const { owner, repo, botUsername, correlationId } = commentContext;
     const { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN } = config;
-    
+
     const correlatedLogger = logger.withCorrelation(correlationId);
     const unprocessedComments = [];
     let selectedLlm = null;
@@ -228,7 +228,7 @@ function buildEnhancedCommentBody(comment, triggerKeywords) {
             codeContext.push(comment.diff_hunk);
             codeContext.push('```');
         }
-        
+
         if (codeContext.length > 0) {
             enhancedCommentBody = `${comment.body}\n\n--- Review Comment Context ---\n${codeContext.join('\n')}`;
         }
@@ -275,7 +275,7 @@ async function enqueuePRCommentJob(jobDetails, options) {
     const jobId = `pr-comments-batch-${owner}-${repo}-${pr.number}-${timestamp}`;
 
     try {
-        await issueQueue.add('processPullRequestComment', jobData, { 
+        await issueQueue.add('processPullRequestComment', jobData, {
             jobId,
             delay: COMMENT_BATCH_DELAY_MS
         });

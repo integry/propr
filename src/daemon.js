@@ -42,7 +42,7 @@ function getCommentConfig() {
         GITHUB_BOT_USERNAME: getBotUsername(),
         PR_FOLLOWUP_TRIGGER_KEYWORDS,
         MODEL_LABEL_PATTERN,
-        processCommentEvent: (payload, eventType, correlationId) => 
+        processCommentEvent: (payload, eventType, correlationId) =>
             processCommentEvent(payload, eventType, correlationId, getCommentConfig())
     };
 }
@@ -50,9 +50,9 @@ function getCommentConfig() {
 async function pollForIssues() {
     const correlationId = generateCorrelationId();
     const correlatedLogger = logger.withCorrelation(correlationId);
-    
+
     correlatedLogger.info('Starting GitHub issue polling cycle...');
-    
+
     let octokit;
     try {
         octokit = await withRetry(
@@ -67,32 +67,32 @@ async function pollForIssues() {
 
     const allDetectedIssues = [];
     const repos = getRepos();
-    
+
     for (const repoFullName of repos) {
         correlatedLogger.debug({ repository: repoFullName }, 'Polling repository');
-        
+
         try {
             const issues = await fetchIssuesForRepo(octokit, repoFullName, correlationId);
-            
+
             if (issues.length > 0) {
                 for (const issue of issues) {
                     await processDetectedIssue(issue, correlationId, redisClient);
                     allDetectedIssues.push(issue);
                 }
             }
-            
+
             await pollForPullRequestComments(octokit, repoFullName, correlationId, getCommentConfig());
-            
+
         } catch (error) {
             handleError(error, `Error polling repository ${repoFullName}`, { correlationId });
         }
     }
-    
-    correlatedLogger.info({ 
+
+    correlatedLogger.info({
         totalIssues: allDetectedIssues.length,
-        repositories: repos.length 
+        repositories: repos.length
     }, 'Polling cycle completed');
-    
+
     return allDetectedIssues;
 }
 
@@ -100,12 +100,12 @@ async function startDaemon(options = {}) {
     await loadAllConfigs();
 
     const repos = getRepos();
-    
+
     if (repos.length === 0) {
         logger.error('No repositories configured. Set GITHUB_REPOS_TO_MONITOR or CONFIG_REPO. Exiting.');
         process.exit(1);
     }
-    
+
     if (isDbEnabled && db) {
         try {
             logger.info('Running database migrations...');
@@ -115,10 +115,10 @@ async function startDaemon(options = {}) {
             logger.error({ error: error.message, stack: error.stack }, 'Database migration failed - daemon will continue but database persistence may not work');
         }
     }
-    
+
     if (options.reset) {
         logger.info('Reset flag detected, clearing all queue data and issue labels...');
-        
+
         try {
             await resetQueues();
             await resetIssueLabels();
@@ -128,13 +128,13 @@ async function startDaemon(options = {}) {
             process.exit(1);
         }
     }
-    
+
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',
         port: process.env.REDIS_PORT || 6379,
         retryStrategy: times => Math.min(times * 50, 2000)
     });
-    
+
     const sendHeartbeat = async () => {
         try {
             await heartbeatRedis.set('system:status:daemon', Date.now(), 'EX', 90);
@@ -143,17 +143,17 @@ async function startDaemon(options = {}) {
             logger.error({ error: error.message }, 'Failed to send daemon heartbeat');
         }
     };
-    
+
     await sendHeartbeat();
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
-    
+
     let intervalId = null;
-    
+
     const commentConfig = getCommentConfig();
     const primaryProcessingLabels = getPrimaryProcessingLabels();
     const GITHUB_BOT_USERNAME = getBotUsername();
     const GITHUB_USER_WHITELIST = getUserWhitelist();
-    
+
     if (ENABLE_WEBHOOKS) {
         logger.info({
             repositories: repos,
@@ -168,13 +168,13 @@ async function startDaemon(options = {}) {
             prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
             resetPerformed: !!options.reset
         }, 'GitHub Issue Detection Daemon starting in webhook mode...');
-        
+
         if (!process.env.GH_WEBHOOK_SECRET) {
             logger.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
         }
-        
+
         await initializeWebhookHandler(
-            (issue, correlationId) => processDetectedIssue(issue, correlationId, redisClient), 
+            (issue, correlationId) => processDetectedIssue(issue, correlationId, redisClient),
             (payload, eventType, correlationId) => processCommentEvent(payload, eventType, correlationId, commentConfig),
             (payload, eventType, correlationId) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
             (payload, eventType, correlationId) => handleCommentEdited(payload, eventType, correlationId, commentConfig)
@@ -248,10 +248,10 @@ export {
 function parseArgs() {
     const args = process.argv.slice(2);
     const options = {};
-    
+
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
-        
+
         if (arg === '--reset' || arg === '-r') {
             options.reset = true;
         } else if (arg === '--help' || arg === '-h') {
@@ -287,7 +287,7 @@ Examples:
             process.exit(1);
         }
     }
-    
+
     return options;
 }
 

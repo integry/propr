@@ -6,7 +6,7 @@ import { getRepos, getPrimaryProcessingLabels } from './configLoader.js';
 
 export async function resetQueues() {
     logger.info('Resetting all queue data...');
-    
+
     try {
         const redis = new Redis({
             host: process.env.REDIS_HOST || '127.0.0.1',
@@ -17,7 +17,7 @@ export async function resetQueues() {
 
         const queueName = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
         const keys = await redis.keys(`bull:${queueName}:*`);
-        
+
         if (keys.length > 0) {
             logger.info({ queueName, keysCount: keys.length }, 'Found queue keys to delete');
             await redis.del(...keys);
@@ -25,9 +25,9 @@ export async function resetQueues() {
         } else {
             logger.info({ queueName }, 'No queue data found to clear');
         }
-        
+
         await redis.quit();
-        
+
     } catch (error) {
         handleError(error, 'Failed to reset queues');
         throw error;
@@ -37,11 +37,11 @@ export async function resetQueues() {
 async function removeProcessingLabelFromIssue(octokit, issue, processingLabel, repoFullName) {
     const [owner, repo] = repoFullName.split('/');
     const currentLabels = issue.labels.map(label => label.name);
-    
+
     if (!currentLabels.includes(processingLabel)) {
         return false;
     }
-    
+
     logger.info({
         repository: repoFullName,
         issueNumber: issue.number,
@@ -66,7 +66,7 @@ async function processRepoLabelReset(octokit, repoFullName, primaryProcessingLab
 
     for (const primaryLabel of primaryProcessingLabels) {
         const processingLabel = `${primaryLabel}-processing`;
-        
+
         const issues = await octokit.paginate('GET /repos/{owner}/{repo}/issues', {
             owner,
             repo,
@@ -87,7 +87,7 @@ async function processRepoLabelReset(octokit, repoFullName, primaryProcessingLab
 
 export async function resetIssueLabels() {
     logger.info('Resetting issue labels...');
-    
+
     const repos = getRepos();
     if (repos.length === 0) {
         logger.warn('No repositories configured for label reset');

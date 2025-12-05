@@ -36,7 +36,7 @@ function generateFailureLabel(triggeringLabel, errorCategory) {
         [ErrorCategories.VALIDATION]: 'validation',
         [ErrorCategories.UNKNOWN]: ''
     };
-    
+
     const suffix = categorySuffix[errorCategory] || '';
     return suffix ? `${triggeringLabel}-failed-${suffix}` : `${triggeringLabel}-failed`;
 }
@@ -114,11 +114,11 @@ export function handleError(error, context, options = {}) {
         exit = false,
         issueRef = null
     } = options;
-    
+
     const category = categorizeError(error, context);
-    const correlatedLogger = correlationId ? 
+    const correlatedLogger = correlationId ?
         logger.withCorrelation(correlationId) : logger;
-    
+
     const errorDetails = {
         category,
         message: error.message,
@@ -128,14 +128,14 @@ export function handleError(error, context, options = {}) {
         context,
         timestamp: new Date().toISOString()
     };
-    
+
     correlatedLogger.error({
         msg: `Error in ${context}`,
         error: errorDetails,
         context,
         category
     });
-    
+
     // Handle issue failure tagging if issue reference is provided
     if (issueRef) {
         handleIssueFailure(issueRef, category, error, correlationId).catch(tagError => {
@@ -151,7 +151,7 @@ export function handleError(error, context, options = {}) {
     if (exit) {
         process.exit(1);
     }
-    
+
     return errorDetails;
 }
 
@@ -163,16 +163,16 @@ export function handleError(error, context, options = {}) {
  * @param {string} correlationId - Correlation ID
  */
 async function handleIssueFailure(issueRef, errorCategory, originalError, correlationId) {
-    const correlatedLogger = correlationId ? 
+    const correlatedLogger = correlationId ?
         logger.withCorrelation(correlationId) : logger;
-    
+
     try {
         const octokit = await getAuthenticatedOctokit();
-        
+
         const triggeringLabel = issueRef.triggeringLabel || process.env.AI_PRIMARY_TAG || 'AI';
         const processingTag = `${triggeringLabel}-processing`;
         const failureLabel = generateFailureLabel(triggeringLabel, errorCategory);
-        
+
         try {
             await octokit.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
                 owner: issueRef.repoOwner,
@@ -187,14 +187,14 @@ async function handleIssueFailure(issueRef, errorCategory, originalError, correl
                 error: removeError.message
             }, 'Could not remove processing tag (may not exist)');
         }
-        
+
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
             owner: issueRef.repoOwner,
             repo: issueRef.repoName,
             issue_number: issueRef.number,
             labels: [failureLabel],
         });
-        
+
         const failureComment = `🚨 **AI Processing Failed**
 
 **Error Category:** ${errorCategory}
@@ -206,14 +206,14 @@ This issue has been marked as failed and moved to the Dead Letter Queue for manu
 
 ---
 *This is an automated message from the Claude-powered GitHub Issue Processor*`;
-        
+
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: issueRef.repoOwner,
             repo: issueRef.repoName,
             issue_number: issueRef.number,
             body: failureComment,
         });
-        
+
         correlatedLogger.info({
             issueNumber: issueRef.number,
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
@@ -221,7 +221,7 @@ This issue has been marked as failed and moved to the Dead Letter Queue for manu
             errorCategory,
             triggeringLabel
         }, 'Updated issue with failure tags and comment');
-        
+
     } catch (tagError) {
         correlatedLogger.error({
             issueNumber: issueRef.number,
@@ -263,10 +263,10 @@ export function safeAsync(fn, defaultValue = null, options = {}) {
         try {
             return await fn(...args);
         } catch (error) {
-            const correlatedLogger = options.correlationId ? 
+            const correlatedLogger = options.correlationId ?
                 logger.withCorrelation(options.correlationId) : logger;
-            
-            correlatedLogger.error('Safe async operation failed', { 
+
+            correlatedLogger.error('Safe async operation failed', {
                 error: error.message,
                 context: options.context || 'safe_async'
             });
@@ -285,9 +285,9 @@ export function safeAsync(fn, defaultValue = null, options = {}) {
 export function makeIdempotent(fn, checkFn, context = 'operation') {
     return async (...args) => {
         const correlationId = args.find(arg => arg?.correlationId)?.correlationId;
-        const correlatedLogger = correlationId ? 
+        const correlatedLogger = correlationId ?
             logger.withCorrelation(correlationId) : logger;
-        
+
         try {
             // Check if operation was already completed
             const alreadyCompleted = await checkFn(...args);
@@ -298,10 +298,10 @@ export function makeIdempotent(fn, checkFn, context = 'operation') {
                 }, `${context} already completed, skipping`);
                 return alreadyCompleted;
             }
-            
+
             // Perform the operation
             return await fn(...args);
-            
+
         } catch (error) {
             handleError(error, `idempotent_${context}`, { correlationId });
             throw error;

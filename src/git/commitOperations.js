@@ -8,10 +8,10 @@ async function validateWorktree(worktreePath, issueNumber) {
     const gitPath = path.join(worktreePath, '.git');
     const worktreeExists = await fs.pathExists(worktreePath);
     const gitExists = await fs.pathExists(gitPath);
-    
+
     if (!worktreeExists) throw new Error(`Worktree path does not exist: ${worktreePath}`);
     if (!gitExists) throw new Error(`Not a git repository (or any of the parent directories): ${worktreePath}`);
-    
+
     const gitStats = await fs.stat(gitPath);
     if (gitStats.isDirectory()) {
         logger.warn({ worktreePath, gitPath, issueNumber }, '.git is a directory, not a worktree file - this suggests improper worktree creation');
@@ -67,39 +67,39 @@ export async function commitChanges(worktreePath, commitMessage, author, options
         logger.error({ worktreePath, issueNumber, error: validationError.message }, 'Worktree validation failed');
         throw validationError;
     }
-    
+
     const git = simpleGit({ baseDir: worktreePath });
     logger.debug({ worktreePath, issueNumber }, 'Initializing git operations in worktree');
-    
+
     try {
         await configureGitAuthor(git, author, worktreePath, issueNumber);
-        
+
         await git.add('.');
         const status = await git.status();
-        
+
         logGitStatus(status, worktreePath, issueNumber);
-        
+
         if (status.files.length === 0) {
             logger.info({ worktreePath }, 'No changes to commit');
             return null;
         }
-        
+
         logger.info({
             worktreePath,
             issueNumber,
             totalFiles: status.files.length,
             files: status.files.map(f => ({ path: f.path, index: f.index, working_dir: f.working_dir }))
         }, 'Files to be committed');
-        
+
         const finalCommitMessage = resolveCommitMessage(commitMessage, issueNumber, issueTitle);
-        
+
         const result = await git.commit(finalCommitMessage);
         const commitHash = result.commit.replace(/^HEAD\s+/, '');
-        
+
         logger.info({ worktreePath, commitHash, filesChanged: status.files.length, issueNumber, commitMessage: finalCommitMessage }, 'Changes committed successfully');
-        
+
         return { commitHash, commitMessage: finalCommitMessage };
-        
+
     } catch (error) {
         handleError(error, `Failed to commit changes in worktree ${worktreePath}`);
         throw error;

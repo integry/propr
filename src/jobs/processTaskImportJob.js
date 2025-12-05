@@ -2,7 +2,7 @@ import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getStateManager, TaskStates } from '../utils/workerStateManager.js';
-import { 
+import {
     createWorktreeForIssue,
     cleanupWorktree,
     getRepoUrl
@@ -23,11 +23,11 @@ export async function processTaskImportJob(job) {
     } = data;
     const correlatedLogger = logger.withCorrelation(correlationId);
     const stateManager = getStateManager(jobId);
-    
-    correlatedLogger.info({ 
+
+    correlatedLogger.info({
         jobId,
         jobName,
-        repository, 
+        repository,
         user,
         taskDescriptionLength: taskDescription?.length || 0,
         taskDescriptionPreview: taskDescription?.substring(0, 100) + '...'
@@ -39,7 +39,7 @@ export async function processTaskImportJob(job) {
 
     try {
         await stateManager.updateState(TaskStates.SETUP, 'Initializing task import process');
-        
+
         octokit = await withRetry(
             () => getAuthenticatedOctokit(),
             { ...retryConfigs.githubApi, correlationId },
@@ -47,7 +47,7 @@ export async function processTaskImportJob(job) {
         );
 
         const [repoOwner, repoName] = repository.split('/');
-        
+
         if (!repoOwner || !repoName) {
             throw new Error(`Invalid repository format: ${repository}. Expected format: owner/name`);
         }
@@ -69,23 +69,23 @@ export async function processTaskImportJob(job) {
             { baseBranch: null, octokit, modelName: 'planner' }
         );
 
-        correlatedLogger.info({ 
-            worktreePath: worktreeInfo.worktreePath, 
-            branchName: worktreeInfo.branchName 
+        correlatedLogger.info({
+            worktreePath: worktreeInfo.worktreePath,
+            branchName: worktreeInfo.branchName
         }, 'Created worktree for task import analysis');
 
         await stateManager.updateState(TaskStates.AI_PROCESSING, 'Generating task import prompt');
-        
+
         const prompt = generateTaskImportPrompt(taskDescription, repoOwner, repoName, worktreeInfo.worktreePath);
 
         await stateManager.updateState(TaskStates.AI_PROCESSING, 'Executing Claude analysis');
-        
+
         const claudeResult = await executeClaudeCode({
             worktreePath: worktreeInfo.worktreePath,
-            issueRef: { 
+            issueRef: {
                 number: 'import',
-                repoOwner, 
-                repoName 
+                repoOwner,
+                repoName
             },
             githubToken: githubToken.token,
             customPrompt: prompt,
@@ -112,12 +112,12 @@ export async function processTaskImportJob(job) {
                 error: claudeResult.error
             }, 'Task import job failed');
         }
-        
+
         await stateManager.updateState(TaskStates.CLEANUP, 'Cleaning up worktree');
         await stateManager.updateState(TaskStates.COMPLETED, 'Task import completed successfully');
 
-        return { 
-            status: 'complete', 
+        return {
+            status: 'complete',
             repository,
             success: claudeResult.success,
             jobId,

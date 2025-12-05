@@ -16,10 +16,10 @@ const connectionOptions = {
 
 export async function getModelPricing(openRouterModelId) {
     const redis = new Redis(connectionOptions);
-    
+
     try {
         let pricingData = await redis.get(PRICING_CACHE_KEY);
-        
+
         if (!pricingData) {
             logger.info('Pricing cache miss. Fetching from OpenRouter API...');
             try {
@@ -28,7 +28,7 @@ export async function getModelPricing(openRouterModelId) {
                     throw new Error(`OpenRouter API error: ${response.statusText}`);
                 }
                 const data = await response.json();
-                
+
                 const pricingMap = {};
                 if (data && Array.isArray(data.data)) {
                     data.data.forEach(model => {
@@ -40,7 +40,7 @@ export async function getModelPricing(openRouterModelId) {
                         }
                     });
                 }
-                
+
                 pricingData = JSON.stringify(pricingMap);
                 await redis.setex(PRICING_CACHE_KEY, CACHE_TTL_SECONDS, pricingData);
                 logger.info('Updated OpenRouter pricing cache.');
@@ -49,7 +49,7 @@ export async function getModelPricing(openRouterModelId) {
                 return null;
             }
         }
-        
+
         const pricingMap = JSON.parse(pricingData);
         return pricingMap[openRouterModelId] || null;
 

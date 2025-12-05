@@ -1,4 +1,4 @@
-import logger, { generateCorrelationId } from '../utils/logger.js'; 
+import logger, { generateCorrelationId } from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { resolveModelAlias, getDefaultModel } from '../config/modelAliases.js';
@@ -21,7 +21,7 @@ const redisClient = new Redis({
 export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
     const correlatedLogger = logger.withCorrelation(correlationId);
     const [owner, repo] = repoFullName.split('/');
-    
+
     if (!owner || !repo) {
         correlatedLogger.warn({ repo: repoFullName }, 'Invalid repository format. Skipping.');
         return [];
@@ -38,22 +38,22 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
                 sort: 'created',
                 direction: 'desc'
             });
-            
+
             const filteredIssues = issues.filter(issue => {
-                const labelNames = issue.labels.map(label => 
+                const labelNames = issue.labels.map(label =>
                     typeof label === 'string' ? label : label.name
                 );
-                return !labelNames.includes(AI_EXCLUDE_TAGS_PROCESSING) && 
+                return !labelNames.includes(AI_EXCLUDE_TAGS_PROCESSING) &&
                        !labelNames.includes(AI_DONE_TAG);
             });
-            
-            correlatedLogger.debug({ 
-                repo: repoFullName, 
+
+            correlatedLogger.debug({
+                repo: repoFullName,
                 totalIssues: issues.length,
                 filteredIssues: filteredIssues.length,
                 excludedLabels: [AI_EXCLUDE_TAGS_PROCESSING, AI_DONE_TAG]
             }, 'Filtered issues by labels');
-            
+
             return { data: { items: filteredIssues } };
         },
         { ...retryConfigs.githubApi, correlationId },
@@ -63,15 +63,15 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
     try {
         const response = await fetchWithRetry();
 
-        correlatedLogger.info({ 
-            repo: repoFullName, 
-            count: response.data.items.length 
+        correlatedLogger.info({
+            repo: repoFullName,
+            count: response.data.items.length
         }, `Found ${response.data.items.length} matching issues.`);
 
         return response.data.items.map(issue => {
             const identifiedModels = [];
             const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
-            
+
             for (const label of issue.labels) {
                 const match = label.name.match(modelLabelRegex);
                 if (match && match[1]) {
@@ -79,7 +79,7 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
                     identifiedModels.push(resolvedModel);
                 }
             }
-            
+
             return {
                 id: issue.id,
                 number: issue.number,
@@ -99,7 +99,7 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
         if (error.status === 403 && error.message && error.message.includes('rate limit')) {
             correlatedLogger.warn('GitHub API rate limit likely exceeded. Consider increasing polling interval.');
         }
-        
+
         return [];
     }
 }
@@ -115,7 +115,7 @@ async function enqueueIssueForModel(issue, modelName, repoFullName, options = {}
         modelName: modelName,
         correlationId: generateCorrelationId()
     };
-    
+
     const addToQueueWithRetry = () => withRetry(
         () => issueQueue.add('processGitHubIssue', issueJob, {
             jobId,
@@ -125,9 +125,9 @@ async function enqueueIssueForModel(issue, modelName, repoFullName, options = {}
         { ...retryConfigs.redis, correlationId },
         `add_issue_to_queue_${issue.number}_${modelName}`
     );
-    
+
     await addToQueueWithRetry();
-    
+
     try {
         const activity = {
             id: `activity-${timestamp}-${issue.id}-${modelName}`,
@@ -143,16 +143,16 @@ async function enqueueIssueForModel(issue, modelName, repoFullName, options = {}
     } catch (activityError) {
         correlatedLogger.warn({ error: activityError.message }, 'Failed to log activity');
     }
-    
+
     correlatedLogger.info({ jobId, issueNumber: issue.number, repository: repoFullName, modelName, issueCorrelationId: issueJob.correlationId }, 'Successfully added issue-model job to processing queue');
 }
 
 async function processIssue(issue, repoFullName, correlationId, correlatedLogger) {
-    correlatedLogger.info({ 
-        issueId: issue.id, issueNumber: issue.number, issueTitle: issue.title, 
+    correlatedLogger.info({
+        issueId: issue.id, issueNumber: issue.number, issueTitle: issue.title,
         issueUrl: issue.url, repository: repoFullName, targetModels: issue.targetModels
     }, 'Detected eligible issue');
-    
+
     for (const modelName of issue.targetModels) {
         correlatedLogger.info({ issueId: issue.id, issueNumber: issue.number, repository: repoFullName, modelName }, `Enqueueing job for model: ${modelName}`);
         try {
@@ -166,32 +166,32 @@ async function processIssue(issue, repoFullName, correlationId, correlatedLogger
 export async function pollForIssues(octokit, repos) {
     const correlationId = generateCorrelationId();
     const correlatedLogger = logger.withCorrelation(correlationId);
-    
+
     correlatedLogger.info('Starting GitHub issue polling cycle...');
-    
+
     const allDetectedIssues = [];
-    
+
     for (const repoFullName of repos) {
         correlatedLogger.debug({ repository: repoFullName }, 'Polling repository');
-        
+
         try {
             const issues = await fetchIssuesForRepo(octokit, repoFullName, correlationId);
-            
+
             for (const issue of issues) {
                 await processIssue(issue, repoFullName, correlationId, correlatedLogger);
                 allDetectedIssues.push(issue);
             }
-            
+
         } catch (error) {
             handleError(error, `Error polling repository ${repoFullName}`, { correlationId });
         }
     }
-    
-    correlatedLogger.info({ 
+
+    correlatedLogger.info({
         totalIssues: allDetectedIssues.length,
-        repositories: repos.length 
+        repositories: repos.length
     }, 'Polling cycle completed');
-    
+
     return allDetectedIssues;
 }
 

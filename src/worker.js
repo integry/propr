@@ -6,8 +6,8 @@ import { handleError } from './utils/errorHandler.js';
 import { withRetry, retryConfigs } from './utils/retryHandler.js';
 import { getStateManager, TaskStates } from './utils/workerStateManager.js';
 import { db, isEnabled as isDbEnabled } from './db/postgres.js';
-import { 
-    ensureRepoCloned, 
+import {
+    ensureRepoCloned,
     createWorktreeForIssue,
     cleanupWorktree,
     getRepoUrl
@@ -58,11 +58,11 @@ async function processTaskImportJob(job) {
     } = data;
     const correlatedLogger = logger.withCorrelation(correlationId);
     const stateManager = getStateManager(jobId);
-    
-    correlatedLogger.info({ 
+
+    correlatedLogger.info({
         jobId,
         jobName,
-        repository, 
+        repository,
         user,
         taskDescriptionLength: taskDescription?.length || 0,
         taskDescriptionPreview: taskDescription?.substring(0, 100) + '...'
@@ -75,7 +75,7 @@ async function processTaskImportJob(job) {
     try {
         // Phase 1: Setup
         await stateManager.updateState(TaskStates.SETUP, 'Initializing task import process');
-        
+
         // Get authenticated Octokit instance
         octokit = await withRetry(
             () => getAuthenticatedOctokit(),
@@ -85,7 +85,7 @@ async function processTaskImportJob(job) {
 
         // Parse repository into owner and name
         const [repoOwner, repoName] = repository.split('/');
-        
+
         if (!repoOwner || !repoName) {
             throw new Error(`Invalid repository format: ${repository}. Expected format: owner/name`);
         }
@@ -110,26 +110,26 @@ async function processTaskImportJob(job) {
             { baseBranch: null, octokit, modelName: 'planner' }
         );
 
-        correlatedLogger.info({ 
-            worktreePath: worktreeInfo.worktreePath, 
-            branchName: worktreeInfo.branchName 
+        correlatedLogger.info({
+            worktreePath: worktreeInfo.worktreePath,
+            branchName: worktreeInfo.branchName
         }, 'Created worktree for task import analysis');
 
         // Phase 2: AI Processing
         await stateManager.updateState(TaskStates.AI_PROCESSING, 'Generating task import prompt');
-        
+
         // Step 3: Generate the task import prompt
         const prompt = generateTaskImportPrompt(taskDescription, repoOwner, repoName, worktreeInfo.worktreePath);
 
         await stateManager.updateState(TaskStates.AI_PROCESSING, 'Executing Claude analysis');
-        
+
         // Step 4: Execute Claude Code with the task import prompt
         const claudeResult = await executeClaudeCode({
             worktreePath: worktreeInfo.worktreePath,
-            issueRef: { 
+            issueRef: {
                 number: 'import', // placeholder
-                repoOwner, 
-                repoName 
+                repoOwner,
+                repoName
             },
             githubToken: githubToken.token,
             customPrompt: prompt,
@@ -157,13 +157,13 @@ async function processTaskImportJob(job) {
                 error: claudeResult.error
             }, 'Task import job failed');
         }
-        
+
         // Phase 3: Cleanup
         await stateManager.updateState(TaskStates.CLEANUP, 'Cleaning up worktree');
         await stateManager.updateState(TaskStates.COMPLETED, 'Task import completed successfully');
 
-        return { 
-            status: 'complete', 
+        return {
+            status: 'complete',
             repository,
             success: claudeResult.success,
             jobId,
@@ -211,7 +211,7 @@ async function processTaskImportJob(job) {
  */
 async function resetWorkerQueues() {
     logger.info('Resetting worker queue data...');
-    
+
     try {
         const redis = new Redis({
             host: process.env.REDIS_HOST || '127.0.0.1',
@@ -223,16 +223,16 @@ async function resetWorkerQueues() {
         // Get all keys related to our queue
         const queueName = GITHUB_ISSUE_QUEUE_NAME;
         const keys = await redis.keys(`bull:${queueName}:*`);
-        
+
         if (keys.length > 0) {
             logger.info({
                 queueName,
                 keysCount: keys.length
             }, 'Found worker queue keys to delete');
-            
+
             // Delete all queue-related keys
             await redis.del(...keys);
-            
+
             logger.info({
                 queueName,
                 deletedKeys: keys.length
@@ -240,10 +240,10 @@ async function resetWorkerQueues() {
         } else {
             logger.info({ queueName }, 'No worker queue data found to clear');
         }
-        
+
         // Clean up Redis connection
         await redis.quit();
-        
+
     } catch (error) {
         logger.error({ error: error.message }, 'Failed to reset worker queue data');
         throw error;
@@ -259,7 +259,7 @@ function parseArguments() {
         reset: false,
         help: false
     };
-    
+
     for (const arg of args) {
         switch (arg) {
             case '--reset':
@@ -275,7 +275,7 @@ function parseArguments() {
                 }
         }
     }
-    
+
     return options;
 }
 
@@ -335,7 +335,7 @@ async function startWorker(options = {}) {
         concurrency: workerConcurrency,
         resetPerformed: options.reset || false
     }, 'Starting GitHub Issue Worker...');
-    
+
     // Run database migrations if enabled
     if (isDbEnabled && db) {
         try {
@@ -349,14 +349,14 @@ async function startWorker(options = {}) {
             }, 'Database migration failed - worker will continue but database persistence may not work');
         }
     }
-    
+
     // Initialize Redis connection for heartbeat
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',
         port: process.env.REDIS_PORT || 6379,
         retryStrategy: times => Math.min(times * 50, 2000)
     });
-    
+
     // Function to send heartbeat
     const sendHeartbeat = async () => {
         try {
@@ -367,24 +367,24 @@ async function startWorker(options = {}) {
             logger.error({ error: error.message }, 'Failed to send worker heartbeat');
         }
     };
-    
+
     // Send initial heartbeat
     await sendHeartbeat();
-    
+
     // Set up heartbeat interval (every 30 seconds)
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
-    
+
     // Ensure Claude Docker image is built before starting worker
     logger.info('Checking Claude Code Docker image...');
     const imageReady = await buildClaudeDockerImage();
-    
+
     if (!imageReady) {
         logger.error('Failed to build Claude Code Docker image. Worker may not function properly.');
         // Continue anyway - worker can still handle Git operations
     } else {
         logger.info('Claude Code Docker image is ready');
     }
-    
+
     const worker = createWorker(GITHUB_ISSUE_QUEUE_NAME, async (job) => {
         if (job.name === 'processGitHubIssue') {
             return processGitHubIssueJob(job);
@@ -421,16 +421,16 @@ async function startWorker(options = {}) {
 
 // Export for testing
 export { processGitHubIssueJob, processPullRequestCommentJob, processTaskImportJob, startWorker };
- 
+
 // Start worker if this is the main module
 if (import.meta.url === `file://${process.argv[1]}`) {
     const options = parseArguments();
-    
+
     if (options.help) {
         showHelp();
         process.exit(0);
     }
-    
+
     async function main() {
         try {
             if (options.reset) {
@@ -438,13 +438,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                 await resetWorkerQueues();
                 logger.info('Worker reset completed successfully');
             }
-            
+
             await startWorker(options);
         } catch (error) {
             logger.error({ error: error.message }, 'Failed to start worker');
             process.exit(1);
         }
     }
-    
+
     main();
 }

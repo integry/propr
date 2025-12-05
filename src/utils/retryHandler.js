@@ -24,13 +24,13 @@ const DEFAULT_RETRY_CONFIG = {
 function calculateDelay(attempt, config) {
     const exponentialDelay = config.baseDelay * Math.pow(config.exponentialBase, attempt);
     let delay = Math.min(exponentialDelay, config.maxDelay);
-    
+
     if (config.jitter) {
         // Add ±25% jitter to prevent thundering herd
         const jitterAmount = delay * 0.25;
         delay += (Math.random() - 0.5) * 2 * jitterAmount;
     }
-    
+
     return Math.max(delay, 0);
 }
 
@@ -45,14 +45,14 @@ function isRetryableError(error, config) {
     if (error.code && config.retryableErrors.includes(error.code)) {
         return true;
     }
-    
+
     // Check HTTP status codes for API errors
     if (error.status) {
         // Retryable HTTP status codes
         const retryableStatuses = [429, 500, 502, 503, 504];
         return retryableStatuses.includes(error.status);
     }
-    
+
     // Check error message patterns
     const retryablePatterns = [
         /rate limit/i,
@@ -65,8 +65,8 @@ function isRetryableError(error, config) {
         /invalid username or token/i,
         /credentials/i
     ];
-    
-    return retryablePatterns.some(pattern => 
+
+    return retryablePatterns.some(pattern =>
         pattern.test(error.message) || pattern.test(error.toString())
     );
 }
@@ -81,9 +81,9 @@ function isRetryableError(error, config) {
 export async function withRetry(fn, options = {}, context = 'operation') {
     const config = { ...DEFAULT_RETRY_CONFIG, ...options };
     const correlationId = options.correlationId || 'unknown';
-    
+
     let lastError;
-    
+
     for (let attempt = 0; attempt < config.maxAttempts; attempt++) {
         try {
             logger.debug({
@@ -92,9 +92,9 @@ export async function withRetry(fn, options = {}, context = 'operation') {
                 attempt: attempt + 1,
                 maxAttempts: config.maxAttempts
             }, `Attempting ${context}`);
-            
+
             const result = await fn();
-            
+
             if (attempt > 0) {
                 logger.info({
                     correlationId,
@@ -103,12 +103,12 @@ export async function withRetry(fn, options = {}, context = 'operation') {
                     totalAttempts: attempt + 1
                 }, `${context} succeeded after retry`);
             }
-            
+
             return result;
-            
+
         } catch (error) {
             lastError = error;
-            
+
             logger.warn({
                 correlationId,
                 context,
@@ -120,7 +120,7 @@ export async function withRetry(fn, options = {}, context = 'operation') {
                     status: error.status
                 }
             }, `${context} failed on attempt ${attempt + 1}`);
-            
+
             // If this is the last attempt, don't retry
             if (attempt === config.maxAttempts - 1) {
                 logger.error({
@@ -136,7 +136,7 @@ export async function withRetry(fn, options = {}, context = 'operation') {
                 }, `${context} failed after all retry attempts`);
                 break;
             }
-            
+
             // Check if error is retryable
             if (!isRetryableError(error, config)) {
                 logger.error({
@@ -151,10 +151,10 @@ export async function withRetry(fn, options = {}, context = 'operation') {
                 }, `${context} failed with non-retryable error`);
                 break;
             }
-            
+
             // Calculate delay for next attempt
             const delay = calculateDelay(attempt, config);
-            
+
             logger.info({
                 correlationId,
                 context,
@@ -162,11 +162,11 @@ export async function withRetry(fn, options = {}, context = 'operation') {
                 nextAttemptIn: delay,
                 retryReason: 'retryable_error'
             }, `Retrying ${context} in ${delay}ms`);
-            
+
             await sleep(delay);
         }
     }
-    
+
     // If we reach here, all attempts failed
     throw lastError;
 }
@@ -187,7 +187,7 @@ function sleep(ms) {
  */
 export function createRetryWrapper(config = {}) {
     const mergedConfig = { ...DEFAULT_RETRY_CONFIG, ...config };
-    
+
     return function retryWrapper(fn, context = 'operation', options = {}) {
         const finalConfig = { ...mergedConfig, ...options };
         return withRetry(fn, finalConfig, context);
@@ -206,7 +206,7 @@ export const retryConfigs = {
         exponentialBase: 2,
         retryableErrors: ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND']
     },
-    
+
     // Git operations
     git: {
         maxAttempts: 2,
@@ -215,7 +215,7 @@ export const retryConfigs = {
         exponentialBase: 2,
         retryableErrors: ['ECONNRESET', 'ETIMEDOUT', 'NETWORK_ERROR']
     },
-    
+
     // Git push operations (with authentication retry)
     gitPush: {
         maxAttempts: 3,
@@ -224,7 +224,7 @@ export const retryConfigs = {
         exponentialBase: 2,
         retryableErrors: ['ECONNRESET', 'ETIMEDOUT', 'NETWORK_ERROR', 'EAUTH', 'ENOTFOUND']
     },
-    
+
     // Claude Code execution
     claude: {
         maxAttempts: 2,
@@ -233,7 +233,7 @@ export const retryConfigs = {
         exponentialBase: 2,
         retryableErrors: ['TIMEOUT', 'DOCKER_ERROR', 'NETWORK_ERROR']
     },
-    
+
     // Database/Redis operations
     redis: {
         maxAttempts: 5,

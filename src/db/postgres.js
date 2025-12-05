@@ -1,4 +1,4 @@
-import knex from 'knex'; 
+import knex from 'knex';
 import knexConfig from '../../knexfile.js';
 import logger from '../utils/logger.js';
 
@@ -12,13 +12,13 @@ if (!isEnabled) {
   try {
     const environment = process.env.NODE_ENV || 'development';
     const config = knexConfig[environment];
-    
+
     if (!config) {
       throw new Error(`No database configuration found for environment: ${environment}`);
     }
-    
+
     db = knex(config);
-    
+
     db.raw('SELECT 1')
       .then(() => {
         logger.info({
@@ -34,7 +34,7 @@ if (!isEnabled) {
           database: config.connection.database
         }, 'PostgreSQL connection test failed - application will continue in fallback mode');
       });
-    
+
   } catch (error) {
     logger.error({
       error: error.message,
@@ -45,7 +45,7 @@ if (!isEnabled) {
 }
 
 export { db, isEnabled };
- 
+
 export async function closeConnection() {
   if (db) {
     try {

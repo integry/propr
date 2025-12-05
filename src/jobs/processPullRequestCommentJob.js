@@ -53,7 +53,7 @@ async function initializePRJobContext(job) {
     const isBatchJob = !!comments && Array.isArray(comments);
     let commentsToProcess = isBatchJob ? [...comments] : [{ id: commentId, body: commentBody, author: commentAuthor }];
     commentsToProcess = await pickUpPendingComments(commentsToProcess, repoOwner, repoName, { pullRequestNumber, correlatedLogger });
-    
+
     return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, PR_LABEL, isBatchJob, commentsToProcess };
 }
 
@@ -71,27 +71,27 @@ async function acquirePRLock(lockParams) {
 
 async function validatePRAndComments(octokit, context) {
     const { commentsToProcess, pullRequestNumber, repoOwner, repoName, PR_LABEL, correlatedLogger, llm: initialLlm } = context;
-    
+
     const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner: repoOwner, repo: repoName, pull_number: pullRequestNumber });
     const botUsername = process.env.GITHUB_BOT_USERNAME || 'gitfixio[bot]';
     const prCommentsForValidation = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100 });
     const reviewCommentsForValidation = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', { owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100 });
     const allCommentsForValidation = [...prCommentsForValidation, ...reviewCommentsForValidation];
     const validatedComments = await validateAndFilterComments(commentsToProcess, allCommentsForValidation, pullRequestNumber, correlatedLogger);
-    
+
     if (validatedComments.length === 0) return { skip: true, reason: 'all_comments_deleted' };
     if (!prData.data.labels.some(label => label.name === PR_LABEL)) return { skip: true, reason: 'missing_required_label' };
-    
+
     const llm = extractModelFromLabels(prData.data.labels, initialLlm, pullRequestNumber, correlatedLogger);
     const unprocessedComments = filterUnprocessedComments(validatedComments, prCommentsForValidation, botUsername, { pullRequestNumber, correlatedLogger });
     if (unprocessedComments.length === 0) return { skip: true, reason: 'already_processed' };
-    
+
     return { skip: false, prData, validatedComments, unprocessedComments, llm, prCommentsForValidation };
 }
 
 async function executeAndCommit(context) {
     const { worktreeInfo, githubToken, prompt, llm, taskId, stateManager, correlatedLogger, job, pullRequestNumber, repoOwner, repoName, correlationId, unprocessedComments, authorsText } = context;
-    
+
     const claudeResult = await executeClaudeCode({
         worktreePath: worktreeInfo.worktreePath,
         issueRef: { number: pullRequestNumber, repoOwner, repoName, title: job.data.title },
@@ -120,7 +120,7 @@ async function executeAndCommit(context) {
 
 async function postCompletionComment(context) {
     const { octokit, commitResult, worktreeInfo, repoUrl, githubToken, correlationId, repoOwner, repoName, startingWorkComment, unprocessedComments, changesSummary, commitMessage, llm, authorsText, claudeResult, correlatedLogger, pullRequestNumber } = context;
-    
+
     if (commitResult) {
         await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, {
             repoUrl, authToken: githubToken.token, tokenRefreshFn: async () => (await octokit.auth()).token, correlationId
@@ -130,7 +130,7 @@ async function postCompletionComment(context) {
         correlatedLogger.info({ pullRequestNumber, commitHash: commitResult.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
         return completionComment;
     }
-    
+
     const noChangesBody = buildCompletionComment(null, unprocessedComments, { changesSummary, commitMessage, llm, authorsText }, claudeResult);
     return await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id, body: noChangesBody });
 }
@@ -145,10 +145,10 @@ export async function processPullRequestCommentJob(job) {
     const taskId = job.id;
     const stateManager = getStateManager();
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
-    
+
     const lockAcquired = await acquirePRLock({ stateManager, lockKey, correlationId, correlatedLogger, job });
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
-    
+
     try {
         await stateManager.createTaskState(taskId, { number: pullRequestNumber, repoOwner, repoName, comments: job.data.comments }, correlationId);
     } catch (stateError) {
@@ -165,7 +165,7 @@ export async function processPullRequestCommentJob(job) {
             correlatedLogger.info({ pullRequestNumber, reason: validation.reason }, 'Skipping PR comment processing');
             return { status: 'skipped', reason: validation.reason, pullRequestNumber };
         }
-        
+
         const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;
         unprocessedComments = validUnprocessed;
         llm = resolvedLlm;
@@ -178,7 +178,7 @@ export async function processPullRequestCommentJob(job) {
         const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
         const originalTaskSpec = await fetchLinkedIssueContext(octokit, prData, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
         const commentHistory = buildCommentHistory(commentsByTime, prData, correlationId);
-        
+
         startingWorkComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
             body: `🔄 **Starting work on follow-up changes** requested by ${authorsText}\n\nI'll analyze the ${unprocessedComments.length} request${unprocessedComments.length > 1 ? 's' : ''} and implement the necessary changes.\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`,
@@ -276,7 +276,7 @@ function extractModelFromLabels(labels, currentLlm, pullRequestNumber, correlate
 function buildCombinedComment(unprocessedComments) {
     let combinedCommentBody;
     let commentAuthors = [];
-    
+
     if (unprocessedComments.length === 1) {
         combinedCommentBody = unprocessedComments[0].body;
         commentAuthors = [unprocessedComments[0].author];
@@ -344,7 +344,7 @@ function buildCommitMessage(options) {
     }
 
     const commentReferences = unprocessedComments.map(c => `Comment by: @${c.author} (ID: ${c.id})`).join('\n');
-    
+
     return `feat(ai): ${changesSummary ? changesSummary.split('\n')[0] : 'Apply follow-up changes from PR comment'}
 
 ${changesSummary ? changesSummary : `Implemented changes requested by ${authorsText}`}${commitDetails}
@@ -377,9 +377,9 @@ async function handleJobError(error, job, options) {
         await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
     } else {
         handleError(error, 'Failed to process PR comment job', { correlationId });
-        
+
         await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: error.message });
-        
+
         if (claudeResult) {
             try {
                 await recordLLMMetrics(claudeResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
@@ -387,7 +387,7 @@ async function handleJobError(error, job, options) {
                 correlatedLogger.error({ error: metricsError.message, correlationId }, 'Failed to record LLM metrics for failed PR comment job');
             }
         }
-        
+
         if (octokit && startingWorkComment) {
             try {
                 await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {

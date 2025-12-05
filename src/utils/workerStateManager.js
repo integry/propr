@@ -27,10 +27,10 @@ export class WorkerStateManager {
             enableReadyCheck: false,
             ...options.redis
         });
-        
+
         this.keyPrefix = options.keyPrefix || 'worker:state:';
         this.stateExpiry = options.stateExpiry || 7 * 24 * 3600; // 7 days
-        
+
         this.redis.on('error', (error) => {
             logger.error({ error: error.message }, 'Redis error in WorkerStateManager');
         });
@@ -61,7 +61,7 @@ export class WorkerStateManager {
 
         const key = this.getTaskKey(taskId);
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-        
+
         const correlatedLogger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
             taskId,
@@ -69,7 +69,7 @@ export class WorkerStateManager {
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
             state: TaskStates.PENDING
         }, 'Task state created');
-        
+
         if (isDbEnabled && db) {
             try {
                 const taskData = {
@@ -83,9 +83,9 @@ export class WorkerStateManager {
                     created_at: state.createdAt,
                     initial_job_data: JSON.stringify(issueRef)
                 };
-                
+
                 await db('tasks').insert(taskData).onConflict('task_id').ignore();
-                
+
                 const historyData = {
                     task_id: taskId,
                     state: TaskStates.PENDING,
@@ -93,9 +93,9 @@ export class WorkerStateManager {
                     reason: 'Task created',
                     metadata: JSON.stringify({})
                 };
-                
+
                 await db('task_history').insert(historyData);
-                
+
                 correlatedLogger.debug({ taskId }, 'Task state persisted to database');
             } catch (error) {
                 correlatedLogger.error({
@@ -104,7 +104,7 @@ export class WorkerStateManager {
                 }, 'Failed to persist task state to database');
             }
         }
-        
+
         return state;
     }
 
@@ -118,18 +118,18 @@ export class WorkerStateManager {
     async updateTaskState(taskId, newState, metadata = {}) {
         const key = this.getTaskKey(taskId);
         const stateJson = await this.redis.get(key);
-        
+
         if (!stateJson) {
             throw new Error(`Task state not found for taskId: ${taskId}`);
         }
-        
+
         const state = JSON.parse(stateJson);
         const previousState = state.state;
-        
+
         state.state = newState;
         state.updatedAt = new Date().toISOString();
         state.attempts = metadata.isRetry ? (state.attempts + 1) : state.attempts;
-        
+
         // Add metadata
         if (metadata.error) {
             state.lastError = {
@@ -138,11 +138,11 @@ export class WorkerStateManager {
                 timestamp: new Date().toISOString()
             };
         }
-        
+
         if (metadata.worktreeInfo) {
             state.worktreeInfo = metadata.worktreeInfo;
         }
-        
+
         if (metadata.claudeResult) {
             state.claudeResult = {
                 success: metadata.claudeResult.success,
@@ -150,11 +150,11 @@ export class WorkerStateManager {
                 executionTime: metadata.claudeResult.executionTime
             };
         }
-        
+
         if (metadata.prResult) {
             state.prResult = metadata.prResult;
         }
-        
+
         // Add to history
         state.history.push({
             state: newState,
@@ -162,9 +162,9 @@ export class WorkerStateManager {
             reason: metadata.reason || `State changed from ${previousState}`,
             metadata: metadata.historyMetadata || {}
         });
-        
+
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-        
+
         const correlatedLogger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
             taskId,
@@ -174,7 +174,7 @@ export class WorkerStateManager {
             newState,
             attempts: state.attempts
         }, 'Task state updated');
-        
+
         if (isDbEnabled && db) {
             try {
                 const historyData = {
@@ -193,9 +193,9 @@ export class WorkerStateManager {
                         commitHash: metadata.commitHash
                     })
                 };
-                
+
                 await db('task_history').insert(historyData);
-                
+
                 correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
             } catch (error) {
                 correlatedLogger.error({
@@ -204,7 +204,7 @@ export class WorkerStateManager {
                 }, 'Failed to persist task state update to database');
             }
         }
-        
+
         return state;
     }
 
@@ -216,11 +216,11 @@ export class WorkerStateManager {
     async getTaskState(taskId) {
         const key = this.getTaskKey(taskId);
         const stateJson = await this.redis.get(key);
-        
+
         if (!stateJson) {
             return null;
         }
-        
+
         return JSON.parse(stateJson);
     }
 
@@ -231,27 +231,27 @@ export class WorkerStateManager {
      */
     async getResumableTask(taskId) {
         const state = await this.getTaskState(taskId);
-        
+
         if (!state) {
             return null;
         }
-        
+
         // Tasks in these states can potentially be resumed
         const resumableStates = [
             TaskStates.PROCESSING,
             TaskStates.CLAUDE_EXECUTION,
             TaskStates.POST_PROCESSING
         ];
-        
+
         if (!resumableStates.includes(state.state)) {
             return null;
         }
-        
+
         // Check if task is stale (stuck for too long)
         const staleThreshold = 30 * 60 * 1000; // 30 minutes
         const updatedAt = new Date(state.updatedAt).getTime();
         const now = Date.now();
-        
+
         if (now - updatedAt > staleThreshold) {
             logger.warn({
                 taskId,
@@ -261,14 +261,14 @@ export class WorkerStateManager {
                 lastUpdate: state.updatedAt,
                 staleDuration: now - updatedAt
             }, 'Found stale task that may need recovery');
-            
+
             return {
                 ...state,
                 isStale: true,
                 staleDuration: now - updatedAt
             };
         }
-        
+
         return {
             ...state,
             isStale: false
@@ -285,26 +285,26 @@ export class WorkerStateManager {
     async updateHistoryMetadata(taskId, historyState, metadata = {}) {
         const key = this.getTaskKey(taskId);
         const stateJson = await this.redis.get(key);
-        
+
         if (!stateJson) {
             throw new Error(`Task state not found for taskId: ${taskId}`);
         }
-        
+
         const state = JSON.parse(stateJson);
-        
+
         // Find the history entry with the specified state (most recent one)
         const historyIndex = state.history.findLastIndex(h => h.state === historyState);
-        
+
         if (historyIndex >= 0) {
             // Merge new metadata with existing metadata
             state.history[historyIndex].metadata = {
                 ...state.history[historyIndex].metadata,
                 ...metadata
             };
-            
+
             state.updatedAt = new Date().toISOString();
             await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-            
+
             const correlatedLogger = logger.withCorrelation(state.correlationId);
             correlatedLogger.debug({
                 taskId,
@@ -317,7 +317,7 @@ export class WorkerStateManager {
                 historyState
             }, 'Could not find history entry to update metadata');
         }
-        
+
         return state;
     }
 
@@ -340,7 +340,7 @@ export class WorkerStateManager {
             },
             reason: `Task failed: ${error.message}`
         };
-        
+
         return await this.updateTaskState(taskId, TaskStates.FAILED, errorMetadata);
     }
 
@@ -362,7 +362,7 @@ export class WorkerStateManager {
                 commitResult: result.commitResult || null
             }
         };
-        
+
         return await this.updateTaskState(taskId, TaskStates.COMPLETED, metadata);
     }
 
@@ -373,21 +373,21 @@ export class WorkerStateManager {
     async getProcessingTasks() {
         const pattern = `${this.keyPrefix}*`;
         const keys = await this.redis.keys(pattern);
-        
+
         const processingTasks = [];
-        
+
         for (const key of keys) {
             try {
                 const stateJson = await this.redis.get(key);
                 if (!stateJson) continue;
-                
+
                 const state = JSON.parse(stateJson);
                 const processingStates = [
                     TaskStates.PROCESSING,
                     TaskStates.CLAUDE_EXECUTION,
                     TaskStates.POST_PROCESSING
                 ];
-                
+
                 if (processingStates.includes(state.state)) {
                     processingTasks.push(state);
                 }
@@ -398,7 +398,7 @@ export class WorkerStateManager {
                 }, 'Failed to parse task state during recovery scan');
             }
         }
-        
+
         return processingTasks;
     }
 
@@ -410,25 +410,25 @@ export class WorkerStateManager {
     async cleanupOldTasks(maxAge = 24 * 3600) {
         const pattern = `${this.keyPrefix}*`;
         const keys = await this.redis.keys(pattern);
-        
+
         let cleanedCount = 0;
         const cutoffTime = Date.now() - (maxAge * 1000);
-        
+
         for (const key of keys) {
             try {
                 const stateJson = await this.redis.get(key);
                 if (!stateJson) continue;
-                
+
                 const state = JSON.parse(stateJson);
                 const cleanupStates = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
-                
+
                 if (cleanupStates.includes(state.state)) {
                     const updatedAt = new Date(state.updatedAt).getTime();
-                    
+
                     if (updatedAt < cutoffTime) {
                         await this.redis.del(key);
                         cleanedCount++;
-                        
+
                         logger.debug({
                             taskId: state.taskId,
                             state: state.state,
@@ -443,13 +443,13 @@ export class WorkerStateManager {
                 }, 'Failed to cleanup task state');
             }
         }
-        
+
         logger.info({
             cleanedCount,
             totalKeys: keys.length,
             maxAge
         }, 'Task state cleanup completed');
-        
+
         return cleanedCount;
     }
 

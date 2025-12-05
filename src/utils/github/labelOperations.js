@@ -14,11 +14,11 @@ export async function safeRemoveLabel(context, labelName) {
             logger.debug(`Label '${labelName}' not found on issue #${issueNumber}, skipping removal`);
             return true;
         }
-        logger.warn({ 
-            error: error.message, 
-            labelName, 
+        logger.warn({
+            error: error.message,
+            labelName,
             issueNumber,
-            status: error.status 
+            status: error.status
         }, `Failed to remove label '${labelName}' from issue #${issueNumber}`);
         return false;
     }
@@ -40,11 +40,11 @@ export async function safeAddLabel(context, labelName) {
             logger.debug(`Label '${labelName}' already exists on issue #${issueNumber}`);
             return true;
         }
-        logger.warn({ 
-            error: error.message, 
-            labelName, 
+        logger.warn({
+            error: error.message,
+            labelName,
             issueNumber,
-            status: error.status 
+            status: error.status
         }, `Failed to add label '${labelName}' to issue #${issueNumber}`);
         return false;
     }

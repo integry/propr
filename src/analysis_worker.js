@@ -37,13 +37,13 @@ async function processAnalysisJob(job) {
 
 function startAnalysisWorker() {
   const workerId = `analysis-worker:${generateCorrelationId()}`;
-  
+
   logger.info({
     queue: ANALYSIS_QUEUE_NAME,
     concurrency: 2,
     workerId
   }, 'Starting Analysis Worker...');
-  
+
   const worker = createWorker(ANALYSIS_QUEUE_NAME, processAnalysisJob, { concurrency: 2 });
 
   process.on('SIGINT', async () => {

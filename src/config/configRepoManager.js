@@ -1,4 +1,4 @@
-import simpleGit from 'simple-git'; 
+import simpleGit from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
@@ -54,10 +54,10 @@ export async function cloneOrPullConfigRepo() {
 export async function loadFollowupKeywords() {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         const keywords = config.followup_keywords || [];
-        
+
         logger.info({ followup_keywords: keywords }, 'Successfully loaded followup keywords');
         return keywords;
     } catch (error) {
@@ -69,7 +69,7 @@ export async function loadFollowupKeywords() {
 export async function loadMonitoredRepos() {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         let reposToMonitor = config.repos_to_monitor || [];
 
@@ -78,7 +78,7 @@ export async function loadMonitoredRepos() {
         }
 
         const repos = reposToMonitor.filter(repo => repo.enabled).map(repo => repo.name);
-        
+
         logger.info({ repos_to_monitor: repos, total_configured: reposToMonitor.length }, 'Successfully loaded enabled monitored repositories');
         return repos;
     } catch (error) {
@@ -90,10 +90,10 @@ export async function loadMonitoredRepos() {
 export async function saveFollowupKeywords(keywords, commitMessage = 'Update followup keywords via UI') {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         config.followup_keywords = keywords;
-        
+
         await fs.writeJson(CONFIG_FILE_PATH, config, { spaces: 2 });
 
         const git = simpleGit(LOCAL_CONFIG_PATH);
@@ -111,7 +111,7 @@ export async function saveFollowupKeywords(keywords, commitMessage = 'Update fol
         const authToken = await getGitHubInstallationToken();
         const authenticatedUrl = CONFIG_REPO_URL.replace('https://', `https://x-access-token:${authToken}@`);
         await git.push(authenticatedUrl, 'main');
-        
+
         logger.info({ keywords }, 'Successfully saved and pushed followup keywords');
         return true;
     } catch (error) {
@@ -123,10 +123,10 @@ export async function saveFollowupKeywords(keywords, commitMessage = 'Update fol
 export async function saveMonitoredRepos(repos, commitMessage = 'Update monitored repositories via UI') {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         config.repos_to_monitor = repos;
-        
+
         await fs.writeJson(CONFIG_FILE_PATH, config, { spaces: 2 });
 
         const git = simpleGit(LOCAL_CONFIG_PATH);
@@ -144,7 +144,7 @@ export async function saveMonitoredRepos(repos, commitMessage = 'Update monitore
         const authToken = await getGitHubInstallationToken();
         const authenticatedUrl = CONFIG_REPO_URL.replace('https://', `https://x-access-token:${authToken}@`);
         await git.push(authenticatedUrl, 'main');
-        
+
         logger.info({ repos }, 'Successfully saved and pushed monitored repositories');
         return true;
     } catch (error) {
@@ -176,10 +176,10 @@ export async function ensureConfigRepoExists() {
             const authToken = await getGitHubInstallationToken();
             const authenticatedUrl = CONFIG_REPO_URL.replace('https://', `https://x-access-token:${authToken}@`);
             await git.push(authenticatedUrl, 'main');
-            
+
             logger.info('Initialized config.json in config repository');
         }
-        
+
         return true;
     } catch (error) {
         logger.error({ error: error.message }, 'Failed to ensure config repo exists');
@@ -190,10 +190,10 @@ export async function ensureConfigRepoExists() {
 export async function loadSettings() {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         const settings = config.settings || {};
-        
+
         logger.info({ settings }, 'Successfully loaded settings from config repo');
         return settings;
     } catch (error) {
@@ -205,10 +205,10 @@ export async function loadSettings() {
 export async function loadPrLabel() {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         const prLabel = config.pr_label !== undefined ? config.pr_label : (process.env.PR_LABEL || 'gitfix');
-        
+
         logger.info({ pr_label: prLabel }, 'Successfully loaded PR label');
         return prLabel;
     } catch (error) {
@@ -220,10 +220,10 @@ export async function loadPrLabel() {
 export async function savePrLabel(prLabel, commitMessage = 'Update PR label via UI') {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         config.pr_label = prLabel;
-        
+
         await fs.writeJson(CONFIG_FILE_PATH, config, { spaces: 2 });
 
         const git = simpleGit(LOCAL_CONFIG_PATH);
@@ -241,7 +241,7 @@ export async function savePrLabel(prLabel, commitMessage = 'Update PR label via 
         const authToken = await getGitHubInstallationToken();
         const authenticatedUrl = CONFIG_REPO_URL.replace('https://', `https://x-access-token:${authToken}@`);
         await git.push(authenticatedUrl, 'main');
-        
+
         logger.info({ pr_label: prLabel }, 'Successfully saved and pushed PR label');
         return true;
     } catch (error) {
@@ -253,10 +253,10 @@ export async function savePrLabel(prLabel, commitMessage = 'Update PR label via 
 export async function saveSettings(settings, commitMessage = 'Update settings via UI') {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         config.settings = { ...(config.settings || {}), ...settings };
-        
+
         await fs.writeJson(CONFIG_FILE_PATH, config, { spaces: 2 });
 
         const git = simpleGit(LOCAL_CONFIG_PATH);
@@ -274,7 +274,7 @@ export async function saveSettings(settings, commitMessage = 'Update settings vi
         const authToken = await getGitHubInstallationToken();
         const authenticatedUrl = CONFIG_REPO_URL.replace('https://', `https://x-access-token:${authToken}@`);
         await git.push(authenticatedUrl, 'main');
-        
+
         logger.info({ settings }, 'Successfully saved and pushed settings');
         return true;
     } catch (error) {
@@ -286,10 +286,10 @@ export async function saveSettings(settings, commitMessage = 'Update settings vi
 export async function loadAiPrimaryTag() {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         const aiPrimaryTag = config.ai_primary_tag !== undefined ? config.ai_primary_tag : (process.env.AI_PRIMARY_TAG || 'AI');
-        
+
         logger.info({ ai_primary_tag: aiPrimaryTag }, 'Successfully loaded AI primary tag');
         return aiPrimaryTag;
     } catch (error) {
@@ -301,10 +301,10 @@ export async function loadAiPrimaryTag() {
 export async function saveAiPrimaryTag(aiPrimaryTag, commitMessage = 'Update AI primary tag via UI') {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         config.ai_primary_tag = aiPrimaryTag;
-        
+
         await fs.writeJson(CONFIG_FILE_PATH, config, { spaces: 2 });
 
         const git = simpleGit(LOCAL_CONFIG_PATH);
@@ -322,7 +322,7 @@ export async function saveAiPrimaryTag(aiPrimaryTag, commitMessage = 'Update AI 
         const authToken = await getGitHubInstallationToken();
         const authenticatedUrl = CONFIG_REPO_URL.replace('https://', `https://x-access-token:${authToken}@`);
         await git.push(authenticatedUrl, 'main');
-        
+
         logger.info({ ai_primary_tag: aiPrimaryTag }, 'Successfully saved and pushed AI primary tag');
         return true;
     } catch (error) {
@@ -334,22 +334,22 @@ export async function saveAiPrimaryTag(aiPrimaryTag, commitMessage = 'Update AI 
 export async function loadPrimaryProcessingLabels() {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         let primaryLabels = config.primary_processing_labels;
-        
+
         if (primaryLabels && Array.isArray(primaryLabels)) {
             logger.info({ primary_processing_labels: primaryLabels }, 'Successfully loaded primary processing labels');
             return primaryLabels;
         }
-        
+
         const envLabels = process.env.PRIMARY_PROCESSING_LABELS;
         if (envLabels) {
             primaryLabels = envLabels.split(',').map(l => l.trim()).filter(l => l);
             logger.info({ primary_processing_labels: primaryLabels }, 'Using primary processing labels from environment');
             return primaryLabels;
         }
-        
+
         logger.info('No primary processing labels found, using default: [AI]');
         return ['AI'];
     } catch (error) {
@@ -361,10 +361,10 @@ export async function loadPrimaryProcessingLabels() {
 export async function savePrimaryProcessingLabels(primaryLabels, commitMessage = 'Update primary processing labels via UI') {
     try {
         await cloneOrPullConfigRepo();
-        
+
         const config = await fs.readJson(CONFIG_FILE_PATH);
         config.primary_processing_labels = Array.isArray(primaryLabels) ? primaryLabels : primaryLabels.split(',').map(l => l.trim()).filter(l => l);
-        
+
         await fs.writeJson(CONFIG_FILE_PATH, config, { spaces: 2 });
 
         const git = simpleGit(LOCAL_CONFIG_PATH);
@@ -382,7 +382,7 @@ export async function savePrimaryProcessingLabels(primaryLabels, commitMessage =
         const authToken = await getGitHubInstallationToken();
         const authenticatedUrl = CONFIG_REPO_URL.replace('https://', `https://x-access-token:${authToken}@`);
         await git.push(authenticatedUrl, 'main');
-        
+
         logger.info({ primary_processing_labels: config.primary_processing_labels }, 'Successfully saved and pushed primary processing labels');
         return true;
     } catch (error) {

@@ -9,19 +9,19 @@ export function getRepoConfigKey(owner, repoName) {
 export async function detectDefaultBranch(git, owner, repoName, octokit = null) {
     const repoConfigKey = getRepoConfigKey(owner, repoName);
     const repoSpecificBranch = process.env[repoConfigKey];
-    
+
     if (repoSpecificBranch) {
         try {
             await git.revparse([`origin/${repoSpecificBranch}`]);
-            logger.info({ 
-                repo: `${owner}/${repoName}`, 
+            logger.info({
+                repo: `${owner}/${repoName}`,
                 defaultBranch: repoSpecificBranch,
                 configKey: repoConfigKey
             }, 'Using repository-specific default branch from environment configuration');
             return repoSpecificBranch;
         } catch (branchError) {
-            logger.warn({ 
-                repo: `${owner}/${repoName}`, 
+            logger.warn({
+                repo: `${owner}/${repoName}`,
                 configuredBranch: repoSpecificBranch,
                 configKey: repoConfigKey,
                 error: branchError.message
@@ -37,16 +37,16 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
             });
             const defaultBranch = repoInfo.data.default_branch;
             if (defaultBranch) {
-                logger.info({ 
-                    repo: `${owner}/${repoName}`, 
-                    defaultBranch 
+                logger.info({
+                    repo: `${owner}/${repoName}`,
+                    defaultBranch
                 }, 'Detected default branch from GitHub API');
                 return defaultBranch;
             }
         } catch (apiError) {
-            logger.debug({ 
-                repo: `${owner}/${repoName}`, 
-                error: apiError.message 
+            logger.debug({
+                repo: `${owner}/${repoName}`,
+                error: apiError.message
             }, 'Failed to detect default branch from GitHub API');
         }
     }
@@ -55,16 +55,16 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
         const headBranchMatch = remoteShow.match(/HEAD branch: (.+)/);
         if (headBranchMatch) {
             const defaultBranch = headBranchMatch[1].trim();
-            logger.debug({ 
-                repo: `${owner}/${repoName}`, 
-                defaultBranch 
+            logger.debug({
+                repo: `${owner}/${repoName}`,
+                defaultBranch
             }, 'Detected default branch from remote HEAD');
             return defaultBranch;
         }
     } catch (error) {
-        logger.debug({ 
-            repo: `${owner}/${repoName}`, 
-            error: error.message 
+        logger.debug({
+            repo: `${owner}/${repoName}`,
+            error: error.message
         }, 'Failed to detect default branch from remote show');
     }
 
@@ -73,40 +73,40 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
         const branchMatch = symbolicRef.match(/refs\/remotes\/origin\/(.+)/);
         if (branchMatch) {
             const defaultBranch = branchMatch[1].trim();
-            logger.debug({ 
-                repo: `${owner}/${repoName}`, 
-                defaultBranch 
+            logger.debug({
+                repo: `${owner}/${repoName}`,
+                defaultBranch
             }, 'Detected default branch from symbolic-ref');
             return defaultBranch;
         }
     } catch (error) {
-        logger.debug({ 
-            repo: `${owner}/${repoName}`, 
-            error: error.message 
+        logger.debug({
+            repo: `${owner}/${repoName}`,
+            error: error.message
         }, 'Failed to detect default branch from symbolic-ref');
     }
 
     const commonBranches = [
         process.env.GIT_FALLBACK_BRANCH || 'main',
-        'main', 
-        'master', 
-        'develop', 
-        'dev', 
+        'main',
+        'master',
+        'develop',
+        'dev',
         'trunk'
     ];
-    
+
     for (const branch of commonBranches) {
         try {
             await git.revparse([`origin/${branch}`]);
-            logger.info({ 
-                repo: `${owner}/${repoName}`, 
-                defaultBranch: branch 
+            logger.info({
+                repo: `${owner}/${repoName}`,
+                defaultBranch: branch
             }, `Using branch '${branch}' as default (found in common branches)`);
             return branch;
         } catch {
-            logger.debug({ 
-                repo: `${owner}/${repoName}`, 
-                branch 
+            logger.debug({
+                repo: `${owner}/${repoName}`,
+                branch
             }, `Branch '${branch}' not found`);
         }
     }
@@ -117,18 +117,18 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
             .filter(branch => branch.startsWith('origin/') && !branch.includes('HEAD'))
             .map(branch => branch.replace('origin/', ''))
             .find(branch => branch);
-            
+
         if (firstBranch) {
-            logger.warn({ 
-                repo: `${owner}/${repoName}`, 
-                defaultBranch: firstBranch 
+            logger.warn({
+                repo: `${owner}/${repoName}`,
+                defaultBranch: firstBranch
             }, `Using first available remote branch '${firstBranch}' as fallback`);
             return firstBranch;
         }
     } catch (error) {
-        logger.warn({ 
-            repo: `${owner}/${repoName}`, 
-            error: error.message 
+        logger.warn({
+            repo: `${owner}/${repoName}`,
+            error: error.message
         }, 'Failed to list remote branches');
     }
 
@@ -155,7 +155,7 @@ function parseOwnerRepoParts(parts) {
 export function listRepositoryBranchConfigurations() {
     const configs = {};
     const prefix = 'GIT_DEFAULT_BRANCH_';
-    
+
     Object.keys(process.env).forEach(key => {
         if (!key.startsWith(prefix)) return;
         const repoKey = key.substring(prefix.length);
@@ -167,6 +167,6 @@ export function listRepositoryBranchConfigurations() {
         const repo = repoParts.join('_').toLowerCase();
         configs[`${owner}/${repo}`] = { owner, repo, branch: process.env[key], envKey: key };
     });
-    
+
     return configs;
 }

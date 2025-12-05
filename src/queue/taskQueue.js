@@ -1,4 +1,4 @@
-import { Queue, Worker } from 'bullmq'; 
+import { Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import logger from '../utils/logger.js';
 import 'dotenv/config';
@@ -27,7 +27,7 @@ redisConnection.on('error', (err) => {
 
 // Queue configuration
 export const GITHUB_ISSUE_QUEUE_NAME = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
- 
+
 // Comment batching delay in milliseconds (default: 3000ms / 3 seconds)
 export const COMMENT_BATCH_DELAY_MS = parseInt(process.env.COMMENT_BATCH_DELAY_MS || '3000', 10);
 
@@ -101,7 +101,7 @@ function extractTurns(result) {
 function buildAiMetrics(job, result, repoFullName, status) {
     const cost = extractCostFromResult(result);
     const parsedCost = typeof cost === 'string' ? parseFloat(cost) : cost;
-    
+
     return {
         timestamp: job.timestamp,
         cost: parsedCost,
@@ -208,9 +208,9 @@ export function createWorker(queueName, processorFunction, options = {}) {
     });
 
     worker.on('error', (err) => {
-        logger.error({ 
-            queue: queueName, 
-            errMessage: err.message 
+        logger.error({
+            queue: queueName,
+            errMessage: err.message
         }, 'Worker error');
     });
 
@@ -218,11 +218,11 @@ export function createWorker(queueName, processorFunction, options = {}) {
         logger.warn({ jobId }, 'Job stalled and will be retried');
     });
 
-    logger.info({ 
+    logger.info({
         queue: queueName,
-        concurrency: worker.opts.concurrency 
+        concurrency: worker.opts.concurrency
     }, 'Worker started and listening to queue');
-    
+
     return worker;
 }
 
@@ -231,7 +231,7 @@ export function createWorker(queueName, processorFunction, options = {}) {
  */
 export async function shutdownQueue() {
     logger.info('Shutting down queue...');
-    
+
     try {
         await issueQueue.close();
         await analysisQueue.close();

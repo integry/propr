@@ -25,7 +25,7 @@ function handlePrResult(prResult, logContext) {
 async function createNewPRForIssue(prContext, claudeResult) {
     const { owner, repoName, branchName, baseBranch, issueNumber, issueTitle, commitMessage, worktreePath, repoUrl, authToken } = prContext;
     const hasRobustParams = worktreePath && baseBranch && repoUrl && authToken;
-    
+
     if (hasRobustParams) {
         const prResult = await createPullRequestRobust({
             owner, repoName, branchName, baseBranch, issueNumber,
@@ -71,10 +71,10 @@ export async function completePostProcessing(options) {
             repoName,
             branchName
         }, 'Checking if PR already exists for branch...');
-        
+
         const prContext = { owner, repoName, branchName, baseBranch, issueNumber, issueTitle, commitMessage, worktreePath, repoUrl, authToken };
         try {
-            const existingPRs = await getAuthenticatedOctokit().then(octokit => 
+            const existingPRs = await getAuthenticatedOctokit().then(octokit =>
                 octokit.request('GET /repos/{owner}/{repo}/pulls', {
                     owner,
                     repo: repoName,
@@ -82,7 +82,7 @@ export async function completePostProcessing(options) {
                     state: 'open'
                 })
             );
-            
+
             if (existingPRs.data.length > 0) {
                 const existingPR = existingPRs.data[0];
                 logger.info({ owner, repoName, branchName, prNumber: existingPR.number, prUrl: existingPR.html_url }, 'Found existing PR created by Claude, using it instead of creating new one');

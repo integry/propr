@@ -80,10 +80,10 @@ export async function handleDispatch(job) {
         correlatedLogger.info({ jobId, issue: issueRef.number, jobsEnqueued }, 'Matrix dispatcher job complete.');
 
     } catch (error) {
-        correlatedLogger.error({ 
-            jobId, 
+        correlatedLogger.error({
+            jobId,
             issue: issueRef.number,
-            errMessage: error.message, 
+            errMessage: error.message,
             stack: error.stack
         }, 'Error in matrix dispatcher, job will fail and not dispatch children');
         throw error;

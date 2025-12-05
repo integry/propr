@@ -13,6 +13,6 @@ export function addModelSpecificDelay(modelName) {
     }, 0);
     const modelDelay = Math.abs(modelHash % 1500);
     const totalDelay = baseDelay + modelDelay;
-    
+
     return new Promise(resolve => setTimeout(resolve, totalDelay));
 }

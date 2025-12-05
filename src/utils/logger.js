@@ -1,4 +1,4 @@
-import pino from 'pino'; 
+import pino from 'pino';
 import { v4 as uuidv4 } from 'uuid';
 
 const logLevel = process.env.LOG_LEVEL || 'info';
@@ -47,16 +47,16 @@ const logger = {
     warn: baseLogger.warn.bind(baseLogger),
     error: baseLogger.error.bind(baseLogger),
     fatal: baseLogger.fatal.bind(baseLogger),
-    
+
     // Correlation ID utilities
     createCorrelatedLogger,
     generateCorrelationId,
-    
+
     // Enhanced logging methods that automatically handle correlation IDs
     withCorrelation(correlationId, additionalContext = {}) {
         return createCorrelatedLogger(correlationId, additionalContext);
     },
-    
+
     // Log with automatic correlation ID extraction from context
     logWithContext(level, messageOrObj, ...args) {
         if (typeof messageOrObj === 'object' && messageOrObj.correlationId) {

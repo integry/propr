@@ -1,4 +1,4 @@
-import logger from './utils/logger.js'; 
+import logger from './utils/logger.js';
 import { getAuthenticatedOctokit } from './auth/githubAuth.js';
 import { withErrorHandling } from './utils/errorHandler.js';
 import config from '../config/index.js';
@@ -15,7 +15,7 @@ async function main() {
     try {
         logger.debug('Testing GitHub authentication...');
         const octokit = await getAuthenticatedOctokit();
-        
+
         // Test the authentication by getting the authenticated app
         const { data: app } = await octokit.request('GET /app');
         logger.info('Successfully authenticated with GitHub', {
@@ -27,7 +27,7 @@ async function main() {
         const { data: repos } = await octokit.request('GET /installation/repositories', {
             per_page: 5,
         });
-        
+
         logger.info('Found repositories', {
             count: repos.total_count,
             repositories: repos.repositories.map(r => r.full_name),
@@ -53,4 +53,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 }
 
 export { main };
- 
+

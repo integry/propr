@@ -81,7 +81,7 @@ export async function processDetectedIssue(issue, correlationId, redisClient) {
             triggeringLabel: triggeringLabel,
             correlationId: generateCorrelationId()
         };
-            
+
         const addToQueueWithRetry = () => withRetry(
             () => issueQueue.add('processGitHubIssue', issueJob, {
                 jobId,
@@ -125,7 +125,7 @@ export async function processDetectedIssue(issue, correlationId, redisClient) {
 export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
     const correlatedLogger = logger.withCorrelation(correlationId);
     const [owner, repo] = repoFullName.split('/');
-    
+
     if (!owner || !repo) {
         correlatedLogger.warn({ repo: repoFullName }, 'Invalid repository format. Skipping.');
         return [];
@@ -141,7 +141,7 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
     const fetchWithRetry = () => withRetry(
         async () => {
             const allIssues = [];
-            
+
             for (const primaryLabel of primaryProcessingLabels) {
                 const issues = await octokit.paginate('GET /repos/{owner}/{repo}/issues', {
                     owner,
@@ -152,24 +152,24 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
                     sort: 'created',
                     direction: 'desc'
                 });
-                
+
                 for (const issue of issues) {
                     if (!allIssues.find(i => i.id === issue.id)) {
                         allIssues.push(issue);
                     }
                 }
             }
-            
+
             const filteredIssues = allIssues.filter(issue => {
                 if (issue.pull_request) return false;
 
                 const labelNames = issue.labels.map(label =>
                     typeof label === 'string' ? label : label.name
                 );
-                
+
                 return !allExcludeLabels.some(excludeLabel => labelNames.includes(excludeLabel));
             });
-            
+
             const pullRequestCount = allIssues.filter(issue => issue.pull_request).length;
 
             correlatedLogger.debug({
@@ -179,7 +179,7 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
                 filteredIssues: filteredIssues.length,
                 excludedLabels: allExcludeLabels
             }, 'Filtered issues (excluding PRs and labels)');
-            
+
             return { data: { items: filteredIssues } };
         },
         { ...retryConfigs.githubApi, correlationId },
@@ -189,9 +189,9 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
     try {
         const response = await fetchWithRetry();
 
-        correlatedLogger.info({ 
-            repo: repoFullName, 
-            count: response.data.items.length 
+        correlatedLogger.info({
+            repo: repoFullName,
+            count: response.data.items.length
         }, `Found ${response.data.items.length} matching issues.`);
 
         return response.data.items.map(issue => ({
@@ -211,7 +211,7 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
         if (error.status === 403 && error.message && error.message.includes('rate limit')) {
             correlatedLogger.warn('GitHub API rate limit likely exceeded. Consider increasing polling interval.');
         }
-        
+
         return [];
     }
 }

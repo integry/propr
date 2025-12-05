@@ -70,7 +70,7 @@ export async function loadSettingsFromConfig() {
     try {
         if (process.env.CONFIG_REPO) {
             const settings = await loadSettings();
-            
+
             if (settings.github_user_whitelist && Array.isArray(settings.github_user_whitelist)) {
                 GITHUB_USER_WHITELIST = settings.github_user_whitelist;
                 process.env.GITHUB_USER_WHITELIST = settings.github_user_whitelist.join(',');

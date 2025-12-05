@@ -1,4 +1,4 @@
-import path from 'path'; 
+import path from 'path';
 import os from 'os';
 import logger from '../utils/logger.js';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
@@ -104,7 +104,7 @@ export async function executeClaudeCode(options) {
             summary: claudeOutput.finalResult?.result || null,
             prompt: prompt
         };
-        
+
         await storePromptInRedis({ claudeOutput, prompt, issueRef, model: response.model, isRetry, retryReason });
 
         if (!response.success) {
@@ -157,7 +157,7 @@ export async function generateTaskSummary(options) {
     const model = resolveModelAlias(modelAlias);
 
     const summaryPrompt = `Please provide a one-sentence summary for the following request, focusing on the main action. Your output must be ONLY the summary string itself, with no other text.
-    
+
 REQUEST:
 ${summaryRequest}
 
@@ -178,7 +178,7 @@ CRITICAL: Do not modify any files. Do not run any commands. Only output the summ
             correlatedLogger.info({ summary, model }, 'Successfully generated task summary');
             return summary;
         }
-        
+
         throw new Error(`Invalid summary response from Claude execution: ${claudeResult.error}`);
     } catch (error) {
         correlatedLogger.error({ error: error.message, model, promptLength: summaryPrompt.length }, 'Failed to generate task summary');
@@ -196,7 +196,7 @@ CRITICAL: Do not modify any files. Do not run any commands. Only output the summ
 export const buildClaudeDockerImage = buildDockerImageInternal;
 
 export { generateTaskImportPrompt };
- 
+
 export async function runLightweightLLMAnalysis(options) {
   const { prompt, model, correlationId, worktreePath, githubToken, issueRef } = options;
   const correlatedLogger = logger.withCorrelation(correlationId);
@@ -223,13 +223,13 @@ CRITICAL: Do not modify any files. Do not run any commands. Only provide your an
 
     if (claudeResult.success && (claudeResult.finalResult?.result || claudeResult.summary)) {
       const analysisText = (claudeResult.finalResult?.result || claudeResult.summary).trim();
-      correlatedLogger.info({ 
-        model, 
-        responseLength: analysisText.length 
+      correlatedLogger.info({
+        model,
+        responseLength: analysisText.length
       }, 'Lightweight LLM analysis completed successfully via Docker');
       return analysisText;
     }
-    
+
     throw new Error(`Invalid analysis response from Claude execution: ${claudeResult.error}`);
   } catch (error) {
     correlatedLogger.error({ error: error.message, model }, 'Lightweight LLM analysis failed');

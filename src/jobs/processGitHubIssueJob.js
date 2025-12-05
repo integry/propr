@@ -3,8 +3,8 @@ import { handleError } from '../utils/errorHandler.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getStateManager, TaskStates } from '../utils/workerStateManager.js';
-import { 
-    ensureRepoCloned, 
+import {
+    ensureRepoCloned,
     createWorktreeForIssue,
     cleanupWorktree,
     getRepoUrl,
@@ -24,12 +24,12 @@ import { getDefaultModel } from '../config/modelAliases.js';
 import { loadPrLabel, loadPrimaryProcessingLabels } from '../config/configRepoManager.js';
 import { filterCommentByAuthor } from '../utils/commentFilters.js';
 import { handleDispatch } from './issueJobDispatcher.js';
-import { 
-    handleUsageLimitError, 
-    handleGenericError, 
+import {
+    handleUsageLimitError,
+    handleGenericError,
     updateTaskTitleInStorage,
     createPullRequest,
-    buildFinalResult 
+    buildFinalResult
 } from './issueJobHelpers.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
@@ -42,11 +42,11 @@ async function getPrimaryProcessingLabels() {
     } catch (error) {
         logger.warn({ error: error.message }, 'Failed to load primary processing labels from config, using fallback');
     }
-    
+
     if (process.env.PRIMARY_PROCESSING_LABELS) {
         return process.env.PRIMARY_PROCESSING_LABELS.split(',').map(l => l.trim()).filter(l => l);
     }
-    
+
     return [process.env.AI_PRIMARY_TAG || 'AI'];
 }
 
@@ -66,12 +66,12 @@ async function initializeJobContext(job) {
     const correlationId = issueRef.correlationId || generateCorrelationId();
     const correlatedLogger = logger.withCorrelation(correlationId);
     const stateManager = getStateManager();
-    
+
     const primaryProcessingLabels = await getPrimaryProcessingLabels();
     const triggeringLabel = issueRef.triggeringLabel || primaryProcessingLabels[0] || 'AI';
     const modelName = issueRef.modelName || DEFAULT_MODEL_NAME;
     const taskId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${modelName}`;
-    
+
     return {
         jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager,
         modelName, taskId,
@@ -103,7 +103,7 @@ async function getAuthenticatedClient(context) {
 
 function checkLabelConditions(currentLabels, context) {
     const { jobId, issueRef, AI_PRIMARY_TAG, AI_DONE_TAG } = context;
-    
+
     if (!currentLabels.includes(AI_PRIMARY_TAG)) {
         logger.warn({ jobId, issueNumber: issueRef.number }, `Issue no longer has primary tag '${AI_PRIMARY_TAG}'. Skipping.`);
         return { skip: true, reason: 'Primary tag missing' };
@@ -132,7 +132,7 @@ async function fetchIssueComments(octokit, issueRef, correlatedLogger) {
 
 async function executeClaudeAndRecordMetrics(executionParams, context) {
     const { worktreeInfo, issueRef, githubToken, currentIssueData, issueComments, taskId, modelName, stateManager, correlatedLogger, correlationId } = { ...executionParams, ...context };
-    
+
     const claudeResult = await executeClaudeCode({
         worktreePath: worktreeInfo.worktreePath,
         issueRef, githubToken: githubToken.token, branchName: worktreeInfo.branchName, modelName,
@@ -144,13 +144,13 @@ async function executeClaudeAndRecordMetrics(executionParams, context) {
         onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger }),
         onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger)
     });
-    
+
     await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
         reason: 'Claude execution completed',
         claudeResult: { success: claudeResult.success, sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, executionTime: claudeResult.executionTime },
         historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model }
     });
-    
+
     await recordLLMMetrics(claudeResult, issueRef, { jobType: 'issue', correlationId, taskId });
     return claudeResult;
 }
@@ -165,15 +165,15 @@ async function processGitHubIssueJob(job) {
 
     const context = await initializeJobContext(job);
     const { jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
-    
+
     await addModelSpecificDelay(modelName);
-    
+
     try {
         await stateManager.createTaskState(taskId, issueRef, correlationId);
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: stateError.message }, 'Failed to create task state, continuing anyway');
     }
-    
+
     correlatedLogger.info({ jobId, jobName, taskId, issueNumber: issueRef.number, repo: `${issueRef.repoOwner}/${issueRef.repoName}` }, 'Processing job started');
 
     const octokit = await getAuthenticatedClient(context);
@@ -182,7 +182,7 @@ async function processGitHubIssueJob(job) {
 
     try {
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting issue processing' });
-        
+
         const currentIssueData = issueRef.issuePayload ? { data: issueRef.issuePayload } :
             await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
                 owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
@@ -200,27 +200,27 @@ async function processGitHubIssueJob(job) {
         issueRef.subtitle = `Preparing a PR for issue #${issueRef.number}`;
         await updateTaskTitleInStorage(taskId, issueRef, stateManager, correlatedLogger);
         await job.updateProgress(25);
-        
+
         const repoValidation = issueRef.repoPayload ? { isValid: true, repoData: issueRef.repoPayload } : await validateRepositoryInfo(issueRef, octokit, correlationId);
         const githubToken = await octokit.auth();
         const repoUrl = getRepoUrl(issueRef);
-        
+
         try {
             await ensureGitRepository(correlatedLogger);
             localRepoPath = await ensureRepoCloned(repoUrl, issueRef.repoOwner, issueRef.repoName, githubToken.token);
             await job.updateProgress(50);
-            
+
             worktreeInfo = await createWorktreeForIssue(localRepoPath, { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName }, { baseBranch: issueRef.baseBranch || null, octokit, modelName });
             await job.updateProgress(75);
-            
+
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
                 body: `🤖 AI processing has started for this issue using **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData.defaultBranch}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\``,
             });
-            
+
             await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token, tokenRefreshFn: async () => (await octokit.auth()).token, correlationId });
             await job.updateProgress(80);
-            
+
             const issueComments = await fetchIssueComments(octokit, issueRef, correlatedLogger);
             claudeResult = await executeClaudeAndRecordMetrics({ octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments }, context);
 
@@ -228,7 +228,7 @@ async function processGitHubIssueJob(job) {
             commitResult = postProcessResult.commitResult;
             postProcessingResult = postProcessResult.postProcessingResult;
             await job.updateProgress(95);
-            
+
         } finally {
             await performFinalValidation({ claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, githubToken, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger });
         }
@@ -270,20 +270,20 @@ function createSessionIdCallback(taskId, issueRef, options = {}) {
                 claudeResult: { sessionId, conversationId },
                 historyMetadata: { sessionId, conversationId, model: modelName }
             });
-            
+
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const logDir = '/tmp/claude-logs';
             await fs.ensureDir(logDir);
-            
+
             const filePrefix = `issue-${issueRef.number}-${timestamp}`;
             const conversationPath = `${logDir}/${filePrefix}-conversation.json`;
-            
+
             await fs.writeFile(conversationPath, JSON.stringify({
                 sessionId, conversationId, timestamp: new Date().toISOString(),
                 issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
                 messages: [], _streaming: true
             }, null, 2));
-            
+
             const redis = new Redis({ host: process.env.REDIS_HOST || 'redis', port: process.env.REDIS_PORT || 6379 });
             const logData = {
                 files: { conversation: conversationPath },
@@ -291,7 +291,7 @@ function createSessionIdCallback(taskId, issueRef, options = {}) {
                 repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
                 timestamp, sessionId, conversationId
             };
-            
+
             if (sessionId) await redis.set(`execution:logs:session:${sessionId}`, JSON.stringify(logData), 'EX', 86400 * 30);
             if (conversationId) await redis.set(`execution:logs:conversation:${conversationId}`, JSON.stringify(logData), 'EX', 86400 * 30);
             await redis.quit();
@@ -315,10 +315,10 @@ async function performPostProcessing(options) {
     const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId, correlatedLogger } = options;
     let commitResult = null;
     let postProcessingResult = null;
-    
+
     try {
         let commitMessage = `fix(ai): Resolve issue #${issueRef.number} - ${currentIssueData.data.title.substring(0, 50)}\n\nImplemented by Claude Code using ${modelName} model.\n\n${claudeResult?.success ? 'Implementation completed successfully.' : 'Implementation attempted - see PR comments for details.'}`;
-        
+
         if (claudeResult?.suggestedCommitMessage) {
             commitMessage = claudeResult.suggestedCommitMessage;
         }
@@ -332,7 +332,7 @@ async function performPostProcessing(options) {
         await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
 
         postProcessingResult = await createPullRequest(
-            octokit, issueRef, worktreeInfo, 
+            octokit, issueRef, worktreeInfo,
             { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger }
         );
 
@@ -357,13 +357,13 @@ async function performPostProcessing(options) {
             postProcessingResult = { success: false, pr: null, updatedLabels: [], error: postProcessingError.message };
         }
     }
-    
+
     return { commitResult, postProcessingResult };
 }
 
 async function handlePRValidation(options) {
     const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, githubToken, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger } = options;
-    
+
     const finalPRValidation = await validatePRCreation({
         owner: issueRef.repoOwner, repoName: issueRef.repoName,
         branchName: worktreeInfo.branchName, expectedPrNumber: postProcessingResult?.pr?.number, correlationId
@@ -373,7 +373,7 @@ async function handlePRValidation(options) {
         await safeUpdateLabels(octokit, issueRef.repoOwner, issueRef.repoName, issueRef.number, [AI_PROCESSING_TAG], [AI_DONE_TAG], correlatedLogger);
         return { pr: finalPRValidation.pr, updatedLabels: postProcessingResult?.updatedLabels || [] };
     }
-    
+
     if (!finalPRValidation.isValid && claudeResult?.success) {
         await attemptEmergencyPRCreation({ worktreeInfo, issueRef, repoValidation, githubToken, modelName, correlationId, correlatedLogger });
     }
@@ -383,7 +383,7 @@ async function handlePRValidation(options) {
 async function cleanupWorktreeIfExists(options) {
     const { worktreeInfo, localRepoPath, claudeResult, postProcessingResult, jobId, issueRef, correlatedLogger } = options;
     if (!worktreeInfo) return;
-    
+
     try {
         const wasSuccessful = claudeResult?.success && postProcessingResult?.pr;
         await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
@@ -398,7 +398,7 @@ async function cleanupWorktreeIfExists(options) {
 async function performFinalValidation(options) {
     const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, githubToken, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger } = options;
     let resolvedPostProcessingResult = postProcessingResult;
-    
+
     if (claudeResult?.success && worktreeInfo?.branchName) {
         try {
             resolvedPostProcessingResult = await handlePRValidation({ claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, githubToken, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger, jobId });
@@ -406,7 +406,7 @@ async function performFinalValidation(options) {
             correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: validationError.message }, 'Final PR validation failed');
         }
     }
-    
+
     await cleanupWorktreeIfExists({ worktreeInfo, localRepoPath, claudeResult, postProcessingResult: resolvedPostProcessingResult, jobId, issueRef, correlatedLogger });
 }
 
@@ -444,7 +444,7 @@ async function attemptEmergencyPRCreation(options) {
             owner: issueRef.repoOwner, repoName: issueRef.repoName,
             branchName: worktreeInfo.branchName, expectedPrNumber: null, correlationId
         });
-        
+
         if (emergencyValidation.isValid) {
             correlatedLogger.info({ issueNumber: issueRef.number, prNumber: emergencyValidation.pr.number }, 'Emergency PR creation successful');
         }

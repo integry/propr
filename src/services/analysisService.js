@@ -1,4 +1,4 @@
-import Redis from 'ioredis'; 
+import Redis from 'ioredis';
 import { db } from '../db/postgres.js';
 import { generateExecutionAnalysisPrompt } from '../claude/prompts/promptGenerator.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
@@ -122,7 +122,7 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     const conversationLog = await db('llm_execution_details')
       .where({ execution_id: executionId })
       .orderBy('sequence_number', 'asc');
-    
+
     if (conversationLog.length === 0) {
       correlatedLogger.warn({ executionId }, 'No execution details found for analysis.');
       return { error: 'No execution details found.' };
@@ -131,7 +131,7 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     const execution = await db('llm_executions')
       .where({ execution_id: executionId })
       .first();
-    
+
     if (!execution) {
       correlatedLogger.warn({ executionId }, 'No execution record found.');
       return { error: 'No execution record found.' };
@@ -167,7 +167,7 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       .where({ task_id: execution.task_id })
       .whereNotNull('metadata')
       .orderBy('timestamp', 'desc');
-    
+
     const commitHash = extractCommitHash(taskHistory, execution.task_id, correlatedLogger);
 
     let localDiff = null;
@@ -177,19 +177,19 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     } else {
       correlatedLogger.warn({ taskId: execution.task_id }, 'No commit hash found in task history, commit diff will not be included');
     }
-    
-    correlatedLogger.info({ 
+
+    correlatedLogger.info({
       worktreePath,
       commitHash,
       hasCommitDiff: !!localDiff,
-      diffLength: localDiff?.length 
+      diffLength: localDiff?.length
     }, 'Commit diff retrieval result');
 
     const compactedLog = compactConversationLog(conversationLog);
 
     const originalLogString = JSON.stringify(conversationLog);
     const compactedLogString = JSON.stringify(compactedLog);
-    correlatedLogger.info({ 
+    correlatedLogger.info({
       originalLogLength: originalLogString.length,
       originalLogSizeKB: (originalLogString.length / 1024).toFixed(2),
       compactedLogLength: compactedLogString.length,
@@ -201,8 +201,8 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     correlatedLogger.info({ compactedLog: compactedLogString }, 'Compacted conversation log output');
 
     const metaPrompt = generateExecutionAnalysisPrompt(
-      originalPrompt, 
-      compactedLog, 
+      originalPrompt,
+      compactedLog,
       model,
       localDiff
     );
@@ -212,18 +212,18 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     const githubToken = tokenData || process.env.GH_TOKEN;
 
     const analysisText = await runLightweightLLMAnalysis({
-      prompt: metaPrompt, 
-      model, 
-      correlationId, 
-      worktreePath, 
+      prompt: metaPrompt,
+      model,
+      correlationId,
+      worktreePath,
       githubToken,
-      issueRef: issueRef || { 
-        number: task.issue_number, 
-        repoOwner: task.repository.split('/')[0], 
-        repoName: task.repository.split('/')[1] 
+      issueRef: issueRef || {
+        number: task.issue_number,
+        repoOwner: task.repository.split('/')[0],
+        repoName: task.repository.split('/')[1]
       }
     });
-    
+
     const analysisReport = {
       generatedAt: new Date().toISOString(),
       modelUsed: model,
@@ -232,10 +232,10 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
 
     return analysisReport;
   } catch (error) {
-    correlatedLogger.error({ 
-      executionId, 
+    correlatedLogger.error({
+      executionId,
       error: error.message,
-      stack: error.stack 
+      stack: error.stack
     }, 'Failed to generate execution analysis');
     throw error;
   }

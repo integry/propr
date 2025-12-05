@@ -56,24 +56,24 @@ async function updateAggregatedMetrics(metricsRedis, metrics) {
     await metricsRedis.incr(`llm:metrics:total:${successKey}`);
     await metricsRedis.incr(`llm:metrics:daily:${dateKey}:${successKey}`);
     await metricsRedis.incr(`llm:metrics:model:${model}:${successKey}`);
-    
+
     const currentTotalCost = parseFloat(await metricsRedis.get('llm:metrics:total:costUsd') || '0');
     await metricsRedis.set('llm:metrics:total:costUsd', (currentTotalCost + costUsd).toFixed(4));
     const currentDailyCost = parseFloat(await metricsRedis.get(`llm:metrics:daily:${dateKey}:costUsd`) || '0');
     await metricsRedis.set(`llm:metrics:daily:${dateKey}:costUsd`, (currentDailyCost + costUsd).toFixed(4));
     const currentModelCost = parseFloat(await metricsRedis.get(`llm:metrics:model:${model}:costUsd`) || '0');
     await metricsRedis.set(`llm:metrics:model:${model}:costUsd`, (currentModelCost + costUsd).toFixed(4));
-    
+
     const currentTotalTurns = parseInt(await metricsRedis.get('llm:metrics:total:turns') || '0');
     await metricsRedis.set('llm:metrics:total:turns', currentTotalTurns + numTurns);
     const currentModelTurns = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:turns`) || '0');
     await metricsRedis.set(`llm:metrics:model:${model}:turns`, currentModelTurns + numTurns);
-    
+
     const currentTotalTime = parseInt(await metricsRedis.get('llm:metrics:total:executionTimeMs') || '0');
     await metricsRedis.set('llm:metrics:total:executionTimeMs', currentTotalTime + executionTimeMs);
     const currentModelTime = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:executionTimeMs`) || '0');
     await metricsRedis.set(`llm:metrics:model:${model}:executionTimeMs`, currentModelTime + executionTimeMs);
-    
+
     await metricsRedis.sadd('llm:metrics:models:used', model);
 }
 
@@ -156,7 +156,7 @@ async function persistToDatabase(claudeResult, taskId, metrics, correlationId) {
         };
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
         const executionId = insertedExecution.execution_id;
-        
+
         if (claudeResult.conversationLog && Array.isArray(claudeResult.conversationLog)) {
             if (claudeResult.conversationLog.length > 0) {
                 logger.debug({
@@ -239,7 +239,7 @@ export async function recordLLMMetrics(claudeResult, issueRef, options = {}) {
         const { model, success, executionTimeMs, executionTimeSec, numTurns, sessionId, conversationId } = extracted;
         const { totalInputTokens, totalOutputTokens } = calculateTokens(claudeResult?.conversationLog);
         const costUsd = await calculateCost(model, totalInputTokens, totalOutputTokens, claudeResult);
-        
+
         const llmMetricsKey = `llm:metrics:${correlationId}`;
         const llmMetrics = {
             correlationId, timestamp, issueNumber: issueRef.number,
@@ -250,15 +250,15 @@ export async function recordLLMMetrics(claudeResult, issueRef, options = {}) {
             failureReason: !success ? (claudeResult?.error || 'unknown') : null
         };
         await metricsRedis.setex(llmMetricsKey, 30 * 24 * 3600, JSON.stringify(llmMetrics));
-        
+
         await updateAggregatedMetrics(metricsRedis, { model, success, costUsd, numTurns, executionTimeMs, dateKey });
-        
+
         const timeSeriesEntry = { timestamp, correlationId, model, success, costUsd, executionTimeSec, numTurns, repository: `${issueRef.repoOwner}/${issueRef.repoName}` };
         await metricsRedis.lpush('llm:metrics:timeseries', JSON.stringify(timeSeriesEntry));
         await metricsRedis.ltrim('llm:metrics:timeseries', 0, 999);
-        
+
         await checkCostThreshold(metricsRedis, { timestamp, correlationId, costUsd, model, numTurns }, issueRef);
-        
+
         logger.info({ correlationId, issueNumber: issueRef.number, model, success, costUsd, executionTimeSec, numTurns }, 'LLM metrics recorded');
         if (claudeResult.conversationLog && claudeResult.conversationLog.length > 0) {
             logger.info({
@@ -353,15 +353,15 @@ async function getHighCostAlerts(metricsRedis) {
  */
 export async function getLLMMetricsSummary() {
     const metricsRedis = new Redis(connectionOptions);
-    
+
     try {
         const summary = await getTotalMetrics(metricsRedis);
         const modelBreakdown = await getModelMetrics(metricsRedis);
         const dailyMetrics = await getDailyMetrics(metricsRedis);
         const recentHighCostAlerts = await getHighCostAlerts(metricsRedis);
-        
+
         return { summary, modelBreakdown, dailyMetrics, recentHighCostAlerts, lastUpdated: new Date().toISOString() };
-        
+
     } catch (error) {
         logger.error({
             error: error.message,
@@ -380,15 +380,15 @@ export async function getLLMMetricsSummary() {
  */
 export async function getLLMMetricsByCorrelationId(correlationId) {
     const metricsRedis = new Redis(connectionOptions);
-    
+
     try {
         const metricsKey = `llm:metrics:${correlationId}`;
         const metricsData = await metricsRedis.get(metricsKey);
-        
+
         if (metricsData) {
             return JSON.parse(metricsData);
         }
-        
+
         return null;
     } catch (error) {
         logger.error({

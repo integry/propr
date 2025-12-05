@@ -24,7 +24,7 @@ export async function handleSimpleUsageLimitError(error, job, correlatedLogger, 
 export async function handleUsageLimitError(error, job, issueRef, options = {}) {
     const { octokit, correlatedLogger, stateManager, taskId } = options;
     const jobId = job.id;
-    
+
     correlatedLogger.warn({
         jobId,
         issueNumber: issueRef.number,
@@ -41,9 +41,9 @@ export async function handleUsageLimitError(error, job, issueRef, options = {}) 
                 repo: issueRef.repoName,
                 issue_number: issueRef.number,
                 body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing this issue.
-                
+
 The job has been automatically rescheduled and will restart ${readableResetTime}.
-    
+
 ---
 *Job ID: ${jobId} will run again after delay.*`
             });
@@ -55,7 +55,7 @@ The job has been automatically rescheduled and will restart ${readableResetTime}
     await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
 
     try {
-        await stateManager.markTaskFailed(taskId, error, { 
+        await stateManager.markTaskFailed(taskId, error, {
             errorCategory: ErrorCategories.CLAUDE_EXECUTION,
             processingStage: 'claude_execution',
             requeued: true,
@@ -70,21 +70,21 @@ export async function handleGenericError(error, job, issueRef, options = {}) {
     const { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG } = options;
     const jobId = job.id;
     const correlationId = issueRef.correlationId;
-    
+
     const errorCategory = error.message?.includes('authentication') ? 'auth_error' :
                          error.message?.includes('network') ? 'network_error' :
                          error.message?.includes('git') ? 'git_error' :
                          error.message?.includes('GitHub') ? 'github_api_error' :
                          error.message?.includes('timeout') ? 'timeout_error' :
                          'unknown_error';
-    
-    correlatedLogger.error({ 
-        jobId, 
+
+    correlatedLogger.error({
+        jobId,
         issueNumber: issueRef.number,
         repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
         correlationId,
         taskId,
-        errMessage: error.message, 
+        errMessage: error.message,
         stack: error.stack,
         status: 'system_error',
         resolution: 'failed',
@@ -95,7 +95,7 @@ export async function handleGenericError(error, job, issueRef, options = {}) {
         timestamp: new Date().toISOString(),
         systemVersion: process.env.npm_package_version || 'unknown'
     }, 'Error processing GitHub issue job - enhanced error metrics logged');
-    
+
     if (claudeResult) {
         try {
             await recordLLMMetrics(claudeResult, issueRef, { jobType: 'issue', correlationId, taskId });
@@ -104,13 +104,13 @@ export async function handleGenericError(error, job, issueRef, options = {}) {
             correlatedLogger.error({ error: metricsError.message, correlationId }, 'Failed to record LLM metrics for failed job');
         }
     }
-    
+
     if (octokit) {
         await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger });
     }
-    
+
     try {
-        await stateManager.markTaskFailed(taskId, error, { 
+        await stateManager.markTaskFailed(taskId, error, {
             errorCategory,
             processingStage: claudeResult ? 'post_processing' : 'pre_processing'
         });
@@ -125,7 +125,7 @@ async function postErrorComment(issueRef, error, options = {}) {
         let errorMessage = `❌ **Failed to process this issue**\n\n`;
         errorMessage += `**Error Category:** ${errorCategory.replace('_', ' ')}\n`;
         errorMessage += `**Error Message:** ${error.message}\n\n`;
-        
+
         if (errorCategory === 'git_error') {
             errorMessage += `This appears to be a Git-related issue. The system may have encountered a corrupted repository or git operation failure. `;
             errorMessage += `The issue will be automatically retried, and any corrupted repositories will be cleaned up.\n\n`;
@@ -134,30 +134,30 @@ async function postErrorComment(issueRef, error, options = {}) {
         } else if (errorCategory === 'network_error') {
             errorMessage += `This is a network connectivity issue. The system will automatically retry.\n\n`;
         }
-        
+
         errorMessage += `**Processing Stage:** ${claudeResult ? 'Post-processing (after AI analysis)' : 'Pre-processing (before AI analysis)'}\n`;
-        
+
         if (worktreeInfo) {
             errorMessage += `**Branch:** ${worktreeInfo.branchName}\n`;
         }
-        
+
         errorMessage += `\n<details><summary>Technical Details</summary>\n\n`;
         errorMessage += `\`\`\`\n${error.stack || error.message}\n\`\`\`\n`;
         errorMessage += `</details>\n\n`;
         errorMessage += `---\n*The system will automatically retry this task. If the issue persists, please contact support.*`;
-        
+
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: issueRef.repoOwner,
             repo: issueRef.repoName,
             issue_number: issueRef.number,
             body: errorMessage
         });
-        
+
         await safeRemoveLabel(
             { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
             AI_PROCESSING_TAG
         );
-        
+
     } catch (commentError) {
         correlatedLogger.error({ error: commentError.message, issueNumber: issueRef.number }, 'Failed to post error comment to GitHub issue');
     }
@@ -189,7 +189,7 @@ export async function updateTaskTitleInStorage(taskId, issueRef, stateManager, c
 export async function createPullRequest(octokit, issueRef, worktreeInfo, options = {}) {
     const { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger } = options;
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
-    
+
     let prTitle = `AI Analysis for Issue #${issueRef.number}: ${issueRef.title?.replace('New Issue: ', '') || 'Issue'}`;
     if (commitResult) {
         prTitle = `AI Fix for Issue #${issueRef.number}: ${issueRef.title?.replace('New Issue: ', '') || 'Issue'}`;

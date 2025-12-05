@@ -29,7 +29,7 @@ export function filterCommentByAuthor(commentAuthor, userType = null, correlatio
     // If whitelist is defined, it takes precedence - ONLY process whitelisted users (even if they're bots)
     if (GITHUB_USER_WHITELIST.length > 0) {
         const normalizedAuthor = commentAuthor.replace('[bot]', '');
-        
+
         if (!GITHUB_USER_WHITELIST.includes(commentAuthor) && !GITHUB_USER_WHITELIST.includes(normalizedAuthor)) {
             correlatedLogger.debug({ commentAuthor }, 'Comment author not in whitelist, skipping');
             return { shouldFilter: true, reason: 'not_in_whitelist' };
