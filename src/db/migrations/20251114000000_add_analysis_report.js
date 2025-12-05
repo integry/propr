@@ -4,7 +4,7 @@ export async function up(knex) {
   });
 
   await knex.raw(`
-    CREATE INDEX idx_llm_executions_analysis_report 
+    CREATE INDEX idx_llm_executions_analysis_report
     ON llm_executions USING gin (analysis_report)
   `);
 }

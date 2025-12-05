@@ -165,7 +165,7 @@ export async function validatePRCreation(options) {
     } catch (error) {
         const errorMessage = `PR validation failed: ${error.message}`;
         handleError(error, errorMessage, { owner, repoName, branchName, correlationId });
-        
+
         return {
             isValid: false,
             error: errorMessage
@@ -238,7 +238,7 @@ Please analyze the complete issue and comments, implement a solution, and create
  */
 export async function validateRepositoryInfo(issueRef, octokit, correlationId) {
     const correlatedLogger = logger.withCorrelation(correlationId);
-    
+
     try {
         // Verify repository exists and is accessible
         const repoResponse = await withRetry(
@@ -251,7 +251,7 @@ export async function validateRepositoryInfo(issueRef, octokit, correlationId) {
         );
 
         const repoData = repoResponse.data;
-        
+
         // Verify issue exists in this repository
         await withRetry(
             () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
@@ -284,7 +284,7 @@ export async function validateRepositoryInfo(issueRef, octokit, correlationId) {
     } catch (error) {
         const errorMessage = `Repository validation failed: ${error.message}`;
         handleError(error, errorMessage, { issueRef, correlationId });
-        
+
         return {
             isValid: false,
             error: errorMessage

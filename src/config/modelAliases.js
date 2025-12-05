@@ -36,13 +36,13 @@ function resolveModelAlias(modelNameOrAlias) {
     if (!modelNameOrAlias) {
         return MODEL_ALIASES[DEFAULT_MODEL_ALIAS];
     }
-    
+
     // Check if it's an alias
     const lowerCaseModel = modelNameOrAlias.toLowerCase();
     if (MODEL_ALIASES[lowerCaseModel]) {
         return MODEL_ALIASES[lowerCaseModel];
     }
-    
+
     // If it's not an alias, return as-is (might be a full model ID)
     return modelNameOrAlias;
 }

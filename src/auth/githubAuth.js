@@ -16,10 +16,10 @@ let appOctokit = null;
 if (appId && privateKeyPath && installationId) {
     try {
         privateKey = fs.readFileSync(path.resolve(privateKeyPath), 'utf8');
-        
+
         // Create Octokit with pagination plugin
         const MyOctokit = Octokit.plugin(paginateRest);
-        
+
         appOctokit = new MyOctokit({
             authStrategy: createAppAuth,
             auth: {

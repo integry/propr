@@ -1,6 +1,6 @@
 import js from '@eslint/js'
 import globals from 'globals'
-
+ 
 export default [
   { ignores: ['node_modules', 'dist', 'coverage'] },
   {
@@ -15,6 +15,10 @@ export default [
     rules: {
       ...js.configs.recommended.rules,
       'no-unused-vars': ['error', { varsIgnorePattern: '^_', argsIgnorePattern: '^_' }],
+      'max-lines': ['warn', { max: 400, skipBlankLines: true, skipComments: true }],
+      'complexity': ['warn', { max: 20 }],
+      'max-depth': ['warn', { max: 4 }],
+      'max-params': ['warn', { max: 4 }],
     },
   },
 ]

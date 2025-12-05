@@ -80,7 +80,7 @@ export function executeDockerCommand(command, args, options = {}) {
                             `/usr/bin/docker ps --filter "volume=${worktreePath}" --format "{{.ID}}:{{.Names}}" --latest`,
                             { encoding: 'utf8', timeout: 5000 }
                         ).trim();
-                        
+
                         if (containersOutput) {
                             const [containerId, containerName] = containersOutput.split(':');
                             containerIdDetected = true;

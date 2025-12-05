@@ -135,7 +135,7 @@ export class IdempotentGitHubOps {
                 }, 'Label already does not exist on issue');
                 return true;
             }
-            
+
             this.correlatedLogger.error({
                 owner,
                 repo,
@@ -156,7 +156,9 @@ export class IdempotentGitHubOps {
      * @param {string} idempotencyKey - Unique key to prevent duplicate comments
      * @returns {Promise<object>} Comment data
      */
-    async addComment(owner, repo, issueNumber, body, idempotencyKey = null) {
+    async addComment(owner, repo, issueNumber, options = {}) {
+        const { body, idempotencyKey: providedIdempotencyKey = null } = options;
+        let idempotencyKey = providedIdempotencyKey;
         // If no idempotency key provided, use a hash of the comment body
         if (!idempotencyKey) {
             const crypto = await import('crypto');
@@ -172,7 +174,7 @@ export class IdempotentGitHubOps {
                     issue_number: issueNumber,
                     per_page: 100
                 });
-                
+
                 // Check if a comment with the idempotency key already exists
                 const keyPattern = `<!-- idempotency-key: ${idempotencyKey} -->`;
                 return comments.find(comment => comment.body.includes(keyPattern));
@@ -183,7 +185,7 @@ export class IdempotentGitHubOps {
 
         const addCommentOperation = async () => {
             const bodyWithKey = `${body}\n\n<!-- idempotency-key: ${idempotencyKey} -->`;
-            
+
             return await withRetry(
                 () => this.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                     owner,

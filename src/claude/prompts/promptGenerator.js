@@ -95,7 +95,7 @@ export function generateExecutionAnalysisPrompt(originalPrompt, conversationLog,
         const content = entry.content ? entry.content.substring(0, 500) : 'N/A';
         const toolName = entry.tool_name || 'N/A';
         const isError = entry.is_error || false;
-        
+
         return `[${index + 1}] Type: ${eventType}, Tool: ${toolName}, Error: ${isError}, Content Preview: ${content}...`;
     }).join('\n');
 
