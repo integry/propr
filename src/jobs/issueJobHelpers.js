@@ -299,14 +299,29 @@ async function findExistingPR(octokit, issueRef, worktreeInfo, options = {}) {
     }
 }
 
+function determineFinalStatus(claudeResult, postProcessingResult) {
+    if (!claudeResult?.success) return 'claude_processing_failed';
+    return postProcessingResult?.pr ? 'complete_with_pr' : 'claude_success_no_changes';
+}
+
+function buildClaudeResultSection(claudeResult) {
+    return {
+        success: claudeResult?.success || false,
+        executionTime: claudeResult?.executionTime || 0,
+        modifiedFiles: claudeResult?.modifiedFiles || [],
+        conversationLog: claudeResult?.conversationLog || [],
+        error: claudeResult?.error || null,
+        sessionId: claudeResult?.sessionId || null,
+        conversationId: claudeResult?.conversationId || null,
+        model: claudeResult?.model || null
+    };
+}
+
 export function buildFinalResult(issueRef, localRepoPath, results) {
-    const { worktreeInfo, claudeResult, postProcessingResult, commitResult: _commitResult } = results;
-    const finalStatus = claudeResult?.success ? 
-        (postProcessingResult?.pr ? 'complete_with_pr' : 'claude_success_no_changes') : 
-        'claude_processing_failed';
+    const { worktreeInfo, claudeResult, postProcessingResult } = results;
 
     return {
-        status: finalStatus,
+        status: determineFinalStatus(claudeResult, postProcessingResult),
         issueNumber: issueRef.number,
         repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
         gitSetup: {
@@ -314,16 +329,7 @@ export function buildFinalResult(issueRef, localRepoPath, results) {
             worktreeCreated: !!worktreeInfo,
             branchName: worktreeInfo?.branchName
         },
-        claudeResult: {
-            success: claudeResult?.success || false,
-            executionTime: claudeResult?.executionTime || 0,
-            modifiedFiles: claudeResult?.modifiedFiles || [],
-            conversationLog: claudeResult?.conversationLog || [],
-            error: claudeResult?.error || null,
-            sessionId: claudeResult?.sessionId || null,
-            conversationId: claudeResult?.conversationId || null,
-            model: claudeResult?.model || null
-        },
+        claudeResult: buildClaudeResultSection(claudeResult),
         postProcessing: {
             success: !!postProcessingResult,
             pr: postProcessingResult?.pr || null,

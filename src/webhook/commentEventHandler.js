@@ -266,95 +266,94 @@ async function storeCommentForBatch(comment, commentAuthor, eventContext, config
 
 const DEFAULT_MODEL_LABEL_PATTERN = '^llm-claude-(.+)$';
 
+function extractLlmFromKeywords(commentBody, keywords) {
+    for (const keyword of keywords) {
+        const llmMatch = commentBody.match(new RegExp(`${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:([\\w.-]+)`));
+        if (llmMatch) {
+            const resolved = resolveModelAlias(llmMatch[1]);
+            if (resolved) return resolved;
+        }
+    }
+    return null;
+}
+
+function stripKeywordsFromBody(body, keywords) {
+    let result = body;
+    for (const keyword of keywords) {
+        const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        result = result.replace(new RegExp(`${escapedKeyword}(:\\w+)?`, 'g'), '');
+    }
+    return result.trim();
+}
+
+function buildCodeContext(comment) {
+    const codeContext = [];
+    if (comment.path) codeContext.push(`File: ${comment.path}`);
+    if (comment.line) codeContext.push(`Line: ${comment.line}`);
+    if (comment.diff_hunk) {
+        codeContext.push('Code context:', '```diff', comment.diff_hunk, '```');
+    }
+    return codeContext;
+}
+
+function isReviewComment(comment, eventType) {
+    return comment.pull_request_review_id || eventType === 'pull_request_review_comment';
+}
+
+function extractLlmFromLabels(prLabels, modelLabelPattern, prNumber, correlatedLogger) {
+    const modelLabelRegex = new RegExp(modelLabelPattern);
+    for (const label of prLabels) {
+        const labelName = typeof label === 'string' ? label : label.name;
+        const match = labelName.match(modelLabelRegex);
+        if (match) {
+            const resolved = resolveModelAlias(match[1]);
+            correlatedLogger.debug({ pullRequestNumber: prNumber, label: labelName, resolvedModel: resolved }, 'Extracted model from PR label (webhook)');
+            return resolved;
+        }
+    }
+    return null;
+}
+
+async function getPRBranchAndLabels(eventType, payload, owner, repo, prNumber) {
+    if (eventType === 'issue_comment') {
+        const octokit = await getAuthenticatedOctokit();
+        const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber });
+        return { branchName: pr.head.ref, prLabels: pr.labels || [] };
+    }
+    return { branchName: payload.pull_request.head.ref, prLabels: payload.pull_request.labels || [] };
+}
+
 async function enqueueNewCommentJob(comment, commentAuthor, eventContext, options) {
     const { eventType, prNumber, owner, repo } = eventContext;
     const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = DEFAULT_MODEL_LABEL_PATTERN } = options;
-    
     const correlatedLogger = logger.withCorrelation(correlationId);
     
-    let llm = null;
-    if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
-        for (const keyword of PR_FOLLOWUP_TRIGGER_KEYWORDS) {
-            const llmMatch = comment.body.match(new RegExp(`${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:([\\w.-]+)`));
-            if (llmMatch) llm = resolveModelAlias(llmMatch[1]);
-            if (llm) break;
-        }
-    }
+    let llm = PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? extractLlmFromKeywords(comment.body, PR_FOLLOWUP_TRIGGER_KEYWORDS) : null;
     
-    let enhancedCommentBody = comment.body;
-    if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
-        for (const keyword of PR_FOLLOWUP_TRIGGER_KEYWORDS) {
-            const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            enhancedCommentBody = enhancedCommentBody.replace(new RegExp(`${escapedKeyword}(:\\w+)?`, 'g'), '');
-        }
-    }
-    enhancedCommentBody = enhancedCommentBody.trim();
+    let enhancedCommentBody = PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? stripKeywordsFromBody(comment.body, PR_FOLLOWUP_TRIGGER_KEYWORDS) : comment.body;
     
-    if (comment.pull_request_review_id || eventType === 'pull_request_review_comment') {
-        const codeContext = [];
-        if (comment.path) codeContext.push(`File: ${comment.path}`);
-        if (comment.line) codeContext.push(`Line: ${comment.line}`);
-        if (comment.diff_hunk) {
-            codeContext.push('Code context:');
-            codeContext.push('```diff');
-            codeContext.push(comment.diff_hunk);
-            codeContext.push('```');
-        }
-        
+    if (isReviewComment(comment, eventType)) {
+        const codeContext = buildCodeContext(comment);
         if (codeContext.length > 0) {
             enhancedCommentBody = `${comment.body}\n\n--- Review Comment Context ---\n${codeContext.join('\n')}`;
         }
     }
     
     const unprocessedComment = {
-        id: comment.id,
-        body: enhancedCommentBody,
-        author: commentAuthor,
-        type: (comment.pull_request_review_id || eventType === 'pull_request_review_comment') ? 'review' : 'issue',
-        hasCodeContext: (comment.pull_request_review_id || eventType === 'pull_request_review_comment') && comment.diff_hunk ? true : false
+        id: comment.id, body: enhancedCommentBody, author: commentAuthor,
+        type: isReviewComment(comment, eventType) ? 'review' : 'issue',
+        hasCodeContext: isReviewComment(comment, eventType) && comment.diff_hunk ? true : false
     };
     
-    let branchName;
-    let prLabels = [];
-    if (eventType === 'issue_comment') {
-        const octokit = await getAuthenticatedOctokit();
-        const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-            owner,
-            repo,
-            pull_number: prNumber
-        });
-        branchName = pr.head.ref;
-        prLabels = pr.labels || [];
-    } else {
-        branchName = payload.pull_request.head.ref;
-        prLabels = payload.pull_request.labels || [];
-    }
+    const { branchName, prLabels } = await getPRBranchAndLabels(eventType, payload, owner, repo, prNumber);
 
     if (!llm && prLabels.length > 0) {
-        const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
-        for (const label of prLabels) {
-            const labelName = typeof label === 'string' ? label : label.name;
-            const match = labelName.match(modelLabelRegex);
-            if (match) {
-                llm = resolveModelAlias(match[1]);
-                correlatedLogger.debug({
-                    pullRequestNumber: prNumber,
-                    label: labelName,
-                    resolvedModel: llm
-                }, 'Extracted model from PR label (webhook)');
-                break;
-            }
-        }
+        llm = extractLlmFromLabels(prLabels, MODEL_LABEL_PATTERN, prNumber, correlatedLogger);
     }
 
     const jobData = {
-        pullRequestNumber: prNumber,
-        comments: [unprocessedComment],
-        repoOwner: owner,
-        repoName: repo,
-        branchName: branchName,
-        llm: llm,
-        correlationId: generateCorrelationId(),
+        pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo,
+        branchName, llm, correlationId: generateCorrelationId(),
     };
     
     const timestamp = Date.now();
@@ -362,25 +361,12 @@ async function enqueueNewCommentJob(comment, commentAuthor, eventContext, option
     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
     
     try {
-        await issueQueue.add('processPullRequestComment', jobData, { 
-            jobId,
-            delay: COMMENT_BATCH_DELAY_MS
-        });
-        
+        await issueQueue.add('processPullRequestComment', jobData, { jobId, delay: COMMENT_BATCH_DELAY_MS });
         await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
-        
-        correlatedLogger.info({
-            jobId,
-            pullRequestNumber: prNumber,
-            commentId: comment.id,
-            commentType: unprocessedComment.type,
-            delayMs: COMMENT_BATCH_DELAY_MS
-        }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
+        correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
     } catch (error) {
         if (error.message?.includes('Job already exists')) {
-            correlatedLogger.debug({
-                pullRequestNumber: prNumber,
-            }, 'PR comment job already in queue, skipping');
+            correlatedLogger.debug({ pullRequestNumber: prNumber }, 'PR comment job already in queue, skipping');
         } else {
             handleError(error, `Failed to add PR comment to queue`, { correlationId });
         }

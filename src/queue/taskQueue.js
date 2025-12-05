@@ -77,20 +77,36 @@ analysisQueue.on('error', (err) => {
 });
 
 function getRepoFullName(job) {
-    return job?.data?.repository || (job?.data?.repoOwner && job?.data?.repoName ? `${job.data.repoOwner}/${job.data.repoName}` : null);
+    if (job?.data?.repository) return job.data.repository;
+    if (job?.data?.repoOwner && job?.data?.repoName) return `${job.data.repoOwner}/${job.data.repoName}`;
+    return null;
 }
 
 function extractCostFromResult(result) {
-    return result?.claudeResult?.claudeCostUsd || result?.claudeResult?.costUsd || result?.claudeResult?.finalResult?.cost_usd || 0;
+    const claudeResult = result?.claudeResult;
+    if (!claudeResult) return 0;
+    return claudeResult.claudeCostUsd || claudeResult.costUsd || claudeResult.finalResult?.cost_usd || 0;
+}
+
+function extractModel(result, job) {
+    return result?.claudeResult?.model || job.data?.modelName || 'unknown';
+}
+
+function extractTurns(result) {
+    const claudeResult = result?.claudeResult;
+    if (!claudeResult) return 0;
+    return claudeResult.claudeNumTurns || claudeResult.finalResult?.num_turns || 0;
 }
 
 function buildAiMetrics(job, result, repoFullName, status) {
     const cost = extractCostFromResult(result);
+    const parsedCost = typeof cost === 'string' ? parseFloat(cost) : cost;
+    
     return {
         timestamp: job.timestamp,
-        cost: typeof cost === 'string' ? parseFloat(cost) : cost,
-        model: result?.claudeResult?.model || job.data?.modelName || 'unknown',
-        turns: result?.claudeResult?.claudeNumTurns || result?.claudeResult?.finalResult?.num_turns || 0,
+        cost: parsedCost,
+        model: extractModel(result, job),
+        turns: extractTurns(result),
         executionTimeMs: result?.claudeResult?.executionTime || 0,
         issueNumber: job.data?.number,
         repo: repoFullName,
