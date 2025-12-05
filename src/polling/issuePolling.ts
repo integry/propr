@@ -1,9 +1,10 @@
 import logger, { generateCorrelationId } from '../utils/logger.js';
+import type { Logger } from 'pino';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { resolveModelAlias, getDefaultModel } from '../config/modelAliases.js';
-import { issueQueue } from '../queue/taskQueue.js';
-import Redis from 'ioredis';
+import { issueQueue, type IssueJobData } from '../queue/taskQueue.js';
+import { Redis } from 'ioredis';
 
 const AI_PRIMARY_TAG = process.env.AI_PRIMARY_TAG || 'AI';
 const AI_EXCLUDE_TAGS_PROCESSING = process.env.AI_EXCLUDE_TAGS_PROCESSING || 'AI-processing';
@@ -18,7 +19,57 @@ const redisClient = new Redis({
     enableReadyCheck: false,
 });
 
-export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
+interface GitHubLabel {
+    name: string;
+}
+
+interface GitHubIssue {
+    id: number;
+    number: number;
+    title: string;
+    html_url: string;
+    labels: GitHubLabel[];
+    created_at: string;
+    updated_at: string;
+}
+
+export interface DetectedIssue {
+    id: number;
+    number: number;
+    title: string;
+    url: string;
+    repoOwner: string;
+    repoName: string;
+    labels: string[];
+    targetModels: string[];
+    createdAt: string;
+    updatedAt: string;
+}
+
+interface ActivityLog {
+    id: string;
+    type: string;
+    timestamp: string;
+    repository: string;
+    issueNumber: number;
+    description: string;
+    status: 'info' | 'success' | 'error';
+}
+
+interface EnqueueOptions {
+    correlationId: string;
+    correlatedLogger: Logger;
+}
+
+type Octokit = {
+    paginate: <T>(endpoint: string, options: Record<string, unknown>) => Promise<T[]>;
+};
+
+export async function fetchIssuesForRepo(
+    octokit: Octokit,
+    repoFullName: string,
+    correlationId: string
+): Promise<DetectedIssue[]> {
     const correlatedLogger = logger.withCorrelation(correlationId);
     const [owner, repo] = repoFullName.split('/');
 
@@ -29,7 +80,7 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
 
     const fetchWithRetry = () => withRetry(
         async () => {
-            const issues = await octokit.paginate('GET /repos/{owner}/{repo}/issues', {
+            const issues = await octokit.paginate<GitHubIssue>('GET /repos/{owner}/{repo}/issues', {
                 owner,
                 repo,
                 state: 'open',
@@ -69,7 +120,7 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
         }, `Found ${response.data.items.length} matching issues.`);
 
         return response.data.items.map(issue => {
-            const identifiedModels = [];
+            const identifiedModels: string[] = [];
             const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
 
             for (const label of issue.labels) {
@@ -96,7 +147,8 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
     } catch (error) {
         handleError(error, `fetch_issues_${repoFullName}`, { correlationId });
 
-        if (error.status === 403 && error.message && error.message.includes('rate limit')) {
+        const err = error as { status?: number; message?: string };
+        if (err.status === 403 && err.message?.includes('rate limit')) {
             correlatedLogger.warn('GitHub API rate limit likely exceeded. Consider increasing polling interval.');
         }
 
@@ -104,11 +156,16 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
     }
 }
 
-async function enqueueIssueForModel(issue, modelName, repoFullName, options = {}) {
+async function enqueueIssueForModel(
+    issue: DetectedIssue,
+    modelName: string,
+    repoFullName: string,
+    options: EnqueueOptions
+): Promise<void> {
     const { correlationId, correlatedLogger } = options;
     const timestamp = Date.now();
     const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${modelName}-${timestamp}`;
-    const issueJob = {
+    const issueJob: IssueJobData = {
         repoOwner: issue.repoOwner,
         repoName: issue.repoName,
         number: issue.number,
@@ -129,7 +186,7 @@ async function enqueueIssueForModel(issue, modelName, repoFullName, options = {}
     await addToQueueWithRetry();
 
     try {
-        const activity = {
+        const activity: ActivityLog = {
             id: `activity-${timestamp}-${issue.id}-${modelName}`,
             type: 'issue_created',
             timestamp: new Date().toISOString(),
@@ -141,13 +198,18 @@ async function enqueueIssueForModel(issue, modelName, repoFullName, options = {}
         await redisClient.lpush('system:activity:log', JSON.stringify(activity));
         await redisClient.ltrim('system:activity:log', 0, 999);
     } catch (activityError) {
-        correlatedLogger.warn({ error: activityError.message }, 'Failed to log activity');
+        correlatedLogger.warn({ error: (activityError as Error).message }, 'Failed to log activity');
     }
 
     correlatedLogger.info({ jobId, issueNumber: issue.number, repository: repoFullName, modelName, issueCorrelationId: issueJob.correlationId }, 'Successfully added issue-model job to processing queue');
 }
 
-async function processIssue(issue, repoFullName, correlationId, correlatedLogger) {
+async function processIssue(
+    issue: DetectedIssue,
+    repoFullName: string,
+    correlationId: string,
+    correlatedLogger: Logger
+): Promise<void> {
     correlatedLogger.info({
         issueId: issue.id, issueNumber: issue.number, issueTitle: issue.title,
         issueUrl: issue.url, repository: repoFullName, targetModels: issue.targetModels
@@ -163,13 +225,16 @@ async function processIssue(issue, repoFullName, correlationId, correlatedLogger
     }
 }
 
-export async function pollForIssues(octokit, repos) {
+export async function pollForIssues(
+    octokit: Octokit,
+    repos: string[]
+): Promise<DetectedIssue[]> {
     const correlationId = generateCorrelationId();
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     correlatedLogger.info('Starting GitHub issue polling cycle...');
 
-    const allDetectedIssues = [];
+    const allDetectedIssues: DetectedIssue[] = [];
 
     for (const repoFullName of repos) {
         correlatedLogger.debug({ repository: repoFullName }, 'Polling repository');
@@ -195,10 +260,10 @@ export async function pollForIssues(octokit, repos) {
     return allDetectedIssues;
 }
 
-export async function shutdownPolling() {
+export async function shutdownPolling(): Promise<void> {
     try {
         await redisClient.quit();
     } catch (error) {
-        logger.error({ error: error.message }, 'Failed to shutdown polling Redis client');
+        logger.error({ error: (error as Error).message }, 'Failed to shutdown polling Redis client');
     }
 }

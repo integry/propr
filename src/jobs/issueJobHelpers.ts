@@ -1,27 +1,86 @@
+import { Job } from 'bullmq';
+import type { Logger } from 'pino';
 import { ErrorCategories } from '../utils/errorHandler.js';
 import { safeRemoveLabel } from '../utils/github/labelOperations.js';
 import { generateCompletionComment } from '../utils/github/logFiles.js';
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { formatResetTime } from '../utils/scheduling.js';
-import { issueQueue } from '../queue/taskQueue.js';
+import { issueQueue, type IssueJobData, type JobResult } from '../queue/taskQueue.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
+import type { WorkerStateManager } from '../utils/workerStateManager.js';
+import type { ClaudeCodeResponse } from '../claude/claudeService.js';
+import type { WorktreeInfo, CommitResult } from '../git/repoManager.js';
+import type { RepoValidationResult } from '../utils/prValidation.js';
 
-export const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10);
-export const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || (2 * 60 * 1000), 10);
+export type RepoValidation = RepoValidationResult;
 
-export function calculateUsageLimitDelay(error) {
+export const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || String(5 * 60 * 1000), 10);
+export const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || String(2 * 60 * 1000), 10);
+
+export interface UsageLimitError extends Error {
+    resetTimestamp?: number;
+}
+
+export interface PostProcessingResult {
+    success: boolean;
+    pr: {
+        number: number;
+        url: string;
+        title: string;
+    } | null;
+    updatedLabels: string[];
+    error?: string;
+}
+
+interface UsageLimitErrorOptions {
+    octokit: Octokit;
+    correlatedLogger: Logger;
+    stateManager: WorkerStateManager;
+    taskId: string;
+}
+
+interface GenericErrorOptions extends UsageLimitErrorOptions {
+    claudeResult: ClaudeCodeResponse | null;
+    worktreeInfo: WorktreeInfo | undefined;
+    AI_PROCESSING_TAG: string;
+}
+
+interface CreatePROptions {
+    commitResult: CommitResult | null;
+    claudeResult: ClaudeCodeResponse | null;
+    modelName: string;
+    repoValidation: RepoValidation;
+    PR_LABEL: string;
+    correlatedLogger: Logger;
+}
+
+type Octokit = {
+    request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
+};
+
+export function calculateUsageLimitDelay(error: UsageLimitError): number {
     const resetTimeUTC = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
     return (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
 }
 
-export async function handleSimpleUsageLimitError(error, job, correlatedLogger, repository) {
+export async function handleSimpleUsageLimitError(
+    error: UsageLimitError,
+    job: Job<IssueJobData>,
+    correlatedLogger: Logger,
+    repository: string
+): Promise<JobResult> {
     correlatedLogger.warn({ repository, resetTimestamp: error.resetTimestamp }, 'Claude usage limit hit during processing. Requeueing job.');
     const delay = calculateUsageLimitDelay(error);
     await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
     return { status: 'requeued', repository, delay };
 }
 
-export async function handleUsageLimitError(error, job, issueRef, options = {}) {
+export async function handleUsageLimitError(
+    error: UsageLimitError,
+    job: Job<IssueJobData>,
+    issueRef: IssueJobData,
+    options: UsageLimitErrorOptions
+): Promise<void> {
     const { octokit, correlatedLogger, stateManager, taskId } = options;
     const jobId = job.id;
 
@@ -48,7 +107,7 @@ The job has been automatically rescheduled and will restart ${readableResetTime}
 *Job ID: ${jobId} will run again after delay.*`
             });
         } catch (commentError) {
-            correlatedLogger.error({ error: commentError.message }, 'Failed to post usage limit delay comment to issue.');
+            correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to issue.');
         }
     }
 
@@ -56,17 +115,19 @@ The job has been automatically rescheduled and will restart ${readableResetTime}
 
     try {
         await stateManager.markTaskFailed(taskId, error, {
-            errorCategory: ErrorCategories.CLAUDE_EXECUTION,
-            processingStage: 'claude_execution',
-            requeued: true,
-            delay: delay
+            errorCategory: ErrorCategories.CLAUDE_EXECUTION
         });
     } catch (stateError) {
-        correlatedLogger.warn({ error: stateError.message }, 'Failed to update task state to failed (requeued)');
+        correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state to failed (requeued)');
     }
 }
 
-export async function handleGenericError(error, job, issueRef, options = {}) {
+export async function handleGenericError(
+    error: Error,
+    job: Job<IssueJobData>,
+    issueRef: IssueJobData,
+    options: GenericErrorOptions
+): Promise<void> {
     const { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG } = options;
     const jobId = job.id;
     const correlationId = issueRef.correlationId;
@@ -98,10 +159,10 @@ export async function handleGenericError(error, job, issueRef, options = {}) {
 
     if (claudeResult) {
         try {
-            await recordLLMMetrics(claudeResult, issueRef, { jobType: 'issue', correlationId, taskId });
+            await recordLLMMetrics(claudeResult as unknown as Parameters<typeof recordLLMMetrics>[0], { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId });
             correlatedLogger.info({ correlationId, issueNumber: issueRef.number }, 'LLM metrics recorded for failed job');
         } catch (metricsError) {
-            correlatedLogger.error({ error: metricsError.message, correlationId }, 'Failed to record LLM metrics for failed job');
+            correlatedLogger.error({ error: (metricsError as Error).message, correlationId }, 'Failed to record LLM metrics for failed job');
         }
     }
 
@@ -111,15 +172,27 @@ export async function handleGenericError(error, job, issueRef, options = {}) {
 
     try {
         await stateManager.markTaskFailed(taskId, error, {
-            errorCategory,
-            processingStage: claudeResult ? 'post_processing' : 'pre_processing'
+            errorCategory
         });
     } catch (stateError) {
-        correlatedLogger.warn({ error: stateError.message }, 'Failed to update task state to failed');
+        correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state to failed');
     }
 }
 
-async function postErrorComment(issueRef, error, options = {}) {
+interface PostErrorCommentOptions {
+    octokit: Octokit;
+    errorCategory: string;
+    claudeResult: ClaudeCodeResponse | null;
+    worktreeInfo: WorktreeInfo | undefined;
+    AI_PROCESSING_TAG: string;
+    correlatedLogger: Logger;
+}
+
+async function postErrorComment(
+    issueRef: IssueJobData,
+    error: Error,
+    options: PostErrorCommentOptions
+): Promise<void> {
     const { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger } = options;
     try {
         let errorMessage = `❌ **Failed to process this issue**\n\n`;
@@ -159,11 +232,16 @@ async function postErrorComment(issueRef, error, options = {}) {
         );
 
     } catch (commentError) {
-        correlatedLogger.error({ error: commentError.message, issueNumber: issueRef.number }, 'Failed to post error comment to GitHub issue');
+        correlatedLogger.error({ error: (commentError as Error).message, issueNumber: issueRef.number }, 'Failed to post error comment to GitHub issue');
     }
 }
 
-export async function updateTaskTitleInStorage(taskId, issueRef, stateManager, correlatedLogger) {
+export async function updateTaskTitleInStorage(
+    taskId: string,
+    issueRef: IssueJobData,
+    stateManager: WorkerStateManager,
+    correlatedLogger: Logger
+): Promise<void> {
     if (isDbEnabled && db) {
         try {
             await db('tasks')
@@ -171,22 +249,27 @@ export async function updateTaskTitleInStorage(taskId, issueRef, stateManager, c
                 .update({ initial_job_data: JSON.stringify(issueRef) });
             correlatedLogger.info({ taskId, title: issueRef.title }, 'Updated task with title/subtitle in DB');
         } catch (dbError) {
-            correlatedLogger.warn({ taskId, error: dbError.message }, 'Failed to update task with title/subtitle in DB');
+            correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to update task with title/subtitle in DB');
         }
     }
     try {
         const state = await stateManager.getTaskState(taskId);
         if (state) {
-            state.issueRef = issueRef;
-            await stateManager.redis.setex(stateManager.getTaskKey(taskId), stateManager.stateExpiry, JSON.stringify(state));
+            state.issueRef = { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName };
+            await (stateManager as unknown as { redis: { setex: (key: string, seconds: number, value: string) => Promise<void> } }).redis.setex((stateManager as unknown as { getTaskKey: (id: string) => string }).getTaskKey(taskId), (stateManager as unknown as { stateExpiry: number }).stateExpiry, JSON.stringify(state));
             correlatedLogger.info({ taskId, title: issueRef.title }, 'Updated task with title/subtitle in Redis');
         }
     } catch (redisError) {
-        correlatedLogger.warn({ taskId, error: redisError.message }, 'Failed to update task with title/subtitle in Redis');
+        correlatedLogger.warn({ taskId, error: (redisError as Error).message }, 'Failed to update task with title/subtitle in Redis');
     }
 }
 
-export async function createPullRequest(octokit, issueRef, worktreeInfo, options = {}) {
+export async function createPullRequest(
+    octokit: Octokit,
+    issueRef: IssueJobData,
+    worktreeInfo: WorktreeInfo,
+    options: CreatePROptions
+): Promise<PostProcessingResult> {
     const { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger } = options;
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
@@ -195,7 +278,7 @@ export async function createPullRequest(octokit, issueRef, worktreeInfo, options
         prTitle = `AI Fix for Issue #${issueRef.number}: ${issueRef.title?.replace('New Issue: ', '') || 'Issue'}`;
     }
 
-    const completionComment = await generateCompletionComment(claudeResult, issueRef);
+    const completionComment = await generateCompletionComment(claudeResult as unknown as Parameters<typeof generateCompletionComment>[0], { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
     const prBody = `## AI Implementation Summary
 
 ${commitResult ? `Closes #${issueRef.number}` : `Addresses #${issueRef.number}`}
@@ -214,12 +297,12 @@ ${completionComment}
 *This PR was created automatically by Claude Code after processing issue #${issueRef.number}.*`;
 
     try {
-        const prResponse = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
+        const prResponse = await octokit.request<{ data: { number: number; html_url: string; title: string } }>('POST /repos/{owner}/{repo}/pulls', {
             owner: issueRef.repoOwner,
             repo: issueRef.repoName,
             title: prTitle,
             head: worktreeInfo.branchName,
-            base: issueRef.baseBranch || repoValidation.repoData.defaultBranch,
+            base: issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main',
             body: prBody,
             draft: false
         });
@@ -257,17 +340,27 @@ ${completionComment}
             jobId,
             issueNumber: issueRef.number,
             branchName: worktreeInfo.branchName,
-            error: prError.message
+            error: (prError as Error).message
         }, 'Direct PR creation failed, checking if PR already exists...');
 
-        return await findExistingPR(octokit, issueRef, worktreeInfo, { prError, correlatedLogger });
+        return await findExistingPR(octokit, issueRef, worktreeInfo, { prError: prError as Error, correlatedLogger });
     }
 }
 
-async function findExistingPR(octokit, issueRef, worktreeInfo, options = {}) {
+interface FindExistingPROptions {
+    prError: Error;
+    correlatedLogger: Logger;
+}
+
+async function findExistingPR(
+    octokit: Octokit,
+    issueRef: IssueJobData,
+    worktreeInfo: WorktreeInfo,
+    options: FindExistingPROptions
+): Promise<PostProcessingResult> {
     const { prError, correlatedLogger } = options;
     try {
-        const existingPRs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+        const existingPRs = await octokit.request<{ data: Array<{ number: number; html_url: string; title: string }> }>('GET /repos/{owner}/{repo}/pulls', {
             owner: issueRef.repoOwner,
             repo: issueRef.repoName,
             head: `${issueRef.repoOwner}:${worktreeInfo.branchName}`,
@@ -299,12 +392,12 @@ async function findExistingPR(octokit, issueRef, worktreeInfo, options = {}) {
     }
 }
 
-function determineFinalStatus(claudeResult, postProcessingResult) {
+function determineFinalStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
     if (!claudeResult?.success) return 'claude_processing_failed';
     return postProcessingResult?.pr ? 'complete_with_pr' : 'claude_success_no_changes';
 }
 
-function buildClaudeResultSection(claudeResult) {
+function buildClaudeResultSection(claudeResult: ClaudeCodeResponse | null): Record<string, unknown> {
     return {
         success: claudeResult?.success || false,
         executionTime: claudeResult?.executionTime || 0,
@@ -317,7 +410,14 @@ function buildClaudeResultSection(claudeResult) {
     };
 }
 
-export function buildFinalResult(issueRef, localRepoPath, results) {
+interface FinalResultResults {
+    worktreeInfo: WorktreeInfo | undefined;
+    claudeResult: ClaudeCodeResponse | null;
+    postProcessingResult: PostProcessingResult | null;
+    commitResult: CommitResult | null;
+}
+
+export function buildFinalResult(issueRef: IssueJobData, localRepoPath: string, results: FinalResultResults): JobResult {
     const { worktreeInfo, claudeResult, postProcessingResult } = results;
 
     return {
@@ -329,7 +429,7 @@ export function buildFinalResult(issueRef, localRepoPath, results) {
             worktreeCreated: !!worktreeInfo,
             branchName: worktreeInfo?.branchName
         },
-        claudeResult: buildClaudeResultSection(claudeResult),
+        claudeResult: buildClaudeResultSection(claudeResult) as { success: boolean },
         postProcessing: {
             success: !!postProcessingResult,
             pr: postProcessingResult?.pr || null,

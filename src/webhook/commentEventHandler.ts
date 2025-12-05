@@ -1,12 +1,69 @@
 import logger, { generateCorrelationId } from '../utils/logger.js';
+import type { Logger } from 'pino';
 import { handleError } from '../utils/errorHandler.js';
-import { issueQueue, COMMENT_BATCH_DELAY_MS } from '../queue/taskQueue.js';
+import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.js';
 import { filterCommentByAuthor, checkCommentTrigger } from '../utils/commentFilters.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPendingPrCommentsKey } from '../utils/constants.js';
+import type { Job } from 'bullmq';
+import type { Redis } from 'ioredis';
+import type {
+    IssueCommentEvent,
+    PullRequestReviewCommentEvent,
+    Label
+} from '@octokit/webhooks-types';
 
-export async function handleCommentDeleted(payload, eventType, correlationId, config) {
+export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
+
+export interface CommentEventConfig {
+    redisClient: Redis;
+    PR_FOLLOWUP_TRIGGER_KEYWORDS: string[];
+    MODEL_LABEL_PATTERN?: string;
+    processCommentEvent?: typeof processCommentEvent;
+}
+
+export type CommentPayload = IssueCommentEvent | PullRequestReviewCommentEvent;
+
+interface PRJobData extends CommentJobData {
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+    comments?: UnprocessedComment[];
+}
+
+interface CommentContext {
+    eventType: CommentEventType;
+    prNumber: number;
+    owner: string;
+    repo: string;
+}
+
+interface StoreCommentConfig {
+    redisClient: Redis;
+    PR_FOLLOWUP_TRIGGER_KEYWORDS: string[];
+}
+
+interface EnqueueCommentOptions {
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent;
+    redisClient: Redis;
+    PR_FOLLOWUP_TRIGGER_KEYWORDS: string[];
+    MODEL_LABEL_PATTERN?: string;
+    correlationId: string;
+}
+
+interface RepoContext {
+    owner: string;
+    repo: string;
+    prNumber: number;
+}
+
+export async function handleCommentDeleted(
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent,
+    eventType: CommentEventType,
+    correlationId: string,
+    config: CommentEventConfig
+): Promise<void> {
     const { redisClient } = config;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
@@ -14,18 +71,21 @@ export async function handleCommentDeleted(payload, eventType, correlationId, co
     const repo = payload.repository.name;
     const repoFullName = `${owner}/${repo}`;
 
-    let prNumber, commentId;
+    let prNumber: number;
+    let commentId: number;
 
     if (eventType === 'issue_comment') {
-        if (!payload.issue.pull_request) {
+        const issuePayload = payload as IssueCommentEvent;
+        if (!issuePayload.issue.pull_request) {
             correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
             return;
         }
-        prNumber = payload.issue.number;
-        commentId = payload.comment.id;
+        prNumber = issuePayload.issue.number;
+        commentId = issuePayload.comment.id;
     } else if (eventType === 'pull_request_review_comment') {
-        prNumber = payload.pull_request.number;
-        commentId = payload.comment.id;
+        const prPayload = payload as PullRequestReviewCommentEvent;
+        prNumber = prPayload.pull_request.number;
+        commentId = prPayload.comment.id;
     } else {
         correlatedLogger.warn({ eventType }, 'Unknown event type for comment deletion');
         return;
@@ -39,7 +99,7 @@ export async function handleCommentDeleted(payload, eventType, correlationId, co
 
     const activeJobs = await issueQueue.getActive();
     const waitingJobs = await issueQueue.getWaiting();
-    const allJobs = [...activeJobs, ...waitingJobs];
+    const allJobs = [...activeJobs, ...waitingJobs] as Job<PRJobData>[];
 
     for (const job of allJobs) {
         if (job.name === 'processPullRequestComment' &&
@@ -55,7 +115,7 @@ export async function handleCommentDeleted(payload, eventType, correlationId, co
                     repository: repoFullName
                 }, 'Aborting job due to comment deletion');
 
-                const taskId = job.id.startsWith('pr-comments-batch-') ?
+                const taskId = job.id?.startsWith('pr-comments-batch-') ?
                     job.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') :
                     `${owner}-${repo}-${prNumber}`;
 
@@ -64,7 +124,7 @@ export async function handleCommentDeleted(payload, eventType, correlationId, co
                     timestamp: new Date().toISOString(),
                     reason: 'comment_deleted',
                     commentId: commentId
-                }), { EX: 3600 });
+                }), 'EX', 3600);
 
                 await job.remove();
 
@@ -80,26 +140,34 @@ export async function handleCommentDeleted(payload, eventType, correlationId, co
     await redisClient.del(commentTrackingKey);
 }
 
-export async function handleCommentEdited(payload, eventType, correlationId, config) {
-    const { redisClient, processCommentEvent } = config;
+export async function handleCommentEdited(
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent,
+    eventType: CommentEventType,
+    correlationId: string,
+    config: CommentEventConfig
+): Promise<void> {
+    const { redisClient, processCommentEvent: processCommentEventFn } = config;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const owner = payload.repository.owner.login;
     const repo = payload.repository.name;
     const repoFullName = `${owner}/${repo}`;
 
-    let prNumber, commentId;
+    let prNumber: number;
+    let commentId: number;
 
     if (eventType === 'issue_comment') {
-        if (!payload.issue.pull_request) {
+        const issuePayload = payload as IssueCommentEvent;
+        if (!issuePayload.issue.pull_request) {
             correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
             return;
         }
-        prNumber = payload.issue.number;
-        commentId = payload.comment.id;
+        prNumber = issuePayload.issue.number;
+        commentId = issuePayload.comment.id;
     } else if (eventType === 'pull_request_review_comment') {
-        prNumber = payload.pull_request.number;
-        commentId = payload.comment.id;
+        const prPayload = payload as PullRequestReviewCommentEvent;
+        prNumber = prPayload.pull_request.number;
+        commentId = prPayload.comment.id;
     } else {
         correlatedLogger.warn({ eventType }, 'Unknown event type for comment edit');
         return;
@@ -113,9 +181,9 @@ export async function handleCommentEdited(payload, eventType, correlationId, con
 
     const activeJobs = await issueQueue.getActive();
     const waitingJobs = await issueQueue.getWaiting();
-    const allJobs = [...activeJobs, ...waitingJobs];
+    const allJobs = [...activeJobs, ...waitingJobs] as Job<PRJobData>[];
 
-    let foundJob = null;
+    let foundJob: Job<PRJobData> | null = null;
     for (const job of allJobs) {
         if (job.name === 'processPullRequestComment' &&
             job.data.pullRequestNumber === prNumber &&
@@ -137,7 +205,7 @@ export async function handleCommentEdited(payload, eventType, correlationId, con
             repository: repoFullName
         }, 'Aborting existing job due to comment edit');
 
-        const taskId = foundJob.id.startsWith('pr-comments-batch-') ?
+        const taskId = foundJob.id?.startsWith('pr-comments-batch-') ?
             foundJob.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') :
             `${owner}-${repo}-${prNumber}`;
 
@@ -146,7 +214,7 @@ export async function handleCommentEdited(payload, eventType, correlationId, con
             timestamp: new Date().toISOString(),
             reason: 'comment_edited',
             commentId: commentId
-        }), { EX: 3600 });
+        }), 'EX', 3600);
 
         await foundJob.remove();
     }
@@ -160,10 +228,17 @@ export async function handleCommentEdited(payload, eventType, correlationId, con
         commentId: commentId
     }, 'Reprocessing edited comment');
 
-    await processCommentEvent(payload, eventType, correlationId);
+    if (processCommentEventFn) {
+        await processCommentEventFn(payload, eventType, correlationId, config);
+    }
 }
 
-export async function processCommentEvent(payload, eventType, correlationId, config) {
+export async function processCommentEvent(
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent,
+    eventType: CommentEventType,
+    correlationId: string,
+    config: CommentEventConfig
+): Promise<void> {
     const { redisClient } = config;
 
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -172,18 +247,21 @@ export async function processCommentEvent(payload, eventType, correlationId, con
     const repo = payload.repository.name;
     const repoFullName = `${owner}/${repo}`;
 
-    let prNumber, comment;
+    let prNumber: number;
+    let comment: { id: number; body: string; user: { login: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 
     if (eventType === 'issue_comment') {
-        if (!payload.issue.pull_request) {
+        const issuePayload = payload as IssueCommentEvent;
+        if (!issuePayload.issue.pull_request) {
             correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
             return;
         }
-        prNumber = payload.issue.number;
-        comment = payload.comment;
+        prNumber = issuePayload.issue.number;
+        comment = issuePayload.comment;
     } else if (eventType === 'pull_request_review_comment') {
-        prNumber = payload.pull_request.number;
-        comment = payload.comment;
+        const prPayload = payload as PullRequestReviewCommentEvent;
+        prNumber = prPayload.pull_request.number;
+        comment = prPayload.comment;
     } else {
         correlatedLogger.warn({ eventType }, 'Unknown event type for comment processing');
         return;
@@ -212,7 +290,7 @@ export async function processCommentEvent(payload, eventType, correlationId, con
     const existingJob = await checkExistingJob(prNumber, owner, repo);
 
     if (existingJob) {
-        await storeCommentForBatch(comment, commentAuthor, { eventType, prNumber, owner, repo }, config);
+        await storeCommentForBatch(comment, commentAuthor, { eventType, prNumber, owner, repo }, config as StoreCommentConfig);
         correlatedLogger.info({
             pullRequestNumber: prNumber,
             repository: repoFullName,
@@ -221,14 +299,25 @@ export async function processCommentEvent(payload, eventType, correlationId, con
         return;
     }
 
-    await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId });
+    await enqueueNewCommentJob(
+        comment,
+        commentAuthor,
+        { eventType, prNumber, owner, repo },
+        {
+            payload,
+            redisClient,
+            PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
+            MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN,
+            correlationId
+        }
+    );
 }
 
-async function checkExistingJob(prNumber, owner, repo) {
+async function checkExistingJob(prNumber: number, owner: string, repo: string): Promise<boolean> {
     const activeJobs = await issueQueue.getActive();
     const waitingJobs = await issueQueue.getWaiting();
     const delayedJobs = await issueQueue.getDelayed();
-    const existingJobs = [...activeJobs, ...waitingJobs, ...delayedJobs];
+    const existingJobs = [...activeJobs, ...waitingJobs, ...delayedJobs] as Job<PRJobData>[];
 
     return existingJobs.some(job =>
         job.name === 'processPullRequestComment' &&
@@ -238,7 +327,12 @@ async function checkExistingJob(prNumber, owner, repo) {
     );
 }
 
-async function storeCommentForBatch(comment, commentAuthor, eventContext, config) {
+async function storeCommentForBatch(
+    comment: { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number },
+    commentAuthor: string,
+    eventContext: CommentContext,
+    config: StoreCommentConfig
+): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
     const { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS } = config;
     const pendingCommentsKey = getPendingPrCommentsKey(owner, repo, prNumber);
@@ -252,7 +346,7 @@ async function storeCommentForBatch(comment, commentAuthor, eventContext, config
     }
     enhancedCommentBody = enhancedCommentBody.trim();
 
-    const pendingComment = {
+    const pendingComment: UnprocessedComment = {
         id: comment.id,
         body: enhancedCommentBody,
         author: commentAuthor,
@@ -266,7 +360,7 @@ async function storeCommentForBatch(comment, commentAuthor, eventContext, config
 
 const DEFAULT_MODEL_LABEL_PATTERN = '^llm-claude-(.+)$';
 
-function extractLlmFromKeywords(commentBody, keywords) {
+function extractLlmFromKeywords(commentBody: string, keywords: string[]): string | null {
     for (const keyword of keywords) {
         const llmMatch = commentBody.match(new RegExp(`${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:([\\w.-]+)`));
         if (llmMatch) {
@@ -277,7 +371,7 @@ function extractLlmFromKeywords(commentBody, keywords) {
     return null;
 }
 
-function stripKeywordsFromBody(body, keywords) {
+function stripKeywordsFromBody(body: string, keywords: string[]): string {
     let result = body;
     for (const keyword of keywords) {
         const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -286,8 +380,8 @@ function stripKeywordsFromBody(body, keywords) {
     return result.trim();
 }
 
-function buildCodeContext(comment) {
-    const codeContext = [];
+function buildCodeContext(comment: { path?: string; line?: number | null; diff_hunk?: string }): string[] {
+    const codeContext: string[] = [];
     if (comment.path) codeContext.push(`File: ${comment.path}`);
     if (comment.line) codeContext.push(`Line: ${comment.line}`);
     if (comment.diff_hunk) {
@@ -296,11 +390,16 @@ function buildCodeContext(comment) {
     return codeContext;
 }
 
-function isReviewComment(comment, eventType) {
-    return comment.pull_request_review_id || eventType === 'pull_request_review_comment';
+function isReviewComment(comment: { pull_request_review_id?: number }, eventType: CommentEventType): boolean {
+    return !!comment.pull_request_review_id || eventType === 'pull_request_review_comment';
 }
 
-function extractLlmFromLabels(prLabels, modelLabelPattern, prNumber, correlatedLogger) {
+function extractLlmFromLabels(
+    prLabels: Label[],
+    modelLabelPattern: string,
+    prNumber: number,
+    correlatedLogger: Logger
+): string | null {
     const modelLabelRegex = new RegExp(modelLabelPattern);
     for (const label of prLabels) {
         const labelName = typeof label === 'string' ? label : label.name;
@@ -314,22 +413,37 @@ function extractLlmFromLabels(prLabels, modelLabelPattern, prNumber, correlatedL
     return null;
 }
 
-async function getPRBranchAndLabels(eventType, payload, repoContext) {
+interface PRBranchAndLabels {
+    branchName: string;
+    prLabels: Label[];
+}
+
+async function getPRBranchAndLabels(
+    eventType: CommentEventType,
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent,
+    repoContext: RepoContext
+): Promise<PRBranchAndLabels> {
     const { owner, repo, prNumber } = repoContext;
     if (eventType === 'issue_comment') {
         const octokit = await getAuthenticatedOctokit();
         const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber });
         return { branchName: pr.head.ref, prLabels: pr.labels || [] };
     }
-    return { branchName: payload.pull_request.head.ref, prLabels: payload.pull_request.labels || [] };
+    const prPayload = payload as PullRequestReviewCommentEvent;
+    return { branchName: prPayload.pull_request.head.ref, prLabels: prPayload.pull_request.labels || [] };
 }
 
-async function enqueueNewCommentJob(comment, commentAuthor, eventContext, options) {
+async function enqueueNewCommentJob(
+    comment: { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number },
+    commentAuthor: string,
+    eventContext: CommentContext,
+    options: EnqueueCommentOptions
+): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
     const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = DEFAULT_MODEL_LABEL_PATTERN } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
-    let llm = PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? extractLlmFromKeywords(comment.body, PR_FOLLOWUP_TRIGGER_KEYWORDS) : null;
+    let llm: string | null = PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? extractLlmFromKeywords(comment.body, PR_FOLLOWUP_TRIGGER_KEYWORDS) : null;
 
     let enhancedCommentBody = PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? stripKeywordsFromBody(comment.body, PR_FOLLOWUP_TRIGGER_KEYWORDS) : comment.body;
 
@@ -340,10 +454,12 @@ async function enqueueNewCommentJob(comment, commentAuthor, eventContext, option
         }
     }
 
-    const unprocessedComment = {
-        id: comment.id, body: enhancedCommentBody, author: commentAuthor,
+    const unprocessedComment: UnprocessedComment = {
+        id: comment.id,
+        body: enhancedCommentBody,
+        author: commentAuthor,
         type: isReviewComment(comment, eventType) ? 'review' : 'issue',
-        hasCodeContext: isReviewComment(comment, eventType) && comment.diff_hunk ? true : false
+        hasCodeContext: isReviewComment(comment, eventType) && !!comment.diff_hunk
     };
 
     const { branchName, prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
@@ -352,9 +468,14 @@ async function enqueueNewCommentJob(comment, commentAuthor, eventContext, option
         llm = extractLlmFromLabels(prLabels, MODEL_LABEL_PATTERN, prNumber, correlatedLogger);
     }
 
-    const jobData = {
-        pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo,
-        branchName, llm, correlationId: generateCorrelationId(),
+    const jobData: CommentJobData = {
+        pullRequestNumber: prNumber,
+        comments: [unprocessedComment],
+        repoOwner: owner,
+        repoName: repo,
+        branchName,
+        llm,
+        correlationId: generateCorrelationId(),
     };
 
     const timestamp = Date.now();
@@ -366,7 +487,8 @@ async function enqueueNewCommentJob(comment, commentAuthor, eventContext, option
         await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
         correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
     } catch (error) {
-        if (error.message?.includes('Job already exists')) {
+        const err = error as Error;
+        if (err.message?.includes('Job already exists')) {
             correlatedLogger.debug({ pullRequestNumber: prNumber }, 'PR comment job already in queue, skipping');
         } else {
             handleError(error, `Failed to add PR comment to queue`, { correlationId });

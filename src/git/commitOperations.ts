@@ -18,7 +18,7 @@ interface CommitOptions {
     issueTitle?: string;
 }
 
-interface CommitResult {
+export interface CommitResult {
     commitHash: string;
     commitMessage: string;
 }
