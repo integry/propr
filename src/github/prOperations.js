@@ -63,7 +63,8 @@ async function waitForBranchPropagation(octokit, owner, repoName, branchName) {
     }
 }
 
-async function compareBranches(octokit, owner, repoName, baseBranch, branchName) {
+async function compareBranches(octokit, branchParams) {
+    const { owner, repoName, baseBranch, branchName } = branchParams;
     try {
         const compareResult = await octokit.request('GET /repos/{owner}/{repo}/compare/{base}...{head}', {
             owner,
@@ -144,7 +145,7 @@ export async function createPullRequestRobust(params) {
         
         await waitForBranchPropagation(octokit, owner, repoName, branchName);
         
-        const compareResult = await compareBranches(octokit, owner, repoName, baseBranch, branchName);
+        const compareResult = await compareBranches(octokit, { owner, repoName, baseBranch, branchName });
         if (compareResult.skipPR) {
             return { success: false, error: 'No commits between base and head branch', skipPR: true };
         }

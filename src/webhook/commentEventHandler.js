@@ -314,7 +314,8 @@ function extractLlmFromLabels(prLabels, modelLabelPattern, prNumber, correlatedL
     return null;
 }
 
-async function getPRBranchAndLabels(eventType, payload, owner, repo, prNumber) {
+async function getPRBranchAndLabels(eventType, payload, repoContext) {
+    const { owner, repo, prNumber } = repoContext;
     if (eventType === 'issue_comment') {
         const octokit = await getAuthenticatedOctokit();
         const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber });
@@ -345,7 +346,7 @@ async function enqueueNewCommentJob(comment, commentAuthor, eventContext, option
         hasCodeContext: isReviewComment(comment, eventType) && comment.diff_hunk ? true : false
     };
     
-    const { branchName, prLabels } = await getPRBranchAndLabels(eventType, payload, owner, repo, prNumber);
+    const { branchName, prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
 
     if (!llm && prLabels.length > 0) {
         llm = extractLlmFromLabels(prLabels, MODEL_LABEL_PATTERN, prNumber, correlatedLogger);

@@ -131,7 +131,7 @@ async function fetchIssueComments(octokit, issueRef, correlatedLogger) {
 }
 
 async function executeClaudeAndRecordMetrics(executionParams, context) {
-    const { octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments, taskId, modelName, stateManager, correlatedLogger, correlationId } = { ...executionParams, ...context };
+    const { worktreeInfo, issueRef, githubToken, currentIssueData, issueComments, taskId, modelName, stateManager, correlatedLogger, correlationId } = { ...executionParams, ...context };
     
     const claudeResult = await executeClaudeCode({
         worktreePath: worktreeInfo.worktreePath,
@@ -164,7 +164,7 @@ async function processGitHubIssueJob(job) {
     }
 
     const context = await initializeJobContext(job);
-    const { jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_PRIMARY_TAG, PR_LABEL } = context;
+    const { jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
     
     await addModelSpecificDelay(modelName);
     
@@ -234,7 +234,7 @@ async function processGitHubIssueJob(job) {
         }
 
         await job.updateProgress(100);
-        await markTaskComplete(stateManager, taskId, claudeResult, postProcessingResult, commitResult, correlatedLogger);
+        await markTaskComplete({ stateManager, taskId, claudeResult, postProcessingResult, commitResult, correlatedLogger });
         return buildFinalResult(issueRef, localRepoPath, { worktreeInfo, claudeResult, postProcessingResult, commitResult });
 
     } catch (error) {
@@ -247,7 +247,8 @@ async function processGitHubIssueJob(job) {
     }
 }
 
-async function markTaskComplete(stateManager, taskId, claudeResult, postProcessingResult, commitResult, correlatedLogger) {
+async function markTaskComplete(taskCompletionParams) {
+    const { stateManager, taskId, claudeResult, postProcessingResult, commitResult, correlatedLogger } = taskCompletionParams;
     try {
         const status = claudeResult?.success ? (postProcessingResult?.pr ? 'complete_with_pr' : 'claude_success_no_changes') : 'claude_processing_failed';
         await stateManager.markTaskCompleted(taskId, {
@@ -361,7 +362,7 @@ async function performPostProcessing(options) {
 }
 
 async function handlePRValidation(options) {
-    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, githubToken, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger, jobId } = options;
+    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, githubToken, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger } = options;
     
     const finalPRValidation = await validatePRCreation({
         owner: issueRef.repoOwner, repoName: issueRef.repoName,

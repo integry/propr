@@ -57,7 +57,8 @@ async function initializePRJobContext(job) {
     return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, PR_LABEL, isBatchJob, commentsToProcess };
 }
 
-async function acquirePRLock(stateManager, lockKey, correlationId, correlatedLogger, job) {
+async function acquirePRLock(lockParams) {
+    const { stateManager, lockKey, correlationId, correlatedLogger, job } = lockParams;
     const currentLock = await stateManager.redis.get(lockKey);
     if (currentLock && currentLock !== correlationId) {
         correlatedLogger.info({ lockOwner: currentLock }, 'PR is currently being processed by another job. Rescheduling...');
@@ -89,7 +90,7 @@ async function validatePRAndComments(octokit, context) {
 }
 
 async function executeAndCommit(context) {
-    const { octokit, worktreeInfo, githubToken, repoUrl, prompt, llm, taskId, stateManager, correlatedLogger, job, pullRequestNumber, repoOwner, repoName, correlationId, unprocessedComments, authorsText, startingWorkComment } = context;
+    const { worktreeInfo, githubToken, prompt, llm, taskId, stateManager, correlatedLogger, job, pullRequestNumber, repoOwner, repoName, correlationId, unprocessedComments, authorsText } = context;
     
     const claudeResult = await executeClaudeCode({
         worktreePath: worktreeInfo.worktreePath,
@@ -136,7 +137,7 @@ async function postCompletionComment(context) {
 
 export async function processPullRequestCommentJob(job) {
     const context = await initializePRJobContext(job);
-    const { pullRequestNumber, jobBranchName, repoOwner, repoName, correlationId, correlatedLogger, PR_LABEL, isBatchJob, commentsToProcess } = context;
+    const { pullRequestNumber, jobBranchName, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess } = context;
     let { llm } = context;
 
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
@@ -145,7 +146,7 @@ export async function processPullRequestCommentJob(job) {
     const stateManager = getStateManager();
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
     
-    const lockAcquired = await acquirePRLock(stateManager, lockKey, correlationId, correlatedLogger, job);
+    const lockAcquired = await acquirePRLock({ stateManager, lockKey, correlationId, correlatedLogger, job });
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
     
     try {
