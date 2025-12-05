@@ -1,4 +1,7 @@
-const MODEL_ALIASES = {
+export type ModelAlias = string;
+export type ModelId = string;
+
+const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
     'opus': 'claude-opus-4-5',
     'opus4': 'claude-opus-4-5',
     'opus-4-0': 'claude-opus-4-5',
@@ -19,35 +22,32 @@ const MODEL_ALIASES = {
     'claude-4-5-haiku': 'claude-haiku-4-5'
 };
 
-const OPENROUTER_MODEL_MAP = {
+const OPENROUTER_MODEL_MAP: Record<ModelId, string> = {
     'claude-opus-4-5': 'anthropic/claude-opus-4.5',
     'claude-sonnet-4-5': 'anthropic/claude-sonnet-4.5',
     'claude-haiku-4-5': 'anthropic/claude-haiku-4.5',
 };
 
-function getOpenRouterId(internalModelId) {
-    return OPENROUTER_MODEL_MAP[internalModelId] || internalModelId;
+function getOpenRouterId(internalModelId: ModelId): string {
+    return OPENROUTER_MODEL_MAP[internalModelId] ?? internalModelId;
 }
 
-// Default model to use when none specified
-const DEFAULT_MODEL_ALIAS = 'sonnet';
+const DEFAULT_MODEL_ALIAS: ModelAlias = 'sonnet';
 
-function resolveModelAlias(modelNameOrAlias) {
+function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {
     if (!modelNameOrAlias) {
         return MODEL_ALIASES[DEFAULT_MODEL_ALIAS];
     }
 
-    // Check if it's an alias
     const lowerCaseModel = modelNameOrAlias.toLowerCase();
     if (MODEL_ALIASES[lowerCaseModel]) {
         return MODEL_ALIASES[lowerCaseModel];
     }
 
-    // If it's not an alias, return as-is (might be a full model ID)
     return modelNameOrAlias;
 }
 
-function getDefaultModel() {
+function getDefaultModel(): ModelId {
     return MODEL_ALIASES[DEFAULT_MODEL_ALIAS];
 }
 

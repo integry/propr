@@ -20,7 +20,7 @@
     "analysis-worker": "tsx src/analysis_worker.js",
     "analysis-worker:dev": "LOG_LEVEL=debug tsx src/analysis_worker.js",
     "config:repos": "tsx scripts/list-repo-configs.js",
-    "db:migrate": "npx knex migrate:latest --knexfile ./knexfile.js",
+    "db:migrate": "npx knex migrate:latest --knexfile ./knexfile.ts",
     "compose:up": "./scripts/compose.sh up",
     "compose:dev": "./scripts/compose.sh dev",
     "compose:down": "./scripts/compose.sh down",

@@ -1,9 +1,19 @@
 import logger from './logger.js';
 
-/**
- * Default retry configuration
- */
-const DEFAULT_RETRY_CONFIG = {
+export interface RetryConfig {
+    maxAttempts: number;
+    baseDelay: number;
+    maxDelay: number;
+    exponentialBase: number;
+    jitter: boolean;
+    retryableErrors: string[];
+}
+
+export interface RetryOptions extends Partial<RetryConfig> {
+    correlationId?: string;
+}
+
+const DEFAULT_RETRY_CONFIG: RetryConfig = {
     maxAttempts: 3,
     baseDelay: 1000,
     maxDelay: 30000,
@@ -15,18 +25,17 @@ const DEFAULT_RETRY_CONFIG = {
     ]
 };
 
-/**
- * Calculates delay for exponential backoff with optional jitter
- * @param {number} attempt - Current attempt number (0-based)
- * @param {object} config - Retry configuration
- * @returns {number} Delay in milliseconds
- */
-function calculateDelay(attempt, config) {
+interface ErrorLike {
+    code?: string;
+    status?: number;
+    message?: string;
+}
+
+function calculateDelay(attempt: number, config: RetryConfig): number {
     const exponentialDelay = config.baseDelay * Math.pow(config.exponentialBase, attempt);
     let delay = Math.min(exponentialDelay, config.maxDelay);
 
     if (config.jitter) {
-        // Add ±25% jitter to prevent thundering herd
         const jitterAmount = delay * 0.25;
         delay += (Math.random() - 0.5) * 2 * jitterAmount;
     }
@@ -34,26 +43,18 @@ function calculateDelay(attempt, config) {
     return Math.max(delay, 0);
 }
 
-/**
- * Determines if an error is retryable
- * @param {Error} error - The error to check
- * @param {object} config - Retry configuration
- * @returns {boolean} Whether the error is retryable
- */
-function isRetryableError(error, config) {
-    // Check error code/type
-    if (error.code && config.retryableErrors.includes(error.code)) {
+function isRetryableError(error: Error | unknown, config: RetryConfig): boolean {
+    const err = error as ErrorLike;
+
+    if (err.code && config.retryableErrors.includes(err.code)) {
         return true;
     }
 
-    // Check HTTP status codes for API errors
-    if (error.status) {
-        // Retryable HTTP status codes
+    if (err.status) {
         const retryableStatuses = [429, 500, 502, 503, 504];
-        return retryableStatuses.includes(error.status);
+        return retryableStatuses.includes(err.status);
     }
 
-    // Check error message patterns
     const retryablePatterns = [
         /rate limit/i,
         /timeout/i,
@@ -66,23 +67,23 @@ function isRetryableError(error, config) {
         /credentials/i
     ];
 
+    const errorMessage = err.message ?? '';
+    const errorString = error?.toString() ?? '';
+
     return retryablePatterns.some(pattern =>
-        pattern.test(error.message) || pattern.test(error.toString())
+        pattern.test(errorMessage) || pattern.test(errorString)
     );
 }
 
-/**
- * Executes a function with exponential backoff retry logic
- * @param {Function} fn - The async function to retry
- * @param {object} options - Retry configuration options
- * @param {string} context - Context for logging (operation name)
- * @returns {Promise<any>} Result of the function
- */
-export async function withRetry(fn, options = {}, context = 'operation') {
-    const config = { ...DEFAULT_RETRY_CONFIG, ...options };
-    const correlationId = options.correlationId || 'unknown';
+export async function withRetry<T>(
+    fn: () => Promise<T>,
+    options: RetryOptions = {},
+    context: string = 'operation'
+): Promise<T> {
+    const config: RetryConfig = { ...DEFAULT_RETRY_CONFIG, ...options };
+    const correlationId = options.correlationId ?? 'unknown';
 
-    let lastError;
+    let lastError: Error | unknown;
 
     for (let attempt = 0; attempt < config.maxAttempts; attempt++) {
         try {
@@ -108,6 +109,7 @@ export async function withRetry(fn, options = {}, context = 'operation') {
 
         } catch (error) {
             lastError = error;
+            const err = error as ErrorLike;
 
             logger.warn({
                 correlationId,
@@ -115,44 +117,41 @@ export async function withRetry(fn, options = {}, context = 'operation') {
                 attempt: attempt + 1,
                 maxAttempts: config.maxAttempts,
                 error: {
-                    message: error.message,
-                    code: error.code,
-                    status: error.status
+                    message: err.message,
+                    code: err.code,
+                    status: err.status
                 }
             }, `${context} failed on attempt ${attempt + 1}`);
 
-            // If this is the last attempt, don't retry
             if (attempt === config.maxAttempts - 1) {
                 logger.error({
                     correlationId,
                     context,
                     totalAttempts: config.maxAttempts,
                     finalError: {
-                        message: error.message,
-                        code: error.code,
-                        status: error.status,
-                        stack: error.stack
+                        message: err.message,
+                        code: err.code,
+                        status: err.status,
+                        stack: (error as Error).stack
                     }
                 }, `${context} failed after all retry attempts`);
                 break;
             }
 
-            // Check if error is retryable
             if (!isRetryableError(error, config)) {
                 logger.error({
                     correlationId,
                     context,
                     attempt: attempt + 1,
                     error: {
-                        message: error.message,
-                        code: error.code,
-                        status: error.status
+                        message: err.message,
+                        code: err.code,
+                        status: err.status
                     }
                 }, `${context} failed with non-retryable error`);
                 break;
             }
 
-            // Calculate delay for next attempt
             const delay = calculateDelay(attempt, config);
 
             logger.info({
@@ -167,38 +166,31 @@ export async function withRetry(fn, options = {}, context = 'operation') {
         }
     }
 
-    // If we reach here, all attempts failed
     throw lastError;
 }
 
-/**
- * Sleep for the specified number of milliseconds
- * @param {number} ms - Milliseconds to sleep
- * @returns {Promise<void>}
- */
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Creates a retry wrapper with predefined configuration for specific operations
- * @param {object} config - Default retry configuration
- * @returns {Function} Retry wrapper function
- */
-export function createRetryWrapper(config = {}) {
+export function createRetryWrapper(config: Partial<RetryConfig> = {}): <T>(
+    fn: () => Promise<T>,
+    context?: string,
+    options?: RetryOptions
+) => Promise<T> {
     const mergedConfig = { ...DEFAULT_RETRY_CONFIG, ...config };
 
-    return function retryWrapper(fn, context = 'operation', options = {}) {
+    return function retryWrapper<T>(
+        fn: () => Promise<T>,
+        context: string = 'operation',
+        options: RetryOptions = {}
+    ): Promise<T> {
         const finalConfig = { ...mergedConfig, ...options };
         return withRetry(fn, finalConfig, context);
     };
 }
 
-/**
- * Predefined retry configurations for common operations
- */
-export const retryConfigs = {
-    // GitHub API operations
+export const retryConfigs: Record<string, Partial<RetryConfig>> = {
     githubApi: {
         maxAttempts: 3,
         baseDelay: 2000,
@@ -207,7 +199,6 @@ export const retryConfigs = {
         retryableErrors: ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND']
     },
 
-    // Git operations
     git: {
         maxAttempts: 2,
         baseDelay: 1000,
@@ -216,7 +207,6 @@ export const retryConfigs = {
         retryableErrors: ['ECONNRESET', 'ETIMEDOUT', 'NETWORK_ERROR']
     },
 
-    // Git push operations (with authentication retry)
     gitPush: {
         maxAttempts: 3,
         baseDelay: 2000,
@@ -225,7 +215,6 @@ export const retryConfigs = {
         retryableErrors: ['ECONNRESET', 'ETIMEDOUT', 'NETWORK_ERROR', 'EAUTH', 'ENOTFOUND']
     },
 
-    // Claude Code execution
     claude: {
         maxAttempts: 2,
         baseDelay: 5000,
@@ -234,7 +223,6 @@ export const retryConfigs = {
         retryableErrors: ['TIMEOUT', 'DOCKER_ERROR', 'NETWORK_ERROR']
     },
 
-    // Database/Redis operations
     redis: {
         maxAttempts: 5,
         baseDelay: 500,

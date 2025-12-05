@@ -1,40 +1,61 @@
 import logger from './logger.js';
-import { withRetry, retryConfigs } from './retryHandler.js';
+import { withRetry, retryConfigs, type RetryOptions } from './retryHandler.js';
 import { makeIdempotent } from './errorHandler.js';
+import type { Logger } from 'pino';
 
-/**
- * Idempotent GitHub label operations
- */
+interface Label {
+    name: string;
+}
+
+interface Issue {
+    data: {
+        labels: Label[];
+    };
+}
+
+interface Comment {
+    body: string;
+}
+
+interface PR {
+    data: Array<{
+        number: number;
+        url: string;
+        [key: string]: unknown;
+    }>;
+}
+
+interface Octokit {
+    request: <T = unknown>(route: string, options?: Record<string, unknown>) => Promise<T>;
+    paginate: <T = unknown>(route: string, options?: Record<string, unknown>) => Promise<T[]>;
+}
+
 export class IdempotentGitHubOps {
-    constructor(octokit, correlationId) {
+    private octokit: Octokit;
+    private correlationId: string;
+    private correlatedLogger: Logger;
+
+    constructor(octokit: Octokit, correlationId: string) {
         this.octokit = octokit;
         this.correlationId = correlationId;
         this.correlatedLogger = logger.withCorrelation(correlationId);
     }
 
-    /**
-     * Idempotently adds a label to an issue
-     * @param {string} owner - Repository owner
-     * @param {string} repo - Repository name
-     * @param {number} issueNumber - Issue number
-     * @param {string} label - Label to add
-     * @returns {Promise<boolean>} True if label was added or already existed
-     */
-    async addLabel(owner, repo, issueNumber, label) {
-        const checkLabelExists = async () => {
+    async addLabel(owner: string, repo: string, issueNumber: number, label: string): Promise<boolean> {
+        const checkLabelExists = async (): Promise<boolean> => {
             try {
-                const issue = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                const issue = await this.octokit.request<Issue>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
                     owner,
                     repo,
                     issue_number: issueNumber,
                 });
                 return issue.data.labels.some(l => l.name === label);
             } catch {
-                return false; // Assume label doesn't exist if we can't check
+                return false;
             }
         };
 
-        const addLabelOperation = async () => {
+        const addLabelOperation = async (): Promise<unknown> => {
             return await withRetry(
                 () => this.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
                     owner,
@@ -42,7 +63,7 @@ export class IdempotentGitHubOps {
                     issue_number: issueNumber,
                     labels: [label],
                 }),
-                { ...retryConfigs.githubApi, correlationId: this.correlationId },
+                { ...retryConfigs.githubApi, correlationId: this.correlationId } as RetryOptions,
                 `add_label_${label}_to_issue_${issueNumber}`
             );
         };
@@ -68,35 +89,27 @@ export class IdempotentGitHubOps {
                 repo,
                 issueNumber,
                 label,
-                error: error.message
+                error: (error as Error).message
             }, 'Failed to add label to issue');
             throw error;
         }
     }
 
-    /**
-     * Idempotently removes a label from an issue
-     * @param {string} owner - Repository owner
-     * @param {string} repo - Repository name
-     * @param {number} issueNumber - Issue number
-     * @param {string} label - Label to remove
-     * @returns {Promise<boolean>} True if label was removed or didn't exist
-     */
-    async removeLabel(owner, repo, issueNumber, label) {
-        const checkLabelNotExists = async () => {
+    async removeLabel(owner: string, repo: string, issueNumber: number, label: string): Promise<boolean> {
+        const checkLabelNotExists = async (): Promise<boolean> => {
             try {
-                const issue = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                const issue = await this.octokit.request<Issue>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
                     owner,
                     repo,
                     issue_number: issueNumber,
                 });
                 return !issue.data.labels.some(l => l.name === label);
             } catch {
-                return true; // Assume label doesn't exist if we can't check
+                return true;
             }
         };
 
-        const removeLabelOperation = async () => {
+        const removeLabelOperation = async (): Promise<unknown> => {
             return await withRetry(
                 () => this.octokit.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
                     owner,
@@ -104,7 +117,7 @@ export class IdempotentGitHubOps {
                     issue_number: issueNumber,
                     name: label,
                 }),
-                { ...retryConfigs.githubApi, correlationId: this.correlationId },
+                { ...retryConfigs.githubApi, correlationId: this.correlationId } as RetryOptions,
                 `remove_label_${label}_from_issue_${issueNumber}`
             );
         };
@@ -125,8 +138,8 @@ export class IdempotentGitHubOps {
             }, 'Label removed from issue (idempotent)');
             return true;
         } catch (error) {
-            // Ignore 404 errors (label already doesn't exist)
-            if (error.status === 404) {
+            const err = error as { status?: number; message?: string };
+            if (err.status === 404) {
                 this.correlatedLogger.debug({
                     owner,
                     repo,
@@ -141,49 +154,43 @@ export class IdempotentGitHubOps {
                 repo,
                 issueNumber,
                 label,
-                error: error.message
+                error: err.message
             }, 'Failed to remove label from issue');
             throw error;
         }
     }
 
-    /**
-     * Idempotently adds a comment to an issue
-     * @param {string} owner - Repository owner
-     * @param {string} repo - Repository name
-     * @param {number} issueNumber - Issue number
-     * @param {string} body - Comment body
-     * @param {string} idempotencyKey - Unique key to prevent duplicate comments
-     * @returns {Promise<object>} Comment data
-     */
-    async addComment(owner, repo, issueNumber, options = {}) {
+    async addComment(
+        owner: string,
+        repo: string,
+        issueNumber: number,
+        options: { body: string; idempotencyKey?: string | null } = { body: '' }
+    ): Promise<unknown> {
         const { body, idempotencyKey: providedIdempotencyKey = null } = options;
         let idempotencyKey = providedIdempotencyKey;
-        // If no idempotency key provided, use a hash of the comment body
+
         if (!idempotencyKey) {
             const crypto = await import('crypto');
             idempotencyKey = crypto.createHash('md5').update(body).digest('hex').substring(0, 8);
         }
 
-        const checkCommentExists = async () => {
+        const checkCommentExists = async (): Promise<Comment | null> => {
             try {
-                // Fetch ALL comments using pagination to ensure we don't miss any
-                const comments = await this.octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                const comments = await this.octokit.paginate<Comment>('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                     owner,
                     repo,
                     issue_number: issueNumber,
                     per_page: 100
                 });
 
-                // Check if a comment with the idempotency key already exists
                 const keyPattern = `<!-- idempotency-key: ${idempotencyKey} -->`;
-                return comments.find(comment => comment.body.includes(keyPattern));
+                return comments.find(comment => comment.body.includes(keyPattern)) ?? null;
             } catch {
-                return null; // Assume comment doesn't exist if we can't check
+                return null;
             }
         };
 
-        const addCommentOperation = async () => {
+        const addCommentOperation = async (): Promise<unknown> => {
             const bodyWithKey = `${body}\n\n<!-- idempotency-key: ${idempotencyKey} -->`;
 
             return await withRetry(
@@ -193,7 +200,7 @@ export class IdempotentGitHubOps {
                     issue_number: issueNumber,
                     body: bodyWithKey,
                 }),
-                { ...retryConfigs.githubApi, correlationId: this.correlationId },
+                { ...retryConfigs.githubApi, correlationId: this.correlationId } as RetryOptions,
                 `add_comment_to_issue_${issueNumber}`
             );
         };
@@ -219,66 +226,53 @@ export class IdempotentGitHubOps {
                 repo,
                 issueNumber,
                 idempotencyKey,
-                error: error.message
+                error: (error as Error).message
             }, 'Failed to add comment to issue');
             throw error;
         }
     }
 
-    /**
-     * Idempotently checks if a PR exists for a branch
-     * @param {string} owner - Repository owner
-     * @param {string} repo - Repository name
-     * @param {string} head - Head branch (e.g., "username:branch-name")
-     * @returns {Promise<object|null>} PR data if exists, null otherwise
-     */
-    async checkPRExists(owner, repo, head) {
+    async checkPRExists(owner: string, repo: string, head: string): Promise<{ number: number; url: string } | null> {
         try {
             const prs = await withRetry(
-                () => this.octokit.request('GET /repos/{owner}/{repo}/pulls', {
+                () => this.octokit.request<PR>('GET /repos/{owner}/{repo}/pulls', {
                     owner,
                     repo,
                     head,
                     state: 'all',
                     per_page: 10
                 }),
-                { ...retryConfigs.githubApi, correlationId: this.correlationId },
+                { ...retryConfigs.githubApi, correlationId: this.correlationId } as RetryOptions,
                 `check_pr_exists_${head}`
             );
 
-            return prs.data.length > 0 ? prs.data[0] : null;
+            return prs.data.length > 0 ? prs.data[0] as { number: number; url: string } : null;
         } catch (error) {
             this.correlatedLogger.warn({
                 owner,
                 repo,
                 head,
-                error: error.message
+                error: (error as Error).message
             }, 'Failed to check if PR exists');
             return null;
         }
     }
 }
 
-/**
- * Idempotent Git operations
- */
 export class IdempotentGitOps {
-    constructor(correlationId) {
+    private correlationId: string;
+    private correlatedLogger: Logger;
+
+    constructor(correlationId: string) {
         this.correlationId = correlationId;
         this.correlatedLogger = logger.withCorrelation(correlationId);
     }
 
-    /**
-     * Idempotently ensures a repository is cloned/updated
-     * @param {string} repoUrl - Repository URL
-     * @param {string} localPath - Local path for the repository
-     * @returns {Promise<string>} Local repository path
-     */
-    async ensureRepoCloned(repoUrl, localPath) {
+    async ensureRepoCloned(repoUrl: string, localPath: string): Promise<string> {
         const fs = await import('fs');
         const path = await import('path');
 
-        const checkRepoExists = async () => {
+        const checkRepoExists = async (): Promise<boolean> => {
             try {
                 const gitDir = path.join(localPath, '.git');
                 return fs.existsSync(gitDir);
@@ -295,22 +289,13 @@ export class IdempotentGitOps {
             return localPath;
         }
 
-        // If repository doesn't exist, we need to clone it
-        // This should be handled by the existing ensureRepoCloned function
         throw new Error('Repository does not exist and cloning should be handled by existing function');
     }
 
-    /**
-     * Idempotently creates a worktree
-     * @param {string} repoPath - Repository path
-     * @param {string} worktreePath - Worktree path
-     * @param {string} branchName - Branch name
-     * @returns {Promise<boolean>} True if worktree was created or already exists
-     */
-    async ensureWorktreeExists(repoPath, worktreePath, branchName) {
+    async ensureWorktreeExists(repoPath: string, worktreePath: string, branchName: string): Promise<boolean> {
         const fs = await import('fs');
 
-        const checkWorktreeExists = async () => {
+        const checkWorktreeExists = async (): Promise<boolean> => {
             try {
                 return fs.existsSync(worktreePath);
             } catch {
@@ -327,7 +312,7 @@ export class IdempotentGitOps {
             return true;
         }
 
-        return false; // Let the existing function handle creation
+        return false;
     }
 }
 

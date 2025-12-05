@@ -1,32 +1,28 @@
 import logger from './logger.js';
+import type { Logger } from 'pino';
 
-/**
- * Centralized comment filtering logic
- * Used by both polling (daemon) and webhook handlers
- */
+interface FilterResult {
+    shouldFilter: boolean;
+    reason: string | null;
+}
 
-/**
- * Check if a comment should be filtered out based on author
- * @param {string} commentAuthor - The comment author's username
- * @param {string} userType - The user type (e.g., 'Bot', 'User') - optional
- * @param {string} correlationId - Correlation ID for logging
- * @returns {Object} { shouldFilter: boolean, reason: string }
- */
-export function filterCommentByAuthor(commentAuthor, userType = null, correlationId = null) {
-    // Handle overloaded parameters (backwards compatibility)
+interface TriggerResult {
+    isTriggered: boolean;
+    extractedLlm: string | null;
+}
+
+export function filterCommentByAuthor(commentAuthor: string, userType: string | null = null, correlationId: string | null = null): FilterResult {
     if (typeof userType === 'string' && userType.length === 36 && userType.includes('-')) {
-        // userType is actually correlationId
         correlationId = userType;
         userType = null;
     }
 
-    const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+    const correlatedLogger: Logger = correlationId ? logger.withCorrelation(correlationId) : logger as unknown as Logger;
 
     const GITHUB_BOT_USERNAME = process.env.GITHUB_BOT_USERNAME;
-    const GITHUB_USER_WHITELIST = (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u).map(u => u.trim());
-    const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u).map(u => u.trim());
+    const GITHUB_USER_WHITELIST: string[] = (process.env.GITHUB_USER_WHITELIST ?? '').split(',').filter(u => u).map(u => u.trim());
+    const GITHUB_USER_BLACKLIST: string[] = (process.env.GITHUB_USER_BLACKLIST ?? '').split(',').filter(u => u).map(u => u.trim());
 
-    // If whitelist is defined, it takes precedence - ONLY process whitelisted users (even if they're bots)
     if (GITHUB_USER_WHITELIST.length > 0) {
         const normalizedAuthor = commentAuthor.replace('[bot]', '');
 
@@ -34,18 +30,14 @@ export function filterCommentByAuthor(commentAuthor, userType = null, correlatio
             correlatedLogger.debug({ commentAuthor }, 'Comment author not in whitelist, skipping');
             return { shouldFilter: true, reason: 'not_in_whitelist' };
         }
-        // User is whitelisted, allow them (even if they're a bot)
         return { shouldFilter: false, reason: null };
     }
 
-    // No whitelist - check if this is the bot's own account
     if (GITHUB_BOT_USERNAME && commentAuthor === GITHUB_BOT_USERNAME) {
         correlatedLogger.debug({ commentAuthor }, 'Skipping configured bot username');
         return { shouldFilter: true, reason: 'bot_own_comment' };
     }
 
-    // Auto-detect bot accounts to prevent self-loops
-    // Only filter bots if they're not explicitly whitelisted (we already checked whitelist above)
     const isBotAccount =
         commentAuthor.endsWith('[bot]') ||
         commentAuthor.includes('[bot]') ||
@@ -56,7 +48,6 @@ export function filterCommentByAuthor(commentAuthor, userType = null, correlatio
         return { shouldFilter: true, reason: 'bot_account' };
     }
 
-    // Check blacklist
     if (GITHUB_USER_BLACKLIST.length > 0 && GITHUB_USER_BLACKLIST.includes(commentAuthor)) {
         correlatedLogger.debug({ commentAuthor }, 'Comment author in blacklist, skipping');
         return { shouldFilter: true, reason: 'in_blacklist' };
@@ -65,28 +56,21 @@ export function filterCommentByAuthor(commentAuthor, userType = null, correlatio
     return { shouldFilter: false, reason: null };
 }
 
-/**
- * Check if a comment should trigger processing based on keywords
- * @param {string} commentBody - The comment body text
- * @param {string} correlationId - Correlation ID for logging
- * @returns {Object} { isTriggered: boolean, extractedLlm: string|null }
- */
-export function checkCommentTrigger(commentBody, correlationId = null) {
-    const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+export function checkCommentTrigger(commentBody: string | null | undefined, correlationId: string | null = null): TriggerResult {
+    const correlatedLogger: Logger = correlationId ? logger.withCorrelation(correlationId) : logger as unknown as Logger;
 
-    const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
+    const PR_FOLLOWUP_TRIGGER_KEYWORDS: string[] = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
 
     if (!commentBody) {
         return { isTriggered: false, extractedLlm: null };
     }
 
     let isTriggered = false;
-    let extractedLlm = null;
+    let extractedLlm: string | null = null;
 
     if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
         isTriggered = PR_FOLLOWUP_TRIGGER_KEYWORDS.some(keyword => commentBody.includes(keyword));
 
-        // Try to extract LLM from trigger keyword
         for (const keyword of PR_FOLLOWUP_TRIGGER_KEYWORDS) {
             const llmMatch = commentBody.match(new RegExp(`${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:([\\w.-]+)`));
             if (llmMatch) {
@@ -95,7 +79,6 @@ export function checkCommentTrigger(commentBody, correlationId = null) {
             }
         }
     } else {
-        // No trigger keywords configured - all comments trigger
         isTriggered = true;
     }
 

@@ -1,10 +1,8 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import logger, { generateCorrelationId } from './logger.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
+import type { Logger } from 'pino';
 
-/**
- * Worker task states
- */
 export const TaskStates = {
     PENDING: 'pending',
     PROCESSING: 'processing',
@@ -13,41 +11,123 @@ export const TaskStates = {
     COMPLETED: 'completed',
     FAILED: 'failed',
     CANCELLED: 'cancelled'
-};
+} as const;
 
-/**
- * Worker state manager for persistent task state tracking
- */
+export type TaskState = typeof TaskStates[keyof typeof TaskStates];
+
+export interface IssueRef {
+    number: number;
+    repoOwner: string;
+    repoName: string;
+    type?: string;
+    modelName?: string;
+    [key: string]: unknown;
+}
+
+interface HistoryEntry {
+    state: TaskState;
+    timestamp: string;
+    reason: string;
+    metadata?: Record<string, unknown>;
+}
+
+interface LastError {
+    message: string;
+    category: string;
+    timestamp: string;
+}
+
+interface ClaudeResultSummary {
+    success: boolean;
+    sessionId?: string;
+    executionTime?: number;
+}
+
+interface WorktreeInfo {
+    [key: string]: unknown;
+}
+
+interface PRResult {
+    prNumber?: number;
+    prUrl?: string;
+    [key: string]: unknown;
+}
+
+interface TaskStateData {
+    taskId: string;
+    issueRef: IssueRef;
+    correlationId: string;
+    state: TaskState;
+    createdAt: string;
+    updatedAt: string;
+    attempts: number;
+    history: HistoryEntry[];
+    lastError?: LastError;
+    worktreeInfo?: WorktreeInfo;
+    claudeResult?: ClaudeResultSummary;
+    prResult?: PRResult;
+}
+
+interface UpdateMetadata {
+    isRetry?: boolean;
+    error?: {
+        message: string;
+        category?: string;
+    };
+    worktreeInfo?: WorktreeInfo;
+    claudeResult?: ClaudeResultSummary;
+    prResult?: PRResult;
+    reason?: string;
+    historyMetadata?: Record<string, unknown>;
+    errorCategory?: string;
+    commitHash?: string;
+}
+
+interface TaskResult {
+    prUrl?: string;
+    prNumber?: number;
+    commitResult?: unknown;
+    [key: string]: unknown;
+}
+
+interface ResumableTaskInfo extends TaskStateData {
+    isStale: boolean;
+    staleDuration?: number;
+}
+
+interface WorkerStateManagerOptions {
+    redis?: Record<string, unknown>;
+    keyPrefix?: string;
+    stateExpiry?: number;
+}
+
 export class WorkerStateManager {
-    constructor(options = {}) {
+    private redis: InstanceType<typeof Redis>;
+    private keyPrefix: string;
+    private stateExpiry: number;
+
+    constructor(options: WorkerStateManagerOptions = {}) {
         this.redis = new Redis({
-            host: process.env.REDIS_HOST || '127.0.0.1',
-            port: parseInt(process.env.REDIS_PORT || '6379', 10),
+            host: process.env.REDIS_HOST ?? '127.0.0.1',
+            port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
             maxRetriesPerRequest: null,
             enableReadyCheck: false,
             ...options.redis
         });
 
-        this.keyPrefix = options.keyPrefix || 'worker:state:';
-        this.stateExpiry = options.stateExpiry || 7 * 24 * 3600; // 7 days
+        this.keyPrefix = options.keyPrefix ?? 'worker:state:';
+        this.stateExpiry = options.stateExpiry ?? 7 * 24 * 3600;
 
-        this.redis.on('error', (error) => {
+        this.redis.on('error', (error: Error) => {
             logger.error({ error: error.message }, 'Redis error in WorkerStateManager');
         });
     }
 
-    /**
-     * Creates a task state entry
-     * @param {string} taskId - Unique task identifier
-     * @param {object} issueRef - GitHub issue reference
-     * @param {string} correlationId - Correlation ID for tracking
-     * @returns {Promise<void>}
-     */
-    async createTaskState(taskId, issueRef, correlationId = null) {
-        const state = {
+    async createTaskState(taskId: string, issueRef: IssueRef, correlationId: string | null = null): Promise<TaskStateData> {
+        const state: TaskStateData = {
             taskId,
             issueRef,
-            correlationId: correlationId || generateCorrelationId(),
+            correlationId: correlationId ?? generateCorrelationId(),
             state: TaskStates.PENDING,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -62,7 +142,7 @@ export class WorkerStateManager {
         const key = this.getTaskKey(taskId);
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
 
-        const correlatedLogger = logger.withCorrelation(state.correlationId);
+        const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
             taskId,
             issueNumber: issueRef.number,
@@ -78,8 +158,8 @@ export class WorkerStateManager {
                     correlation_id: state.correlationId,
                     repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
                     issue_number: issueRef.number,
-                    task_type: issueRef.type || 'issue',
-                    model_name: issueRef.modelName || null,
+                    task_type: issueRef.type ?? 'issue',
+                    model_name: issueRef.modelName ?? null,
                     created_at: state.createdAt,
                     initial_job_data: JSON.stringify(issueRef)
                 };
@@ -99,7 +179,7 @@ export class WorkerStateManager {
                 correlatedLogger.debug({ taskId }, 'Task state persisted to database');
             } catch (error) {
                 correlatedLogger.error({
-                    error: error.message,
+                    error: (error as Error).message,
                     taskId
                 }, 'Failed to persist task state to database');
             }
@@ -108,14 +188,7 @@ export class WorkerStateManager {
         return state;
     }
 
-    /**
-     * Updates task state
-     * @param {string} taskId - Task identifier
-     * @param {string} newState - New state
-     * @param {object} metadata - Additional metadata
-     * @returns {Promise<object>} Updated state
-     */
-    async updateTaskState(taskId, newState, metadata = {}) {
+    async updateTaskState(taskId: string, newState: TaskState, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
         const stateJson = await this.redis.get(key);
 
@@ -123,18 +196,17 @@ export class WorkerStateManager {
             throw new Error(`Task state not found for taskId: ${taskId}`);
         }
 
-        const state = JSON.parse(stateJson);
+        const state: TaskStateData = JSON.parse(stateJson);
         const previousState = state.state;
 
         state.state = newState;
         state.updatedAt = new Date().toISOString();
         state.attempts = metadata.isRetry ? (state.attempts + 1) : state.attempts;
 
-        // Add metadata
         if (metadata.error) {
             state.lastError = {
                 message: metadata.error.message,
-                category: metadata.error.category,
+                category: metadata.error.category ?? 'unknown',
                 timestamp: new Date().toISOString()
             };
         }
@@ -155,17 +227,16 @@ export class WorkerStateManager {
             state.prResult = metadata.prResult;
         }
 
-        // Add to history
         state.history.push({
             state: newState,
             timestamp: new Date().toISOString(),
-            reason: metadata.reason || `State changed from ${previousState}`,
-            metadata: metadata.historyMetadata || {}
+            reason: metadata.reason ?? `State changed from ${previousState}`,
+            metadata: metadata.historyMetadata ?? {}
         });
 
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
 
-        const correlatedLogger = logger.withCorrelation(state.correlationId);
+        const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
             taskId,
             issueNumber: state.issueRef.number,
@@ -181,9 +252,9 @@ export class WorkerStateManager {
                     task_id: taskId,
                     state: newState,
                     timestamp: new Date().toISOString(),
-                    reason: metadata.reason || `State changed from ${previousState}`,
+                    reason: metadata.reason ?? `State changed from ${previousState}`,
                     metadata: JSON.stringify({
-                        ...(metadata.historyMetadata || {}),
+                        ...(metadata.historyMetadata ?? {}),
                         previousState,
                         attempts: state.attempts,
                         error: metadata.error,
@@ -199,7 +270,7 @@ export class WorkerStateManager {
                 correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
             } catch (error) {
                 correlatedLogger.error({
-                    error: error.message,
+                    error: (error as Error).message,
                     taskId
                 }, 'Failed to persist task state update to database');
             }
@@ -208,12 +279,7 @@ export class WorkerStateManager {
         return state;
     }
 
-    /**
-     * Gets task state
-     * @param {string} taskId - Task identifier
-     * @returns {Promise<object|null>} Task state or null if not found
-     */
-    async getTaskState(taskId) {
+    async getTaskState(taskId: string): Promise<TaskStateData | null> {
         const key = this.getTaskKey(taskId);
         const stateJson = await this.redis.get(key);
 
@@ -221,23 +287,17 @@ export class WorkerStateManager {
             return null;
         }
 
-        return JSON.parse(stateJson);
+        return JSON.parse(stateJson) as TaskStateData;
     }
 
-    /**
-     * Checks if task can be resumed after worker restart
-     * @param {string} taskId - Task identifier
-     * @returns {Promise<object|null>} Resumable task info or null
-     */
-    async getResumableTask(taskId) {
+    async getResumableTask(taskId: string): Promise<ResumableTaskInfo | null> {
         const state = await this.getTaskState(taskId);
 
         if (!state) {
             return null;
         }
 
-        // Tasks in these states can potentially be resumed
-        const resumableStates = [
+        const resumableStates: TaskState[] = [
             TaskStates.PROCESSING,
             TaskStates.CLAUDE_EXECUTION,
             TaskStates.POST_PROCESSING
@@ -247,8 +307,7 @@ export class WorkerStateManager {
             return null;
         }
 
-        // Check if task is stale (stuck for too long)
-        const staleThreshold = 30 * 60 * 1000; // 30 minutes
+        const staleThreshold = 30 * 60 * 1000;
         const updatedAt = new Date(state.updatedAt).getTime();
         const now = Date.now();
 
@@ -275,14 +334,7 @@ export class WorkerStateManager {
         };
     }
 
-    /**
-     * Updates metadata for a specific history entry
-     * @param {string} taskId - Task identifier
-     * @param {string} historyState - State name to find in history
-     * @param {object} metadata - Metadata to merge
-     * @returns {Promise<object>} Updated state
-     */
-    async updateHistoryMetadata(taskId, historyState, metadata = {}) {
+    async updateHistoryMetadata(taskId: string, historyState: TaskState, metadata: Record<string, unknown> = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
         const stateJson = await this.redis.get(key);
 
@@ -290,13 +342,11 @@ export class WorkerStateManager {
             throw new Error(`Task state not found for taskId: ${taskId}`);
         }
 
-        const state = JSON.parse(stateJson);
+        const state: TaskStateData = JSON.parse(stateJson);
 
-        // Find the history entry with the specified state (most recent one)
         const historyIndex = state.history.findLastIndex(h => h.state === historyState);
 
         if (historyIndex >= 0) {
-            // Merge new metadata with existing metadata
             state.history[historyIndex].metadata = {
                 ...state.history[historyIndex].metadata,
                 ...metadata
@@ -305,7 +355,7 @@ export class WorkerStateManager {
             state.updatedAt = new Date().toISOString();
             await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
 
-            const correlatedLogger = logger.withCorrelation(state.correlationId);
+            const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
             correlatedLogger.debug({
                 taskId,
                 historyState,
@@ -321,22 +371,12 @@ export class WorkerStateManager {
         return state;
     }
 
-    /**
-     * Marks task as failed
-     * @param {string} taskId - Task identifier
-     * @param {Error} error - Error that caused failure
-     * @param {object} metadata - Additional metadata
-     * @returns {Promise<object>} Updated state
-     */
-    async markTaskFailed(taskId, error, metadata = {}) {
-        const errorMetadata = {
+    async markTaskFailed(taskId: string, error: Error, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
+        const errorMetadata: UpdateMetadata = {
             ...metadata,
             error: {
                 message: error.message,
-                category: metadata.errorCategory || 'unknown',
-                stack: error.stack,
-                code: error.code,
-                status: error.status
+                category: metadata.errorCategory ?? 'unknown',
             },
             reason: `Task failed: ${error.message}`
         };
@@ -344,45 +384,35 @@ export class WorkerStateManager {
         return await this.updateTaskState(taskId, TaskStates.FAILED, errorMetadata);
     }
 
-    /**
-     * Marks task as completed
-     * @param {string} taskId - Task identifier
-     * @param {object} result - Task result
-     * @returns {Promise<object>} Updated state
-     */
-    async markTaskCompleted(taskId, result = {}) {
-        const metadata = {
-            result,
+    async markTaskCompleted(taskId: string, result: TaskResult = {}): Promise<TaskStateData> {
+        const metadata: UpdateMetadata = {
+            prResult: result,
             reason: 'Task completed successfully',
             historyMetadata: {
                 pr: (result.prUrl && result.prNumber) ? {
                     number: result.prNumber,
                     url: result.prUrl
                 } : null,
-                commitResult: result.commitResult || null
+                commitResult: result.commitResult ?? null
             }
         };
 
         return await this.updateTaskState(taskId, TaskStates.COMPLETED, metadata);
     }
 
-    /**
-     * Gets all tasks in processing states (for recovery)
-     * @returns {Promise<Array>} Array of processing tasks
-     */
-    async getProcessingTasks() {
+    async getProcessingTasks(): Promise<TaskStateData[]> {
         const pattern = `${this.keyPrefix}*`;
         const keys = await this.redis.keys(pattern);
 
-        const processingTasks = [];
+        const processingTasks: TaskStateData[] = [];
 
         for (const key of keys) {
             try {
                 const stateJson = await this.redis.get(key);
                 if (!stateJson) continue;
 
-                const state = JSON.parse(stateJson);
-                const processingStates = [
+                const state: TaskStateData = JSON.parse(stateJson);
+                const processingStates: TaskState[] = [
                     TaskStates.PROCESSING,
                     TaskStates.CLAUDE_EXECUTION,
                     TaskStates.POST_PROCESSING
@@ -394,7 +424,7 @@ export class WorkerStateManager {
             } catch (error) {
                 logger.warn({
                     key,
-                    error: error.message
+                    error: (error as Error).message
                 }, 'Failed to parse task state during recovery scan');
             }
         }
@@ -402,12 +432,7 @@ export class WorkerStateManager {
         return processingTasks;
     }
 
-    /**
-     * Clears completed and failed tasks older than specified time
-     * @param {number} maxAge - Maximum age in seconds (default: 24 hours)
-     * @returns {Promise<number>} Number of tasks cleaned up
-     */
-    async cleanupOldTasks(maxAge = 24 * 3600) {
+    async cleanupOldTasks(maxAge: number = 24 * 3600): Promise<number> {
         const pattern = `${this.keyPrefix}*`;
         const keys = await this.redis.keys(pattern);
 
@@ -419,8 +444,8 @@ export class WorkerStateManager {
                 const stateJson = await this.redis.get(key);
                 if (!stateJson) continue;
 
-                const state = JSON.parse(stateJson);
-                const cleanupStates = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
+                const state: TaskStateData = JSON.parse(stateJson);
+                const cleanupStates: TaskState[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
 
                 if (cleanupStates.includes(state.state)) {
                     const updatedAt = new Date(state.updatedAt).getTime();
@@ -439,7 +464,7 @@ export class WorkerStateManager {
             } catch (error) {
                 logger.warn({
                     key,
-                    error: error.message
+                    error: (error as Error).message
                 }, 'Failed to cleanup task state');
             }
         }
@@ -453,37 +478,25 @@ export class WorkerStateManager {
         return cleanedCount;
     }
 
-    /**
-     * Generates task key
-     * @param {string} taskId - Task identifier
-     * @returns {string} Redis key
-     */
-    getTaskKey(taskId) {
+    getTaskKey(taskId: string): string {
         return `${this.keyPrefix}${taskId}`;
     }
 
-    /**
-     * Closes Redis connection
-     * @returns {Promise<void>}
-     */
-    async close() {
+    async close(): Promise<void> {
         await this.redis.quit();
     }
 }
 
-/**
- * Creates a singleton instance of WorkerStateManager
- */
-let stateManagerInstance = null;
+let stateManagerInstance: WorkerStateManager | null = null;
 
-export function getStateManager(options = {}) {
+export function getStateManager(options: WorkerStateManagerOptions = {}): WorkerStateManager {
     if (!stateManagerInstance) {
         stateManagerInstance = new WorkerStateManager(options);
     }
     return stateManagerInstance;
 }
 
-export async function closeStateManager() {
+export async function closeStateManager(): Promise<void> {
     if (stateManagerInstance) {
         await stateManagerInstance.close();
         stateManagerInstance = null;
