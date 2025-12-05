@@ -13,6 +13,9 @@ export interface RetryOptions extends Partial<RetryConfig> {
     correlationId?: string;
 }
 
+/**
+ * Default retry configuration
+ */
 const DEFAULT_RETRY_CONFIG: RetryConfig = {
     maxAttempts: 3,
     baseDelay: 1000,
@@ -31,6 +34,12 @@ interface ErrorLike {
     message?: string;
 }
 
+/**
+ * Calculates delay for exponential backoff with optional jitter
+ * @param attempt - Current attempt number (0-based)
+ * @param config - Retry configuration
+ * @returns Delay in milliseconds
+ */
 function calculateDelay(attempt: number, config: RetryConfig): number {
     const exponentialDelay = config.baseDelay * Math.pow(config.exponentialBase, attempt);
     let delay = Math.min(exponentialDelay, config.maxDelay);
@@ -43,6 +52,12 @@ function calculateDelay(attempt: number, config: RetryConfig): number {
     return Math.max(delay, 0);
 }
 
+/**
+ * Determines if an error is retryable
+ * @param error - The error to check
+ * @param config - Retry configuration
+ * @returns Whether the error is retryable
+ */
 function isRetryableError(error: Error | unknown, config: RetryConfig): boolean {
     const err = error as ErrorLike;
 
@@ -75,6 +90,13 @@ function isRetryableError(error: Error | unknown, config: RetryConfig): boolean 
     );
 }
 
+/**
+ * Executes a function with exponential backoff retry logic
+ * @param fn - The async function to retry
+ * @param options - Retry configuration options
+ * @param context - Context for logging (operation name)
+ * @returns Result of the function
+ */
 export async function withRetry<T>(
     fn: () => Promise<T>,
     options: RetryOptions = {},
@@ -169,10 +191,20 @@ export async function withRetry<T>(
     throw lastError;
 }
 
+/**
+ * Sleep for the specified number of milliseconds
+ * @param ms - Milliseconds to sleep
+ * @returns Promise that resolves after the delay
+ */
 function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Creates a retry wrapper with predefined configuration for specific operations
+ * @param config - Default retry configuration
+ * @returns Retry wrapper function
+ */
 export function createRetryWrapper(config: Partial<RetryConfig> = {}): <T>(
     fn: () => Promise<T>,
     context?: string,
@@ -190,7 +222,11 @@ export function createRetryWrapper(config: Partial<RetryConfig> = {}): <T>(
     };
 }
 
+/**
+ * Predefined retry configurations for common operations
+ */
 export const retryConfigs: Record<string, Partial<RetryConfig>> = {
+    // GitHub API operations
     githubApi: {
         maxAttempts: 3,
         baseDelay: 2000,
@@ -199,6 +235,7 @@ export const retryConfigs: Record<string, Partial<RetryConfig>> = {
         retryableErrors: ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND']
     },
 
+    // Git operations
     git: {
         maxAttempts: 2,
         baseDelay: 1000,
@@ -207,6 +244,7 @@ export const retryConfigs: Record<string, Partial<RetryConfig>> = {
         retryableErrors: ['ECONNRESET', 'ETIMEDOUT', 'NETWORK_ERROR']
     },
 
+    // Git push operations (with authentication retry)
     gitPush: {
         maxAttempts: 3,
         baseDelay: 2000,
@@ -215,6 +253,7 @@ export const retryConfigs: Record<string, Partial<RetryConfig>> = {
         retryableErrors: ['ECONNRESET', 'ETIMEDOUT', 'NETWORK_ERROR', 'EAUTH', 'ENOTFOUND']
     },
 
+    // Claude Code execution
     claude: {
         maxAttempts: 2,
         baseDelay: 5000,
@@ -223,6 +262,7 @@ export const retryConfigs: Record<string, Partial<RetryConfig>> = {
         retryableErrors: ['TIMEOUT', 'DOCKER_ERROR', 'NETWORK_ERROR']
     },
 
+    // Database/Redis operations
     redis: {
         maxAttempts: 5,
         baseDelay: 500,

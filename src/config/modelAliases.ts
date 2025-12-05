@@ -32,6 +32,7 @@ function getOpenRouterId(internalModelId: ModelId): string {
     return OPENROUTER_MODEL_MAP[internalModelId] ?? internalModelId;
 }
 
+// Default model to use when none specified
 const DEFAULT_MODEL_ALIAS: ModelAlias = 'sonnet';
 
 function resolveModelAlias(modelNameOrAlias?: string | null): ModelId {

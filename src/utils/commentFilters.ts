@@ -1,6 +1,11 @@
 import logger from './logger.js';
 import type { Logger } from 'pino';
 
+/**
+ * Centralized comment filtering logic
+ * Used by both polling (daemon) and webhook handlers
+ */
+
 interface FilterResult {
     shouldFilter: boolean;
     reason: string | null;
@@ -11,6 +16,13 @@ interface TriggerResult {
     extractedLlm: string | null;
 }
 
+/**
+ * Check if a comment should be filtered out based on author
+ * @param commentAuthor - The comment author's username
+ * @param userType - The user type (e.g., 'Bot', 'User') - optional
+ * @param correlationId - Correlation ID for logging
+ * @returns Object with shouldFilter boolean and reason string
+ */
 export function filterCommentByAuthor(commentAuthor: string, userType: string | null = null, correlationId: string | null = null): FilterResult {
     if (typeof userType === 'string' && userType.length === 36 && userType.includes('-')) {
         correlationId = userType;
@@ -56,6 +68,12 @@ export function filterCommentByAuthor(commentAuthor: string, userType: string | 
     return { shouldFilter: false, reason: null };
 }
 
+/**
+ * Check if a comment should trigger processing based on keywords
+ * @param commentBody - The comment body text
+ * @param correlationId - Correlation ID for logging
+ * @returns Object with isTriggered boolean and extractedLlm string or null
+ */
 export function checkCommentTrigger(commentBody: string | null | undefined, correlationId: string | null = null): TriggerResult {
     const correlatedLogger: Logger = correlationId ? logger.withCorrelation(correlationId) : logger as unknown as Logger;
 

@@ -209,6 +209,12 @@ function logConversationDebug(claudeResult: ClaudeResult | null, correlationId?:
     }
 }
 
+/**
+ * Records LLM metrics for a completed Claude execution
+ * @param claudeResult - Result from Claude execution
+ * @param issueRef - Issue reference
+ * @param options - Additional options including jobType, correlationId, and taskId
+ */
 export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueRef: IssueRef, options: RecordMetricsOptions = {}): Promise<void> {
     const { jobType = 'issue', correlationId, taskId = null } = options;
     const metricsRedis = new Redis(connectionOptions);

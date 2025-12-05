@@ -1,6 +1,9 @@
 import logger from './logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 
+/**
+ * Error categories for classification
+ */
 export const ErrorCategories = {
     GITHUB_API: 'github_api',
     CLAUDE_EXECUTION: 'claude_execution',
@@ -46,6 +49,12 @@ interface ErrorLike {
     stack?: string;
 }
 
+/**
+ * Generates a failure label based on triggering label and error category
+ * @param triggeringLabel - The primary label that triggered processing
+ * @param errorCategory - The error category
+ * @returns The failure label
+ */
 function generateFailureLabel(triggeringLabel: string, errorCategory: ErrorCategory): string {
     const categorySuffix: Record<ErrorCategory, string> = {
         [ErrorCategories.GITHUB_API]: 'github-api',
@@ -107,6 +116,12 @@ function categorizeByText(text: string, categoryMap: [string, ErrorCategory][]):
     return null;
 }
 
+/**
+ * Categorizes an error based on its properties
+ * @param error - The error to categorize
+ * @param context - Context where the error occurred
+ * @returns Error category
+ */
 export function categorizeError(error: Error | unknown, context: string = ''): ErrorCategory {
     const err = error as ErrorLike;
     return categorizeByErrorCode(err)
@@ -116,6 +131,13 @@ export function categorizeError(error: Error | unknown, context: string = ''): E
         ?? ErrorCategories.UNKNOWN;
 }
 
+/**
+ * Enhanced error handler for async operations with correlation ID support
+ * @param error - The error object
+ * @param context - Context where the error occurred
+ * @param options - Additional options
+ * @returns Error details including category
+ */
 export function handleError(error: Error | unknown, context: string, options: ErrorHandlerOptions = {}): ErrorDetails {
     const {
         correlationId,
@@ -163,6 +185,13 @@ export function handleError(error: Error | unknown, context: string, options: Er
     return errorDetails;
 }
 
+/**
+ * Handles issue failure by updating GitHub labels
+ * @param issueRef - GitHub issue reference
+ * @param errorCategory - Categorized error type
+ * @param originalError - The original error
+ * @param correlationId - Correlation ID
+ */
 async function handleIssueFailure(
     issueRef: IssueRef,
     errorCategory: ErrorCategory,
@@ -239,6 +268,13 @@ This issue has been marked as failed and moved to the Dead Letter Queue for manu
     }
 }
 
+/**
+ * Wraps an async function with enhanced error handling
+ * @param fn - The async function to wrap
+ * @param context - Context for error logging
+ * @param options - Additional options
+ * @returns Wrapped function
+ */
 export function withErrorHandling<T extends (...args: unknown[]) => Promise<unknown>>(
     fn: T,
     context: string,
@@ -254,6 +290,13 @@ export function withErrorHandling<T extends (...args: unknown[]) => Promise<unkn
     };
 }
 
+/**
+ * Creates a safe async function that doesn't throw
+ * @param fn - The async function to wrap
+ * @param defaultValue - Default value to return on error
+ * @param options - Additional options
+ * @returns Wrapped function
+ */
 export function safeAsync<T, Args extends unknown[]>(
     fn: (...args: Args) => Promise<T>,
     defaultValue: T | null = null,
@@ -279,6 +322,13 @@ interface IdempotentArg {
     correlationId?: string;
 }
 
+/**
+ * Creates an idempotent operation wrapper
+ * @param fn - The async function to make idempotent
+ * @param checkFn - Function to check if operation already completed
+ * @param context - Context for logging
+ * @returns Idempotent wrapped function
+ */
 export function makeIdempotent<T, Args extends unknown[]>(
     fn: (...args: Args) => Promise<T>,
     checkFn: (...args: Args) => Promise<T | boolean | null>,

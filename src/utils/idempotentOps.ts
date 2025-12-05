@@ -30,6 +30,9 @@ interface Octokit {
     paginate: <T = unknown>(route: string, options?: Record<string, unknown>) => Promise<T[]>;
 }
 
+/**
+ * Idempotent GitHub label operations
+ */
 export class IdempotentGitHubOps {
     private octokit: Octokit;
     private correlationId: string;
@@ -41,6 +44,14 @@ export class IdempotentGitHubOps {
         this.correlatedLogger = logger.withCorrelation(correlationId);
     }
 
+    /**
+     * Idempotently adds a label to an issue
+     * @param owner - Repository owner
+     * @param repo - Repository name
+     * @param issueNumber - Issue number
+     * @param label - Label to add
+     * @returns True if label was added or already existed
+     */
     async addLabel(owner: string, repo: string, issueNumber: number, label: string): Promise<boolean> {
         const checkLabelExists = async (): Promise<boolean> => {
             try {
@@ -95,6 +106,14 @@ export class IdempotentGitHubOps {
         }
     }
 
+    /**
+     * Idempotently removes a label from an issue
+     * @param owner - Repository owner
+     * @param repo - Repository name
+     * @param issueNumber - Issue number
+     * @param label - Label to remove
+     * @returns True if label was removed or didn't exist
+     */
     async removeLabel(owner: string, repo: string, issueNumber: number, label: string): Promise<boolean> {
         const checkLabelNotExists = async (): Promise<boolean> => {
             try {
@@ -160,6 +179,14 @@ export class IdempotentGitHubOps {
         }
     }
 
+    /**
+     * Idempotently adds a comment to an issue
+     * @param owner - Repository owner
+     * @param repo - Repository name
+     * @param issueNumber - Issue number
+     * @param options - Comment options including body and optional idempotency key
+     * @returns Comment data
+     */
     async addComment(
         owner: string,
         repo: string,
@@ -232,6 +259,13 @@ export class IdempotentGitHubOps {
         }
     }
 
+    /**
+     * Idempotently checks if a PR exists for a branch
+     * @param owner - Repository owner
+     * @param repo - Repository name
+     * @param head - Head branch (e.g., "username:branch-name")
+     * @returns PR data if exists, null otherwise
+     */
     async checkPRExists(owner: string, repo: string, head: string): Promise<{ number: number; url: string } | null> {
         try {
             const prs = await withRetry(
@@ -259,6 +293,9 @@ export class IdempotentGitHubOps {
     }
 }
 
+/**
+ * Idempotent Git operations
+ */
 export class IdempotentGitOps {
     private correlationId: string;
     private correlatedLogger: Logger;
@@ -268,6 +305,12 @@ export class IdempotentGitOps {
         this.correlatedLogger = logger.withCorrelation(correlationId);
     }
 
+    /**
+     * Idempotently ensures a repository is cloned/updated
+     * @param repoUrl - Repository URL
+     * @param localPath - Local path for the repository
+     * @returns Local repository path
+     */
     async ensureRepoCloned(repoUrl: string, localPath: string): Promise<string> {
         const fs = await import('fs');
         const path = await import('path');
@@ -292,6 +335,13 @@ export class IdempotentGitOps {
         throw new Error('Repository does not exist and cloning should be handled by existing function');
     }
 
+    /**
+     * Idempotently creates a worktree
+     * @param repoPath - Repository path
+     * @param worktreePath - Worktree path
+     * @param branchName - Branch name
+     * @returns True if worktree was created or already exists
+     */
     async ensureWorktreeExists(repoPath: string, worktreePath: string, branchName: string): Promise<boolean> {
         const fs = await import('fs');
 

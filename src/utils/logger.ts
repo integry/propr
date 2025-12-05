@@ -15,6 +15,12 @@ const baseLogger: Logger = pino({
     } : undefined,
 });
 
+/**
+ * Creates a child logger with correlation ID
+ * @param correlationId - Correlation ID to include in all log messages
+ * @param additionalContext - Additional context to include
+ * @returns Child logger instance
+ */
 function createCorrelatedLogger(correlationId: string, additionalContext: Record<string, unknown> = {}): Logger {
     return baseLogger.child({
         correlationId,
@@ -22,6 +28,10 @@ function createCorrelatedLogger(correlationId: string, additionalContext: Record
     });
 }
 
+/**
+ * Generates a new correlation ID
+ * @returns UUID-based correlation ID
+ */
 function generateCorrelationId(): string {
     return uuidv4();
 }
@@ -41,6 +51,9 @@ interface EnhancedLogger {
     logWithContext: (level: LogLevel, messageOrObj: unknown, ...args: unknown[]) => void;
 }
 
+/**
+ * Enhanced logger with correlation ID support
+ */
 const logger: EnhancedLogger = {
     trace: baseLogger.trace.bind(baseLogger),
     debug: baseLogger.debug.bind(baseLogger),
