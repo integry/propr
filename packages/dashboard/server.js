@@ -896,7 +896,7 @@ app.post('/api/task/:taskId/deep-dive-analysis', ensureAuthenticated, async (req
     const settings = await configRepoManager.loadSettings();
     const advancedModel = settings.analysis_model_advanced || process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514';
 
-    const { getExecutionAnalysis } = await import('../../src/services/analysisService.js');
+    const { getExecutionAnalysis } = await import('../../dist/src/services/analysisService.js');
     
     const analysisReport = await getExecutionAnalysis({
       executionId: latestExecution.execution_id,
@@ -1782,29 +1782,29 @@ app.post('/api/import-tasks', ensureAuthenticated, async (req, res) => {
 
 async function start() {
   try {
-    // Dynamically import ES module
-    const loggerModule = await import('../../src/utils/logger.js');
+    // Dynamically import ES module from compiled TypeScript
+    const loggerModule = await import('../../dist/src/utils/logger.js');
     generateCorrelationId = loggerModule.generateCorrelationId;
 
-    configRepoManager = await import('../../src/config/configRepoManager.js');
-    
+    configRepoManager = await import('../../dist/src/config/configRepoManager.js');
+
     // Import webhook handler module (initialization happens after Redis is ready)
     let webhookModule;
     let initializeWebhookHandler;
     let daemonModule;
     try {
-      webhookModule = await import('../../src/webhook/webhookHandler.js');
+      webhookModule = await import('../../dist/src/webhook/webhookHandler.js');
       processWebhookEvent = webhookModule.processWebhookEvent;
       initializeWebhookHandler = webhookModule.initializeWebhookHandler;
-      
+
       // Import daemon functions for webhook processing
-      daemonModule = await import('../../src/daemon.js');
+      daemonModule = await import('../../dist/src/daemon.js');
     } catch (error) {
       console.warn('[webhook] Failed to import webhook handler:', error.message);
     }
 
     // Initialize PostgreSQL if enabled
-    const dbModule = await import('../../src/db/postgres.js');
+    const dbModule = await import('../../dist/src/db/postgres.js');
     db = dbModule.db;
     isDbEnabled = dbModule.isEnabled;
     

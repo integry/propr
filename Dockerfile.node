@@ -9,12 +9,15 @@ WORKDIR /usr/src/app
 COPY package*.json ./
 COPY packages/dashboard/package*.json ./packages/dashboard/
 
-# Install dependencies
-RUN npm install --omit=dev
-RUN cd packages/dashboard && npm install --omit=dev
+# Install all dependencies (including dev for TypeScript compilation)
+RUN npm install
+RUN cd packages/dashboard && npm install
 
 # Copy application code
 COPY . .
+
+# Build TypeScript
+RUN npm run build
 
 # Create necessary directories
 RUN mkdir -p /tmp/git-processor
