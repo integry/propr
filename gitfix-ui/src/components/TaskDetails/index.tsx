@@ -11,7 +11,7 @@ import LogFilesModal from './LogFilesModal';
 import MetadataBar from './MetadataBar';
 import TaskHeader from './TaskHeader';
 import RealTimeStats from './RealTimeStats';
-import { useTaskData, usePromptData, useLogFilesData } from './useTaskData';
+import { useTaskData, usePromptData, useLogFilesData } from './hooks';
 import { useThinkingLog } from './useThinkingLog';
 import { getHistoryDerivedData } from './useHistoryData';
 

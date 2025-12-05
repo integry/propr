@@ -4,6 +4,7 @@ import { issueQueue, COMMENT_BATCH_DELAY_MS } from '../queue/taskQueue.js';
 import { filterCommentByAuthor, checkCommentTrigger } from '../utils/commentFilters.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { getPendingPrCommentsKey } from '../utils/constants.js';
 
 export async function handleCommentDeleted(payload, eventType, correlationId, config) {
     const { redisClient } = config;
@@ -240,7 +241,7 @@ async function checkExistingJob(prNumber, owner, repo) {
 async function storeCommentForBatch(comment, commentAuthor, eventContext, config) {
     const { eventType, prNumber, owner, repo } = eventContext;
     const { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS } = config;
-    const pendingCommentsKey = `pending-pr-comments:${owner}:${repo}:${prNumber}`;
+    const pendingCommentsKey = getPendingPrCommentsKey(owner, repo, prNumber);
 
     let enhancedCommentBody = comment.body;
     if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {

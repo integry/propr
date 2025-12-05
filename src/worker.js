@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { GITHUB_ISSUE_QUEUE_NAME, createWorker, issueQueue } from './queue/taskQueue.js';
+import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from './queue/taskQueue.js';
 import logger, { generateCorrelationId } from './utils/logger.js';
 import { getAuthenticatedOctokit } from './auth/githubAuth.js';
 import { handleError } from './utils/errorHandler.js';
@@ -19,6 +19,7 @@ import Redis from 'ioredis';
 import { loadAiPrimaryTag, loadSettings } from './config/configRepoManager.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
 import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJob.js';
+import { handleSimpleUsageLimitError } from './jobs/issueJobHelpers.js';
 
 // Configuration
 const AI_PROCESSING_TAG = process.env.AI_PROCESSING_TAG || 'AI-processing';
@@ -35,18 +36,6 @@ async function getAiPrimaryTag() {
     return process.env.AI_PRIMARY_TAG || 'AI';
 }
 
-
-// Buffer to add AFTER the reset timestamp to ensure limit is reset
-const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10);
-const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || (2 * 60 * 1000), 10);
-
-async function handleUsageLimitError(error, job, correlatedLogger, repository) {
-    correlatedLogger.warn({ repository, resetTimestamp: error.resetTimestamp }, 'Claude usage limit hit during task import processing. Requeueing job.');
-    const resetTimeUTC = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
-    const delay = (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
-    await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
-    return { status: 'requeued', repository, delay };
-}
 
 
 
@@ -188,7 +177,7 @@ async function processTaskImportJob(job) {
 
     } catch (error) {
         if (error instanceof UsageLimitError) {
-            return handleUsageLimitError(error, job, correlatedLogger, repository);
+            return handleSimpleUsageLimitError(error, job, correlatedLogger, repository);
         }
         correlatedLogger.error({ error: error.message, stack: error.stack }, 'Task import job failed');
         await stateManager.updateState(TaskStates.FAILED, `Task import failed: ${error.message}`);

@@ -13,6 +13,7 @@ import { issueQueue } from '../queue/taskQueue.js';
 import Redis from 'ioredis';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { loadPrLabel } from '../config/configRepoManager.js';
+import { getPendingPrCommentsKey } from '../utils/constants.js';
 import {
     validateAndFilterComments,
     filterUnprocessedComments,
@@ -234,7 +235,7 @@ function processPendingComments(commentsToProcess, pendingComments, correlatedLo
 
 async function pickUpPendingComments(commentsToProcess, repoOwner, repoName, options = {}) {
     const { pullRequestNumber, correlatedLogger } = options;
-    const pendingCommentsKey = `pending-pr-comments:${repoOwner}:${repoName}:${pullRequestNumber}`;
+    const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
     try {
         const pendingComments = await redisClient.lrange(pendingCommentsKey, 0, -1);
         if (pendingComments.length > 0) {
@@ -409,7 +410,7 @@ async function cleanupJob(options) {
     }
 
     try {
-        const pendingCommentsKey = `pending-pr-comments:${repoOwner}:${repoName}:${pullRequestNumber}`;
+        const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
         const remainingPendingComments = await redisClient.llen(pendingCommentsKey);
         if (remainingPendingComments > 0) {
             correlatedLogger.info({ pullRequestNumber, pendingCount: remainingPendingComments }, 'Found pending comments that arrived during processing, queuing follow-up job');

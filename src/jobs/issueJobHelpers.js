@@ -6,8 +6,20 @@ import { formatResetTime } from '../utils/scheduling.js';
 import { issueQueue } from '../queue/taskQueue.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 
-const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10);
-const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || (2 * 60 * 1000), 10);
+export const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || (5 * 60 * 1000), 10);
+export const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || (2 * 60 * 1000), 10);
+
+export function calculateUsageLimitDelay(error) {
+    const resetTimeUTC = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
+    return (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
+}
+
+export async function handleSimpleUsageLimitError(error, job, correlatedLogger, repository) {
+    correlatedLogger.warn({ repository, resetTimestamp: error.resetTimestamp }, 'Claude usage limit hit during processing. Requeueing job.');
+    const delay = calculateUsageLimitDelay(error);
+    await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
+    return { status: 'requeued', repository, delay };
+}
 
 export async function handleUsageLimitError(error, job, issueRef, options = {}) {
     const { octokit, correlatedLogger, stateManager, taskId } = options;
@@ -19,8 +31,7 @@ export async function handleUsageLimitError(error, job, issueRef, options = {}) 
         resetTimestamp: error.resetTimestamp
     }, 'Claude usage limit hit during issue processing. Requeueing job.');
 
-    const resetTimeUTC = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
-    const delay = (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
+    const delay = calculateUsageLimitDelay(error);
     const readableResetTime = formatResetTime(error.resetTimestamp);
 
     if (octokit) {
