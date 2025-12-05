@@ -38,3 +38,4 @@ const config: GitFixConfig = {
 };
 
 export default config;
+
