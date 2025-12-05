@@ -1,10 +1,11 @@
 import js from '@eslint/js'
 import globals from 'globals'
- 
+import tseslint from 'typescript-eslint'
+
 export default [
   { ignores: ['node_modules', 'dist', 'coverage'] },
   {
-    files: ['src/**/*.js'],
+    files: ['src/**/*.js', 'src/**/*.ts'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
@@ -21,4 +22,8 @@ export default [
       'max-params': ['warn', { max: 4 }],
     },
   },
+  ...tseslint.configs.recommended.map(config => ({
+    ...config,
+    files: ['src/**/*.ts'],
+  })),
 ]
