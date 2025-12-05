@@ -276,7 +276,7 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
 
     const githubTokenKey = `github:token:${task.repository}`;
     const tokenData = await redis.get(githubTokenKey);
-    const githubToken = tokenData || process.env.GH_TOKEN;
+    const githubToken = tokenData || process.env.GH_TOKEN || '';
 
     const [repoOwner, repoName] = task.repository.split('/');
     const analysisText: string = await runLightweightLLMAnalysis({
