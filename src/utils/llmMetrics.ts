@@ -4,16 +4,15 @@ import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import { analysisQueue } from '../queue/taskQueue.js';
 import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
+import type {
+    RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing,
+    ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics,
+    ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent,
+    LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData
+} from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
 const REDIS_PORT: number = parseInt(process.env.REDIS_PORT ?? '6379', 10);
-
-interface RedisConnectionOptions {
-    host: string;
-    port: number;
-    maxRetriesPerRequest: null;
-    enableReadyCheck: boolean;
-}
 
 const connectionOptions: RedisConnectionOptions = {
     host: REDIS_HOST,
@@ -21,197 +20,6 @@ const connectionOptions: RedisConnectionOptions = {
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
 };
-
-interface Usage {
-    input_tokens?: number;
-    output_tokens?: number;
-}
-
-interface Message {
-    usage?: Usage;
-    content?: MessageContent[];
-}
-
-interface MessageContent {
-    type: string;
-    name?: string;
-    input?: unknown;
-    id?: string;
-}
-
-interface ConversationStep {
-    message?: Message;
-    timestamp?: string;
-    type?: string;
-    isError?: boolean;
-    metadata?: Record<string, unknown>;
-}
-
-interface FinalResult {
-    num_turns?: number;
-    cost_usd?: number;
-    total_cost_usd?: number;
-}
-
-interface ClaudeResult {
-    model?: string;
-    success?: boolean;
-    executionTime?: number;
-    sessionId?: string;
-    conversationId?: string | null;
-    finalResult?: FinalResult;
-    conversationLog?: ConversationStep[];
-    error?: string;
-}
-
-interface IssueRef {
-    number: number;
-    repoOwner: string;
-    repoName: string;
-}
-
-interface RecordMetricsOptions {
-    jobType?: string;
-    correlationId?: string;
-    taskId?: string | null;
-}
-
-interface ModelPricing {
-    prompt: number;
-    completion: number;
-}
-
-interface ExtractedMetrics {
-    model: string;
-    success: boolean;
-    executionTimeMs: number;
-    executionTimeSec: number;
-    numTurns: number;
-    sessionId: string;
-    conversationId: string | null;
-}
-
-interface AggregatedMetrics {
-    model: string;
-    success: boolean;
-    costUsd: number;
-    numTurns: number;
-    executionTimeMs: number;
-    dateKey: string;
-}
-
-interface CostCheckMetrics {
-    timestamp: string;
-    correlationId?: string;
-    costUsd: number;
-    model: string;
-    numTurns: number;
-}
-
-interface PersistMetrics {
-    sessionId: string;
-    conversationId: string | null;
-    executionTimeMs: number;
-    model: string;
-    success: boolean;
-    numTurns: number;
-    costUsd: number;
-}
-
-interface ConversationDetailParams {
-    step: ConversationStep;
-    index: number;
-    executionId: string;
-    conversationLog: ConversationStep[];
-    totalTokens: number;
-    costUsd: number;
-}
-
-interface ConversationDetail {
-    execution_id: string;
-    sequence_number: number;
-    event_timestamp: string;
-    event_type: string;
-    content: string | null;
-    duration_ms: number | null;
-    token_count_input: number | null;
-    token_count_output: number | null;
-    cost_usd: number | null;
-    is_error: boolean;
-    tool_name: string | null;
-    tool_input: string | null;
-    tool_use_id: string | null;
-    metadata: string | null;
-}
-
-interface LLMMetricsSummary {
-    totalRequests: number;
-    totalSuccessful: number;
-    totalFailed: number;
-    successRate: number;
-    totalCostUsd: number;
-    avgCostPerRequest: number;
-    totalTurns: number;
-    avgTurnsPerRequest: number;
-    avgExecutionTimeSec: number;
-}
-
-interface ModelMetrics {
-    totalRequests: number;
-    successful: number;
-    failed: number;
-    successRate: number;
-    totalCostUsd: number;
-    avgCostPerRequest: number;
-    totalTurns: number;
-    avgTurnsPerRequest: number;
-    avgExecutionTimeSec: number;
-}
-
-interface DailyMetric {
-    date: string;
-    successful: number;
-    failed: number;
-    total: number;
-    costUsd: number;
-}
-
-interface HighCostAlert {
-    timestamp: string;
-    correlationId?: string;
-    issueNumber: number;
-    repository: string;
-    costUsd: number;
-    threshold: number;
-    model: string;
-    numTurns: number;
-}
-
-interface LLMMetricsSummaryResult {
-    summary: LLMMetricsSummary;
-    modelBreakdown: Record<string, ModelMetrics>;
-    dailyMetrics: DailyMetric[];
-    recentHighCostAlerts: HighCostAlert[];
-    lastUpdated: string;
-}
-
-interface LLMMetricsData {
-    correlationId?: string;
-    timestamp: string;
-    issueNumber: number;
-    repository: string;
-    jobType: string;
-    model: string;
-    success: boolean;
-    executionTimeMs: number;
-    executionTimeSec: number;
-    numTurns: number;
-    costUsd: number;
-    sessionId: string;
-    conversationId: string | null;
-    error: string | null;
-    failureReason: string | null;
-}
 
 function extractMetricsFromClaudeResult(claudeResult: ClaudeResult | null): ExtractedMetrics {
     const model = claudeResult?.model ?? process.env.CLAUDE_MODEL ?? 'unknown';
@@ -279,14 +87,9 @@ async function checkCostThreshold(metricsRedis: InstanceType<typeof Redis>, metr
     const costThreshold = parseFloat(process.env.LLM_COST_THRESHOLD_USD ?? '10.00');
     if (costUsd > costThreshold) {
         const alertEntry: HighCostAlert = {
-            timestamp,
-            correlationId,
-            issueNumber: issueRef.number,
+            timestamp, correlationId, issueNumber: issueRef.number,
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            costUsd,
-            threshold: costThreshold,
-            model,
-            numTurns
+            costUsd, threshold: costThreshold, model, numTurns
         };
         await metricsRedis.lpush('llm:metrics:alerts:highcost', JSON.stringify(alertEntry));
         await metricsRedis.ltrim('llm:metrics:alerts:highcost', 0, 99);
@@ -315,8 +118,7 @@ function buildConversationDetail(params: ConversationDetailParams): Conversation
     const { toolName, toolInput, toolUseId } = extractToolUsage(step.message?.content);
     const messageTokens = (step.message?.usage?.input_tokens ?? 0) + (step.message?.usage?.output_tokens ?? 0);
     return {
-        execution_id: executionId,
-        sequence_number: index,
+        execution_id: executionId, sequence_number: index,
         event_timestamp: step.timestamp ?? new Date().toISOString(),
         event_type: step.type ?? 'unknown',
         content: step.message ? JSON.stringify(step.message) : null,
@@ -324,11 +126,9 @@ function buildConversationDetail(params: ConversationDetailParams): Conversation
         token_count_input: step.message?.usage?.input_tokens ?? null,
         token_count_output: step.message?.usage?.output_tokens ?? null,
         cost_usd: calculateMessageCost(messageTokens, totalTokens, costUsd),
-        is_error: step.isError ?? false,
-        tool_name: toolName,
+        is_error: step.isError ?? false, tool_name: toolName,
         tool_input: toolInput ? JSON.stringify(toolInput) : null,
-        tool_use_id: toolUseId,
-        metadata: step.metadata ? JSON.stringify(step.metadata) : null
+        tool_use_id: toolUseId, metadata: step.metadata ? JSON.stringify(step.metadata) : null
     };
 }
 
@@ -337,19 +137,12 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd } = metrics;
     try {
         const executionData = {
-            task_id: taskId,
-            session_id: sessionId,
-            conversation_id: conversationId,
+            task_id: taskId, session_id: sessionId, conversation_id: conversationId,
             start_time: new Date(Date.now() - executionTimeMs).toISOString(),
-            end_time: new Date().toISOString(),
-            duration_ms: executionTimeMs,
-            model_name: model,
-            success: success,
-            num_turns: numTurns,
-            cost_usd: costUsd,
+            end_time: new Date().toISOString(), duration_ms: executionTimeMs,
+            model_name: model, success: success, num_turns: numTurns, cost_usd: costUsd,
             error_message: !success ? (claudeResult?.error ?? 'Unknown error') : null,
-            prompt_length: null,
-            output_length: null
+            prompt_length: null, output_length: null
         };
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
         const executionId = (insertedExecution as { execution_id: string }).execution_id;
@@ -357,8 +150,7 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         if (claudeResult.conversationLog && Array.isArray(claudeResult.conversationLog)) {
             if (claudeResult.conversationLog.length > 0) {
                 logger.debug({
-                    correlationId,
-                    taskId,
+                    correlationId, taskId,
                     sampleKeys: Object.keys(claudeResult.conversationLog[0]),
                     sampleItem: JSON.stringify(claudeResult.conversationLog[0]).substring(0, 200)
                 }, 'ConversationLog sample structure');
@@ -372,15 +164,11 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
             );
             if (detailsArray.length > 0) {
                 logger.info({
-                    correlationId,
-                    taskId,
+                    correlationId, taskId,
                     sampleDetail: {
-                        sequence: detailsArray[0].sequence_number,
-                        type: detailsArray[0].event_type,
-                        hasContent: !!detailsArray[0].content,
-                        contentPreview: detailsArray[0].content?.substring(0, 100),
-                        inputTokens: detailsArray[0].token_count_input,
-                        outputTokens: detailsArray[0].token_count_output,
+                        sequence: detailsArray[0].sequence_number, type: detailsArray[0].event_type,
+                        hasContent: !!detailsArray[0].content, contentPreview: detailsArray[0].content?.substring(0, 100),
+                        inputTokens: detailsArray[0].token_count_input, outputTokens: detailsArray[0].token_count_output,
                         toolName: detailsArray[0].tool_name
                     }
                 }, 'DEBUG: Sample detail before insert');
@@ -389,16 +177,8 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         }
         logger.debug({ correlationId, taskId, executionId }, 'LLM metrics persisted to database');
         try {
-            await analysisQueue.add('analyzeExecution', {
-                taskId,
-                executionId,
-                sessionId,
-                correlationId,
-            }, {
-                jobId: `analysis-${executionId}`,
-                removeOnComplete: true,
-                removeOnFail: true,
-                delay: 10000,
+            await analysisQueue.add('analyzeExecution', { taskId, executionId, sessionId, correlationId }, {
+                jobId: `analysis-${executionId}`, removeOnComplete: true, removeOnFail: true, delay: 10000,
             });
             logger.debug({ correlationId, taskId, executionId }, 'Enqueued task for execution analysis (with 10s delay)');
         } catch (queueError) {
@@ -409,13 +189,31 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
     }
 }
 
+async function storeMetricsToRedis(metricsRedis: InstanceType<typeof Redis>, llmMetrics: LLMMetricsData, correlationId?: string): Promise<void> {
+    const llmMetricsKey = `llm:metrics:${correlationId}`;
+    await metricsRedis.setex(llmMetricsKey, 30 * 24 * 3600, JSON.stringify(llmMetrics));
+}
+
+async function storeTimeSeriesEntry(metricsRedis: InstanceType<typeof Redis>, entry: Record<string, unknown>): Promise<void> {
+    await metricsRedis.lpush('llm:metrics:timeseries', JSON.stringify(entry));
+    await metricsRedis.ltrim('llm:metrics:timeseries', 0, 999);
+}
+
+function logConversationDebug(claudeResult: ClaudeResult | null, correlationId?: string, taskId?: string | null): void {
+    if (claudeResult?.conversationLog && claudeResult.conversationLog.length > 0) {
+        logger.info({
+            correlationId, taskId, conversationLogLength: claudeResult.conversationLog.length,
+            firstItemKeys: Object.keys(claudeResult.conversationLog[0]),
+            firstItemSample: JSON.stringify(claudeResult.conversationLog[0]).substring(0, 300)
+        }, 'DEBUG: ConversationLog structure');
+    }
+}
+
 export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueRef: IssueRef, options: RecordMetricsOptions = {}): Promise<void> {
     const { jobType = 'issue', correlationId, taskId = null } = options;
     const metricsRedis = new Redis(connectionOptions);
     logger.info({
-        correlationId,
-        taskId,
-        hasClaudeResult: !!claudeResult,
+        correlationId, taskId, hasClaudeResult: !!claudeResult,
         hasConversationLog: !!claudeResult?.conversationLog,
         conversationLogType: Array.isArray(claudeResult?.conversationLog) ? 'array' : typeof claudeResult?.conversationLog,
         conversationLogLength: claudeResult?.conversationLog?.length ?? 0
@@ -428,44 +226,26 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         const { model, success, executionTimeMs, executionTimeSec, numTurns, sessionId, conversationId } = extracted;
         const { totalInputTokens, totalOutputTokens } = calculateTokens(claudeResult?.conversationLog);
         const costUsd = await calculateCost(model, totalInputTokens, totalOutputTokens, claudeResult);
+        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
 
-        const llmMetricsKey = `llm:metrics:${correlationId}`;
         const llmMetrics: LLMMetricsData = {
-            correlationId, timestamp, issueNumber: issueRef.number,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`, jobType,
+            correlationId, timestamp, issueNumber: issueRef.number, repository, jobType,
             model, success, executionTimeMs, executionTimeSec, numTurns, costUsd,
-            sessionId, conversationId,
-            error: claudeResult?.error ?? null,
+            sessionId, conversationId, error: claudeResult?.error ?? null,
             failureReason: !success ? (claudeResult?.error ?? 'unknown') : null
         };
-        await metricsRedis.setex(llmMetricsKey, 30 * 24 * 3600, JSON.stringify(llmMetrics));
-
+        await storeMetricsToRedis(metricsRedis, llmMetrics, correlationId);
         await updateAggregatedMetrics(metricsRedis, { model, success, costUsd, numTurns, executionTimeMs, dateKey });
-
-        const timeSeriesEntry = { timestamp, correlationId, model, success, costUsd, executionTimeSec, numTurns, repository: `${issueRef.repoOwner}/${issueRef.repoName}` };
-        await metricsRedis.lpush('llm:metrics:timeseries', JSON.stringify(timeSeriesEntry));
-        await metricsRedis.ltrim('llm:metrics:timeseries', 0, 999);
-
+        await storeTimeSeriesEntry(metricsRedis, { timestamp, correlationId, model, success, costUsd, executionTimeSec, numTurns, repository });
         await checkCostThreshold(metricsRedis, { timestamp, correlationId, costUsd, model, numTurns }, issueRef);
 
         logger.info({ correlationId, issueNumber: issueRef.number, model, success, costUsd, executionTimeSec, numTurns }, 'LLM metrics recorded');
-        if (claudeResult?.conversationLog && claudeResult.conversationLog.length > 0) {
-            logger.info({
-                correlationId, taskId,
-                conversationLogLength: claudeResult.conversationLog.length,
-                firstItemKeys: Object.keys(claudeResult.conversationLog[0]),
-                firstItemSample: JSON.stringify(claudeResult.conversationLog[0]).substring(0, 300)
-            }, 'DEBUG: ConversationLog structure');
-        }
+        logConversationDebug(claudeResult, correlationId, taskId);
         if (claudeResult) {
             await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd }, correlationId);
         }
     } catch (error) {
-        logger.error({
-            error: (error as Error).message,
-            stack: (error as Error).stack,
-            correlationId
-        }, 'Failed to record LLM metrics');
+        logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');
     } finally {
         await metricsRedis.quit();
     }
@@ -479,14 +259,10 @@ async function getTotalMetrics(metricsRedis: InstanceType<typeof Redis>): Promis
     const totalExecutionTimeMs = parseInt(await metricsRedis.get('llm:metrics:total:executionTimeMs') ?? '0');
     const totalRequests = totalSuccessful + totalFailed;
     return {
-        totalRequests,
-        totalSuccessful,
-        totalFailed,
+        totalRequests, totalSuccessful, totalFailed,
         successRate: totalRequests > 0 ? totalSuccessful / totalRequests : 0,
-        totalCostUsd,
-        avgCostPerRequest: totalRequests > 0 ? totalCostUsd / totalRequests : 0,
-        totalTurns,
-        avgTurnsPerRequest: totalRequests > 0 ? totalTurns / totalRequests : 0,
+        totalCostUsd, avgCostPerRequest: totalRequests > 0 ? totalCostUsd / totalRequests : 0,
+        totalTurns, avgTurnsPerRequest: totalRequests > 0 ? totalTurns / totalRequests : 0,
         avgExecutionTimeSec: totalRequests > 0 ? (totalExecutionTimeMs / totalRequests) / 1000 : 0
     };
 }
@@ -502,14 +278,10 @@ async function getModelMetrics(metricsRedis: InstanceType<typeof Redis>): Promis
         const modelExecutionTimeMs = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:executionTimeMs`) ?? '0');
         const modelTotal = modelSuccessful + modelFailed;
         modelMetrics[model] = {
-            totalRequests: modelTotal,
-            successful: modelSuccessful,
-            failed: modelFailed,
+            totalRequests: modelTotal, successful: modelSuccessful, failed: modelFailed,
             successRate: modelTotal > 0 ? modelSuccessful / modelTotal : 0,
-            totalCostUsd: modelCostUsd,
-            avgCostPerRequest: modelTotal > 0 ? modelCostUsd / modelTotal : 0,
-            totalTurns: modelTurns,
-            avgTurnsPerRequest: modelTotal > 0 ? modelTurns / modelTotal : 0,
+            totalCostUsd: modelCostUsd, avgCostPerRequest: modelTotal > 0 ? modelCostUsd / modelTotal : 0,
+            totalTurns: modelTurns, avgTurnsPerRequest: modelTotal > 0 ? modelTurns / modelTotal : 0,
             avgExecutionTimeSec: modelTotal > 0 ? (modelExecutionTimeMs / modelTotal) / 1000 : 0
         };
     }
@@ -540,20 +312,14 @@ async function getHighCostAlerts(metricsRedis: InstanceType<typeof Redis>): Prom
 
 export async function getLLMMetricsSummary(): Promise<LLMMetricsSummaryResult> {
     const metricsRedis = new Redis(connectionOptions);
-
     try {
         const summary = await getTotalMetrics(metricsRedis);
         const modelBreakdown = await getModelMetrics(metricsRedis);
         const dailyMetrics = await getDailyMetrics(metricsRedis);
         const recentHighCostAlerts = await getHighCostAlerts(metricsRedis);
-
         return { summary, modelBreakdown, dailyMetrics, recentHighCostAlerts, lastUpdated: new Date().toISOString() };
-
     } catch (error) {
-        logger.error({
-            error: (error as Error).message,
-            stack: (error as Error).stack
-        }, 'Failed to retrieve LLM metrics summary');
+        logger.error({ error: (error as Error).message, stack: (error as Error).stack }, 'Failed to retrieve LLM metrics summary');
         throw error;
     } finally {
         await metricsRedis.quit();
@@ -562,21 +328,15 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummaryResult> {
 
 export async function getLLMMetricsByCorrelationId(correlationId: string): Promise<LLMMetricsData | null> {
     const metricsRedis = new Redis(connectionOptions);
-
     try {
         const metricsKey = `llm:metrics:${correlationId}`;
         const metricsData = await metricsRedis.get(metricsKey);
-
         if (metricsData) {
             return JSON.parse(metricsData) as LLMMetricsData;
         }
-
         return null;
     } catch (error) {
-        logger.error({
-            error: (error as Error).message,
-            correlationId
-        }, 'Failed to retrieve LLM metrics by correlation ID');
+        logger.error({ error: (error as Error).message, correlationId }, 'Failed to retrieve LLM metrics by correlation ID');
         return null;
     } finally {
         await metricsRedis.quit();

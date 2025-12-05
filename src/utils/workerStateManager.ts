@@ -2,104 +2,12 @@ import { Redis } from 'ioredis';
 import logger, { generateCorrelationId } from './logger.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import type { Logger } from 'pino';
+import {
+    TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
+    type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions
+} from './workerStateManager.types.js';
 
-export const TaskStates = {
-    PENDING: 'pending',
-    PROCESSING: 'processing',
-    CLAUDE_EXECUTION: 'claude_execution',
-    POST_PROCESSING: 'post_processing',
-    COMPLETED: 'completed',
-    FAILED: 'failed',
-    CANCELLED: 'cancelled'
-} as const;
-
-export type TaskState = typeof TaskStates[keyof typeof TaskStates];
-
-export interface IssueRef {
-    number: number;
-    repoOwner: string;
-    repoName: string;
-    type?: string;
-    modelName?: string;
-    [key: string]: unknown;
-}
-
-interface HistoryEntry {
-    state: TaskState;
-    timestamp: string;
-    reason: string;
-    metadata?: Record<string, unknown>;
-}
-
-interface LastError {
-    message: string;
-    category: string;
-    timestamp: string;
-}
-
-interface ClaudeResultSummary {
-    success: boolean;
-    sessionId?: string;
-    executionTime?: number;
-}
-
-interface WorktreeInfo {
-    [key: string]: unknown;
-}
-
-interface PRResult {
-    prNumber?: number;
-    prUrl?: string;
-    [key: string]: unknown;
-}
-
-interface TaskStateData {
-    taskId: string;
-    issueRef: IssueRef;
-    correlationId: string;
-    state: TaskState;
-    createdAt: string;
-    updatedAt: string;
-    attempts: number;
-    history: HistoryEntry[];
-    lastError?: LastError;
-    worktreeInfo?: WorktreeInfo;
-    claudeResult?: ClaudeResultSummary;
-    prResult?: PRResult;
-}
-
-interface UpdateMetadata {
-    isRetry?: boolean;
-    error?: {
-        message: string;
-        category?: string;
-    };
-    worktreeInfo?: WorktreeInfo;
-    claudeResult?: ClaudeResultSummary;
-    prResult?: PRResult;
-    reason?: string;
-    historyMetadata?: Record<string, unknown>;
-    errorCategory?: string;
-    commitHash?: string;
-}
-
-interface TaskResult {
-    prUrl?: string;
-    prNumber?: number;
-    commitResult?: unknown;
-    [key: string]: unknown;
-}
-
-interface ResumableTaskInfo extends TaskStateData {
-    isStale: boolean;
-    staleDuration?: number;
-}
-
-interface WorkerStateManagerOptions {
-    redis?: Record<string, unknown>;
-    keyPrefix?: string;
-    stateExpiry?: number;
-}
+export { TaskStates, type TaskState, type IssueRef };
 
 export class WorkerStateManager {
     private redis: InstanceType<typeof Redis>;
@@ -114,10 +22,8 @@ export class WorkerStateManager {
             enableReadyCheck: false,
             ...options.redis
         });
-
         this.keyPrefix = options.keyPrefix ?? 'worker:state:';
         this.stateExpiry = options.stateExpiry ?? 7 * 24 * 3600;
-
         this.redis.on('error', (error: Error) => {
             logger.error({ error: error.message }, 'Redis error in WorkerStateManager');
         });
@@ -125,187 +31,109 @@ export class WorkerStateManager {
 
     async createTaskState(taskId: string, issueRef: IssueRef, correlationId: string | null = null): Promise<TaskStateData> {
         const state: TaskStateData = {
-            taskId,
-            issueRef,
-            correlationId: correlationId ?? generateCorrelationId(),
-            state: TaskStates.PENDING,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            attempts: 0,
-            history: [{
-                state: TaskStates.PENDING,
-                timestamp: new Date().toISOString(),
-                reason: 'Task created'
-            }]
+            taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
+            state: TaskStates.PENDING, createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(), attempts: 0,
+            history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
         };
-
         const key = this.getTaskKey(taskId);
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
-            taskId,
-            issueNumber: issueRef.number,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            state: TaskStates.PENDING
+            taskId, issueNumber: issueRef.number,
+            repository: `${issueRef.repoOwner}/${issueRef.repoName}`, state: TaskStates.PENDING
         }, 'Task state created');
 
         if (isDbEnabled && db) {
             try {
                 const taskData = {
-                    task_id: taskId,
-                    job_id: null,
-                    correlation_id: state.correlationId,
+                    task_id: taskId, job_id: null, correlation_id: state.correlationId,
                     repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-                    issue_number: issueRef.number,
-                    task_type: issueRef.type ?? 'issue',
-                    model_name: issueRef.modelName ?? null,
-                    created_at: state.createdAt,
+                    issue_number: issueRef.number, task_type: issueRef.type ?? 'issue',
+                    model_name: issueRef.modelName ?? null, created_at: state.createdAt,
                     initial_job_data: JSON.stringify(issueRef)
                 };
-
                 await db('tasks').insert(taskData).onConflict('task_id').ignore();
-
                 const historyData = {
-                    task_id: taskId,
-                    state: TaskStates.PENDING,
-                    timestamp: state.createdAt,
-                    reason: 'Task created',
-                    metadata: JSON.stringify({})
+                    task_id: taskId, state: TaskStates.PENDING,
+                    timestamp: state.createdAt, reason: 'Task created', metadata: JSON.stringify({})
                 };
-
                 await db('task_history').insert(historyData);
-
                 correlatedLogger.debug({ taskId }, 'Task state persisted to database');
             } catch (error) {
-                correlatedLogger.error({
-                    error: (error as Error).message,
-                    taskId
-                }, 'Failed to persist task state to database');
+                correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
             }
         }
-
         return state;
     }
 
     async updateTaskState(taskId: string, newState: TaskState, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
         const stateJson = await this.redis.get(key);
-
-        if (!stateJson) {
-            throw new Error(`Task state not found for taskId: ${taskId}`);
-        }
+        if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
         const state: TaskStateData = JSON.parse(stateJson);
         const previousState = state.state;
-
         state.state = newState;
         state.updatedAt = new Date().toISOString();
         state.attempts = metadata.isRetry ? (state.attempts + 1) : state.attempts;
 
         if (metadata.error) {
-            state.lastError = {
-                message: metadata.error.message,
-                category: metadata.error.category ?? 'unknown',
-                timestamp: new Date().toISOString()
-            };
+            state.lastError = { message: metadata.error.message, category: metadata.error.category ?? 'unknown', timestamp: new Date().toISOString() };
         }
-
-        if (metadata.worktreeInfo) {
-            state.worktreeInfo = metadata.worktreeInfo;
-        }
-
+        if (metadata.worktreeInfo) state.worktreeInfo = metadata.worktreeInfo;
         if (metadata.claudeResult) {
-            state.claudeResult = {
-                success: metadata.claudeResult.success,
-                sessionId: metadata.claudeResult.sessionId,
-                executionTime: metadata.claudeResult.executionTime
-            };
+            state.claudeResult = { success: metadata.claudeResult.success, sessionId: metadata.claudeResult.sessionId, executionTime: metadata.claudeResult.executionTime };
         }
-
-        if (metadata.prResult) {
-            state.prResult = metadata.prResult;
-        }
+        if (metadata.prResult) state.prResult = metadata.prResult;
 
         state.history.push({
-            state: newState,
-            timestamp: new Date().toISOString(),
+            state: newState, timestamp: new Date().toISOString(),
             reason: metadata.reason ?? `State changed from ${previousState}`,
             metadata: metadata.historyMetadata ?? {}
         });
-
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
 
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
-            taskId,
-            issueNumber: state.issueRef.number,
+            taskId, issueNumber: state.issueRef.number,
             repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-            previousState,
-            newState,
-            attempts: state.attempts
+            previousState, newState, attempts: state.attempts
         }, 'Task state updated');
 
         if (isDbEnabled && db) {
             try {
                 const historyData = {
-                    task_id: taskId,
-                    state: newState,
-                    timestamp: new Date().toISOString(),
+                    task_id: taskId, state: newState, timestamp: new Date().toISOString(),
                     reason: metadata.reason ?? `State changed from ${previousState}`,
                     metadata: JSON.stringify({
-                        ...(metadata.historyMetadata ?? {}),
-                        previousState,
-                        attempts: state.attempts,
-                        error: metadata.error,
-                        worktreeInfo: metadata.worktreeInfo,
-                        claudeResult: metadata.claudeResult,
-                        prResult: metadata.prResult,
-                        commitHash: metadata.commitHash
+                        ...(metadata.historyMetadata ?? {}), previousState, attempts: state.attempts,
+                        error: metadata.error, worktreeInfo: metadata.worktreeInfo,
+                        claudeResult: metadata.claudeResult, prResult: metadata.prResult, commitHash: metadata.commitHash
                     })
                 };
-
                 await db('task_history').insert(historyData);
-
                 correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
             } catch (error) {
-                correlatedLogger.error({
-                    error: (error as Error).message,
-                    taskId
-                }, 'Failed to persist task state update to database');
+                correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
             }
         }
-
         return state;
     }
 
     async getTaskState(taskId: string): Promise<TaskStateData | null> {
         const key = this.getTaskKey(taskId);
         const stateJson = await this.redis.get(key);
-
-        if (!stateJson) {
-            return null;
-        }
-
+        if (!stateJson) return null;
         return JSON.parse(stateJson) as TaskStateData;
     }
 
     async getResumableTask(taskId: string): Promise<ResumableTaskInfo | null> {
         const state = await this.getTaskState(taskId);
+        if (!state) return null;
 
-        if (!state) {
-            return null;
-        }
-
-        const resumableStates: TaskState[] = [
-            TaskStates.PROCESSING,
-            TaskStates.CLAUDE_EXECUTION,
-            TaskStates.POST_PROCESSING
-        ];
-
-        if (!resumableStates.includes(state.state)) {
-            return null;
-        }
+        const resumableStates: TaskState[] = [TaskStates.PROCESSING, TaskStates.CLAUDE_EXECUTION, TaskStates.POST_PROCESSING];
+        if (!resumableStates.includes(state.state)) return null;
 
         const staleThreshold = 30 * 60 * 1000;
         const updatedAt = new Date(state.updatedAt).getTime();
@@ -313,129 +141,76 @@ export class WorkerStateManager {
 
         if (now - updatedAt > staleThreshold) {
             logger.warn({
-                taskId,
-                correlationId: state.correlationId,
-                issueNumber: state.issueRef.number,
-                state: state.state,
-                lastUpdate: state.updatedAt,
-                staleDuration: now - updatedAt
+                taskId, correlationId: state.correlationId, issueNumber: state.issueRef.number,
+                state: state.state, lastUpdate: state.updatedAt, staleDuration: now - updatedAt
             }, 'Found stale task that may need recovery');
-
-            return {
-                ...state,
-                isStale: true,
-                staleDuration: now - updatedAt
-            };
+            return { ...state, isStale: true, staleDuration: now - updatedAt };
         }
-
-        return {
-            ...state,
-            isStale: false
-        };
+        return { ...state, isStale: false };
     }
 
     async updateHistoryMetadata(taskId: string, historyState: TaskState, metadata: Record<string, unknown> = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
         const stateJson = await this.redis.get(key);
-
-        if (!stateJson) {
-            throw new Error(`Task state not found for taskId: ${taskId}`);
-        }
+        if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
         const state: TaskStateData = JSON.parse(stateJson);
-
         const historyIndex = state.history.findLastIndex(h => h.state === historyState);
 
         if (historyIndex >= 0) {
-            state.history[historyIndex].metadata = {
-                ...state.history[historyIndex].metadata,
-                ...metadata
-            };
-
+            state.history[historyIndex].metadata = { ...state.history[historyIndex].metadata, ...metadata };
             state.updatedAt = new Date().toISOString();
             await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-
             const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-            correlatedLogger.debug({
-                taskId,
-                historyState,
-                metadata
-            }, 'Updated history metadata');
+            correlatedLogger.debug({ taskId, historyState, metadata }, 'Updated history metadata');
         } else {
-            logger.warn({
-                taskId,
-                historyState
-            }, 'Could not find history entry to update metadata');
+            logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');
         }
-
         return state;
     }
 
     async markTaskFailed(taskId: string, error: Error, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
         const errorMetadata: UpdateMetadata = {
             ...metadata,
-            error: {
-                message: error.message,
-                category: metadata.errorCategory ?? 'unknown',
-            },
+            error: { message: error.message, category: metadata.errorCategory ?? 'unknown' },
             reason: `Task failed: ${error.message}`
         };
-
         return await this.updateTaskState(taskId, TaskStates.FAILED, errorMetadata);
     }
 
     async markTaskCompleted(taskId: string, result: TaskResult = {}): Promise<TaskStateData> {
         const metadata: UpdateMetadata = {
-            prResult: result,
-            reason: 'Task completed successfully',
+            prResult: result, reason: 'Task completed successfully',
             historyMetadata: {
-                pr: (result.prUrl && result.prNumber) ? {
-                    number: result.prNumber,
-                    url: result.prUrl
-                } : null,
+                pr: (result.prUrl && result.prNumber) ? { number: result.prNumber, url: result.prUrl } : null,
                 commitResult: result.commitResult ?? null
             }
         };
-
         return await this.updateTaskState(taskId, TaskStates.COMPLETED, metadata);
     }
 
     async getProcessingTasks(): Promise<TaskStateData[]> {
         const pattern = `${this.keyPrefix}*`;
         const keys = await this.redis.keys(pattern);
-
         const processingTasks: TaskStateData[] = [];
 
         for (const key of keys) {
             try {
                 const stateJson = await this.redis.get(key);
                 if (!stateJson) continue;
-
                 const state: TaskStateData = JSON.parse(stateJson);
-                const processingStates: TaskState[] = [
-                    TaskStates.PROCESSING,
-                    TaskStates.CLAUDE_EXECUTION,
-                    TaskStates.POST_PROCESSING
-                ];
-
-                if (processingStates.includes(state.state)) {
-                    processingTasks.push(state);
-                }
+                const processingStates: TaskState[] = [TaskStates.PROCESSING, TaskStates.CLAUDE_EXECUTION, TaskStates.POST_PROCESSING];
+                if (processingStates.includes(state.state)) processingTasks.push(state);
             } catch (error) {
-                logger.warn({
-                    key,
-                    error: (error as Error).message
-                }, 'Failed to parse task state during recovery scan');
+                logger.warn({ key, error: (error as Error).message }, 'Failed to parse task state during recovery scan');
             }
         }
-
         return processingTasks;
     }
 
     async cleanupOldTasks(maxAge: number = 24 * 3600): Promise<number> {
         const pattern = `${this.keyPrefix}*`;
         const keys = await this.redis.keys(pattern);
-
         let cleanedCount = 0;
         const cutoffTime = Date.now() - (maxAge * 1000);
 
@@ -443,38 +218,21 @@ export class WorkerStateManager {
             try {
                 const stateJson = await this.redis.get(key);
                 if (!stateJson) continue;
-
                 const state: TaskStateData = JSON.parse(stateJson);
                 const cleanupStates: TaskState[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
-
                 if (cleanupStates.includes(state.state)) {
                     const updatedAt = new Date(state.updatedAt).getTime();
-
                     if (updatedAt < cutoffTime) {
                         await this.redis.del(key);
                         cleanedCount++;
-
-                        logger.debug({
-                            taskId: state.taskId,
-                            state: state.state,
-                            age: Date.now() - updatedAt
-                        }, 'Cleaned up old task state');
+                        logger.debug({ taskId: state.taskId, state: state.state, age: Date.now() - updatedAt }, 'Cleaned up old task state');
                     }
                 }
             } catch (error) {
-                logger.warn({
-                    key,
-                    error: (error as Error).message
-                }, 'Failed to cleanup task state');
+                logger.warn({ key, error: (error as Error).message }, 'Failed to cleanup task state');
             }
         }
-
-        logger.info({
-            cleanedCount,
-            totalKeys: keys.length,
-            maxAge
-        }, 'Task state cleanup completed');
-
+        logger.info({ cleanedCount, totalKeys: keys.length, maxAge }, 'Task state cleanup completed');
         return cleanedCount;
     }
 
@@ -490,9 +248,7 @@ export class WorkerStateManager {
 let stateManagerInstance: WorkerStateManager | null = null;
 
 export function getStateManager(options: WorkerStateManagerOptions = {}): WorkerStateManager {
-    if (!stateManagerInstance) {
-        stateManagerInstance = new WorkerStateManager(options);
-    }
+    if (!stateManagerInstance) stateManagerInstance = new WorkerStateManager(options);
     return stateManagerInstance;
 }
 
