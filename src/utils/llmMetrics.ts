@@ -177,7 +177,7 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         }
         logger.debug({ correlationId, taskId, executionId }, 'LLM metrics persisted to database');
         try {
-            await analysisQueue.add('analyzeExecution', { taskId, executionId, sessionId, correlationId }, {
+            await analysisQueue.add('analyzeExecution', { analysisType: 'execution', taskId, executionId, sessionId, correlationId }, {
                 jobId: `analysis-${executionId}`, removeOnComplete: true, removeOnFail: true, delay: 10000,
             });
             logger.debug({ correlationId, taskId, executionId }, 'Enqueued task for execution analysis (with 10s delay)');

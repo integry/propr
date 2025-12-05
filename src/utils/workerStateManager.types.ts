@@ -35,6 +35,7 @@ export interface LastError {
 export interface ClaudeResultSummary {
     success: boolean;
     sessionId?: string;
+    conversationId?: string;
     executionTime?: number;
 }
 

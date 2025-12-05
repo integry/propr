@@ -104,6 +104,8 @@ interface PushBranchOptions {
     repoUrl?: string;
     authToken?: string;
     remote?: string;
+    tokenRefreshFn?: () => Promise<string>;
+    correlationId?: string;
 }
 
 export async function pushBranch(worktreePath: string, branchName: string, options: PushBranchOptions = {}): Promise<void> {

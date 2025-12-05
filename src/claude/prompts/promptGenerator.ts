@@ -18,6 +18,7 @@ export interface IssueDetails {
     labels?: IssueLabel[];
     user?: IssueUser;
     created_at?: string;
+    updated_at?: string;
     comments?: IssueComment[];
 }
 

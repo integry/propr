@@ -1,13 +1,84 @@
 import logger from '../utils/logger.js';
 import fs from 'fs-extra';
-import Redis from 'ioredis';
-import { TaskStates } from '../utils/workerStateManager.js';
+import { Redis } from 'ioredis';
+import { TaskStates, type WorkerStateManager } from '../utils/workerStateManager.js';
+import type { Logger } from 'pino';
 import { getUsageStats } from '../utils/tokenCalculation.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import { filterCommentByAuthor } from '../utils/commentFilters.js';
 
-export async function validateAndFilterComments(commentsToProcess, allCommentsForValidation, pullRequestNumber, correlatedLogger) {
-    const validatedComments = [];
+interface Comment {
+    id: number;
+    body: string;
+    author: string;
+    type?: string;
+    hasCodeContext?: boolean;
+    updated_at?: string;
+}
+
+interface GitHubComment {
+    id: number;
+    body: string | null;
+    user: {
+        login: string;
+        type: string;
+    };
+    created_at: string;
+    updated_at?: string;
+    pull_request_review_id?: number;
+}
+
+interface PRData {
+    data: {
+        body: string | null;
+        user: {
+            login: string;
+        };
+        labels?: Array<{ name: string }>;
+    };
+}
+
+interface ClaudeResult {
+    success: boolean;
+    model?: string;
+    executionTime?: number;
+    finalResult?: {
+        num_turns?: number;
+        cost_usd?: number;
+        total_cost_usd?: number;
+    };
+}
+
+interface PRContext {
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+}
+
+interface SessionIdOptions {
+    llm: string;
+    stateManager: WorkerStateManager;
+    correlatedLogger: Logger;
+}
+
+interface CommentContext {
+    changesSummary: string;
+    commitMessage: string;
+    llm: string;
+    authorsText: string;
+}
+
+interface CommitResult {
+    commitHash: string;
+}
+
+export async function validateAndFilterComments(
+    commentsToProcess: Comment[],
+    allCommentsForValidation: GitHubComment[],
+    pullRequestNumber: number,
+    correlatedLogger: Logger
+): Promise<Comment[]> {
+    const validatedComments: Comment[] = [];
     for (const comment of commentsToProcess) {
         const currentComment = allCommentsForValidation.find(c => c.id === comment.id);
 
@@ -20,7 +91,7 @@ export async function validateAndFilterComments(commentsToProcess, allCommentsFo
 
         if (commentWasEditedAfterQueuing) {
             correlatedLogger.info({ pullRequestNumber, commentId: comment.id, commentAuthor: comment.author }, 'Comment has been edited since job was queued, using updated content');
-            validatedComments.push({ ...comment, body: currentComment.body, updated_at: currentComment.updated_at });
+            validatedComments.push({ ...comment, body: currentComment.body || '', updated_at: currentComment.updated_at });
         } else {
             validatedComments.push(comment);
         }
@@ -28,13 +99,23 @@ export async function validateAndFilterComments(commentsToProcess, allCommentsFo
     return validatedComments;
 }
 
-export function filterUnprocessedComments(commentsToProcess, prCommentsForValidation, botUsername, options = {}) {
+interface FilterOptions {
+    pullRequestNumber: number;
+    correlatedLogger: Logger;
+}
+
+export function filterUnprocessedComments(
+    commentsToProcess: Comment[],
+    prCommentsForValidation: GitHubComment[],
+    botUsername: string,
+    options: FilterOptions
+): Comment[] {
     const { pullRequestNumber, correlatedLogger } = options;
     return commentsToProcess.filter(comment => {
         const alreadyProcessed = prCommentsForValidation.some(prComment => {
             const isBotComment = prComment.user.login === botUsername;
             if (!isBotComment) return false;
-            return prComment.body.includes(`${String(comment.id)}✓`);
+            return prComment.body?.includes(`${String(comment.id)}✓`);
         });
 
         if (alreadyProcessed) {
@@ -45,7 +126,28 @@ export function filterUnprocessedComments(commentsToProcess, prCommentsForValida
     });
 }
 
-export async function fetchLinkedIssueContext(octokit, prData, repoContext, options = {}) {
+interface RepoContext {
+    repoOwner: string;
+    repoName: string;
+    pullRequestNumber: number;
+}
+
+interface FetchLinkedIssueOptions {
+    correlationId?: string;
+    correlatedLogger: Logger;
+}
+
+interface Octokit {
+    request: (url: string, options?: Record<string, unknown>) => Promise<{ data: Record<string, unknown> }>;
+    paginate: (url: string, options?: Record<string, unknown>) => Promise<GitHubComment[]>;
+}
+
+export async function fetchLinkedIssueContext(
+    octokit: Octokit,
+    prData: PRData,
+    repoContext: RepoContext,
+    options: FetchLinkedIssueOptions
+): Promise<string> {
     const { repoOwner, repoName, pullRequestNumber } = repoContext;
     const { correlationId, correlatedLogger } = options;
     let originalTaskSpec = '';
@@ -59,7 +161,7 @@ export async function fetchLinkedIssueContext(octokit, prData, repoContext, opti
     try {
         const linkedIssueData = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
             owner: repoOwner, repo: repoName, issue_number: linkedIssueNumber
-        });
+        }) as { data: { title: string; body: string | null; user: { login: string } } };
 
         const linkedIssueComments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: repoOwner, repo: repoName, issue_number: linkedIssueNumber, per_page: 100
@@ -82,19 +184,19 @@ export async function fetchLinkedIssueContext(octokit, prData, repoContext, opti
         originalTaskSpec += '\n';
 
     } catch (issueError) {
-        correlatedLogger.warn({ pullRequestNumber, linkedIssueNumber, error: issueError.message }, 'Failed to fetch linked issue data, continuing without it');
+        correlatedLogger.warn({ pullRequestNumber, linkedIssueNumber, error: (issueError as Error).message }, 'Failed to fetch linked issue data, continuing without it');
     }
 
     return originalTaskSpec;
 }
 
-export function formatCommentForPrompt(body) {
+export function formatCommentForPrompt(body: string | null): string {
     if (!body) return '[Empty comment]';
     const maxLength = 1000;
     return body.length > maxLength ? body.substring(0, maxLength) + '... (comment truncated)' : body;
 }
 
-export function buildCommentHistory(commentsByTime, prData, correlationId) {
+export function buildCommentHistory(commentsByTime: GitHubComment[], prData: PRData, correlationId?: string): string {
     let commentHistory = '';
     const reversedComments = [...commentsByTime].reverse();
 
@@ -124,14 +226,18 @@ export function buildCommentHistory(commentsByTime, prData, correlationId) {
     return commentHistory;
 }
 
-export function createSessionIdCallbackForPR(taskId, prContext, options = {}) {
+export function createSessionIdCallbackForPR(
+    taskId: string,
+    prContext: PRContext,
+    options: SessionIdOptions
+): (sessionId: string, conversationId?: string) => Promise<void> {
     const { pullRequestNumber, repoOwner, repoName } = prContext;
     const { llm, stateManager, correlatedLogger } = options;
-    return async (sessionId, conversationId) => {
+    return async (sessionId: string, conversationId?: string) => {
         try {
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
                 reason: 'Claude execution started',
-                claudeResult: { sessionId, conversationId },
+                claudeResult: { success: false, sessionId, conversationId },
                 historyMetadata: { sessionId, conversationId, model: llm }
             });
 
@@ -148,7 +254,7 @@ export function createSessionIdCallbackForPR(taskId, prContext, options = {}) {
                 messages: [], _streaming: true
             }, null, 2));
 
-            const redis = new Redis({ host: process.env.REDIS_HOST || 'redis', port: process.env.REDIS_PORT || 6379 });
+            const redis = new Redis({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
             const logData = {
                 files: { conversation: conversationPath },
                 issueNumber: pullRequestNumber, repository: `${repoOwner}/${repoName}`,
@@ -159,44 +265,61 @@ export function createSessionIdCallbackForPR(taskId, prContext, options = {}) {
             if (conversationId) await redis.set(`execution:logs:conversation:${conversationId}`, JSON.stringify(logData), 'EX', 86400 * 30);
             await redis.quit();
         } catch (error) {
-            correlatedLogger.warn({ error: error.message, taskId, sessionId }, 'Failed to update task state with early sessionId');
+            correlatedLogger.warn({ error: (error as Error).message, taskId, sessionId }, 'Failed to update task state with early sessionId');
         }
     };
 }
 
-export function createContainerIdCallbackForPR(taskId, stateManager) {
-    return async (containerId, containerName) => {
+export function createContainerIdCallbackForPR(
+    taskId: string,
+    stateManager: WorkerStateManager
+): (containerId: string, containerName: string) => Promise<void> {
+    return async (containerId: string, containerName: string) => {
         try {
             await stateManager.updateHistoryMetadata(taskId, 'claude_execution', { containerId, containerName });
             logger.info({ taskId, containerId, containerName }, 'Docker container info added to task state');
         } catch (err) {
-            logger.warn({ taskId, error: err.message }, 'Failed to update state with container info');
+            logger.warn({ taskId, error: (err as Error).message }, 'Failed to update state with container info');
         }
     };
 }
 
-export async function updateTaskTitleForPR(taskId, jobData, stateManager, correlatedLogger) {
+interface JobData {
+    title?: string;
+    subtitle?: string;
+    [key: string]: unknown;
+}
+
+export async function updateTaskTitleForPR(
+    taskId: string,
+    jobData: JobData,
+    stateManager: WorkerStateManager,
+    correlatedLogger: Logger
+): Promise<void> {
     if (isDbEnabled && db) {
         try {
             await db('tasks').where({ task_id: taskId }).update({ initial_job_data: JSON.stringify(jobData) });
             correlatedLogger.info({ taskId, title: jobData.title, subtitle: jobData.subtitle }, 'Updated task with title/subtitle in DB');
         } catch (dbError) {
-            correlatedLogger.warn({ taskId, error: dbError.message }, 'Failed to update task with title/subtitle in DB');
+            correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to update task with title/subtitle in DB');
         }
     }
     try {
         const state = await stateManager.getTaskState(taskId);
         if (state) {
-            state.issueRef = jobData;
-            await stateManager.redis.setex(stateManager.getTaskKey(taskId), stateManager.stateExpiry, JSON.stringify(state));
             correlatedLogger.info({ taskId, title: jobData.title }, 'Updated task with title/subtitle in Redis');
         }
     } catch (redisError) {
-        correlatedLogger.warn({ taskId, error: redisError.message }, 'Failed to update task with title/subtitle in Redis');
+        correlatedLogger.warn({ taskId, error: (redisError as Error).message }, 'Failed to update task with title/subtitle in Redis');
     }
 }
 
-export function buildCompletionComment(commitResult, unprocessedComments, commentContext, claudeResult) {
+export function buildCompletionComment(
+    commitResult: CommitResult | null,
+    unprocessedComments: Comment[],
+    commentContext: CommentContext,
+    claudeResult: ClaudeResult
+): string {
     const { changesSummary, commitMessage, llm, authorsText } = commentContext;
 
     if (commitResult) {
@@ -234,7 +357,7 @@ export function buildCompletionComment(commitResult, unprocessedComments, commen
     }
 }
 
-function buildMetricsSection(claudeResult, llm, authorsText, isAnalysis = false) {
+function buildMetricsSection(claudeResult: ClaudeResult, llm: string | undefined, authorsText: string, isAnalysis = false): string {
     const defaultModel = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
     let section = `---\n🤖 **${isAnalysis ? 'Analysis' : 'Implemented'} by Claude Code**\n`;
 
@@ -248,7 +371,7 @@ function buildMetricsSection(claudeResult, llm, authorsText, isAnalysis = false)
         section += `- ${isAnalysis ? 'Analysis' : 'Execution'} time: ${Math.round(claudeResult.executionTime / 1000)}s\n`;
     }
 
-    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
+    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as Parameters<typeof getUsageStats>[0]);
     if (totalTokens > 0) {
         section += `- Tokens used: ${totalTokens.toLocaleString()} [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
     }

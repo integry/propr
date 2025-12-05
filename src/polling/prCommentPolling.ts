@@ -1,10 +1,52 @@
 import logger, { generateCorrelationId } from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
-import { issueQueue, COMMENT_BATCH_DELAY_MS } from '../queue/taskQueue.js';
+import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData } from '../queue/taskQueue.js';
 import { filterCommentByAuthor, checkCommentTrigger } from '../utils/commentFilters.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
+import type { Octokit } from '@octokit/core';
+import type { Redis } from 'ioredis';
 
-export async function pollForPullRequestComments(octokit, repoFullName, correlationId, config) {
+interface PullRequest {
+    number: number;
+    title: string;
+    head: { ref: string };
+    labels: Array<{ name: string } | string>;
+}
+
+interface Comment {
+    id: number;
+    body: string | null;
+    user: { login: string };
+    created_at: string;
+    pull_request_review_id?: number;
+    path?: string;
+    line?: number;
+    diff_hunk?: string;
+}
+
+interface UnprocessedComment {
+    id: number;
+    body: string;
+    author: string;
+    type: 'review' | 'issue';
+    hasCodeContext: boolean;
+}
+
+interface PollingConfig {
+    GITHUB_BOT_USERNAME?: string;
+    PR_FOLLOWUP_TRIGGER_KEYWORDS: string[];
+    MODEL_LABEL_PATTERN: string;
+    redisClient: Redis;
+}
+
+interface RepoContext {
+    owner: string;
+    repo: string;
+    repoFullName: string;
+    correlationId: string;
+}
+
+export async function pollForPullRequestComments(octokit: Octokit, repoFullName: string, correlationId: string, config: PollingConfig): Promise<void> {
 
     const correlatedLogger = logger.withCorrelation(correlationId);
     const [owner, repo] = repoFullName.split('/');
@@ -14,12 +56,12 @@ export async function pollForPullRequestComments(octokit, repoFullName, correlat
     }, 'Checking for PR comments in repository');
 
     try {
-        const prs = await octokit.paginate('GET /repos/{owner}/{repo}/pulls', {
+        const prs = await (octokit as unknown as { paginate: (url: string, params: Record<string, unknown>) => Promise<PullRequest[]> }).paginate('GET /repos/{owner}/{repo}/pulls', {
             owner,
             repo,
             state: 'open',
             per_page: 100
-        });
+        }) as PullRequest[];
 
         correlatedLogger.debug({
             repository: repoFullName,
@@ -39,11 +81,11 @@ export async function pollForPullRequestComments(octokit, repoFullName, correlat
             );
         }
     } catch (error) {
-        handleError(error, `Error polling PR comments for repository ${repoFullName}`, { correlationId });
+        handleError(error as Error, `Error polling PR comments for repository ${repoFullName}`, { correlationId });
     }
 }
 
-async function processPullRequestComments(octokit, pr, repoContext, config) {
+async function processPullRequestComments(octokit: Octokit, pr: PullRequest, repoContext: RepoContext, config: PollingConfig): Promise<void> {
     const { owner, repo, repoFullName, correlationId } = repoContext;
     const { GITHUB_BOT_USERNAME, PR_FOLLOWUP_TRIGGER_KEYWORDS } = config;
 
@@ -56,18 +98,18 @@ async function processPullRequestComments(octokit, pr, repoContext, config) {
     }, 'Checking PR for comments');
 
     const [issueComments, reviewComments] = await Promise.all([
-        octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        (octokit as unknown as { paginate: (url: string, params: Record<string, unknown>) => Promise<Comment[]> }).paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner,
             repo,
             issue_number: pr.number,
             per_page: 100
-        }),
-        octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
+        }) as Promise<Comment[]>,
+        (octokit as unknown as { paginate: (url: string, params: Record<string, unknown>) => Promise<Comment[]> }).paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
             owner,
             repo,
             pull_number: pr.number,
             per_page: 100
-        })
+        }) as Promise<Comment[]>
     ]);
 
     const allComments = [...issueComments, ...reviewComments];
@@ -79,7 +121,7 @@ async function processPullRequestComments(octokit, pr, repoContext, config) {
     const triggerComments = commentsByTime.filter(c => {
         if (!c.body) return false;
         if (PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0) {
-            return PR_FOLLOWUP_TRIGGER_KEYWORDS.some(keyword => c.body.includes(keyword));
+            return PR_FOLLOWUP_TRIGGER_KEYWORDS.some(keyword => c.body!.includes(keyword));
         }
         return true;
     });
@@ -118,13 +160,25 @@ async function processPullRequestComments(octokit, pr, repoContext, config) {
     }
 }
 
-async function collectUnprocessedComments(commentsByTime, pr, commentContext, config) {
+interface CommentContext {
+    owner: string;
+    repo: string;
+    botUsername: string;
+    correlationId: string;
+}
+
+interface CollectResult {
+    unprocessedComments: UnprocessedComment[];
+    selectedLlm: string | null;
+}
+
+async function collectUnprocessedComments(commentsByTime: Comment[], pr: PullRequest, commentContext: CommentContext, config: PollingConfig): Promise<CollectResult> {
     const { owner, repo, botUsername, correlationId } = commentContext;
     const { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN } = config;
 
     const correlatedLogger = logger.withCorrelation(correlationId);
-    const unprocessedComments = [];
-    let selectedLlm = null;
+    const unprocessedComments: UnprocessedComment[] = [];
+    let selectedLlm: string | null = null;
 
     if (pr.labels && Array.isArray(pr.labels)) {
         const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
@@ -148,7 +202,7 @@ async function collectUnprocessedComments(commentsByTime, pr, commentContext, co
         const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
         if (filterResult.shouldFilter) continue;
 
-        const triggerResult = checkCommentTrigger(comment.body, correlationId);
+        const triggerResult = checkCommentTrigger(comment.body || '', correlationId);
         if (!triggerResult.isTriggered) continue;
 
         const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${pr.number}:${comment.id}`;
@@ -169,7 +223,7 @@ async function collectUnprocessedComments(commentsByTime, pr, commentContext, co
         const alreadyProcessed = subsequentComments.some(laterComment => {
             const isBotComment = laterComment.user.login === botUsername;
             if (!isBotComment) return false;
-            return laterComment.body.includes(`${String(comment.id)}✓`);
+            return laterComment.body?.includes(`${String(comment.id)}✓`);
         });
 
         if (alreadyProcessed) {
@@ -182,7 +236,7 @@ async function collectUnprocessedComments(commentsByTime, pr, commentContext, co
             continue;
         }
 
-        let llm = extractModelFromComment(comment.body, PR_FOLLOWUP_TRIGGER_KEYWORDS);
+        const llm = extractModelFromComment(comment.body || '', PR_FOLLOWUP_TRIGGER_KEYWORDS);
         if (llm) selectedLlm = llm;
 
         const enhancedCommentBody = buildEnhancedCommentBody(comment, PR_FOLLOWUP_TRIGGER_KEYWORDS);
@@ -199,7 +253,7 @@ async function collectUnprocessedComments(commentsByTime, pr, commentContext, co
     return { unprocessedComments, selectedLlm };
 }
 
-function extractModelFromComment(body, triggerKeywords) {
+function extractModelFromComment(body: string, triggerKeywords: string[]): string | null {
     if (triggerKeywords.length === 0) return null;
     for (const keyword of triggerKeywords) {
         const llmMatch = body.match(new RegExp(`${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:([\\w.-]+)`));
@@ -208,8 +262,8 @@ function extractModelFromComment(body, triggerKeywords) {
     return null;
 }
 
-function buildEnhancedCommentBody(comment, triggerKeywords) {
-    let enhancedCommentBody = comment.body;
+function buildEnhancedCommentBody(comment: Comment, triggerKeywords: string[]): string {
+    let enhancedCommentBody = comment.body || '';
     if (triggerKeywords.length > 0) {
         for (const keyword of triggerKeywords) {
             const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -219,7 +273,7 @@ function buildEnhancedCommentBody(comment, triggerKeywords) {
     enhancedCommentBody = enhancedCommentBody.trim();
 
     if (comment.pull_request_review_id) {
-        const codeContext = [];
+        const codeContext: string[] = [];
         if (comment.path) codeContext.push(`File: ${comment.path}`);
         if (comment.line) codeContext.push(`Line: ${comment.line}`);
         if (comment.diff_hunk) {
@@ -236,7 +290,21 @@ function buildEnhancedCommentBody(comment, triggerKeywords) {
     return enhancedCommentBody;
 }
 
-async function enqueuePRCommentJob(jobDetails, options) {
+interface JobDetails {
+    unprocessedComments: UnprocessedComment[];
+    selectedLlm: string | null;
+    pr: PullRequest;
+    owner: string;
+    repo: string;
+}
+
+interface EnqueueOptions {
+    repoFullName: string;
+    correlationId: string;
+    redisClient: Redis;
+}
+
+async function enqueuePRCommentJob(jobDetails: JobDetails, options: EnqueueOptions): Promise<void> {
     const { unprocessedComments, selectedLlm, pr, owner, repo } = jobDetails;
     const { repoFullName, correlationId, redisClient } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -248,9 +316,9 @@ async function enqueuePRCommentJob(jobDetails, options) {
 
     const jobExists = existingJobs.some(job =>
         job.name === 'processPullRequestComment' &&
-        job.data.pullRequestNumber === pr.number &&
-        job.data.repoOwner === owner &&
-        job.data.repoName === repo
+        (job.data as CommentJobData).pullRequestNumber === pr.number &&
+        (job.data as CommentJobData).repoOwner === owner &&
+        (job.data as CommentJobData).repoName === repo
     );
 
     if (jobExists) {
@@ -261,13 +329,13 @@ async function enqueuePRCommentJob(jobDetails, options) {
         return;
     }
 
-    const jobData = {
+    const jobData: CommentJobData = {
         pullRequestNumber: pr.number,
         comments: unprocessedComments,
         repoOwner: owner,
         repoName: repo,
         branchName: pr.head.ref,
-        llm: selectedLlm,
+        llm: selectedLlm || undefined,
         correlationId: generateCorrelationId(),
     };
 
@@ -296,13 +364,13 @@ async function enqueuePRCommentJob(jobDetails, options) {
             delayMs: COMMENT_BATCH_DELAY_MS
         }, `Successfully added batch PR comments job (${unprocessedComments.length} comments)`);
     } catch (error) {
-        if (error.message?.includes('Job already exists')) {
+        if ((error as Error).message?.includes('Job already exists')) {
             correlatedLogger.debug({
                 pullRequestNumber: pr.number,
                 commentsCount: unprocessedComments.length,
             }, 'PR comments batch job already in queue, skipping');
         } else {
-            handleError(error, `Failed to add PR comments batch to queue`, { correlationId });
+            handleError(error as Error, `Failed to add PR comments batch to queue`, { correlationId });
         }
     }
 }
