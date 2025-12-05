@@ -1,4 +1,4 @@
-import simpleGit from 'simple-git';
+import { simpleGit, SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
@@ -6,7 +6,27 @@ import { handleError } from '../utils/errorHandler.js';
 
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
 
-export async function cleanupWorktree(localRepoPath, worktreePath, branchName, options = {}) {
+interface CleanupOptions {
+    deleteBranch?: boolean;
+    success?: boolean;
+    retentionStrategy?: string;
+    retentionHours?: number;
+}
+
+interface CleanupResult {
+    cleaned: number;
+    retained: number;
+}
+
+interface RetentionInfo {
+    timestamp: string;
+    issueProcessed: boolean;
+    success: boolean;
+    retentionHours: number;
+    scheduledCleanup: string;
+}
+
+export async function cleanupWorktree(localRepoPath: string, worktreePath: string, branchName: string, options: CleanupOptions = {}): Promise<void> {
     const {
         deleteBranch = false,
         success = true,
@@ -34,23 +54,23 @@ export async function cleanupWorktree(localRepoPath, worktreePath, branchName, o
         await createRetentionMarker(worktreePath, retentionHours);
     }
 
-    const git = simpleGit(localRepoPath);
+    const git: SimpleGit = simpleGit(localRepoPath);
 
     try {
         await git.raw(['worktree', 'remove', worktreePath, '--force']);
         logger.info({ worktreePath }, 'Worktree removed successfully');
     } catch (error) {
-        if (error.message && error.message.includes('.git\' is not a .git file')) {
+        if ((error as Error).message && (error as Error).message.includes('.git\' is not a .git file')) {
             logger.info({ worktreePath }, 'Directory is not a valid worktree, will remove directly');
         } else {
-            logger.warn({ worktreePath, error: error.message }, 'Failed to remove worktree with git command');
+            logger.warn({ worktreePath, error: (error as Error).message }, 'Failed to remove worktree with git command');
         }
 
         try {
             await fs.remove(worktreePath);
             logger.info({ worktreePath }, 'Worktree directory removed directly');
         } catch (fsError) {
-            logger.error({ worktreePath, error: fsError.message }, 'Failed to remove worktree directory');
+            logger.error({ worktreePath, error: (fsError as Error).message }, 'Failed to remove worktree directory');
         }
     }
 
@@ -59,7 +79,7 @@ export async function cleanupWorktree(localRepoPath, worktreePath, branchName, o
             await git.deleteLocalBranch(branchName, true);
             logger.info({ branchName }, 'Local branch deleted');
         } catch (branchError) {
-            logger.warn({ branchName, error: branchError.message }, 'Failed to delete local branch');
+            logger.warn({ branchName, error: (branchError as Error).message }, 'Failed to delete local branch');
         }
     }
 
@@ -67,13 +87,13 @@ export async function cleanupWorktree(localRepoPath, worktreePath, branchName, o
         await git.raw(['worktree', 'prune']);
         logger.debug('Git worktree references pruned');
     } catch (pruneError) {
-        logger.warn({ error: pruneError.message }, 'Failed to prune worktree references');
+        logger.warn({ error: (pruneError as Error).message }, 'Failed to prune worktree references');
     }
 }
 
-async function createRetentionMarker(worktreePath, retentionHours) {
+async function createRetentionMarker(worktreePath: string, retentionHours: number): Promise<void> {
     try {
-        const retentionInfo = {
+        const retentionInfo: RetentionInfo = {
             timestamp: new Date().toISOString(),
             issueProcessed: true,
             success: false,
@@ -83,11 +103,11 @@ async function createRetentionMarker(worktreePath, retentionHours) {
         await fs.writeJson(path.join(worktreePath, '.retention-info.json'), retentionInfo);
         logger.info({ worktreePath }, 'Created retention marker file');
     } catch (markerError) {
-        logger.warn({ worktreePath, error: markerError.message }, 'Failed to create retention marker file');
+        logger.warn({ worktreePath, error: (markerError as Error).message }, 'Failed to create retention marker file');
     }
 }
 
-export async function cleanupExpiredWorktrees(worktreesBasePath = WORKTREES_BASE_PATH) {
+export async function cleanupExpiredWorktrees(worktreesBasePath: string = WORKTREES_BASE_PATH): Promise<CleanupResult> {
     logger.info({ worktreesBasePath }, 'Starting cleanup of expired worktrees...');
 
     let cleaned = 0;
@@ -113,7 +133,7 @@ export async function cleanupExpiredWorktrees(worktreesBasePath = WORKTREES_BASE
     return { cleaned, retained };
 }
 
-async function processWorktreeDirectory(dirPath) {
+async function processWorktreeDirectory(dirPath: string): Promise<CleanupResult> {
     let cleaned = 0;
     let retained = 0;
 
@@ -133,7 +153,7 @@ async function processWorktreeDirectory(dirPath) {
     return { cleaned, retained };
 }
 
-async function processWorktreeItem(itemPath, stats) {
+async function processWorktreeItem(itemPath: string, stats: fs.Stats): Promise<CleanupResult> {
     let cleaned = 0;
     let retained = 0;
 
@@ -141,7 +161,7 @@ async function processWorktreeItem(itemPath, stats) {
 
     if (await fs.pathExists(retentionFile)) {
         try {
-            const retentionInfo = await fs.readJson(retentionFile);
+            const retentionInfo = await fs.readJson(retentionFile) as RetentionInfo;
             const scheduledCleanup = new Date(retentionInfo.scheduledCleanup);
             const now = new Date();
 
@@ -154,7 +174,7 @@ async function processWorktreeItem(itemPath, stats) {
                 retained++;
             }
         } catch (retentionError) {
-            logger.warn({ worktreePath: itemPath, error: retentionError.message }, 'Failed to read retention info, skipping cleanup');
+            logger.warn({ worktreePath: itemPath, error: (retentionError as Error).message }, 'Failed to read retention info, skipping cleanup');
             retained++;
         }
     } else {
@@ -175,7 +195,7 @@ async function processWorktreeItem(itemPath, stats) {
     return { cleaned, retained };
 }
 
-export async function setupWorktreePermissions(worktreePath, branchName, issueId) {
+export async function setupWorktreePermissions(worktreePath: string, branchName: string, issueId: number | string | null): Promise<void> {
     try {
         const { execSync } = await import('child_process');
         execSync(`sudo chown -R 1000:1000 "${worktreePath}"`, {
@@ -184,22 +204,27 @@ export async function setupWorktreePermissions(worktreePath, branchName, issueId
         });
         logger.debug({ worktreePath, branchName, issueId }, 'Set worktree ownership to UID 1000 for container compatibility');
     } catch (chownError) {
-        logger.warn({ worktreePath, branchName, issueId, error: chownError.message }, 'Failed to set worktree ownership - container may have permission issues');
+        logger.warn({ worktreePath, branchName, issueId, error: (chownError as Error).message }, 'Failed to set worktree ownership - container may have permission issues');
     }
 }
 
-export async function addToSafeDirectories(git, worktreePath, localRepoPath, options = {}) {
+interface SafeDirectoryOptions {
+    branchName?: string;
+    issueId?: number | string | null;
+}
+
+export async function addToSafeDirectories(git: SimpleGit, worktreePath: string, localRepoPath: string, options: SafeDirectoryOptions = {}): Promise<void> {
     const { branchName, issueId } = options;
     try {
         await git.raw(['config', '--global', '--add', 'safe.directory', worktreePath]);
         await git.raw(['config', '--global', '--add', 'safe.directory', localRepoPath]);
         logger.debug({ worktreePath, localRepoPath, branchName, issueId }, 'Added worktree and main repo to Git safe directories');
     } catch (safeConfigError) {
-        logger.warn({ worktreePath, branchName, issueId, error: safeConfigError.message }, 'Failed to add directories to Git safe directories');
+        logger.warn({ worktreePath, branchName, issueId, error: (safeConfigError as Error).message }, 'Failed to add directories to Git safe directories');
     }
 }
 
-export async function verifyWorktreeCreation(worktreePath) {
+export async function verifyWorktreeCreation(worktreePath: string): Promise<void> {
     const gitFilePath = path.join(worktreePath, '.git');
     if (await fs.pathExists(gitFilePath)) {
         const stats = await fs.stat(gitFilePath);
@@ -224,7 +249,14 @@ export async function verifyWorktreeCreation(worktreePath) {
     }
 }
 
-export async function setupWorktreeRemote(worktreeGit, parentGit, worktreePath) {
+interface RemoteRef {
+    name: string;
+    refs: {
+        fetch?: string;
+    };
+}
+
+export async function setupWorktreeRemote(worktreeGit: SimpleGit, parentGit: SimpleGit, worktreePath: string): Promise<void> {
     try {
         const remotes = await worktreeGit.getRemotes();
         logger.debug({ worktreePath, existingRemotes: remotes.map(r => r.name) }, 'Checking existing remotes in worktree');
@@ -232,7 +264,7 @@ export async function setupWorktreeRemote(worktreeGit, parentGit, worktreePath) 
         if (!remotes.find(r => r.name === 'origin')) {
             logger.info({ worktreePath }, 'No origin remote found in worktree, adding it');
 
-            const parentRemotes = await parentGit.getRemotes(true);
+            const parentRemotes = await parentGit.getRemotes(true) as RemoteRef[];
             const originRemote = parentRemotes.find(r => r.name === 'origin');
 
             if (originRemote && originRemote.refs.fetch) {
@@ -245,10 +277,10 @@ export async function setupWorktreeRemote(worktreeGit, parentGit, worktreePath) 
             logger.debug({ worktreePath }, 'Origin remote already exists in worktree');
         }
     } catch (remoteError) {
-        logger.error({ worktreePath, error: remoteError.message, stack: remoteError.stack }, 'Failed to set up remote in worktree - push operations WILL fail');
+        logger.error({ worktreePath, error: (remoteError as Error).message, stack: (remoteError as Error).stack }, 'Failed to set up remote in worktree - push operations WILL fail');
     }
 }
 
-export function getWorktreePath(owner, repoName, worktreeDirName) {
+export function getWorktreePath(owner: string, repoName: string, worktreeDirName: string): string {
     return path.join(WORKTREES_BASE_PATH, owner, repoName, worktreeDirName);
 }

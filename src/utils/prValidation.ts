@@ -1,19 +1,31 @@
+import { Octokit } from '@octokit/core';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from './logger.js';
 import { handleError } from './errorHandler.js';
 import { withRetry, retryConfigs } from './retryHandler.js';
 
-/**
- * Validates that a Pull Request was successfully created
- * @param {Object} options - Validation options
- * @param {string} options.owner - Repository owner
- * @param {string} options.repoName - Repository name
- * @param {string} options.branchName - Head branch name
- * @param {number} options.expectedPrNumber - Expected PR number (optional)
- * @param {string} options.correlationId - Correlation ID for logging
- * @returns {Promise<{isValid: boolean, pr?: Object, error?: string}>} Validation result
- */
-export async function validatePRCreation(options) {
+export interface PRInfo {
+    number: number;
+    url: string;
+    title: string;
+    state: string;
+}
+
+export interface PRValidationResult {
+    isValid: boolean;
+    pr?: PRInfo;
+    error?: string;
+}
+
+export interface ValidatePRCreationOptions {
+    owner: string;
+    repoName: string;
+    branchName: string;
+    expectedPrNumber?: number;
+    correlationId: string;
+}
+
+export async function validatePRCreation(options: ValidatePRCreationOptions): Promise<PRValidationResult> {
     const {
         owner,
         repoName,
@@ -27,7 +39,6 @@ export async function validatePRCreation(options) {
     try {
         const octokit = await getAuthenticatedOctokit();
 
-        // Method 1: If we have an expected PR number, check it directly
         if (expectedPrNumber) {
             try {
                 const prResponse = await withRetry(
@@ -65,12 +76,11 @@ export async function validatePRCreation(options) {
                     owner,
                     repoName,
                     expectedPrNumber,
-                    error: directCheckError.message
+                    error: (directCheckError as Error).message
                 }, 'Direct PR validation failed, falling back to branch search');
             }
         }
 
-        // Method 2: Search for PRs with the head branch
         try {
             const prListResponse = await withRetry(
                 () => octokit.request('GET /repos/{owner}/{repo}/pulls', {
@@ -86,7 +96,7 @@ export async function validatePRCreation(options) {
 
             const prs = prListResponse.data;
             if (prs.length > 0) {
-                const pr = prs[0]; // Take the first (most recent) PR
+                const pr = prs[0];
                 correlatedLogger.info({
                     owner,
                     repoName,
@@ -111,11 +121,10 @@ export async function validatePRCreation(options) {
                 owner,
                 repoName,
                 branchName,
-                error: searchError.message
+                error: (searchError as Error).message
             }, 'PR search validation failed');
         }
 
-        // Method 3: Check if branch exists on remote (indicates push succeeded but PR creation failed)
         try {
             const branchResponse = await withRetry(
                 () => octokit.request('GET /repos/{owner}/{repo}/branches/{branch}', {
@@ -145,11 +154,10 @@ export async function validatePRCreation(options) {
                 owner,
                 repoName,
                 branchName,
-                error: branchError.message
+                error: (branchError as Error).message
             }, 'Branch existence check failed');
         }
 
-        // No PR found and validation methods exhausted
         correlatedLogger.warn({
             owner,
             repoName,
@@ -163,8 +171,8 @@ export async function validatePRCreation(options) {
         };
 
     } catch (error) {
-        const errorMessage = `PR validation failed: ${error.message}`;
-        handleError(error, errorMessage, { owner, repoName, branchName, correlationId });
+        const errorMessage = `PR validation failed: ${(error as Error).message}`;
+        handleError(error, errorMessage, { correlationId });
 
         return {
             isValid: false,
@@ -173,17 +181,27 @@ export async function validatePRCreation(options) {
     }
 }
 
-/**
- * Generates enhanced Claude prompt with explicit repository metadata
- * @param {Object} options - Prompt enhancement options
- * @param {Object} options.issueRef - Issue reference object
- * @param {string} options.currentIssueData - Current issue data from GitHub API
- * @param {string} options.worktreePath - Path to the Git worktree
- * @param {string} options.branchName - Branch name for the issue
- * @param {string} options.baseBranch - Base branch name
- * @returns {string} Enhanced prompt for Claude
- */
-export function generateEnhancedClaudePrompt(options) {
+export interface IssueRef {
+    repoOwner: string;
+    repoName: string;
+    number: number;
+}
+
+export interface CurrentIssueData {
+    title: string;
+    html_url: string;
+    body?: string | null;
+}
+
+export interface GenerateEnhancedClaudePromptOptions {
+    issueRef: IssueRef;
+    currentIssueData: CurrentIssueData;
+    worktreePath: string;
+    branchName: string;
+    baseBranch: string;
+}
+
+export function generateEnhancedClaudePrompt(options: GenerateEnhancedClaudePromptOptions): string {
     const {
         issueRef,
         currentIssueData,
@@ -229,18 +247,23 @@ Please analyze the complete issue and comments, implement a solution, and create
     return prompt;
 }
 
-/**
- * Validates repository information to ensure it's correct before Claude execution
- * @param {Object} issueRef - Issue reference object
- * @param {Object} octokit - Authenticated Octokit instance
- * @param {string} correlationId - Correlation ID for logging
- * @returns {Promise<{isValid: boolean, repoData?: Object, error?: string}>} Validation result
- */
-export async function validateRepositoryInfo(issueRef, octokit, correlationId) {
+export interface RepoData {
+    fullName: string;
+    defaultBranch: string;
+    private: boolean;
+    cloneUrl: string;
+}
+
+export interface RepoValidationResult {
+    isValid: boolean;
+    repoData?: RepoData;
+    error?: string;
+}
+
+export async function validateRepositoryInfo(issueRef: IssueRef, octokit: InstanceType<typeof Octokit>, correlationId: string): Promise<RepoValidationResult> {
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     try {
-        // Verify repository exists and is accessible
         const repoResponse = await withRetry(
             () => octokit.request('GET /repos/{owner}/{repo}', {
                 owner: issueRef.repoOwner,
@@ -252,7 +275,6 @@ export async function validateRepositoryInfo(issueRef, octokit, correlationId) {
 
         const repoData = repoResponse.data;
 
-        // Verify issue exists in this repository
         await withRetry(
             () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
                 owner: issueRef.repoOwner,
@@ -282,7 +304,7 @@ export async function validateRepositoryInfo(issueRef, octokit, correlationId) {
         };
 
     } catch (error) {
-        const errorMessage = `Repository validation failed: ${error.message}`;
+        const errorMessage = `Repository validation failed: ${(error as Error).message}`;
         handleError(error, errorMessage, { issueRef, correlationId });
 
         return {

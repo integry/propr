@@ -2,11 +2,44 @@ import { getUsageStats } from '../utils/tokenCalculation.js';
 
 const MAX_COMMENT_LENGTH = 65000;
 
-export function generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult) {
+interface ContentBlock {
+    text?: string;
+}
+
+interface ConversationLogEntry {
+    type: string;
+    message?: {
+        content?: string | ContentBlock[];
+        usage?: {
+            input_tokens?: number;
+            cache_creation_input_tokens?: number;
+            cache_read_input_tokens?: number;
+            output_tokens?: number;
+        };
+    };
+}
+
+export interface ClaudeResult {
+    success?: boolean;
+    executionTime?: number;
+    finalResult?: {
+        num_turns?: number;
+        cost_usd?: number;
+        subtype?: string | null;
+    };
+    sessionId?: string;
+    summary?: string;
+    conversationLog?: ConversationLogEntry[];
+    modifiedFiles?: string[];
+    rawOutput?: string;
+    exitCode?: number | string;
+}
+
+export function generatePRBody(issueNumber: number, issueTitle: string, commitMessage: string, claudeResult: ClaudeResult | null): string {
     const timestamp = new Date().toISOString();
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
-    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
+    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as { conversationLog?: Array<{ message?: { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }> } | null);
     const cost = claudeResult?.finalResult?.cost_usd || 0;
 
     let body = `## 🤖 AI-Generated Solution\n\n`;
@@ -44,7 +77,7 @@ export function generatePRBody(issueNumber, issueTitle, commitMessage, claudeRes
     return body;
 }
 
-export function generateClaudeLogsComment(claudeResult, issueNumber) {
+export function generateClaudeLogsComment(claudeResult: ClaudeResult | null, issueNumber: number): string {
     let comment = `## 🔍 Claude Code Execution Logs\n\n`;
     comment += `**Issue**: #${issueNumber}\n`;
     comment += `**Session ID**: \`${claudeResult?.sessionId || 'unknown'}\`\n`;
@@ -52,7 +85,7 @@ export function generateClaudeLogsComment(claudeResult, issueNumber) {
 
     if (claudeResult?.finalResult) {
         const result = claudeResult.finalResult;
-        const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
+        const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as { conversationLog?: Array<{ message?: { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }> } | null);
 
         comment += `### 📊 Execution Statistics\n\n`;
         comment += `- **Success**: ${claudeResult.success ? 'Yes' : 'No'}\n`;
@@ -76,10 +109,11 @@ export function generateClaudeLogsComment(claudeResult, issueNumber) {
         let conversationSnippet = '';
         recentMessages.forEach((msg) => {
             if (msg.type === 'user') {
-                const content = msg.message?.content || '[content unavailable]';
+                const content = (msg.message?.content as string) || '[content unavailable]';
                 conversationSnippet += `**User**: ${content.substring(0, 300)}${content.length > 300 ? '...' : ''}\n\n`;
             } else if (msg.type === 'assistant') {
-                const content = msg.message?.content?.[0]?.text || '[content unavailable]';
+                const contentArr = msg.message?.content as ContentBlock[] | undefined;
+                const content = contentArr?.[0]?.text || '[content unavailable]';
                 conversationSnippet += `**Claude**: ${content.substring(0, 300)}${content.length > 300 ? '...' : ''}\n\n`;
             }
         });

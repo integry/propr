@@ -1,19 +1,30 @@
-import simpleGit from 'simple-git';
+import { simpleGit, SimpleGit } from 'simple-git';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 
-export async function setupAuthenticatedRemote(git, repoUrl, authToken) {
+interface InstallationAuth {
+    token: string;
+}
+
+export async function setupAuthenticatedRemote(git: SimpleGit, repoUrl: string, authToken: string): Promise<void> {
     const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
     await git.remote(['set-url', 'origin', authenticatedUrl]);
 }
 
-export async function ensureBranchAndPush(worktreePath, branchName, baseBranch, options = {}) {
+interface EnsureBranchAndPushOptions {
+    repoUrl?: string;
+    authToken?: string;
+    tokenRefreshFn?: () => Promise<string>;
+    correlationId?: string;
+}
+
+export async function ensureBranchAndPush(worktreePath: string, branchName: string, baseBranch: string, options: EnsureBranchAndPushOptions = {}): Promise<void> {
     const { repoUrl, authToken, tokenRefreshFn, correlationId } = options;
 
-    const pushOperation = async (currentToken) => {
-        const git = simpleGit({ baseDir: worktreePath });
+    const pushOperation = async (currentToken: string | undefined): Promise<void> => {
+        const git: SimpleGit = simpleGit({ baseDir: worktreePath });
 
         if (repoUrl && currentToken) await setupAuthenticatedRemote(git, repoUrl, currentToken);
 
@@ -44,11 +55,11 @@ export async function ensureBranchAndPush(worktreePath, branchName, baseBranch, 
             if (!diffResult.trim()) {
                 logger.warn({ branchName, baseBranch }, 'No changes detected between branch and base');
             } else {
-                const changedFiles = diffResult.trim().split('\n').filter(f => f);
+                const changedFiles = diffResult.trim().split('\n').filter((f: string) => f);
                 logger.info({ branchName, baseBranch, changedFiles: changedFiles.length }, 'Changes detected, proceeding with push');
             }
         } catch (diffError) {
-            logger.debug({ error: diffError.message }, 'Could not check diff, proceeding anyway');
+            logger.debug({ error: (diffError as Error).message }, 'Could not check diff, proceeding anyway');
         }
 
         await git.push(['--set-upstream', 'origin', branchName]);
@@ -63,7 +74,7 @@ export async function ensureBranchAndPush(worktreePath, branchName, baseBranch, 
                 try {
                     await pushOperation(currentToken);
                 } catch (error) {
-                    if (tokenRefreshFn && (error.message.includes('Authentication failed') || error.message.includes('Invalid username or token'))) {
+                    if (tokenRefreshFn && ((error as Error).message.includes('Authentication failed') || (error as Error).message.includes('Invalid username or token'))) {
                         logger.info({ correlationId, worktreePath, branchName }, 'Authentication error detected, attempting to refresh token');
 
                         try {
@@ -73,7 +84,7 @@ export async function ensureBranchAndPush(worktreePath, branchName, baseBranch, 
                                 logger.info({ correlationId }, 'Token refreshed successfully, retrying push');
                             }
                         } catch (refreshError) {
-                            logger.error({ correlationId, error: refreshError.message }, 'Failed to refresh token');
+                            logger.error({ correlationId, error: (refreshError as Error).message }, 'Failed to refresh token');
                         }
                     }
                     throw error;
@@ -84,17 +95,23 @@ export async function ensureBranchAndPush(worktreePath, branchName, baseBranch, 
         );
 
     } catch (error) {
-        logger.error({ error: error.message, branchName, baseBranch, worktreePath }, 'Failed to ensure branch and push');
+        logger.error({ error: (error as Error).message, branchName, baseBranch, worktreePath }, 'Failed to ensure branch and push');
         throw error;
     }
 }
 
-export async function pushBranch(worktreePath, branchName, options = {}) {
+interface PushBranchOptions {
+    repoUrl?: string;
+    authToken?: string;
+    remote?: string;
+}
+
+export async function pushBranch(worktreePath: string, branchName: string, options: PushBranchOptions = {}): Promise<void> {
     const { repoUrl, authToken, remote = 'origin' } = options;
 
     const git = simpleGit({ baseDir: worktreePath });
 
-    const performPush = async (token) => {
+    const performPush = async (token: string | undefined): Promise<void> => {
         if (repoUrl && token) await setupAuthenticatedRemote(git, repoUrl, token);
 
         try {
@@ -113,7 +130,7 @@ export async function pushBranch(worktreePath, branchName, options = {}) {
                 logger.info({ worktreePath, previousBranch: currentBranch.trim(), newBranch: newBranch.trim(), expectedBranch: branchName, checkoutSuccess: newBranch.trim() === branchName }, 'Branch checkout completed');
             }
         } catch (branchCheckError) {
-            logger.warn({ error: branchCheckError.message }, 'Failed to verify current branch, proceeding with push anyway');
+            logger.warn({ error: (branchCheckError as Error).message }, 'Failed to verify current branch, proceeding with push anyway');
         }
 
         await git.push([remote, branchName, '--set-upstream']);
@@ -123,11 +140,11 @@ export async function pushBranch(worktreePath, branchName, options = {}) {
         await performPush(authToken);
         logger.info({ worktreePath, branchName, remote }, 'Branch pushed to remote successfully');
     } catch (error) {
-        if (error.message && (error.message.includes('Authentication failed') || error.message.includes('Invalid username or token'))) {
+        if ((error as Error).message && ((error as Error).message.includes('Authentication failed') || (error as Error).message.includes('Invalid username or token'))) {
             logger.info({ worktreePath, branchName }, 'Authentication error detected, attempting to refresh token');
             try {
                 const freshOctokit = await getAuthenticatedOctokit();
-                const freshAuth = await freshOctokit.auth({ type: "installation" });
+                const freshAuth = await (freshOctokit as unknown as { auth: (opts: { type: string }) => Promise<InstallationAuth> }).auth({ type: "installation" });
                 await performPush(freshAuth.token);
                 logger.info({ worktreePath, branchName, remote }, 'Branch pushed to remote successfully after token refresh');
             } catch (retryError) {

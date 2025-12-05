@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import { db } from '../db/postgres.js';
 import { generateExecutionAnalysisPrompt } from '../claude/prompts/promptGenerator.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
@@ -8,13 +8,80 @@ import { execa } from 'execa';
 
 const redis = new Redis({
   host: process.env.REDIS_HOST || 'redis',
-  port: process.env.REDIS_PORT || 6379,
+  port: parseInt(process.env.REDIS_PORT || '6379', 10),
 });
 
-async function getCommitDiff(worktreePath, commitHash, correlationId) {
+interface PromptData {
+  prompt?: string;
+  issueRef?: IssueRef;
+}
+
+interface IssueRef {
+  number: number;
+  repoOwner: string;
+  repoName: string;
+}
+
+interface Execution {
+  execution_id: string;
+  task_id: string;
+}
+
+interface Task {
+  task_id: string;
+  repository: string;
+  issue_number: number;
+}
+
+interface TaskHistory {
+  metadata: string | TaskHistoryMetadata;
+  timestamp: string;
+}
+
+interface TaskHistoryMetadata {
+  historyMetadata?: {
+    commitResult?: {
+      commitHash?: string;
+    };
+  };
+  commitResult?: {
+    commitHash?: string;
+  };
+  commitHash?: string;
+  prResult?: {
+    commitHash?: string;
+  };
+  githubComment?: {
+    body?: string;
+  };
+}
+
+interface ConversationLogEntry {
+  type?: string;
+  id?: string;
+  name?: string;
+  content?: string;
+  tool_use_id?: string;
+  is_error?: boolean;
+  compacted?: boolean;
+}
+
+interface AnalysisReport {
+  generatedAt: string;
+  modelUsed: string;
+  report: string;
+}
+
+interface GetExecutionAnalysisParams {
+  executionId: string;
+  sessionId: string;
+  correlationId: string;
+  model: string;
+}
+
+async function getCommitDiff(worktreePath: string, commitHash: string, correlationId: string): Promise<string | null> {
   const correlatedLogger = logger.withCorrelation(correlationId);
   try {
-    // Add the directory to git's safe.directory list to avoid dubious ownership errors
     await execa('git', ['config', '--global', '--add', 'safe.directory', worktreePath], {
       reject: false
     });
@@ -34,12 +101,12 @@ async function getCommitDiff(worktreePath, commitHash, correlationId) {
     }
     return stdout;
   } catch (error) {
-    correlatedLogger.error({ worktreePath, commitHash, error: error.message }, `Exception while running git show ${commitHash}`);
+    correlatedLogger.error({ worktreePath, commitHash, error: (error as Error).message }, `Exception while running git show ${commitHash}`);
     return null;
   }
 }
 
-function extractCommitHashFromMetadata(metadata) {
+function extractCommitHashFromMetadata(metadata: TaskHistoryMetadata): string | null {
   if (metadata.historyMetadata?.commitResult?.commitHash) return metadata.historyMetadata.commitResult.commitHash;
   if (metadata.commitResult?.commitHash) return metadata.commitResult.commitHash;
   if (metadata.commitHash) return metadata.commitHash;
@@ -51,10 +118,10 @@ function extractCommitHashFromMetadata(metadata) {
   return null;
 }
 
-function extractCommitHash(taskHistory, taskId, correlatedLogger) {
+function extractCommitHash(taskHistory: TaskHistory[], taskId: string, correlatedLogger: ReturnType<typeof logger.withCorrelation>): string | null {
   for (const history of taskHistory) {
     try {
-      const metadata = typeof history.metadata === 'string' ? JSON.parse(history.metadata) : (history.metadata || {});
+      const metadata: TaskHistoryMetadata = typeof history.metadata === 'string' ? JSON.parse(history.metadata) : (history.metadata || {});
       const hash = extractCommitHashFromMetadata(metadata);
       if (hash) {
         if (metadata.githubComment?.body) {
@@ -63,18 +130,18 @@ function extractCommitHash(taskHistory, taskId, correlatedLogger) {
         return hash;
       }
     } catch (parseError) {
-      correlatedLogger.warn({ taskId, error: parseError.message }, 'Failed to parse task history metadata');
+      correlatedLogger.warn({ taskId, error: (parseError as Error).message }, 'Failed to parse task history metadata');
     }
   }
   return null;
 }
 
-function compactConversationLog(conversationLog) {
+function compactConversationLog(conversationLog: ConversationLogEntry[]): ConversationLogEntry[] {
   if (!Array.isArray(conversationLog)) {
     return [];
   }
 
-  const toolUseMap = new Map();
+  const toolUseMap = new Map<string, string>();
   conversationLog.forEach(entry => {
     if (entry.type === 'tool_use' && entry.id && entry.name) {
       toolUseMap.set(entry.id, entry.name);
@@ -91,7 +158,7 @@ function compactConversationLog(conversationLog) {
         return entry;
       }
 
-      const toolName = toolUseMap.get(entry.tool_use_id);
+      const toolName = entry.tool_use_id ? toolUseMap.get(entry.tool_use_id) : undefined;
       const content = entry.content || '';
 
       if (toolName === 'Read' || toolName === 'Grep' || toolName === 'Glob') {
@@ -110,18 +177,22 @@ function compactConversationLog(conversationLog) {
   });
 }
 
-export async function getExecutionAnalysis({ executionId, sessionId, correlationId, model }) {
+export async function getExecutionAnalysis({ executionId, sessionId, correlationId, model }: GetExecutionAnalysisParams): Promise<AnalysisReport | { error: string }> {
   const correlatedLogger = logger.withCorrelation(correlationId);
+
+  if (!db) {
+    return { error: 'Database not configured.' };
+  }
 
   try {
     const promptKey = `execution:prompt:session:${sessionId}`;
-    const promptData = JSON.parse(await redis.get(promptKey) || '{}');
+    const promptData: PromptData = JSON.parse(await redis.get(promptKey) || '{}');
     const originalPrompt = promptData.prompt || 'Original prompt not found.';
     const issueRef = promptData.issueRef;
 
     const conversationLog = await db('llm_execution_details')
       .where({ execution_id: executionId })
-      .orderBy('sequence_number', 'asc');
+      .orderBy('sequence_number', 'asc') as ConversationLogEntry[];
 
     if (conversationLog.length === 0) {
       correlatedLogger.warn({ executionId }, 'No execution details found for analysis.');
@@ -130,7 +201,7 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
 
     const execution = await db('llm_executions')
       .where({ execution_id: executionId })
-      .first();
+      .first() as Execution | undefined;
 
     if (!execution) {
       correlatedLogger.warn({ executionId }, 'No execution record found.');
@@ -139,24 +210,20 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
 
     const task = await db('tasks')
       .where({ task_id: execution.task_id })
-      .first();
+      .first() as Task | undefined;
 
     if (!task) {
       correlatedLogger.warn({ executionId, taskId: execution.task_id }, 'No task record found.');
       return { error: 'No task record found.' };
     }
 
-    // Construct the path to the cloned repository
-    // task.repository is in format "owner/repo", e.g., "integry/gitfix"
     const worktreePath = `/tmp/git-processor/clones/${task.repository}`;
 
     correlatedLogger.info({ worktreePath, repository: task.repository }, 'Using cloned repository for commit diff retrieval');
 
-    // Check if the repository path exists
     if (!fs.existsSync(worktreePath)) {
       correlatedLogger.warn({ worktreePath }, 'Repository path does not exist, commit diff will not be available');
     } else {
-      // Fetch latest changes to ensure commit is available
       await execa('git', ['fetch', 'origin'], {
         cwd: worktreePath,
         reject: false
@@ -166,11 +233,11 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     const taskHistory = await db('task_history')
       .where({ task_id: execution.task_id })
       .whereNotNull('metadata')
-      .orderBy('timestamp', 'desc');
+      .orderBy('timestamp', 'desc') as TaskHistory[];
 
     const commitHash = extractCommitHash(taskHistory, execution.task_id, correlatedLogger);
 
-    let localDiff = null;
+    let localDiff: string | null = null;
     if (commitHash) {
       correlatedLogger.info({ commitHash, taskId: execution.task_id }, 'Found commit hash in task history');
       localDiff = await getCommitDiff(worktreePath, commitHash, correlationId);
@@ -200,18 +267,19 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
 
     correlatedLogger.info({ compactedLog: compactedLogString }, 'Compacted conversation log output');
 
-    const metaPrompt = generateExecutionAnalysisPrompt(
+    const metaPrompt: string = generateExecutionAnalysisPrompt(
       originalPrompt,
       compactedLog,
       model,
       localDiff
-    );
+    ) as string;
 
     const githubTokenKey = `github:token:${task.repository}`;
     const tokenData = await redis.get(githubTokenKey);
     const githubToken = tokenData || process.env.GH_TOKEN;
 
-    const analysisText = await runLightweightLLMAnalysis({
+    const [repoOwner, repoName] = task.repository.split('/');
+    const analysisText: string = await runLightweightLLMAnalysis({
       prompt: metaPrompt,
       model,
       correlationId,
@@ -219,12 +287,12 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       githubToken,
       issueRef: issueRef || {
         number: task.issue_number,
-        repoOwner: task.repository.split('/')[0],
-        repoName: task.repository.split('/')[1]
+        repoOwner,
+        repoName
       }
-    });
+    }) as string;
 
-    const analysisReport = {
+    const analysisReport: AnalysisReport = {
       generatedAt: new Date().toISOString(),
       modelUsed: model,
       report: analysisText,
@@ -234,8 +302,8 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
   } catch (error) {
     correlatedLogger.error({
       executionId,
-      error: error.message,
-      stack: error.stack
+      error: (error as Error).message,
+      stack: (error as Error).stack
     }, 'Failed to generate execution analysis');
     throw error;
   }

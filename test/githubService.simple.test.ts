@@ -1,14 +1,41 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
+interface FinalResult {
+    num_turns?: number;
+    cost_usd?: number;
+    subtype?: string | null;
+}
+
+interface Message {
+    content?: string | ContentBlock[];
+}
+
+interface ContentBlock {
+    text?: string;
+}
+
+interface ConversationLogEntry {
+    type: string;
+    message?: Message;
+}
+
+interface ClaudeResult {
+    success?: boolean;
+    executionTime?: number;
+    finalResult?: FinalResult;
+    sessionId?: string;
+    summary?: string;
+    conversationLog?: ConversationLogEntry[];
+    rawOutput?: string;
+}
+
 describe('GitHub Service - Core Logic Tests', () => {
     
     test('should validate PR body generation logic', () => {
-        // Test the logic for generating PR body content
         const issueNumber = 42;
         const issueTitle = 'Fix critical bug in authentication system';
-        const commitMessage = 'fix(auth): resolve login validation issue\n\nFixed null pointer exception when validating user credentials.';
-        const claudeResult = {
+        const claudeResult: ClaudeResult = {
             success: true,
             executionTime: 15000,
             finalResult: {
@@ -19,7 +46,6 @@ describe('GitHub Service - Core Logic Tests', () => {
             summary: 'Fixed the authentication bug by adding proper null checks and error handling'
         };
 
-        // Manually create PR body to test the logic (extracted from the actual function)
         const timestamp = new Date().toISOString();
         const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
         
@@ -39,7 +65,6 @@ describe('GitHub Service - Core Logic Tests', () => {
             body += `- **Session ID**: \`${claudeResult.sessionId || 'unknown'}\`\n`;
         }
 
-        // Verify the body contains expected elements
         assert(body.includes('Resolves #42'));
         assert(body.includes('Fix critical bug in authentication system'));
         assert(body.includes('✅ Success'));
@@ -51,7 +76,7 @@ describe('GitHub Service - Core Logic Tests', () => {
     });
 
     test('should validate Claude logs comment generation logic', () => {
-        const claudeResult = {
+        const claudeResult: ClaudeResult = {
             success: true,
             sessionId: 'test-session-123',
             executionTime: 5000,
@@ -69,13 +94,11 @@ describe('GitHub Service - Core Logic Tests', () => {
         };
         const issueNumber = 42;
 
-        // Generate comment content (extracted logic from actual function)
         let comment = `## 🔍 Claude Code Execution Logs\n\n`;
         comment += `**Issue**: #${issueNumber}\n`;
         comment += `**Session ID**: \`${claudeResult?.sessionId || 'unknown'}\`\n`;
         comment += `**Timestamp**: ${new Date().toISOString()}\n\n`;
 
-        // Add execution details
         if (claudeResult?.finalResult) {
             const result = claudeResult.finalResult;
             comment += `### 📊 Execution Statistics\n\n`;
@@ -85,13 +108,11 @@ describe('GitHub Service - Core Logic Tests', () => {
             comment += `- **Cost**: $${result.cost_usd || 'unknown'}\n\n`;
         }
 
-        // Add conversation summary
         if (claudeResult?.conversationLog && claudeResult.conversationLog.length > 0) {
             comment += `### 💬 Conversation Summary\n\n`;
             comment += `Total messages exchanged: ${claudeResult.conversationLog.length}\n\n`;
         }
 
-        // Verify the comment contains expected elements
         assert(comment.includes('Claude Code Execution Logs'));
         assert(comment.includes('#42'));
         assert(comment.includes('test-session-123'));
@@ -108,7 +129,6 @@ describe('GitHub Service - Core Logic Tests', () => {
         const labelsToRemove = ['AI-processing'];
         const labelsToAdd = ['AI-done'];
 
-        // Calculate new labels set (extracted logic from actual function)
         const updatedLabels = [
             ...currentLabels.filter(label => !labelsToRemove.includes(label)),
             ...labelsToAdd.filter(label => !currentLabels.includes(label))
@@ -118,9 +138,9 @@ describe('GitHub Service - Core Logic Tests', () => {
     });
 
     test('should handle duplicate labels correctly', () => {
-        const currentLabels = ['bug', 'AI-done']; // Already has the label we want to add
-        const labelsToRemove = ['AI-processing']; // Label not present
-        const labelsToAdd = ['AI-done']; // Label already present
+        const currentLabels = ['bug', 'AI-done'];
+        const labelsToRemove = ['AI-processing'];
+        const labelsToAdd = ['AI-done'];
 
         const updatedLabels = [
             ...currentLabels.filter(label => !labelsToRemove.includes(label)),
@@ -134,7 +154,6 @@ describe('GitHub Service - Core Logic Tests', () => {
         const issueNumber = 42;
         const issueTitle = 'Very Long Issue Title That Should Be Truncated to Fit in Commit Message Properly';
         
-        // Generate structured commit message (extracted logic from repoManager)
         const shortTitle = issueTitle ? issueTitle.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
         const commitMessage = `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}
 
@@ -145,9 +164,8 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
         assert(commitMessage.includes('Implemented by Claude Code'));
         assert(commitMessage.length < 200, 'Commit message should be reasonably sized');
         
-        // Verify the title was truncated properly
-        const extractedTitle = commitMessage.match(/- (.+)/)[1].split('\n')[0];
-        assert(extractedTitle.length <= 50, 'Title should be truncated to 50 characters');
+        const extractedTitle = commitMessage.match(/- (.+)/)?.[1].split('\n')[0];
+        assert(extractedTitle && extractedTitle.length <= 50, 'Title should be truncated to 50 characters');
     });
 
     test('should validate retention info structure', () => {
@@ -166,7 +184,6 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
         assert(retentionInfo.retentionHours === 24);
         assert(typeof retentionInfo.scheduledCleanup === 'string');
         
-        // Verify the scheduled cleanup is approximately 24 hours in the future
         const scheduledTime = new Date(retentionInfo.scheduledCleanup);
         const expectedTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
         const timeDiff = Math.abs(scheduledTime.getTime() - expectedTime.getTime());
@@ -176,10 +193,8 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
     test('should validate GitHub comment length limits', () => {
         const MAX_COMMENT_LENGTH = 65000;
         
-        // Create a very long comment
         let longComment = 'A'.repeat(70000);
         
-        // Apply truncation logic (extracted from actual function)
         if (longComment.length > MAX_COMMENT_LENGTH) {
             const truncatePoint = MAX_COMMENT_LENGTH - 200;
             longComment = longComment.substring(0, truncatePoint);
@@ -194,10 +209,8 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
 
 describe('GitHub Service - Error Handling', () => {
     test('should handle missing Claude result gracefully', () => {
-        const claudeResult = null;
-        const issueNumber = 42;
+        const claudeResult: ClaudeResult | null = null;
 
-        // Test that functions handle null/undefined claudeResult
         const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
         const isSuccess = claudeResult?.success || false;
         const sessionId = claudeResult?.sessionId || 'unknown';
@@ -208,32 +221,31 @@ describe('GitHub Service - Error Handling', () => {
     });
 
     test('should handle empty conversation log', () => {
-        const claudeResult = {
+        const claudeResult: ClaudeResult = {
             success: true,
             conversationLog: []
         };
 
-        // Test conversation log handling
         const hasConversation = claudeResult?.conversationLog && claudeResult.conversationLog.length > 0;
         assert.strictEqual(hasConversation, false);
     });
 
     test('should handle malformed conversation messages', () => {
-        const claudeResult = {
+        const claudeResult: ClaudeResult = {
             conversationLog: [
-                { type: 'user', message: null },
-                { type: 'assistant', message: { content: null } },
+                { type: 'user', message: undefined },
+                { type: 'assistant', message: { content: undefined } },
                 { type: 'assistant', message: { content: [{ text: 'Valid message' }] } }
             ]
         };
 
-        // Test that we can safely extract content
-        claudeResult.conversationLog.forEach(msg => {
+        claudeResult.conversationLog?.forEach(msg => {
             if (msg.type === 'user') {
-                const content = msg.message?.content || '[content unavailable]';
+                const content = (msg.message?.content as string) || '[content unavailable]';
                 assert(typeof content === 'string');
             } else if (msg.type === 'assistant') {
-                const content = msg.message?.content?.[0]?.text || '[content unavailable]';
+                const contentArr = msg.message?.content as ContentBlock[] | undefined;
+                const content = contentArr?.[0]?.text || '[content unavailable]';
                 assert(typeof content === 'string');
             }
         });

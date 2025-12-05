@@ -1,12 +1,14 @@
+import { SimpleGit } from 'simple-git';
+import { Octokit } from '@octokit/core';
 import logger from '../utils/logger.js';
 
-export function getRepoConfigKey(owner, repoName) {
+export function getRepoConfigKey(owner: string, repoName: string): string {
     const cleanOwner = owner.toUpperCase().replace(/[^A-Z0-9]/g, '_');
     const cleanRepoName = repoName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
     return `GIT_DEFAULT_BRANCH_${cleanOwner}_${cleanRepoName}`;
 }
 
-export async function detectDefaultBranch(git, owner, repoName, octokit = null) {
+export async function detectDefaultBranch(git: SimpleGit, owner: string, repoName: string, octokit: InstanceType<typeof Octokit> | null = null): Promise<string> {
     const repoConfigKey = getRepoConfigKey(owner, repoName);
     const repoSpecificBranch = process.env[repoConfigKey];
 
@@ -24,7 +26,7 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
                 repo: `${owner}/${repoName}`,
                 configuredBranch: repoSpecificBranch,
                 configKey: repoConfigKey,
-                error: branchError.message
+                error: (branchError as Error).message
             }, 'Repository-specific configured branch does not exist, falling back to detection methods');
         }
     }
@@ -46,7 +48,7 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
         } catch (apiError) {
             logger.debug({
                 repo: `${owner}/${repoName}`,
-                error: apiError.message
+                error: (apiError as Error).message
             }, 'Failed to detect default branch from GitHub API');
         }
     }
@@ -64,7 +66,7 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
     } catch (error) {
         logger.debug({
             repo: `${owner}/${repoName}`,
-            error: error.message
+            error: (error as Error).message
         }, 'Failed to detect default branch from remote show');
     }
 
@@ -82,7 +84,7 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
     } catch (error) {
         logger.debug({
             repo: `${owner}/${repoName}`,
-            error: error.message
+            error: (error as Error).message
         }, 'Failed to detect default branch from symbolic-ref');
     }
 
@@ -128,16 +130,21 @@ export async function detectDefaultBranch(git, owner, repoName, octokit = null) 
     } catch (error) {
         logger.warn({
             repo: `${owner}/${repoName}`,
-            error: error.message
+            error: (error as Error).message
         }, 'Failed to list remote branches');
     }
 
     throw new Error(`Unable to detect default branch for repository ${owner}/${repoName}`);
 }
 
-function parseOwnerRepoParts(parts) {
-    let ownerParts = [];
-    let repoParts = [];
+interface OwnerRepoParts {
+    ownerParts: string[];
+    repoParts: string[];
+}
+
+function parseOwnerRepoParts(parts: string[]): OwnerRepoParts {
+    const ownerParts: string[] = [];
+    let repoParts: string[] = [];
     for (let i = 0; i < parts.length; i++) {
         ownerParts.push(parts[i]);
         if (i > 0 && parts.length > i + 1) {
@@ -146,14 +153,20 @@ function parseOwnerRepoParts(parts) {
         }
     }
     if (repoParts.length === 0 && parts.length === 2) {
-        ownerParts = [parts[0]];
-        repoParts = [parts[1]];
+        return { ownerParts: [parts[0]], repoParts: [parts[1]] };
     }
     return { ownerParts, repoParts };
 }
 
-export function listRepositoryBranchConfigurations() {
-    const configs = {};
+export interface BranchConfiguration {
+    owner: string;
+    repo: string;
+    branch: string | undefined;
+    envKey: string;
+}
+
+export function listRepositoryBranchConfigurations(): Record<string, BranchConfiguration> {
+    const configs: Record<string, BranchConfiguration> = {};
     const prefix = 'GIT_DEFAULT_BRANCH_';
 
     Object.keys(process.env).forEach(key => {

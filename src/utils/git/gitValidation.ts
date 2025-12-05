@@ -1,8 +1,9 @@
-import simpleGit from 'simple-git';
+import { simpleGit, SimpleGit } from 'simple-git';
+import { Logger } from 'pino';
 
-export async function ensureGitRepository(logger) {
+export async function ensureGitRepository(logger: Logger): Promise<boolean> {
     try {
-        const git = simpleGit();
+        const git: SimpleGit = simpleGit();
 
         const isRepo = await git.checkIsRepo();
 
@@ -16,7 +17,7 @@ export async function ensureGitRepository(logger) {
 
         return true;
     } catch (error) {
-        logger.error({ error: error.message }, 'Failed to ensure git repository');
+        logger.error({ error: (error as Error).message }, 'Failed to ensure git repository');
         throw error;
     }
 }
