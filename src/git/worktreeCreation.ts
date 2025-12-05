@@ -1,4 +1,4 @@
-import simpleGit from 'simple-git';
+import { simpleGit, SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
@@ -12,7 +12,7 @@ import {
     getWorktreePath
 } from './worktreeOperations.js';
 
-async function removeWorktreeForBranch(git, worktreeLines, branchName) {
+async function removeWorktreeForBranch(git: SimpleGit, worktreeLines: string[], branchName: string): Promise<void> {
     for (let i = 0; i < worktreeLines.length; i++) {
         const line = worktreeLines[i];
         if (!line.startsWith('worktree ')) continue;
@@ -28,13 +28,13 @@ async function removeWorktreeForBranch(git, worktreeLines, branchName) {
             try {
                 await git.raw(['worktree', 'remove', wtPath, '--force']);
             } catch (removeError) {
-                logger.warn({ worktreePath: wtPath, error: removeError.message }, 'Failed to remove existing worktree');
+                logger.warn({ worktreePath: wtPath, error: (removeError as Error).message }, 'Failed to remove existing worktree');
             }
         }
     }
 }
 
-export async function cleanupExistingBranch(git, branchName) {
+export async function cleanupExistingBranch(git: SimpleGit, branchName: string): Promise<void> {
     try {
         await git.revparse([branchName]);
         logger.info({ branchName }, 'Branch already exists, will delete and recreate');
@@ -44,21 +44,21 @@ export async function cleanupExistingBranch(git, branchName) {
             const worktreeLines = worktreeList.split('\n');
             await removeWorktreeForBranch(git, worktreeLines, branchName);
         } catch (listError) {
-            logger.debug({ error: listError.message }, 'Failed to list worktrees');
+            logger.debug({ error: (listError as Error).message }, 'Failed to list worktrees');
         }
 
         try {
             await git.branch(['-D', branchName]);
             logger.info({ branchName }, 'Deleted existing branch');
         } catch (deleteError) {
-            logger.warn({ branchName, error: deleteError.message }, 'Failed to delete existing branch, continuing anyway');
+            logger.warn({ branchName, error: (deleteError as Error).message }, 'Failed to delete existing branch, continuing anyway');
         }
     } catch {
         logger.debug({ branchName }, 'Branch does not exist, will create new one');
     }
 }
 
-async function handleExistingWorktreePath(worktreePath, localRepoPath, branchName) {
+async function handleExistingWorktreePath(worktreePath: string, localRepoPath: string, branchName: string): Promise<void> {
     logger.warn({ worktreePath, branchName }, 'Worktree path already exists. Checking if it\'s a valid worktree...');
 
     const gitPath = path.join(worktreePath, '.git');
@@ -82,7 +82,7 @@ async function handleExistingWorktreePath(worktreePath, localRepoPath, branchNam
     }
 }
 
-async function handleWorktreeConflict(git, error, worktreePath, branchName) {
+async function handleWorktreeConflict(git: SimpleGit, error: Error, worktreePath: string, branchName: string): Promise<void> {
     logger.error({ branchName, error: error.message }, 'Branch is already checked out in another worktree');
 
     const match = error.message.match(/worktree at '([^']+)'/);
@@ -97,7 +97,7 @@ async function handleWorktreeConflict(git, error, worktreePath, branchName) {
             const worktreeAddResult = await git.raw(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`]);
             logger.info({ branchName, worktreePath, gitOutput: worktreeAddResult.trim() }, 'Successfully created worktree after removing existing one');
         } catch (retryError) {
-            logger.error({ branchName, existingWorktreePath, error: retryError.message }, 'Failed to handle existing worktree conflict');
+            logger.error({ branchName, existingWorktreePath, error: (retryError as Error).message }, 'Failed to handle existing worktree conflict');
             throw new Error(`Cannot create worktree: branch '${branchName}' is locked by another worktree`);
         }
     } else {
@@ -105,20 +105,20 @@ async function handleWorktreeConflict(git, error, worktreePath, branchName) {
     }
 }
 
-async function handleImproperWorktree(worktreePath, branchName, error) {
+async function handleImproperWorktree(worktreePath: string, branchName: string, error: Error): Promise<void> {
     logger.error({ branchName, worktreePath, error: error.message }, 'Worktree creation failed - improper structure detected');
 
     try {
         await fs.remove(worktreePath);
         logger.info({ worktreePath }, 'Removed improperly created worktree directory');
     } catch (cleanupError) {
-        logger.error({ worktreePath, error: cleanupError.message }, 'Failed to clean up improper worktree directory');
+        logger.error({ worktreePath, error: (cleanupError as Error).message }, 'Failed to clean up improper worktree directory');
     }
 
     throw error;
 }
 
-async function handleWorktreeCreationError(git, branchName, error) {
+async function handleWorktreeCreationError(git: SimpleGit, branchName: string, error: Error): Promise<void> {
     logger.error({ branchName, error: error.message }, 'Failed to create worktree from remote branch');
 
     try {
@@ -134,7 +134,7 @@ async function handleWorktreeCreationError(git, branchName, error) {
     }
 }
 
-async function createWorktreeFromRemote(git, worktreePath, branchName, localRepoPath) {
+async function createWorktreeFromRemote(git: SimpleGit, worktreePath: string, branchName: string, localRepoPath: string): Promise<void> {
     try {
         const worktreeMetadataDir = path.join(localRepoPath, '.git', 'worktrees');
         await fs.ensureDir(worktreeMetadataDir);
@@ -148,43 +148,61 @@ async function createWorktreeFromRemote(git, worktreePath, branchName, localRepo
             const existingWorktrees = await git.raw(['worktree', 'list', '--porcelain']);
             logger.debug({ localRepoPath, existingWorktrees: existingWorktrees.trim() }, 'Current worktrees before adding new one');
         } catch (listError) {
-            logger.warn({ error: listError.message }, 'Failed to list existing worktrees');
+            logger.warn({ error: (listError as Error).message }, 'Failed to list existing worktrees');
         }
 
         const worktreeAddResult = await git.raw(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`]);
         logger.info({ branchName, worktreePath, gitOutput: worktreeAddResult.trim() }, 'Git worktree add command completed');
 
     } catch (error) {
-        if (error.message && error.message.includes('is already used by worktree')) {
-            await handleWorktreeConflict(git, error, worktreePath, branchName);
-        } else if (error.message && error.message.includes('.git is a directory')) {
-            await handleImproperWorktree(worktreePath, branchName, error);
+        if ((error as Error).message && (error as Error).message.includes('is already used by worktree')) {
+            await handleWorktreeConflict(git, error as Error, worktreePath, branchName);
+        } else if ((error as Error).message && (error as Error).message.includes('.git is a directory')) {
+            await handleImproperWorktree(worktreePath, branchName, error as Error);
         } else {
-            await handleWorktreeCreationError(git, branchName, error);
+            await handleWorktreeCreationError(git, branchName, error as Error);
         }
     }
 }
 
-async function verifyFinalWorktreeSetup(worktreeGit, worktreePath, branchName) {
+interface RemoteRef {
+    name: string;
+    refs: {
+        fetch?: string;
+    };
+}
+
+async function verifyFinalWorktreeSetup(worktreeGit: SimpleGit, worktreePath: string, branchName: string): Promise<void> {
     try {
-        const finalRemotes = await worktreeGit.getRemotes(true);
+        const finalRemotes = await worktreeGit.getRemotes(true) as RemoteRef[];
         const hasOrigin = finalRemotes.some(r => r.name === 'origin');
 
         if (!hasOrigin) throw new Error('Worktree was created but origin remote is missing');
 
         logger.info({ worktreePath, branchName, remotes: finalRemotes.map(r => ({ name: r.name, url: r.refs.fetch })) }, 'Git worktree created successfully from existing branch with remotes configured');
     } catch (verifyError) {
-        logger.error({ worktreePath, error: verifyError.message }, 'Final verification failed - worktree may not be properly configured');
-        throw new Error(`Worktree setup incomplete: ${verifyError.message}`);
+        logger.error({ worktreePath, error: (verifyError as Error).message }, 'Final verification failed - worktree may not be properly configured');
+        throw new Error(`Worktree setup incomplete: ${(verifyError as Error).message}`);
     }
 }
 
-export async function createWorktreeFromExistingBranch(localRepoPath, branchName, options = {}) {
+interface CreateWorktreeFromExistingBranchOptions {
+    worktreeDirName: string;
+    owner: string;
+    repoName: string;
+}
+
+interface WorktreeResult {
+    worktreePath: string;
+    branchName: string;
+}
+
+export async function createWorktreeFromExistingBranch(localRepoPath: string, branchName: string, options: CreateWorktreeFromExistingBranchOptions): Promise<WorktreeResult> {
     const { worktreeDirName, owner, repoName } = options;
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
 
     try {
-        const git = simpleGit(localRepoPath);
+        const git: SimpleGit = simpleGit(localRepoPath);
 
         if (await fs.pathExists(worktreePath)) {
             await handleExistingWorktreePath(worktreePath, localRepoPath, branchName);
@@ -203,7 +221,7 @@ export async function createWorktreeFromExistingBranch(localRepoPath, branchName
         await setupWorktreePermissions(worktreePath, branchName, null);
         await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId: null });
 
-        const worktreeGit = simpleGit({ baseDir: worktreePath });
+        const worktreeGit: SimpleGit = simpleGit({ baseDir: worktreePath });
         await setupWorktreeRemote(worktreeGit, git, worktreePath);
 
         await verifyFinalWorktreeSetup(worktreeGit, worktreePath, branchName);

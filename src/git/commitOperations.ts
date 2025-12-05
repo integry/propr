@@ -1,10 +1,29 @@
-import simpleGit from 'simple-git';
+import { simpleGit, SimpleGit, StatusResult, FileStatusResult } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 
-async function validateWorktree(worktreePath, issueNumber) {
+interface Author {
+    name: string;
+    email: string;
+}
+
+interface CommitMessageObject {
+    claudeSuggested?: string;
+}
+
+interface CommitOptions {
+    issueNumber?: number;
+    issueTitle?: string;
+}
+
+interface CommitResult {
+    commitHash: string;
+    commitMessage: string;
+}
+
+async function validateWorktree(worktreePath: string, issueNumber?: number): Promise<void> {
     const gitPath = path.join(worktreePath, '.git');
     const worktreeExists = await fs.pathExists(worktreePath);
     const gitExists = await fs.pathExists(gitPath);
@@ -21,22 +40,22 @@ async function validateWorktree(worktreePath, issueNumber) {
     }
 }
 
-async function configureGitAuthor(git, author, worktreePath, issueNumber) {
+async function configureGitAuthor(git: SimpleGit, author: Author | null, worktreePath: string, issueNumber?: number): Promise<void> {
     if (!author) return;
     try {
         await git.raw(['config', 'user.name', author.name]);
         await git.raw(['config', 'user.email', author.email]);
         logger.debug({ worktreePath, author, issueNumber }, 'Set git author config using raw commands');
     } catch (configError) {
-        logger.warn({ worktreePath, error: configError.message, issueNumber }, 'Failed to set local git config, continuing without author config');
+        logger.warn({ worktreePath, error: (configError as Error).message, issueNumber }, 'Failed to set local git config, continuing without author config');
     }
 }
 
-function logGitStatus(status, worktreePath, issueNumber) {
+function logGitStatus(status: StatusResult, worktreePath: string, issueNumber?: number): void {
     logger.debug({
         worktreePath,
         issueNumber,
-        tracked: status.tracked?.length || 0,
+        tracked: (status as StatusResult & { tracked?: string[] }).tracked?.length || 0,
         notAdded: status.not_added?.length || 0,
         conflicted: status.conflicted?.length || 0,
         created: status.created?.length || 0,
@@ -48,7 +67,7 @@ function logGitStatus(status, worktreePath, issueNumber) {
     }, 'Git status before commit');
 }
 
-function resolveCommitMessage(commitMessage, issueNumber, issueTitle) {
+function resolveCommitMessage(commitMessage: string | CommitMessageObject, issueNumber?: number, issueTitle?: string): string {
     if (typeof commitMessage === 'object' && commitMessage.claudeSuggested) {
         return commitMessage.claudeSuggested;
     }
@@ -59,16 +78,16 @@ function resolveCommitMessage(commitMessage, issueNumber, issueTitle) {
     return `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}\n\nImplemented by Claude Code. Full conversation log in PR comment.`;
 }
 
-export async function commitChanges(worktreePath, commitMessage, author, options = {}) {
+export async function commitChanges(worktreePath: string, commitMessage: string | CommitMessageObject, author: Author | null, options: CommitOptions = {}): Promise<CommitResult | null> {
     const { issueNumber, issueTitle } = options;
     try {
         await validateWorktree(worktreePath, issueNumber);
     } catch (validationError) {
-        logger.error({ worktreePath, issueNumber, error: validationError.message }, 'Worktree validation failed');
+        logger.error({ worktreePath, issueNumber, error: (validationError as Error).message }, 'Worktree validation failed');
         throw validationError;
     }
 
-    const git = simpleGit({ baseDir: worktreePath });
+    const git: SimpleGit = simpleGit({ baseDir: worktreePath });
     logger.debug({ worktreePath, issueNumber }, 'Initializing git operations in worktree');
 
     try {
@@ -88,7 +107,7 @@ export async function commitChanges(worktreePath, commitMessage, author, options
             worktreePath,
             issueNumber,
             totalFiles: status.files.length,
-            files: status.files.map(f => ({ path: f.path, index: f.index, working_dir: f.working_dir }))
+            files: status.files.map((f: FileStatusResult) => ({ path: f.path, index: f.index, working_dir: f.working_dir }))
         }, 'Files to be committed');
 
         const finalCommitMessage = resolveCommitMessage(commitMessage, issueNumber, issueTitle);

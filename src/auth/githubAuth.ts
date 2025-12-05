@@ -5,19 +5,22 @@ import fs from 'fs';
 import path from 'path';
 import 'dotenv/config';
 
+interface InstallationAuth {
+    token: string;
+    type: string;
+}
+
 const appId = process.env.GH_APP_ID;
 const privateKeyPath = process.env.GH_PRIVATE_KEY_PATH;
 const installationId = process.env.GH_INSTALLATION_ID;
 
-let privateKey;
-let appOctokit = null;
+let privateKey: string | undefined;
+let appOctokit: InstanceType<typeof Octokit> | null = null;
 
-// Only initialize if all credentials are present
 if (appId && privateKeyPath && installationId) {
     try {
         privateKey = fs.readFileSync(path.resolve(privateKeyPath), 'utf8');
 
-        // Create Octokit with pagination plugin
         const MyOctokit = Octokit.plugin(paginateRest);
 
         appOctokit = new MyOctokit({
@@ -29,7 +32,7 @@ if (appId && privateKeyPath && installationId) {
             },
         });
     } catch (error) {
-        console.error('Failed to read GitHub App private key:', error.message);
+        console.error('Failed to read GitHub App private key:', (error as Error).message);
         console.error('Ensure GH_PRIVATE_KEY_PATH is set correctly in your .env file and points to a valid private key file.');
         if (process.env.NODE_ENV !== 'test') {
             process.exit(1);
@@ -40,31 +43,21 @@ if (appId && privateKeyPath && installationId) {
     process.exit(1);
 }
 
-
-/**
- * Gets an installation access token for the GitHub App.
- * @returns {Promise<string>} The installation access token.
- */
-export async function getGitHubInstallationToken() {
+export async function getGitHubInstallationToken(): Promise<string> {
     if (!appOctokit) {
         throw new Error('GitHub App not configured. Please set GH_APP_ID, GH_PRIVATE_KEY_PATH, and GH_INSTALLATION_ID environment variables.');
     }
     try {
-        const { token } = await appOctokit.auth({ type: "installation" });
-        return token;
+        const auth = await appOctokit.auth({ type: "installation" }) as InstallationAuth;
+        return auth.token;
     } catch (error) {
         console.error("Error getting GitHub installation token:", error);
         throw error;
     }
 }
 
-/**
- * Gets an Octokit instance authenticated as an installation.
- * @returns {Promise<Octokit>} Authenticated Octokit instance.
- */
-export async function getAuthenticatedOctokit() {
+export async function getAuthenticatedOctokit(): Promise<InstanceType<typeof Octokit>> {
     const token = await getGitHubInstallationToken();
-    // Create Octokit with pagination plugin
     const MyOctokit = Octokit.plugin(paginateRest);
     return new MyOctokit({ auth: token });
 }

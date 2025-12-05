@@ -13,7 +13,7 @@ interface ConversationLogEntry {
     message?: Message;
 }
 
-interface ClaudeResult {
+export interface ClaudeResult {
     conversationLog?: ConversationLogEntry[];
 }
 

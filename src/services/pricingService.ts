@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
@@ -7,14 +7,38 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/models';
 const PRICING_CACHE_KEY = 'pricing:openrouter:data';
 const CACHE_TTL_SECONDS = 86400;
 
-const connectionOptions = {
+interface RedisConnectionOptions {
+    host: string;
+    port: number;
+    maxRetriesPerRequest: null;
+    enableReadyCheck: boolean;
+}
+
+const connectionOptions: RedisConnectionOptions = {
     host: REDIS_HOST,
     port: REDIS_PORT,
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
 };
 
-export async function getModelPricing(openRouterModelId) {
+interface ModelPricing {
+    prompt: number;
+    completion: number;
+}
+
+interface OpenRouterModel {
+    id: string;
+    pricing?: {
+        prompt?: string;
+        completion?: string;
+    };
+}
+
+interface OpenRouterResponse {
+    data?: OpenRouterModel[];
+}
+
+export async function getModelPricing(openRouterModelId: string): Promise<ModelPricing | null> {
     const redis = new Redis(connectionOptions);
 
     try {
@@ -27,15 +51,15 @@ export async function getModelPricing(openRouterModelId) {
                 if (!response.ok) {
                     throw new Error(`OpenRouter API error: ${response.statusText}`);
                 }
-                const data = await response.json();
+                const data: OpenRouterResponse = await response.json() as OpenRouterResponse;
 
-                const pricingMap = {};
+                const pricingMap: Record<string, ModelPricing> = {};
                 if (data && Array.isArray(data.data)) {
-                    data.data.forEach(model => {
+                    data.data.forEach((model: OpenRouterModel) => {
                         if (model.pricing) {
                             pricingMap[model.id] = {
-                                prompt: parseFloat(model.pricing.prompt) || 0,
-                                completion: parseFloat(model.pricing.completion) || 0
+                                prompt: parseFloat(model.pricing.prompt || '0') || 0,
+                                completion: parseFloat(model.pricing.completion || '0') || 0
                             };
                         }
                     });
@@ -45,16 +69,16 @@ export async function getModelPricing(openRouterModelId) {
                 await redis.setex(PRICING_CACHE_KEY, CACHE_TTL_SECONDS, pricingData);
                 logger.info('Updated OpenRouter pricing cache.');
             } catch (apiError) {
-                logger.error({ error: apiError.message }, 'Failed to fetch OpenRouter pricing');
+                logger.error({ error: (apiError as Error).message }, 'Failed to fetch OpenRouter pricing');
                 return null;
             }
         }
 
-        const pricingMap = JSON.parse(pricingData);
+        const pricingMap: Record<string, ModelPricing> = JSON.parse(pricingData);
         return pricingMap[openRouterModelId] || null;
 
     } catch (error) {
-        logger.error({ error: error.message }, 'Error in getModelPricing');
+        logger.error({ error: (error as Error).message }, 'Error in getModelPricing');
         return null;
     } finally {
         await redis.quit();

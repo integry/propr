@@ -1,11 +1,131 @@
+import { Octokit } from '@octokit/core';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
-import { ensureBranchAndPush } from '../git/repoManager.js';
+import { ensureBranchAndPush } from '../git/repoBranching.js';
 import { handleError } from '../utils/errorHandler.js';
 
 const DEFAULT_BASE_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
 
-async function findExistingPRForBranch(octokit, repoContext, errorMessage) {
+export interface ClaudeResult {
+    success?: boolean;
+    executionTime?: number;
+    finalResult?: {
+        num_turns?: number;
+        cost_usd?: number;
+        subtype?: string | null;
+    };
+    sessionId?: string;
+    summary?: string;
+    conversationLog?: ConversationLogEntry[];
+    modifiedFiles?: string[];
+    rawOutput?: string;
+    exitCode?: number | string;
+}
+
+interface ConversationLogEntry {
+    type: string;
+    message?: {
+        content?: string | ContentBlock[];
+    };
+}
+
+interface ContentBlock {
+    text?: string;
+}
+
+export interface PRInfo {
+    number: number;
+    url: string;
+    title: string;
+    state?: string;
+}
+
+interface PRResult {
+    skipPR?: boolean;
+    error?: string;
+    success?: boolean;
+    pr?: PRInfo;
+}
+
+interface RepoContext {
+    owner: string;
+    repoName: string;
+    branchName: string;
+}
+
+interface BranchParams {
+    owner: string;
+    repoName: string;
+    baseBranch: string;
+    branchName: string;
+}
+
+interface PRParams {
+    owner: string;
+    repoName: string;
+    prTitle: string;
+    branchName: string;
+    baseBranch: string;
+    prBody: string;
+}
+
+export interface CreatePullRequestRobustParams {
+    owner: string;
+    repoName: string;
+    branchName: string;
+    baseBranch: string;
+    issueNumber: number;
+    prTitle: string;
+    prBody: string;
+    worktreePath: string;
+    repoUrl: string;
+    authToken: string;
+    correlationId?: string;
+}
+
+export interface CreatePullRequestOptions {
+    owner: string;
+    repoName: string;
+    branchName: string;
+    baseBranch?: string;
+    issueNumber: number;
+    issueTitle: string;
+    commitMessage: string;
+    claudeResult: ClaudeResult;
+}
+
+export interface AddClaudeLogsCommentOptions {
+    owner: string;
+    repoName: string;
+    prNumber: number;
+    claudeResult: ClaudeResult;
+    issueNumber: number;
+}
+
+export interface UpdateIssueLabelsOptions {
+    owner: string;
+    repoName: string;
+    issueNumber: number;
+    labelsToRemove?: string[];
+    labelsToAdd?: string[];
+}
+
+interface ExistingPRResult {
+    success: boolean;
+    pr: PRInfo;
+}
+
+interface PRCreateResponse {
+    data: {
+        number: number;
+        html_url: string;
+        title: string;
+        state: string;
+    };
+    existingPR?: ExistingPRResult;
+}
+
+async function findExistingPRForBranch(octokit: InstanceType<typeof Octokit>, repoContext: RepoContext, errorMessage: string): Promise<ExistingPRResult | null> {
     const { owner, repoName, branchName } = repoContext;
     logger.info({ owner, repoName, branchName, error: errorMessage }, 'PR already exists for this branch, attempting to find existing PR');
 
@@ -32,12 +152,12 @@ async function findExistingPRForBranch(octokit, repoContext, errorMessage) {
             };
         }
     } catch (findError) {
-        logger.warn({ error: findError.message }, 'Failed to find existing PR');
+        logger.warn({ error: (findError as Error).message }, 'Failed to find existing PR');
     }
     return null;
 }
 
-async function waitForBranchPropagation(octokit, owner, repoName, branchName) {
+async function waitForBranchPropagation(octokit: InstanceType<typeof Octokit>, owner: string, repoName: string, branchName: string): Promise<void> {
     logger.debug({ branchName }, 'Waiting for GitHub to propagate branch data...');
     await new Promise(resolve => setTimeout(resolve, 3000));
 
@@ -53,17 +173,17 @@ async function waitForBranchPropagation(octokit, owner, repoName, branchName) {
             return;
         } catch (branchCheckError) {
             if (attempt === maxRetries) {
-                throw new Error(`Branch '${branchName}' does not exist on remote after ${maxRetries} attempts: ${branchCheckError.message}`);
+                throw new Error(`Branch '${branchName}' does not exist on remote after ${maxRetries} attempts: ${(branchCheckError as Error).message}`);
             }
 
             const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
-            logger.debug({ branchName, attempt, delay, error: branchCheckError.message }, 'Branch not found, retrying...');
+            logger.debug({ branchName, attempt, delay, error: (branchCheckError as Error).message }, 'Branch not found, retrying...');
             await new Promise(resolve => setTimeout(resolve, delay));
         }
     }
 }
 
-async function compareBranches(octokit, branchParams) {
+async function compareBranches(octokit: InstanceType<typeof Octokit>, branchParams: BranchParams): Promise<{ skipPR: boolean }> {
     const { owner, repoName, baseBranch, branchName } = branchParams;
     try {
         const compareResult = await octokit.request('GET /repos/{owner}/{repo}/compare/{base}...{head}', {
@@ -81,12 +201,17 @@ async function compareBranches(octokit, branchParams) {
         logger.debug({ branchName, baseBranch, aheadBy: compareResult.data.ahead_by, behindBy: compareResult.data.behind_by }, 'Confirmed commits exist between branches');
         return { skipPR: false };
     } catch (compareError) {
-        logger.warn({ branchName, baseBranch, error: compareError.message }, 'Could not compare branches, proceeding with PR creation anyway');
+        logger.warn({ branchName, baseBranch, error: (compareError as Error).message }, 'Could not compare branches, proceeding with PR creation anyway');
         return { skipPR: false };
     }
 }
 
-function isHistorySyncError(error) {
+interface ErrorLike {
+    status?: number;
+    message?: string;
+}
+
+function isHistorySyncError(error: ErrorLike): boolean {
     const status = error.status;
     const message = error.message || '';
     return (status === 422 || status === 400) &&
@@ -97,7 +222,7 @@ function isHistorySyncError(error) {
          message.includes('Base sha can\'t be blank'));
 }
 
-async function createPRWithRetry(octokit, prParams) {
+async function createPRWithRetry(octokit: InstanceType<typeof Octokit>, prParams: PRParams): Promise<PRCreateResponse> {
     const { owner, repoName, prTitle, branchName, baseBranch, prBody } = prParams;
 
     try {
@@ -105,13 +230,14 @@ async function createPRWithRetry(octokit, prParams) {
             owner, repo: repoName, title: prTitle, head: branchName, base: baseBranch, body: prBody, draft: false
         });
     } catch (prCreateError) {
-        if (prCreateError.status === 422 && prCreateError.message?.includes('A pull request already exists')) {
-            const existingResult = await findExistingPRForBranch(octokit, { owner, repoName, branchName }, prCreateError.message);
-            if (existingResult) return { existingPR: existingResult };
+        const err = prCreateError as ErrorLike;
+        if (err.status === 422 && err.message?.includes('A pull request already exists')) {
+            const existingResult = await findExistingPRForBranch(octokit, { owner, repoName, branchName }, err.message);
+            if (existingResult) return { existingPR: existingResult } as PRCreateResponse;
         }
 
-        if (isHistorySyncError(prCreateError)) {
-            logger.warn({ owner, repoName, branchName, baseBranch, error: prCreateError.message }, 'Branch has no history in common with base branch, waiting for GitHub sync...');
+        if (isHistorySyncError(err)) {
+            logger.warn({ owner, repoName, branchName, baseBranch, error: err.message }, 'Branch has no history in common with base branch, waiting for GitHub sync...');
             await new Promise(resolve => setTimeout(resolve, 10000));
 
             try {
@@ -121,7 +247,7 @@ async function createPRWithRetry(octokit, prParams) {
                 logger.info({ owner, repoName, branchName, baseBranch }, 'PR creation succeeded after retry for history sync issue');
                 return retryResponse;
             } catch (retryError) {
-                logger.error({ owner, repoName, branchName, baseBranch, originalError: prCreateError.message, retryError: retryError.message }, 'PR creation failed even after retry for history sync issue');
+                logger.error({ owner, repoName, branchName, baseBranch, originalError: err.message, retryError: (retryError as Error).message }, 'PR creation failed even after retry for history sync issue');
                 throw retryError;
             }
         }
@@ -129,7 +255,7 @@ async function createPRWithRetry(octokit, prParams) {
     }
 }
 
-export async function createPullRequestRobust(params) {
+export async function createPullRequestRobust(params: CreatePullRequestRobustParams): Promise<PRResult> {
     const { owner, repoName, branchName, baseBranch, issueNumber, prTitle, prBody, worktreePath, repoUrl, authToken } = params;
 
     const octokit = await getAuthenticatedOctokit();
@@ -139,7 +265,10 @@ export async function createPullRequestRobust(params) {
 
         await ensureBranchAndPush(worktreePath, branchName, baseBranch, {
             repoUrl, authToken,
-            tokenRefreshFn: async () => (await octokit.auth()).token,
+            tokenRefreshFn: async () => {
+                const auth = await (octokit as unknown as { auth: (opts: { type: string }) => Promise<{ token: string }> }).auth({ type: "installation" });
+                return auth.token;
+            },
             correlationId: params.correlationId || 'unknown'
         });
 
@@ -159,13 +288,13 @@ export async function createPullRequestRobust(params) {
         return { success: true, pr: { number: prData.number, url: prData.html_url, title: prData.title, state: prData.state } };
 
     } catch (error) {
-        logger.error({ owner, repoName, branchName, baseBranch, issueNumber, error: error.message }, 'Failed to create pull request');
+        logger.error({ owner, repoName, branchName, baseBranch, issueNumber, error: (error as Error).message }, 'Failed to create pull request');
         handleError(error, `Failed to create pull request for ${owner}/${repoName}#${issueNumber}`);
         throw error;
     }
 }
 
-export async function createPullRequest(options) {
+export async function createPullRequest(options: CreatePullRequestOptions): Promise<PRInfo> {
     const {
         owner,
         repoName,
@@ -226,7 +355,7 @@ export async function createPullRequest(options) {
     }
 }
 
-export async function addClaudeLogsComment(options) {
+export async function addClaudeLogsComment(options: AddClaudeLogsCommentOptions): Promise<void> {
     const {
         owner,
         repoName,
@@ -269,7 +398,7 @@ export async function addClaudeLogsComment(options) {
     }
 }
 
-export async function updateIssueLabels(options) {
+export async function updateIssueLabels(options: UpdateIssueLabelsOptions): Promise<string[]> {
     const {
         owner,
         repoName,
@@ -287,7 +416,7 @@ export async function updateIssueLabels(options) {
             issue_number: issueNumber
         });
 
-        const currentLabels = issueResponse.data.labels.map(label => label.name);
+        const currentLabels = (issueResponse.data.labels as Array<{ name: string }>).map(label => label.name);
 
         const updatedLabels = [
             ...currentLabels.filter(label => !labelsToRemove.includes(label)),
