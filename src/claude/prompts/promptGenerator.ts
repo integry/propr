@@ -1,4 +1,60 @@
-export function generateClaudePrompt(issueRef, branchName = null, modelName = null, issueDetails = null) {
+export interface IssueLabel {
+    name: string;
+}
+
+export interface IssueUser {
+    login: string;
+}
+
+export interface IssueComment {
+    user?: IssueUser;
+    created_at?: string;
+    body?: string;
+}
+
+export interface IssueDetails {
+    title?: string;
+    body?: string;
+    labels?: IssueLabel[];
+    user?: IssueUser;
+    created_at?: string;
+    comments?: IssueComment[];
+}
+
+export interface IssueRef {
+    number: number;
+    repoOwner: string;
+    repoName: string;
+}
+
+export interface ConversationLogEntry {
+    event_type?: string;
+    content?: string;
+    tool_name?: string;
+    is_error?: boolean;
+}
+
+export interface ExecutionAnalysisResult {
+    efficiency_score: number;
+    efficiency_notes: string;
+    tool_usage_summary: {
+        most_used_tools: string[];
+        tool_appropriateness: string;
+    };
+    error_analysis: string;
+    prompt_quality_score: number;
+    prompt_improvements: string;
+    implementation_critique: string;
+    implementation_critique_score: number;
+    recommendations: string[];
+}
+
+export function generateClaudePrompt(
+    issueRef: IssueRef,
+    branchName: string | null = null,
+    modelName: string | null = null,
+    issueDetails: IssueDetails | null = null
+): string {
     const branchInfo = branchName ? `\n- **BRANCH**: You are working on branch \`${branchName}\`.` : '';
     const modelInfo = modelName ? `\n- **MODEL**: This task is being processed by the \`${modelName}\` model.` : '';
 
@@ -64,7 +120,12 @@ Follow these steps systematically:
 Your task is complete when you have implemented a working solution to the issue. The git workflow and PR creation will be handled automatically by the system after your implementation.`;
 }
 
-export function generateTaskImportPrompt(taskDescription, repoOwner, repoName, worktreePath) {
+export function generateTaskImportPrompt(
+    taskDescription: string,
+    repoOwner: string,
+    repoName: string,
+    worktreePath: string
+): string {
     return `You are an expert software analyst. Your task is to convert code change requests into detailed GitHub issue specifications for the **${repoOwner}/${repoName}** repo, so a junior developer can implement them. If the issue specification with comments is already defined, publish it directly to Github without modifications, otherwise carefully analyze the request first and then publish the issues.
 
 You are working in a git worktree at '${worktreePath}' which contains the full source code for analysis and planning.
@@ -89,7 +150,12 @@ ${taskDescription}
 ---`;
 }
 
-export function generateExecutionAnalysisPrompt(originalPrompt, conversationLog, model, localDiff) {
+export function generateExecutionAnalysisPrompt(
+    originalPrompt: string,
+    conversationLog: ConversationLogEntry[],
+    model: string,
+    localDiff: string | null
+): string {
     const conversationSummary = conversationLog.map((entry, index) => {
         const eventType = entry.event_type || 'unknown';
         const content = entry.content ? entry.content.substring(0, 500) : 'N/A';
