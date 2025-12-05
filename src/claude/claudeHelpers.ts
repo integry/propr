@@ -2,11 +2,14 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import logger from '../utils/logger.js';
-import { generateClaudePrompt } from './prompts/promptGenerator.js';
-import { executeDockerCommand } from './docker/dockerExecutor.js';
+import { generateClaudePrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
+import { executeDockerCommand, ExecutionResult } from './docker/dockerExecutor.js';
 
 export class UsageLimitError extends Error {
-    constructor(message, resetTimestamp) {
+    resetTimestamp: number;
+    retryable: boolean;
+
+    constructor(message: string, resetTimestamp: number) {
         super(message);
         this.name = 'UsageLimitError';
         this.resetTimestamp = resetTimestamp;
@@ -14,9 +17,85 @@ export class UsageLimitError extends Error {
     }
 }
 
-export function buildClaudePrompt(options) {
+export interface BuildClaudePromptOptions {
+    customPrompt?: string;
+    issueRef: IssueRef;
+    branchName?: string;
+    modelName?: string;
+    issueDetails?: IssueDetails;
+    isRetry?: boolean;
+    retryReason?: string;
+}
+
+export interface DockerArgsParams {
+    worktreePath: string;
+    githubToken: string;
+    prompt: string;
+    modelName?: string;
+    issueNumber: number;
+    CLAUDE_DOCKER_IMAGE: string;
+    CLAUDE_CONFIG_PATH: string;
+    CLAUDE_MAX_TURNS: number;
+}
+
+export interface ConversationLogEntry {
+    type?: string;
+    message?: {
+        id?: string;
+        model?: string;
+    };
+    timestamp?: string;
+    [key: string]: unknown;
+}
+
+export interface ClaudeOutputResult {
+    type: string;
+    is_error?: boolean;
+    result?: string;
+    total_cost_usd?: number;
+    cost_usd?: number;
+    model?: string;
+    conversation_id?: string;
+}
+
+export interface ClaudeOutput {
+    success: boolean;
+    rawOutput: string;
+    error: string;
+    conversationLog: ConversationLogEntry[];
+    sessionId: string | null;
+    conversationId?: string;
+    finalResult: ClaudeOutputResult | null;
+    model?: string;
+}
+
+export interface StorePromptOptions {
+    claudeOutput: ClaudeOutput;
+    prompt: string;
+    issueRef: IssueRef;
+    model: string;
+    isRetry?: boolean;
+    retryReason?: string;
+}
+
+interface JsonLineMessage {
+    type?: string;
+    message?: {
+        id?: string;
+        model?: string;
+    };
+    session_id?: string;
+    conversation_id?: string;
+    model?: string;
+    result?: string;
+    is_error?: boolean;
+    total_cost_usd?: number;
+    cost_usd?: number;
+}
+
+export function buildClaudePrompt(options: BuildClaudePromptOptions): string {
     const { customPrompt, issueRef, branchName, modelName, issueDetails, isRetry, retryReason } = options;
-    const basePrompt = customPrompt || generateClaudePrompt(issueRef, branchName, modelName, issueDetails);
+    const basePrompt = customPrompt || generateClaudePrompt(issueRef, branchName ?? null, modelName ?? null, issueDetails ?? null);
     const prompt = `${basePrompt}
 
 **CRITICAL GIT SAFETY RULES:**
@@ -43,18 +122,19 @@ export function buildClaudePrompt(options) {
     return prompt;
 }
 
-export async function setWorktreeOwnership(worktreePath, issueNumber) {
+export async function setWorktreeOwnership(worktreePath: string, issueNumber: number): Promise<void> {
     try {
         await executeDockerCommand('sudo', ['chown', '-R', '1000:1000', worktreePath], { timeout: 10000 });
         logger.debug({ issueNumber, worktreePath }, 'Set worktree ownership to UID 1000 for container compatibility');
     } catch (chownError) {
-        logger.warn({ issueNumber, worktreePath, error: chownError.message }, 'Failed to set worktree ownership - container may have permission issues');
+        const error = chownError as Error;
+        logger.warn({ issueNumber, worktreePath, error: error.message }, 'Failed to set worktree ownership - container may have permission issues');
     }
 }
 
-export function verifyWorktreeStructure(worktreePath, issueNumber) {
+export function verifyWorktreeStructure(worktreePath: string, issueNumber: number): string | null {
     const worktreeGitPath = path.join(worktreePath, '.git');
-    let worktreeGitContent = null;
+    let worktreeGitContent: string | null = null;
 
     try {
         if (!fs.existsSync(worktreeGitPath)) {
@@ -80,13 +160,18 @@ export function verifyWorktreeStructure(worktreePath, issueNumber) {
             mainRepoExists: mainRepoPath ? fs.existsSync(mainRepoPath) : false
         }, 'Verified worktree .git file structure');
     } catch (verifyError) {
-        logger.error({ issueNumber, error: verifyError.message }, 'Failed to verify worktree structure');
+        const error = verifyError as Error;
+        logger.error({ issueNumber, error: error.message }, 'Failed to verify worktree structure');
     }
 
     return worktreeGitContent;
 }
 
-export function verifyWorktreePostExecution(worktreePath, issueNumber, worktreeGitContent) {
+export function verifyWorktreePostExecution(
+    worktreePath: string,
+    issueNumber: number,
+    worktreeGitContent: string | null
+): void {
     try {
         const postExecGitPath = path.join(worktreePath, '.git');
         if (!fs.existsSync(postExecGitPath)) return;
@@ -113,14 +198,15 @@ export function verifyWorktreePostExecution(worktreePath, issueNumber, worktreeG
             logger.warn({ issueNumber, preContent: worktreeGitContent, postContent }, 'Worktree .git file content changed during execution');
         }
     } catch (postVerifyError) {
-        logger.error({ issueNumber, error: postVerifyError.message }, 'Failed to verify worktree state after execution');
+        const error = postVerifyError as Error;
+        logger.error({ issueNumber, error: error.message }, 'Failed to verify worktree state after execution');
     }
 }
 
-export function buildDockerArgs(params) {
+export function buildDockerArgs(params: DockerArgsParams): string[] {
     const { worktreePath, githubToken, prompt, modelName, issueNumber, CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS } = params;
 
-    const dockerArgs = [
+    const dockerArgs: string[] = [
         'run', '--rm',
         '--security-opt', 'no-new-privileges',
         '--cap-add', 'CHOWN',
@@ -151,8 +237,8 @@ export function buildDockerArgs(params) {
     return dockerArgs;
 }
 
-export function parseStreamJsonOutput(result) {
-    const claudeOutput = {
+export function parseStreamJsonOutput(result: ExecutionResult): ClaudeOutput {
+    const claudeOutput: ClaudeOutput = {
         success: result.exitCode === 0,
         rawOutput: result.stdout,
         error: result.stderr,
@@ -166,7 +252,7 @@ export function parseStreamJsonOutput(result) {
     const lines = result.stdout.split('\n').filter(line => line.trim());
     for (const line of lines) {
         try {
-            const jsonLine = JSON.parse(line);
+            const jsonLine: JsonLineMessage = JSON.parse(line);
             processJsonLine(jsonLine, claudeOutput, result.messageTimestamps);
         } catch {
             continue;
@@ -176,7 +262,11 @@ export function parseStreamJsonOutput(result) {
     return claudeOutput;
 }
 
-function processJsonLine(jsonLine, claudeOutput, messageTimestamps) {
+function processJsonLine(
+    jsonLine: JsonLineMessage,
+    claudeOutput: ClaudeOutput,
+    messageTimestamps: Map<string, string>
+): void {
     if (jsonLine.type === 'user' || jsonLine.type === 'assistant') {
         const messageKey = jsonLine.message?.id || `${jsonLine.type}-${JSON.stringify(jsonLine).substring(0, 100)}`;
         const timestamp = messageTimestamps?.get(messageKey);
@@ -196,8 +286,16 @@ function processJsonLine(jsonLine, claudeOutput, messageTimestamps) {
     }
 }
 
-function processResultLine(jsonLine, claudeOutput) {
-    claudeOutput.finalResult = jsonLine;
+function processResultLine(jsonLine: JsonLineMessage, claudeOutput: ClaudeOutput): void {
+    claudeOutput.finalResult = {
+        type: jsonLine.type || 'result',
+        is_error: jsonLine.is_error,
+        result: jsonLine.result,
+        total_cost_usd: jsonLine.total_cost_usd,
+        cost_usd: jsonLine.cost_usd,
+        model: jsonLine.model,
+        conversation_id: jsonLine.conversation_id
+    };
     claudeOutput.success = !jsonLine.is_error;
 
     if (jsonLine.result) {
@@ -216,7 +314,7 @@ function processResultLine(jsonLine, claudeOutput) {
     if (jsonLine.conversation_id) claudeOutput.conversationId = jsonLine.conversation_id;
 }
 
-export async function storePromptInRedis(options) {
+export async function storePromptInRedis(options: StorePromptOptions): Promise<void> {
     const { claudeOutput, prompt, issueRef, model, isRetry, retryReason } = options;
     if (!claudeOutput.sessionId && !claudeOutput.conversationId) return;
 
@@ -224,7 +322,7 @@ export async function storePromptInRedis(options) {
         const Redis = await import('ioredis');
         const redis = new Redis.default({
             host: process.env.REDIS_HOST || 'redis',
-            port: process.env.REDIS_PORT || 6379
+            port: parseInt(process.env.REDIS_PORT || '6379', 10)
         });
 
         const promptData = {
@@ -238,7 +336,7 @@ export async function storePromptInRedis(options) {
             retryReason
         };
 
-        const promptKeys = [];
+        const promptKeys: string[] = [];
 
         if (claudeOutput.sessionId) {
             const sessionKey = `execution:prompt:session:${claudeOutput.sessionId}`;
@@ -267,6 +365,7 @@ export async function storePromptInRedis(options) {
 
         await redis.quit();
     } catch (redisError) {
-        logger.warn({ issueNumber: issueRef.number, error: redisError.message }, 'Failed to store execution prompt in Redis - continuing');
+        const error = redisError as Error;
+        logger.warn({ issueNumber: issueRef.number, error: error.message }, 'Failed to store execution prompt in Redis - continuing');
     }
 }

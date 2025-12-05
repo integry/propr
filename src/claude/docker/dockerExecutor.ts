@@ -1,27 +1,54 @@
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
 import logger from '../../utils/logger.js';
 
-const CLAUDE_DOCKER_IMAGE = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
+export interface ExecutionResult {
+    stdout: string;
+    stderr: string;
+    exitCode: number | null;
+    messageTimestamps: Map<string, string>;
+}
 
-export function executeDockerCommand(command, args, options = {}) {
+export interface DockerCommandOptions {
+    timeout?: number;
+    cwd?: string;
+    onSessionId?: (sessionId: string, conversationId?: string) => void;
+    onContainerId?: (containerId: string, containerName: string) => void;
+    worktreePath?: string;
+}
+
+interface JsonLineMessage {
+    type?: string;
+    message?: {
+        id?: string;
+        model?: string;
+    };
+    session_id?: string;
+    conversation_id?: string;
+}
+
+const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
+
+export function executeDockerCommand(
+    command: string,
+    args: string[],
+    options: DockerCommandOptions = {}
+): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath } = options;
 
-        let executablePath = command;
+        let executablePath: string = command;
         if (command === 'docker') {
-            const possiblePaths = [
+            const possiblePaths: string[] = [
                 '/usr/bin/docker',
                 '/usr/local/bin/docker',
                 '/bin/docker'
             ];
 
-            // Try to find docker at known locations
             let found = false;
             for (const dockerPath of possiblePaths) {
                 try {
                     if (fs.existsSync(dockerPath)) {
-                        // Check if it's executable
                         fs.accessSync(dockerPath, fs.constants.X_OK);
                         executablePath = dockerPath;
                         found = true;
@@ -33,15 +60,13 @@ export function executeDockerCommand(command, args, options = {}) {
                 }
             }
 
-            // Fall back to 'docker' in PATH
             if (!found) {
                 executablePath = 'docker';
                 logger.debug('Using docker from PATH');
             }
         }
 
-        // Check if cwd exists before using it
-        const spawnOptions = {
+        const spawnOptions: SpawnOptions = {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: process.env
         };
@@ -52,14 +77,14 @@ export function executeDockerCommand(command, args, options = {}) {
             logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
         }
 
-        const child = spawn(executablePath, args, spawnOptions);
+        const child: ChildProcess = spawn(executablePath, args, spawnOptions);
 
         let stdout = '';
         let stderr = '';
         let timedOut = false;
         let sessionIdDetected = false;
         let containerIdDetected = false;
-        const messageTimestamps = new Map(); // Track timestamps for conversation messages
+        const messageTimestamps = new Map<string, string>();
 
         const timeoutHandle = setTimeout(() => {
             timedOut = true;
@@ -92,27 +117,25 @@ export function executeDockerCommand(command, args, options = {}) {
                             }, 'Detected Docker container ID for Claude execution');
                         }
                     } catch (err) {
-                        logger.debug({ error: err.message }, 'Failed to detect container ID');
+                        const error = err as Error;
+                        logger.debug({ error: error.message }, 'Failed to detect container ID');
                     }
                 }
             }, 2000);
         }
 
-        child.stdout.on('data', (data) => {
+        child.stdout?.on('data', (data: Buffer) => {
             const chunk = data.toString();
             const receiveTimestamp = new Date().toISOString();
             stdout += chunk;
 
-            // Parse lines and capture timestamps
             const lines = chunk.split('\n');
             for (const line of lines) {
                 if (line.trim()) {
                     try {
-                        const jsonLine = JSON.parse(line);
+                        const jsonLine: JsonLineMessage = JSON.parse(line);
 
-                        // Capture timestamp for conversation messages
                         if (jsonLine.type === 'assistant' || jsonLine.type === 'user') {
-                            // Use message ID as key if available, otherwise use a combination of type and content hash
                             const messageKey = jsonLine.message?.id ||
                                 `${jsonLine.type}-${JSON.stringify(jsonLine).substring(0, 100)}`;
                             messageTimestamps.set(messageKey, receiveTimestamp);
@@ -129,11 +152,11 @@ export function executeDockerCommand(command, args, options = {}) {
             }
         });
 
-        child.stderr.on('data', (data) => {
+        child.stderr?.on('data', (data: Buffer) => {
             stderr += data.toString();
         });
 
-        child.on('close', (exitCode) => {
+        child.on('close', (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
 
             if (timedOut) {
@@ -145,18 +168,18 @@ export function executeDockerCommand(command, args, options = {}) {
                 exitCode,
                 stdout,
                 stderr,
-                messageTimestamps // Include captured timestamps
+                messageTimestamps
             });
         });
 
-        child.on('error', (error) => {
+        child.on('error', (error: Error) => {
             clearTimeout(timeoutHandle);
             reject(error);
         });
     });
 }
 
-export async function buildClaudeDockerImage() {
+export async function buildClaudeDockerImage(): Promise<boolean> {
     logger.info({ image: CLAUDE_DOCKER_IMAGE }, 'Building Claude Code Docker image...');
 
     try {
@@ -191,10 +214,12 @@ export async function buildClaudeDockerImage() {
         }
 
     } catch (error) {
+        const err = error as Error;
         logger.error({
             image: CLAUDE_DOCKER_IMAGE,
-            error: error.message
+            error: err.message
         }, 'Error building Docker image');
         return false;
     }
 }
+
