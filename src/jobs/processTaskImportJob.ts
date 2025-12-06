@@ -4,7 +4,6 @@ import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getStateManager, TaskStates } from '../utils/workerStateManager.js';
-import type { WorkerStateManager } from '../utils/workerStateManager.js';
 import {
     createWorktreeForIssue,
     cleanupWorktree,

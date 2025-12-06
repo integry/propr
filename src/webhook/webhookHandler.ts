@@ -1,5 +1,4 @@
 import logger from '../utils/logger.js';
-import type { Logger } from 'pino';
 import type {
     IssuesEvent,
     IssuesLabeledEvent,
@@ -93,8 +92,7 @@ function isPullRequestReviewCommentEditedEvent(payload: PullRequestReviewComment
 
 async function handleIssuesEvent(
     payload: IssuesEvent,
-    correlationId: string,
-    correlatedLogger: Logger
+    correlationId: string
 ): Promise<void> {
     if (!processDetectedIssue) {
         throw new Error('Issue processor not initialized');
@@ -121,8 +119,7 @@ async function handleIssuesEvent(
 
 async function handleIssueCommentEvent(
     payload: IssueCommentEvent,
-    correlationId: string,
-    correlatedLogger: Logger
+    correlationId: string
 ): Promise<void> {
     if (!processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
         throw new Error('Comment handlers not initialized');
@@ -141,8 +138,7 @@ async function handleIssueCommentEvent(
 
 async function handlePullRequestReviewCommentEvent(
     payload: PullRequestReviewCommentEvent,
-    correlationId: string,
-    correlatedLogger: Logger
+    correlationId: string
 ): Promise<void> {
     if (!processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
         throw new Error('Comment handlers not initialized');
@@ -172,19 +168,19 @@ export async function processWebhookEvent(
     switch (eventType) {
         case 'issues':
             if (isIssuesEvent(payload)) {
-                await handleIssuesEvent(payload, correlationId, correlatedLogger);
+                await handleIssuesEvent(payload, correlationId);
             }
             break;
 
         case 'issue_comment':
             if (isIssueCommentEvent(payload)) {
-                await handleIssueCommentEvent(payload, correlationId, correlatedLogger);
+                await handleIssueCommentEvent(payload, correlationId);
             }
             break;
 
         case 'pull_request_review_comment':
             if (isPullRequestReviewCommentEvent(payload)) {
-                await handlePullRequestReviewCommentEvent(payload, correlationId, correlatedLogger);
+                await handlePullRequestReviewCommentEvent(payload, correlationId);
             }
             break;
 

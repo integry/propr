@@ -1,5 +1,4 @@
 import logger, { generateCorrelationId } from '../utils/logger.js';
-import type { Logger } from 'pino';
 import { handleError } from '../utils/errorHandler.js';
 import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.js';
 import { filterCommentByAuthor, checkCommentTrigger } from '../utils/commentFilters.js';
