@@ -1,8 +1,24 @@
-const passport = require('passport');
-const { Strategy: GitHubStrategy } = require('passport-github2');
-const session = require('express-session');
+import passport from 'passport';
+import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
+import session from 'express-session';
+import type { Express, Request, Response, NextFunction } from 'express';
 
-function setupAuth(app) {
+interface GitHubUser {
+    id: string;
+    username: string;
+    displayName: string;
+    email: string | null;
+    avatarUrl: string | null;
+    accessToken: string;
+}
+
+declare global {
+    namespace Express {
+        interface User extends GitHubUser {}
+    }
+}
+
+export function setupAuth(app: Express): void {
     const requiredEnvVars = ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL'];
     const missingVars = requiredEnvVars.filter(v => !process.env[v]);
     if (missingVars.length > 0) {
@@ -16,24 +32,22 @@ function setupAuth(app) {
         cookie: {
             secure: process.env.NODE_ENV === 'production',
             httpOnly: true,
-            maxAge: 24 * 60 * 60 * 1000 // 24 hours
+            maxAge: 24 * 60 * 60 * 1000
         }
     }));
     app.use(passport.initialize());
     app.use(passport.session());
 
     passport.use(new GitHubStrategy({
-        clientID: process.env.GH_OAUTH_CLIENT_ID,
-        clientSecret: process.env.GH_OAUTH_CLIENT_SECRET,
-        callbackURL: process.env.GH_OAUTH_CALLBACK_URL,
+        clientID: process.env.GH_OAUTH_CLIENT_ID!,
+        clientSecret: process.env.GH_OAUTH_CLIENT_SECRET!,
+        callbackURL: process.env.GH_OAUTH_CALLBACK_URL!,
     },
-    (accessToken, refreshToken, profile, done) => {
-        // Here you would find or create a user in your database.
-        // For now, we'll just pass the profile through.
+    (accessToken: string, refreshToken: string, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) => {
         console.log('User authenticated:', profile.username);
-        const user = {
+        const user: GitHubUser = {
             id: profile.id,
-            username: profile.username,
+            username: profile.username || '',
             displayName: profile.displayName,
             email: profile.emails && profile.emails[0] ? profile.emails[0].value : null,
             avatarUrl: profile.photos && profile.photos[0] ? profile.photos[0].value : null,
@@ -43,20 +57,18 @@ function setupAuth(app) {
     }));
 
     passport.serializeUser((user, done) => done(null, user));
-    passport.deserializeUser((obj, done) => done(null, obj));
+    passport.deserializeUser((obj: Express.User, done) => done(null, obj));
 
-    // Routes
     app.get('/api/auth/github', passport.authenticate('github', { scope: ['user:email', 'read:org', 'repo'] }));
 
     app.get('/api/auth/github/callback',
         passport.authenticate('github', { failureRedirect: '/login' }),
-        (req, res) => {
-            // Successful authentication, redirect to the dashboard.
+        (req: Request, res: Response) => {
             res.redirect(`${process.env.FRONTEND_URL}/`);
         }
     );
 
-    app.get('/api/auth/logout', (req, res) => {
+    app.get('/api/auth/logout', (req: Request, res: Response) => {
         req.logout((err) => {
             if (err) {
                 console.error('Logout error:', err);
@@ -71,18 +83,14 @@ function setupAuth(app) {
         });
     });
 
-    app.get('/api/auth/user', ensureAuthenticated, (req, res) => {
+    app.get('/api/auth/user', ensureAuthenticated, (req: Request, res: Response) => {
         res.json(req.user);
     });
 }
 
-function ensureAuthenticated(req, res, next) {
+export function ensureAuthenticated(req: Request, res: Response, next: NextFunction): void {
     if (req.isAuthenticated()) {
-        // Here you can add authorization logic, e.g.,
-        // check if req.user.username is part of a specific GitHub org.
         return next();
     }
     res.status(401).json({ error: 'Unauthorized' });
 }
-
-module.exports = { setupAuth, ensureAuthenticated };

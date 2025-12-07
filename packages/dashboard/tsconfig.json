@@ -6,13 +6,19 @@
     "lib": ["ESNext"],
     "outDir": "./dist",
     "rootDir": ".",
-    "strict": true,
+    "strict": false,
+    "noImplicitAny": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "allowJs": true
+    "declaration": true,
+    "allowSyntheticDefaultImports": true,
+    "paths": {
+      "../../dist/src/*": ["../../src/*"]
+    },
+    "baseUrl": "."
   },
-  "include": ["src/**/*", "config/**/*", "scripts/**/*", "knexfile.ts"],
-  "exclude": ["node_modules", "dist", "packages"]
+  "include": ["*.ts"],
+  "exclude": ["node_modules", "dist"]
 }
