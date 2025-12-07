@@ -1,10 +1,10 @@
 import logger from '../utils/logger.js';
 import type { Logger } from 'pino';
 import fs from 'fs-extra';
-import { Redis } from 'ioredis';
+import type { Redis } from 'ioredis';
 import { TaskStates } from '../utils/workerStateManager.js';
 import type { WorkerStateManager } from '../utils/workerStateManager.js';
-import { getUsageStats } from '../utils/tokenCalculation.js';
+import { getUsageStats, type ClaudeResult as TokenClaudeResult } from '../utils/tokenCalculation.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import { filterCommentByAuthor } from '../utils/commentFilters.js';
 import type { UnprocessedComment, CommentJobData } from '../queue/taskQueue.js';
@@ -46,6 +46,7 @@ interface SessionIdOptions {
     llm: string;
     stateManager: WorkerStateManager;
     correlatedLogger: Logger;
+    redisClient: InstanceType<typeof Redis>;
 }
 
 interface PRContext {
@@ -210,7 +211,7 @@ export function createSessionIdCallbackForPR(
     options: SessionIdOptions
 ): (sessionId: string, conversationId?: string) => Promise<void> {
     const { pullRequestNumber, repoOwner, repoName } = prContext;
-    const { llm, stateManager, correlatedLogger } = options;
+    const { llm, stateManager, correlatedLogger, redisClient } = options;
     return async (sessionId: string, conversationId?: string): Promise<void> => {
         try {
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
@@ -232,16 +233,14 @@ export function createSessionIdCallbackForPR(
                 messages: [], _streaming: true
             }, null, 2));
 
-            const redis = new Redis({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
             const logData = {
                 files: { conversation: conversationPath },
                 issueNumber: pullRequestNumber, repository: `${repoOwner}/${repoName}`,
                 timestamp, sessionId, conversationId
             };
 
-            if (sessionId) await redis.set(`execution:logs:session:${sessionId}`, JSON.stringify(logData), 'EX', 86400 * 30);
-            if (conversationId) await redis.set(`execution:logs:conversation:${conversationId}`, JSON.stringify(logData), 'EX', 86400 * 30);
-            await redis.quit();
+            if (sessionId) await redisClient.set(`execution:logs:session:${sessionId}`, JSON.stringify(logData), 'EX', 86400 * 30);
+            if (conversationId) await redisClient.set(`execution:logs:conversation:${conversationId}`, JSON.stringify(logData), 'EX', 86400 * 30);
         } catch (error) {
             correlatedLogger.warn({ error: (error as Error).message, taskId, sessionId }, 'Failed to update task state with early sessionId');
         }
@@ -262,12 +261,16 @@ export function createContainerIdCallbackForPR(
     };
 }
 
-export async function updateTaskTitleForPR(
-    taskId: string,
-    jobData: CommentJobData,
-    stateManager: WorkerStateManager,
-    correlatedLogger: Logger
-): Promise<void> {
+interface UpdateTaskTitleOptions {
+    taskId: string;
+    jobData: CommentJobData;
+    stateManager: WorkerStateManager;
+    correlatedLogger: Logger;
+    redisClient?: InstanceType<typeof Redis>;
+}
+
+export async function updateTaskTitleForPR(options: UpdateTaskTitleOptions): Promise<void> {
+    const { taskId, jobData, stateManager, correlatedLogger, redisClient } = options;
     if (isDbEnabled && db) {
         try {
             await db('tasks').where({ task_id: taskId }).update({ initial_job_data: JSON.stringify(jobData) });
@@ -276,17 +279,17 @@ export async function updateTaskTitleForPR(
             correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to update task with title/subtitle in DB');
         }
     }
-    try {
-        const state = await stateManager.getTaskState(taskId);
-        if (state) {
-            state.issueRef = { number: jobData.pullRequestNumber, repoOwner: jobData.repoOwner, repoName: jobData.repoName };
-            const redis = new Redis({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
-            await redis.setex(stateManager.getTaskKey(taskId), 7 * 24 * 3600, JSON.stringify(state));
-            await redis.quit();
-            correlatedLogger.info({ taskId, title: jobData.title }, 'Updated task with title/subtitle in Redis');
+    if (redisClient) {
+        try {
+            const state = await stateManager.getTaskState(taskId);
+            if (state) {
+                state.issueRef = { number: jobData.pullRequestNumber, repoOwner: jobData.repoOwner, repoName: jobData.repoName };
+                await redisClient.setex(stateManager.getTaskKey(taskId), 7 * 24 * 3600, JSON.stringify(state));
+                correlatedLogger.info({ taskId, title: jobData.title }, 'Updated task with title/subtitle in Redis');
+            }
+        } catch (redisError) {
+            correlatedLogger.warn({ taskId, error: (redisError as Error).message }, 'Failed to update task with title/subtitle in Redis');
         }
-    } catch (redisError) {
-        correlatedLogger.warn({ taskId, error: (redisError as Error).message }, 'Failed to update task with title/subtitle in Redis');
     }
 }
 
@@ -352,7 +355,7 @@ function buildMetricsSection(
         section += `- ${isAnalysis ? 'Analysis' : 'Execution'} time: ${Math.round(claudeResult.executionTime / 1000)}s\n`;
     }
 
-    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as unknown as Parameters<typeof getUsageStats>[0]);
+    const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as TokenClaudeResult['conversationLog'] });
     if (totalTokens > 0) {
         section += `- Tokens used: ${totalTokens.toLocaleString()} [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
     }

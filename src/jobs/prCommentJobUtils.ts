@@ -7,6 +7,7 @@ import { cleanupWorktree } from '../git/repoManager.js';
 import type { WorktreeInfo } from '../git/repoManager.js';
 import { formatResetTime } from '../utils/scheduling.js';
 import type { ClaudeCodeResponse } from '../claude/claudeService.js';
+import type { ClaudeResult } from '../utils/llmMetrics.types.js';
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { issueQueue, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.js';
 import { TaskStates } from '../utils/workerStateManager.js';
@@ -14,6 +15,19 @@ import type { WorkerStateManager } from '../utils/workerStateManager.js';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { getPendingPrCommentsKey } from '../utils/constants.js';
 import type { Redis } from 'ioredis';
+
+function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
+    return {
+        model: response.model,
+        success: response.success,
+        executionTime: response.executionTime,
+        sessionId: response.sessionId,
+        conversationId: response.conversationId,
+        finalResult: response.finalResult,
+        conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
+        error: response.error
+    };
+}
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || String(5 * 60 * 1000), 10);
@@ -186,7 +200,7 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
 
         if (claudeResult) {
             try {
-                await recordLLMMetrics(claudeResult as unknown as Parameters<typeof recordLLMMetrics>[0], { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
+                await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
             } catch (metricsError) {
                 correlatedLogger.error({ error: (metricsError as Error).message, correlationId }, 'Failed to record LLM metrics for failed PR comment job');
             }

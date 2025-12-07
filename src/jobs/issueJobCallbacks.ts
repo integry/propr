@@ -2,7 +2,7 @@ import type { Logger } from 'pino';
 import type { WorkerStateManager } from '../utils/workerStateManager.js';
 import { TaskStates } from '../utils/workerStateManager.js';
 import fs from 'fs-extra';
-import { Redis } from 'ioredis';
+import type { Redis } from 'ioredis';
 import type { IssueJobData } from '../queue/taskQueue.js';
 
 export interface SessionIdCallback {
@@ -13,12 +13,19 @@ export interface ContainerIdCallback {
     (containerId: string, containerName: string): Promise<void>;
 }
 
+export interface SessionIdCallbackOptions {
+    modelName: string;
+    stateManager: WorkerStateManager;
+    correlatedLogger: Logger;
+    redisClient: InstanceType<typeof Redis>;
+}
+
 export function createSessionIdCallback(
     taskId: string,
     issueRef: IssueJobData,
-    options: { modelName: string; stateManager: WorkerStateManager; correlatedLogger: Logger }
+    options: SessionIdCallbackOptions
 ): SessionIdCallback {
-    const { modelName, stateManager, correlatedLogger } = options;
+    const { modelName, stateManager, correlatedLogger, redisClient } = options;
     return async (sessionId: string, conversationId?: string): Promise<void> => {
         try {
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
@@ -40,7 +47,6 @@ export function createSessionIdCallback(
                 messages: [], _streaming: true
             }, null, 2));
 
-            const redis = new Redis({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
             const logData = {
                 files: { conversation: conversationPath },
                 issueNumber: issueRef.number,
@@ -48,9 +54,8 @@ export function createSessionIdCallback(
                 timestamp, sessionId, conversationId
             };
 
-            if (sessionId) await redis.set(`execution:logs:session:${sessionId}`, JSON.stringify(logData), 'EX', 86400 * 30);
-            if (conversationId) await redis.set(`execution:logs:conversation:${conversationId}`, JSON.stringify(logData), 'EX', 86400 * 30);
-            await redis.quit();
+            if (sessionId) await redisClient.set(`execution:logs:session:${sessionId}`, JSON.stringify(logData), 'EX', 86400 * 30);
+            if (conversationId) await redisClient.set(`execution:logs:conversation:${conversationId}`, JSON.stringify(logData), 'EX', 86400 * 30);
         } catch (error) {
             correlatedLogger.warn({ error: (error as Error).message, taskId, sessionId }, 'Failed to update task state with early sessionId');
         }

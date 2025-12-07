@@ -1,5 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
+import { Redis } from 'ioredis';
 import logger, { generateCorrelationId } from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
@@ -13,6 +14,7 @@ import { safeAddLabel } from '../utils/github/labelOperations.js';
 import { ensureGitRepository } from '../utils/git/gitValidation.js';
 import { executeClaudeCode, UsageLimitError } from '../claude/claudeService.js';
 import type { ClaudeCodeResponse } from '../claude/claudeService.js';
+import type { ClaudeResult } from '../utils/llmMetrics.types.js';
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { validateRepositoryInfo } from '../utils/prValidation.js';
 import type { RepoValidationResult } from '../utils/prValidation.js';
@@ -25,6 +27,13 @@ import type { PostProcessingResult } from './issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from './issueJobCallbacks.js';
 import { performPostProcessing, performFinalValidation } from './issueJobPostProcessing.js';
 import type { IssueJobData, JobResult } from '../queue/taskQueue.js';
+
+const redisClient = new Redis({
+    host: process.env.REDIS_HOST || '127.0.0.1',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+});
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
@@ -173,6 +182,19 @@ async function fetchIssueComments(octokit: ExecutionParams['octokit'], issueRef:
     }
 }
 
+function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
+    return {
+        model: response.model,
+        success: response.success,
+        executionTime: response.executionTime,
+        sessionId: response.sessionId,
+        conversationId: response.conversationId,
+        finalResult: response.finalResult,
+        conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
+        error: response.error
+    };
+}
+
 async function executeClaudeAndRecordMetrics(executionParams: ExecutionParams, context: JobContext): Promise<ClaudeCodeResponse> {
     const { worktreeInfo, issueRef, githubToken, currentIssueData, issueComments } = executionParams;
     const { taskId, modelName, stateManager, correlatedLogger, correlationId } = context;
@@ -186,7 +208,7 @@ async function executeClaudeAndRecordMetrics(executionParams: ExecutionParams, c
             comments: issueComments, labels: currentIssueData.data.labels,
             created_at: currentIssueData.data.created_at, user: currentIssueData.data.user
         },
-        onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger }),
+        onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
         onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger)
     });
 
@@ -196,7 +218,7 @@ async function executeClaudeAndRecordMetrics(executionParams: ExecutionParams, c
         historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model }
     });
 
-    await recordLLMMetrics(claudeResult as unknown as Parameters<typeof recordLLMMetrics>[0], { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId });
+    await recordLLMMetrics(toClaudeResult(claudeResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId });
     return claudeResult;
 }
 

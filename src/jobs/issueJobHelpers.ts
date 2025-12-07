@@ -4,6 +4,7 @@ import { ErrorCategories } from '../utils/errorHandler.js';
 import { safeRemoveLabel } from '../utils/github/labelOperations.js';
 import { generateCompletionComment } from '../utils/github/logFiles.js';
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
+import type { ClaudeResult } from '../utils/llmMetrics.types.js';
 import { formatResetTime } from '../utils/scheduling.js';
 import { issueQueue, type IssueJobData, type JobResult } from '../queue/taskQueue.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
@@ -11,6 +12,19 @@ import type { WorkerStateManager } from '../utils/workerStateManager.js';
 import type { ClaudeCodeResponse } from '../claude/claudeService.js';
 import type { WorktreeInfo, CommitResult } from '../git/repoManager.js';
 import type { RepoValidationResult } from '../utils/prValidation.js';
+
+function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
+    return {
+        model: response.model,
+        success: response.success,
+        executionTime: response.executionTime,
+        sessionId: response.sessionId,
+        conversationId: response.conversationId,
+        finalResult: response.finalResult,
+        conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
+        error: response.error
+    };
+}
 
 export type RepoValidation = RepoValidationResult;
 
@@ -159,7 +173,7 @@ export async function handleGenericError(
 
     if (claudeResult) {
         try {
-            await recordLLMMetrics(claudeResult as unknown as Parameters<typeof recordLLMMetrics>[0], { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId });
+            await recordLLMMetrics(toClaudeResult(claudeResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId });
             correlatedLogger.info({ correlationId, issueNumber: issueRef.number }, 'LLM metrics recorded for failed job');
         } catch (metricsError) {
             correlatedLogger.error({ error: (metricsError as Error).message, correlationId }, 'Failed to record LLM metrics for failed job');
@@ -256,7 +270,10 @@ export async function updateTaskTitleInStorage(
         const state = await stateManager.getTaskState(taskId);
         if (state) {
             state.issueRef = { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName };
-            await (stateManager as unknown as { redis: { setex: (key: string, seconds: number, value: string) => Promise<void> } }).redis.setex((stateManager as unknown as { getTaskKey: (id: string) => string }).getTaskKey(taskId), (stateManager as unknown as { stateExpiry: number }).stateExpiry, JSON.stringify(state));
+            await stateManager.updateTaskState(taskId, state.state, {
+                reason: 'Updated task title/subtitle',
+                historyMetadata: { title: issueRef.title, subtitle: issueRef.subtitle }
+            });
             correlatedLogger.info({ taskId, title: issueRef.title }, 'Updated task with title/subtitle in Redis');
         }
     } catch (redisError) {
@@ -278,7 +295,7 @@ export async function createPullRequest(
         prTitle = `AI Fix for Issue #${issueRef.number}: ${issueRef.title?.replace('New Issue: ', '') || 'Issue'}`;
     }
 
-    const completionComment = await generateCompletionComment(claudeResult as unknown as Parameters<typeof generateCompletionComment>[0], { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
+    const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
     const prBody = `## AI Implementation Summary
 
 ${commitResult ? `Closes #${issueRef.number}` : `Addresses #${issueRef.number}`}

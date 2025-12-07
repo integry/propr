@@ -11,6 +11,7 @@ import { ensureGitRepository } from '../utils/git/gitValidation.js';
 import { createLogFiles } from '../utils/github/logFiles.js';
 import { executeClaudeCode, UsageLimitError, generateTaskSummary } from '../claude/claudeService.js';
 import type { ClaudeCodeResponse } from '../claude/claudeService.js';
+import type { ClaudeResult } from '../utils/llmMetrics.types.js';
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '../queue/taskQueue.js';
 import { Redis } from 'ioredis';
@@ -24,6 +25,19 @@ import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
     handleJobError, cleanupJob, pickUpPendingComments
 } from './prCommentJobUtils.js';
+
+function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
+    return {
+        model: response.model,
+        success: response.success,
+        executionTime: response.executionTime,
+        sessionId: response.sessionId,
+        conversationId: response.conversationId,
+        finalResult: response.finalResult,
+        conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
+        error: response.error
+    };
+}
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
@@ -206,7 +220,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const summaryTitle = await generateSummaryTitle({ combinedCommentBody, worktreeInfo: state.worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger });
     job.data.title = `Followup: ${prData!.data.title}`;
     job.data.subtitle = summaryTitle;
-    await updateTaskTitleForPR(taskId, job.data, stateManager, correlatedLogger);
+    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient });
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
 
@@ -215,11 +229,11 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         issueRef: { number: pullRequestNumber, repoOwner, repoName },
         githubToken: githubToken.token, customPrompt: prompt, branchName: state.worktreeInfo.branchName,
         modelName: llm || DEFAULT_MODEL_NAME,
-        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: llm || DEFAULT_MODEL_NAME, stateManager, correlatedLogger }),
+        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: llm || DEFAULT_MODEL_NAME, stateManager, correlatedLogger, redisClient }),
         onContainerId: createContainerIdCallbackForPR(taskId, stateManager)
     });
 
-    await recordLLMMetrics(state.claudeResult as unknown as Parameters<typeof recordLLMMetrics>[0], { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
+    await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
     await createLogFiles(state.claudeResult, { number: pullRequestNumber, repoOwner, repoName });
     await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
         reason: 'Claude execution completed',

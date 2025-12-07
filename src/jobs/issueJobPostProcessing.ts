@@ -1,4 +1,5 @@
 import type { Logger } from 'pino';
+import { setTimeout } from 'timers/promises';
 import type { ClaudeCodeResponse } from '../claude/claudeService.js';
 import type { WorktreeInfo, CommitResult } from '../git/repoManager.js';
 import { cleanupWorktree, commitChanges, pushBranch } from '../git/repoManager.js';
@@ -62,6 +63,9 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
         );
 
         await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
+
+        correlatedLogger.debug('Waiting for branch propagation...');
+        await setTimeout(3000);
 
         postProcessingResult = await createPullRequest(
             octokit, issueRef, worktreeInfo,
