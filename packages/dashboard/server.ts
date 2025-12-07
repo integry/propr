@@ -10,7 +10,6 @@ import { execSync } from 'child_process';
 import 'dotenv/config';
 import { Redis } from 'ioredis';
 import { setupAuth, ensureAuthenticated } from './auth.ts';
-import './auth.js';
 import { getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './llmMetricsAdapter.ts';
 import { generateCorrelationId } from '../../src/utils/logger.ts';
 import * as configRepoManager from '../../src/config/configRepoManager.ts';
