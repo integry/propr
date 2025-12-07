@@ -2,8 +2,29 @@
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
+interface SystemStatus {
+  daemon: string;
+  workers: { id: number; status: string }[];
+  redis: string;
+  githubAuth: string;
+  claudeAuth: string;
+}
+
+interface StatusResponse {
+  daemon: string;
+  workerCount?: number;
+  redis: string;
+  githubAuth: string;
+  claudeAuth: string;
+}
+
+interface TaskAnalysisResponse {
+  analysis: unknown | null;
+  message?: string;
+}
+
 // Helper function to handle API responses and auth
-const handleApiResponse = async (response) => {
+const handleApiResponse = async (response: Response): Promise<Response> => {
   if (response.status === 401) {
     if (window.location.pathname === '/login') {
       throw new Error('Authentication required');
@@ -17,15 +38,15 @@ const handleApiResponse = async (response) => {
   return response;
 };
 
-export const getSystemStatus = async () => {
+export const getSystemStatus = async (): Promise<SystemStatus> => {
   const response = await fetch(`${API_BASE_URL}/api/status`, {
     credentials: 'include' // Include cookies for session
   });
   await handleApiResponse(response);
-  const data = await response.json();
+  const data: StatusResponse = await response.json();
   
   // Transform backend response to match frontend expectations
-  let workers = [];
+  const workers: { id: number; status: string }[] = [];
   for (let i = 0; i < (data.workerCount || 0); i++) {
     workers.push({ id: i + 1, status: 'active' });
   }
@@ -39,7 +60,7 @@ export const getSystemStatus = async () => {
   };
 };
 
-export const getQueueStats = async () => {
+export const getQueueStats = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/queue/stats`, {
     credentials: 'include' // Include cookies for session
   });
@@ -47,7 +68,7 @@ export const getQueueStats = async () => {
   return response.json();
 };
 
-export const getTasks = async (status = 'all', limit = 50, offset = 0, repository = 'all') => {
+export const getTasks = async (status = 'all', limit = 50, offset = 0, repository = 'all'): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/tasks?status=${status}&limit=${limit}&offset=${offset}&repository=${repository}`, {
     credentials: 'include'
   });
@@ -55,7 +76,7 @@ export const getTasks = async (status = 'all', limit = 50, offset = 0, repositor
   return response.json();
 };
 
-export const getTaskHistory = async (taskId) => {
+export const getTaskHistory = async (taskId: string): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/history`, {
     credentials: 'include'
   });
@@ -63,7 +84,7 @@ export const getTaskHistory = async (taskId) => {
   return response.json();
 };
 
-export const getTaskAnalysis = async (taskId) => {
+export const getTaskAnalysis = async (taskId: string): Promise<TaskAnalysisResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/analysis`, {
     credentials: 'include'
   });
@@ -72,7 +93,7 @@ export const getTaskAnalysis = async (taskId) => {
   return response.json();
 };
 
-export const getTaskLiveDetails = async (taskId) => {
+export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/live-details`, {
     credentials: 'include'
   });
@@ -80,7 +101,7 @@ export const getTaskLiveDetails = async (taskId) => {
   return response.json();
 };
 
-export const getRepoConfig = async () => {
+export const getRepoConfig = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/repos`, {
     credentials: 'include'
   });
@@ -88,7 +109,7 @@ export const getRepoConfig = async () => {
   return response.json();
 };
 
-export const updateRepoConfig = async (repos) => {
+export const updateRepoConfig = async (repos: string[]): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/repos`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -99,7 +120,7 @@ export const updateRepoConfig = async (repos) => {
   return response.json();
 };
 
-export const getAvailableGithubRepos = async () => {
+export const getAvailableGithubRepos = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/github/repos`, {
     credentials: 'include'
   });
@@ -107,7 +128,7 @@ export const getAvailableGithubRepos = async () => {
   return response.json();
 };
 
-export const getSettings = async () => {
+export const getSettings = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/settings`, {
     credentials: 'include'
   });
@@ -115,7 +136,7 @@ export const getSettings = async () => {
   return response.json();
 };
 
-export const updateSettings = async (settings) => {
+export const updateSettings = async (settings: Record<string, unknown>): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/settings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -126,7 +147,7 @@ export const updateSettings = async (settings) => {
   return response.json();
 };
 
-export const getFollowupKeywords = async () => {
+export const getFollowupKeywords = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/followup-keywords`, {
     credentials: 'include'
   });
@@ -134,7 +155,7 @@ export const getFollowupKeywords = async () => {
   return response.json();
 };
 
-export const updateFollowupKeywords = async (keywords) => {
+export const updateFollowupKeywords = async (keywords: string[]): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/followup-keywords`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -145,7 +166,7 @@ export const updateFollowupKeywords = async (keywords) => {
   return response.json();
 };
 
-export const fetchPrompt = async (promptPath) => {
+export const fetchPrompt = async (promptPath: string): Promise<string> => {
   const response = await fetch(`${API_BASE_URL}${promptPath}`, {
     credentials: 'include'
   });
@@ -153,7 +174,7 @@ export const fetchPrompt = async (promptPath) => {
   return response.text();
 };
 
-export const fetchLogFiles = async (logsPath) => {
+export const fetchLogFiles = async (logsPath: string): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}${logsPath}`, {
     credentials: 'include'
   });
@@ -161,7 +182,7 @@ export const fetchLogFiles = async (logsPath) => {
   return response.json();
 };
 
-export const fetchLogFile = async (logFilePath) => {
+export const fetchLogFile = async (logFilePath: string): Promise<string> => {
   const response = await fetch(`${API_BASE_URL}${logFilePath}`, {
     credentials: 'include'
   });
@@ -169,7 +190,7 @@ export const fetchLogFile = async (logFilePath) => {
   return response.text();
 };
 
-export const getPrLabel = async () => {
+export const getPrLabel = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/pr-label`, {
     credentials: 'include'
   });
@@ -177,7 +198,7 @@ export const getPrLabel = async () => {
   return response.json();
 };
 
-export const updatePrLabel = async (prLabel) => {
+export const updatePrLabel = async (prLabel: string): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/pr-label`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -188,7 +209,7 @@ export const updatePrLabel = async (prLabel) => {
   return response.json();
 };
 
-export const getAiPrimaryTag = async () => {
+export const getAiPrimaryTag = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/ai-primary-tag`, {
     credentials: 'include'
   });
@@ -196,7 +217,7 @@ export const getAiPrimaryTag = async () => {
   return response.json();
 };
 
-export const updateAiPrimaryTag = async (aiPrimaryTag) => {
+export const updateAiPrimaryTag = async (aiPrimaryTag: string): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/ai-primary-tag`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -207,7 +228,7 @@ export const updateAiPrimaryTag = async (aiPrimaryTag) => {
   return response.json();
 };
 
-export const getPrimaryProcessingLabels = async () => {
+export const getPrimaryProcessingLabels = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/primary-processing-labels`, {
     credentials: 'include'
   });
@@ -215,7 +236,7 @@ export const getPrimaryProcessingLabels = async () => {
   return response.json();
 };
 
-export const updatePrimaryProcessingLabels = async (primaryLabels) => {
+export const updatePrimaryProcessingLabels = async (primaryLabels: string[]): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/primary-processing-labels`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -226,7 +247,7 @@ export const updatePrimaryProcessingLabels = async (primaryLabels) => {
   return response.json();
 };
 
-export const stopTaskExecution = async (taskId) => {
+export const stopTaskExecution = async (taskId: string): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/stop`, {
     method: 'POST',
     credentials: 'include'
@@ -235,7 +256,7 @@ export const stopTaskExecution = async (taskId) => {
   return response.json();
 };
 
-export const generateDeepDiveAnalysis = async (taskId) => {
+export const generateDeepDiveAnalysis = async (taskId: string): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/deep-dive-analysis`, {
     method: 'POST',
     credentials: 'include'
@@ -244,7 +265,7 @@ export const generateDeepDiveAnalysis = async (taskId) => {
   return response.json();
 };
 
-export const getCurrentUser = async () => {
+export const getCurrentUser = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/auth/user`, {
     credentials: 'include'
   });
@@ -252,6 +273,6 @@ export const getCurrentUser = async () => {
   return response.json();
 };
 
-export const logout = () => {
+export const logout = (): void => {
   window.location.href = `${API_BASE_URL}/api/auth/logout`;
 };
