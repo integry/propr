@@ -17,11 +17,15 @@ import {
   initializeWebhookHandler,
   db,
   isEnabled as isDbEnabled,
-  getExecutionAnalysis
+  getExecutionAnalysis,
+  loadSettingsFromConfig,
+  processDetectedIssue as processDetectedIssueBase,
+  handleCommentDeleted,
+  handleCommentEdited,
+  processCommentEvent
 } from '@gitfix/core';
-import type { WebhookEventType, DetectedIssue } from '@gitfix/core';
+import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@gitfix/core';
 import * as configRepoManager from '@gitfix/core';
-import { loadSettingsFromConfig, processDetectedIssue as processDetectedIssueBase, processCommentEvent, handleCommentDeleted, handleCommentEdited } from '../../src/daemon.js';
 
 const ioRedisClient = new Redis({
   host: process.env.REDIS_HOST || '127.0.0.1',
@@ -30,8 +34,28 @@ const ioRedisClient = new Redis({
   enableReadyCheck: false,
 });
 
+const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-claude-(.+)$';
+const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
+
+function getCommentConfig(): CommentEventConfig {
+    return {
+        redisClient: ioRedisClient,
+        PR_FOLLOWUP_TRIGGER_KEYWORDS,
+        MODEL_LABEL_PATTERN,
+        processCommentEvent: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) =>
+            processCommentEvent(payload, eventType, correlationId, getCommentConfig())
+    };
+}
+
 const processDetectedIssue = (issue: DetectedIssue, correlationId: string): Promise<void> =>
   processDetectedIssueBase(issue, correlationId, ioRedisClient as unknown as Parameters<typeof processDetectedIssueBase>[2]);
+
+const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
+    processCommentEvent(payload, eventType, correlationId, getCommentConfig());
+const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
+    handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
+const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
+    handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 const app = express();
 const PORT = process.env.DASHBOARD_API_PORT || 4000;
@@ -1751,9 +1775,9 @@ async function start(): Promise<void> {
     try {
       await initializeWebhookHandler(
         processDetectedIssue,
-        processCommentEvent,
-        handleCommentDeleted,
-        handleCommentEdited
+        processCommentEventWrapper,
+        handleCommentDeletedWrapper,
+        handleCommentEditedWrapper
       );
       console.log('[webhook] Webhook handler initialized with daemon processor functions');
     } catch (error) {

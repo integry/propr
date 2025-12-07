@@ -99,3 +99,20 @@ export { executeDockerCommand } from './claude/docker/dockerExecutor.js';
 export { generateExecutionAnalysisPrompt, generateClaudePrompt } from './claude/prompts/promptGenerator.js';
 export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult } from './claude/prompts/promptGenerator.js';
 
+export {
+    getReposFromEnv,
+    getRepos,
+    getAiPrimaryTag,
+    getPrimaryProcessingLabels,
+    getUserWhitelist,
+    getBotUsername,
+    detectBotUsername,
+    loadReposFromConfig,
+    loadSettingsFromConfig,
+    loadAiPrimaryTagFromConfig,
+    loadPrimaryProcessingLabelsFromConfig,
+    loadAllConfigs,
+    reloadConfigs
+} from './daemon/configLoader.js';
+export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
+
