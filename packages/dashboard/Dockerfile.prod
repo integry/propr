@@ -51,9 +51,9 @@ COPY --from=builder /app/dist ./dist
 
 # Create packages directory and symlink for dashboard's relative imports
 # Dashboard server runs from /app/packages/dashboard/dist/server.js
-# Its imports like "../../src/..." resolve to /app/packages/src/
+# Its imports like "../../src/..." resolve to /app/packages/dashboard/src/
 # This symlink makes that path point to the actual compiled files
-RUN mkdir -p packages && ln -s ../dist/src packages/src
+RUN mkdir -p packages/dashboard && ln -s ../../dist/src packages/dashboard/src
 
 # Set up dashboard directory
 WORKDIR /app/packages/dashboard

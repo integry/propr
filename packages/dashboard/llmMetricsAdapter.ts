@@ -1,7 +1,4 @@
-import IORedis from 'ioredis';
-type RedisInstance = InstanceType<typeof IORedis>;
-type RedisConstructor = new (options: { host: string; port: number; maxRetriesPerRequest: null; enableReadyCheck: boolean }) => RedisInstance;
-const Redis = (IORedis as unknown as { default?: RedisConstructor }).default || IORedis as unknown as RedisConstructor;
+import Redis from 'ioredis';
 
 // Redis configuration
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
@@ -13,6 +10,8 @@ const connectionOptions = {
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
 };
+
+const metricsRedis = new Redis(connectionOptions);
 
 interface ModelMetrics {
     totalRequests: number;
@@ -65,8 +64,6 @@ interface LLMMetricsDetail {
  * @returns {Promise<LLMMetricsSummary>} LLM metrics summary
  */
 export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
-    const metricsRedis = new Redis(connectionOptions);
-    
     try {
         // Get total metrics
         const totalSuccessful = parseInt(await metricsRedis.get('llm:metrics:total:successful') || '0');
@@ -159,8 +156,6 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
     } catch (error) {
         console.error('Failed to retrieve LLM metrics summary:', error);
         throw error;
-    } finally {
-        await metricsRedis.quit();
     }
 }
 
@@ -170,8 +165,6 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
  * @returns {Promise<LLMMetricsDetail | null>} Detailed LLM metrics or null
  */
 export async function getLLMMetricsByCorrelationId(correlationId: string): Promise<LLMMetricsDetail | null> {
-    const metricsRedis = new Redis(connectionOptions);
-    
     try {
         const metricsKey = `llm:metrics:${correlationId}`;
         const metricsData = await metricsRedis.get(metricsKey);
@@ -184,7 +177,5 @@ export async function getLLMMetricsByCorrelationId(correlationId: string): Promi
     } catch (error) {
         console.error('Failed to retrieve LLM metrics by correlation ID:', error);
         return null;
-    } finally {
-        await metricsRedis.quit();
     }
 }
