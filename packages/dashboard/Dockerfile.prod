@@ -5,15 +5,24 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Copy API package files
+# Copy package files
 COPY package*.json ./
-RUN npm ci --only=production
+COPY tsconfig.json ./
 
-# Copy API source
-COPY server.js ./
-COPY auth.js ./
-COPY llmMetricsAdapter.js ./
+# Install all dependencies (including devDependencies for build)
+RUN npm ci
+
+# Copy TypeScript source files
+COPY server.ts ./
+COPY auth.ts ./
+COPY llmMetricsAdapter.ts ./
+
+# Build TypeScript to JavaScript
+RUN npm run build
+
+# Remove devDependencies after build
+RUN npm prune --production
 
 EXPOSE 4000
 
-CMD ["node", "server.js"]
+CMD ["node", "dist/server.js"]
