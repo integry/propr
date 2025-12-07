@@ -2,8 +2,6 @@ import { logger } from '@gitfix/core';
 import { getAuthenticatedOctokit, withErrorHandling } from '@gitfix/core';
 import config from '../config/index.js';
 
-
-
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception');
     process.exit(1);
