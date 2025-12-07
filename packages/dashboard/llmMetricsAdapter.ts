@@ -1,4 +1,6 @@
-import { Redis } from 'ioredis';
+import IORedis from 'ioredis';
+type RedisConstructor = new (options: { host: string; port: number; maxRetriesPerRequest: null; enableReadyCheck: boolean }) => IORedis.Redis;
+const Redis = (IORedis as unknown as { default?: RedisConstructor }).default || IORedis as unknown as RedisConstructor;
 
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
