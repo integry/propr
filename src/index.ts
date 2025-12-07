@@ -3,6 +3,7 @@ import { getAuthenticatedOctokit } from './auth/githubAuth.ts';
 import { withErrorHandling } from './utils/errorHandler.ts';
 import config from '../config/index.ts';
 
+
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception');
     process.exit(1);
