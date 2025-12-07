@@ -5,6 +5,7 @@
     "moduleResolution": "NodeNext",
     "lib": ["ESNext"],
     "outDir": "./dist",
+    "rootDir": ".",
     "strict": false,
     "noImplicitAny": false,
     "esModuleInterop": true,
@@ -13,8 +14,7 @@
     "resolveJsonModule": true,
     "declaration": false,
     "allowSyntheticDefaultImports": true,
-    "baseUrl": ".",
-    "noResolve": false
+    "isolatedModules": true
   },
   "include": ["*.ts"],
   "exclude": ["node_modules", "dist"]
