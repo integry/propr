@@ -1,8 +1,8 @@
 import { Redis } from 'ioredis';
-import { db } from '../db/postgres.js';
-import { generateExecutionAnalysisPrompt } from '../claude/prompts/promptGenerator.js';
-import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
-import logger from '../utils/logger.js';
+import { db } from '../db/postgres.ts';
+import { generateExecutionAnalysisPrompt } from '../claude/prompts/promptGenerator.ts';
+import { runLightweightLLMAnalysis } from '../claude/claudeService.ts';
+import logger from '../utils/logger.ts';
 import fs from 'fs';
 import { execa } from 'execa';
 

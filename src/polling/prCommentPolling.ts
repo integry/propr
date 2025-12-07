@@ -1,8 +1,8 @@
-import logger, { generateCorrelationId } from '../utils/logger.js';
-import { handleError } from '../utils/errorHandler.js';
-import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.js';
-import { filterCommentByAuthor, checkCommentTrigger } from '../utils/commentFilters.js';
-import { resolveModelAlias } from '../config/modelAliases.js';
+import logger, { generateCorrelationId } from '../utils/logger.ts';
+import { handleError } from '../utils/errorHandler.ts';
+import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.ts';
+import { filterCommentByAuthor, checkCommentTrigger } from '../utils/commentFilters.ts';
+import { resolveModelAlias } from '../config/modelAliases.ts';
 import type { Redis } from 'ioredis';
 
 type Octokit = {

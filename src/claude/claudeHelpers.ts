@@ -1,9 +1,9 @@
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
-import logger from '../utils/logger.js';
-import { generateClaudePrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
-import { executeDockerCommand, ExecutionResult } from './docker/dockerExecutor.js';
+import logger from '../utils/logger.ts';
+import { generateClaudePrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.ts';
+import { executeDockerCommand, ExecutionResult } from './docker/dockerExecutor.ts';
 
 export class UsageLimitError extends Error {
     resetTimestamp: number;

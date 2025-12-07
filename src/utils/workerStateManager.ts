@@ -1,11 +1,11 @@
 import { Redis } from 'ioredis';
-import logger, { generateCorrelationId } from './logger.js';
-import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
+import logger, { generateCorrelationId } from './logger.ts';
+import { db, isEnabled as isDbEnabled } from '../db/postgres.ts';
 import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
     type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions
-} from './workerStateManager.types.js';
+} from './workerStateManager.types.ts';
 
 export { TaskStates, type TaskState, type IssueRef };
 

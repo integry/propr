@@ -1,7 +1,7 @@
-import { getAuthenticatedOctokit } from './auth/githubAuth.js';
-import logger from './utils/logger.js';
-import { handleError } from './utils/errorHandler.js';
-import { generatePRBody } from './github/prFormatters.js';
+import { getAuthenticatedOctokit } from './auth/githubAuth.ts';
+import logger from './utils/logger.ts';
+import { handleError } from './utils/errorHandler.ts';
+import { generatePRBody } from './github/prFormatters.ts';
 import {
     createPullRequestRobust as createPullRequestRobustOps,
     createPullRequest as createPullRequestOps,
@@ -13,7 +13,7 @@ import {
     CreatePullRequestRobustParams,
     AddClaudeLogsCommentOptions,
     UpdateIssueLabelsOptions
-} from './github/prOperations.js';
+} from './github/prOperations.ts';
 
 export const createPullRequestRobust = createPullRequestRobustOps;
 export const createPullRequest = createPullRequestOps;

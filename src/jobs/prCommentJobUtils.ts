@@ -1,19 +1,19 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { generateCorrelationId } from '../utils/logger.js';
-import { handleError } from '../utils/errorHandler.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { cleanupWorktree } from '../git/repoManager.js';
-import type { WorktreeInfo } from '../git/repoManager.js';
-import { formatResetTime } from '../utils/scheduling.js';
-import type { ClaudeCodeResponse } from '../claude/claudeService.js';
-import type { ClaudeResult } from '../utils/llmMetrics.types.js';
-import { recordLLMMetrics } from '../utils/llmMetrics.js';
-import { issueQueue, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.js';
-import { TaskStates } from '../utils/workerStateManager.js';
-import type { WorkerStateManager } from '../utils/workerStateManager.js';
-import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
-import { getPendingPrCommentsKey } from '../utils/constants.js';
+import { generateCorrelationId } from '../utils/logger.ts';
+import { handleError } from '../utils/errorHandler.ts';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
+import { cleanupWorktree } from '../git/repoManager.ts';
+import type { WorktreeInfo } from '../git/repoManager.ts';
+import { formatResetTime } from '../utils/scheduling.ts';
+import type { ClaudeCodeResponse } from '../claude/claudeService.ts';
+import type { ClaudeResult } from '../utils/llmMetrics.types.ts';
+import { recordLLMMetrics } from '../utils/llmMetrics.ts';
+import { issueQueue, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.ts';
+import { TaskStates } from '../utils/workerStateManager.ts';
+import type { WorkerStateManager } from '../utils/workerStateManager.ts';
+import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.ts';
+import { getPendingPrCommentsKey } from '../utils/constants.ts';
 import type { Redis } from 'ioredis';
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {

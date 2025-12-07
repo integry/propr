@@ -1,15 +1,15 @@
 import { Redis } from 'ioredis';
-import logger from './logger.js';
-import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
-import { analysisQueue } from '../queue/taskQueue.js';
-import { getOpenRouterId } from '../config/modelAliases.js';
-import { getModelPricing } from '../services/pricingService.js';
+import logger from './logger.ts';
+import { db, isEnabled as isDbEnabled } from '../db/postgres.ts';
+import { analysisQueue } from '../queue/taskQueue.ts';
+import { getOpenRouterId } from '../config/modelAliases.ts';
+import { getModelPricing } from '../services/pricingService.ts';
 import type {
     RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing,
     ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics,
     ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent,
     LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData
-} from './llmMetrics.types.js';
+} from './llmMetrics.types.ts';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
 const REDIS_PORT: number = parseInt(process.env.REDIS_PORT ?? '6379', 10);

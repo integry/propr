@@ -165,7 +165,7 @@ jobs:
           # --- DASHBOARD ---
           if [ "${{ steps.filter.outputs.dashboard }}" == 'true' ]; then
             echo -e "\n--- Dashboard: Build ---" >> build_log.txt
-            BUILD_OUTPUT=$(docker build -t gitfix-dashboard -f packages/dashboard/Dockerfile.prod ./packages/dashboard 2>&1) || {
+            BUILD_OUTPUT=$(docker build -t gitfix-dashboard -f packages/dashboard/Dockerfile.prod . 2>&1) || {
               echo "❌ Dashboard Build FAILED" >> build_log.txt
               echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
               EXIT_CODE=1

@@ -29,7 +29,7 @@ interface ParsedClaudeOutput {
 }
 
 test('Claude service module exports required functions', async () => {
-    const claudeService = await import('../src/claude/claudeService.js');
+    const claudeService = await import('../src/claude/claudeService.ts');
     
     assert.strictEqual(typeof claudeService.executeClaudeCode, 'function');
     assert.strictEqual(typeof claudeService.buildClaudeDockerImage, 'function');
@@ -157,12 +157,12 @@ test('Environment configuration has valid defaults', () => {
 });
 
 test('ExecutionResult interface types are correct', async () => {
-    const { executeDockerCommand } = await import('../src/claude/docker/dockerExecutor.js');
+    const { executeDockerCommand } = await import('../src/claude/docker/dockerExecutor.ts');
     assert.strictEqual(typeof executeDockerCommand, 'function');
 });
 
 test('IssueRef and IssueDetails types are exported', async () => {
-    const { generateClaudePrompt } = await import('../src/claude/prompts/promptGenerator.js');
+    const { generateClaudePrompt } = await import('../src/claude/prompts/promptGenerator.ts');
     assert.strictEqual(typeof generateClaudePrompt, 'function');
     
     const testRef = {
@@ -177,7 +177,7 @@ test('IssueRef and IssueDetails types are exported', async () => {
 });
 
 test('UsageLimitError has correct properties', async () => {
-    const { UsageLimitError } = await import('../src/claude/claudeHelpers.js');
+    const { UsageLimitError } = await import('../src/claude/claudeHelpers.ts');
     
     const error = new UsageLimitError('Test limit error', 1234567890);
     

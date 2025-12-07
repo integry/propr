@@ -16,7 +16,7 @@ RUN cd packages/dashboard && npm install
 # Copy application code
 COPY . .
 
-# Build TypeScript
+# Build TypeScript (main app only - dashboard uses tsx at runtime)
 RUN npm run build
 
 # Create necessary directories

@@ -1,17 +1,17 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { ErrorCategories } from '../utils/errorHandler.js';
-import { safeRemoveLabel } from '../utils/github/labelOperations.js';
-import { generateCompletionComment } from '../utils/github/logFiles.js';
-import { recordLLMMetrics } from '../utils/llmMetrics.js';
-import type { ClaudeResult } from '../utils/llmMetrics.types.js';
-import { formatResetTime } from '../utils/scheduling.js';
-import { issueQueue, type IssueJobData, type JobResult } from '../queue/taskQueue.js';
-import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
-import type { WorkerStateManager } from '../utils/workerStateManager.js';
-import type { ClaudeCodeResponse } from '../claude/claudeService.js';
-import type { WorktreeInfo, CommitResult } from '../git/repoManager.js';
-import type { RepoValidationResult } from '../utils/prValidation.js';
+import { ErrorCategories } from '../utils/errorHandler.ts';
+import { safeRemoveLabel } from '../utils/github/labelOperations.ts';
+import { generateCompletionComment } from '../utils/github/logFiles.ts';
+import { recordLLMMetrics } from '../utils/llmMetrics.ts';
+import type { ClaudeResult } from '../utils/llmMetrics.types.ts';
+import { formatResetTime } from '../utils/scheduling.ts';
+import { issueQueue, type IssueJobData, type JobResult } from '../queue/taskQueue.ts';
+import { db, isEnabled as isDbEnabled } from '../db/postgres.ts';
+import type { WorkerStateManager } from '../utils/workerStateManager.ts';
+import type { ClaudeCodeResponse } from '../claude/claudeService.ts';
+import type { WorktreeInfo, CommitResult } from '../git/repoManager.ts';
+import type { RepoValidationResult } from '../utils/prValidation.ts';
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {

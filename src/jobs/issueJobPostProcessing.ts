@@ -1,15 +1,15 @@
 import type { Logger } from 'pino';
 import { setTimeout } from 'timers/promises';
-import type { ClaudeCodeResponse } from '../claude/claudeService.js';
-import type { WorktreeInfo, CommitResult } from '../git/repoManager.js';
-import { cleanupWorktree, commitChanges, pushBranch } from '../git/repoManager.js';
-import { safeUpdateLabels } from '../utils/github/labelOperations.js';
-import { generateCompletionComment } from '../utils/github/logFiles.js';
-import { executeClaudeCode } from '../claude/claudeService.js';
-import { validatePRCreation } from '../utils/prValidation.js';
-import type { RepoValidationResult, PRValidationResult } from '../utils/prValidation.js';
-import type { IssueJobData } from '../queue/taskQueue.js';
-import { createPullRequest, type PostProcessingResult } from './issueJobHelpers.js';
+import type { ClaudeCodeResponse } from '../claude/claudeService.ts';
+import type { WorktreeInfo, CommitResult } from '../git/repoManager.ts';
+import { cleanupWorktree, commitChanges, pushBranch } from '../git/repoManager.ts';
+import { safeUpdateLabels } from '../utils/github/labelOperations.ts';
+import { generateCompletionComment } from '../utils/github/logFiles.ts';
+import { executeClaudeCode } from '../claude/claudeService.ts';
+import { validatePRCreation } from '../utils/prValidation.ts';
+import type { RepoValidationResult, PRValidationResult } from '../utils/prValidation.ts';
+import type { IssueJobData } from '../queue/taskQueue.ts';
+import { createPullRequest, type PostProcessingResult } from './issueJobHelpers.ts';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;

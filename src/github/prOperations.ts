@@ -1,8 +1,9 @@
 import { Octokit } from '@octokit/core';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import logger from '../utils/logger.js';
-import { ensureBranchAndPush } from '../git/repoBranching.js';
-import { handleError } from '../utils/errorHandler.js';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
+import logger from '../utils/logger.ts';
+import { ensureBranchAndPush } from '../git/repoBranching.ts';
+import { handleError } from '../utils/errorHandler.ts';
+import { generatePRBody, generateClaudeLogsComment } from './prFormatters.ts';
 
 const DEFAULT_BASE_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
 
@@ -310,7 +311,6 @@ export async function createPullRequest(options: CreatePullRequestOptions): Prom
         const octokit = await getAuthenticatedOctokit();
 
         const prTitle = `AI Fix for Issue #${issueNumber}: ${issueTitle}`;
-        const { generatePRBody } = await import('./prFormatters.js');
         const prBody = generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult);
 
         logger.info({
@@ -367,7 +367,6 @@ export async function addClaudeLogsComment(options: AddClaudeLogsCommentOptions)
     try {
         const octokit = await getAuthenticatedOctokit();
 
-        const { generateClaudeLogsComment } = await import('./prFormatters.js');
         const commentBody = generateClaudeLogsComment(claudeResult, issueNumber);
 
         logger.info({

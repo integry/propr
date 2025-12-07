@@ -211,9 +211,9 @@ describe('GitHub Service - Error Handling', () => {
     test('should handle missing Claude result gracefully', () => {
         const claudeResult: ClaudeResult | null = null;
 
-        const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
-        const isSuccess = claudeResult?.success || false;
-        const sessionId = claudeResult?.sessionId || 'unknown';
+        const executionTime = Math.round(((claudeResult as ClaudeResult | null)?.executionTime || 0) / 1000);
+        const isSuccess = (claudeResult as ClaudeResult | null)?.success || false;
+        const sessionId = (claudeResult as ClaudeResult | null)?.sessionId || 'unknown';
 
         assert.strictEqual(executionTime, 0);
         assert.strictEqual(isSuccess, false);

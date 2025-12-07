@@ -2,19 +2,19 @@ import { simpleGit, SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import { Octokit } from '@octokit/core';
-import logger from '../utils/logger.js';
-import { handleError } from '../utils/errorHandler.js';
+import logger from '../utils/logger.ts';
+import { handleError } from '../utils/errorHandler.ts';
 import {
     cleanupWorktree,
     cleanupExpiredWorktrees,
     setupWorktreePermissions,
     addToSafeDirectories,
     getWorktreePath
-} from './worktreeOperations.js';
-import { cleanupExistingBranch, createWorktreeFromExistingBranch } from './worktreeCreation.js';
-import { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './repoBranching.js';
-import { commitChanges } from './commitOperations.js';
-import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations } from './branchConfig.js';
+} from './worktreeOperations.ts';
+import { cleanupExistingBranch, createWorktreeFromExistingBranch } from './worktreeCreation.ts';
+import { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './repoBranching.ts';
+import { commitChanges } from './commitOperations.ts';
+import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations } from './branchConfig.ts';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
 const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
@@ -192,4 +192,4 @@ export function getRepoUrl(issue: IssueRef): string {
 }
 
 export { cleanupWorktree, cleanupExpiredWorktrees, createWorktreeFromExistingBranch, ensureBranchAndPush, pushBranch, commitChanges, detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations };
-export type { CommitResult } from './commitOperations.js';
+export type { CommitResult } from './commitOperations.ts';

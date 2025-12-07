@@ -1,9 +1,12 @@
-import logger from '../utils/logger.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { loadMonitoredRepos, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from '../config/configRepoManager.js';
+import logger from '../utils/logger.ts';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
+import { loadMonitoredRepos, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from '../config/configRepoManager.ts';
 
 interface Settings {
     github_user_whitelist?: string[];
+    worker_concurrency?: number;
+    analysis_model_fast?: string;
+    [key: string]: unknown;
 }
 
 const GITHUB_REPOS_TO_MONITOR = process.env.GITHUB_REPOS_TO_MONITOR;

@@ -131,7 +131,7 @@ services:
       context: .
       dockerfile: Dockerfile.node
     container_name: gitfix-dashboard-api
-    command: sh -c "cd /usr/src/app/packages/dashboard && node server.js"
+    command: sh -c "cd /usr/src/app/packages/dashboard && npx tsx server.ts"
     ports:
       - '4000:4000'
     volumes:

@@ -1,22 +1,23 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import logger from '../utils/logger.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { withRetry, retryConfigs } from '../utils/retryHandler.js';
-import { getStateManager, TaskStates } from '../utils/workerStateManager.js';
+import logger from '../utils/logger.ts';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
+import { withRetry, retryConfigs } from '../utils/retryHandler.ts';
+import { getStateManager, TaskStates } from '../utils/workerStateManager.ts';
 import {
     createWorktreeForIssue,
     cleanupWorktree,
-    getRepoUrl
-} from '../git/repoManager.js';
-import type { WorktreeInfo } from '../git/repoManager.js';
-import { ensureGitRepository } from '../utils/git/gitValidation.js';
-import { executeClaudeCode, UsageLimitError } from '../claude/claudeService.js';
-import type { ClaudeCodeResponse } from '../claude/claudeService.js';
-import { generateTaskImportPrompt } from '../claude/prompts/promptGenerator.js';
-import { handleError } from '../utils/errorHandler.js';
-import { handleSimpleUsageLimitError } from './issueJobHelpers.js';
-import type { TaskImportJobData, JobResult } from '../queue/taskQueue.js';
+    getRepoUrl,
+    ensureRepoCloned
+} from '../git/repoManager.ts';
+import type { WorktreeInfo } from '../git/repoManager.ts';
+import { ensureGitRepository } from '../utils/git/gitValidation.ts';
+import { executeClaudeCode, UsageLimitError } from '../claude/claudeService.ts';
+import type { ClaudeCodeResponse } from '../claude/claudeService.ts';
+import { generateTaskImportPrompt } from '../claude/prompts/promptGenerator.ts';
+import { handleError } from '../utils/errorHandler.ts';
+import { handleSimpleUsageLimitError } from './issueJobHelpers.ts';
+import type { TaskImportJobData, JobResult } from '../queue/taskQueue.ts';
 
 interface GitHubToken {
     token: string;
@@ -78,7 +79,6 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
         await ensureGitRepository(correlatedLogger);
 
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Cloning repository if needed' });
-        const { ensureRepoCloned } = await import('../git/repoManager.js');
         localRepoPath = await ensureRepoCloned(repoUrl, repoOwner, repoName, githubToken.token);
 
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Creating worktree for analysis' });

@@ -1,30 +1,30 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import logger from '../utils/logger.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { withRetry, retryConfigs } from '../utils/retryHandler.js';
-import { getStateManager, TaskStates } from '../utils/workerStateManager.js';
-import type { WorkerStateManager } from '../utils/workerStateManager.js';
-import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitChanges, pushBranch } from '../git/repoManager.js';
-import type { WorktreeInfo } from '../git/repoManager.js';
-import { ensureGitRepository } from '../utils/git/gitValidation.js';
-import { createLogFiles } from '../utils/github/logFiles.js';
-import { executeClaudeCode, UsageLimitError, generateTaskSummary } from '../claude/claudeService.js';
-import type { ClaudeCodeResponse } from '../claude/claudeService.js';
-import type { ClaudeResult } from '../utils/llmMetrics.types.js';
-import { recordLLMMetrics } from '../utils/llmMetrics.js';
-import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '../queue/taskQueue.js';
+import logger from '../utils/logger.ts';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
+import { withRetry, retryConfigs } from '../utils/retryHandler.ts';
+import { getStateManager, TaskStates } from '../utils/workerStateManager.ts';
+import type { WorkerStateManager } from '../utils/workerStateManager.ts';
+import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitChanges, pushBranch } from '../git/repoManager.ts';
+import type { WorktreeInfo } from '../git/repoManager.ts';
+import { ensureGitRepository } from '../utils/git/gitValidation.ts';
+import { createLogFiles } from '../utils/github/logFiles.ts';
+import { executeClaudeCode, UsageLimitError, generateTaskSummary } from '../claude/claudeService.ts';
+import type { ClaudeCodeResponse } from '../claude/claudeService.ts';
+import type { ClaudeResult } from '../utils/llmMetrics.types.ts';
+import { recordLLMMetrics } from '../utils/llmMetrics.ts';
+import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '../queue/taskQueue.ts';
 import { Redis } from 'ioredis';
-import { getDefaultModel } from '../config/modelAliases.js';
-import { loadPrLabel } from '../config/configRepoManager.js';
+import { getDefaultModel } from '../config/modelAliases.ts';
+import { loadPrLabel } from '../config/configRepoManager.ts';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
     buildCommentHistory, createSessionIdCallbackForPR, createContainerIdCallbackForPR, updateTaskTitleForPR, buildCompletionComment
-} from './prCommentJobHelpers.js';
+} from './prCommentJobHelpers.ts';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
     handleJobError, cleanupJob, pickUpPendingComments
-} from './prCommentJobUtils.js';
+} from './prCommentJobUtils.ts';
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -234,7 +234,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
 
     await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
-    await createLogFiles(state.claudeResult, { number: pullRequestNumber, repoOwner, repoName });
+    await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
     await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
         reason: 'Claude execution completed',
         claudeResult: { success: state.claudeResult.success, sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, executionTime: state.claudeResult.executionTime },

@@ -1,9 +1,9 @@
 import type { Logger } from 'pino';
-import type { WorkerStateManager } from '../utils/workerStateManager.js';
-import { TaskStates } from '../utils/workerStateManager.js';
+import type { WorkerStateManager } from '../utils/workerStateManager.ts';
+import { TaskStates } from '../utils/workerStateManager.ts';
 import fs from 'fs-extra';
 import type { Redis } from 'ioredis';
-import type { IssueJobData } from '../queue/taskQueue.js';
+import type { IssueJobData } from '../queue/taskQueue.ts';
 
 export interface SessionIdCallback {
     (sessionId: string, conversationId?: string): Promise<void>;

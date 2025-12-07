@@ -35,8 +35,8 @@ services:
 
   dashboard:
     build:
-      context: ./packages/dashboard
-      dockerfile: Dockerfile.prod
+      context: .
+      dockerfile: packages/dashboard/Dockerfile.prod
       args:
         VITE_API_BASE_URL: ${FRONTEND_API_URL:-http://localhost}
         VITE_APP_URL: ${FRONTEND_APP_URL:-http://localhost}
@@ -104,7 +104,7 @@ services:
         condition: service_healthy
     networks:
       - gitfix-network
-    command: ["node", "src/daemon.js"]
+    command: ["node", "dist/src/daemon.js"]
 
   worker:
     build:
@@ -140,7 +140,7 @@ services:
         condition: service_healthy
     networks:
       - gitfix-network
-    command: ["node", "src/worker.js"]
+    command: ["node", "dist/src/worker.js"]
 
 networks:
   gitfix-network:

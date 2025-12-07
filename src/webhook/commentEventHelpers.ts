@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import { resolveModelAlias } from '../config/modelAliases.js';
+import { resolveModelAlias } from '../config/modelAliases.ts';
 import type { Label } from '@octokit/webhooks-types';
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
