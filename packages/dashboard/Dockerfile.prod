@@ -59,7 +59,7 @@ RUN mkdir -p packages && ln -s ../dist/src packages/src
 WORKDIR /app/packages/dashboard
 
 # Copy built dashboard files
-COPY --from=builder /app/packages/dashboard/dist ./dist
+COPY --from=builder /app/dist/packages/dashboard ./dist
 COPY --from=builder /app/packages/dashboard/package*.json ./
 
 # Install dashboard production dependencies only
