@@ -1,19 +1,90 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import logger from '../logger.js';
-import { getUsageStats } from '../tokenCalculation.js';
+interface MessageUsage {
+    input_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+    output_tokens?: number;
+}
 
-export async function createLogFiles(claudeResult, issueRef) {
-    const fs = await import('fs');
-    const path = await import('path');
-    const os = await import('os');
+interface UsageStats {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+}
 
+function getUsageStats(claudeResult: ClaudeResult | null): UsageStats {
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    if (claudeResult?.conversationLog) {
+        claudeResult.conversationLog.forEach(msg => {
+            const message = msg.message as { usage?: MessageUsage } | undefined;
+            if (message?.usage) {
+                const usage = message.usage;
+                inputTokens += (usage.input_tokens ?? 0);
+                inputTokens += (usage.cache_creation_input_tokens ?? 0);
+                inputTokens += (usage.cache_read_input_tokens ?? 0);
+                outputTokens += (usage.output_tokens ?? 0);
+            }
+        });
+    }
+
+    return {
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens
+    };
+}
+
+interface IssueRef {
+    number: number;
+    repoOwner: string;
+    repoName: string;
+}
+
+interface ConversationMessage {
+    type?: string;
+    message?: {
+        content?: Array<{ text?: string }>;
+    };
+}
+
+interface FinalResult {
+    cost_usd?: number;
+    num_turns?: number;
+    subtype?: string;
+}
+
+interface ClaudeResult {
+    success?: boolean;
+    sessionId?: string | null;
+    conversationId?: string | null;
+    model?: string | null;
+    executionTime?: number;
+    conversationLog?: ConversationMessage[];
+    rawOutput?: string;
+    finalResult?: FinalResult;
+    summary?: string;
+}
+
+interface LogFiles {
+    conversation?: string;
+    output?: string;
+}
+
+export async function createLogFiles(claudeResultInput: unknown, issueRef: IssueRef): Promise<LogFiles> {
+    const claudeResult = claudeResultInput as ClaudeResult;
     const logDir = path.join(os.tmpdir(), 'claude-logs');
     await fs.promises.mkdir(logDir, { recursive: true });
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const filePrefix = `issue-${issueRef.number}-${timestamp}`;
 
-    const files = {};
+    const files: LogFiles = {};
 
     if (claudeResult?.conversationLog && claudeResult.conversationLog.length > 0) {
         const conversationPath = path.join(logDir, `${filePrefix}-conversation.json`);
@@ -42,7 +113,7 @@ export async function createLogFiles(claudeResult, issueRef) {
         try {
             const redis = new Redis({
                 host: process.env.REDIS_HOST || 'redis',
-                port: process.env.REDIS_PORT || 6379
+                port: parseInt(process.env.REDIS_PORT || '6379', 10)
             });
 
             const logData = {
@@ -76,9 +147,10 @@ export async function createLogFiles(claudeResult, issueRef) {
 
             await redis.quit();
         } catch (redisError) {
+            const err = redisError as Error;
             logger.warn({
                 issueNumber: issueRef.number,
-                error: redisError.message
+                error: err.message
             }, 'Failed to store log file paths in Redis');
         }
     }
@@ -86,17 +158,17 @@ export async function createLogFiles(claudeResult, issueRef) {
     return files;
 }
 
-function buildExecutionDetails(claudeResult, issueRef, timestamp) {
+function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, timestamp: string): string {
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
     const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
     const cost = claudeResult?.finalResult?.cost_usd || 0;
     const lines = [
-        `🤖 **AI Processing ${isSuccess ? 'Completed' : 'Failed'}**\n`,
+        `**AI Processing ${isSuccess ? 'Completed' : 'Failed'}**\n`,
         `**Execution Details:**`,
         `- Issue: #${issueRef.number}`,
         `- Repository: ${issueRef.repoOwner}/${issueRef.repoName}`,
-        `- Status: ${isSuccess ? '✅ Success' : '❌ Failed'}`,
+        `- Status: ${isSuccess ? 'Success' : 'Failed'}`,
         `- Execution Time: ${executionTime}s`,
         `- Tokens used: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]`,
         `- API cost: $${cost}`,
@@ -107,26 +179,26 @@ function buildExecutionDetails(claudeResult, issueRef, timestamp) {
     return lines.join('\n') + '\n\n';
 }
 
-function buildSummarySection(claudeResult) {
+function buildSummarySection(claudeResult: ClaudeResult): string {
     let section = '';
     if (claudeResult?.summary) section += `**Summary:**\n${claudeResult.summary}\n\n`;
     if (claudeResult?.finalResult?.subtype === 'error_max_turns') {
-        section += `⚠️ **Max Turns Reached**: Claude reached the maximum number of conversation turns (${claudeResult.finalResult.num_turns}) before completing all tasks. Consider increasing the turn limit or breaking down the task into smaller parts.\n\n`;
+        section += `**Max Turns Reached**: Claude reached the maximum number of conversation turns (${claudeResult.finalResult.num_turns}) before completing all tasks. Consider increasing the turn limit or breaking down the task into smaller parts.\n\n`;
     }
     return section;
 }
 
-function buildLogFilesSection(logFiles, claudeResult) {
+function buildLogFilesSection(logFiles: LogFiles, claudeResult: ClaudeResult): string {
     if (Object.keys(logFiles).length === 0) return '';
-    const lines = ['**📁 Detailed Logs:**'];
-    if (logFiles.conversation && claudeResult.conversationLog?.length > 0) {
+    const lines = ['**Detailed Logs:**'];
+    if (logFiles.conversation && claudeResult.conversationLog?.length) {
         lines.push(`- Conversation: ${claudeResult.conversationLog.length} messages`);
         lines.push(`- Session: \`${claudeResult.sessionId}\``);
     }
     lines.push('\nLog files stored at:');
-    Object.entries(logFiles).forEach(([type, path]) => lines.push(`- ${type}: \`${path}\``));
-    lines.push('\n<details>\n<summary>💬 Latest Conversation Messages</summary>\n');
-    if (claudeResult.conversationLog?.length > 0) {
+    Object.entries(logFiles).forEach(([type, filePath]) => lines.push(`- ${type}: \`${filePath}\``));
+    lines.push('\n<details>\n<summary>Latest Conversation Messages</summary>\n');
+    if (claudeResult.conversationLog?.length) {
         lines.push('```');
         claudeResult.conversationLog.slice(-3).forEach(msg => {
             if (msg.type === 'assistant') {
@@ -141,15 +213,17 @@ function buildLogFilesSection(logFiles, claudeResult) {
     return lines.join('\n') + '\n';
 }
 
-export async function generateCompletionComment(claudeResult, issueRef) {
+export async function generateCompletionComment(claudeResultInput: unknown, issueRef: IssueRef): Promise<string> {
     const timestamp = new Date().toISOString();
-    let comment = buildExecutionDetails(claudeResult, issueRef, timestamp);
-    comment += buildSummarySection(claudeResult);
+    const result: ClaudeResult = (claudeResultInput as ClaudeResult) || { success: false };
+    let comment = buildExecutionDetails(result, issueRef, timestamp);
+    comment += buildSummarySection(result);
     try {
-        const logFiles = await createLogFiles(claudeResult, issueRef);
-        comment += buildLogFilesSection(logFiles, claudeResult);
+        const logFiles = await createLogFiles(result, issueRef);
+        comment += buildLogFilesSection(logFiles, result);
     } catch (logError) {
-        logger.warn({ issueNumber: issueRef.number, error: logError.message }, 'Failed to create log files');
+        const err = logError as Error;
+        logger.warn({ issueNumber: issueRef.number, error: err.message }, 'Failed to create log files');
     }
     comment += `---\n*Powered by Claude Code v${process.env.npm_package_version || 'unknown'}*`;
     return comment;

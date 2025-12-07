@@ -3,10 +3,17 @@ import { getAuthenticatedOctokit } from './auth/githubAuth.js';
 import { withErrorHandling } from './utils/errorHandler.js';
 import config from '../config/index.js';
 
-/**
- * Example usage of the authentication and logging system
- */
-async function main() {
+process.on('uncaughtException', (error: Error) => {
+    logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception');
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason: unknown) => {
+    logger.fatal({ reason }, 'Unhandled rejection');
+    process.exit(1);
+});
+
+async function main(): Promise<void> {
     logger.info('GitFix application starting', {
         environment: config.environment,
         logLevel: config.logging.level,
@@ -16,27 +23,26 @@ async function main() {
         logger.debug('Testing GitHub authentication...');
         const octokit = await getAuthenticatedOctokit();
 
-        // Test the authentication by getting the authenticated app
         const { data: app } = await octokit.request('GET /app');
         logger.info('Successfully authenticated with GitHub', {
-            appName: app.name,
-            appId: app.id,
+            appName: app?.name,
+            appId: app?.id,
         });
 
-        // Example of using the authenticated client
         const { data: repos } = await octokit.request('GET /installation/repositories', {
             per_page: 5,
         });
 
         logger.info('Found repositories', {
             count: repos.total_count,
-            repositories: repos.repositories.map(r => r.full_name),
+            repositories: repos.repositories.map((r: { full_name: string }) => r.full_name),
         });
 
     } catch (error) {
+        const err = error as Error;
         logger.error('Failed to initialize application', {
-            error: error.message,
-            stack: error.stack,
+            error: err.message,
+            stack: err.stack,
         });
         process.exit(1);
     }
@@ -44,13 +50,10 @@ async function main() {
     logger.info('GitFix application initialized successfully');
 }
 
-// Wrap main function with error handling
 const safeMain = withErrorHandling(main, 'main');
 
-// Only run if this is the main module
 if (import.meta.url === `file://${process.argv[1]}`) {
     safeMain();
 }
 
 export { main };
-

@@ -1,11 +1,44 @@
+import { Redis } from 'ioredis';
+import type { Logger } from 'pino';
+import type { PaginatedOctokitInstance } from '../auth/githubAuth.js';
 import logger, { generateCorrelationId } from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { issueQueue } from '../queue/taskQueue.js';
 import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } from './configLoader.js';
 
-export async function processDetectedIssue(issue, correlationId, redisClient) {
-    const correlatedLogger = logger.withCorrelation(correlationId);
+export interface DetectedIssue {
+    id: number;
+    number: number;
+    title: string;
+    url: string;
+    repoOwner: string;
+    repoName: string;
+    labels: string[];
+    createdAt: string;
+    updatedAt: string;
+}
+
+
+interface GitHubIssue {
+    id: number;
+    number: number;
+    title: string;
+    html_url: string;
+    labels: Array<{ name: string } | string>;
+    created_at: string;
+    updated_at: string;
+    pull_request?: unknown;
+}
+
+interface GitHubSearchResponse {
+    data: {
+        items: GitHubIssue[];
+    };
+}
+
+export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<void> {
+    const correlatedLogger: Logger = logger.withCorrelation(correlationId);
     const repoFullName = `${issue.repoOwner}/${issue.repoName}`;
 
     let primaryProcessingLabels = getPrimaryProcessingLabels();
@@ -14,7 +47,7 @@ export async function processDetectedIssue(issue, correlationId, redisClient) {
         primaryProcessingLabels = getPrimaryProcessingLabels();
     }
 
-    const allExcludeLabels = [];
+    const allExcludeLabels: string[] = [];
     for (const label of primaryProcessingLabels) {
         allExcludeLabels.push(`${label}-processing`);
         allExcludeLabels.push(`${label}-done`);
@@ -51,12 +84,19 @@ export async function processDetectedIssue(issue, correlationId, redisClient) {
     const waitingJobs = await issueQueue.getWaiting();
     const existingJobs = [...activeJobs, ...waitingJobs];
 
+    interface JobData {
+        number?: number;
+        repoOwner?: string;
+        repoName?: string;
+        isChildJob?: boolean;
+    }
+
     const jobExists = existingJobs.some(job =>
         job.name === 'processGitHubIssue' &&
-        job.data.number === issue.number &&
-        job.data.repoOwner === issue.repoOwner &&
-        job.data.repoName === issue.repoName &&
-        !job.data.isChildJob
+        (job.data as JobData).number === issue.number &&
+        (job.data as JobData).repoOwner === issue.repoOwner &&
+        (job.data as JobData).repoName === issue.repoName &&
+        !(job.data as JobData).isChildJob
     );
 
     if (jobExists) {
@@ -82,7 +122,7 @@ export async function processDetectedIssue(issue, correlationId, redisClient) {
             correlationId: generateCorrelationId()
         };
 
-        const addToQueueWithRetry = () => withRetry(
+        const addToQueueWithRetry = (): Promise<unknown> => withRetry(
             () => issueQueue.add('processGitHubIssue', issueJob, {
                 jobId,
                 attempts: 3,
@@ -107,7 +147,8 @@ export async function processDetectedIssue(issue, correlationId, redisClient) {
             await redisClient.lpush('system:activity:log', JSON.stringify(activity));
             await redisClient.ltrim('system:activity:log', 0, 999);
         } catch (activityError) {
-            correlatedLogger.warn({ error: activityError.message }, 'Failed to log activity');
+            const err = activityError as Error;
+            correlatedLogger.warn({ error: err.message }, 'Failed to log activity');
         }
 
         correlatedLogger.info({
@@ -122,8 +163,8 @@ export async function processDetectedIssue(issue, correlationId, redisClient) {
     }
 }
 
-export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
-    const correlatedLogger = logger.withCorrelation(correlationId);
+export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repoFullName: string, correlationId: string): Promise<DetectedIssue[]> {
+    const correlatedLogger: Logger = logger.withCorrelation(correlationId);
     const [owner, repo] = repoFullName.split('/');
 
     if (!owner || !repo) {
@@ -132,15 +173,15 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
     }
 
     const primaryProcessingLabels = getPrimaryProcessingLabels();
-    const allExcludeLabels = [];
+    const allExcludeLabels: string[] = [];
     for (const label of primaryProcessingLabels) {
         allExcludeLabels.push(`${label}-processing`);
         allExcludeLabels.push(`${label}-done`);
     }
 
-    const fetchWithRetry = () => withRetry(
-        async () => {
-            const allIssues = [];
+    const fetchWithRetry = (): Promise<GitHubSearchResponse> => withRetry(
+        async (): Promise<GitHubSearchResponse> => {
+            const allIssues: GitHubIssue[] = [];
 
             for (const primaryLabel of primaryProcessingLabels) {
                 const issues = await octokit.paginate('GET /repos/{owner}/{repo}/issues', {
@@ -151,7 +192,7 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
                     per_page: 100,
                     sort: 'created',
                     direction: 'desc'
-                });
+                }) as GitHubIssue[];
 
                 for (const issue of issues) {
                     if (!allIssues.find(i => i.id === issue.id)) {
@@ -201,14 +242,15 @@ export async function fetchIssuesForRepo(octokit, repoFullName, correlationId) {
             url: issue.html_url,
             repoOwner: owner,
             repoName: repo,
-            labels: issue.labels.map(l => l.name),
+            labels: issue.labels.map(l => typeof l === 'string' ? l : l.name),
             createdAt: issue.created_at,
             updatedAt: issue.updated_at
         }));
     } catch (error) {
+        const err = error as Error & { status?: number };
         handleError(error, `fetch_issues_${repoFullName}`, { correlationId });
 
-        if (error.status === 403 && error.message && error.message.includes('rate limit')) {
+        if (err.status === 403 && err.message && err.message.includes('rate limit')) {
             correlatedLogger.warn('GitHub API rate limit likely exceeded. Consider increasing polling interval.');
         }
 

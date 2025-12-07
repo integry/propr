@@ -4,6 +4,9 @@ import { loadMonitoredRepos, loadSettings, loadAiPrimaryTag, loadPrimaryProcessi
 
 interface Settings {
     github_user_whitelist?: string[];
+    worker_concurrency?: number;
+    analysis_model_fast?: string;
+    [key: string]: unknown;
 }
 
 const GITHUB_REPOS_TO_MONITOR = process.env.GITHUB_REPOS_TO_MONITOR;

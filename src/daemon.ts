@@ -1,15 +1,17 @@
 import 'dotenv/config';
+import { Redis } from 'ioredis';
+import type { Logger } from 'pino';
 import { getAuthenticatedOctokit } from './auth/githubAuth.js';
 import logger, { generateCorrelationId } from './utils/logger.js';
 import { withErrorHandling, handleError } from './utils/errorHandler.js';
 import { withRetry, retryConfigs } from './utils/retryHandler.js';
 import { shutdownQueue } from './queue/taskQueue.js';
-import Redis from 'ioredis';
 import { getDefaultModel } from './config/modelAliases.js';
 import { db, isEnabled as isDbEnabled } from './db/postgres.js';
 import { initializeWebhookHandler } from './webhook/webhookHandler.js';
 import { pollForPullRequestComments } from './polling/prCommentPolling.js';
 import { handleCommentDeleted, handleCommentEdited, processCommentEvent } from './webhook/commentEventHandler.js';
+import type { CommentPayload, CommentEventConfig, CommentEventType } from './webhook/commentEventHandler.js';
 import {
     loadAllConfigs,
     reloadConfigs,
@@ -21,6 +23,17 @@ import {
 } from './daemon/configLoader.js';
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
+import type { DetectedIssue } from './daemon/issueDetection.js';
+
+process.on('uncaughtException', (error: Error) => {
+    logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason: unknown) => {
+    logger.fatal({ reason }, 'Unhandled rejection in daemon');
+    process.exit(1);
+});
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -36,20 +49,19 @@ const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
 const ENABLE_WEBHOOKS = process.env.ENABLE_GITHUB_WEBHOOKS === 'true';
 
-function getCommentConfig() {
+function getCommentConfig(): CommentEventConfig {
     return {
         redisClient,
-        GITHUB_BOT_USERNAME: getBotUsername(),
         PR_FOLLOWUP_TRIGGER_KEYWORDS,
         MODEL_LABEL_PATTERN,
-        processCommentEvent: (payload, eventType, correlationId) =>
+        processCommentEvent: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) =>
             processCommentEvent(payload, eventType, correlationId, getCommentConfig())
     };
 }
 
-async function pollForIssues() {
+async function pollForIssues(): Promise<DetectedIssue[]> {
     const correlationId = generateCorrelationId();
-    const correlatedLogger = logger.withCorrelation(correlationId);
+    const correlatedLogger: Logger = logger.withCorrelation(correlationId);
 
     correlatedLogger.info('Starting GitHub issue polling cycle...');
 
@@ -62,10 +74,10 @@ async function pollForIssues() {
         );
     } catch (authError) {
         handleError(authError, 'Failed to get authenticated Octokit instance', { correlationId });
-        return;
+        return [];
     }
 
-    const allDetectedIssues = [];
+    const allDetectedIssues: DetectedIssue[] = [];
     const repos = getRepos();
 
     for (const repoFullName of repos) {
@@ -81,7 +93,11 @@ async function pollForIssues() {
                 }
             }
 
-            await pollForPullRequestComments(octokit, repoFullName, correlationId, getCommentConfig());
+            await pollForPullRequestComments(octokit, repoFullName, correlationId, {
+                redisClient,
+                PR_FOLLOWUP_TRIGGER_KEYWORDS,
+                MODEL_LABEL_PATTERN
+            });
 
         } catch (error) {
             handleError(error, `Error polling repository ${repoFullName}`, { correlationId });
@@ -96,7 +112,11 @@ async function pollForIssues() {
     return allDetectedIssues;
 }
 
-async function startDaemon(options = {}) {
+interface DaemonOptions {
+    reset?: boolean;
+}
+
+async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     await loadAllConfigs();
 
     const repos = getRepos();
@@ -112,7 +132,8 @@ async function startDaemon(options = {}) {
             await db.migrate.latest();
             logger.info('Database migrations completed successfully');
         } catch (error) {
-            logger.error({ error: error.message, stack: error.stack }, 'Database migration failed - daemon will continue but database persistence may not work');
+            const err = error as Error;
+            logger.error({ error: err.message, stack: err.stack }, 'Database migration failed - daemon will continue but database persistence may not work');
         }
     }
 
@@ -124,30 +145,32 @@ async function startDaemon(options = {}) {
             await resetIssueLabels();
             logger.info('Reset completed successfully');
         } catch (error) {
-            logger.error({ error: error.message }, 'Reset failed');
+            const err = error as Error;
+            logger.error({ error: err.message }, 'Reset failed');
             process.exit(1);
         }
     }
 
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',
-        port: process.env.REDIS_PORT || 6379,
-        retryStrategy: times => Math.min(times * 50, 2000)
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        retryStrategy: (times: number) => Math.min(times * 50, 2000)
     });
 
-    const sendHeartbeat = async () => {
+    const sendHeartbeat = async (): Promise<void> => {
         try {
             await heartbeatRedis.set('system:status:daemon', Date.now(), 'EX', 90);
             logger.debug('Daemon heartbeat sent');
         } catch (error) {
-            logger.error({ error: error.message }, 'Failed to send daemon heartbeat');
+            const err = error as Error;
+            logger.error({ error: err.message }, 'Failed to send daemon heartbeat');
         }
     };
 
     await sendHeartbeat();
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
 
-    let intervalId = null;
+    let intervalId: NodeJS.Timeout | null = null;
 
     const commentConfig = getCommentConfig();
     const primaryProcessingLabels = getPrimaryProcessingLabels();
@@ -174,10 +197,10 @@ async function startDaemon(options = {}) {
         }
 
         await initializeWebhookHandler(
-            (issue, correlationId) => processDetectedIssue(issue, correlationId, redisClient),
-            (payload, eventType, correlationId) => processCommentEvent(payload, eventType, correlationId, commentConfig),
-            (payload, eventType, correlationId) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
-            (payload, eventType, correlationId) => handleCommentEdited(payload, eventType, correlationId, commentConfig)
+            (issue: DetectedIssue, correlationId: string) => processDetectedIssue(issue, correlationId, redisClient),
+            (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => processCommentEvent(payload, eventType, correlationId, commentConfig),
+            (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
+            (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig)
         );
         logger.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');
     } else {
@@ -225,11 +248,11 @@ async function startDaemon(options = {}) {
     });
 }
 
-const processCommentEventWrapper = (payload, eventType, correlationId) =>
+const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
     processCommentEvent(payload, eventType, correlationId, getCommentConfig());
-const handleCommentDeletedWrapper = (payload, eventType, correlationId) =>
+const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
     handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
-const handleCommentEditedWrapper = (payload, eventType, correlationId) =>
+const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
     handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 export {
@@ -245,9 +268,13 @@ export {
     handleCommentEditedWrapper as handleCommentEdited
 };
 
-function parseArgs() {
+interface ParsedArgs {
+    reset?: boolean;
+}
+
+function parseArgs(): ParsedArgs {
     const args = process.argv.slice(2);
-    const options = {};
+    const options: ParsedArgs = {};
 
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -294,7 +321,8 @@ Examples:
 if (import.meta.url === `file://${process.argv[1]}`) {
     const options = parseArgs();
     startDaemon(options).catch(error => {
-        logger.error({ error: error.message }, 'Daemon startup failed');
+        const err = error as Error;
+        logger.error({ error: err.message }, 'Daemon startup failed');
         process.exit(1);
     });
 }

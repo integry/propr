@@ -234,7 +234,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
 
     await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
-    await createLogFiles(state.claudeResult, { number: pullRequestNumber, repoOwner, repoName });
+    await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
     await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
         reason: 'Claude execution completed',
         claudeResult: { success: state.claudeResult.success, sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, executionTime: state.claudeResult.executionTime },

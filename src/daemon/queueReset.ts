@@ -1,10 +1,16 @@
+import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import Redis from 'ioredis';
+import type { PaginatedOctokitInstance } from '../auth/githubAuth.js';
 import { getRepos, getPrimaryProcessingLabels } from './configLoader.js';
 
-export async function resetQueues() {
+interface GitHubIssue {
+    number: number;
+    labels: Array<{ name: string }>;
+}
+
+export async function resetQueues(): Promise<void> {
     logger.info('Resetting all queue data...');
 
     try {
@@ -34,7 +40,12 @@ export async function resetQueues() {
     }
 }
 
-async function removeProcessingLabelFromIssue(octokit, issue, processingLabel, repoFullName) {
+async function removeProcessingLabelFromIssue(
+    octokit: PaginatedOctokitInstance,
+    issue: GitHubIssue,
+    processingLabel: string,
+    repoFullName: string
+): Promise<boolean> {
     const [owner, repo] = repoFullName.split('/');
     const currentLabels = issue.labels.map(label => label.name);
 
@@ -57,7 +68,11 @@ async function removeProcessingLabelFromIssue(octokit, issue, processingLabel, r
     return true;
 }
 
-async function processRepoLabelReset(octokit, repoFullName, primaryProcessingLabels) {
+async function processRepoLabelReset(
+    octokit: PaginatedOctokitInstance,
+    repoFullName: string,
+    primaryProcessingLabels: string[]
+): Promise<number> {
     const [owner, repo] = repoFullName.split('/');
     if (!owner || !repo) return 0;
 
@@ -73,7 +88,7 @@ async function processRepoLabelReset(octokit, repoFullName, primaryProcessingLab
             state: 'open',
             labels: processingLabel,
             per_page: 100
-        });
+        }) as GitHubIssue[];
 
         for (const issue of issues) {
             const wasRemoved = await removeProcessingLabelFromIssue(octokit, issue, processingLabel, repoFullName);
@@ -85,7 +100,7 @@ async function processRepoLabelReset(octokit, repoFullName, primaryProcessingLab
     return repoResetCount;
 }
 
-export async function resetIssueLabels() {
+export async function resetIssueLabels(): Promise<void> {
     logger.info('Resetting issue labels...');
 
     const repos = getRepos();
@@ -104,7 +119,8 @@ export async function resetIssueLabels() {
             try {
                 totalReset += await processRepoLabelReset(octokit, repoFullName, primaryProcessingLabels);
             } catch (repoError) {
-                logger.error({ repository: repoFullName, error: repoError.message }, 'Failed to reset labels for repository');
+                const err = repoError as Error;
+                logger.error({ repository: repoFullName, error: err.message }, 'Failed to reset labels for repository');
             }
         }
 

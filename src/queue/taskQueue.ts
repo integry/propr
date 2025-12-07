@@ -59,7 +59,7 @@ export interface AnalysisJobData {
     correlationId: string;
 }
 
-export type JobData = IssueJobData | CommentJobData | TaskImportJobData;
+export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData;
 
 export interface ClaudeResult {
     success: boolean;

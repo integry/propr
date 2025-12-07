@@ -1,9 +1,4 @@
-#!/usr/bin/env node
-
-/**
- * Manual script to fix issue labels when post-processing fails
- * Usage: node scripts/fix-issue-labels.js <owner> <repo> <issueNumber>
- */
+#!/usr/bin/env tsx
 
 import { getAuthenticatedOctokit } from '../src/auth/githubAuth.js';
 import logger from '../src/utils/logger.js';
@@ -11,13 +6,22 @@ import logger from '../src/utils/logger.js';
 const AI_PROCESSING_TAG = process.env.AI_PROCESSING_TAG || 'AI-processing';
 const AI_DONE_TAG = process.env.AI_DONE_TAG || 'AI-done';
 
-async function fixIssueLabels(owner, repo, issueNumber) {
+interface PullRequest {
+    number: number;
+    title: string;
+    html_url: string;
+    body?: string | null;
+    head: {
+        ref: string;
+    };
+}
+
+async function fixIssueLabels(owner: string, repo: string, issueNumber: number): Promise<void> {
     try {
         const octokit = await getAuthenticatedOctokit();
         
         logger.info({ owner, repo, issueNumber }, 'Fixing issue labels...');
         
-        // Remove processing tag
         try {
             await octokit.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
                 owner,
@@ -27,10 +31,10 @@ async function fixIssueLabels(owner, repo, issueNumber) {
             });
             logger.info({ issueNumber, tag: AI_PROCESSING_TAG }, 'Removed processing tag');
         } catch (removeError) {
-            logger.warn({ error: removeError.message }, 'Failed to remove processing tag (might not exist)');
+            const err = removeError as Error;
+            logger.warn({ error: err.message }, 'Failed to remove processing tag (might not exist)');
         }
         
-        // Add done tag
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
             owner,
             repo,
@@ -39,7 +43,6 @@ async function fixIssueLabels(owner, repo, issueNumber) {
         });
         logger.info({ issueNumber, tag: AI_DONE_TAG }, 'Added done tag');
         
-        // Check if there's a PR for this issue
         const prs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
             owner,
             repo,
@@ -47,7 +50,7 @@ async function fixIssueLabels(owner, repo, issueNumber) {
             per_page: 20
         });
         
-        const relatedPR = prs.data.find(pr => 
+        const relatedPR = (prs.data as PullRequest[]).find(pr => 
             pr.title.includes(`#${issueNumber}`) || 
             pr.body?.includes(`#${issueNumber}`) ||
             pr.head.ref.includes(issueNumber.toString())
@@ -61,7 +64,6 @@ async function fixIssueLabels(owner, repo, issueNumber) {
                 prTitle: relatedPR.title
             }, 'Found related PR');
             
-            // Add comment to issue linking to PR
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner,
                 repo,
@@ -89,32 +91,31 @@ Please review the changes and merge when ready.
         logger.info({ owner, repo, issueNumber }, 'Issue labels fixed successfully');
         
     } catch (error) {
+        const err = error as Error;
         logger.error({ 
             owner, 
             repo, 
             issueNumber, 
-            error: error.message 
+            error: err.message 
         }, 'Failed to fix issue labels');
         throw error;
     }
 }
 
-// Parse command line arguments
 const [owner, repo, issueNumber] = process.argv.slice(2);
 
 if (!owner || !repo || !issueNumber) {
-    console.error('Usage: node scripts/fix-issue-labels.js <owner> <repo> <issueNumber>');
-    console.error('Example: node scripts/fix-issue-labels.js integry forex 346');
+    console.error('Usage: tsx scripts/fix-issue-labels.ts <owner> <repo> <issueNumber>');
+    console.error('Example: tsx scripts/fix-issue-labels.ts integry forex 346');
     process.exit(1);
 }
 
-// Run the fix
 fixIssueLabels(owner, repo, parseInt(issueNumber, 10))
     .then(() => {
-        console.log('✅ Issue labels fixed successfully');
+        console.log('Issue labels fixed successfully');
         process.exit(0);
     })
-    .catch((error) => {
-        console.error('❌ Failed to fix issue labels:', error.message);
+    .catch((error: Error) => {
+        console.error('Failed to fix issue labels:', error.message);
         process.exit(1);
     });
