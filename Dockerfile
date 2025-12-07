@@ -11,10 +11,17 @@ RUN apt-get update && apt-get install -y \
     docker.io \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy package files (including workspace packages)
 COPY package*.json ./
+COPY packages/core/package*.json ./packages/core/
+COPY packages/dashboard/package*.json ./packages/dashboard/
+
 RUN npm install
 
 COPY . .
+
+# Build core package first (required for @gitfix/core imports)
+RUN cd packages/core && npm run build
 
 # Build TypeScript to JavaScript
 RUN npm run build

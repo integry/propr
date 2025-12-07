@@ -1,0 +1,13 @@
+export declare function getReposFromEnv(): string[];
+export declare function getRepos(): string[];
+export declare function getAiPrimaryTag(): string;
+export declare function getPrimaryProcessingLabels(): string[];
+export declare function getUserWhitelist(): string[];
+export declare function getBotUsername(): string | undefined;
+export declare function detectBotUsername(): Promise<string>;
+export declare function loadReposFromConfig(): Promise<void>;
+export declare function loadSettingsFromConfig(): Promise<void>;
+export declare function loadAiPrimaryTagFromConfig(): Promise<void>;
+export declare function loadPrimaryProcessingLabelsFromConfig(): Promise<void>;
+export declare function loadAllConfigs(): Promise<void>;
+export declare function reloadConfigs(): Promise<void>;

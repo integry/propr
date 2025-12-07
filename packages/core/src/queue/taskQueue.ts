@@ -2,6 +2,7 @@
 import { Queue, Worker, Job, QueueOptions, WorkerOptions } from 'bullmq';
 import { Redis, RedisOptions } from 'ioredis';
 import logger from '../utils/logger.js';
+import type { ConversationStep } from '../utils/llmMetrics.types.js';
 import 'dotenv/config';
 
 export interface IssueJobData {
@@ -62,20 +63,33 @@ export interface AnalysisJobData {
 
 export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData;
 
+export interface ClaudeOutputResult {
+    type?: string;
+    is_error?: boolean;
+    result?: string;
+    total_cost_usd?: number;
+    cost_usd?: number;
+    num_turns?: number;
+    model?: string;
+    conversation_id?: string;
+}
+
 export interface ClaudeResult {
     success: boolean;
-    sessionId?: string;
+    sessionId?: string | null;
     conversationId?: string;
     executionTime?: number;
     model?: string;
-    finalResult?: {
-        cost_usd?: number;
-        num_turns?: number;
-        result?: string;
-    };
+    finalResult?: ClaudeOutputResult | null;
+    conversationLog?: ConversationStep[];
     claudeCostUsd?: number;
     costUsd?: number;
     claudeNumTurns?: number;
+    output?: {
+        rawOutput?: string;
+    };
+    rawOutput?: string;
+    error?: string;
 }
 
 export interface JobResult {

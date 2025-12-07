@@ -6,12 +6,16 @@ FROM node:18-alpine AS builder
 
 WORKDIR /app
 
-# Copy root package files
-COPY package.json package-lock.json ./
+# Copy root package files and tsconfig
+COPY package.json package-lock.json tsconfig.json ./
 
 # Copy all workspace packages
 COPY packages/core ./packages/core
 COPY packages/dashboard ./packages/dashboard
+
+# Copy root src directory (needed by dashboard for daemon imports)
+COPY src ./src
+COPY config ./config
 
 # Install all dependencies (including linking workspaces)
 RUN npm ci
@@ -20,8 +24,8 @@ RUN npm ci
 WORKDIR /app/packages/core
 RUN npm run build
 
-# Build dashboard
-WORKDIR /app/packages/dashboard
+# Build root project (builds both src and dashboard via root tsconfig include)
+WORKDIR /app
 RUN npm run build
 
 # Production stage
@@ -32,15 +36,19 @@ WORKDIR /app
 # Copy root package files and install production dependencies with workspaces
 COPY --from=builder /app/package.json /app/package-lock.json ./
 
-# Copy built packages
+# Copy built packages (core only needs dist)
 COPY --from=builder /app/packages/core ./packages/core
-COPY --from=builder /app/packages/dashboard ./packages/dashboard
+COPY --from=builder /app/packages/dashboard/package.json ./packages/dashboard/
+
+# Copy built dist directory (contains src, packages/dashboard output)
+COPY --from=builder /app/dist ./dist
 
 # Install production dependencies only
 RUN npm ci --production
 
-WORKDIR /app/packages/dashboard
+# Dashboard server is at dist/packages/dashboard/server.js
+WORKDIR /app
 
 EXPOSE 4000
 
-CMD ["node", "dist/server.js"]
+CMD ["node", "dist/packages/dashboard/server.js"]
