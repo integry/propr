@@ -12,7 +12,6 @@ import { setupAuth, ensureAuthenticated } from './auth.js';
 import { getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './llmMetricsAdapter.js';
 import type { Knex } from 'knex';
 
-const COMMENT_BATCH_DELAY_MS = parseInt(process.env.COMMENT_BATCH_DELAY_MS || '3000', 10);
 
 let generateCorrelationId: () => string;
 let configRepoManager: {
