@@ -41,7 +41,7 @@ await mock.module('../src/utils/llmMetrics.js', {
 });
 
 // Import the worker module
-const { processGitHubIssueJob, startWorker } = await import('../src/worker.js');
+const { processGitHubIssueJob, startWorker } = await import('../src/worker.ts');
 
 test('processGitHubIssueJob adds processing tag to issue', async (t) => {
     const mockJob = {
@@ -202,7 +202,7 @@ test('processGitHubIssueJob handles authentication errors', async () => {
     };
 
     // Mock auth failure
-    const { getAuthenticatedOctokit } = await import('../src/auth/githubAuth.js');
+    const { getAuthenticatedOctokit } = await import('../src/auth/githubAuth.ts');
     getAuthenticatedOctokit.mock.mockImplementationOnce(async () => {
         throw new Error('Auth failed');
     });
@@ -214,7 +214,7 @@ test('processGitHubIssueJob handles authentication errors', async () => {
 });
 
 test('startWorker creates worker with correct configuration', () => {
-    const { createWorker } = require('../src/queue/taskQueue.js');
+    const { createWorker } = require('../src/queue/taskQueue.ts');
     createWorker.mock.resetCalls();
     
     const worker = startWorker();

@@ -44,7 +44,7 @@ await mock.module('bullmq', {
 });
 
 // Now import the modules
-const { issueQueue, createWorker, shutdownQueue } = await import('../src/queue/taskQueue.js');
+const { issueQueue, createWorker, shutdownQueue } = await import('../src/queue/taskQueue.ts');
 
 test('issueQueue is created successfully', () => {
     assert.ok(issueQueue);

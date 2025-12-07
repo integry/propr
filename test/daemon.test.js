@@ -117,7 +117,7 @@ test('pollForIssues returns detected issues', async (t) => {
 
     // This test validates that pollForIssues can run without authentication
     // In a real scenario, it would use the authenticated client
-    const { pollForIssues: testPollForIssues } = await import('../src/daemon.js');
+    const { pollForIssues: testPollForIssues } = await import('../src/daemon.ts');
     
     // Since we don't have real GitHub credentials in test, this will fail auth
     // but that's expected and handled gracefully

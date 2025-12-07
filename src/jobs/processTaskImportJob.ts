@@ -7,7 +7,8 @@ import { getStateManager, TaskStates } from '../utils/workerStateManager.js';
 import {
     createWorktreeForIssue,
     cleanupWorktree,
-    getRepoUrl
+    getRepoUrl,
+    ensureRepoCloned
 } from '../git/repoManager.js';
 import type { WorktreeInfo } from '../git/repoManager.js';
 import { ensureGitRepository } from '../utils/git/gitValidation.js';
@@ -78,7 +79,6 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
         await ensureGitRepository(correlatedLogger);
 
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Cloning repository if needed' });
-        const { ensureRepoCloned } = await import('../git/repoManager.js');
         localRepoPath = await ensureRepoCloned(repoUrl, repoOwner, repoName, githubToken.token);
 
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Creating worktree for analysis' });

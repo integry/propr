@@ -13,9 +13,6 @@ import './auth.js';
 import { getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './llmMetricsAdapter.js';
 import type { Knex } from 'knex';
 
-const dynamicImport = (modulePath: string) => import(modulePath);
-
-
 let generateCorrelationId: () => string;
 let configRepoManager: {
     loadFollowupKeywords: () => Promise<string[]>;
@@ -35,6 +32,7 @@ let configRepoManager: {
 let processWebhookEvent: ((payload: unknown, event: string, correlationId: string) => Promise<void>) | null = null;
 let db: Knex | null = null;
 let isDbEnabled = false;
+let getExecutionAnalysis: (params: { executionId: string; sessionId: string; correlationId: string; model: string }) => Promise<string | null>;
 
 const app = express();
 const PORT = process.env.DASHBOARD_API_PORT || 4000;
@@ -900,9 +898,6 @@ app.post('/api/task/:taskId/deep-dive-analysis', ensureAuthenticated, async (req
     const settings = await configRepoManager.loadSettings();
     const advancedModel = (settings.analysis_model_advanced as string) || process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514';
 
-    const analysisServiceModule = await dynamicImport('../../src/services/analysisService.js') as { getExecutionAnalysis: (params: { executionId: string; sessionId: string; correlationId: string; model: string }) => Promise<string | null> };
-    const { getExecutionAnalysis } = analysisServiceModule;
-    
     const analysisReport = await getExecutionAnalysis({
       executionId: latestExecution.execution_id,
       sessionId: latestExecution.session_id,
@@ -1734,27 +1729,30 @@ app.get('/health', (req: Request, res: Response) => {
 
 async function start(): Promise<void> {
   try {
-    const loggerModule = await dynamicImport('../../src/utils/logger.js') as { generateCorrelationId: () => string };
+    const loggerModule = await import('../../src/utils/logger.ts') as { generateCorrelationId: () => string };
     generateCorrelationId = loggerModule.generateCorrelationId;
 
-    configRepoManager = await dynamicImport('../../src/config/configRepoManager.js') as typeof configRepoManager;
+    configRepoManager = await import('../../src/config/configRepoManager.ts') as typeof configRepoManager;
 
     let webhookModule: { processWebhookEvent?: typeof processWebhookEvent; initializeWebhookHandler?: (a: unknown, b: unknown, c: unknown, d: unknown) => Promise<void> } | undefined;
     let initializeWebhookHandler: ((a: unknown, b: unknown, c: unknown, d: unknown) => Promise<void>) | undefined;
     let daemonModule: { loadSettingsFromConfig?: () => Promise<void>; processDetectedIssue?: unknown; processCommentEvent?: unknown; handleCommentDeleted?: unknown; handleCommentEdited?: unknown } | undefined;
     try {
-      webhookModule = await dynamicImport('../../src/webhook/webhookHandler.js') as typeof webhookModule;
+      webhookModule = await import('../../src/webhook/webhookHandler.ts') as typeof webhookModule;
       processWebhookEvent = webhookModule?.processWebhookEvent || null;
       initializeWebhookHandler = webhookModule?.initializeWebhookHandler;
 
-      daemonModule = await dynamicImport('../../src/daemon.js') as typeof daemonModule;
+      daemonModule = await import('../../src/daemon.ts') as typeof daemonModule;
     } catch (error) {
       console.warn('[webhook] Failed to import webhook handler:', (error as Error).message);
     }
 
-    const dbModule = await dynamicImport('../../src/db/postgres.js') as { db: Knex; isEnabled: boolean };
+    const dbModule = await import('../../src/db/postgres.ts') as { db: Knex; isEnabled: boolean };
     db = dbModule.db;
     isDbEnabled = dbModule.isEnabled;
+
+    const analysisModule = await import('../../src/services/analysisService.ts') as { getExecutionAnalysis: typeof getExecutionAnalysis };
+    getExecutionAnalysis = analysisModule.getExecutionAnalysis;
     
     if (isDbEnabled && db) {
       console.log('PostgreSQL persistence is enabled');
