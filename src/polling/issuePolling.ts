@@ -1,9 +1,9 @@
-import logger, { generateCorrelationId } from '../utils/logger.js';
+import logger, { generateCorrelationId } from '../utils/logger.ts';
 import type { Logger } from 'pino';
-import { handleError } from '../utils/errorHandler.js';
-import { withRetry, retryConfigs } from '../utils/retryHandler.js';
-import { resolveModelAlias, getDefaultModel } from '../config/modelAliases.js';
-import { issueQueue, type IssueJobData } from '../queue/taskQueue.js';
+import { handleError } from '../utils/errorHandler.ts';
+import { withRetry, retryConfigs } from '../utils/retryHandler.ts';
+import { resolveModelAlias, getDefaultModel } from '../config/modelAliases.ts';
+import { issueQueue, type IssueJobData } from '../queue/taskQueue.ts';
 import { Redis } from 'ioredis';
 
 const AI_PRIMARY_TAG = process.env.AI_PRIMARY_TAG || 'AI';

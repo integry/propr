@@ -1,8 +1,8 @@
 import { Octokit } from '@octokit/core';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import logger from './logger.js';
-import { handleError } from './errorHandler.js';
-import { withRetry, retryConfigs } from './retryHandler.js';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
+import logger from './logger.ts';
+import { handleError } from './errorHandler.ts';
+import { withRetry, retryConfigs } from './retryHandler.ts';
 
 export interface PRInfo {
     number: number;

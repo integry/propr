@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "lib": ["ESNext"],
     "outDir": "./dist",
     "rootDir": ".",
@@ -11,7 +11,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "allowJs": true
+    "allowJs": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
   },
   "include": ["src/**/*", "config/**/*", "scripts/**/*", "knexfile.ts", "packages/dashboard/**/*"],
   "exclude": ["node_modules", "dist", "packages/dashboard/node_modules", "packages/dashboard/dist"]

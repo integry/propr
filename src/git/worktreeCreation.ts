@@ -1,8 +1,8 @@
 import { simpleGit, SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
-import logger from '../utils/logger.js';
-import { handleError } from '../utils/errorHandler.js';
+import logger from '../utils/logger.ts';
+import { handleError } from '../utils/errorHandler.ts';
 import {
     cleanupWorktree,
     setupWorktreePermissions,
@@ -10,7 +10,7 @@ import {
     verifyWorktreeCreation,
     setupWorktreeRemote,
     getWorktreePath
-} from './worktreeOperations.js';
+} from './worktreeOperations.ts';
 
 async function removeWorktreeForBranch(git: SimpleGit, worktreeLines: string[], branchName: string): Promise<void> {
     for (let i = 0; i < worktreeLines.length; i++) {

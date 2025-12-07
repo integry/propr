@@ -1,8 +1,8 @@
 import { simpleGit, SimpleGit } from 'simple-git';
-import logger from '../utils/logger.js';
-import { handleError } from '../utils/errorHandler.js';
-import { withRetry, retryConfigs } from '../utils/retryHandler.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import logger from '../utils/logger.ts';
+import { handleError } from '../utils/errorHandler.ts';
+import { withRetry, retryConfigs } from '../utils/retryHandler.ts';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
 
 interface InstallationAuth {
     token: string;

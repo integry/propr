@@ -1,8 +1,8 @@
 import { simpleGit, SimpleGit, StatusResult, FileStatusResult } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
-import logger from '../utils/logger.js';
-import { handleError } from '../utils/errorHandler.js';
+import logger from '../utils/logger.ts';
+import { handleError } from '../utils/errorHandler.ts';
 
 interface Author {
     name: string;

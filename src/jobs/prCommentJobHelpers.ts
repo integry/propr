@@ -1,15 +1,15 @@
-import logger from '../utils/logger.js';
+import logger from '../utils/logger.ts';
 import type { Logger } from 'pino';
 import fs from 'fs-extra';
 import type { Redis } from 'ioredis';
-import { TaskStates } from '../utils/workerStateManager.js';
-import type { WorkerStateManager } from '../utils/workerStateManager.js';
-import { getUsageStats, type ClaudeResult as TokenClaudeResult } from '../utils/tokenCalculation.js';
-import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
-import { filterCommentByAuthor } from '../utils/commentFilters.js';
-import type { UnprocessedComment, CommentJobData } from '../queue/taskQueue.js';
-import type { ClaudeCodeResponse } from '../claude/claudeService.js';
-import type { CommitResult } from '../git/repoManager.js';
+import { TaskStates } from '../utils/workerStateManager.ts';
+import type { WorkerStateManager } from '../utils/workerStateManager.ts';
+import { getUsageStats, type ClaudeResult as TokenClaudeResult } from '../utils/tokenCalculation.ts';
+import { db, isEnabled as isDbEnabled } from '../db/postgres.ts';
+import { filterCommentByAuthor } from '../utils/commentFilters.ts';
+import type { UnprocessedComment, CommentJobData } from '../queue/taskQueue.ts';
+import type { ClaudeCodeResponse } from '../claude/claudeService.ts';
+import type { CommitResult } from '../git/repoManager.ts';
 
 interface ValidationComment {
     id: number;

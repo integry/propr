@@ -1,6 +1,6 @@
-import logger from './logger.js';
-import { withRetry, retryConfigs, type RetryOptions } from './retryHandler.js';
-import { makeIdempotent } from './errorHandler.js';
+import logger from './logger.ts';
+import { withRetry, retryConfigs, type RetryOptions } from './retryHandler.ts';
+import { makeIdempotent } from './errorHandler.ts';
 import type { Logger } from 'pino';
 
 interface Label {

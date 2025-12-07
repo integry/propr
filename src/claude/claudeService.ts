@@ -1,9 +1,9 @@
 import path from 'path';
 import os from 'os';
-import logger from '../utils/logger.js';
-import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
-import { generateTaskImportPrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
-import { executeDockerCommand, buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.js';
+import logger from '../utils/logger.ts';
+import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.ts';
+import { generateTaskImportPrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.ts';
+import { executeDockerCommand, buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.ts';
 import {
     verifyWorktreeStructure,
     verifyWorktreePostExecution,
@@ -16,7 +16,7 @@ import {
     ClaudeOutput,
     ConversationLogEntry,
     ClaudeOutputResult
-} from './claudeHelpers.js';
+} from './claudeHelpers.ts';
 
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };

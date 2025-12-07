@@ -1,12 +1,12 @@
 import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
-import { createWorker, ANALYSIS_QUEUE_NAME } from './queue/taskQueue.js';
-import type { AnalysisJobData, JobResult } from './queue/taskQueue.js';
-import logger, { generateCorrelationId } from './utils/logger.js';
-import { db } from './db/postgres.js';
-import { getExecutionAnalysis } from './services/analysisService.js';
-import { loadSettings } from './config/configRepoManager.js';
-import { resolveModelAlias } from './config/modelAliases.js';
+import { createWorker, ANALYSIS_QUEUE_NAME } from './queue/taskQueue.ts';
+import type { AnalysisJobData, JobResult } from './queue/taskQueue.ts';
+import logger, { generateCorrelationId } from './utils/logger.ts';
+import { db } from './db/postgres.ts';
+import { getExecutionAnalysis } from './services/analysisService.ts';
+import { loadSettings } from './config/configRepoManager.ts';
+import { resolveModelAlias } from './config/modelAliases.ts';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in analysis worker');

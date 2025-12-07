@@ -1,6 +1,6 @@
 import { SimpleGit } from 'simple-git';
 import { Octokit } from '@octokit/core';
-import logger from '../utils/logger.js';
+import logger from '../utils/logger.ts';
 
 export function getRepoConfigKey(owner: string, repoName: string): string {
     const cleanOwner = owner.toUpperCase().replace(/[^A-Z0-9]/g, '_');

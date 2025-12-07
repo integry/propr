@@ -1,14 +1,14 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import logger, { generateCorrelationId } from '../utils/logger.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { withRetry, retryConfigs } from '../utils/retryHandler.js';
-import { validateRepositoryInfo } from '../utils/prValidation.js';
-import type { RepoValidationResult } from '../utils/prValidation.js';
+import logger, { generateCorrelationId } from '../utils/logger.ts';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
+import { withRetry, retryConfigs } from '../utils/retryHandler.ts';
+import { validateRepositoryInfo } from '../utils/prValidation.ts';
+import type { RepoValidationResult } from '../utils/prValidation.ts';
 
 type RepoValidation = RepoValidationResult;
-import { issueQueue, type IssueJobData, type JobResult } from '../queue/taskQueue.js';
-import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
+import { issueQueue, type IssueJobData, type JobResult } from '../queue/taskQueue.ts';
+import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.ts';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 

@@ -1,5 +1,6 @@
 import IORedis from 'ioredis';
-type RedisConstructor = new (options: { host: string; port: number; maxRetriesPerRequest: null; enableReadyCheck: boolean }) => IORedis.Redis;
+type RedisInstance = InstanceType<typeof IORedis>;
+type RedisConstructor = new (options: { host: string; port: number; maxRetriesPerRequest: null; enableReadyCheck: boolean }) => RedisInstance;
 const Redis = (IORedis as unknown as { default?: RedisConstructor }).default || IORedis as unknown as RedisConstructor;
 
 // Redis configuration
@@ -129,13 +130,13 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
         
         // Get recent high cost alerts
         const highCostAlerts = await metricsRedis.lrange('llm:metrics:alerts:highcost', 0, 9);
-        const parsedAlerts: HighCostAlert[] = highCostAlerts.map(alert => {
+        const parsedAlerts: HighCostAlert[] = highCostAlerts.map((alert: string) => {
             try {
                 return JSON.parse(alert) as HighCostAlert;
             } catch {
                 return null;
             }
-        }).filter((alert): alert is HighCostAlert => alert !== null);
+        }).filter((alert: HighCostAlert | null): alert is HighCostAlert => alert !== null);
         
         return {
             summary: {

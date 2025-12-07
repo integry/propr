@@ -1,6 +1,6 @@
-import logger from '../utils/logger.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { loadMonitoredRepos, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from '../config/configRepoManager.js';
+import logger from '../utils/logger.ts';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
+import { loadMonitoredRepos, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from '../config/configRepoManager.ts';
 
 interface Settings {
     github_user_whitelist?: string[];

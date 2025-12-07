@@ -1,5 +1,5 @@
-import logger from './logger.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import logger from './logger.ts';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
 
 /**
  * Error categories for classification

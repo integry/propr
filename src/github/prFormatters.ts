@@ -1,4 +1,4 @@
-import { getUsageStats } from '../utils/tokenCalculation.js';
+import { getUsageStats } from '../utils/tokenCalculation.ts';
 
 const MAX_COMMENT_LENGTH = 65000;
 

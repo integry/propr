@@ -1,13 +1,13 @@
-import logger, { generateCorrelationId } from '../utils/logger.js';
-import { handleError } from '../utils/errorHandler.js';
-import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.js';
-import { filterCommentByAuthor, checkCommentTrigger } from '../utils/commentFilters.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { getPendingPrCommentsKey } from '../utils/constants.js';
+import logger, { generateCorrelationId } from '../utils/logger.ts';
+import { handleError } from '../utils/errorHandler.ts';
+import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.ts';
+import { filterCommentByAuthor, checkCommentTrigger } from '../utils/commentFilters.ts';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
+import { getPendingPrCommentsKey } from '../utils/constants.ts';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
-import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './commentEventHelpers.js';
+import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './commentEventHelpers.ts';
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
 

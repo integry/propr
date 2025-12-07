@@ -1,8 +1,8 @@
 import { simpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
-import logger from '../utils/logger.js';
-import { getGitHubInstallationToken } from '../auth/githubAuth.js';
+import logger from '../utils/logger.ts';
+import { getGitHubInstallationToken } from '../auth/githubAuth.ts';
 
 const CONFIG_REPO_URL = process.env.CONFIG_REPO || 'https://github.com/integry/gitfix-config.git';
 const LOCAL_CONFIG_PATH = process.env.CONFIG_REPO_PATH || path.join(process.cwd(), '.config_repo');

@@ -1,7 +1,7 @@
 // Task queue module for processing GitHub issues and PR comments
 import { Queue, Worker, Job, QueueOptions, WorkerOptions } from 'bullmq';
 import { Redis, RedisOptions } from 'ioredis';
-import logger from '../utils/logger.js';
+import logger from '../utils/logger.ts';
 import 'dotenv/config';
 
 export interface IssueJobData {

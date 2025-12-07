@@ -1,6 +1,6 @@
 import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
-import logger from '../../utils/logger.js';
+import logger from '../../utils/logger.ts';
 
 export interface ExecutionResult {
     stdout: string;

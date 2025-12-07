@@ -1,6 +1,6 @@
 import knex, { Knex } from 'knex';
-import knexConfig from '../../knexfile.js';
-import logger from '../utils/logger.js';
+import knexConfig from '../../knexfile.ts';
+import logger from '../utils/logger.ts';
 
 const isEnabled: boolean = process.env.ENABLE_DB_PERSISTENCE === 'true';
 

@@ -1,7 +1,7 @@
-import logger from './utils/logger.js';
-import { getAuthenticatedOctokit } from './auth/githubAuth.js';
-import { withErrorHandling } from './utils/errorHandler.js';
-import config from '../config/index.js';
+import logger from './utils/logger.ts';
+import { getAuthenticatedOctokit } from './auth/githubAuth.ts';
+import { withErrorHandling } from './utils/errorHandler.ts';
+import config from '../config/index.ts';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception');

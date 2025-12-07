@@ -1,15 +1,15 @@
 import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from './queue/taskQueue.js';
-import type { IssueJobData, CommentJobData, TaskImportJobData, JobResult } from './queue/taskQueue.js';
-import logger, { generateCorrelationId } from './utils/logger.js';
-import { db, isEnabled as isDbEnabled } from './db/postgres.js';
-import { buildClaudeDockerImage } from './claude/claudeService.js';
-import { loadAiPrimaryTag, loadSettings } from './config/configRepoManager.js';
-import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
-import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJob.js';
-import { processTaskImportJob } from './jobs/processTaskImportJob.js';
+import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from './queue/taskQueue.ts';
+import type { IssueJobData, CommentJobData, TaskImportJobData, JobResult } from './queue/taskQueue.ts';
+import logger, { generateCorrelationId } from './utils/logger.ts';
+import { db, isEnabled as isDbEnabled } from './db/postgres.ts';
+import { buildClaudeDockerImage } from './claude/claudeService.ts';
+import { loadAiPrimaryTag, loadSettings } from './config/configRepoManager.ts';
+import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.ts';
+import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJob.ts';
+import { processTaskImportJob } from './jobs/processTaskImportJob.ts';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');

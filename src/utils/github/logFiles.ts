@@ -2,7 +2,7 @@ import { Redis } from 'ioredis';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import logger from '../logger.js';
+import logger from '../logger.ts';
 interface MessageUsage {
     input_tokens?: number;
     cache_creation_input_tokens?: number;
