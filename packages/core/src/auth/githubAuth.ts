@@ -15,15 +15,14 @@ const privateKeyPath = process.env.GH_PRIVATE_KEY_PATH;
 const installationId = process.env.GH_INSTALLATION_ID;
 
 let privateKey: string | undefined;
-let appOctokit: InstanceType<typeof Octokit> | null = null;
+const PaginatedOctokit = Octokit.plugin(paginateRest);
+let appOctokit: InstanceType<typeof PaginatedOctokit> | null = null;
 
 if (appId && privateKeyPath && installationId) {
     try {
         privateKey = fs.readFileSync(path.resolve(privateKeyPath), 'utf8');
 
-        const MyOctokit = Octokit.plugin(paginateRest);
-
-        appOctokit = new MyOctokit({
+        appOctokit = new PaginatedOctokit({
             authStrategy: createAppAuth,
             auth: {
                 appId,
@@ -56,7 +55,6 @@ export async function getGitHubInstallationToken(): Promise<string> {
     }
 }
 
-const PaginatedOctokit = Octokit.plugin(paginateRest);
 export type PaginatedOctokitInstance = InstanceType<typeof PaginatedOctokit>;
 
 export async function getAuthenticatedOctokit(): Promise<PaginatedOctokitInstance> {
