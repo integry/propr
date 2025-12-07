@@ -1,20 +1,9 @@
 {
+  "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "lib": ["ESNext"],
-    "outDir": "./dist",
-    "rootDir": ".",
-    "strict": false,
-    "noImplicitAny": false,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "declaration": false,
-    "allowSyntheticDefaultImports": true,
-    "isolatedModules": true
+    "outDir": "../../dist/packages/dashboard",
+    "strict": true,
+    "noImplicitAny": true
   },
   "include": ["*.ts"],
   "exclude": ["node_modules", "dist"]

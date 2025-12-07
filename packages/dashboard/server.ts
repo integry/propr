@@ -8,31 +8,26 @@ import fs from 'fs-extra';
 import os from 'os';
 import { execSync } from 'child_process';
 import 'dotenv/config';
+import { Redis } from 'ioredis';
 import { setupAuth, ensureAuthenticated } from './auth.js';
 import './auth.js';
 import { getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './llmMetricsAdapter.js';
-import type { Knex } from 'knex';
+import { generateCorrelationId } from '../../src/utils/logger.js';
+import * as configRepoManager from '../../src/config/configRepoManager.js';
+import { processWebhookEvent, initializeWebhookHandler, type WebhookEventType, type DetectedIssue } from '../../src/webhook/webhookHandler.js';
+import { loadSettingsFromConfig, processDetectedIssue as processDetectedIssueBase, processCommentEvent, handleCommentDeleted, handleCommentEdited } from '../../src/daemon.js';
+import { db, isEnabled as isDbEnabled } from '../../src/db/postgres.js';
+import { getExecutionAnalysis } from '../../src/services/analysisService.js';
 
-let generateCorrelationId: () => string;
-let configRepoManager: {
-    loadFollowupKeywords: () => Promise<string[]>;
-    saveFollowupKeywords: (keywords: string[], message: string) => Promise<boolean>;
-    cloneOrPullConfigRepo: () => Promise<void>;
-    ensureConfigRepoExists: () => Promise<void>;
-    loadSettings: () => Promise<Record<string, unknown>>;
-    saveSettings: (settings: Record<string, unknown>, message: string) => Promise<boolean>;
-    saveMonitoredRepos: (repos: Array<{ name: string; enabled: boolean }>, message: string) => Promise<boolean>;
-    loadPrLabel: () => Promise<string>;
-    savePrLabel: (label: string, message: string) => Promise<boolean>;
-    loadAiPrimaryTag: () => Promise<string>;
-    saveAiPrimaryTag: (tag: string, message: string) => Promise<boolean>;
-    loadPrimaryProcessingLabels: () => Promise<string[]>;
-    savePrimaryProcessingLabels: (labels: string[], message: string) => Promise<boolean>;
-};
-let processWebhookEvent: ((payload: unknown, event: string, correlationId: string) => Promise<void>) | null = null;
-let db: Knex | null = null;
-let isDbEnabled = false;
-let getExecutionAnalysis: (params: { executionId: string; sessionId: string; correlationId: string; model: string }) => Promise<string | null>;
+const ioRedisClient = new Redis({
+  host: process.env.REDIS_HOST || '127.0.0.1',
+  port: parseInt(process.env.REDIS_PORT || '6379', 10),
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+});
+
+const processDetectedIssue = (issue: DetectedIssue, correlationId: string): Promise<void> =>
+  processDetectedIssueBase(issue, correlationId, ioRedisClient);
 
 const app = express();
 const PORT = process.env.DASHBOARD_API_PORT || 4000;
@@ -316,7 +311,7 @@ app.get('/api/tasks', ensureAuthenticated, async (req: Request, res: Response) =
 
       const baseQuery = db('tasks as t')
         .join(latestHistorySubquery, function() {
-          this.on('t.task_id', '=', 'h.task_id').andOn('h.rn', '=', db.raw('?', [1]));
+          this.on('t.task_id', '=', 'h.task_id').andOn('h.rn', '=', db!.raw('?', [1]));
         })
         .leftJoin(processingStartSubquery, 'ps.task_id', 't.task_id')
         .leftJoin(completionSubquery, 'cs.task_id', 't.task_id');
@@ -1700,15 +1695,11 @@ if (process.env.ENABLE_GITHUB_WEBHOOKS === 'true') {
       }
       
       const payload = JSON.parse(req.body.toString()) as { action?: string; repository?: { full_name?: string } };
-      const event = req.headers['x-github-event'] as string;
+      const event = req.headers['x-github-event'] as WebhookEventType;
       
       console.log(`[webhook] Event received: ${event}, action: ${payload.action}, repo: ${payload.repository?.full_name}`);
       
-      if (processWebhookEvent) {
-        await processWebhookEvent(payload, event, correlationId);
-      } else {
-        console.warn('[webhook] processWebhookEvent not initialized');
-      }
+      await processWebhookEvent(payload, event, correlationId);
       
       res.status(200).send('Webhook processed.');
     } catch (error) {
@@ -1729,31 +1720,6 @@ app.get('/health', (req: Request, res: Response) => {
 
 async function start(): Promise<void> {
   try {
-    const loggerModule = await import('../../dist/src/utils/logger.js') as { generateCorrelationId: () => string };
-    generateCorrelationId = loggerModule.generateCorrelationId;
-
-    configRepoManager = await import('../../dist/src/config/configRepoManager.js') as typeof configRepoManager;
-
-    let webhookModule: { processWebhookEvent?: typeof processWebhookEvent; initializeWebhookHandler?: (a: unknown, b: unknown, c: unknown, d: unknown) => Promise<void> } | undefined;
-    let initializeWebhookHandler: ((a: unknown, b: unknown, c: unknown, d: unknown) => Promise<void>) | undefined;
-    let daemonModule: { loadSettingsFromConfig?: () => Promise<void>; processDetectedIssue?: unknown; processCommentEvent?: unknown; handleCommentDeleted?: unknown; handleCommentEdited?: unknown } | undefined;
-    try {
-      webhookModule = await import('../../dist/src/webhook/webhookHandler.js') as typeof webhookModule;
-      processWebhookEvent = webhookModule?.processWebhookEvent || null;
-      initializeWebhookHandler = webhookModule?.initializeWebhookHandler;
-
-      daemonModule = await import('../../dist/src/daemon.js') as typeof daemonModule;
-    } catch (error) {
-      console.warn('[webhook] Failed to import webhook handler:', (error as Error).message);
-    }
-
-    const dbModule = await import('../../dist/src/db/postgres.js') as { db: Knex; isEnabled: boolean };
-    db = dbModule.db;
-    isDbEnabled = dbModule.isEnabled;
-
-    const analysisModule = await import('../../dist/src/services/analysisService.js') as { getExecutionAnalysis: typeof getExecutionAnalysis };
-    getExecutionAnalysis = analysisModule.getExecutionAnalysis;
-    
     if (isDbEnabled && db) {
       console.log('PostgreSQL persistence is enabled');
       try {
@@ -1772,26 +1738,22 @@ async function start(): Promise<void> {
       console.warn('Failed to initialize config repository:', (error as Error).message);
     }
 
-    if (daemonModule && daemonModule.loadSettingsFromConfig) {
-      try {
-        await daemonModule.loadSettingsFromConfig();
-      } catch (error) {
-        console.warn('Failed to load settings from config repo:', (error as Error).message);
-      }
+    try {
+      await loadSettingsFromConfig();
+    } catch (error) {
+      console.warn('Failed to load settings from config repo:', (error as Error).message);
     }
 
-    if (initializeWebhookHandler && daemonModule) {
-      try {
-        await initializeWebhookHandler(
-          daemonModule.processDetectedIssue,
-          daemonModule.processCommentEvent,
-          daemonModule.handleCommentDeleted,
-          daemonModule.handleCommentEdited
-        );
-        console.log('[webhook] Webhook handler initialized with daemon processor functions');
-      } catch (error) {
-        console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message);
-      }
+    try {
+      await initializeWebhookHandler(
+        processDetectedIssue,
+        processCommentEvent,
+        handleCommentDeleted,
+        handleCommentEdited
+      );
+      console.log('[webhook] Webhook handler initialized with daemon processor functions');
+    } catch (error) {
+      console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message);
     }
 
     app.listen(PORT, () => {
