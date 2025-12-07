@@ -16,4 +16,7 @@ RUN npm install
 
 COPY . .
 
+# Build TypeScript to JavaScript
+RUN npm run build
+
 # The command will be specified in docker-compose.yml
