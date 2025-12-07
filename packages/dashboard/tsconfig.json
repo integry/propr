@@ -14,9 +14,6 @@
     "resolveJsonModule": true,
     "declaration": true,
     "allowSyntheticDefaultImports": true,
-    "paths": {
-      "../../dist/src/*": ["../../src/*"]
-    },
     "baseUrl": "."
   },
   "include": ["*.ts"],
