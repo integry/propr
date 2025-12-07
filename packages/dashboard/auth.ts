@@ -12,9 +12,18 @@ interface GitHubUser {
     accessToken: string;
 }
 
-declare module 'express-serve-static-core' {
-    // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-    interface User extends GitHubUser {}
+declare global {
+    // eslint-disable-next-line @typescript-eslint/no-namespace
+    namespace Express {
+        interface User {
+            id: string;
+            username: string;
+            displayName: string;
+            email: string | null;
+            avatarUrl: string | null;
+            accessToken: string;
+        }
+    }
 }
 
 export function setupAuth(app: Express): void {

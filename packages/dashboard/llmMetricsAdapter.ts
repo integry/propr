@@ -1,4 +1,4 @@
-import IORedis from 'ioredis';
+import { Redis } from 'ioredis';
 
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
@@ -57,7 +57,7 @@ interface LLMMetricsDetail {
 }
 
 export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
-    const metricsRedis = new IORedis(connectionOptions);
+    const metricsRedis = new Redis(connectionOptions);
     
     try {
         const totalSuccessful = parseInt(await metricsRedis.get('llm:metrics:total:successful') || '0');
@@ -153,7 +153,7 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
 }
 
 export async function getLLMMetricsByCorrelationId(correlationId: string): Promise<LLMMetricsDetail | null> {
-    const metricsRedis = new IORedis(connectionOptions);
+    const metricsRedis = new Redis(connectionOptions);
     
     try {
         const metricsKey = `llm:metrics:${correlationId}`;

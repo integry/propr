@@ -9,6 +9,7 @@ import os from 'os';
 import { execSync } from 'child_process';
 import 'dotenv/config';
 import { setupAuth, ensureAuthenticated } from './auth.js';
+import './auth.js';
 import { getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './llmMetricsAdapter.js';
 import type { Knex } from 'knex';
 
@@ -897,6 +898,7 @@ app.post('/api/task/:taskId/deep-dive-analysis', ensureAuthenticated, async (req
     const settings = await configRepoManager.loadSettings();
     const advancedModel = (settings.analysis_model_advanced as string) || process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514';
 
+    // @ts-expect-error - Core service module, optional at runtime
     const { getExecutionAnalysis } = await import('../../dist/src/services/analysisService.js');
     
     const analysisReport = await getExecutionAnalysis({
@@ -1730,24 +1732,29 @@ app.get('/health', (req: Request, res: Response) => {
 
 async function start(): Promise<void> {
   try {
+    // @ts-expect-error - Core service module, optional at runtime
     const loggerModule = await import('../../dist/src/utils/logger.js');
     generateCorrelationId = loggerModule.generateCorrelationId;
 
+    // @ts-expect-error - Core service module, optional at runtime
     configRepoManager = await import('../../dist/src/config/configRepoManager.js');
 
     let webhookModule: { processWebhookEvent?: typeof processWebhookEvent; initializeWebhookHandler?: (a: unknown, b: unknown, c: unknown, d: unknown) => Promise<void> } | undefined;
     let initializeWebhookHandler: ((a: unknown, b: unknown, c: unknown, d: unknown) => Promise<void>) | undefined;
     let daemonModule: { loadSettingsFromConfig?: () => Promise<void>; processDetectedIssue?: unknown; processCommentEvent?: unknown; handleCommentDeleted?: unknown; handleCommentEdited?: unknown } | undefined;
     try {
+      // @ts-expect-error - Core service module, optional at runtime
       webhookModule = await import('../../dist/src/webhook/webhookHandler.js');
       processWebhookEvent = webhookModule.processWebhookEvent || null;
       initializeWebhookHandler = webhookModule.initializeWebhookHandler;
 
+      // @ts-expect-error - Core service module, optional at runtime
       daemonModule = await import('../../dist/src/daemon.js');
     } catch (error) {
       console.warn('[webhook] Failed to import webhook handler:', (error as Error).message);
     }
 
+    // @ts-expect-error - Core service module, optional at runtime
     const dbModule = await import('../../dist/src/db/postgres.js');
     db = dbModule.db;
     isDbEnabled = dbModule.isEnabled;
