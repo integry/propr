@@ -1,30 +1,30 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import logger from '../utils/logger.ts';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
-import { withRetry, retryConfigs } from '../utils/retryHandler.ts';
-import { getStateManager, TaskStates } from '../utils/workerStateManager.ts';
-import type { WorkerStateManager } from '../utils/workerStateManager.ts';
-import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitChanges, pushBranch } from '../git/repoManager.ts';
-import type { WorktreeInfo } from '../git/repoManager.ts';
-import { ensureGitRepository } from '../utils/git/gitValidation.ts';
-import { createLogFiles } from '../utils/github/logFiles.ts';
-import { executeClaudeCode, UsageLimitError, generateTaskSummary } from '../claude/claudeService.ts';
-import type { ClaudeCodeResponse } from '../claude/claudeService.ts';
-import type { ClaudeResult } from '../utils/llmMetrics.types.ts';
-import { recordLLMMetrics } from '../utils/llmMetrics.ts';
-import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '../queue/taskQueue.ts';
+import { logger } from '@gitfix/core';
+import { getAuthenticatedOctokit } from '@gitfix/core';
+import { withRetry, retryConfigs } from '@gitfix/core';
+import { getStateManager, TaskStates } from '@gitfix/core';
+import type { WorkerStateManager } from '@gitfix/core';
+import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitChanges, pushBranch } from '@gitfix/core';
+import type { WorktreeInfo } from '@gitfix/core';
+import { ensureGitRepository } from '@gitfix/core';
+import { createLogFiles } from '@gitfix/core';
+import { executeClaudeCode, UsageLimitError, generateTaskSummary } from '@gitfix/core';
+import type { ClaudeCodeResponse } from '@gitfix/core';
+import type { ClaudeResult } from '@gitfix/core';
+import { recordLLMMetrics } from '@gitfix/core';
+import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@gitfix/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel } from '../config/modelAliases.ts';
-import { loadPrLabel } from '../config/configRepoManager.ts';
+import { getDefaultModel } from '@gitfix/core';
+import { loadPrLabel } from '@gitfix/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
     buildCommentHistory, createSessionIdCallbackForPR, createContainerIdCallbackForPR, updateTaskTitleForPR, buildCompletionComment
-} from './prCommentJobHelpers.ts';
+} from './prCommentJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
     handleJobError, cleanupJob, pickUpPendingComments
-} from './prCommentJobUtils.ts';
+} from './prCommentJobUtils.js';
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {

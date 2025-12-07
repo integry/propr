@@ -1,9 +1,10 @@
-import logger, { generateCorrelationId } from '../utils/logger.ts';
+import { logger } from '@gitfix/core';
+import { generateCorrelationId } from '@gitfix/core';
 import type { Logger } from 'pino';
-import { handleError } from '../utils/errorHandler.ts';
-import { withRetry, retryConfigs } from '../utils/retryHandler.ts';
-import { resolveModelAlias, getDefaultModel } from '../config/modelAliases.ts';
-import { issueQueue, type IssueJobData } from '../queue/taskQueue.ts';
+import { handleError } from '@gitfix/core';
+import { withRetry, retryConfigs } from '@gitfix/core';
+import { resolveModelAlias, getDefaultModel } from '@gitfix/core';
+import { issueQueue, type IssueJobData } from '@gitfix/core';
 import { Redis } from 'ioredis';
 
 const AI_PRIMARY_TAG = process.env.AI_PRIMARY_TAG || 'AI';

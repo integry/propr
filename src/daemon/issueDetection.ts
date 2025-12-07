@@ -1,11 +1,12 @@
 import { Redis } from 'ioredis';
 import type { Logger } from 'pino';
-import type { PaginatedOctokitInstance } from '../auth/githubAuth.ts';
-import logger, { generateCorrelationId } from '../utils/logger.ts';
-import { handleError } from '../utils/errorHandler.ts';
-import { withRetry, retryConfigs } from '../utils/retryHandler.ts';
-import { issueQueue } from '../queue/taskQueue.ts';
-import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } from './configLoader.ts';
+import type { PaginatedOctokitInstance } from '@gitfix/core';
+import { logger } from '@gitfix/core';
+import { generateCorrelationId } from '@gitfix/core';
+import { handleError } from '@gitfix/core';
+import { withRetry, retryConfigs } from '@gitfix/core';
+import { issueQueue } from '@gitfix/core';
+import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } from './configLoader.js';
 
 export interface DetectedIssue {
     id: number;

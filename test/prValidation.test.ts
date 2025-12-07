@@ -4,7 +4,7 @@ import {
     validatePRCreation, 
     generateEnhancedClaudePrompt, 
     validateRepositoryInfo 
-} from '../src/utils/prValidation.ts';
+} from '@gitfix/core';
 
 describe('PR Validation Utils', () => {
     test('generateEnhancedClaudePrompt should include all required repository information', () => {

@@ -1,7 +1,6 @@
-import logger from './utils/logger.ts';
-import { getAuthenticatedOctokit } from './auth/githubAuth.ts';
-import { withErrorHandling } from './utils/errorHandler.ts';
-import config from '../config/index.ts';
+import { logger } from '@gitfix/core';
+import { getAuthenticatedOctokit, withErrorHandling } from '@gitfix/core';
+import config from '../config/index.js';
 
 
 

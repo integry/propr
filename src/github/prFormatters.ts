@@ -1,4 +1,4 @@
-import { getUsageStats } from '../utils/tokenCalculation.ts';
+import { getUsageStats } from '@gitfix/core';
 
 const MAX_COMMENT_LENGTH = 65000;
 

@@ -1,19 +1,19 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { generateCorrelationId } from '../utils/logger.ts';
-import { handleError } from '../utils/errorHandler.ts';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
-import { cleanupWorktree } from '../git/repoManager.ts';
-import type { WorktreeInfo } from '../git/repoManager.ts';
-import { formatResetTime } from '../utils/scheduling.ts';
-import type { ClaudeCodeResponse } from '../claude/claudeService.ts';
-import type { ClaudeResult } from '../utils/llmMetrics.types.ts';
-import { recordLLMMetrics } from '../utils/llmMetrics.ts';
-import { issueQueue, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.ts';
-import { TaskStates } from '../utils/workerStateManager.ts';
-import type { WorkerStateManager } from '../utils/workerStateManager.ts';
-import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.ts';
-import { getPendingPrCommentsKey } from '../utils/constants.ts';
+import { generateCorrelationId } from '@gitfix/core';
+import { handleError } from '@gitfix/core';
+import { getAuthenticatedOctokit } from '@gitfix/core';
+import { cleanupWorktree } from '@gitfix/core';
+import type { WorktreeInfo } from '@gitfix/core';
+import { formatResetTime } from '@gitfix/core';
+import type { ClaudeCodeResponse } from '@gitfix/core';
+import type { ClaudeResult } from '@gitfix/core';
+import { recordLLMMetrics } from '@gitfix/core';
+import { issueQueue, type CommentJobData, type UnprocessedComment } from '@gitfix/core';
+import { TaskStates } from '@gitfix/core';
+import type { WorkerStateManager } from '@gitfix/core';
+import { getDefaultModel, resolveModelAlias } from '@gitfix/core';
+import { getPendingPrCommentsKey } from '@gitfix/core';
 import type { Redis } from 'ioredis';
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {

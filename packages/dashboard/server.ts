@@ -9,14 +9,19 @@ import os from 'os';
 import { execSync } from 'child_process';
 import 'dotenv/config';
 import { Redis } from 'ioredis';
-import { setupAuth, ensureAuthenticated } from './auth.ts';
-import { getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './llmMetricsAdapter.ts';
-import { generateCorrelationId } from '../../src/utils/logger.ts';
-import * as configRepoManager from '../../src/config/configRepoManager.ts';
-import { processWebhookEvent, initializeWebhookHandler, type WebhookEventType, type DetectedIssue } from '../../src/webhook/webhookHandler.ts';
-import { loadSettingsFromConfig, processDetectedIssue as processDetectedIssueBase, processCommentEvent, handleCommentDeleted, handleCommentEdited } from '../../src/daemon.ts';
-import { db, isEnabled as isDbEnabled } from '../../src/db/postgres.ts';
-import { getExecutionAnalysis } from '../../src/services/analysisService.ts';
+import { setupAuth, ensureAuthenticated } from './auth.js';
+import { getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './llmMetricsAdapter.js';
+import {
+  generateCorrelationId,
+  processWebhookEvent,
+  initializeWebhookHandler,
+  db,
+  isEnabled as isDbEnabled,
+  getExecutionAnalysis
+} from '@gitfix/core';
+import type { WebhookEventType, DetectedIssue } from '@gitfix/core';
+import * as configRepoManager from '@gitfix/core';
+import { loadSettingsFromConfig, processDetectedIssue as processDetectedIssueBase, processCommentEvent, handleCommentDeleted, handleCommentEdited } from '../../src/daemon.js';
 
 const ioRedisClient = new Redis({
   host: process.env.REDIS_HOST || '127.0.0.1',

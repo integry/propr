@@ -22,7 +22,7 @@ const config: KnexConfig = {
             database: process.env.DB_NAME ?? 'gitfix_history'
         },
         migrations: {
-            directory: path.join(__dirname, 'src/db/migrations'),
+            directory: path.join(__dirname, 'packages/core/src/db/migrations'),
             tableName: 'knex_migrations'
         },
         pool: {
@@ -41,7 +41,7 @@ const config: KnexConfig = {
             database: process.env.DB_NAME
         },
         migrations: {
-            directory: path.join(__dirname, 'src/db/migrations'),
+            directory: path.join(__dirname, 'packages/core/src/db/migrations'),
             tableName: 'knex_migrations'
         },
         pool: {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { handleError, withErrorHandling, safeAsync } from '../src/utils/errorHandler.ts';
+import { handleError, withErrorHandling, safeAsync } from '@gitfix/core';
 
 test('handleError logs errors without throwing', () => {
     const testError = new Error('Test error');
