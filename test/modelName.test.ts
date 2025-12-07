@@ -1,14 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-// Test the model name extraction logic
-function extractModelDisplayName(modelId) {
+function extractModelDisplayName(modelId: string | null | undefined): string {
     if (!modelId || typeof modelId !== 'string') {
         return 'Claude (Unknown Model)';
     }
     
-    // Common model patterns and their display names
-    const modelMappings = {
+    const modelMappings: Record<string, string> = {
         'claude-3-5-sonnet': 'Claude 3.5 Sonnet',
         'claude-3-sonnet': 'Claude 3 Sonnet',
         'claude-3-opus': 'Claude 3 Opus',
@@ -18,14 +16,12 @@ function extractModelDisplayName(modelId) {
         'claude-instant': 'Claude Instant'
     };
     
-    // Try to match known patterns
     for (const [pattern, displayName] of Object.entries(modelMappings)) {
         if (modelId.toLowerCase().includes(pattern)) {
             return displayName;
         }
     }
     
-    // Extract version and model type if available
     const claudeMatch = modelId.match(/claude-(\d+(?:\.\d+)?)-(\w+)/i);
     if (claudeMatch) {
         const version = claudeMatch[1];
@@ -33,13 +29,12 @@ function extractModelDisplayName(modelId) {
         return `Claude ${version} ${type}`;
     }
     
-    // Fallback: clean up the model ID for display
     const cleanedId = modelId
         .replace(/^claude-?/i, 'Claude ')
-        .replace(/-(\d{8}|\d{4}-\d{2}-\d{2}).*$/, '') // Remove date stamps
+        .replace(/-(\d{8}|\d{4}-\d{2}-\d{2}).*$/, '')
         .replace(/-/g, ' ')
-        .replace(/\b\w/g, l => l.toUpperCase()) // Title case
-        .trim(); // Remove any trailing/leading whitespace
+        .replace(/\b\w/g, l => l.toUpperCase())
+        .trim();
     
     return cleanedId || 'Claude (Unknown Model)';
 }
@@ -89,7 +84,6 @@ test('Model name extraction for other Claude models', () => {
 });
 
 test('Model name extraction with pattern matching fallback', () => {
-    // Test the regex fallback for new model patterns
     assert.strictEqual(
         extractModelDisplayName('claude-4-turbo'), 
         'Claude 4 Turbo'
@@ -136,13 +130,11 @@ test('Model name extraction removes timestamps', () => {
 });
 
 test('Model name extraction handles edge cases', () => {
-    // Test with different case variations
     assert.strictEqual(
         extractModelDisplayName('Claude-3-5-Sonnet'), 
         'Claude 3.5 Sonnet'
     );
     
-    // Test with minimal Claude identifier
     assert.strictEqual(
         extractModelDisplayName('claude'), 
         'Claude'

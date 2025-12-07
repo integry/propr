@@ -1,13 +1,32 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
+interface CommitMessageObject {
+    claudeSuggested?: string;
+}
+
+interface RetentionInfo {
+    timestamp: string;
+    issueProcessed: boolean;
+    success: boolean;
+    retentionHours: number;
+    scheduledCleanup: string;
+}
+
+interface TestCase {
+    input: string | CommitMessageObject | null;
+    expected?: string;
+    expectedPattern?: RegExp;
+    issueNumber?: number;
+    issueTitle?: string;
+}
+
 describe('Repository Manager - Enhanced Features Logic Tests', () => {
     
     test('should generate structured commit message correctly', () => {
         const issueNumber = 42;
         const issueTitle = 'Fix authentication bug with null pointer exception';
         
-        // Test default structured commit message generation (extracted logic)
         const shortTitle = issueTitle ? issueTitle.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
         const finalCommitMessage = `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}
 
@@ -21,10 +40,9 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
 
     test('should handle Claude suggested commit message', () => {
         const claudeSuggested = 'feat: implement advanced authentication system\n\nAdded OAuth2 support and improved security validation.';
-        const commitMessageObj = { claudeSuggested };
+        const commitMessageObj: CommitMessageObject = { claudeSuggested };
         
-        // Test Claude suggested message handling (extracted logic)
-        let finalCommitMessage;
+        let finalCommitMessage: string | undefined;
         if (typeof commitMessageObj === 'object' && commitMessageObj.claudeSuggested) {
             finalCommitMessage = commitMessageObj.claudeSuggested;
         }
@@ -36,7 +54,6 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
         const longTitle = 'This is a very long issue title that exceeds the reasonable length limit for commit messages and should be truncated properly to maintain readability';
         const issueNumber = 123;
         
-        // Test title truncation (extracted logic)
         const shortTitle = longTitle.substring(0, 50).replace(/\s+/g, ' ').trim();
         const commitMessage = `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}
 
@@ -48,19 +65,16 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
     });
 
     test('should validate retention strategy logic', () => {
-        // Test keep_on_failure strategy
         const retentionStrategy = 'keep_on_failure';
         const success = false;
         
         const shouldKeepWorktree = !success && retentionStrategy === 'keep_on_failure';
         assert.strictEqual(shouldKeepWorktree, true);
 
-        // Test keep_for_hours strategy
         const retentionStrategy2 = 'keep_for_hours';
         const shouldScheduleCleanup = !success && retentionStrategy2 === 'keep_for_hours';
         assert.strictEqual(shouldScheduleCleanup, true);
 
-        // Test always_delete strategy (default)
         const retentionStrategy3 = 'always_delete';
         const shouldDeleteImmediately = retentionStrategy3 === 'always_delete';
         assert.strictEqual(shouldDeleteImmediately, true);
@@ -70,8 +84,7 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
         const retentionHours = 48;
         const now = Date.now();
         
-        // Test retention info generation (extracted logic)
-        const retentionInfo = {
+        const retentionInfo: RetentionInfo = {
             timestamp: new Date().toISOString(),
             issueProcessed: true,
             success: false,
@@ -84,7 +97,6 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
         assert(retentionInfo.success === false);
         assert(retentionInfo.retentionHours === 48);
         
-        // Verify scheduled cleanup is correctly calculated
         const scheduledTime = new Date(retentionInfo.scheduledCleanup);
         const expectedTime = new Date(now + 48 * 60 * 60 * 1000);
         const timeDiff = Math.abs(scheduledTime.getTime() - expectedTime.getTime());
@@ -92,30 +104,25 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
     });
 
     test('should determine branch deletion logic correctly', () => {
-        // Test branch deletion logic based on success
         const wasSuccessful = true;
-        const postProcessingResult = { pr: { number: 123 } };
         
-        const shouldDeleteBranch = !wasSuccessful; // Keep branch if successful (it's in the PR)
+        const shouldDeleteBranch = !wasSuccessful;
         assert.strictEqual(shouldDeleteBranch, false, 'Should not delete branch when successful and PR created');
 
-        // Test when unsuccessful
         const wasUnsuccessful = false;
         const shouldDeleteBranchOnFailure = !wasUnsuccessful;
         assert.strictEqual(shouldDeleteBranchOnFailure, true, 'Should delete branch when unsuccessful');
     });
 
     test('should validate expired worktree cleanup logic', () => {
-        // Test age calculation
-        const oldTimestamp = Date.now() - 48 * 60 * 60 * 1000; // 48 hours ago
+        const oldTimestamp = Date.now() - 48 * 60 * 60 * 1000;
         const ageHours = (Date.now() - oldTimestamp) / (1000 * 60 * 60);
         const maxAgeHours = 72;
         
         const shouldCleanupByAge = ageHours > maxAgeHours;
         assert.strictEqual(shouldCleanupByAge, false, 'Should not cleanup by age if under limit');
 
-        // Test with older timestamp
-        const veryOldTimestamp = Date.now() - 96 * 60 * 60 * 1000; // 96 hours ago
+        const veryOldTimestamp = Date.now() - 96 * 60 * 60 * 1000;
         const veryOldAgeHours = (Date.now() - veryOldTimestamp) / (1000 * 60 * 60);
         
         const shouldCleanupVeryOld = veryOldAgeHours > maxAgeHours;
@@ -123,21 +130,19 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
     });
 
     test('should validate retention file scheduling logic', () => {
-        // Test future cleanup time
-        const futureCleanup = new Date(Date.now() + 12 * 60 * 60 * 1000); // 12 hours in future
+        const futureCleanup = new Date(Date.now() + 12 * 60 * 60 * 1000);
         const now = new Date();
         
         const shouldCleanupNow = now >= futureCleanup;
         assert.strictEqual(shouldCleanupNow, false, 'Should not cleanup before scheduled time');
 
-        // Test past cleanup time
-        const pastCleanup = new Date(Date.now() - 1 * 60 * 60 * 1000); // 1 hour ago
+        const pastCleanup = new Date(Date.now() - 1 * 60 * 60 * 1000);
         const shouldCleanupPast = now >= pastCleanup;
         assert.strictEqual(shouldCleanupPast, true, 'Should cleanup after scheduled time');
     });
 
     test('should handle commit message variations correctly', () => {
-        const testCases = [
+        const testCases: TestCase[] = [
             {
                 input: 'Simple string message',
                 expected: 'Simple string message'
@@ -155,14 +160,13 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
         ];
 
         testCases.forEach((testCase, index) => {
-            let finalCommitMessage;
+            let finalCommitMessage: string;
             
             if (typeof testCase.input === 'object' && testCase.input?.claudeSuggested) {
                 finalCommitMessage = testCase.input.claudeSuggested;
             } else if (typeof testCase.input === 'string') {
                 finalCommitMessage = testCase.input;
             } else {
-                // Generate default
                 const shortTitle = testCase.issueTitle ? testCase.issueTitle.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
                 finalCommitMessage = `fix(ai): Resolve issue #${testCase.issueNumber} - ${shortTitle}
 
@@ -181,16 +185,14 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
 describe('Repository Manager - Edge Cases', () => {
     
     test('should handle empty or undefined issue titles', () => {
-        const issueNumber = 42;
-        const undefinedTitle = undefined;
-        const emptyTitle = '';
+        function processTitle(title: string | undefined): string {
+            return title ? title.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
+        }
         
-        // Test with undefined title
-        const shortTitle1 = undefinedTitle ? undefinedTitle.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
+        const shortTitle1 = processTitle(undefined);
         assert.strictEqual(shortTitle1, 'issue fix');
 
-        // Test with empty title
-        const shortTitle2 = emptyTitle ? emptyTitle.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
+        const shortTitle2 = processTitle('');
         assert.strictEqual(shortTitle2, 'issue fix');
     });
 
@@ -210,16 +212,13 @@ describe('Repository Manager - Edge Cases', () => {
     });
 
     test('should handle retention hours parsing', () => {
-        // Test valid retention hours
         const validHours = parseInt('24', 10);
         assert.strictEqual(validHours, 24);
 
-        // Test invalid retention hours (should default)
         const invalidHours = parseInt('invalid', 10);
         const defaultHours = invalidHours || 24;
         assert.strictEqual(defaultHours, 24);
 
-        // Test environment variable simulation
         const envVar = '48';
         const parsedEnvVar = parseInt(envVar, 10);
         assert.strictEqual(parsedEnvVar, 48);

@@ -1,25 +1,10 @@
-import { test, describe, beforeEach, mock } from 'node:test';
+import { test, describe, mock } from 'node:test';
 import assert from 'node:assert';
 import { 
     validatePRCreation, 
     generateEnhancedClaudePrompt, 
     validateRepositoryInfo 
-} from '../src/utils/prValidation.js';
-
-// Mock the logger to avoid issues with imports
-const mockLogger = {
-    withCorrelation: () => ({
-        info: () => {},
-        warn: () => {},
-        error: () => {}
-    }),
-    info: () => {},
-    warn: () => {},
-    error: () => {}
-};
-
-// Mock retry handler
-const mockWithRetry = async (fn) => fn();
+} from '../src/utils/prValidation.ts';
 
 describe('PR Validation Utils', () => {
     test('generateEnhancedClaudePrompt should include all required repository information', () => {
@@ -41,7 +26,6 @@ describe('PR Validation Utils', () => {
 
         const prompt = generateEnhancedClaudePrompt(testOptions);
 
-        // Verify all critical repository information is included
         assert.ok(prompt.includes('Repository Owner: testowner'));
         assert.ok(prompt.includes('Repository Name: testrepo'));
         assert.ok(prompt.includes('Full Repository: testowner/testrepo'));
@@ -53,11 +37,9 @@ describe('PR Validation Utils', () => {
         assert.ok(prompt.includes('This is a test issue description'));
         assert.ok(prompt.includes('DO NOT hallucinate or guess repository names'));
         
-        // Verify explicit instructions are present
         assert.ok(prompt.includes('CRITICAL - USE EXACTLY AS PROVIDED'));
         assert.ok(prompt.includes('IMPORTANT INSTRUCTIONS:'));
         
-        // Verify comment reading instructions are included
         assert.ok(prompt.includes('gh issue view 123'));
         assert.ok(prompt.includes('gh issue view 123 --comments'));
         assert.ok(prompt.includes('read all issue comments for additional context'));
@@ -86,7 +68,6 @@ describe('PR Validation Utils', () => {
     });
 
     test('validatePRCreation should handle different validation scenarios', async () => {
-        // Mock successful validation scenario
         const mockOctokit = {
             request: mock.fn(() => Promise.resolve({
                 data: {
@@ -99,11 +80,6 @@ describe('PR Validation Utils', () => {
             }))
         };
 
-        // Mock the dependencies by temporarily replacing them
-        const originalImports = {};
-        
-        // Test the core validation logic by calling the function
-        // Note: In a real test environment, we would mock the imports properly
         const testOptions = {
             owner: 'testowner',
             repoName: 'testrepo',
@@ -112,7 +88,6 @@ describe('PR Validation Utils', () => {
             correlationId: 'test-correlation-id'
         };
 
-        // For now, just verify the function exists and can be called
         assert.ok(typeof validatePRCreation === 'function');
         assert.ok(typeof validateRepositoryInfo === 'function');
     });

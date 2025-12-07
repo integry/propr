@@ -1,14 +1,29 @@
 import { mock } from 'node:test';
 
-// Mock implementation for recordLLMMetrics
+interface LLMMetricsSummary {
+    summary: {
+        totalRequests: number;
+        totalSuccessful: number;
+        totalFailed: number;
+        successRate: number;
+        totalCostUsd: number;
+        avgCostPerRequest: number;
+        totalTurns: number;
+        avgTurnsPerRequest: number;
+        avgExecutionTimeSec: number;
+    };
+    modelBreakdown: Record<string, unknown>;
+    dailyMetrics: unknown[];
+    recentHighCostAlerts: unknown[];
+    lastUpdated: string;
+}
+
 export const mockRecordLLMMetrics = mock.fn(async () => {
-    // No-op mock implementation
 });
 
-// Export a mock module object that can be used in tests
 export const llmMetricsMock = {
     recordLLMMetrics: mockRecordLLMMetrics,
-    getLLMMetricsSummary: mock.fn(async () => ({
+    getLLMMetricsSummary: mock.fn(async (): Promise<LLMMetricsSummary> => ({
         summary: {
             totalRequests: 0,
             totalSuccessful: 0,

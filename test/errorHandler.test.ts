@@ -1,16 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { handleError, withErrorHandling, safeAsync } from '../src/utils/errorHandler.js';
+import { handleError, withErrorHandling, safeAsync } from '../src/utils/errorHandler.ts';
 
 test('handleError logs errors without throwing', () => {
     const testError = new Error('Test error');
     assert.doesNotThrow(() => {
-        handleError(testError, 'test context', false);
+        handleError(testError, 'test context', {});
     });
 });
 
 test('withErrorHandling wraps async functions', async () => {
-    const successFn = async (value) => value * 2;
+    const successFn = async (...args: unknown[]): Promise<unknown> => {
+        const value = args[0] as number;
+        return value * 2;
+    };
     const wrapped = withErrorHandling(successFn, 'test');
     
     const result = await wrapped(5);
@@ -18,7 +21,7 @@ test('withErrorHandling wraps async functions', async () => {
 });
 
 test('withErrorHandling handles errors', async () => {
-    const errorFn = async () => {
+    const errorFn = async (): Promise<unknown> => {
         throw new Error('Test error');
     };
     const wrapped = withErrorHandling(errorFn, 'test');
@@ -27,7 +30,7 @@ test('withErrorHandling handles errors', async () => {
 });
 
 test('safeAsync returns default value on error', async () => {
-    const errorFn = async () => {
+    const errorFn = async (): Promise<string> => {
         throw new Error('Test error');
     };
     const safe = safeAsync(errorFn, 'default');
@@ -37,8 +40,8 @@ test('safeAsync returns default value on error', async () => {
 });
 
 test('safeAsync returns result on success', async () => {
-    const successFn = async (value) => value * 2;
-    const safe = safeAsync(successFn, 'default');
+    const successFn = async (value: number): Promise<number> => value * 2;
+    const safe = safeAsync(successFn, 0);
     
     const result = await safe(5);
     assert.strictEqual(result, 10);

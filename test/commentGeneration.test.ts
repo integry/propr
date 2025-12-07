@@ -1,7 +1,38 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-function getUsageStats(claudeResult) {
+interface ClaudeResult {
+    success?: boolean;
+    executionTime?: number;
+    conversationId?: string;
+    sessionId?: string;
+    model?: string;
+    conversationLog?: Array<{
+        message?: {
+            usage?: {
+                input_tokens?: number;
+                output_tokens?: number;
+            };
+        };
+    }>;
+    finalResult?: {
+        cost_usd?: number;
+    };
+}
+
+interface IssueRef {
+    number: number;
+    repoOwner: string;
+    repoName: string;
+}
+
+interface UsageStats {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+}
+
+function getUsageStats(claudeResult: ClaudeResult): UsageStats {
     let inputTokens = 0;
     let outputTokens = 0;
 
@@ -21,19 +52,19 @@ function getUsageStats(claudeResult) {
     };
 }
 
-function generateMockCompletionComment(claudeResult, issueRef) {
+function generateMockCompletionComment(claudeResult: ClaudeResult, issueRef: IssueRef): string {
     const timestamp = new Date().toISOString();
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
     const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
     const cost = claudeResult?.finalResult?.cost_usd || 0;
     
-    function extractModelDisplayName(modelId) {
+    function extractModelDisplayName(modelId: string | undefined): string {
         if (!modelId || typeof modelId !== 'string') {
             return 'Claude (Unknown Model)';
         }
         
-        const modelMappings = {
+        const modelMappings: Record<string, string> = {
             'claude-3-5-sonnet': 'Claude 3.5 Sonnet',
             'claude-3-opus': 'Claude 3 Opus',
             'claude-3-haiku': 'Claude 3 Haiku'
@@ -73,7 +104,7 @@ function generateMockCompletionComment(claudeResult, issueRef) {
 }
 
 test('Enhanced GitHub comment includes conversation ID and model', () => {
-    const mockClaudeResult = {
+    const mockClaudeResult: ClaudeResult = {
         success: true,
         executionTime: 127000,
         conversationId: 'conv_abc123xyz789',
@@ -88,7 +119,7 @@ test('Enhanced GitHub comment includes conversation ID and model', () => {
         }
     };
     
-    const mockIssueRef = {
+    const mockIssueRef: IssueRef = {
         number: 344,
         repoOwner: 'integry',
         repoName: 'forex'
@@ -108,12 +139,12 @@ test('Enhanced GitHub comment includes conversation ID and model', () => {
 });
 
 test('GitHub comment gracefully handles missing optional fields', () => {
-    const mockClaudeResult = {
+    const mockClaudeResult: ClaudeResult = {
         success: false,
         executionTime: 5000,
     };
     
-    const mockIssueRef = {
+    const mockIssueRef: IssueRef = {
         number: 123,
         repoOwner: 'testorg',
         repoName: 'testrepo'
@@ -152,13 +183,13 @@ test('GitHub comment handles different model types correctly', () => {
     ];
     
     testCases.forEach(({ model, expected }) => {
-        const mockClaudeResult = {
+        const mockClaudeResult: ClaudeResult = {
             success: true,
             executionTime: 1000,
             model
         };
         
-        const mockIssueRef = {
+        const mockIssueRef: IssueRef = {
             number: 1,
             repoOwner: 'test',
             repoName: 'test'
@@ -171,7 +202,7 @@ test('GitHub comment handles different model types correctly', () => {
 });
 
 test('GitHub comment correctly displays token usage with conversationLog', () => {
-    const mockClaudeResult = {
+    const mockClaudeResult: ClaudeResult = {
         success: true,
         executionTime: 95000,
         conversationId: 'conv_test123',
@@ -186,7 +217,7 @@ test('GitHub comment correctly displays token usage with conversationLog', () =>
         }
     };
     
-    const mockIssueRef = {
+    const mockIssueRef: IssueRef = {
         number: 456,
         repoOwner: 'testorg',
         repoName: 'testrepo'

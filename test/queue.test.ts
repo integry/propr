@@ -1,13 +1,11 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert';
 
-// Mock Redis before importing modules that use it
 const mockRedis = {
     on: mock.fn(),
     quit: mock.fn(async () => {}),
 };
 
-// Mock ioredis module
 await mock.module('ioredis', {
     namedExports: {
         default: function Redis() {
@@ -16,14 +14,21 @@ await mock.module('ioredis', {
     }
 });
 
-// Mock BullMQ module
 const mockQueue = {
     add: mock.fn(async () => ({ id: 'test-job-id' })),
     close: mock.fn(async () => {}),
     on: mock.fn(),
 };
 
-const mockWorker = {
+interface MockWorker {
+    on: ReturnType<typeof mock.fn>;
+    close: ReturnType<typeof mock.fn>;
+    opts: { concurrency: number };
+    processor?: unknown;
+    name?: string;
+}
+
+const mockWorker: MockWorker = {
     on: mock.fn(),
     close: mock.fn(async () => {}),
     opts: { concurrency: 5 },
@@ -34,7 +39,7 @@ await mock.module('bullmq', {
         Queue: function Queue() {
             return mockQueue;
         },
-        Worker: function Worker(name, processor, opts) {
+        Worker: function Worker(name: string, processor: unknown, opts?: { concurrency?: number }) {
             mockWorker.processor = processor;
             mockWorker.name = name;
             mockWorker.opts = { ...mockWorker.opts, ...opts };
@@ -43,7 +48,6 @@ await mock.module('bullmq', {
     }
 });
 
-// Now import the modules
 const { issueQueue, createWorker, shutdownQueue } = await import('../src/queue/taskQueue.ts');
 
 test('issueQueue is created successfully', () => {
@@ -59,16 +63,15 @@ test('Redis connection events are registered', () => {
 });
 
 test('createWorker creates a worker with correct configuration', () => {
-    const processorFn = async () => {};
-    const worker = createWorker('test-queue', processorFn);
+    const processorFn = async (): Promise<{ status: string }> => ({ status: 'completed' });
+    const worker = createWorker('test-queue', processorFn as Parameters<typeof createWorker>[1]);
     
     assert.ok(worker);
-    assert.strictEqual(worker.name, 'test-queue');
-    assert.strictEqual(worker.processor, processorFn);
-    assert.strictEqual(worker.opts.concurrency, 5);
+    assert.strictEqual(mockWorker.name, 'test-queue');
+    assert.strictEqual(mockWorker.processor, processorFn);
+    assert.strictEqual(mockWorker.opts.concurrency, 5);
     
-    // Check worker event handlers are registered
-    const eventNames = mockWorker.on.mock.calls.map(call => call.arguments[0]);
+    const eventNames = mockWorker.on.mock.calls.map((call: { arguments: unknown[] }) => call.arguments[0]);
     assert.ok(eventNames.includes('completed'));
     assert.ok(eventNames.includes('failed'));
     assert.ok(eventNames.includes('error'));
@@ -88,11 +91,16 @@ test('shutdownQueue closes queue and Redis connection', async () => {
 test('queue can add jobs', async () => {
     mockQueue.add.mock.resetCalls();
     
-    const jobData = { issueNumber: 123 };
+    const jobData = { 
+        repoOwner: 'test',
+        repoName: 'repo',
+        number: 123
+    };
     const result = await issueQueue.add('testJob', jobData);
     
     assert.strictEqual(mockQueue.add.mock.calls.length, 1);
-    assert.strictEqual(mockQueue.add.mock.calls[0].arguments[0], 'testJob');
-    assert.deepStrictEqual(mockQueue.add.mock.calls[0].arguments[1], jobData);
+    const calls = mockQueue.add.mock.calls as Array<{ arguments: unknown[] }>;
+    assert.strictEqual(calls[0].arguments[0], 'testJob');
+    assert.deepStrictEqual(calls[0].arguments[1], jobData);
     assert.deepStrictEqual(result, { id: 'test-job-id' });
 });

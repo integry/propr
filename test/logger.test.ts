@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import logger from '../src/utils/logger.js';
+import logger from '../src/utils/logger.ts';
 
 test('Logger exports a pino instance', () => {
     assert.ok(logger);
