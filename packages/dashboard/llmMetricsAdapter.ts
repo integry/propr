@@ -2,6 +2,7 @@ import IORedis from 'ioredis';
 type RedisConstructor = new (options: { host: string; port: number; maxRetriesPerRequest: null; enableReadyCheck: boolean }) => IORedis.Redis;
 const Redis = (IORedis as unknown as { default?: RedisConstructor }).default || IORedis as unknown as RedisConstructor;
 
+// Redis configuration
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 
@@ -58,10 +59,15 @@ interface LLMMetricsDetail {
     [key: string]: unknown;
 }
 
+/**
+ * Retrieves LLM metrics summary
+ * @returns {Promise<LLMMetricsSummary>} LLM metrics summary
+ */
 export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
     const metricsRedis = new Redis(connectionOptions);
     
     try {
+        // Get total metrics
         const totalSuccessful = parseInt(await metricsRedis.get('llm:metrics:total:successful') || '0');
         const totalFailed = parseInt(await metricsRedis.get('llm:metrics:total:failed') || '0');
         const totalCostUsd = parseFloat(await metricsRedis.get('llm:metrics:total:costUsd') || '0');
@@ -74,6 +80,7 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
         const avgTurnsPerRequest = totalRequests > 0 ? totalTurns / totalRequests : 0;
         const avgExecutionTimeSec = totalRequests > 0 ? (totalExecutionTimeMs / totalRequests) / 1000 : 0;
         
+        // Get model-specific metrics
         const modelsUsed = await metricsRedis.smembers('llm:metrics:models:used');
         const modelMetrics: Record<string, ModelMetrics> = {};
         
@@ -99,6 +106,7 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
             };
         }
         
+        // Get daily metrics for the last 7 days
         const dailyMetrics: DailyMetric[] = [];
         const today = new Date();
         for (let i = 0; i < 7; i++) {
@@ -119,6 +127,7 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
             });
         }
         
+        // Get recent high cost alerts
         const highCostAlerts = await metricsRedis.lrange('llm:metrics:alerts:highcost', 0, 9);
         const parsedAlerts: HighCostAlert[] = highCostAlerts.map(alert => {
             try {
@@ -154,6 +163,11 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
     }
 }
 
+/**
+ * Retrieves detailed LLM metrics for a specific correlation ID
+ * @param {string} correlationId - Correlation ID
+ * @returns {Promise<LLMMetricsDetail | null>} Detailed LLM metrics or null
+ */
 export async function getLLMMetricsByCorrelationId(correlationId: string): Promise<LLMMetricsDetail | null> {
     const metricsRedis = new Redis(connectionOptions);
     

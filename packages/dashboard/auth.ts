@@ -40,7 +40,7 @@ export function setupAuth(app: Express): void {
         cookie: {
             secure: process.env.NODE_ENV === 'production',
             httpOnly: true,
-            maxAge: 24 * 60 * 60 * 1000
+            maxAge: 24 * 60 * 60 * 1000 // 24 hours
         }
     }));
     app.use(passport.initialize());
@@ -52,6 +52,8 @@ export function setupAuth(app: Express): void {
         callbackURL: process.env.GH_OAUTH_CALLBACK_URL!,
     },
     (accessToken: string, refreshToken: string, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) => {
+        // Here you would find or create a user in your database.
+        // For now, we'll just pass the profile through.
         console.log('User authenticated:', profile.username);
         const user: GitHubUser = {
             id: profile.id,
@@ -67,11 +69,13 @@ export function setupAuth(app: Express): void {
     passport.serializeUser((user, done) => done(null, user));
     passport.deserializeUser((obj: Express.User, done) => done(null, obj));
 
+    // Routes
     app.get('/api/auth/github', passport.authenticate('github', { scope: ['user:email', 'read:org', 'repo'] }));
 
     app.get('/api/auth/github/callback',
         passport.authenticate('github', { failureRedirect: '/login' }),
         (req: Request, res: Response) => {
+            // Successful authentication, redirect to the dashboard.
             res.redirect(`${process.env.FRONTEND_URL}/`);
         }
     );
@@ -98,6 +102,8 @@ export function setupAuth(app: Express): void {
 
 export function ensureAuthenticated(req: Request, res: Response, next: NextFunction): void {
     if (req.isAuthenticated()) {
+        // Here you can add authorization logic, e.g.,
+        // check if req.user.username is part of a specific GitHub org.
         return next();
     }
     res.status(401).json({ error: 'Unauthorized' });
