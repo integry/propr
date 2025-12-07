@@ -13,22 +13,24 @@ import './auth.js';
 import { getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './llmMetricsAdapter.js';
 import type { Knex } from 'knex';
 
+const dynamicImport = (modulePath: string) => import(modulePath);
+
 
 let generateCorrelationId: () => string;
 let configRepoManager: {
     loadFollowupKeywords: () => Promise<string[]>;
-    saveFollowupKeywords: (keywords: string[], message: string) => Promise<void>;
+    saveFollowupKeywords: (keywords: string[], message: string) => Promise<boolean>;
     cloneOrPullConfigRepo: () => Promise<void>;
     ensureConfigRepoExists: () => Promise<void>;
     loadSettings: () => Promise<Record<string, unknown>>;
-    saveSettings: (settings: Record<string, unknown>, message: string) => Promise<void>;
-    saveMonitoredRepos: (repos: Array<{ name: string; enabled: boolean }>, message: string) => Promise<void>;
+    saveSettings: (settings: Record<string, unknown>, message: string) => Promise<boolean>;
+    saveMonitoredRepos: (repos: Array<{ name: string; enabled: boolean }>, message: string) => Promise<boolean>;
     loadPrLabel: () => Promise<string>;
-    savePrLabel: (label: string, message: string) => Promise<void>;
+    savePrLabel: (label: string, message: string) => Promise<boolean>;
     loadAiPrimaryTag: () => Promise<string>;
-    saveAiPrimaryTag: (tag: string, message: string) => Promise<void>;
+    saveAiPrimaryTag: (tag: string, message: string) => Promise<boolean>;
     loadPrimaryProcessingLabels: () => Promise<string[]>;
-    savePrimaryProcessingLabels: (labels: string[], message: string) => Promise<void>;
+    savePrimaryProcessingLabels: (labels: string[], message: string) => Promise<boolean>;
 };
 let processWebhookEvent: ((payload: unknown, event: string, correlationId: string) => Promise<void>) | null = null;
 let db: Knex | null = null;
@@ -898,7 +900,8 @@ app.post('/api/task/:taskId/deep-dive-analysis', ensureAuthenticated, async (req
     const settings = await configRepoManager.loadSettings();
     const advancedModel = (settings.analysis_model_advanced as string) || process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514';
 
-    const { getExecutionAnalysis } = await import('../../src/services/analysisService.js');
+    const analysisServiceModule = await dynamicImport('../../src/services/analysisService.js') as { getExecutionAnalysis: (params: { executionId: string; sessionId: string; correlationId: string; model: string }) => Promise<string | null> };
+    const { getExecutionAnalysis } = analysisServiceModule;
     
     const analysisReport = await getExecutionAnalysis({
       executionId: latestExecution.execution_id,
@@ -1731,25 +1734,25 @@ app.get('/health', (req: Request, res: Response) => {
 
 async function start(): Promise<void> {
   try {
-    const loggerModule = await import('../../src/utils/logger.js');
+    const loggerModule = await dynamicImport('../../src/utils/logger.js') as { generateCorrelationId: () => string };
     generateCorrelationId = loggerModule.generateCorrelationId;
 
-    configRepoManager = await import('../../src/config/configRepoManager.js');
+    configRepoManager = await dynamicImport('../../src/config/configRepoManager.js') as typeof configRepoManager;
 
     let webhookModule: { processWebhookEvent?: typeof processWebhookEvent; initializeWebhookHandler?: (a: unknown, b: unknown, c: unknown, d: unknown) => Promise<void> } | undefined;
     let initializeWebhookHandler: ((a: unknown, b: unknown, c: unknown, d: unknown) => Promise<void>) | undefined;
     let daemonModule: { loadSettingsFromConfig?: () => Promise<void>; processDetectedIssue?: unknown; processCommentEvent?: unknown; handleCommentDeleted?: unknown; handleCommentEdited?: unknown } | undefined;
     try {
-      webhookModule = await import('../../src/webhook/webhookHandler.js');
-      processWebhookEvent = webhookModule.processWebhookEvent || null;
-      initializeWebhookHandler = webhookModule.initializeWebhookHandler;
+      webhookModule = await dynamicImport('../../src/webhook/webhookHandler.js') as typeof webhookModule;
+      processWebhookEvent = webhookModule?.processWebhookEvent || null;
+      initializeWebhookHandler = webhookModule?.initializeWebhookHandler;
 
-      daemonModule = await import('../../src/daemon.js');
+      daemonModule = await dynamicImport('../../src/daemon.js') as typeof daemonModule;
     } catch (error) {
       console.warn('[webhook] Failed to import webhook handler:', (error as Error).message);
     }
 
-    const dbModule = await import('../../src/db/postgres.js');
+    const dbModule = await dynamicImport('../../src/db/postgres.js') as { db: Knex; isEnabled: boolean };
     db = dbModule.db;
     isDbEnabled = dbModule.isEnabled;
     
