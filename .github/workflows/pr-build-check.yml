@@ -41,6 +41,8 @@ jobs:
               - 'docs/**'
             dashboard:
               - 'packages/dashboard/**'
+            core_package:
+              - 'packages/core/**'
 
       - name: Run Checks
         id: build
@@ -160,6 +162,33 @@ jobs:
             if [ $DOCS_FAILED -eq 0 ]; then
               echo "✅ Docs Build passed" >> build_log.txt
             fi
+          fi
+
+          # --- CORE PACKAGE ---
+          if [ "${{ steps.filter.outputs.core_package }}" == 'true' ]; then
+            echo -e "\n--- Core Package: Lint ---" >> build_log.txt
+            CORE_PKG_FAILED=0
+            
+            cd packages/core
+            INSTALL_OUTPUT=$(npm ci 2>&1) || {
+              echo "❌ Core Package Dependency Install FAILED" >> ../../build_log.txt
+              echo "$INSTALL_OUTPUT" | tail -50 >> ../../build_log.txt
+              CORE_PKG_FAILED=1
+              EXIT_CODE=1
+            }
+            
+            if [ $CORE_PKG_FAILED -eq 0 ]; then
+              LINT_OUTPUT=$(npm run lint -- --max-warnings 0 2>&1) || {
+                echo "❌ Core Package Lint FAILED" >> ../../build_log.txt
+                echo "$LINT_OUTPUT" >> ../../build_log.txt
+                CORE_PKG_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $CORE_PKG_FAILED -eq 0 ]; then
+                echo "✅ Core Package Lint passed" >> ../../build_log.txt
+              fi
+            fi
+            cd ../..
           fi
 
           # --- DASHBOARD ---
