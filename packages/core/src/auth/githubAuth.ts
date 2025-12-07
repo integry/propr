@@ -60,6 +60,8 @@ const PaginatedOctokit = Octokit.plugin(paginateRest);
 export type PaginatedOctokitInstance = InstanceType<typeof PaginatedOctokit>;
 
 export async function getAuthenticatedOctokit(): Promise<PaginatedOctokitInstance> {
-    const token = await getGitHubInstallationToken();
-    return new PaginatedOctokit({ auth: token });
+    if (!appOctokit) {
+        throw new Error('GitHub App not configured. Please set GH_APP_ID, GH_PRIVATE_KEY_PATH, and GH_INSTALLATION_ID environment variables.');
+    }
+    return appOctokit as PaginatedOctokitInstance;
 }
