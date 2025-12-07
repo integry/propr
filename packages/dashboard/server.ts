@@ -1729,29 +1729,29 @@ app.get('/health', (req: Request, res: Response) => {
 
 async function start(): Promise<void> {
   try {
-    const loggerModule = await import('../../src/utils/logger.ts') as { generateCorrelationId: () => string };
+    const loggerModule = await import('../../dist/src/utils/logger.js') as { generateCorrelationId: () => string };
     generateCorrelationId = loggerModule.generateCorrelationId;
 
-    configRepoManager = await import('../../src/config/configRepoManager.ts') as typeof configRepoManager;
+    configRepoManager = await import('../../dist/src/config/configRepoManager.js') as typeof configRepoManager;
 
     let webhookModule: { processWebhookEvent?: typeof processWebhookEvent; initializeWebhookHandler?: (a: unknown, b: unknown, c: unknown, d: unknown) => Promise<void> } | undefined;
     let initializeWebhookHandler: ((a: unknown, b: unknown, c: unknown, d: unknown) => Promise<void>) | undefined;
     let daemonModule: { loadSettingsFromConfig?: () => Promise<void>; processDetectedIssue?: unknown; processCommentEvent?: unknown; handleCommentDeleted?: unknown; handleCommentEdited?: unknown } | undefined;
     try {
-      webhookModule = await import('../../src/webhook/webhookHandler.ts') as typeof webhookModule;
+      webhookModule = await import('../../dist/src/webhook/webhookHandler.js') as typeof webhookModule;
       processWebhookEvent = webhookModule?.processWebhookEvent || null;
       initializeWebhookHandler = webhookModule?.initializeWebhookHandler;
 
-      daemonModule = await import('../../src/daemon.ts') as typeof daemonModule;
+      daemonModule = await import('../../dist/src/daemon.js') as typeof daemonModule;
     } catch (error) {
       console.warn('[webhook] Failed to import webhook handler:', (error as Error).message);
     }
 
-    const dbModule = await import('../../src/db/postgres.ts') as { db: Knex; isEnabled: boolean };
+    const dbModule = await import('../../dist/src/db/postgres.js') as { db: Knex; isEnabled: boolean };
     db = dbModule.db;
     isDbEnabled = dbModule.isEnabled;
 
-    const analysisModule = await import('../../src/services/analysisService.ts') as { getExecutionAnalysis: typeof getExecutionAnalysis };
+    const analysisModule = await import('../../dist/src/services/analysisService.js') as { getExecutionAnalysis: typeof getExecutionAnalysis };
     getExecutionAnalysis = analysisModule.getExecutionAnalysis;
     
     if (isDbEnabled && db) {
