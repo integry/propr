@@ -110,10 +110,12 @@ interface CreateWorktreeOptions {
     modelName?: string | null;
 }
 
-interface WorktreeResult {
+export interface WorktreeResult {
     worktreePath: string;
     branchName: string;
 }
+
+export type WorktreeInfo = WorktreeResult;
 
 export async function createWorktreeForIssue(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions = {}): Promise<WorktreeResult> {
     const { issueId, issueTitle, owner, repoName } = issueInfo;
@@ -190,3 +192,4 @@ export function getRepoUrl(issue: IssueRef): string {
 }
 
 export { cleanupWorktree, cleanupExpiredWorktrees, createWorktreeFromExistingBranch, ensureBranchAndPush, pushBranch, commitChanges, detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations };
+export type { CommitResult } from './commitOperations.js';

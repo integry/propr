@@ -56,8 +56,10 @@ export async function getGitHubInstallationToken(): Promise<string> {
     }
 }
 
-export async function getAuthenticatedOctokit(): Promise<InstanceType<typeof Octokit>> {
+const PaginatedOctokit = Octokit.plugin(paginateRest);
+export type PaginatedOctokitInstance = InstanceType<typeof PaginatedOctokit>;
+
+export async function getAuthenticatedOctokit(): Promise<PaginatedOctokitInstance> {
     const token = await getGitHubInstallationToken();
-    const MyOctokit = Octokit.plugin(paginateRest);
-    return new MyOctokit({ auth: token });
+    return new PaginatedOctokit({ auth: token });
 }

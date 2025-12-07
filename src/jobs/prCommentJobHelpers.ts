@@ -1,13 +1,79 @@
 import logger from '../utils/logger.js';
+import type { Logger } from 'pino';
 import fs from 'fs-extra';
-import Redis from 'ioredis';
+import type { Redis } from 'ioredis';
 import { TaskStates } from '../utils/workerStateManager.js';
-import { getUsageStats } from '../utils/tokenCalculation.js';
+import type { WorkerStateManager } from '../utils/workerStateManager.js';
+import { getUsageStats, type ClaudeResult as TokenClaudeResult } from '../utils/tokenCalculation.js';
 import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
 import { filterCommentByAuthor } from '../utils/commentFilters.js';
+import type { UnprocessedComment, CommentJobData } from '../queue/taskQueue.js';
+import type { ClaudeCodeResponse } from '../claude/claudeService.js';
+import type { CommitResult } from '../git/repoManager.js';
 
-export async function validateAndFilterComments(commentsToProcess, allCommentsForValidation, pullRequestNumber, correlatedLogger) {
-    const validatedComments = [];
+interface ValidationComment {
+    id: number;
+    body?: string;
+    updated_at?: string;
+}
+
+interface PRData {
+    data: {
+        body: string | null;
+        user: { login: string };
+    };
+}
+
+interface PRComment {
+    user: { login: string; type?: string };
+    body: string | null;
+    created_at: string;
+    pull_request_review_id?: number;
+}
+
+interface RepoContext {
+    repoOwner: string;
+    repoName: string;
+    pullRequestNumber: number;
+}
+
+interface FetchLinkedIssueOptions {
+    correlationId: string;
+    correlatedLogger: Logger;
+}
+
+interface SessionIdOptions {
+    llm: string;
+    stateManager: WorkerStateManager;
+    correlatedLogger: Logger;
+    redisClient: InstanceType<typeof Redis>;
+}
+
+interface PRContext {
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+}
+
+interface CommentContext {
+    changesSummary: string;
+    commitMessage: string;
+    llm: string | null | undefined;
+    authorsText: string;
+}
+
+type Octokit = {
+    request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
+    paginate: <T>(endpoint: string, options: Record<string, unknown>) => Promise<T[]>;
+};
+
+export async function validateAndFilterComments(
+    commentsToProcess: UnprocessedComment[],
+    allCommentsForValidation: ValidationComment[],
+    pullRequestNumber: number,
+    correlatedLogger: Logger
+): Promise<UnprocessedComment[]> {
+    const validatedComments: UnprocessedComment[] = [];
     for (const comment of commentsToProcess) {
         const currentComment = allCommentsForValidation.find(c => c.id === comment.id);
 
@@ -16,11 +82,11 @@ export async function validateAndFilterComments(commentsToProcess, allCommentsFo
             continue;
         }
 
-        const commentWasEditedAfterQueuing = comment.updated_at && currentComment.updated_at !== comment.updated_at;
+        const commentWasEditedAfterQueuing = (comment as unknown as { updated_at?: string }).updated_at && currentComment.updated_at !== (comment as unknown as { updated_at?: string }).updated_at;
 
         if (commentWasEditedAfterQueuing) {
             correlatedLogger.info({ pullRequestNumber, commentId: comment.id, commentAuthor: comment.author }, 'Comment has been edited since job was queued, using updated content');
-            validatedComments.push({ ...comment, body: currentComment.body, updated_at: currentComment.updated_at });
+            validatedComments.push({ ...comment, body: currentComment.body || comment.body });
         } else {
             validatedComments.push(comment);
         }
@@ -28,13 +94,23 @@ export async function validateAndFilterComments(commentsToProcess, allCommentsFo
     return validatedComments;
 }
 
-export function filterUnprocessedComments(commentsToProcess, prCommentsForValidation, botUsername, options = {}) {
+interface FilterOptions {
+    pullRequestNumber: number;
+    correlatedLogger: Logger;
+}
+
+export function filterUnprocessedComments(
+    commentsToProcess: UnprocessedComment[],
+    prCommentsForValidation: PRComment[],
+    botUsername: string,
+    options: FilterOptions
+): UnprocessedComment[] {
     const { pullRequestNumber, correlatedLogger } = options;
     return commentsToProcess.filter(comment => {
         const alreadyProcessed = prCommentsForValidation.some(prComment => {
             const isBotComment = prComment.user.login === botUsername;
             if (!isBotComment) return false;
-            return prComment.body.includes(`${String(comment.id)}✓`);
+            return prComment.body?.includes(`${String(comment.id)}✓`);
         });
 
         if (alreadyProcessed) {
@@ -45,7 +121,12 @@ export function filterUnprocessedComments(commentsToProcess, prCommentsForValida
     });
 }
 
-export async function fetchLinkedIssueContext(octokit, prData, repoContext, options = {}) {
+export async function fetchLinkedIssueContext(
+    octokit: Octokit,
+    prData: PRData,
+    repoContext: RepoContext,
+    options: FetchLinkedIssueOptions
+): Promise<string> {
     const { repoOwner, repoName, pullRequestNumber } = repoContext;
     const { correlationId, correlatedLogger } = options;
     let originalTaskSpec = '';
@@ -57,11 +138,11 @@ export async function fetchLinkedIssueContext(octokit, prData, repoContext, opti
     correlatedLogger.info({ pullRequestNumber, linkedIssueNumber }, 'Found linked issue in PR body');
 
     try {
-        const linkedIssueData = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+        const linkedIssueData = await octokit.request<{ data: { title: string; body: string; user: { login: string } } }>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
             owner: repoOwner, repo: repoName, issue_number: linkedIssueNumber
         });
 
-        const linkedIssueComments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        const linkedIssueComments = await octokit.paginate<{ user: { login: string; type?: string }; body: string }>('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: repoOwner, repo: repoName, issue_number: linkedIssueNumber, per_page: 100
         });
 
@@ -82,19 +163,19 @@ export async function fetchLinkedIssueContext(octokit, prData, repoContext, opti
         originalTaskSpec += '\n';
 
     } catch (issueError) {
-        correlatedLogger.warn({ pullRequestNumber, linkedIssueNumber, error: issueError.message }, 'Failed to fetch linked issue data, continuing without it');
+        correlatedLogger.warn({ pullRequestNumber, linkedIssueNumber, error: (issueError as Error).message }, 'Failed to fetch linked issue data, continuing without it');
     }
 
     return originalTaskSpec;
 }
 
-export function formatCommentForPrompt(body) {
+export function formatCommentForPrompt(body: string | null): string {
     if (!body) return '[Empty comment]';
     const maxLength = 1000;
     return body.length > maxLength ? body.substring(0, maxLength) + '... (comment truncated)' : body;
 }
 
-export function buildCommentHistory(commentsByTime, prData, correlationId) {
+export function buildCommentHistory(commentsByTime: PRComment[], prData: PRData, correlationId: string): string {
     let commentHistory = '';
     const reversedComments = [...commentsByTime].reverse();
 
@@ -124,14 +205,18 @@ export function buildCommentHistory(commentsByTime, prData, correlationId) {
     return commentHistory;
 }
 
-export function createSessionIdCallbackForPR(taskId, prContext, options = {}) {
+export function createSessionIdCallbackForPR(
+    taskId: string,
+    prContext: PRContext,
+    options: SessionIdOptions
+): (sessionId: string, conversationId?: string) => Promise<void> {
     const { pullRequestNumber, repoOwner, repoName } = prContext;
-    const { llm, stateManager, correlatedLogger } = options;
-    return async (sessionId, conversationId) => {
+    const { llm, stateManager, correlatedLogger, redisClient } = options;
+    return async (sessionId: string, conversationId?: string): Promise<void> => {
         try {
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
                 reason: 'Claude execution started',
-                claudeResult: { sessionId, conversationId },
+                claudeResult: { success: false, sessionId, conversationId },
                 historyMetadata: { sessionId, conversationId, model: llm }
             });
 
@@ -148,55 +233,72 @@ export function createSessionIdCallbackForPR(taskId, prContext, options = {}) {
                 messages: [], _streaming: true
             }, null, 2));
 
-            const redis = new Redis({ host: process.env.REDIS_HOST || 'redis', port: process.env.REDIS_PORT || 6379 });
             const logData = {
                 files: { conversation: conversationPath },
                 issueNumber: pullRequestNumber, repository: `${repoOwner}/${repoName}`,
                 timestamp, sessionId, conversationId
             };
 
-            if (sessionId) await redis.set(`execution:logs:session:${sessionId}`, JSON.stringify(logData), 'EX', 86400 * 30);
-            if (conversationId) await redis.set(`execution:logs:conversation:${conversationId}`, JSON.stringify(logData), 'EX', 86400 * 30);
-            await redis.quit();
+            if (sessionId) await redisClient.set(`execution:logs:session:${sessionId}`, JSON.stringify(logData), 'EX', 86400 * 30);
+            if (conversationId) await redisClient.set(`execution:logs:conversation:${conversationId}`, JSON.stringify(logData), 'EX', 86400 * 30);
         } catch (error) {
-            correlatedLogger.warn({ error: error.message, taskId, sessionId }, 'Failed to update task state with early sessionId');
+            correlatedLogger.warn({ error: (error as Error).message, taskId, sessionId }, 'Failed to update task state with early sessionId');
         }
     };
 }
 
-export function createContainerIdCallbackForPR(taskId, stateManager) {
-    return async (containerId, containerName) => {
+export function createContainerIdCallbackForPR(
+    taskId: string,
+    stateManager: WorkerStateManager
+): (containerId: string, containerName: string) => Promise<void> {
+    return async (containerId: string, containerName: string): Promise<void> => {
         try {
             await stateManager.updateHistoryMetadata(taskId, 'claude_execution', { containerId, containerName });
             logger.info({ taskId, containerId, containerName }, 'Docker container info added to task state');
         } catch (err) {
-            logger.warn({ taskId, error: err.message }, 'Failed to update state with container info');
+            logger.warn({ taskId, error: (err as Error).message }, 'Failed to update state with container info');
         }
     };
 }
 
-export async function updateTaskTitleForPR(taskId, jobData, stateManager, correlatedLogger) {
+interface UpdateTaskTitleOptions {
+    taskId: string;
+    jobData: CommentJobData;
+    stateManager: WorkerStateManager;
+    correlatedLogger: Logger;
+    redisClient?: InstanceType<typeof Redis>;
+}
+
+export async function updateTaskTitleForPR(options: UpdateTaskTitleOptions): Promise<void> {
+    const { taskId, jobData, stateManager, correlatedLogger, redisClient } = options;
     if (isDbEnabled && db) {
         try {
             await db('tasks').where({ task_id: taskId }).update({ initial_job_data: JSON.stringify(jobData) });
             correlatedLogger.info({ taskId, title: jobData.title, subtitle: jobData.subtitle }, 'Updated task with title/subtitle in DB');
         } catch (dbError) {
-            correlatedLogger.warn({ taskId, error: dbError.message }, 'Failed to update task with title/subtitle in DB');
+            correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to update task with title/subtitle in DB');
         }
     }
-    try {
-        const state = await stateManager.getTaskState(taskId);
-        if (state) {
-            state.issueRef = jobData;
-            await stateManager.redis.setex(stateManager.getTaskKey(taskId), stateManager.stateExpiry, JSON.stringify(state));
-            correlatedLogger.info({ taskId, title: jobData.title }, 'Updated task with title/subtitle in Redis');
+    if (redisClient) {
+        try {
+            const state = await stateManager.getTaskState(taskId);
+            if (state) {
+                state.issueRef = { number: jobData.pullRequestNumber, repoOwner: jobData.repoOwner, repoName: jobData.repoName };
+                await redisClient.setex(stateManager.getTaskKey(taskId), 7 * 24 * 3600, JSON.stringify(state));
+                correlatedLogger.info({ taskId, title: jobData.title }, 'Updated task with title/subtitle in Redis');
+            }
+        } catch (redisError) {
+            correlatedLogger.warn({ taskId, error: (redisError as Error).message }, 'Failed to update task with title/subtitle in Redis');
         }
-    } catch (redisError) {
-        correlatedLogger.warn({ taskId, error: redisError.message }, 'Failed to update task with title/subtitle in Redis');
     }
 }
 
-export function buildCompletionComment(commitResult, unprocessedComments, commentContext, claudeResult) {
+export function buildCompletionComment(
+    commitResult: CommitResult | null,
+    unprocessedComments: UnprocessedComment[],
+    commentContext: CommentContext,
+    claudeResult: ClaudeCodeResponse
+): string {
     const { changesSummary, commitMessage, llm, authorsText } = commentContext;
 
     if (commitResult) {
@@ -234,26 +336,31 @@ export function buildCompletionComment(commitResult, unprocessedComments, commen
     }
 }
 
-function buildMetricsSection(claudeResult, llm, authorsText, isAnalysis = false) {
+function buildMetricsSection(
+    claudeResult: ClaudeCodeResponse,
+    llm: string | null | undefined,
+    authorsText: string,
+    isAnalysis = false
+): string {
     const defaultModel = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
     let section = `---\n🤖 **${isAnalysis ? 'Analysis' : 'Implemented'} by Claude Code**\n`;
 
     if (!isAnalysis) section += `- Requested by: ${authorsText}\n`;
     section += `- Model: ${claudeResult.model || llm || defaultModel}\n`;
 
-    if (claudeResult.finalResult?.num_turns) {
-        section += `- Turns: ${claudeResult.finalResult.num_turns}\n`;
+    if ((claudeResult.finalResult as { num_turns?: number } | null)?.num_turns) {
+        section += `- Turns: ${(claudeResult.finalResult as { num_turns?: number }).num_turns}\n`;
     }
     if (claudeResult.executionTime) {
         section += `- ${isAnalysis ? 'Analysis' : 'Execution'} time: ${Math.round(claudeResult.executionTime / 1000)}s\n`;
     }
 
-    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
+    const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as TokenClaudeResult['conversationLog'] });
     if (totalTokens > 0) {
         section += `- Tokens used: ${totalTokens.toLocaleString()} [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
     }
 
-    const cost = claudeResult.finalResult?.cost_usd || claudeResult.finalResult?.total_cost_usd;
+    const cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
     if (cost != null) {
         section += `- Cost: $${cost.toFixed(2)}\n`;
     }

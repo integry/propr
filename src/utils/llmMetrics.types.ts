@@ -33,9 +33,9 @@ export interface ClaudeResult {
     model?: string;
     success?: boolean;
     executionTime?: number;
-    sessionId?: string;
+    sessionId?: string | null;
     conversationId?: string | null;
-    finalResult?: FinalResult;
+    finalResult?: FinalResult | null;
     conversationLog?: ConversationStep[];
     error?: string;
 }
