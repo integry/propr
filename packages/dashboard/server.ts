@@ -27,7 +27,7 @@ const ioRedisClient = new Redis({
 });
 
 const processDetectedIssue = (issue: DetectedIssue, correlationId: string): Promise<void> =>
-  processDetectedIssueBase(issue, correlationId, ioRedisClient);
+  processDetectedIssueBase(issue, correlationId, ioRedisClient as unknown as Parameters<typeof processDetectedIssueBase>[2]);
 
 const app = express();
 const PORT = process.env.DASHBOARD_API_PORT || 4000;
