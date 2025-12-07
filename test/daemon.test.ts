@@ -1,6 +1,8 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert';
+import { fetchIssuesForRepo, pollForIssues } from '../src/daemon.ts';
 
+// Mock environment variables for testing
 process.env.GITHUB_REPOS_TO_MONITOR = 'test-owner/test-repo';
 process.env.AI_PRIMARY_TAG = 'AI';
 process.env.AI_EXCLUDE_TAGS_PROCESSING = 'AI-processing';
@@ -8,56 +10,46 @@ process.env.AI_DONE_TAG = 'AI-done';
 process.env.MODEL_LABEL_PATTERN = '^llm-claude-(.+)$';
 process.env.DEFAULT_CLAUDE_MODEL = 'claude-3-5-sonnet-20240620';
 
-interface MockIssue {
-    id: number;
-    number: number;
-    title: string;
-    html_url: string;
-    labels: Array<{ name: string }>;
-    created_at: string;
-    updated_at: string;
+interface MockOctokit {
+    request?: ReturnType<typeof mock.fn>;
 }
 
-interface TransformedIssue {
-    id: number;
-    number: number;
-    title: string;
-    url: string;
-    repoOwner: string;
-    repoName: string;
-    labels: string[];
-    targetModels?: string[];
-    createdAt: string;
-    updatedAt: string;
-}
-
-test('daemon test - validate issue transformation logic', () => {
-    function transformIssue(mockIssue: MockIssue, repoOwner: string, repoName: string): TransformedIssue {
-        const modelLabelPattern = new RegExp(process.env.MODEL_LABEL_PATTERN || '^llm-claude-(.+)$');
-        const targetModels: string[] = [];
-        
-        mockIssue.labels.forEach(label => {
-            const match = label.name.match(modelLabelPattern);
-            if (match && match[1]) {
-                targetModels.push(match[1]);
-            }
-        });
-        
-        return {
-            id: mockIssue.id,
-            number: mockIssue.number,
-            title: mockIssue.title,
-            url: mockIssue.html_url,
-            repoOwner,
-            repoName,
-            labels: mockIssue.labels.map(l => l.name),
-            targetModels: targetModels.length > 0 ? targetModels : ['sonnet'],
-            createdAt: mockIssue.created_at,
-            updatedAt: mockIssue.updated_at
-        };
-    }
+test('fetchIssuesForRepo handles invalid repository format', async () => {
+    const mockOctokit: MockOctokit = {};
+    const invalidRepo = 'invalid-format';
     
-    const mockIssue: MockIssue = {
+    const issues = await fetchIssuesForRepo(mockOctokit, invalidRepo);
+    assert.deepStrictEqual(issues, []);
+});
+
+test('fetchIssuesForRepo constructs correct search query', async () => {
+    let capturedQuery = '';
+    const mockOctokit = {
+        request: mock.fn(async (_endpoint: string, options: { q: string }) => {
+            capturedQuery = options.q;
+            return {
+                data: {
+                    total_count: 0,
+                    items: []
+                }
+            };
+        })
+    };
+
+    await fetchIssuesForRepo(mockOctokit, 'owner/repo');
+    
+    assert.strictEqual(mockOctokit.request.mock.calls.length, 1);
+    assert.strictEqual(mockOctokit.request.mock.calls[0].arguments[0], 'GET /search/issues');
+    assert.ok(capturedQuery.includes('repo:owner/repo'));
+    assert.ok(capturedQuery.includes('is:issue'));
+    assert.ok(capturedQuery.includes('is:open'));
+    assert.ok(capturedQuery.includes('label:"AI"'));
+    assert.ok(capturedQuery.includes('-label:"AI-processing"'));
+    assert.ok(capturedQuery.includes('-label:"AI-done"'));
+});
+
+test('fetchIssuesForRepo transforms issues correctly', async () => {
+    const mockIssue = {
         id: 123,
         number: 1,
         title: 'Test Issue',
@@ -69,117 +61,183 @@ test('daemon test - validate issue transformation logic', () => {
         created_at: '2024-01-01T00:00:00Z',
         updated_at: '2024-01-02T00:00:00Z'
     };
-    
-    const result = transformIssue(mockIssue, 'owner', 'repo');
-    
-    assert.strictEqual(result.id, 123);
-    assert.strictEqual(result.number, 1);
-    assert.strictEqual(result.title, 'Test Issue');
-    assert.strictEqual(result.url, 'https://github.com/owner/repo/issues/1');
-    assert.strictEqual(result.repoOwner, 'owner');
-    assert.strictEqual(result.repoName, 'repo');
-    assert.deepStrictEqual(result.labels, ['AI', 'bug']);
-    assert.deepStrictEqual(result.targetModels, ['sonnet']);
-});
 
-test('daemon test - handles invalid repository format', () => {
-    function parseRepoFullName(repoFullName: string): { owner: string; repo: string } | null {
-        const [owner, repo] = repoFullName.split('/');
-        if (!owner || !repo) {
-            return null;
-        }
-        return { owner, repo };
-    }
-    
-    assert.strictEqual(parseRepoFullName('invalid-format'), null);
-    assert.deepStrictEqual(parseRepoFullName('owner/repo'), { owner: 'owner', repo: 'repo' });
-});
-
-test('daemon test - constructs correct search query', () => {
-    function constructSearchQuery(owner: string, repo: string): string {
-        const primaryTag = process.env.AI_PRIMARY_TAG || 'AI';
-        const processingTag = process.env.AI_EXCLUDE_TAGS_PROCESSING || 'AI-processing';
-        const doneTag = process.env.AI_DONE_TAG || 'AI-done';
-        
-        return `repo:${owner}/${repo} is:issue is:open label:"${primaryTag}" -label:"${processingTag}" -label:"${doneTag}"`;
-    }
-    
-    const query = constructSearchQuery('owner', 'repo');
-    
-    assert.ok(query.includes('repo:owner/repo'));
-    assert.ok(query.includes('is:issue'));
-    assert.ok(query.includes('is:open'));
-    assert.ok(query.includes('label:"AI"'));
-    assert.ok(query.includes('-label:"AI-processing"'));
-    assert.ok(query.includes('-label:"AI-done"'));
-});
-
-test('daemon test - identifies model labels correctly', () => {
-    function extractModelLabels(labels: string[]): string[] {
-        const modelLabelPattern = new RegExp(process.env.MODEL_LABEL_PATTERN || '^llm-claude-(.+)$');
-        const models: string[] = [];
-        
-        labels.forEach(label => {
-            const match = label.match(modelLabelPattern);
-            if (match && match[1]) {
-                models.push(match[1]);
+    const mockOctokit = {
+        request: mock.fn(async () => ({
+            data: {
+                total_count: 1,
+                items: [mockIssue]
             }
-        });
-        
-        return models.length > 0 ? models : ['sonnet'];
-    }
+        }))
+    };
+
+    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
     
-    const labels = ['AI', 'llm-claude-3-opus-20240229', 'llm-claude-3-5-sonnet-20240620', 'enhancement'];
-    const models = extractModelLabels(labels);
-    
-    assert.deepStrictEqual(models, ['3-opus-20240229', '3-5-sonnet-20240620']);
+    assert.strictEqual(issues.length, 1);
+    assert.deepStrictEqual(issues[0], {
+        id: 123,
+        number: 1,
+        title: 'Test Issue',
+        url: 'https://github.com/owner/repo/issues/1',
+        repoOwner: 'owner',
+        repoName: 'repo',
+        labels: ['AI', 'bug'],
+        targetModels: ['sonnet'],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-02T00:00:00Z'
+    });
 });
 
-test('daemon test - handles single model label', () => {
-    function extractModelLabels(labels: string[]): string[] {
-        const modelLabelPattern = new RegExp(process.env.MODEL_LABEL_PATTERN || '^llm-claude-(.+)$');
-        const models: string[] = [];
-        
-        labels.forEach(label => {
-            const match = label.match(modelLabelPattern);
-            if (match && match[1]) {
-                models.push(match[1]);
+test('fetchIssuesForRepo handles API errors gracefully', async () => {
+    const mockOctokit = {
+        request: mock.fn(async () => {
+            const error = new Error('API Error') as Error & { status: number };
+            error.status = 500;
+            throw error;
+        })
+    };
+
+    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
+    assert.deepStrictEqual(issues, []);
+});
+
+test('fetchIssuesForRepo handles rate limit errors', async () => {
+    const mockOctokit = {
+        request: mock.fn(async () => {
+            const error = new Error('API rate limit exceeded') as Error & { status: number };
+            error.status = 403;
+            throw error;
+        })
+    };
+
+    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
+    assert.deepStrictEqual(issues, []);
+});
+
+test('pollForIssues returns detected issues', async () => {
+    // Override environment for this test
+    const originalRepos = process.env.GITHUB_REPOS_TO_MONITOR;
+    process.env.GITHUB_REPOS_TO_MONITOR = 'owner1/repo1';
+
+    // This test validates that pollForIssues can run without authentication
+    // In a real scenario, it would use the authenticated client
+    const { pollForIssues: testPollForIssues } = await import('../src/daemon.ts');
+    
+    // Since we don't have real GitHub credentials in test, this will fail auth
+    // but that's expected and handled gracefully
+    const issues = await testPollForIssues();
+
+    // Without auth, it should return undefined or empty array (no issues)
+    assert.ok(issues === undefined || (Array.isArray(issues) && issues.length === 0));
+
+    // Restore original environment
+    process.env.GITHUB_REPOS_TO_MONITOR = originalRepos;
+});
+
+test('fetchIssuesForRepo identifies model labels correctly', async () => {
+    const mockIssue = {
+        id: 124,
+        number: 2,
+        title: 'Test Issue with Model Labels',
+        html_url: 'https://github.com/owner/repo/issues/2',
+        labels: [
+            { name: 'AI' },
+            { name: 'llm-claude-3-opus-20240229' },
+            { name: 'llm-claude-3-5-sonnet-20240620' },
+            { name: 'enhancement' }
+        ],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-02T00:00:00Z'
+    };
+
+    const mockOctokit = {
+        request: mock.fn(async () => ({
+            data: {
+                total_count: 1,
+                items: [mockIssue]
             }
-        });
-        
-        return models.length > 0 ? models : ['sonnet'];
-    }
+        }))
+    };
+
+    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
     
-    const labels = ['AI', 'llm-claude-3-opus-20240229', 'bug'];
-    const models = extractModelLabels(labels);
-    
-    assert.deepStrictEqual(models, ['3-opus-20240229']);
+    assert.strictEqual(issues.length, 1);
+    assert.deepStrictEqual(issues[0].targetModels, [
+        '3-opus-20240229',
+        '3-5-sonnet-20240620'
+    ]);
+    assert.deepStrictEqual(issues[0].labels, [
+        'AI',
+        'llm-claude-3-opus-20240229',
+        'llm-claude-3-5-sonnet-20240620',
+        'enhancement'
+    ]);
 });
 
-test('daemon test - ignores non-matching model labels', () => {
-    function extractModelLabels(labels: string[]): string[] {
-        const modelLabelPattern = new RegExp(process.env.MODEL_LABEL_PATTERN || '^llm-claude-(.+)$');
-        const models: string[] = [];
-        
-        labels.forEach(label => {
-            const match = label.match(modelLabelPattern);
-            if (match && match[1]) {
-                models.push(match[1]);
+test('fetchIssuesForRepo handles single model label', async () => {
+    const mockIssue = {
+        id: 125,
+        number: 3,
+        title: 'Test Issue with Single Model',
+        html_url: 'https://github.com/owner/repo/issues/3',
+        labels: [
+            { name: 'AI' },
+            { name: 'llm-claude-3-opus-20240229' },
+            { name: 'bug' }
+        ],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-02T00:00:00Z'
+    };
+
+    const mockOctokit = {
+        request: mock.fn(async () => ({
+            data: {
+                total_count: 1,
+                items: [mockIssue]
             }
-        });
-        
-        return models.length > 0 ? models : ['sonnet'];
-    }
+        }))
+    };
+
+    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
     
-    const labels = ['AI', 'gpt-4', 'openai-claude', 'llm-other-model', 'documentation'];
-    const models = extractModelLabels(labels);
-    
-    assert.deepStrictEqual(models, ['sonnet']);
+    assert.strictEqual(issues.length, 1);
+    assert.deepStrictEqual(issues[0].targetModels, ['3-opus-20240229']);
 });
 
-test('daemon test - validates exported functions exist', async () => {
-    const daemonModule = await import('../src/daemon.ts');
+test('fetchIssuesForRepo ignores non-matching model labels', async () => {
+    const mockIssue = {
+        id: 126,
+        number: 4,
+        title: 'Test Issue with Non-Model Labels',
+        html_url: 'https://github.com/owner/repo/issues/4',
+        labels: [
+            { name: 'AI' },
+            { name: 'gpt-4' }, // Should not match pattern
+            { name: 'openai-claude' }, // Should not match pattern
+            { name: 'llm-other-model' }, // Should not match claude pattern
+            { name: 'documentation' }
+        ],
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-02T00:00:00Z'
+    };
+
+    const mockOctokit = {
+        request: mock.fn(async () => ({
+            data: {
+                total_count: 1,
+                items: [mockIssue]
+            }
+        }))
+    };
+
+    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
     
-    assert.strictEqual(typeof daemonModule.fetchIssuesForRepo, 'function');
-    assert.strictEqual(typeof daemonModule.pollForIssues, 'function');
+    assert.strictEqual(issues.length, 1);
+    // Should fall back to default model since no matching labels
+    assert.deepStrictEqual(issues[0].targetModels, ['sonnet']);
+});
+
+test('daemon exports required functions', () => {
+    assert.strictEqual(typeof fetchIssuesForRepo, 'function');
+    assert.strictEqual(typeof pollForIssues, 'function');
 });

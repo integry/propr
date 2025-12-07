@@ -1,94 +1,242 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert';
  
+// Set up environment variables for testing
 process.env.AI_PROCESSING_TAG = 'AI-processing';
 process.env.AI_PRIMARY_TAG = 'AI';
 process.env.AI_DONE_TAG = 'AI-done';
-process.env.SIMULATED_WORK_MS = '100';
+process.env.SIMULATED_WORK_MS = '100'; // Fast for testing
 
-test('worker test - validates job processing logic', async () => {
-    function shouldSkipIssue(labels: string[], primaryTag: string, doneTag: string): { skip: boolean; reason?: string } {
-        const labelNames = labels.map(l => l.toLowerCase());
-        
-        if (!labelNames.includes(primaryTag.toLowerCase())) {
-            return { skip: true, reason: 'Primary tag missing' };
+// Mock modules
+const mockOctokit = {
+    request: mock.fn()
+};
+
+const mockWorker = {
+    on: mock.fn(),
+    close: mock.fn(async () => {}),
+    processor: null as ((job: unknown) => Promise<unknown>) | null
+};
+
+// Mock dependencies
+await mock.module('../src/auth/githubAuth.ts', {
+    namedExports: {
+        getAuthenticatedOctokit: mock.fn(async () => mockOctokit)
+    }
+});
+
+await mock.module('../src/queue/taskQueue.ts', {
+    namedExports: {
+        GITHUB_ISSUE_QUEUE_NAME: 'test-queue',
+        createWorker: mock.fn((name: string, processor: (job: unknown) => Promise<unknown>) => {
+            mockWorker.processor = processor;
+            return mockWorker;
+        })
+    }
+});
+
+await mock.module('../src/utils/llmMetrics.ts', {
+    namedExports: {
+        recordLLMMetrics: mock.fn(async () => {})
+    }
+});
+
+// Import the worker module
+const { processGitHubIssueJob, startWorker } = await import('../src/worker.ts');
+
+interface MockJob {
+    id: string;
+    name: string;
+    data: {
+        id?: number;
+        number: number;
+        title?: string;
+        url?: string;
+        repoOwner: string;
+        repoName: string;
+        labels?: string[];
+    };
+    updateProgress?: ReturnType<typeof mock.fn>;
+}
+
+test('processGitHubIssueJob adds processing tag to issue', async () => {
+    const mockJob: MockJob = {
+        id: 'job-123',
+        name: 'processGitHubIssue',
+        data: {
+            id: 1,
+            number: 42,
+            title: 'Test Issue',
+            url: 'https://github.com/test/repo/issues/42',
+            repoOwner: 'test',
+            repoName: 'repo',
+            labels: ['AI'],
+        },
+        updateProgress: mock.fn(),
+    };
+
+    // Mock GitHub API responses
+    mockOctokit.request.mock.mockImplementation(async (endpoint: string, params: { issue_number?: number; labels?: string[] }) => {
+        if (endpoint.includes('GET /repos')) {
+            return {
+                data: {
+                    labels: [{ name: 'AI' }]
+                }
+            };
         }
-        
-        if (labelNames.includes(doneTag.toLowerCase())) {
-            return { skip: true, reason: 'Already done' };
+        if (endpoint.includes('POST') && endpoint.includes('labels')) {
+            return { data: {} };
         }
-        
-        return { skip: false };
-    }
+        if (endpoint.includes('POST') && endpoint.includes('comments')) {
+            return { data: {} };
+        }
+        return { data: {} };
+    });
+
+    const result = await processGitHubIssueJob(mockJob);
+
+    assert.strictEqual(result.status, 'simulated_processing_complete');
+    assert.strictEqual(result.issueNumber, 42);
     
-    const primaryTag = process.env.AI_PRIMARY_TAG || 'AI';
-    const doneTag = process.env.AI_DONE_TAG || 'AI-done';
+    // Verify GitHub API calls
+    const apiCalls = mockOctokit.request.mock.calls;
     
-    const result1 = shouldSkipIssue(['bug'], primaryTag, doneTag);
-    assert.strictEqual(result1.skip, true);
-    assert.strictEqual(result1.reason, 'Primary tag missing');
+    // Should get issue data
+    assert.ok(apiCalls.some((call: { arguments: [string, { issue_number?: number }] }) => 
+        call.arguments[0].includes('GET /repos') &&
+        call.arguments[1].issue_number === 42
+    ));
     
-    const result2 = shouldSkipIssue(['AI', 'AI-done'], primaryTag, doneTag);
-    assert.strictEqual(result2.skip, true);
-    assert.strictEqual(result2.reason, 'Already done');
+    // Should add processing tag
+    assert.ok(apiCalls.some((call: { arguments: [string, { labels?: string[] }] }) => 
+        call.arguments[0].includes('POST') &&
+        call.arguments[0].includes('labels') &&
+        call.arguments[1].labels?.includes('AI-processing')
+    ));
     
-    const result3 = shouldSkipIssue(['AI'], primaryTag, doneTag);
-    assert.strictEqual(result3.skip, false);
+    // Should add comment
+    assert.ok(apiCalls.some((call: { arguments: [string, unknown] }) => 
+        call.arguments[0].includes('POST') &&
+        call.arguments[0].includes('comments')
+    ));
 });
 
-test('worker test - validates processing tag logic', () => {
-    function shouldAddProcessingTag(labels: string[], processingTag: string): boolean {
-        const labelNames = labels.map(l => l.toLowerCase());
-        return !labelNames.includes(processingTag.toLowerCase());
-    }
-    
-    const processingTag = process.env.AI_PROCESSING_TAG || 'AI-processing';
-    
-    assert.strictEqual(shouldAddProcessingTag(['AI'], processingTag), true);
-    assert.strictEqual(shouldAddProcessingTag(['AI', 'AI-processing'], processingTag), false);
+test('processGitHubIssueJob skips issue without primary tag', async () => {
+    const mockJob: MockJob = {
+        id: 'job-124',
+        name: 'processGitHubIssue',
+        data: {
+            number: 43,
+            repoOwner: 'test',
+            repoName: 'repo',
+        },
+        updateProgress: mock.fn(),
+    };
+
+    mockOctokit.request.mock.resetCalls();
+    mockOctokit.request.mock.mockImplementation(async () => ({
+        data: {
+            labels: [{ name: 'bug' }] // No AI tag
+        }
+    }));
+
+    const result = await processGitHubIssueJob(mockJob);
+
+    assert.strictEqual(result.status, 'skipped');
+    assert.strictEqual(result.reason, 'Primary tag missing');
 });
 
-test('worker test - validates exported functions exist', async () => {
-    const workerModule = await import('../src/worker.ts');
-    
-    assert.strictEqual(typeof workerModule.processGitHubIssueJob, 'function');
-    assert.strictEqual(typeof workerModule.startWorker, 'function');
+test('processGitHubIssueJob skips issue with done tag', async () => {
+    const mockJob: MockJob = {
+        id: 'job-125',
+        name: 'processGitHubIssue',
+        data: {
+            number: 44,
+            repoOwner: 'test',
+            repoName: 'repo',
+        },
+        updateProgress: mock.fn(),
+    };
+
+    mockOctokit.request.mock.resetCalls();
+    mockOctokit.request.mock.mockImplementation(async () => ({
+        data: {
+            labels: [{ name: 'AI' }, { name: 'AI-done' }]
+        }
+    }));
+
+    const result = await processGitHubIssueJob(mockJob);
+
+    assert.strictEqual(result.status, 'skipped');
+    assert.strictEqual(result.reason, 'Already done');
 });
 
-test('worker test - model-specific delay calculation', () => {
-    function calculateDelay(modelName: string): number {
-        const baseDelay = 500;
-        const modelHash = modelName.split('').reduce((hash, char) => {
-            return ((hash << 5) - hash + char.charCodeAt(0)) & 0xffffffff;
-        }, 0);
-        const modelDelay = Math.abs(modelHash % 1500);
-        return baseDelay + modelDelay;
-    }
+test('processGitHubIssueJob handles already processing issues', async () => {
+    const mockJob: MockJob = {
+        id: 'job-126',
+        name: 'processGitHubIssue',
+        data: {
+            number: 45,
+            repoOwner: 'test',
+            repoName: 'repo',
+        },
+        updateProgress: mock.fn(),
+    };
+
+    mockOctokit.request.mock.resetCalls();
+    mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+        if (endpoint.includes('GET /repos')) {
+            return {
+                data: {
+                    labels: [{ name: 'AI' }, { name: 'AI-processing' }]
+                }
+            };
+        }
+        return { data: {} };
+    });
+
+    const result = await processGitHubIssueJob(mockJob);
+
+    assert.strictEqual(result.status, 'simulated_processing_complete');
     
-    const opusDelay = calculateDelay('opus');
-    const sonnetDelay = calculateDelay('sonnet');
-    
-    assert(opusDelay >= 500 && opusDelay < 2000);
-    assert(sonnetDelay >= 500 && sonnetDelay < 2000);
-    assert.notStrictEqual(opusDelay, sonnetDelay);
+    // Should not try to add processing tag again
+    const labelCalls = mockOctokit.request.mock.calls.filter((call: { arguments: [string, unknown] }) => 
+        call.arguments[0].includes('labels')
+    );
+    assert.strictEqual(labelCalls.length, 0);
 });
 
-test('worker test - branch name generation', () => {
-    function generateBranchName(issueId: number, title: string, timestamp: string, modelName: string | null, randomString: string): string {
-        const sanitizedTitle = title
-            .toLowerCase()
-            .replace(/[^a-z0-9_\-]/g, '-')
-            .replace(/-+/g, '-')
-            .replace(/^-|-$/g, '')
-            .substring(0, 25);
-        
-        const modelSuffix = modelName ? `-${modelName}` : '';
-        return `ai-fix/${issueId}-${sanitizedTitle}-${timestamp}${modelSuffix}-${randomString}`;
-    }
+test('processGitHubIssueJob handles authentication errors', async () => {
+    const mockJob: MockJob = {
+        id: 'job-127',
+        name: 'processGitHubIssue',
+        data: {
+            number: 46,
+            repoOwner: 'test',
+            repoName: 'repo',
+        },
+    };
+
+    // Mock auth failure
+    const { getAuthenticatedOctokit } = await import('../src/auth/githubAuth.ts');
+    (getAuthenticatedOctokit as ReturnType<typeof mock.fn>).mock.mockImplementationOnce(async () => {
+        throw new Error('Auth failed');
+    });
+
+    await assert.rejects(
+        processGitHubIssueJob(mockJob),
+        /Auth failed/
+    );
+});
+
+test('startWorker creates worker with correct configuration', async () => {
+    const { createWorker } = await import('../src/queue/taskQueue.ts');
+    (createWorker as ReturnType<typeof mock.fn>).mock.resetCalls();
     
-    const branchName = generateBranchName(42, 'Test Issue', '20240528-1430', 'opus', 'abc');
+    const worker = startWorker();
     
-    assert.strictEqual(branchName, 'ai-fix/42-test-issue-20240528-1430-opus-abc');
-    assert(branchName.startsWith('ai-fix/'));
-    assert(branchName.includes('-opus-'));
+    assert.ok(worker);
+    assert.strictEqual((createWorker as ReturnType<typeof mock.fn>).mock.calls.length, 1);
+    assert.strictEqual((createWorker as ReturnType<typeof mock.fn>).mock.calls[0].arguments[0], 'test-queue');
+    assert.strictEqual(typeof (createWorker as ReturnType<typeof mock.fn>).mock.calls[0].arguments[1], 'function');
 });
