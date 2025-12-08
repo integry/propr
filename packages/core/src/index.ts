@@ -72,6 +72,11 @@ export { generateContext, SecurityException } from './services/contextService.js
 export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile } from './services/contextService.js';
 export { findRelevantFiles } from './services/relevanceService.js';
 export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';
+export { generatePlan, refinePlan, PlanningFailedError } from './services/taskPlanningService.js';
+export type { GeneratePlanOptions, RefinePlanOptions } from './services/taskPlanningService.js';
+export { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT } from './claude/prompts/plannerPrompts.js';
+export type { Plan, PlanItem } from './claude/prompts/plannerPrompts.js';
+export { parseLlmJson, JsonParseError } from './utils/jsonUtils.js';
 export { extractKeywords } from './services/relevance/keywordExtractor.js';
 export { mineGitHistory } from './services/relevance/gitMiner.js';
 export { scorePaths } from './services/relevance/pathScorer.js';
