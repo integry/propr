@@ -165,6 +165,7 @@ function setupRoutes(): void {
   app.delete('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.deleteDraft);
   app.post('/api/planner/drafts/:id/attachments', ensureAuthenticated, attachmentUpload, plannerRoutes.uploadAttachment);
   app.delete('/api/planner/drafts/:id/attachments/:attachmentId', ensureAuthenticated, plannerRoutes.deleteAttachment);
+  app.post('/api/planner/context/stats', ensureAuthenticated, plannerRoutes.getContextStats);
 
   app.post('/api/planner/relevance', ensureAuthenticated, relevanceRoutes.analyzeRelevance);
 
