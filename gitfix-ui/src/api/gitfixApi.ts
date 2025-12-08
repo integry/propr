@@ -357,3 +357,59 @@ export const generatePlan = async (draftId: string): Promise<void> => {
   });
   await handleApiResponse(response);
 };
+
+export interface PlanTask {
+  id: string;
+  title: string;
+  body: string;
+  files: string[];
+}
+
+export interface DraftWithPlan extends PlannerDraft {
+  plan_json: PlanTask[];
+}
+
+export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${id}`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const updateDraft = async (draftId: string, data: { plan_json: PlanTask[] }): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+};
+
+export interface RefineResponse {
+  plan: PlanTask[];
+  message: string;
+}
+
+export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instruction: string): Promise<RefineResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/refine`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draftId, plan: currentPlan, instruction }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const finalizePlan = async (draftId: string): Promise<{ issuesCreated: number }> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/finalize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draftId }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
