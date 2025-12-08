@@ -6,11 +6,7 @@ import {
   generateCorrelationId
 } from '@gitfix/core';
 
-interface RelevanceRoutesDeps {
-  isDbEnabled: boolean;
-}
-
-export function createRelevanceRoutes(_deps: RelevanceRoutesDeps) {
+export function createRelevanceRoutes() {
   async function analyzeRelevance(req: Request, res: Response): Promise<void> {
     const correlationId = generateCorrelationId();
     

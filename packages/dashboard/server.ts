@@ -117,7 +117,7 @@ function setupRoutes(): void {
   const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db, isDbEnabled });
   const llmMetricsRoutes = createLLMMetricsRoutes();
   const plannerRoutes = createPlannerRoutes({ db, isDbEnabled });
-  const relevanceRoutes = createRelevanceRoutes({ isDbEnabled });
+  const relevanceRoutes = createRelevanceRoutes();
 
   app.get('/api/status', ensureAuthenticated, statusRoutes.getStatus);
   app.get('/api/tasks', ensureAuthenticated, taskRoutes.getTasks);
