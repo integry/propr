@@ -5,6 +5,7 @@ import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, Plan, PlanItem } from '../claude/prompts/plannerPrompts.js';
 import { parseLlmJson, JsonParseError } from '../utils/jsonUtils.js';
 import logger from '../utils/logger.js';
+import { PathValidationService } from './pathValidationService.js';
 
 export class PlanningFailedError extends Error {
   constructor(message: string) {
@@ -119,17 +120,22 @@ Remember: Output ONLY a valid JSON array. No markdown, no explanations.`;
     throw new PlanningFailedError('Generated plan is empty. The prompt may be too vague.');
   }
 
-  correlatedLogger.info({ taskCount: plan.length }, 'Plan generated successfully');
+  correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
+  const validatedPlan = await PathValidationService.validateAndRepair(worktreePath, plan, {
+    correlationId
+  });
+
+  correlatedLogger.info({ taskCount: validatedPlan.length }, 'Plan generated successfully');
 
   await db('task_drafts')
     .where({ draft_id: draftId })
     .update({
-      plan_json: JSON.stringify(plan),
+      plan_json: JSON.stringify(validatedPlan),
       status: 'review',
       updated_at: db.fn.now()
     });
 
-  return plan;
+  return validatedPlan;
 }
 
 export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
