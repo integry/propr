@@ -70,6 +70,11 @@ export { getExecutionAnalysis } from './services/analysisService.js';
 export { getModelPricing } from './services/pricingService.js';
 export { generateContext, SecurityException } from './services/contextService.js';
 export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile } from './services/contextService.js';
+export { findRelevantFiles } from './services/relevanceService.js';
+export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';
+export { extractKeywords } from './services/relevance/keywordExtractor.js';
+export { mineGitHistory } from './services/relevance/gitMiner.js';
+export { scorePaths } from './services/relevance/pathScorer.js';
 
 export {
     executeClaudeCode,
