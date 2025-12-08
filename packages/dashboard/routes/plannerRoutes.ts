@@ -3,8 +3,16 @@ import { Knex } from 'knex';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs-extra';
-import { AttachmentService } from '@gitfix/core';
-import type { MulterFile } from '@gitfix/core';
+import {
+  AttachmentService,
+  generatePlan,
+  refinePlan,
+  executeDraft,
+  getGitHubInstallationToken,
+  ensureRepoCloned,
+  generateCorrelationId
+} from '@gitfix/core';
+import type { MulterFile, Plan } from '@gitfix/core';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
@@ -379,6 +387,187 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
+  async function generate(req: Request, res: Response): Promise<void> {
+    if (!isDbEnabled || !db) {
+      res.status(503).json({ error: 'Database not available' });
+      return;
+    }
+
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: 'User not authenticated' });
+      return;
+    }
+
+    const { draftId } = req.body;
+    if (!draftId) {
+      res.status(400).json({ error: 'draftId is required' });
+      return;
+    }
+
+    const correlationId = generateCorrelationId();
+
+    try {
+      const draft = await db('task_drafts')
+        .where({ draft_id: draftId })
+        .first();
+
+      if (!draft) {
+        res.status(404).json({ error: 'Draft not found' });
+        return;
+      }
+
+      if (draft.user_id !== userId) {
+        res.status(403).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      const [owner, repoName] = draft.repository.split('/');
+      if (!owner || !repoName) {
+        res.status(400).json({ error: 'Invalid repository format' });
+        return;
+      }
+
+      const accessToken = req.user?.accessToken;
+      if (!accessToken) {
+        res.status(401).json({ error: 'GitHub access token not available' });
+        return;
+      }
+
+      let authToken: string;
+      try {
+        authToken = await getGitHubInstallationToken();
+      } catch {
+        authToken = accessToken;
+      }
+
+      const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+      const worktreePath = await ensureRepoCloned(repoUrl, owner, repoName, authToken);
+
+      const plan = await generatePlan({
+        draftId,
+        worktreePath,
+        githubToken: authToken,
+        correlationId
+      });
+
+      res.json({ success: true, plan });
+    } catch (error) {
+      console.error('Generate plan error:', error);
+      const message = error instanceof Error ? error.message : 'Failed to generate plan';
+      res.status(500).json({ error: message });
+    }
+  }
+
+  async function refine(req: Request, res: Response): Promise<void> {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: 'User not authenticated' });
+      return;
+    }
+
+    const { draftId, plan: currentPlan, instruction } = req.body;
+
+    if (!currentPlan || !Array.isArray(currentPlan)) {
+      res.status(400).json({ error: 'currentPlan array is required' });
+      return;
+    }
+
+    if (!instruction || typeof instruction !== 'string') {
+      res.status(400).json({ error: 'instruction is required' });
+      return;
+    }
+
+    const correlationId = generateCorrelationId();
+
+    try {
+      let worktreePath = process.cwd();
+      let authToken = req.user?.accessToken || '';
+
+      if (draftId && isDbEnabled && db) {
+        const draft = await db('task_drafts')
+          .where({ draft_id: draftId })
+          .first();
+
+        if (draft) {
+          const [owner, repoName] = draft.repository.split('/');
+          if (owner && repoName) {
+            try {
+              authToken = await getGitHubInstallationToken();
+            } catch {
+              // Use user's token as fallback
+            }
+            const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+            worktreePath = await ensureRepoCloned(repoUrl, owner, repoName, authToken);
+          }
+        }
+      }
+
+      const plan = await refinePlan({
+        currentPlan: currentPlan as Plan,
+        instruction,
+        worktreePath,
+        githubToken: authToken,
+        correlationId
+      });
+
+      if (draftId && isDbEnabled && db) {
+        await db('task_drafts')
+          .where({ draft_id: draftId })
+          .update({
+            plan_json: JSON.stringify(plan),
+            updated_at: db.fn.now()
+          });
+      }
+
+      res.json({ success: true, plan, message: 'Plan refined successfully' });
+    } catch (error) {
+      console.error('Refine plan error:', error);
+      const message = error instanceof Error ? error.message : 'Failed to refine plan';
+      res.status(500).json({ error: message });
+    }
+  }
+
+  async function finalize(req: Request, res: Response): Promise<void> {
+    if (!isDbEnabled || !db) {
+      res.status(503).json({ error: 'Database not available' });
+      return;
+    }
+
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: 'User not authenticated' });
+      return;
+    }
+
+    const { draftId } = req.body;
+    if (!draftId) {
+      res.status(400).json({ error: 'draftId is required' });
+      return;
+    }
+
+    const correlationId = generateCorrelationId();
+
+    try {
+      const result = await executeDraft(draftId, userId, correlationId);
+
+      if (result.alreadyExecuted) {
+        res.json({ success: true, alreadyExecuted: true, issuesCreated: 0 });
+        return;
+      }
+
+      res.json({
+        success: true,
+        results: result.results,
+        issuesCreated: result.results?.length || 0
+      });
+    } catch (error) {
+      console.error('Finalize plan error:', error);
+      const message = error instanceof Error ? error.message : 'Failed to execute plan';
+      res.status(500).json({ error: message });
+    }
+  }
+
   return {
     listDrafts,
     createDraft,
@@ -387,6 +576,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     deleteDraft,
     uploadAttachment,
     deleteAttachment,
-    getContextStats
+    getContextStats,
+    generate,
+    refine,
+    finalize
   };
 }

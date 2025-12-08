@@ -166,6 +166,9 @@ function setupRoutes(): void {
   app.post('/api/planner/drafts/:id/attachments', ensureAuthenticated, attachmentUpload, plannerRoutes.uploadAttachment);
   app.delete('/api/planner/drafts/:id/attachments/:attachmentId', ensureAuthenticated, plannerRoutes.deleteAttachment);
   app.post('/api/planner/context/stats', ensureAuthenticated, plannerRoutes.getContextStats);
+  app.post('/api/planner/generate', ensureAuthenticated, plannerRoutes.generate);
+  app.post('/api/planner/refine', ensureAuthenticated, plannerRoutes.refine);
+  app.post('/api/planner/finalize', ensureAuthenticated, plannerRoutes.finalize);
 
   app.post('/api/planner/relevance', ensureAuthenticated, relevanceRoutes.analyzeRelevance);
 
