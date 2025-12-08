@@ -33,7 +33,7 @@ export const useDraft = (draftId: string): UseDraftResult => {
   }, [fetchDraft]);
 
   useEffect(() => {
-    if (!draft || draft.status !== 'generating') return;
+    if (draft?.status !== 'generating') return;
 
     const interval = setInterval(fetchDraft, 3000);
     return () => clearInterval(interval);
