@@ -68,6 +68,8 @@ export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isRevi
 
 export { getExecutionAnalysis } from './services/analysisService.js';
 export { getModelPricing } from './services/pricingService.js';
+export { generateContext, SecurityException } from './services/contextService.js';
+export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile } from './services/contextService.js';
 
 export {
     executeClaudeCode,
