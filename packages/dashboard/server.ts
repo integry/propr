@@ -16,7 +16,8 @@ import {
   createExecutionRoutes,
   createDockerRoutes,
   createGitHubRoutes,
-  createLLMMetricsRoutes
+  createLLMMetricsRoutes,
+  createPlannerRoutes
 } from './routes/index.js';
 import {
   generateCorrelationId,
@@ -114,6 +115,7 @@ function setupRoutes(): void {
   const dockerRoutes = createDockerRoutes({ redisClient });
   const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db, isDbEnabled });
   const llmMetricsRoutes = createLLMMetricsRoutes();
+  const plannerRoutes = createPlannerRoutes({ db, isDbEnabled });
 
   app.get('/api/status', ensureAuthenticated, statusRoutes.getStatus);
   app.get('/api/tasks', ensureAuthenticated, taskRoutes.getTasks);
@@ -152,6 +154,12 @@ function setupRoutes(): void {
 
   app.post('/api/import-tasks', ensureAuthenticated, githubRoutes.importTasks);
   app.get('/api/github/repos', ensureAuthenticated, githubRoutes.getRepos);
+
+  app.get('/api/planner/drafts', ensureAuthenticated, plannerRoutes.listDrafts);
+  app.post('/api/planner/drafts', ensureAuthenticated, plannerRoutes.createDraft);
+  app.get('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.getDraft);
+  app.put('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.updateDraft);
+  app.delete('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.deleteDraft);
 
   setupWebhookRoute();
 }
