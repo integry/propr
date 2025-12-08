@@ -274,6 +274,70 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
+  async function getContextStats(req: Request, res: Response): Promise<void> {
+    if (!isDbEnabled || !db) {
+      res.status(503).json({ error: 'Database not available' });
+      return;
+    }
+
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: 'User not authenticated' });
+      return;
+    }
+
+    const { draftId, level } = req.body;
+
+    if (!draftId) {
+      res.status(400).json({ error: 'draftId is required' });
+      return;
+    }
+
+    try {
+      const existing = await db('task_drafts')
+        .select('user_id')
+        .where({ draft_id: draftId })
+        .first();
+
+      if (!existing) {
+        res.status(404).json({ error: 'Draft not found' });
+        return;
+      }
+
+      if (existing.user_id !== userId) {
+        res.status(403).json({ error: 'Unauthorized access to draft' });
+        return;
+      }
+
+      // Token estimates based on context level
+      const levelMultipliers: Record<string, number> = {
+        low: 1,
+        medium: 3,
+        high: 10
+      };
+      const multiplier = levelMultipliers[level] || levelMultipliers.medium;
+
+      // Base token estimate (structure only)
+      const baseTokens = 5000;
+      const tokenCount = baseTokens * multiplier;
+
+      // Cost estimate: ~$3 per 1M input tokens for Claude
+      const costEstimate = (tokenCount / 1_000_000) * 3;
+
+      // Smart files based on level
+      const smartFiles = level === 'low' ? 0 : level === 'medium' ? 15 : 50;
+
+      res.json({
+        tokenCount,
+        costEstimate,
+        smartFiles
+      });
+    } catch (error) {
+      console.error('Get context stats error:', error);
+      res.status(500).json({ error: 'Failed to get context stats' });
+    }
+  }
+
   async function deleteAttachment(req: Request, res: Response): Promise<void> {
     if (!isDbEnabled || !db) {
       res.status(503).json({ error: 'Database not available' });
@@ -322,6 +386,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     updateDraft,
     deleteDraft,
     uploadAttachment,
-    deleteAttachment
+    deleteAttachment,
+    getContextStats
   };
 }

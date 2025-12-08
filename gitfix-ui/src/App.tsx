@@ -1,9 +1,10 @@
-import React, { useEffect } from 'react' 
+import React, { useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './components/Dashboard'
 import RepositoriesPage from './pages/RepositoriesPage'
 import TasksPage from './pages/TasksPage'
+import TaskPlannerPage from './pages/TaskPlannerPage'
 import AiToolsPage from './pages/AiToolsPage'
 import SettingsPage from './pages/SettingsPage'
 import LoginPage from './pages/LoginPage'
@@ -76,6 +77,14 @@ const App: React.FC = () => {
           element={
             <Layout>
               <TasksPage />
+            </Layout>
+          }
+        />
+        <Route
+          path="/tasks/plan/:draftId"
+          element={
+            <Layout>
+              <TaskPlannerPage />
             </Layout>
           }
         />
