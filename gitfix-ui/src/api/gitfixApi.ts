@@ -276,3 +276,84 @@ export const getCurrentUser = async (): Promise<unknown> => {
 export const logout = (): void => {
   window.location.href = `${API_BASE_URL}/api/auth/logout`;
 };
+
+export interface PlannerDraft {
+  draft_id: string;
+  repository: string;
+  prompt: string;
+  status: 'draft' | 'review' | 'generating';
+  attachments: PlannerAttachment[];
+  created_at: string;
+}
+
+export interface PlannerAttachment {
+  id: string;
+  originalName: string;
+  tokenEstimate: number;
+}
+
+export interface ContextStats {
+  tokenCount: number;
+  costEstimate: number;
+  smartFiles: number;
+}
+
+export const createDraft = async (repository: string, prompt: string): Promise<PlannerDraft> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repository, prompt }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const getDraft = async (id: string): Promise<PlannerDraft> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${id}`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const getContextStats = async (draftId: string, config: { level: string }): Promise<ContextStats> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/context/stats`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draftId, ...config }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const uploadAttachment = async (draftId: string, file: File): Promise<PlannerAttachment> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/attachments`, {
+    method: 'POST',
+    body: formData,
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const removeAttachment = async (draftId: string, attachmentId: string): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/attachments/${attachmentId}`, {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+};
+
+export const generatePlan = async (draftId: string): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draftId }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+};
