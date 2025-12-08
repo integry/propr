@@ -73,7 +73,7 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
             throw new Error(`Invalid repository format: ${repository}. Expected format: owner/name`);
         }
 
-        const githubToken = await octokit.auth() as GitHubToken;
+        const githubToken = await octokit.auth({ type: "installation" }) as GitHubToken;
         const repoUrl = getRepoUrl({ repoOwner, repoName });
 
         await ensureGitRepository(correlatedLogger);

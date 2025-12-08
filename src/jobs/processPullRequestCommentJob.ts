@@ -206,7 +206,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         body: `🔄 **Starting work on follow-up changes** requested by ${state.authorsText}\n\nI'll analyze the ${state.unprocessedComments.length} request${state.unprocessedComments.length > 1 ? 's' : ''} and implement the necessary changes.\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${state.unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`,
     });
 
-    const githubToken = await state.octokit.auth() as GitHubToken;
+    const githubToken = await state.octokit.auth({ type: "installation" }) as GitHubToken;
     const repoUrl = getRepoUrl({ repoOwner, repoName });
 
     await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting PR comment processing' });

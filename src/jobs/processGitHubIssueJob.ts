@@ -273,7 +273,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
         await job.updateProgress(25);
 
         const repoValidation: RepoValidation = issueRef.repoPayload ? { isValid: true, repoData: issueRef.repoPayload as unknown as RepoValidation['repoData'] } : await validateRepositoryInfo({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number }, octokit, correlationId);
-        const githubToken = await octokit.auth() as GitHubToken;
+        const githubToken = await octokit.auth({ type: "installation" }) as GitHubToken;
         const repoUrl = getRepoUrl(issueRef);
 
         try {
