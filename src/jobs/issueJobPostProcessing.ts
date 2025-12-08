@@ -69,7 +69,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
 
         postProcessingResult = await createPullRequest(
             octokit, issueRef, worktreeInfo,
-            { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger }
+            { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger, issueTitle: currentIssueData.data.title }
         );
 
         await safeUpdateLabels(

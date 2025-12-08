@@ -66,6 +66,7 @@ interface CreatePROptions {
     repoValidation: RepoValidation;
     PR_LABEL: string;
     correlatedLogger: Logger;
+    issueTitle: string;
 }
 
 type Octokit = {
@@ -287,12 +288,12 @@ export async function createPullRequest(
     worktreeInfo: WorktreeInfo,
     options: CreatePROptions
 ): Promise<PostProcessingResult> {
-    const { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger } = options;
+    const { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger, issueTitle } = options;
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
-    let prTitle = `AI Analysis for Issue #${issueRef.number}: ${issueRef.title?.replace('New Issue: ', '') || 'Issue'}`;
+    let prTitle = `AI Analysis for Issue #${issueRef.number}: ${issueTitle}`;
     if (commitResult) {
-        prTitle = `AI Fix for Issue #${issueRef.number}: ${issueRef.title?.replace('New Issue: ', '') || 'Issue'}`;
+        prTitle = `AI Fix for Issue #${issueRef.number}: ${issueTitle}`;
     }
 
     const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
