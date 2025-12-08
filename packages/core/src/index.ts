@@ -74,6 +74,8 @@ export { findRelevantFiles } from './services/relevanceService.js';
 export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';
 export { generatePlan, refinePlan, PlanningFailedError } from './services/taskPlanningService.js';
 export type { GeneratePlanOptions, RefinePlanOptions } from './services/taskPlanningService.js';
+export { AttachmentService } from './services/attachmentService.js';
+export type { Attachment, MulterFile } from './services/attachmentService.js';
 export { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT } from './claude/prompts/plannerPrompts.js';
 export type { Plan, PlanItem } from './claude/prompts/plannerPrompts.js';
 export { parseLlmJson, JsonParseError } from './utils/jsonUtils.js';

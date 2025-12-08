@@ -1,5 +1,20 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs-extra';
+import { AttachmentService } from '@gitfix/core';
+import type { MulterFile } from '@gitfix/core';
+
+const uploadDir = path.join(process.cwd(), 'temp_uploads');
+fs.ensureDirSync(uploadDir);
+
+const upload = multer({
+  dest: uploadDir,
+  limits: { fileSize: 10 * 1024 * 1024 }
+});
+
+export const attachmentUpload = upload.single('file');
 
 interface PlannerRoutesDeps {
   db: Knex | null;
@@ -209,11 +224,104 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
+  async function uploadAttachment(req: Request, res: Response): Promise<void> {
+    if (!isDbEnabled || !db) {
+      res.status(503).json({ error: 'Database not available' });
+      return;
+    }
+
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: 'User not authenticated' });
+      return;
+    }
+
+    if (!req.file) {
+      res.status(400).json({ error: 'No file uploaded' });
+      return;
+    }
+
+    try {
+      const existing = await db('task_drafts')
+        .select('user_id')
+        .where({ draft_id: req.params.id })
+        .first();
+
+      if (!existing) {
+        res.status(404).json({ error: 'Draft not found' });
+        return;
+      }
+
+      if (existing.user_id !== userId) {
+        res.status(403).json({ error: 'Unauthorized access to draft' });
+        return;
+      }
+
+      const attachment = await AttachmentService.processUpload(
+        req.file as MulterFile,
+        req.params.id
+      );
+
+      res.json(attachment);
+    } catch (error) {
+      console.error('Upload attachment error:', error);
+      const message = error instanceof Error ? error.message : 'Processing failed';
+      if (message.includes('not supported') || message.includes('Unsupported')) {
+        res.status(400).json({ error: message });
+      } else {
+        res.status(500).json({ error: message });
+      }
+    }
+  }
+
+  async function deleteAttachment(req: Request, res: Response): Promise<void> {
+    if (!isDbEnabled || !db) {
+      res.status(503).json({ error: 'Database not available' });
+      return;
+    }
+
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: 'User not authenticated' });
+      return;
+    }
+
+    try {
+      const existing = await db('task_drafts')
+        .select('user_id')
+        .where({ draft_id: req.params.id })
+        .first();
+
+      if (!existing) {
+        res.status(404).json({ error: 'Draft not found' });
+        return;
+      }
+
+      if (existing.user_id !== userId) {
+        res.status(403).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      await AttachmentService.deleteAttachment(req.params.id, req.params.attachmentId);
+      res.status(204).send();
+    } catch (error) {
+      console.error('Delete attachment error:', error);
+      const message = error instanceof Error ? error.message : 'Failed to delete attachment';
+      if (message.includes('not found')) {
+        res.status(404).json({ error: message });
+      } else {
+        res.status(500).json({ error: message });
+      }
+    }
+  }
+
   return {
     listDrafts,
     createDraft,
     getDraft,
     updateDraft,
-    deleteDraft
+    deleteDraft,
+    uploadAttachment,
+    deleteAttachment
   };
 }

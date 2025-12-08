@@ -18,7 +18,8 @@ import {
   createGitHubRoutes,
   createLLMMetricsRoutes,
   createPlannerRoutes,
-  createRelevanceRoutes
+  createRelevanceRoutes,
+  attachmentUpload
 } from './routes/index.js';
 import {
   generateCorrelationId,
@@ -162,6 +163,8 @@ function setupRoutes(): void {
   app.get('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.getDraft);
   app.put('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.updateDraft);
   app.delete('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.deleteDraft);
+  app.post('/api/planner/drafts/:id/attachments', ensureAuthenticated, attachmentUpload, plannerRoutes.uploadAttachment);
+  app.delete('/api/planner/drafts/:id/attachments/:attachmentId', ensureAuthenticated, plannerRoutes.deleteAttachment);
 
   app.post('/api/planner/relevance', ensureAuthenticated, relevanceRoutes.analyzeRelevance);
 
