@@ -10,9 +10,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@types/lodash": "^4.17.21",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "lodash": "^4.17.21",
+    "lucide-react": "^0.556.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-resizable-panels": "^3.0.6",
     "react-router-dom": "^7.9.3",
     "react-syntax-highlighter": "^16.1.0"
   },

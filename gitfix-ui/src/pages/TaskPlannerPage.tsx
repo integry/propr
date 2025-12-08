@@ -1,10 +1,13 @@
 import React from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useDraft } from '../hooks/useDraft';
 import SetupWizard from '../components/TaskPlanner/SetupWizard';
+import PlanEditor from '../components/TaskPlanner/PlanEditor';
+import { DraftWithPlan } from '../api/gitfixApi';
 
 const TaskPlannerPage: React.FC = () => {
   const { draftId } = useParams<{ draftId: string }>();
+  const navigate = useNavigate();
   const { draft, loading, error, refetch } = useDraft(draftId || '');
 
   if (loading) {
@@ -52,17 +55,11 @@ const TaskPlannerPage: React.FC = () => {
 
   if (draft.status === 'review') {
     return (
-      <div className="max-w-4xl mx-auto p-6">
-        <div className="bg-white rounded-lg shadow p-8 text-center">
-          <div className="text-4xl mb-4">✅</div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Plan Generated</h2>
-          <p className="text-gray-600 mb-6">
-            Your implementation plan is ready for review.
-          </p>
-          <p className="text-sm text-gray-400">
-            (Plan Editor component coming in Issue #8)
-          </p>
-        </div>
+      <div className="h-[calc(100vh-120px)] p-4">
+        <PlanEditor 
+          draft={draft as DraftWithPlan} 
+          onFinalize={() => navigate('/')}
+        />
       </div>
     );
   }
