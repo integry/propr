@@ -1,6 +1,6 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert';
-import { fetchIssuesForRepo, pollForIssues } from '../src/daemon.ts';
+import { fetchIssuesForRepo, pollForIssues } from '@gitfix/core';
 
 // Mock environment variables for testing
 process.env.GITHUB_REPOS_TO_MONITOR = 'test-owner/test-repo';
@@ -121,7 +121,7 @@ test('pollForIssues returns detected issues', async () => {
 
     // This test validates that pollForIssues can run without authentication
     // In a real scenario, it would use the authenticated client
-    const { pollForIssues: testPollForIssues } = await import('../src/daemon.ts');
+    const { pollForIssues: testPollForIssues } = await import('@gitfix/core');
     
     // Since we don't have real GitHub credentials in test, this will fail auth
     // but that's expected and handled gracefully

@@ -1,9 +1,9 @@
 import { Octokit } from '@octokit/core';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
-import logger from '../utils/logger.ts';
-import { ensureBranchAndPush } from '../git/repoBranching.ts';
-import { handleError } from '../utils/errorHandler.ts';
-import { generatePRBody, generateClaudeLogsComment } from './prFormatters.ts';
+import { getAuthenticatedOctokit } from '@gitfix/core';
+import { logger } from '@gitfix/core';
+import { ensureBranchAndPush } from '@gitfix/core';
+import { handleError } from '@gitfix/core';
+import { generatePRBody, generateClaudeLogsComment } from './prFormatters.js';
 
 const DEFAULT_BASE_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
 

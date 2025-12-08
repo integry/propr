@@ -15,6 +15,6 @@
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["src/**/*", "config/**/*", "scripts/**/*", "test/**/*", "knexfile.ts", "packages/dashboard/**/*"],
-  "exclude": ["node_modules", "dist", "packages/dashboard/node_modules", "packages/dashboard/dist"]
+  "include": ["src/**/*", "config/**/*", "scripts/**/*", "knexfile.ts", "packages/dashboard/**/*", "packages/core/**/*"],
+  "exclude": ["node_modules", "dist", "test/**/*", "packages/dashboard/node_modules", "packages/dashboard/dist", "packages/core/node_modules", "packages/core/dist"]
 }

@@ -1,17 +1,25 @@
 import 'dotenv/config';
 import { Redis } from 'ioredis';
 import type { Logger } from 'pino';
-import { getAuthenticatedOctokit } from './auth/githubAuth.ts';
-import logger, { generateCorrelationId } from './utils/logger.ts';
-import { withErrorHandling, handleError } from './utils/errorHandler.ts';
-import { withRetry, retryConfigs } from './utils/retryHandler.ts';
-import { shutdownQueue } from './queue/taskQueue.ts';
-import { getDefaultModel } from './config/modelAliases.ts';
-import { db, isEnabled as isDbEnabled } from './db/postgres.ts';
-import { initializeWebhookHandler } from './webhook/webhookHandler.ts';
-import { pollForPullRequestComments } from './polling/prCommentPolling.ts';
-import { handleCommentDeleted, handleCommentEdited, processCommentEvent } from './webhook/commentEventHandler.ts';
-import type { CommentPayload, CommentEventConfig, CommentEventType } from './webhook/commentEventHandler.ts';
+import {
+    getAuthenticatedOctokit,
+    generateCorrelationId,
+    withErrorHandling,
+    handleError,
+    withRetry,
+    retryConfigs,
+    shutdownQueue,
+    getDefaultModel,
+    db,
+    isEnabled as isDbEnabled,
+    initializeWebhookHandler,
+    handleCommentDeleted,
+    handleCommentEdited,
+    processCommentEvent
+} from '@gitfix/core';
+import type { CommentPayload, CommentEventConfig, CommentEventType } from '@gitfix/core';
+import { logger } from '@gitfix/core';
+import { pollForPullRequestComments } from './polling/prCommentPolling.js';
 import {
     loadAllConfigs,
     reloadConfigs,
@@ -20,10 +28,10 @@ import {
     getUserWhitelist,
     getPrimaryProcessingLabels,
     loadSettingsFromConfig
-} from './daemon/configLoader.ts';
-import { resetQueues, resetIssueLabels } from './daemon/queueReset.ts';
-import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.ts';
-import type { DetectedIssue } from './daemon/issueDetection.ts';
+} from './daemon/configLoader.js';
+import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
+import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
+import type { DetectedIssue } from './daemon/issueDetection.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');

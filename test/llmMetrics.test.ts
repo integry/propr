@@ -1,7 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'assert';
 import Redis from 'ioredis';
-import { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } from '../src/utils/llmMetrics.ts';
+import { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } from '@gitfix/core';
 
 interface ClaudeResultLike {
     success: boolean;

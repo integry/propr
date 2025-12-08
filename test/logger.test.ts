@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import logger from '../src/utils/logger.ts';
+import { logger } from '@gitfix/core';
 
 test('Logger exports a pino instance', () => {
     assert.ok(logger);

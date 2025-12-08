@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { getGitHubInstallationToken, getAuthenticatedOctokit } from '../src/auth/githubAuth.ts';
+import { getGitHubInstallationToken, getAuthenticatedOctokit } from '@gitfix/core';
 
 test('GitHub authentication module exports required functions', () => {
     assert.strictEqual(typeof getGitHubInstallationToken, 'function');

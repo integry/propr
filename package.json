@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build": "tsc",
     "lint": "eslint src/",
@@ -36,6 +39,7 @@
   "license": "ISC",
   "description": "Automated GitHub Issue Processor with AI-powered solution generation",
   "dependencies": {
+    "@gitfix/core": "*",
     "@anthropic-ai/claude-code": "^2.0.1",
     "@octokit/auth-app": "^8.0.1",
     "@octokit/core": "^7.0.2",

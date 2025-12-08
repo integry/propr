@@ -12,6 +12,7 @@
     "dev": "tsx watch server.ts"
   },
   "dependencies": {
+    "@gitfix/core": "*",
     "bullmq": "^3.5.0",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",

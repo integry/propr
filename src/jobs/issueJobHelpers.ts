@@ -1,17 +1,17 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { ErrorCategories } from '../utils/errorHandler.ts';
-import { safeRemoveLabel } from '../utils/github/labelOperations.ts';
-import { generateCompletionComment } from '../utils/github/logFiles.ts';
-import { recordLLMMetrics } from '../utils/llmMetrics.ts';
-import type { ClaudeResult } from '../utils/llmMetrics.types.ts';
-import { formatResetTime } from '../utils/scheduling.ts';
-import { issueQueue, type IssueJobData, type JobResult } from '../queue/taskQueue.ts';
-import { db, isEnabled as isDbEnabled } from '../db/postgres.ts';
-import type { WorkerStateManager } from '../utils/workerStateManager.ts';
-import type { ClaudeCodeResponse } from '../claude/claudeService.ts';
-import type { WorktreeInfo, CommitResult } from '../git/repoManager.ts';
-import type { RepoValidationResult } from '../utils/prValidation.ts';
+import { ErrorCategories } from '@gitfix/core';
+import { safeRemoveLabel } from '@gitfix/core';
+import { generateCompletionComment } from '@gitfix/core';
+import { recordLLMMetrics } from '@gitfix/core';
+import type { ClaudeResult } from '@gitfix/core';
+import { formatResetTime } from '@gitfix/core';
+import { issueQueue, type IssueJobData, type JobResult } from '@gitfix/core';
+import { db, isEnabled as isDbEnabled } from '@gitfix/core';
+import type { WorkerStateManager } from '@gitfix/core';
+import type { ClaudeCodeResponse } from '@gitfix/core';
+import type { WorktreeInfo, CommitResult } from '@gitfix/core';
+import type { RepoValidationResult } from '@gitfix/core';
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {

@@ -6,35 +6,26 @@ FROM node:18-alpine AS builder
 
 WORKDIR /app
 
-# Copy root package files and install dependencies (for building main project)
-COPY package.json package-lock.json ./
+# Copy root package files and tsconfig
+COPY package.json package-lock.json tsconfig.json ./
+
+# Copy all workspace packages
+COPY packages/core ./packages/core
+COPY packages/dashboard ./packages/dashboard
+
+# Copy root src directory (needed by dashboard for daemon imports)
+COPY src ./src
+COPY config ./config
+
+# Install all dependencies (including linking workspaces)
 RUN npm ci
 
-# Copy source files and config
-COPY src/ ./src/
-COPY config/ ./config/
-COPY tsconfig.json ./
-COPY knexfile.ts ./
-
-# Build main project to generate dist/src/ files
+# Build core first
+WORKDIR /app/packages/core
 RUN npm run build
 
-# Set up dashboard directory matching expected structure
-WORKDIR /app/packages/dashboard
-
-# Copy dashboard package files
-COPY packages/dashboard/package*.json ./
-COPY packages/dashboard/tsconfig.json ./
-
-# Install dashboard dependencies
-RUN npm ci
-
-# Copy dashboard TypeScript source files
-COPY packages/dashboard/server.ts ./
-COPY packages/dashboard/auth.ts ./
-COPY packages/dashboard/llmMetricsAdapter.ts ./
-
-# Build dashboard TypeScript to JavaScript
+# Build root project (builds both src and dashboard via root tsconfig include)
+WORKDIR /app
 RUN npm run build
 
 # Production stage
@@ -42,29 +33,22 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Copy root package files and install production dependencies
+# Copy root package files and install production dependencies with workspaces
 COPY --from=builder /app/package.json /app/package-lock.json ./
-RUN npm ci --production
 
-# Copy built main project dist files (needed for runtime dynamic imports)
+# Copy built packages (core only needs dist)
+COPY --from=builder /app/packages/core ./packages/core
+COPY --from=builder /app/packages/dashboard/package.json ./packages/dashboard/
+
+# Copy built dist directory (contains src, packages/dashboard output)
 COPY --from=builder /app/dist ./dist
 
-# Create packages directory and symlink for dashboard's relative imports
-# Dashboard server runs from /app/packages/dashboard/dist/server.js
-# Its imports like "../../src/..." resolve to /app/packages/dashboard/src/
-# This symlink makes that path point to the actual compiled files
-RUN mkdir -p packages/dashboard && ln -s ../../dist/src packages/dashboard/src
-
-# Set up dashboard directory
-WORKDIR /app/packages/dashboard
-
-# Copy built dashboard files
-COPY --from=builder /app/dist/packages/dashboard ./dist
-COPY --from=builder /app/packages/dashboard/package*.json ./
-
-# Install dashboard production dependencies only
+# Install production dependencies only
 RUN npm ci --production
+
+# Dashboard server is at dist/packages/dashboard/server.js
+WORKDIR /app
 
 EXPOSE 4000
 
-CMD ["node", "dist/server.js"]
+CMD ["node", "dist/packages/dashboard/server.js"]

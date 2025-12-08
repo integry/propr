@@ -1,23 +1,23 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import logger from '../utils/logger.ts';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.ts';
-import { withRetry, retryConfigs } from '../utils/retryHandler.ts';
-import { getStateManager, TaskStates } from '../utils/workerStateManager.ts';
+import { logger } from '@gitfix/core';
+import { getAuthenticatedOctokit } from '@gitfix/core';
+import { withRetry, retryConfigs } from '@gitfix/core';
+import { getStateManager, TaskStates } from '@gitfix/core';
 import {
     createWorktreeForIssue,
     cleanupWorktree,
     getRepoUrl,
     ensureRepoCloned
-} from '../git/repoManager.ts';
-import type { WorktreeInfo } from '../git/repoManager.ts';
-import { ensureGitRepository } from '../utils/git/gitValidation.ts';
-import { executeClaudeCode, UsageLimitError } from '../claude/claudeService.ts';
-import type { ClaudeCodeResponse } from '../claude/claudeService.ts';
-import { generateTaskImportPrompt } from '../claude/prompts/promptGenerator.ts';
-import { handleError } from '../utils/errorHandler.ts';
-import { handleSimpleUsageLimitError } from './issueJobHelpers.ts';
-import type { TaskImportJobData, JobResult } from '../queue/taskQueue.ts';
+} from '@gitfix/core';
+import type { WorktreeInfo } from '@gitfix/core';
+import { ensureGitRepository } from '@gitfix/core';
+import { executeClaudeCode, UsageLimitError } from '@gitfix/core';
+import type { ClaudeCodeResponse } from '@gitfix/core';
+import { generateTaskImportPrompt } from '@gitfix/core';
+import { handleError } from '@gitfix/core';
+import { handleSimpleUsageLimitError } from './issueJobHelpers.js';
+import type { TaskImportJobData, JobResult } from '@gitfix/core';
 
 interface GitHubToken {
     token: string;

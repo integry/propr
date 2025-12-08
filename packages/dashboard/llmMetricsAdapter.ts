@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 
 // Redis configuration
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
@@ -59,91 +59,100 @@ interface LLMMetricsDetail {
     [key: string]: unknown;
 }
 
-/**
- * Retrieves LLM metrics summary
- * @returns {Promise<LLMMetricsSummary>} LLM metrics summary
- */
+async function getTotalMetrics(): Promise<{
+    totalSuccessful: number;
+    totalFailed: number;
+    totalCostUsd: number;
+    totalTurns: number;
+    totalExecutionTimeMs: number;
+}> {
+    const totalSuccessful = parseInt(await metricsRedis.get('llm:metrics:total:successful') || '0');
+    const totalFailed = parseInt(await metricsRedis.get('llm:metrics:total:failed') || '0');
+    const totalCostUsd = parseFloat(await metricsRedis.get('llm:metrics:total:costUsd') || '0');
+    const totalTurns = parseInt(await metricsRedis.get('llm:metrics:total:turns') || '0');
+    const totalExecutionTimeMs = parseInt(await metricsRedis.get('llm:metrics:total:executionTimeMs') || '0');
+    return { totalSuccessful, totalFailed, totalCostUsd, totalTurns, totalExecutionTimeMs };
+}
+
+async function getModelMetrics(model: string): Promise<ModelMetrics> {
+    const modelSuccessful = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:successful`) || '0');
+    const modelFailed = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:failed`) || '0');
+    const modelCostUsd = parseFloat(await metricsRedis.get(`llm:metrics:model:${model}:costUsd`) || '0');
+    const modelTurns = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:turns`) || '0');
+    const modelExecutionTimeMs = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:executionTimeMs`) || '0');
+    const modelTotal = modelSuccessful + modelFailed;
+    return {
+        totalRequests: modelTotal,
+        successful: modelSuccessful,
+        failed: modelFailed,
+        successRate: modelTotal > 0 ? modelSuccessful / modelTotal : 0,
+        totalCostUsd: modelCostUsd,
+        avgCostPerRequest: modelTotal > 0 ? modelCostUsd / modelTotal : 0,
+        totalTurns: modelTurns,
+        avgTurnsPerRequest: modelTotal > 0 ? modelTurns / modelTotal : 0,
+        avgExecutionTimeSec: modelTotal > 0 ? (modelExecutionTimeMs / modelTotal) / 1000 : 0
+    };
+}
+
+async function getDailyMetric(dateKey: string): Promise<DailyMetric> {
+    const daySuccessful = parseInt(await metricsRedis.get(`llm:metrics:daily:${dateKey}:successful`) || '0');
+    const dayFailed = parseInt(await metricsRedis.get(`llm:metrics:daily:${dateKey}:failed`) || '0');
+    const dayCostUsd = parseFloat(await metricsRedis.get(`llm:metrics:daily:${dateKey}:costUsd`) || '0');
+    return {
+        date: dateKey,
+        successful: daySuccessful,
+        failed: dayFailed,
+        total: daySuccessful + dayFailed,
+        costUsd: dayCostUsd
+    };
+}
+
+function parseHighCostAlerts(alerts: string[]): HighCostAlert[] {
+    return alerts.map((alert: string) => {
+        try {
+            return JSON.parse(alert) as HighCostAlert;
+        } catch {
+            return null;
+        }
+    }).filter((alert: HighCostAlert | null): alert is HighCostAlert => alert !== null);
+}
+
 export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
     try {
-        // Get total metrics
-        const totalSuccessful = parseInt(await metricsRedis.get('llm:metrics:total:successful') || '0');
-        const totalFailed = parseInt(await metricsRedis.get('llm:metrics:total:failed') || '0');
-        const totalCostUsd = parseFloat(await metricsRedis.get('llm:metrics:total:costUsd') || '0');
-        const totalTurns = parseInt(await metricsRedis.get('llm:metrics:total:turns') || '0');
-        const totalExecutionTimeMs = parseInt(await metricsRedis.get('llm:metrics:total:executionTimeMs') || '0');
-        
-        const totalRequests = totalSuccessful + totalFailed;
-        const successRate = totalRequests > 0 ? totalSuccessful / totalRequests : 0;
-        const avgCostPerRequest = totalRequests > 0 ? totalCostUsd / totalRequests : 0;
-        const avgTurnsPerRequest = totalRequests > 0 ? totalTurns / totalRequests : 0;
-        const avgExecutionTimeSec = totalRequests > 0 ? (totalExecutionTimeMs / totalRequests) / 1000 : 0;
-        
-        // Get model-specific metrics
+        const totals = await getTotalMetrics();
+        const totalRequests = totals.totalSuccessful + totals.totalFailed;
+        const successRate = totalRequests > 0 ? totals.totalSuccessful / totalRequests : 0;
+        const avgCostPerRequest = totalRequests > 0 ? totals.totalCostUsd / totalRequests : 0;
+        const avgTurnsPerRequest = totalRequests > 0 ? totals.totalTurns / totalRequests : 0;
+        const avgExecutionTimeSec = totalRequests > 0 ? (totals.totalExecutionTimeMs / totalRequests) / 1000 : 0;
+
         const modelsUsed = await metricsRedis.smembers('llm:metrics:models:used');
         const modelMetrics: Record<string, ModelMetrics> = {};
-        
         for (const model of modelsUsed) {
-            const modelSuccessful = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:successful`) || '0');
-            const modelFailed = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:failed`) || '0');
-            const modelCostUsd = parseFloat(await metricsRedis.get(`llm:metrics:model:${model}:costUsd`) || '0');
-            const modelTurns = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:turns`) || '0');
-            const modelExecutionTimeMs = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:executionTimeMs`) || '0');
-            
-            const modelTotal = modelSuccessful + modelFailed;
-            
-            modelMetrics[model] = {
-                totalRequests: modelTotal,
-                successful: modelSuccessful,
-                failed: modelFailed,
-                successRate: modelTotal > 0 ? modelSuccessful / modelTotal : 0,
-                totalCostUsd: modelCostUsd,
-                avgCostPerRequest: modelTotal > 0 ? modelCostUsd / modelTotal : 0,
-                totalTurns: modelTurns,
-                avgTurnsPerRequest: modelTotal > 0 ? modelTurns / modelTotal : 0,
-                avgExecutionTimeSec: modelTotal > 0 ? (modelExecutionTimeMs / modelTotal) / 1000 : 0
-            };
+            modelMetrics[model] = await getModelMetrics(model);
         }
-        
-        // Get daily metrics for the last 7 days
+
         const dailyMetrics: DailyMetric[] = [];
         const today = new Date();
         for (let i = 0; i < 7; i++) {
             const date = new Date(today);
             date.setDate(date.getDate() - i);
             const dateKey = date.toISOString().split('T')[0];
-            
-            const daySuccessful = parseInt(await metricsRedis.get(`llm:metrics:daily:${dateKey}:successful`) || '0');
-            const dayFailed = parseInt(await metricsRedis.get(`llm:metrics:daily:${dateKey}:failed`) || '0');
-            const dayCostUsd = parseFloat(await metricsRedis.get(`llm:metrics:daily:${dateKey}:costUsd`) || '0');
-            
-            dailyMetrics.push({
-                date: dateKey,
-                successful: daySuccessful,
-                failed: dayFailed,
-                total: daySuccessful + dayFailed,
-                costUsd: dayCostUsd
-            });
+            dailyMetrics.push(await getDailyMetric(dateKey));
         }
-        
-        // Get recent high cost alerts
+
         const highCostAlerts = await metricsRedis.lrange('llm:metrics:alerts:highcost', 0, 9);
-        const parsedAlerts: HighCostAlert[] = highCostAlerts.map((alert: string) => {
-            try {
-                return JSON.parse(alert) as HighCostAlert;
-            } catch {
-                return null;
-            }
-        }).filter((alert: HighCostAlert | null): alert is HighCostAlert => alert !== null);
-        
+        const parsedAlerts = parseHighCostAlerts(highCostAlerts);
+
         return {
             summary: {
                 totalRequests,
-                totalSuccessful,
-                totalFailed,
+                totalSuccessful: totals.totalSuccessful,
+                totalFailed: totals.totalFailed,
                 successRate,
-                totalCostUsd,
+                totalCostUsd: totals.totalCostUsd,
                 avgCostPerRequest,
-                totalTurns,
+                totalTurns: totals.totalTurns,
                 avgTurnsPerRequest,
                 avgExecutionTimeSec
             },
@@ -152,7 +161,6 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
             recentHighCostAlerts: parsedAlerts,
             lastUpdated: new Date().toISOString()
         };
-        
     } catch (error) {
         console.error('Failed to retrieve LLM metrics summary:', error);
         throw error;

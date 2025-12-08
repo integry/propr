@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 
 import 'dotenv/config';
-import { listRepositoryBranchConfigurations } from '../src/git/repoManager.ts';
+import { listRepositoryBranchConfigurations } from '@gitfix/core';
 
 interface RepoConfig {
     branch: string;

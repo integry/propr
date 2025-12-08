@@ -1,15 +1,15 @@
-import logger from '../utils/logger.ts';
+import { logger } from '@gitfix/core';
 import type { Logger } from 'pino';
 import fs from 'fs-extra';
 import type { Redis } from 'ioredis';
-import { TaskStates } from '../utils/workerStateManager.ts';
-import type { WorkerStateManager } from '../utils/workerStateManager.ts';
-import { getUsageStats, type ClaudeResult as TokenClaudeResult } from '../utils/tokenCalculation.ts';
-import { db, isEnabled as isDbEnabled } from '../db/postgres.ts';
-import { filterCommentByAuthor } from '../utils/commentFilters.ts';
-import type { UnprocessedComment, CommentJobData } from '../queue/taskQueue.ts';
-import type { ClaudeCodeResponse } from '../claude/claudeService.ts';
-import type { CommitResult } from '../git/repoManager.ts';
+import { TaskStates } from '@gitfix/core';
+import type { WorkerStateManager } from '@gitfix/core';
+import { getUsageStats, type ClaudeResult as TokenClaudeResult } from '@gitfix/core';
+import { db, isEnabled as isDbEnabled } from '@gitfix/core';
+import { filterCommentByAuthor } from '@gitfix/core';
+import type { UnprocessedComment, CommentJobData } from '@gitfix/core';
+import type { ClaudeCodeResponse } from '@gitfix/core';
+import type { CommitResult } from '@gitfix/core';
 
 interface ValidationComment {
     id: number;

@@ -25,6 +25,8 @@ jobs:
             package-lock.json
             gitfix-ui/package-lock.json
             docs/package-lock.json
+            packages/dashboard/package-lock.json
+            packages/core/package-lock.json
 
       - name: Detect Changes
         id: filter
@@ -41,6 +43,8 @@ jobs:
               - 'docs/**'
             dashboard:
               - 'packages/dashboard/**'
+            core_package:
+              - 'packages/core/**'
 
       - name: Run Checks
         id: build
@@ -162,16 +166,110 @@ jobs:
             fi
           fi
 
-          # --- DASHBOARD ---
-          if [ "${{ steps.filter.outputs.dashboard }}" == 'true' ]; then
-            echo -e "\n--- Dashboard: Build ---" >> build_log.txt
-            BUILD_OUTPUT=$(docker build -t gitfix-dashboard -f packages/dashboard/Dockerfile.prod . 2>&1) || {
-              echo "❌ Dashboard Build FAILED" >> build_log.txt
-              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
+          # --- CORE PACKAGE ---
+          if [ "${{ steps.filter.outputs.core_package }}" == 'true' ]; then
+            echo -e "\n--- Core Package: Build & Lint ---" >> build_log.txt
+            CORE_PKG_FAILED=0
+            
+            # Ensure root dependencies are installed (respecting lockfile & workspaces)
+            # Note: If your workflow installs deps earlier globally, you can skip this 'npm ci'
+            INSTALL_OUTPUT=$(npm ci 2>&1) || {
+              echo "❌ Root Dependency Install FAILED" >> build_log.txt
+              echo "$INSTALL_OUTPUT" | tail -50 >> build_log.txt
+              CORE_PKG_FAILED=1
               EXIT_CODE=1
             }
-            if [ $? -eq 0 ] && [ $EXIT_CODE -eq 0 ]; then
-              echo "✅ Dashboard Build passed" >> build_log.txt
+
+            if [ $CORE_PKG_FAILED -eq 0 ]; then
+              # 1. Build Verification
+              echo "Building @gitfix/core..."
+              BUILD_OUTPUT=$(npm run build -w @gitfix/core 2>&1) || {
+                echo "❌ Core Package Build FAILED" >> build_log.txt
+                echo "$BUILD_OUTPUT" >> build_log.txt
+                CORE_PKG_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $CORE_PKG_FAILED -eq 0 ]; then
+                echo "✅ Core Package Build passed" >> build_log.txt
+              fi
+            fi
+
+            if [ $CORE_PKG_FAILED -eq 0 ]; then
+              # 2. Lint Verification
+              echo "Linting @gitfix/core..."
+              LINT_OUTPUT=$(npm run lint -w @gitfix/core -- --max-warnings 0 2>&1) || {
+                echo "❌ Core Package Lint FAILED" >> build_log.txt
+                echo "$LINT_OUTPUT" >> build_log.txt
+                CORE_PKG_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $CORE_PKG_FAILED -eq 0 ]; then
+                echo "✅ Core Package Lint passed" >> build_log.txt
+              fi
+            fi
+          fi
+
+          # --- DASHBOARD ---
+          if [ "${{ steps.filter.outputs.dashboard }}" == 'true' ]; then
+            echo -e "\n--- Dashboard: Build & Lint ---" >> build_log.txt
+            DASHBOARD_FAILED=0
+            
+            # Ensure root dependencies are installed (respecting lockfile & workspaces)
+            INSTALL_OUTPUT=$(npm ci 2>&1) || {
+              echo "❌ Root Dependency Install FAILED" >> build_log.txt
+              echo "$INSTALL_OUTPUT" | tail -50 >> build_log.txt
+              DASHBOARD_FAILED=1
+              EXIT_CODE=1
+            }
+
+            if [ $DASHBOARD_FAILED -eq 0 ]; then
+              # 1. Build @gitfix/core first (dashboard depends on it)
+              echo "Building @gitfix/core (dependency)..."
+              BUILD_OUTPUT=$(npm run build -w @gitfix/core 2>&1) || {
+                echo "❌ Core Package Build FAILED (dashboard dependency)" >> build_log.txt
+                echo "$BUILD_OUTPUT" >> build_log.txt
+                DASHBOARD_FAILED=1
+                EXIT_CODE=1
+              }
+            fi
+
+            if [ $DASHBOARD_FAILED -eq 0 ]; then
+              # 2. Build Verification
+              echo "Building @gitfix/dashboard-api..."
+              BUILD_OUTPUT=$(npm run build -w @gitfix/dashboard-api 2>&1) || {
+                echo "❌ Dashboard Build FAILED" >> build_log.txt
+                echo "$BUILD_OUTPUT" >> build_log.txt
+                DASHBOARD_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $DASHBOARD_FAILED -eq 0 ]; then
+                echo "✅ Dashboard Build passed" >> build_log.txt
+              fi
+            fi
+
+            if [ $DASHBOARD_FAILED -eq 0 ]; then
+              # 3. Lint Verification
+              echo "Linting @gitfix/dashboard-api..."
+              LINT_OUTPUT=$(npm run lint -w @gitfix/dashboard-api -- --max-warnings 0 2>&1) || {
+                echo "❌ Dashboard Lint FAILED" >> build_log.txt
+                echo "$LINT_OUTPUT" >> build_log.txt
+                DASHBOARD_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $DASHBOARD_FAILED -eq 0 ]; then
+                echo "✅ Dashboard Lint passed" >> build_log.txt
+              fi
+            fi
+
+            # 4. Docker Build
+            BUILD_OUTPUT=$(docker build -t gitfix-dashboard -f packages/dashboard/Dockerfile.prod . 2>&1) || {
+              echo "❌ Dashboard Docker Build FAILED" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
+              DASHBOARD_FAILED=1
+              EXIT_CODE=1
+            }
+            if [ $DASHBOARD_FAILED -eq 0 ]; then
+              echo "✅ Dashboard Docker Build passed" >> build_log.txt
             fi
           fi
 
