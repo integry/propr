@@ -17,7 +17,8 @@ import {
   createDockerRoutes,
   createGitHubRoutes,
   createLLMMetricsRoutes,
-  createPlannerRoutes
+  createPlannerRoutes,
+  createRelevanceRoutes
 } from './routes/index.js';
 import {
   generateCorrelationId,
@@ -116,6 +117,7 @@ function setupRoutes(): void {
   const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db, isDbEnabled });
   const llmMetricsRoutes = createLLMMetricsRoutes();
   const plannerRoutes = createPlannerRoutes({ db, isDbEnabled });
+  const relevanceRoutes = createRelevanceRoutes();
 
   app.get('/api/status', ensureAuthenticated, statusRoutes.getStatus);
   app.get('/api/tasks', ensureAuthenticated, taskRoutes.getTasks);
@@ -160,6 +162,8 @@ function setupRoutes(): void {
   app.get('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.getDraft);
   app.put('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.updateDraft);
   app.delete('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.deleteDraft);
+
+  app.post('/api/planner/relevance', ensureAuthenticated, relevanceRoutes.analyzeRelevance);
 
   setupWebhookRoute();
 }

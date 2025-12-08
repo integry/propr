@@ -9,3 +9,4 @@ export { createDockerRoutes } from './dockerRoutes.js';
 export { createGitHubRoutes } from './githubRoutes.js';
 export { createLLMMetricsRoutes } from './llmMetricsRoutes.js';
 export { createPlannerRoutes } from './plannerRoutes.js';
+export { createRelevanceRoutes } from './relevanceRoutes.js';
