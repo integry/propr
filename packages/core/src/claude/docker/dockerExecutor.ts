@@ -15,6 +15,7 @@ export interface DockerCommandOptions {
     onSessionId?: (sessionId: string, conversationId?: string) => void;
     onContainerId?: (containerId: string, containerName: string) => void;
     worktreePath?: string;
+    stdinData?: string; // Data to pipe to stdin
 }
 
 interface JsonLineMessage {
@@ -35,7 +36,7 @@ export function executeDockerCommand(
     options: DockerCommandOptions = {}
 ): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath } = options;
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData } = options;
 
         let executablePath: string = command;
         if (command === 'docker') {
@@ -67,7 +68,7 @@ export function executeDockerCommand(
         }
 
         const spawnOptions: SpawnOptions = {
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'],
             env: process.env
         };
 
@@ -78,6 +79,13 @@ export function executeDockerCommand(
         }
 
         const child: ChildProcess = spawn(executablePath, args, spawnOptions);
+
+        // Write stdin data if provided (for large prompts)
+        if (stdinData && child.stdin) {
+            child.stdin.write(stdinData);
+            child.stdin.end();
+            logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');
+        }
 
         let stdout = '';
         let stderr = '';

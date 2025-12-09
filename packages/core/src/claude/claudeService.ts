@@ -111,7 +111,8 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             cwd: worktreePath,
             onSessionId,
             onContainerId,
-            worktreePath
+            worktreePath,
+            stdinData: prompt // Always pass prompt via stdin
         });
 
         const executionTime = Date.now() - startTime;
@@ -244,16 +245,27 @@ CRITICAL: Do not modify any files. Do not run any commands. Only provide your an
             modelName: resolvedModel,
         });
 
-        if (claudeResult.success && (claudeResult.finalResult?.result || claudeResult.summary)) {
+        // Check for results even if exitCode was non-zero - Claude may have produced valid output
+        if (claudeResult.finalResult?.result || claudeResult.summary) {
             const analysisText = (claudeResult.finalResult?.result || claudeResult.summary)!.trim();
             correlatedLogger.info({
                 model,
-                responseLength: analysisText.length
-            }, 'Lightweight LLM analysis completed successfully via Docker');
+                responseLength: analysisText.length,
+                exitCode: claudeResult.exitCode
+            }, 'Lightweight LLM analysis completed via Docker');
             return analysisText;
         }
 
-        throw new Error(`Invalid analysis response from Claude execution: ${claudeResult.error}`);
+        // Log detailed error info
+        correlatedLogger.error({
+            exitCode: claudeResult.exitCode,
+            rawOutputLength: claudeResult.rawOutput?.length,
+            rawOutputPreview: claudeResult.rawOutput?.substring(0, 500),
+            logs: claudeResult.logs?.substring(0, 500),
+            finalResult: claudeResult.finalResult
+        }, 'Claude execution did not produce valid result');
+
+        throw new Error(`Invalid analysis response from Claude execution: ${claudeResult.error || 'No result returned'}`);
     } catch (error) {
         const err = error as Error;
         correlatedLogger.error({ error: err.message, model }, 'Lightweight LLM analysis failed');

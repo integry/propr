@@ -31,6 +31,7 @@ export interface DockerArgsParams {
     worktreePath: string;
     githubToken: string;
     prompt: string;
+    promptFilePath?: string;
     modelName?: string;
     issueNumber: number;
     CLAUDE_DOCKER_IMAGE: string;
@@ -204,10 +205,12 @@ export function verifyWorktreePostExecution(
 }
 
 export function buildDockerArgs(params: DockerArgsParams): string[] {
-    const { worktreePath, githubToken, prompt, modelName, issueNumber, CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS } = params;
+    const { worktreePath, githubToken, modelName, issueNumber, CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS } = params;
 
+    // Always use stdin for prompt to avoid E2BIG errors with large prompts
     const dockerArgs: string[] = [
         'run', '--rm',
+        '-i', // Allow stdin for piping prompt
         '--security-opt', 'no-new-privileges',
         '--cap-add', 'CHOWN',
         '--network', 'bridge',
@@ -220,7 +223,7 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
         '-e', `GH_TOKEN=${githubToken}`,
         '-w', '/home/node/workspace',
         CLAUDE_DOCKER_IMAGE,
-        'claude', '-p', prompt,
+        'claude', '-p', '-', // Read prompt from stdin
         '--max-turns', CLAUDE_MAX_TURNS.toString(),
         '--output-format', 'stream-json',
         '--verbose',
@@ -228,7 +231,9 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
     ];
 
     if (modelName) {
-        dockerArgs.splice(-6, 0, '--model', modelName);
+        // Insert model before --max-turns
+        const maxTurnsIndex = dockerArgs.indexOf('--max-turns');
+        dockerArgs.splice(maxTurnsIndex, 0, '--model', modelName);
         logger.info({ issueNumber, requestedModel: modelName }, 'Using specific model for Claude Code execution');
     } else {
         logger.debug({ issueNumber }, 'No model specified, Claude Code will use default');
