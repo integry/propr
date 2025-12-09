@@ -169,6 +169,7 @@ function setupRoutes(): void {
   app.get('/api/planner/drafts/:id/repository-info', ensureAuthenticated, plannerRoutes.getRepositoryInfo);
   app.post('/api/planner/context/stats', ensureAuthenticated, plannerRoutes.getContextStats);
   app.post('/api/planner/preview', ensureAuthenticated, plannerRoutes.previewContext);
+  app.post('/api/planner/preview/context', ensureAuthenticated, plannerRoutes.downloadContext);
   app.post('/api/planner/generate', ensureAuthenticated, plannerRoutes.generate);
   app.post('/api/planner/refine', ensureAuthenticated, plannerRoutes.refine);
   app.post('/api/planner/finalize', ensureAuthenticated, plannerRoutes.finalize);

@@ -12,7 +12,10 @@ import {
   ensureRepoCloned,
   generateCorrelationId,
   generateContextPreview,
-  BranchNotFoundError
+  generateContext,
+  findRelevantFiles,
+  BranchNotFoundError,
+  checkoutBranch
 } from '@gitfix/core';
 import type { MulterFile, Plan, Granularity } from '@gitfix/core';
 import {
@@ -463,6 +466,59 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
+  async function downloadContext(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    const validation = validatePreviewInput(req.body);
+    if (!validation.valid) { res.status(400).json({ error: validation.error }); return; }
+
+    const { draftId, prompt, baseBranch, files } = req.body;
+    const correlationId = generateCorrelationId();
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id, ['user_id', 'repository']);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const draft = ownership.draft!;
+      const [owner, repoName] = (draft.repository as string).split('/');
+      if (!owner || !repoName) { res.status(400).json({ error: 'Invalid repository format' }); return; }
+
+      const accessToken = req.user?.accessToken;
+      if (!accessToken) { res.status(401).json({ error: 'GitHub access token not available' }); return; }
+
+      const authToken = await getRepoAuthToken(accessToken);
+      const worktreePath = await ensureRepoCloned(`https://github.com/${owner}/${repoName}.git`, owner, repoName, authToken);
+
+      try {
+        await checkoutBranch(worktreePath, baseBranch);
+      } catch (error) {
+        if (error instanceof BranchNotFoundError) { res.status(400).json({ error: error.message }); return; }
+        throw error;
+      }
+
+      const relevanceResult = await findRelevantFiles(worktreePath, prompt, { correlationId });
+      const manualFiles = files || [];
+      const autoFilePaths = relevanceResult.files.map(f => f.path);
+      const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
+
+      const contextResult = await generateContext({
+        repoPath: worktreePath,
+        filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined,
+        tokenLimit: 100000,
+        correlationId
+      });
+
+      res.setHeader('Content-Type', 'text/xml');
+      res.setHeader('Content-Disposition', `attachment; filename="context-${draftId}.xml"`);
+      res.send(contextResult.context);
+
+    } catch (error) {
+      console.error('Download context error:', error);
+      res.status(500).json({ error: 'Failed to generate context' });
+    }
+  }
+
   return {
     listDrafts,
     createDraft,
@@ -475,6 +531,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     getRepositoryInfo,
     getContextStats,
     previewContext,
+    downloadContext,
     generate,
     refine,
     finalize

@@ -254,3 +254,14 @@ export const getRepositoryInfo = async (draftId: string): Promise<RepositoryInfo
 export const getAttachmentUrl = (draftId: string, attachmentId: string): string => {
   return `${API_BASE_URL}/api/planner/drafts/${draftId}/attachments/${attachmentId}`;
 };
+
+export const downloadContext = async (options: PreviewOptions): Promise<Blob> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/preview/context`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.blob();
+};
