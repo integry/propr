@@ -247,13 +247,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    const { draftId } = req.body;
+    const { draftId, baseBranch, granularity } = req.body;
     if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
 
     const correlationId = generateCorrelationId();
 
     try {
-      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id, ['user_id', 'repository']);
+      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id, ['user_id', 'repository', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const draft = ownership.draft!;
@@ -268,6 +268,19 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
       const worktreePath = await ensureRepoCloned(repoUrl, owner, repoName, authToken);
+
+      if (baseBranch || granularity) {
+        const existingConfig = (draft.context_config as Record<string, unknown>) || {};
+        const updatedConfig = {
+          ...existingConfig,
+          ...(baseBranch && { baseBranch }),
+          ...(granularity && VALID_GRANULARITIES.includes(granularity) && { granularity })
+        };
+        await db!('task_drafts').where({ draft_id: draftId }).update({
+          context_config: JSON.stringify(updatedConfig),
+          updated_at: db!.fn.now()
+        });
+      }
 
       const plan = await generatePlan({ draftId, worktreePath, githubToken: authToken, correlationId });
       res.json({ success: true, plan });

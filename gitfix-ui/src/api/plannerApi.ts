@@ -39,6 +39,42 @@ export interface ContextStats {
   smartFiles: number;
 }
 
+export type Granularity = 'single' | 'balanced' | 'granular';
+
+export interface SmartFileSelection {
+  path: string;
+  reason: string;
+  source: 'manual' | 'auto';
+  score?: number;
+}
+
+export interface PreviewStats {
+  totalTokens: number;
+  costEstimate: number;
+  contextLength: number;
+  fileCount: number;
+}
+
+export interface PreviewResult {
+  success: boolean;
+  stats: PreviewStats;
+  smartSelection: SmartFileSelection[];
+  warnings: string[];
+}
+
+export interface PreviewOptions {
+  draftId: string;
+  prompt: string;
+  baseBranch: string;
+  granularity: Granularity;
+  files?: string[];
+}
+
+export interface PlanGenerationOptions {
+  baseBranch?: string;
+  granularity?: Granularity;
+}
+
 export const createDraft = async (repository: string, prompt: string): Promise<PlannerDraft> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/drafts`, {
     method: 'POST',
@@ -89,14 +125,25 @@ export const removeAttachment = async (draftId: string, attachmentId: string): P
   await handleApiResponse(response);
 };
 
-export const generatePlan = async (draftId: string): Promise<void> => {
+export const generatePlan = async (draftId: string, options?: PlanGenerationOptions): Promise<void> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ draftId }),
+    body: JSON.stringify({ draftId, ...options }),
     credentials: 'include'
   });
   await handleApiResponse(response);
+};
+
+export const previewContext = async (options: PreviewOptions): Promise<PreviewResult> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
 };
 
 export interface PlanTask {
