@@ -164,7 +164,9 @@ function setupRoutes(): void {
   app.put('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.updateDraft);
   app.delete('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.deleteDraft);
   app.post('/api/planner/drafts/:id/attachments', ensureAuthenticated, attachmentUpload, plannerRoutes.uploadAttachment);
+  app.get('/api/planner/drafts/:id/attachments/:attachmentId', ensureAuthenticated, plannerRoutes.getAttachmentContent);
   app.delete('/api/planner/drafts/:id/attachments/:attachmentId', ensureAuthenticated, plannerRoutes.deleteAttachment);
+  app.get('/api/planner/drafts/:id/repository-info', ensureAuthenticated, plannerRoutes.getRepositoryInfo);
   app.post('/api/planner/context/stats', ensureAuthenticated, plannerRoutes.getContextStats);
   app.post('/api/planner/preview', ensureAuthenticated, plannerRoutes.previewContext);
   app.post('/api/planner/generate', ensureAuthenticated, plannerRoutes.generate);

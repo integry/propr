@@ -20,7 +20,7 @@ export interface GenerationTrace {
 export interface PlannerDraft {
   draft_id: string;
   repository: string;
-  prompt: string;
+  initial_prompt: string;
   status: 'draft' | 'review' | 'generating';
   attachments: PlannerAttachment[];
   created_at: string;
@@ -31,6 +31,8 @@ export interface PlannerAttachment {
   id: string;
   originalName: string;
   tokenEstimate: number;
+  type?: 'image' | 'text';
+  mimeType?: string;
 }
 
 export interface ContextStats {
@@ -226,4 +228,21 @@ export const deleteDraft = async (draftId: string): Promise<void> => {
     credentials: 'include'
   });
   await handleApiResponse(response);
+};
+
+export interface RepositoryInfo {
+  defaultBranch: string;
+  branches: string[];
+}
+
+export const getRepositoryInfo = async (draftId: string): Promise<RepositoryInfo> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/repository-info`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const getAttachmentUrl = (draftId: string, attachmentId: string): string => {
+  return `${API_BASE_URL}/api/planner/drafts/${draftId}/attachments/${attachmentId}`;
 };

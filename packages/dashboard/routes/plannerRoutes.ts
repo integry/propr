@@ -350,6 +350,64 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
+  async function getAttachmentContent(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['attachments']);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const attachments = (ownership.draft?.attachments || []) as { id: string; storedPath: string; mimeType: string; originalName: string }[];
+      const attachment = attachments.find(a => a.id === req.params.attachmentId);
+      if (!attachment) { res.status(404).json({ error: 'Attachment not found' }); return; }
+
+      const content = await AttachmentService.getAttachmentContent(attachment.storedPath);
+      res.setHeader('Content-Type', attachment.mimeType);
+      res.setHeader('Content-Disposition', `inline; filename="${attachment.originalName}"`);
+      res.send(content);
+    } catch (error) {
+      console.error('Get attachment content error:', error);
+      res.status(500).json({ error: 'Failed to get attachment content' });
+    }
+  }
+
+  async function getRepositoryInfo(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['repository']);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const repository = ownership.draft?.repository as string;
+      if (!repository) { res.status(400).json({ error: 'Repository not found in draft' }); return; }
+
+      const [owner, repoName] = repository.split('/');
+      if (!owner || !repoName) { res.status(400).json({ error: 'Invalid repository format' }); return; }
+
+      const accessToken = req.user?.accessToken;
+      if (!accessToken) { res.status(401).json({ error: 'GitHub access token not available' }); return; }
+
+      const authToken = await getRepoAuthToken(accessToken);
+      const { Octokit } = await import('@octokit/core');
+      const octokit = new Octokit({ auth: authToken });
+
+      const [repoInfo, branchesResponse] = await Promise.all([
+        octokit.request('GET /repos/{owner}/{repo}', { owner, repo: repoName }),
+        octokit.request('GET /repos/{owner}/{repo}/branches', { owner, repo: repoName, per_page: 100 })
+      ]);
+
+      res.json({
+        defaultBranch: repoInfo.data.default_branch,
+        branches: branchesResponse.data.map(b => b.name)
+      });
+    } catch (error) {
+      console.error('Get repository info error:', error);
+      res.status(500).json({ error: 'Failed to get repository info' });
+    }
+  }
+
   return {
     listDrafts,
     createDraft,
@@ -358,6 +416,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     deleteDraft,
     uploadAttachment,
     deleteAttachment,
+    getAttachmentContent,
+    getRepositoryInfo,
     getContextStats,
     previewContext,
     generate,

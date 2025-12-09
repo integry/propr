@@ -5,6 +5,7 @@ import {
   generatePlan, 
   getDraft, 
   previewContext,
+  getRepositoryInfo,
   PlannerDraft, 
   PlannerAttachment, 
   GenerationTrace,
@@ -16,6 +17,7 @@ import { CostPreview } from './CostPreview';
 import { SmartFileSelection } from './SmartFileSelection';
 import { AttachmentUploader } from './AttachmentUploader';
 import { GranularitySelector } from './GranularitySelector';
+import { BranchSelector } from './BranchSelector';
 import { Loader2 } from 'lucide-react';
 
 interface SetupWizardProps {
@@ -40,10 +42,16 @@ interface PreviewState {
   lastSynced: Date | null;
 }
 
+interface RepoInfoState {
+  isLoading: boolean;
+  branches: string[];
+  error: string | null;
+}
+
 export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete }) => {
   const [config, setConfig] = useState<PlannerConfig>({
-    prompt: draft.prompt,
-    baseBranch: 'main',
+    prompt: draft.initial_prompt || '',
+    baseBranch: '',
     granularity: 'balanced',
     files: draft.attachments || []
   });
@@ -55,11 +63,18 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     lastSynced: null
   });
 
+  const [repoInfo, setRepoInfo] = useState<RepoInfoState>({
+    isLoading: true,
+    branches: [],
+    error: null
+  });
+
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [generationTrace, setGenerationTrace] = useState<GenerationTrace | undefined>(undefined);
   const [branchError, setBranchError] = useState<string | null>(null);
+  const [initialSyncDone, setInitialSyncDone] = useState<boolean>(false);
   
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -69,9 +84,23 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     configRef.current = config;
   }, [config]);
 
+  useEffect(() => {
+    const loadRepoInfo = async () => {
+      try {
+        const info = await getRepositoryInfo(draft.draft_id);
+        setRepoInfo({ isLoading: false, branches: info.branches, error: null });
+        setConfig(prev => ({ ...prev, baseBranch: info.defaultBranch }));
+      } catch (err) {
+        setRepoInfo({ isLoading: false, branches: [], error: (err as Error).message });
+        setConfig(prev => ({ ...prev, baseBranch: 'main' }));
+      }
+    };
+    loadRepoInfo();
+  }, [draft.draft_id]);
+
   const fetchPreview = useCallback(async () => {
     const currentConfig = configRef.current;
-    if (!currentConfig.prompt.trim()) {
+    if (!currentConfig.prompt.trim() || !currentConfig.baseBranch) {
       return;
     }
     
@@ -112,6 +141,15 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   }, [draft.draft_id]);
 
   useEffect(() => {
+    if (!initialSyncDone && config.baseBranch && config.prompt.trim()) {
+      setInitialSyncDone(true);
+      fetchPreview();
+    }
+  }, [config.baseBranch, config.prompt, initialSyncDone, fetchPreview]);
+
+  useEffect(() => {
+    if (!initialSyncDone) return;
+
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
@@ -125,13 +163,13 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [config.prompt, config.baseBranch, config.granularity, fetchPreview]);
+  }, [config.prompt, config.baseBranch, config.granularity, fetchPreview, initialSyncDone]);
 
   useEffect(() => {
-    if (config.files.length > 0) {
+    if (initialSyncDone && config.files.length > 0) {
       fetchPreview();
     }
-  }, [config.files.length, fetchPreview]);
+  }, [config.files.length, fetchPreview, initialSyncDone]);
 
   const handleUpload = async (file: File) => {
     setIsUploading(true);
@@ -217,7 +255,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     };
   }, []);
 
-  const isGenerateDisabled = isGenerating || preview.isLoading || !!branchError;
+  const isGenerateDisabled = isGenerating || preview.isLoading || !!branchError || repoInfo.isLoading;
 
   return (
     <div className="max-w-4xl mx-auto p-6 bg-white rounded-lg shadow">
@@ -228,23 +266,13 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
             Repository: <span className="font-mono text-gray-900">{draft.repository}</span>
           </p>
         </div>
-        <div className="flex flex-col items-end">
-          <label className="block text-sm font-medium text-gray-700 mb-1">Base Branch</label>
-          <input
-            type="text"
-            value={config.baseBranch}
-            onChange={(e) => setConfig(prev => ({ ...prev, baseBranch: e.target.value }))}
-            placeholder="main"
-            className={`w-40 px-3 py-1.5 text-sm border rounded-md font-mono ${
-              branchError 
-                ? 'border-red-300 focus:ring-red-500 focus:border-red-500' 
-                : 'border-gray-300 focus:ring-indigo-500 focus:border-indigo-500'
-            }`}
-          />
-          {branchError && (
-            <p className="text-xs text-red-600 mt-1">{branchError}</p>
-          )}
-        </div>
+        <BranchSelector
+          value={config.baseBranch}
+          branches={repoInfo.branches}
+          isLoading={repoInfo.isLoading}
+          error={branchError || repoInfo.error}
+          onChange={(branch) => setConfig(prev => ({ ...prev, baseBranch: branch }))}
+        />
       </div>
 
       <div className="mb-6">
@@ -272,6 +300,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
 
       <AttachmentUploader
         files={config.files}
+        draftId={draft.draft_id}
         isUploading={isUploading}
         onUpload={handleUpload}
         onRemove={handleRemoveFile}
@@ -306,6 +335,11 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           <span className="flex items-center justify-center gap-2">
             <Loader2 className="w-5 h-5 animate-spin" />
             Syncing...
+          </span>
+        ) : repoInfo.isLoading ? (
+          <span className="flex items-center justify-center gap-2">
+            <Loader2 className="w-5 h-5 animate-spin" />
+            Loading repository info...
           </span>
         ) : (
           'Generate Implementation Plan'
