@@ -10,9 +10,11 @@ import {
   executeDraft,
   getGitHubInstallationToken,
   ensureRepoCloned,
-  generateCorrelationId
+  generateCorrelationId,
+  generateContextPreview,
+  BranchNotFoundError
 } from '@gitfix/core';
-import type { MulterFile, Plan } from '@gitfix/core';
+import type { MulterFile, Plan, Granularity } from '@gitfix/core';
 import {
   checkDbAndAuth,
   checkAuth,
@@ -173,6 +175,68 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
+  const VALID_GRANULARITIES = ['single', 'balanced', 'granular'] as const;
+  const BRANCH_NAME_REGEX = /^[a-zA-Z0-9._/-]+$/;
+
+  async function previewContext(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    const { draftId, prompt, baseBranch, granularity, files } = req.body;
+    
+    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
+    if (!prompt || typeof prompt !== 'string') { res.status(400).json({ error: 'prompt is required' }); return; }
+    if (!baseBranch || typeof baseBranch !== 'string') { res.status(400).json({ error: 'baseBranch is required' }); return; }
+    if (!BRANCH_NAME_REGEX.test(baseBranch)) { res.status(400).json({ error: 'Invalid branch name format' }); return; }
+    if (granularity && !VALID_GRANULARITIES.includes(granularity)) { 
+      res.status(400).json({ error: `granularity must be one of: ${VALID_GRANULARITIES.join(', ')}` }); 
+      return; 
+    }
+    if (files && (!Array.isArray(files) || !files.every(f => typeof f === 'string'))) {
+      res.status(400).json({ error: 'files must be an array of strings' });
+      return;
+    }
+
+    const correlationId = generateCorrelationId();
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id, ['user_id', 'repository']);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const draft = ownership.draft!;
+      const [owner, repoName] = (draft.repository as string).split('/');
+      if (!owner || !repoName) { res.status(400).json({ error: 'Invalid repository format' }); return; }
+
+      const accessToken = req.user?.accessToken;
+      if (!accessToken) { res.status(401).json({ error: 'GitHub access token not available' }); return; }
+
+      let authToken: string;
+      try { authToken = await getGitHubInstallationToken(); } catch { authToken = accessToken; }
+
+      const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+      const worktreePath = await ensureRepoCloned(repoUrl, owner, repoName, authToken);
+
+      const result = await generateContextPreview({
+        draftId,
+        prompt,
+        baseBranch,
+        granularity: (granularity || 'balanced') as Granularity,
+        files,
+        worktreePath,
+        correlationId
+      });
+
+      res.json(result);
+    } catch (error) {
+      console.error('Preview context error:', error);
+      if (error instanceof BranchNotFoundError) {
+        res.status(400).json({ error: error.message });
+        return;
+      }
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to preview context' });
+    }
+  }
+
   async function deleteAttachment(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
@@ -293,6 +357,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     uploadAttachment,
     deleteAttachment,
     getContextStats,
+    previewContext,
     generate,
     refine,
     finalize
