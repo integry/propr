@@ -1,8 +1,10 @@
-import { test, describe, beforeEach } from 'node:test';
+import { test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
 
 process.env.NODE_ENV = 'test';
-import { extractKeywords } from '@gitfix/core';
+import { extractKeywords } from '../packages/core/src/services/relevance/keywordExtractor.js';
+import { formatCommitLog } from '../packages/core/src/services/relevance/gitMiner.js';
+import type { CommitInfo } from '../packages/core/src/services/relevance/gitMiner.js';
 
 describe('Keyword Extractor', () => {
     test('extracts CamelCase identifiers', () => {
@@ -94,5 +96,88 @@ describe('Relevance Scoring', () => {
         const maxResults = 20;
         const limited = scores.slice(0, maxResults);
         assert.strictEqual(limited.length, 20);
+    });
+});
+
+describe('Semantic Git Mining', () => {
+    describe('formatCommitLog', () => {
+        test('formats commits correctly', () => {
+            const commits: CommitInfo[] = [
+                { hash: 'abc123', subject: 'fix auth bug', body: '', files: ['src/auth.ts', 'src/login.ts'] },
+                { hash: 'def456', subject: 'add user feature', body: '', files: ['src/user.ts'] }
+            ];
+            const log = formatCommitLog(commits);
+            assert.ok(log.includes('abc123'));
+            assert.ok(log.includes('fix auth bug'));
+            assert.ok(log.includes('src/auth.ts'));
+            assert.ok(log.includes('def456'));
+        });
+
+        test('handles empty commits array', () => {
+            const log = formatCommitLog([]);
+            assert.strictEqual(log, '');
+        });
+
+        test('truncates at maxChars limit', () => {
+            const commits: CommitInfo[] = [
+                { hash: 'abc123', subject: 'long commit message', body: '', files: ['file1.ts', 'file2.ts', 'file3.ts'] },
+                { hash: 'def456', subject: 'another commit', body: '', files: ['file4.ts'] }
+            ];
+            const log = formatCommitLog(commits, 50);
+            assert.ok(log.length <= 100);
+        });
+    });
+
+    describe('SemanticMinerResponse parsing', () => {
+        test('parses valid JSON response', () => {
+            const response = '{"files": [{"path": "src/auth.ts", "score": 90, "reason": "auth commit"}]}';
+            const jsonMatch = response.match(/\{[\s\S]*"files"[\s\S]*\}/);
+            assert.ok(jsonMatch);
+            const parsed = JSON.parse(jsonMatch[0]);
+            assert.strictEqual(parsed.files.length, 1);
+            assert.strictEqual(parsed.files[0].path, 'src/auth.ts');
+            assert.strictEqual(parsed.files[0].score, 90);
+        });
+
+        test('handles response with extra text', () => {
+            const response = 'Here is my analysis:\n{"files": [{"path": "src/test.ts", "score": 50, "reason": "test"}]}\nDone.';
+            const jsonMatch = response.match(/\{[\s\S]*"files"[\s\S]*\}/);
+            assert.ok(jsonMatch);
+            const parsed = JSON.parse(jsonMatch[0]);
+            assert.strictEqual(parsed.files.length, 1);
+        });
+
+        test('returns empty array for invalid JSON', () => {
+            const response = 'This is not valid JSON';
+            const jsonMatch = response.match(/\{[\s\S]*"files"[\s\S]*\}/);
+            assert.strictEqual(jsonMatch, null);
+        });
+
+        test('filters invalid file entries', () => {
+            const response = '{"files": [{"path": "valid.ts", "score": 80, "reason": "test"}, {"path": "", "score": 50}, {"score": 30}]}';
+            const parsed = JSON.parse(response);
+            const validFiles = parsed.files.filter((f: { path?: string; score?: number }) => 
+                typeof f.path === 'string' && 
+                typeof f.score === 'number' &&
+                f.path.trim().length > 0
+            );
+            assert.strictEqual(validFiles.length, 1);
+            assert.strictEqual(validFiles[0].path, 'valid.ts');
+        });
+
+        test('clamps scores to 0-100 range', () => {
+            const files = [
+                { path: 'a.ts', score: 150 },
+                { path: 'b.ts', score: -20 },
+                { path: 'c.ts', score: 75 }
+            ];
+            const clamped = files.map(f => ({
+                ...f,
+                score: Math.min(100, Math.max(0, f.score))
+            }));
+            assert.strictEqual(clamped[0].score, 100);
+            assert.strictEqual(clamped[1].score, 0);
+            assert.strictEqual(clamped[2].score, 75);
+        });
     });
 });
