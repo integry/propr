@@ -15,6 +15,7 @@ export interface ContextGenerationResult {
   totalTokens: number;
   fileCharCounts: Record<string, number>;
   fileTokenCounts: Record<string, number>;
+  includedFiles: string[];
 }
 
 export interface SuspiciousFile {
@@ -176,6 +177,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
         totalTokens: limitedResult.totalTokens,
         fileCharCounts: limitedResult.fileCharCounts,
         fileTokenCounts: limitedResult.fileTokenCounts,
+        includedFiles: selectedFiles,
       };
     }
 
@@ -195,6 +197,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       totalTokens: result.totalTokens,
       fileCharCounts: result.fileCharCounts,
       fileTokenCounts: result.fileTokenCounts,
+      includedFiles: Object.keys(result.fileTokenCounts),
     };
   } catch (error) {
     if (error instanceof SecurityException) {
