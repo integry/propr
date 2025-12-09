@@ -27,6 +27,41 @@ const DEFAULT_MIN_SCORE = 30;
 const TIMEOUT_MS = 2000;
 const SEMANTIC_TIMEOUT_MS = 30000;
 
+function addScoresToMap(
+  scores: GitFileScore[] | PathFileScore[],
+  finalScores: Record<string, { score: number; reasons: Set<string> }>,
+  reason: string
+): void {
+  for (const item of scores) {
+    if (!finalScores[item.path]) {
+      finalScores[item.path] = { score: 0, reasons: new Set() };
+    }
+    finalScores[item.path].score += item.score;
+    finalScores[item.path].reasons.add(reason);
+  }
+}
+
+function buildSortedFiles(
+  finalScores: Record<string, { score: number; reasons: Set<string> }>,
+  minScore: number,
+  maxResults: number
+): RelevantFile[] {
+  return Object.entries(finalScores)
+    .filter(([, data]) => data.score >= minScore)
+    .sort(([, a], [, b]) => b.score - a.score)
+    .slice(0, maxResults)
+    .map(([path, data]): RelevantFile => {
+      const reasons = Array.from(data.reasons);
+      let reason: 'git-history' | 'path-match' | 'combined' | 'llm-semantic';
+      if (reasons.length > 1) {
+        reason = 'combined';
+      } else {
+        reason = reasons[0] as 'git-history' | 'path-match' | 'llm-semantic';
+      }
+      return { path, reason, score: data.score };
+    });
+}
+
 export async function findRelevantFiles(
   repoPath: string,
   prompt: string,
@@ -65,13 +100,7 @@ export async function findRelevantFiles(
 
       const semanticScores = await Promise.race([semanticPromise, semanticTimeoutPromise]);
 
-      for (const item of semanticScores) {
-        if (!finalScores[item.path]) {
-          finalScores[item.path] = { score: 0, reasons: new Set() };
-        }
-        finalScores[item.path].score += item.score;
-        finalScores[item.path].reasons.add('llm-semantic');
-      }
+      addScoresToMap(semanticScores, finalScores, 'llm-semantic');
 
       usedSemanticMining = semanticScores.length > 0;
       correlatedLogger.info({ semanticFileCount: semanticScores.length }, 'Semantic mining completed');
@@ -114,36 +143,10 @@ export async function findRelevantFiles(
     }
   }
   
-  for (const item of gitScores) {
-    if (!finalScores[item.path]) {
-      finalScores[item.path] = { score: 0, reasons: new Set() };
-    }
-    finalScores[item.path].score += item.score;
-    finalScores[item.path].reasons.add('git-history');
-  }
-  
-  for (const item of pathScores) {
-    if (!finalScores[item.path]) {
-      finalScores[item.path] = { score: 0, reasons: new Set() };
-    }
-    finalScores[item.path].score += item.score;
-    finalScores[item.path].reasons.add('path-match');
-  }
+  addScoresToMap(gitScores, finalScores, 'git-history');
+  addScoresToMap(pathScores, finalScores, 'path-match');
 
-  const sortedFiles = Object.entries(finalScores)
-    .filter(([, data]) => data.score >= minScore)
-    .sort(([, a], [, b]) => b.score - a.score)
-    .slice(0, maxResults)
-    .map(([path, data]): RelevantFile => {
-      const reasons = Array.from(data.reasons);
-      let reason: 'git-history' | 'path-match' | 'combined' | 'llm-semantic';
-      if (reasons.length > 1) {
-        reason = 'combined';
-      } else {
-        reason = reasons[0] as 'git-history' | 'path-match' | 'llm-semantic';
-      }
-      return { path, reason, score: data.score };
-    });
+  const sortedFiles = buildSortedFiles(finalScores, minScore, maxResults);
 
   correlatedLogger.info(
     { resultCount: sortedFiles.length, keywordCount: keywords.length, usedSemanticMining },
