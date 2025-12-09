@@ -131,5 +131,3 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
     </div>
   );
 };
-
-export { resizeImage };
