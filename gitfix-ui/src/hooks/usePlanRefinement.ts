@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { debounce } from 'lodash';
-import { updateDraft, refinePlan, PlanTask } from '../api/gitfixApi';
+import { updateDraft, refinePlan, getDraftWithPlan, PlanTask } from '../api/gitfixApi';
 
 export type SaveStatus = 'saved' | 'saving' | 'error';
 
@@ -98,9 +98,34 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
   const handleRefine = useCallback(async (instruction: string): Promise<{ success: boolean; message: string }> => {
     try {
-      const response = await refinePlan(draftId, currentPlan, instruction);
-      updatePlan(response.plan, 'ai');
-      return { success: true, message: response.message };
+      // Start refinement - returns immediately with 202
+      await refinePlan(draftId, currentPlan, instruction);
+
+      // Poll for completion
+      const pollForCompletion = async (): Promise<{ success: boolean; message: string }> => {
+        const maxAttempts = 300; // 5 minutes max
+        for (let i = 0; i < maxAttempts; i++) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          const draft = await getDraftWithPlan(draftId);
+
+          if (draft.status === 'review') {
+            // Refinement complete
+            if (draft.plan_json && Array.isArray(draft.plan_json)) {
+              updatePlan(draft.plan_json, 'ai');
+              return { success: true, message: 'Plan refined successfully' };
+            }
+            return { success: false, message: 'Refinement completed but no plan returned' };
+          }
+
+          if (draft.status !== 'refining') {
+            // Unexpected status
+            return { success: false, message: 'Refinement failed unexpectedly' };
+          }
+        }
+        return { success: false, message: 'Refinement timed out. Please try again.' };
+      };
+
+      return await pollForCompletion();
     } catch (e) {
       console.error(e);
       return { success: false, message: 'Failed to refine plan. Please try again.' };

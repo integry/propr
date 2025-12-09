@@ -1,5 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Bot, User, Loader2 } from 'lucide-react';
+import { ChatMessage } from '../../api/gitfixApi';
 
 interface Message {
   id: string;
@@ -10,17 +11,27 @@ interface Message {
 
 interface RefinementChatProps {
   onSendMessage: (message: string) => Promise<{ success: boolean; message: string }>;
+  initialMessages?: ChatMessage[];
+  onMessagesChange?: (messages: ChatMessage[]) => void;
 }
 
-export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage }) => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      content: 'I can help you refine this plan. Try asking me to:\n- "Make the testing task more detailed"\n- "Split the backend task into two"\n- "Add error handling to all tasks"',
-      timestamp: new Date()
+const WELCOME_MESSAGE: Message = {
+  id: 'welcome',
+  role: 'assistant',
+  content: 'I can help you refine this plan. Try asking me to:\n- "Make the testing task more detailed"\n- "Split the backend task into two"\n- "Add error handling to all tasks"',
+  timestamp: new Date()
+};
+
+export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange }) => {
+  const [messages, setMessages] = useState<Message[]>(() => {
+    if (initialMessages && initialMessages.length > 0) {
+      return initialMessages.map(m => ({
+        ...m,
+        timestamp: new Date(m.timestamp)
+      }));
     }
-  ]);
+    return [WELCOME_MESSAGE];
+  });
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -32,6 +43,18 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage })
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Convert messages to ChatMessage format for persistence (excluding 'thinking' messages)
+  const toChatMessages = useCallback((msgs: Message[]): ChatMessage[] => {
+    return msgs
+      .filter(m => m.role !== 'thinking')
+      .map(m => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        timestamp: m.timestamp.toISOString()
+      }));
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,22 +74,29 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage })
       timestamp: new Date()
     };
 
-    setMessages(prev => [...prev, userMessage, thinkingMessage]);
+    const messagesWithUser = [...messages, userMessage];
+    setMessages([...messagesWithUser, thinkingMessage]);
     setInput('');
     setIsLoading(true);
 
+    // Save user message immediately
+    onMessagesChange?.(toChatMessages(messagesWithUser));
+
     const result = await onSendMessage(userMessage.content);
 
-    setMessages(prev => {
-      const filtered = prev.filter(m => m.id !== 'thinking');
-      return [...filtered, {
-        id: `assistant-${Date.now()}`,
-        role: 'assistant',
-        content: result.success ? result.message : `Error: ${result.message}`,
-        timestamp: new Date()
-      }];
-    });
+    const assistantMessage: Message = {
+      id: `assistant-${Date.now()}`,
+      role: 'assistant',
+      content: result.success ? result.message : `Error: ${result.message}`,
+      timestamp: new Date()
+    };
+
+    const finalMessages = [...messagesWithUser, assistantMessage];
+    setMessages(finalMessages);
     setIsLoading(false);
+
+    // Save with assistant response
+    onMessagesChange?.(toChatMessages(finalMessages));
   };
 
   return (

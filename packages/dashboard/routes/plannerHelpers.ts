@@ -55,8 +55,10 @@ export async function verifyDraftOwnership(
   userId: string,
   selectFields: string[] = ['user_id']
 ): Promise<OwnershipResult> {
+  // Always include user_id for ownership verification
+  const fieldsWithUserId = selectFields.includes('user_id') ? selectFields : ['user_id', ...selectFields];
   const existing = await db('task_drafts')
-    .select(...selectFields)
+    .select(...fieldsWithUserId)
     .where({ draft_id: draftId })
     .first();
 

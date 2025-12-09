@@ -1,168 +1,261 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { getContextStats, uploadAttachment, removeAttachment, generatePlan, getDraft, PlannerDraft, PlannerAttachment, ContextStats, GenerationTrace } from '../../api/gitfixApi';
+import { 
+  uploadAttachment, 
+  removeAttachment, 
+  generatePlan, 
+  getDraft, 
+  previewContext,
+  getRepositoryInfo,
+  PlannerDraft, 
+  PlannerAttachment, 
+  GenerationTrace,
+  Granularity,
+  PreviewResult
+} from '../../api/gitfixApi';
 import { GenerationProgress } from './GenerationProgress';
+import { CostPreview } from './CostPreview';
+import { SmartFileSelection } from './SmartFileSelection';
+import { AttachmentUploader } from './AttachmentUploader';
+import { GranularitySelector } from './GranularitySelector';
+import { BranchSelector } from './BranchSelector';
+import { Loader2 } from 'lucide-react';
 
 interface SetupWizardProps {
   draft: PlannerDraft;
   onGenerateComplete: () => void;
 }
 
-const CONTEXT_LEVELS = ['low', 'medium', 'high'] as const;
-const CONTEXT_LABELS = ['Structure Only (Fast)', 'Balanced (Recommended)', 'Full Context (Expensive)'];
-const MAX_IMAGE_SIZE = 1024;
+const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
+const DEBOUNCE_DELAY = 800;
 
-const resizeImage = (file: File): Promise<File> => {
-  return new Promise((resolve) => {
-    if (!file.type.startsWith('image/') || file.size <= 1024 * 1024) {
-      resolve(file);
-      return;
-    }
+interface PlannerConfig {
+  prompt: string;
+  baseBranch: string;
+  granularity: Granularity;
+  files: PlannerAttachment[];
+}
 
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const img = new Image();
-    
-    img.onload = () => {
-      let { width, height } = img;
-      
-      if (width > MAX_IMAGE_SIZE || height > MAX_IMAGE_SIZE) {
-        if (width > height) {
-          height = (height / width) * MAX_IMAGE_SIZE;
-          width = MAX_IMAGE_SIZE;
-        } else {
-          width = (width / height) * MAX_IMAGE_SIZE;
-          height = MAX_IMAGE_SIZE;
-        }
-      }
-      
-      canvas.width = width;
-      canvas.height = height;
-      ctx?.drawImage(img, 0, 0, width, height);
-      
-      canvas.toBlob((blob) => {
-        if (blob) {
-          resolve(new File([blob], file.name, { type: file.type }));
-        } else {
-          resolve(file);
-        }
-      }, file.type, 0.9);
-    };
-    
-    img.onerror = () => resolve(file);
-    img.src = URL.createObjectURL(file);
-  });
-};
+interface PreviewState {
+  isLoading: boolean;
+  data: PreviewResult | null;
+  error: string | null;
+  lastSynced: Date | null;
+}
+
+interface RepoInfoState {
+  isLoading: boolean;
+  branches: string[];
+  error: string | null;
+}
 
 export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete }) => {
-  const [levelIndex, setLevelIndex] = useState<number>(1);
-  const [stats, setStats] = useState<ContextStats | null>(null);
-  const [files, setFiles] = useState<PlannerAttachment[]>(draft.attachments || []);
+  const [config, setConfig] = useState<PlannerConfig>({
+    prompt: draft.initial_prompt || '',
+    baseBranch: '',
+    granularity: 'balanced',
+    files: draft.attachments || []
+  });
+  
+  const [preview, setPreview] = useState<PreviewState>({
+    isLoading: false,
+    data: null,
+    error: null,
+    lastSynced: null
+  });
+
+  const [repoInfo, setRepoInfo] = useState<RepoInfoState>({
+    isLoading: true,
+    branches: [],
+    error: null
+  });
+
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [generationTrace, setGenerationTrace] = useState<GenerationTrace | undefined>(undefined);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [branchError, setBranchError] = useState<string | null>(null);
+  const [initialSyncDone, setInitialSyncDone] = useState<boolean>(false);
+  
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const configRef = useRef(config);
 
-  const fetchStats = useCallback(async (level: string) => {
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  useEffect(() => {
+    const loadRepoInfo = async () => {
+      try {
+        const info = await getRepositoryInfo(draft.draft_id);
+        setRepoInfo({ isLoading: false, branches: info.branches, error: null });
+        setConfig(prev => ({ ...prev, baseBranch: info.defaultBranch }));
+      } catch (err) {
+        setRepoInfo({ isLoading: false, branches: [], error: (err as Error).message });
+        setConfig(prev => ({ ...prev, baseBranch: 'main' }));
+      }
+    };
+    loadRepoInfo();
+  }, [draft.draft_id]);
+
+  const fetchPreview = useCallback(async () => {
+    const currentConfig = configRef.current;
+    if (!currentConfig.prompt.trim() || !currentConfig.baseBranch) {
+      return;
+    }
+    
+    if (!BRANCH_NAME_REGEX.test(currentConfig.baseBranch)) {
+      setBranchError('Invalid branch name format');
+      return;
+    }
+    setBranchError(null);
+    
+    setPreview(prev => ({ ...prev, isLoading: true, error: null }));
+    
     try {
-      const data = await getContextStats(draft.draft_id, { level });
-      setStats(data);
+      const result = await previewContext({
+        draftId: draft.draft_id,
+        prompt: currentConfig.prompt,
+        baseBranch: currentConfig.baseBranch,
+        granularity: currentConfig.granularity,
+        files: currentConfig.files.map(f => f.originalName)
+      });
+      
+      setPreview({
+        isLoading: false,
+        data: result,
+        error: null,
+        lastSynced: new Date()
+      });
     } catch (err) {
-      console.error('Failed to fetch context stats:', err);
+      const errorMessage = (err as Error).message || 'Failed to fetch preview';
+      setPreview(prev => ({
+        ...prev,
+        isLoading: false,
+        error: errorMessage
+      }));
+      if (errorMessage.toLowerCase().includes('branch')) {
+        setBranchError(errorMessage);
+      }
     }
   }, [draft.draft_id]);
 
   useEffect(() => {
+    if (!initialSyncDone && config.baseBranch && config.prompt.trim()) {
+      setInitialSyncDone(true);
+      fetchPreview();
+    }
+  }, [config.baseBranch, config.prompt, initialSyncDone, fetchPreview]);
+
+  useEffect(() => {
+    if (!initialSyncDone) return;
+
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
     
     debounceTimerRef.current = setTimeout(() => {
-      fetchStats(CONTEXT_LEVELS[levelIndex]);
-    }, 500);
+      fetchPreview();
+    }, DEBOUNCE_DELAY);
 
     return () => {
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [levelIndex, fetchStats]);
+  }, [config.prompt, config.baseBranch, config.granularity, fetchPreview, initialSyncDone]);
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  useEffect(() => {
+    if (initialSyncDone && config.files.length > 0) {
+      fetchPreview();
+    }
+  }, [config.files.length, fetchPreview, initialSyncDone]);
 
+  const handleUpload = async (file: File) => {
     setIsUploading(true);
     setError(null);
     
     try {
-      const processedFile = await resizeImage(file);
-      const attachment = await uploadAttachment(draft.draft_id, processedFile);
-      setFiles([...files, attachment]);
+      const attachment = await uploadAttachment(draft.draft_id, file);
+      setConfig(prev => ({ ...prev, files: [...prev.files, attachment] }));
     } catch (err) {
       setError((err as Error).message || 'Failed to upload file');
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
     }
   };
 
   const handleRemoveFile = async (attachmentId: string) => {
     try {
       await removeAttachment(draft.draft_id, attachmentId);
-      setFiles(files.filter(f => f.id !== attachmentId));
+      setConfig(prev => ({ ...prev, files: prev.files.filter(f => f.id !== attachmentId) }));
     } catch (err) {
       setError((err as Error).message || 'Failed to remove file');
     }
   };
 
   const handleGenerate = async () => {
+    if (branchError) {
+      setError('Please fix the branch name before generating');
+      return;
+    }
+
     setIsGenerating(true);
     setError(null);
     setGenerationTrace(undefined);
-    
-    const generatePromise = generatePlan(draft.draft_id);
-    
+
+    try {
+      // Start generation - returns immediately with 202
+      await generatePlan(draft.draft_id, {
+        baseBranch: config.baseBranch,
+        granularity: config.granularity
+      });
+    } catch (err) {
+      setError((err as Error).message || 'Failed to start plan generation');
+      setIsGenerating(false);
+      return;
+    }
+
+    // Poll for completion
     pollingIntervalRef.current = setInterval(async () => {
       try {
         const updatedDraft = await getDraft(draft.draft_id);
         if (updatedDraft.generation_trace) {
           setGenerationTrace(updatedDraft.generation_trace);
+          // Check for error in generation trace
+          const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
+          if (trace.error) {
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current);
+              pollingIntervalRef.current = null;
+            }
+            setError(trace.error);
+            setIsGenerating(false);
+            return;
+          }
         }
-        if (updatedDraft.status !== 'draft' && updatedDraft.status !== 'generating') {
+        // Check if generation completed (status changed to 'review')
+        if (updatedDraft.status === 'review') {
           if (pollingIntervalRef.current) {
             clearInterval(pollingIntervalRef.current);
             pollingIntervalRef.current = null;
           }
+          onGenerateComplete();
+        }
+        // Check if generation failed (status went back to 'draft')
+        if (updatedDraft.status === 'draft') {
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+          }
+          const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
+          setError(trace?.error || 'Plan generation failed');
+          setIsGenerating(false);
         }
       } catch (e) {
         console.error('Failed to poll draft status:', e);
       }
     }, 1000);
-
-    try {
-      await generatePromise;
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current);
-        pollingIntervalRef.current = null;
-      }
-      const finalDraft = await getDraft(draft.draft_id);
-      if (finalDraft.generation_trace) {
-        setGenerationTrace(finalDraft.generation_trace);
-      }
-      onGenerateComplete();
-    } catch (err) {
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current);
-        pollingIntervalRef.current = null;
-      }
-      setError((err as Error).message || 'Failed to generate plan');
-      setIsGenerating(false);
-    }
   };
 
   useEffect(() => {
@@ -173,125 +266,56 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     };
   }, []);
 
-  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files?.[0];
-    if (!file) return;
-
-    setIsUploading(true);
-    setError(null);
-    
-    try {
-      const processedFile = await resizeImage(file);
-      const attachment = await uploadAttachment(draft.draft_id, processedFile);
-      setFiles([...files, attachment]);
-    } catch (err) {
-      setError((err as Error).message || 'Failed to upload file');
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-  };
-
-  const getCostColorClass = (cost: number) => {
-    if (cost > 0.5) return 'bg-red-50 text-red-700 border-red-200';
-    if (cost > 0.1) return 'bg-yellow-50 text-yellow-700 border-yellow-200';
-    return 'bg-green-50 text-green-700 border-green-200';
-  };
+  const isGenerateDisabled = isGenerating || preview.isLoading || !!branchError || repoInfo.isLoading;
 
   return (
     <div className="max-w-4xl mx-auto p-6 bg-white rounded-lg shadow">
-      <h2 className="text-2xl font-bold text-gray-900 mb-2">Configure AI Planner</h2>
-      <p className="text-gray-600 mb-6">
-        Repository: <span className="font-mono text-gray-900">{draft.repository}</span>
-      </p>
-      <div className="bg-gray-50 rounded-md p-4 mb-6">
-        <p className="text-gray-700 italic">"{draft.prompt}"</p>
-      </div>
-
-      <div className="mb-8">
-        <label className="block text-sm font-medium text-gray-700 mb-2">Context Sensitivity</label>
-        <input 
-          type="range" 
-          min="0" 
-          max="2" 
-          step="1"
-          value={levelIndex}
-          onChange={(e) => setLevelIndex(parseInt(e.target.value))}
-          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+      <div className="flex justify-between items-start mb-6">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Configure AI Planner</h2>
+          <p className="text-gray-600">
+            Repository: <span className="font-mono text-gray-900">{draft.repository}</span>
+          </p>
+        </div>
+        <BranchSelector
+          value={config.baseBranch}
+          branches={repoInfo.branches}
+          isLoading={repoInfo.isLoading}
+          error={branchError || repoInfo.error}
+          onChange={(branch) => setConfig(prev => ({ ...prev, baseBranch: branch }))}
         />
-        <div className="flex justify-between text-xs text-gray-500 mt-2">
-          {CONTEXT_LABELS.map((label, idx) => (
-            <span 
-              key={label} 
-              className={idx === levelIndex ? 'text-indigo-600 font-medium' : ''}
-            >
-              {label}
-            </span>
-          ))}
-        </div>
-        
-        {stats && (
-          <div className={`mt-4 p-4 rounded-md border flex items-center justify-between ${getCostColorClass(stats.costEstimate)}`}>
-            <div className="flex items-center gap-4">
-              <span className="font-bold">Est. Cost: ${stats.costEstimate.toFixed(3)}</span>
-              <span>({stats.tokenCount.toLocaleString()} tokens)</span>
-            </div>
-            {stats.smartFiles > 0 && (
-              <span className="text-sm bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full">
-                Auto-selected {stats.smartFiles} relevant files
-              </span>
-            )}
-          </div>
-        )}
       </div>
 
-      <div className="mb-8">
-        <label className="block text-sm font-medium text-gray-700 mb-2">Attachments</label>
-        <div 
-          className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:bg-gray-50 transition-colors"
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
-        >
-          <input 
-            type="file" 
-            onChange={handleFileChange} 
-            className="hidden" 
-            id="file-upload" 
-            ref={fileInputRef}
-            accept="image/*,.log,.txt,.json"
-          />
-          <label 
-            htmlFor="file-upload" 
-            className={`cursor-pointer text-indigo-600 hover:text-indigo-500 ${isUploading ? 'opacity-50' : ''}`}
-          >
-            {isUploading ? 'Uploading...' : 'Upload logs or screenshots (drag & drop supported)'}
-          </label>
-          <p className="text-xs text-gray-400 mt-2">Images over 1MB will be automatically resized</p>
-        </div>
-        {files.length > 0 && (
-          <ul className="mt-4 space-y-2">
-            {files.map(f => (
-              <li key={f.id} className="text-sm flex items-center justify-between bg-gray-50 p-3 rounded-md">
-                <div className="flex items-center gap-2">
-                  <span>📄</span>
-                  <span className="text-gray-900">{f.originalName}</span>
-                  <span className="text-xs text-gray-400">({f.tokenEstimate} tokens)</span>
-                </div>
-                <button
-                  onClick={() => handleRemoveFile(f.id)}
-                  className="text-red-600 hover:text-red-700 text-xs font-medium"
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+      <div className="mb-6">
+        <label className="block text-sm font-medium text-gray-700 mb-2">Prompt</label>
+        <textarea
+          value={config.prompt}
+          onChange={(e) => setConfig(prev => ({ ...prev, prompt: e.target.value }))}
+          placeholder="Describe what you want the AI to do..."
+          className="w-full px-4 py-3 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 resize-none"
+          rows={4}
+          style={{ minHeight: '100px' }}
+        />
       </div>
+
+      <GranularitySelector
+        value={config.granularity}
+        onChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
+      />
+
+      <CostPreview preview={preview} />
+
+      {preview.data && (
+        <SmartFileSelection smartSelection={preview.data.smartSelection} />
+      )}
+
+      <AttachmentUploader
+        files={config.files}
+        draftId={draft.draft_id}
+        isUploading={isUploading}
+        onUpload={handleUpload}
+        onRemove={handleRemoveFile}
+      />
 
       {error && (
         <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
@@ -303,9 +327,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
 
       <button 
         onClick={handleGenerate}
-        disabled={isGenerating}
+        disabled={isGenerateDisabled}
         className={`w-full py-3 rounded-lg font-medium transition-colors ${
-          isGenerating
+          isGenerateDisabled
             ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
             : 'bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer'
         }`}
@@ -317,6 +341,16 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
             </svg>
             Generating Plan...
+          </span>
+        ) : preview.isLoading ? (
+          <span className="flex items-center justify-center gap-2">
+            <Loader2 className="w-5 h-5 animate-spin" />
+            Syncing...
+          </span>
+        ) : repoInfo.isLoading ? (
+          <span className="flex items-center justify-center gap-2">
+            <Loader2 className="w-5 h-5 animate-spin" />
+            Loading repository info...
           </span>
         ) : (
           'Generate Implementation Plan'

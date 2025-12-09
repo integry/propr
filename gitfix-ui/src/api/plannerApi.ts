@@ -20,8 +20,8 @@ export interface GenerationTrace {
 export interface PlannerDraft {
   draft_id: string;
   repository: string;
-  prompt: string;
-  status: 'draft' | 'review' | 'generating';
+  initial_prompt: string;
+  status: 'draft' | 'review' | 'generating' | 'refining';
   attachments: PlannerAttachment[];
   created_at: string;
   generation_trace?: GenerationTrace;
@@ -31,12 +31,50 @@ export interface PlannerAttachment {
   id: string;
   originalName: string;
   tokenEstimate: number;
+  type?: 'image' | 'text';
+  mimeType?: string;
 }
 
 export interface ContextStats {
   tokenCount: number;
   costEstimate: number;
   smartFiles: number;
+}
+
+export type Granularity = 'single' | 'balanced' | 'granular';
+
+export interface SmartFileSelection {
+  path: string;
+  reason: string;
+  source: 'manual' | 'auto';
+  score?: number;
+}
+
+export interface PreviewStats {
+  totalTokens: number;
+  costEstimate: number;
+  contextLength: number;
+  fileCount: number;
+}
+
+export interface PreviewResult {
+  success: boolean;
+  stats: PreviewStats;
+  smartSelection: SmartFileSelection[];
+  warnings: string[];
+}
+
+export interface PreviewOptions {
+  draftId: string;
+  prompt: string;
+  baseBranch: string;
+  granularity: Granularity;
+  files?: string[];
+}
+
+export interface PlanGenerationOptions {
+  baseBranch?: string;
+  granularity?: Granularity;
 }
 
 export const createDraft = async (repository: string, prompt: string): Promise<PlannerDraft> => {
@@ -89,14 +127,25 @@ export const removeAttachment = async (draftId: string, attachmentId: string): P
   await handleApiResponse(response);
 };
 
-export const generatePlan = async (draftId: string): Promise<void> => {
+export const generatePlan = async (draftId: string, options?: PlanGenerationOptions): Promise<void> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ draftId }),
+    body: JSON.stringify({ draftId, ...options }),
     credentials: 'include'
   });
   await handleApiResponse(response);
+};
+
+export const previewContext = async (options: PreviewOptions): Promise<PreviewResult> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
 };
 
 export interface PlanTask {
@@ -106,8 +155,16 @@ export interface PlanTask {
   files: string[];
 }
 
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+}
+
 export interface DraftWithPlan extends PlannerDraft {
   plan_json: PlanTask[];
+  chat_history?: ChatMessage[];
 }
 
 export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
@@ -118,7 +175,7 @@ export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
   return response.json();
 };
 
-export const updateDraft = async (draftId: string, data: { plan_json: PlanTask[] }): Promise<void> => {
+export const updateDraft = async (draftId: string, data: { plan_json?: PlanTask[]; chat_history?: ChatMessage[] }): Promise<void> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -160,7 +217,7 @@ export interface DraftListItem {
   repository: string;
   name?: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'executed' | 'generating';
+  status: 'draft' | 'review' | 'executed' | 'generating' | 'refining';
   updated_at: string;
   created_at: string;
 }
@@ -179,4 +236,21 @@ export const deleteDraft = async (draftId: string): Promise<void> => {
     credentials: 'include'
   });
   await handleApiResponse(response);
+};
+
+export interface RepositoryInfo {
+  defaultBranch: string;
+  branches: string[];
+}
+
+export const getRepositoryInfo = async (draftId: string): Promise<RepositoryInfo> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/repository-info`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const getAttachmentUrl = (draftId: string, attachmentId: string): string => {
+  return `${API_BASE_URL}/api/planner/drafts/${draftId}/attachments/${attachmentId}`;
 };
