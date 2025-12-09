@@ -12,42 +12,19 @@ import {
   PreviewResult
 } from '../../api/gitfixApi';
 import { GenerationProgress } from './GenerationProgress';
-import { Square, Layers, LayoutGrid, Loader2 } from 'lucide-react';
+import { CostPreview } from './CostPreview';
+import { SmartFileSelection } from './SmartFileSelection';
+import { AttachmentUploader } from './AttachmentUploader';
+import { GranularitySelector } from './GranularitySelector';
+import { Loader2 } from 'lucide-react';
 
 interface SetupWizardProps {
   draft: PlannerDraft;
   onGenerateComplete: () => void;
 }
 
-const MAX_IMAGE_SIZE = 1024;
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
 const DEBOUNCE_DELAY = 800;
-
-const GRANULARITY_OPTIONS: Array<{
-  id: Granularity;
-  label: string;
-  description: string;
-  icon: typeof Square;
-}> = [
-  { 
-    id: 'single', 
-    label: 'Single Task', 
-    description: 'Consolidate all changes into one large GitHub issue.',
-    icon: Square 
-  },
-  { 
-    id: 'balanced', 
-    label: 'Balanced', 
-    description: 'Group related changes logically. (Recommended)',
-    icon: Layers 
-  },
-  { 
-    id: 'granular', 
-    label: 'Granular', 
-    description: 'Create a separate issue for every modified file.',
-    icon: LayoutGrid 
-  }
-];
 
 interface PlannerConfig {
   prompt: string;
@@ -62,48 +39,6 @@ interface PreviewState {
   error: string | null;
   lastSynced: Date | null;
 }
-
-const resizeImage = (file: File): Promise<File> => {
-  return new Promise((resolve) => {
-    if (!file.type.startsWith('image/') || file.size <= 1024 * 1024) {
-      resolve(file);
-      return;
-    }
-
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const img = new Image();
-    
-    img.onload = () => {
-      let { width, height } = img;
-      
-      if (width > MAX_IMAGE_SIZE || height > MAX_IMAGE_SIZE) {
-        if (width > height) {
-          height = (height / width) * MAX_IMAGE_SIZE;
-          width = MAX_IMAGE_SIZE;
-        } else {
-          width = (width / height) * MAX_IMAGE_SIZE;
-          height = MAX_IMAGE_SIZE;
-        }
-      }
-      
-      canvas.width = width;
-      canvas.height = height;
-      ctx?.drawImage(img, 0, 0, width, height);
-      
-      canvas.toBlob((blob) => {
-        if (blob) {
-          resolve(new File([blob], file.name, { type: file.type }));
-        } else {
-          resolve(file);
-        }
-      }, file.type, 0.9);
-    };
-    
-    img.onerror = () => resolve(file);
-    img.src = URL.createObjectURL(file);
-  });
-};
 
 export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete }) => {
   const [config, setConfig] = useState<PlannerConfig>({
@@ -126,11 +61,16 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const [generationTrace, setGenerationTrace] = useState<GenerationTrace | undefined>(undefined);
   const [branchError, setBranchError] = useState<string | null>(null);
   
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const configRef = useRef(config);
 
-  const fetchPreview = useCallback(async (currentConfig: PlannerConfig) => {
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  const fetchPreview = useCallback(async () => {
+    const currentConfig = configRef.current;
     if (!currentConfig.prompt.trim()) {
       return;
     }
@@ -177,7 +117,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
     
     debounceTimerRef.current = setTimeout(() => {
-      fetchPreview(config);
+      fetchPreview();
     }, DEBOUNCE_DELAY);
 
     return () => {
@@ -189,28 +129,21 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
 
   useEffect(() => {
     if (config.files.length > 0) {
-      fetchPreview(config);
+      fetchPreview();
     }
-  }, [config.files.length]);
+  }, [config.files.length, fetchPreview]);
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const handleUpload = async (file: File) => {
     setIsUploading(true);
     setError(null);
     
     try {
-      const processedFile = await resizeImage(file);
-      const attachment = await uploadAttachment(draft.draft_id, processedFile);
+      const attachment = await uploadAttachment(draft.draft_id, file);
       setConfig(prev => ({ ...prev, files: [...prev.files, attachment] }));
     } catch (err) {
       setError((err as Error).message || 'Failed to upload file');
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
     }
   };
 
@@ -284,35 +217,6 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     };
   }, []);
 
-  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files?.[0];
-    if (!file) return;
-
-    setIsUploading(true);
-    setError(null);
-    
-    try {
-      const processedFile = await resizeImage(file);
-      const attachment = await uploadAttachment(draft.draft_id, processedFile);
-      setConfig(prev => ({ ...prev, files: [...prev.files, attachment] }));
-    } catch (err) {
-      setError((err as Error).message || 'Failed to upload file');
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-  };
-
-  const getCostColorClass = (cost: number) => {
-    if (cost > 0.5) return 'bg-red-50 text-red-700 border-red-200';
-    if (cost > 0.1) return 'bg-yellow-50 text-yellow-700 border-yellow-200';
-    return 'bg-green-50 text-green-700 border-green-200';
-  };
-
   const isGenerateDisabled = isGenerating || preview.isLoading || !!branchError;
 
   return (
@@ -355,148 +259,23 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         />
       </div>
 
-      <div className="mb-6">
-        <label className="block text-sm font-medium text-gray-700 mb-3">Task Granularity</label>
-        <div className="flex gap-2">
-          {GRANULARITY_OPTIONS.map((option) => {
-            const Icon = option.icon;
-            const isSelected = config.granularity === option.id;
-            return (
-              <button
-                key={option.id}
-                onClick={() => setConfig(prev => ({ ...prev, granularity: option.id }))}
-                className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 transition-all ${
-                  isSelected
-                    ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
-                    : 'border-gray-200 hover:border-gray-300 text-gray-600'
-                }`}
-                title={option.description}
-              >
-                <Icon className="w-4 h-4" />
-                <span className="font-medium text-sm">{option.label}</span>
-              </button>
-            );
-          })}
-        </div>
-        <p className="text-xs text-gray-500 mt-2">
-          {GRANULARITY_OPTIONS.find(o => o.id === config.granularity)?.description}
-        </p>
-      </div>
+      <GranularitySelector
+        value={config.granularity}
+        onChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
+      />
 
-      <div className={`mb-6 p-4 rounded-md border transition-opacity ${
-        preview.isLoading ? 'opacity-60' : ''
-      } ${preview.data ? getCostColorClass(preview.data.stats.costEstimate) : 'bg-gray-50 border-gray-200'}`}>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            {preview.isLoading ? (
-              <span className="flex items-center gap-2 text-gray-500">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Analyzing...
-              </span>
-            ) : preview.data ? (
-              <>
-                <span className="font-bold">Est. Cost: ${preview.data.stats.costEstimate.toFixed(3)}</span>
-                <span>({preview.data.stats.totalTokens.toLocaleString()} tokens)</span>
-              </>
-            ) : preview.error ? (
-              <span className="text-red-600">{preview.error}</span>
-            ) : (
-              <span className="text-gray-500">Enter a prompt to see cost estimate</span>
-            )}
-          </div>
-          {preview.data && preview.data.smartSelection.length > 0 && (
-            <span className="text-sm bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full">
-              Auto-selected {preview.data.smartSelection.filter(f => f.source === 'auto').length} relevant files
-            </span>
-          )}
-        </div>
-        
-        {preview.data && preview.data.warnings.length > 0 && (
-          <div className="mt-2 text-sm text-yellow-600">
-            {preview.data.warnings.map((warning, idx) => (
-              <p key={idx}>⚠️ {warning}</p>
-            ))}
-          </div>
-        )}
-      </div>
+      <CostPreview preview={preview} />
 
-      {preview.data && preview.data.smartSelection.length > 0 && (
-        <div className="mb-6">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Smart File Selection ({preview.data.smartSelection.length} files)
-          </label>
-          <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-md">
-            <ul className="divide-y divide-gray-100">
-              {preview.data.smartSelection.slice(0, 20).map((file, idx) => (
-                <li key={idx} className="px-3 py-2 text-sm flex items-center justify-between hover:bg-gray-50">
-                  <div className="flex items-center gap-2">
-                    <span className={`text-xs px-1.5 py-0.5 rounded ${
-                      file.source === 'manual' 
-                        ? 'bg-blue-100 text-blue-700' 
-                        : 'bg-green-100 text-green-700'
-                    }`}>
-                      {file.source}
-                    </span>
-                    <span className="font-mono text-gray-900">{file.path}</span>
-                  </div>
-                  <span className="text-xs text-gray-500 truncate max-w-xs" title={file.reason}>
-                    {file.reason}
-                  </span>
-                </li>
-              ))}
-              {preview.data.smartSelection.length > 20 && (
-                <li className="px-3 py-2 text-sm text-gray-500 text-center">
-                  ... and {preview.data.smartSelection.length - 20} more files
-                </li>
-              )}
-            </ul>
-          </div>
-        </div>
+      {preview.data && (
+        <SmartFileSelection smartSelection={preview.data.smartSelection} />
       )}
 
-      <div className="mb-8">
-        <label className="block text-sm font-medium text-gray-700 mb-2">Attachments</label>
-        <div 
-          className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:bg-gray-50 transition-colors"
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
-        >
-          <input 
-            type="file" 
-            onChange={handleFileChange} 
-            className="hidden" 
-            id="file-upload" 
-            ref={fileInputRef}
-            accept="image/*,.log,.txt,.json"
-          />
-          <label 
-            htmlFor="file-upload" 
-            className={`cursor-pointer text-indigo-600 hover:text-indigo-500 ${isUploading ? 'opacity-50' : ''}`}
-          >
-            {isUploading ? 'Uploading...' : 'Upload logs or screenshots (drag & drop supported)'}
-          </label>
-          <p className="text-xs text-gray-400 mt-2">Images over 1MB will be automatically resized</p>
-        </div>
-        {config.files.length > 0 && (
-          <ul className="mt-4 space-y-2">
-            {config.files.map(f => (
-              <li key={f.id} className="text-sm flex items-center justify-between bg-gray-50 p-3 rounded-md">
-                <div className="flex items-center gap-2">
-                  <span>📄</span>
-                  <span className="text-gray-900">{f.originalName}</span>
-                  <span className="text-xs text-gray-400">({f.tokenEstimate} tokens)</span>
-                </div>
-                <button
-                  onClick={() => handleRemoveFile(f.id)}
-                  className="text-red-600 hover:text-red-700 text-xs font-medium"
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <AttachmentUploader
+        files={config.files}
+        isUploading={isUploading}
+        onUpload={handleUpload}
+        onRemove={handleRemoveFile}
+      />
 
       {error && (
         <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
