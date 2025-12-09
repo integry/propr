@@ -17,7 +17,6 @@ import {
 import type { MulterFile, Plan, Granularity } from '@gitfix/core';
 import {
   checkDbAndAuth,
-  checkAuth,
   sendCheckError,
   verifyDraftOwnership,
   setupRepoContext
