@@ -355,7 +355,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     if (!check.valid) { sendCheckError(res, check); return; }
 
     try {
-      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['attachments']);
+      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'attachments']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const attachments = (ownership.draft?.attachments || []) as { id: string; storedPath: string; mimeType: string; originalName: string }[];
@@ -377,7 +377,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     if (!check.valid) { sendCheckError(res, check); return; }
 
     try {
-      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['repository']);
+      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'repository']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const repository = ownership.draft?.repository as string;
