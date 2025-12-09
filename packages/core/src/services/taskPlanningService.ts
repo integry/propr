@@ -14,6 +14,47 @@ export class PlanningFailedError extends Error {
   }
 }
 
+interface GenerationTraceStep {
+  name: string;
+  status: 'pending' | 'completed' | 'failed';
+  data?: Record<string, unknown>;
+}
+
+interface GenerationTrace {
+  steps: GenerationTraceStep[];
+}
+
+async function updateTrace(
+  draftId: string,
+  step: string,
+  status: 'pending' | 'completed' | 'failed',
+  data?: Record<string, unknown>
+): Promise<void> {
+  if (!db) return;
+
+  const draft = await db('task_drafts')
+    .where({ draft_id: draftId })
+    .select('generation_trace')
+    .first();
+
+  const trace: GenerationTrace = (draft?.generation_trace as GenerationTrace) || { steps: [] };
+
+  const existingStepIndex = trace.steps.findIndex((s) => s.name === step);
+  if (existingStepIndex >= 0) {
+    trace.steps[existingStepIndex] = {
+      ...trace.steps[existingStepIndex],
+      status,
+      data: { ...trace.steps[existingStepIndex].data, ...data }
+    };
+  } else {
+    trace.steps.push({ name: step, status, data });
+  }
+
+  await db('task_drafts')
+    .where({ draft_id: draftId })
+    .update({ generation_trace: JSON.stringify(trace) });
+}
+
 export interface GeneratePlanOptions {
   draftId: string;
   worktreePath: string;
@@ -38,6 +79,7 @@ interface TaskDraft {
   initial_prompt: string;
   plan_json: Plan;
   context_config: Record<string, unknown>;
+  generation_trace: GenerationTrace;
   status: string;
   created_at: Date;
   updated_at: Date;
@@ -62,12 +104,25 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     throw new PlanningFailedError('Draft has no initial prompt');
   }
 
+  await updateTrace(draftId, 'relevance', 'pending');
+
   correlatedLogger.info({ repository: draft.repository }, 'Finding relevant files');
 
   const relevanceResult = await findRelevantFiles(worktreePath, draft.initial_prompt, {
     correlationId
   });
   const relevantFilePaths = relevanceResult.files.map(f => f.path);
+
+  await updateTrace(draftId, 'relevance', 'completed', {
+    keywords: relevanceResult.keywordsDetected,
+    candidates: relevanceResult.files.map(f => ({
+      path: f.path,
+      reason: f.reason,
+      score: f.score
+    }))
+  });
+
+  await updateTrace(draftId, 'context', 'pending');
 
   correlatedLogger.info({ fileCount: relevantFilePaths.length }, 'Generating context');
 
@@ -76,6 +131,13 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     filesToInclude: relevantFilePaths.length > 0 ? relevantFilePaths : undefined,
     correlationId
   });
+
+  await updateTrace(draftId, 'context', 'completed', {
+    includedFiles: contextResult.includedFiles,
+    tokenCount: contextResult.totalTokens
+  });
+
+  await updateTrace(draftId, 'llm', 'pending');
 
   const userPrompt = `${PLANNER_SYSTEM_PROMPT}
 
@@ -127,6 +189,8 @@ Remember: Output ONLY a valid JSON array. No markdown, no explanations.`;
   });
 
   correlatedLogger.info({ taskCount: validatedPlan.length }, 'Plan generated successfully');
+
+  await updateTrace(draftId, 'llm', 'completed');
 
   await db('task_drafts')
     .where({ draft_id: draftId })
