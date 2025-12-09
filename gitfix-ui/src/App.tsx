@@ -5,6 +5,7 @@ import Dashboard from './components/Dashboard'
 import RepositoriesPage from './pages/RepositoriesPage'
 import TasksPage from './pages/TasksPage'
 import TaskPlannerPage from './pages/TaskPlannerPage'
+import PlansPage from './pages/PlansPage'
 import AiToolsPage from './pages/AiToolsPage'
 import SettingsPage from './pages/SettingsPage'
 import LoginPage from './pages/LoginPage'
@@ -85,6 +86,14 @@ const App: React.FC = () => {
           element={
             <Layout>
               <TaskPlannerPage />
+            </Layout>
+          }
+        />
+        <Route
+          path="/plans"
+          element={
+            <Layout>
+              <PlansPage />
             </Layout>
           }
         />
