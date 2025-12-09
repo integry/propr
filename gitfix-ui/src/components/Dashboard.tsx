@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import SystemStatus from './SystemStatus';
 import TaskQueueStats from './TaskQueueStats';
 import TaskList from './TaskList';
@@ -52,9 +52,17 @@ const Dashboard: React.FC = () => {
   return (
     <div>
       <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-lg p-6 mb-8 shadow-lg">
-        <h3 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
-          <span>✨</span> Start New AI Plan
-        </h3>
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-xl font-semibold text-white flex items-center gap-2">
+            <span>✨</span> Start New AI Plan
+          </h3>
+          <Link
+            to="/plans"
+            className="text-sm text-indigo-100 hover:text-white underline"
+          >
+            View History
+          </Link>
+        </div>
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-indigo-100 mb-2">Repository</label>

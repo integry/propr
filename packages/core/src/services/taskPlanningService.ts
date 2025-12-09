@@ -25,6 +25,7 @@ export interface RefinePlanOptions {
   currentPlan: Plan;
   instruction: string;
   worktreePath: string;
+  repository: string;
   githubToken: string;
   correlationId?: string;
 }
@@ -139,14 +140,14 @@ Remember: Output ONLY a valid JSON array. No markdown, no explanations.`;
 }
 
 export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
-  const { currentPlan, instruction, worktreePath, githubToken, correlationId } = options;
+  const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!Array.isArray(currentPlan)) {
     throw new PlanningFailedError('Current plan must be an array');
   }
 
-  correlatedLogger.info({ instruction, taskCount: currentPlan.length }, 'Refining plan');
+  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository }, 'Refining plan');
 
   const userPrompt = `${REFINER_SYSTEM_PROMPT}
 
@@ -158,10 +159,11 @@ Instruction:
 
 Remember: Return ONLY the updated JSON array. No markdown, no explanations.`;
 
+  const [repoOwner, repoName] = repository.split('/');
   const issueRef = {
     number: 0,
-    repoOwner: 'unknown',
-    repoName: 'unknown'
+    repoOwner: repoOwner || 'unknown',
+    repoName: repoName || 'unknown'
   };
 
   const response = await runLightweightLLMAnalysis({

@@ -240,6 +240,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         currentPlan: currentPlan as Plan,
         instruction,
         worktreePath: repoContext.worktreePath,
+        repository: repoContext.repository,
         githubToken: repoContext.authToken,
         correlationId
       });
@@ -257,10 +258,10 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
   async function getRefineRepoContext(draftId: string | undefined, fallbackToken: string) {
     if (!draftId || !isDbEnabled || !db) {
-      return { worktreePath: process.cwd(), authToken: fallbackToken };
+      return { worktreePath: process.cwd(), authToken: fallbackToken, repository: 'unknown/unknown' };
     }
     const draft = await db('task_drafts').where({ draft_id: draftId }).first();
-    if (!draft) return { worktreePath: process.cwd(), authToken: fallbackToken };
+    if (!draft) return { worktreePath: process.cwd(), authToken: fallbackToken, repository: 'unknown/unknown' };
     return setupRepoContext(draft, fallbackToken);
   }
 

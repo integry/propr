@@ -413,3 +413,29 @@ export const finalizePlan = async (draftId: string): Promise<{ issuesCreated: nu
   await handleApiResponse(response);
   return response.json();
 };
+
+export interface DraftListItem {
+  draft_id: string;
+  repository: string;
+  name?: string;
+  initial_prompt: string;
+  status: 'draft' | 'review' | 'executed' | 'generating';
+  updated_at: string;
+  created_at: string;
+}
+
+export const getDrafts = async (): Promise<DraftListItem[]> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const deleteDraft = async (draftId: string): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+};

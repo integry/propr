@@ -74,6 +74,7 @@ export async function verifyDraftOwnership(
 export interface RepoSetupResult {
   worktreePath: string;
   authToken: string;
+  repository: string;
 }
 
 export async function setupRepoContext(
@@ -82,7 +83,7 @@ export async function setupRepoContext(
 ): Promise<RepoSetupResult> {
   const [owner, repoName] = draft.repository.split('/');
   if (!owner || !repoName) {
-    return { worktreePath: process.cwd(), authToken: fallbackToken };
+    return { worktreePath: process.cwd(), authToken: fallbackToken, repository: 'unknown/unknown' };
   }
 
   let authToken: string;
@@ -95,5 +96,5 @@ export async function setupRepoContext(
   const repoUrl = `https://github.com/${owner}/${repoName}.git`;
   const worktreePath = await ensureRepoCloned(repoUrl, owner, repoName, authToken);
 
-  return { worktreePath, authToken };
+  return { worktreePath, authToken, repository: draft.repository };
 }
