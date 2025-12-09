@@ -138,7 +138,7 @@ services:
       - ~/.claude:/root/.claude:ro
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
-      - /tmp/git-processor:/tmp/git-processor:ro
+      - /tmp/git-processor:/tmp/git-processor
     env_file:
       - .env
     environment:

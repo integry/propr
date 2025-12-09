@@ -32,117 +32,48 @@ export class SecurityException extends Error {
   }
 }
 
-interface RepomixConfig {
-  cwd: string;
-  output: {
-    filePath: string;
-    style: 'xml' | 'plain' | 'markdown';
-    parsableStyle: boolean;
-    fileSummary: boolean;
-    directoryStructure: boolean;
-    removeComments: boolean;
-    removeEmptyLines: boolean;
-    topFilesLength: number;
-    showLineNumbers: boolean;
-    copyToClipboard: boolean;
-  };
-  include: string[];
-  ignore: {
-    useGitignore: boolean;
-    useDefaultPatterns: boolean;
-    customPatterns: string[];
-  };
-  security: {
-    enableSecurityCheck: boolean;
-  };
-  tokenCount: {
-    encoding: string;
-  };
-}
-
-interface PackResult {
-  totalFiles: number;
-  totalCharacters: number;
-  totalTokens: number;
-  fileCharCounts: Record<string, number>;
-  fileTokenCounts: Record<string, number>;
-  suspiciousFilesResults: SuspiciousFile[];
-}
-
-interface ProcessedFile {
-  path: string;
-  content: string;
-}
-
-interface RawFile {
-  path: string;
-  content: string;
-}
-
-interface FileSearchResult {
-  filePaths: string[];
-  emptyDirPaths: string[];
-}
-
-interface SafetyResult {
-  safeRawFiles: RawFile[];
-  safeFilePaths: string[];
-  suspiciousFilesResults: SuspiciousFile[];
-}
-
-interface MetricsResult {
-  totalFiles: number;
-  totalCharacters: number;
-  totalTokens: number;
-  fileCharCounts: Record<string, number>;
-  fileTokenCounts: Record<string, number>;
-}
-
-type ProgressCallback = (message: string) => void;
-
-interface PackDeps {
-  searchFiles: (rootDir: string, config: RepomixConfig) => Promise<FileSearchResult>;
-  collectFiles: (filePaths: string[], rootDir: string) => Promise<RawFile[]>;
-  processFiles: (rawFiles: RawFile[], config: RepomixConfig, progressCallback: ProgressCallback) => Promise<ProcessedFile[]>;
-  generateOutput: (rootDir: string, config: RepomixConfig, processedFiles: ProcessedFile[], allFilePaths: string[]) => Promise<string>;
-  validateFileSafety: (rawFiles: RawFile[], progressCallback: ProgressCallback, config: RepomixConfig) => Promise<SafetyResult>;
-  writeOutputToDisk: (output: string, config: RepomixConfig) => Promise<undefined>;
-  copyToClipboardIfEnabled: (output: string, progressCallback: ProgressCallback, config: RepomixConfig) => Promise<undefined>;
-  calculateMetrics: (processedFiles: ProcessedFile[], output: string, progressCallback: ProgressCallback, config: RepomixConfig) => Promise<MetricsResult>;
-}
-
-type PackFunction = (
-  rootDir: string,
-  config: RepomixConfig,
-  progressCallback?: ProgressCallback,
-  deps?: Partial<PackDeps>
-) => Promise<PackResult>;
-
-const typedPack = pack as unknown as PackFunction;
+// Default max tokens - Claude's context is ~200K but we need room for the prompt and response
+const DEFAULT_MAX_CONTEXT_TOKENS = 150000;
 
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
-  const { repoPath, filesToInclude, correlationId } = options;
+  const { repoPath, filesToInclude, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
-  correlatedLogger.info({ repoPath, filesToInclude }, 'Starting context generation with repomix');
+  correlatedLogger.info({ repoPath, filesToInclude, tokenLimit }, 'Starting context generation with repomix');
 
-  const config: RepomixConfig = {
+  const config = {
     cwd: repoPath,
+    input: {
+      maxFileSize: 10 * 1024 * 1024, // 10MB
+    },
     output: {
       filePath: 'repomix-output.xml',
-      style: 'xml',
+      style: 'xml' as const,
       parsableStyle: true,
       fileSummary: true,
       directoryStructure: true,
+      files: true,
       removeComments: false,
       removeEmptyLines: false,
+      compress: false,
       topFilesLength: 10,
       showLineNumbers: false,
+      truncateBase64: true,
       copyToClipboard: false,
+      includeFullDirectoryStructure: false,
+      tokenCountTree: false,
+      git: {
+        sortByChanges: false,
+        sortByChangesMaxCommits: 100,
+        includeDiffs: false,
+        includeLogs: false,
+        includeLogsCount: 10,
+      },
     },
     include: filesToInclude || [],
     ignore: {
       useGitignore: true,
+      useDotIgnore: true,
       useDefaultPatterns: true,
       customPatterns: ['.git', 'node_modules'],
     },
@@ -161,12 +92,14 @@ export async function generateContext(options: ContextGenerationOptions): Promis
     return undefined;
   };
 
-  const noopCopyToClipboard = async (): Promise<undefined> => {
-    return undefined;
+  const noopCopyToClipboard = async (): Promise<void> => {
+    return;
   };
 
   try {
-    const result = await typedPack(repoPath, config, () => {}, {
+    // repomix v1.9+ expects rootDirs as first argument (array of directories)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (pack as any)([repoPath], config, () => {}, {
       writeOutputToDisk: captureWriteOutput,
       copyToClipboardIfEnabled: noopCopyToClipboard,
     });
@@ -180,6 +113,70 @@ export async function generateContext(options: ContextGenerationOptions): Promis
         `Security check failed: ${result.suspiciousFilesResults.length} file(s) contain potential secrets`,
         result.suspiciousFilesResults
       );
+    }
+
+    // Check if we need to truncate due to token limit
+    if (result.totalTokens > tokenLimit) {
+      correlatedLogger.warn(
+        {
+          totalTokens: result.totalTokens,
+          tokenLimit,
+          totalFiles: result.totalFiles,
+        },
+        'Context exceeds token limit, truncating by selecting files up to limit'
+      );
+
+      // Sort files by token count and select until we hit the limit
+      const fileTokenEntries = Object.entries(result.fileTokenCounts as Record<string, number>);
+      fileTokenEntries.sort((a, b) => a[1] - b[1]); // Sort by token count ascending (smaller files first)
+
+      const selectedFiles: string[] = [];
+      let currentTokens = 0;
+      // Reserve ~5000 tokens for directory structure and metadata
+      const effectiveLimit = tokenLimit - 5000;
+
+      for (const [filePath, tokens] of fileTokenEntries) {
+        if (currentTokens + tokens <= effectiveLimit) {
+          selectedFiles.push(filePath);
+          currentTokens += tokens;
+        }
+      }
+
+      correlatedLogger.info(
+        {
+          originalFiles: result.totalFiles,
+          selectedFiles: selectedFiles.length,
+          estimatedTokens: currentTokens,
+        },
+        'Re-generating context with limited file set'
+      );
+
+      // Re-generate with selected files only
+      const limitedConfig = { ...config, include: selectedFiles };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const limitedResult = await (pack as any)([repoPath], limitedConfig, () => {}, {
+        writeOutputToDisk: captureWriteOutput,
+        copyToClipboardIfEnabled: noopCopyToClipboard,
+      });
+
+      correlatedLogger.info(
+        {
+          totalFiles: limitedResult.totalFiles,
+          totalCharacters: limitedResult.totalCharacters,
+          totalTokens: limitedResult.totalTokens,
+          truncated: true,
+        },
+        'Context generation completed with truncation'
+      );
+
+      return {
+        context: capturedOutput,
+        totalFiles: limitedResult.totalFiles,
+        totalCharacters: limitedResult.totalCharacters,
+        totalTokens: limitedResult.totalTokens,
+        fileCharCounts: limitedResult.fileCharCounts,
+        fileTokenCounts: limitedResult.fileTokenCounts,
+      };
     }
 
     correlatedLogger.info(

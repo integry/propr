@@ -62,8 +62,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   }
 
   correlatedLogger.info({ repository: draft.repository }, 'Finding relevant files');
-  
-  const relevanceResult = await findRelevantFiles(draft.repository, draft.initial_prompt, {
+
+  const relevanceResult = await findRelevantFiles(worktreePath, draft.initial_prompt, {
     correlationId
   });
   const relevantFilePaths = relevanceResult.files.map(f => f.path);
@@ -71,7 +71,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   correlatedLogger.info({ fileCount: relevantFilePaths.length }, 'Generating context');
 
   const contextResult = await generateContext({
-    repoPath: draft.repository,
+    repoPath: worktreePath,
     filesToInclude: relevantFilePaths.length > 0 ? relevantFilePaths : undefined,
     correlationId
   });
