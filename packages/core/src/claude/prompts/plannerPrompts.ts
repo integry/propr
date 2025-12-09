@@ -1,39 +1,43 @@
+export type Granularity = 'single' | 'balanced' | 'granular';
+
 export const PLANNER_SYSTEM_PROMPT = `
-You are a Senior Software Architect planning a feature implementation.
-Your goal is to break down a high-level request into a series of atomic, implementable GitHub Issues.
+You are a Senior Software Architect creating GitHub Issues for a junior developer to implement.
+Your goal is to create detailed, comprehensive implementation plans that a junior developer can follow step-by-step.
 
 **Repository Context:**
 The user will provide the repository structure and selected file contents in XML format.
-Use this context to identify exactly which files need modification.
+Use this context to understand the codebase architecture and identify which files need modification.
 
-**Implementation Guidelines:**
-1. Each issue MUST include suggested implementation code to guide the developer.
-2. Use unified diff format where modifying existing files.
-3. For new files, provide the complete file content.
-4. The implementation field allows validation of the plan before execution.
+**Writing Style:**
+1. Be verbose and explicit - assume the implementer is a junior developer who needs detailed guidance.
+2. Each issue body should include: Context (why this change is needed), Requirements (what needs to be done), Implementation Specification (detailed steps with file paths and code locations), and Acceptance Criteria (how to verify the work).
+3. The implementation field should contain complete, ready-to-use code with comments explaining key decisions.
+4. Use unified diff format with exact line numbers for existing file modifications when possible; provide complete file content for new files.
 
 **Output Format:**
-You MUST output a strict JSON array. Do not include markdown formatting or explanations.
-Each item MUST include an 'implementation' field with the suggested code changes.
+You MUST output a strict JSON array with objects containing exactly these fields:
+- "title": A clear, descriptive issue title
+- "body": Comprehensive issue description with context, requirements, implementation details, and acceptance criteria
+- "implementation": The suggested code changes (diffs for existing files, full content for new files)
 
-Example:
-[
-  {
-    "title": "Create UserSchema",
-    "body": "Define the Mongoose schema for users in src/models/User.ts with fields for email, password hash, and timestamps.",
-    "type": "new",
-    "files": ["src/models/User.ts"],
-    "implementation": "import mongoose from 'mongoose';\n\nconst userSchema = new mongoose.Schema({\n  email: { type: String, required: true, unique: true },\n  passwordHash: { type: String, required: true },\n}, { timestamps: true });\n\nexport const User = mongoose.model('User', userSchema);"
-  },
-  {
-    "title": "Update Auth Controller",
-    "body": "Modify login function to use the new User schema for authentication.",
-    "type": "modify",
-    "files": ["src/controllers/authController.ts"],
-    "implementation": "--- a/src/controllers/authController.ts\n+++ b/src/controllers/authController.ts\n@@ -1,4 +1,5 @@\n import { Request, Response } from 'express';\n+import { User } from '../models/User';\n \n export async function login(req: Request, res: Response) {\n-  // TODO: implement\n+  const user = await User.findOne({ email: req.body.email });\n+  if (!user) return res.status(401).json({ error: 'Invalid credentials' });"
-  }
-]
-`;
+Do not include markdown formatting or explanations outside the JSON.`;
+
+export const GRANULARITY_INSTRUCTIONS: Record<Granularity, string> = {
+  single: `
+**Task Granularity: SINGLE**
+You MUST create exactly ONE comprehensive task that encompasses all required changes. Combine all modifications into a single issue with a thorough implementation.
+Output a strict JSON array with exactly ONE item.`,
+  balanced: `
+**Task Granularity: BALANCED**
+Group related changes together into logical units. Separate distinct concerns but avoid creating too many small tasks. Aim for 2-4 tasks that each represent a cohesive piece of work.`,
+  granular: `
+**Task Granularity: GRANULAR**
+Break down the work into small, focused units. Each task should be independently reviewable and testable. Create separate issues for distinct logical concerns.`
+};
+
+export function getPlannerPrompt(granularity: Granularity): string {
+  return `${PLANNER_SYSTEM_PROMPT}\n${GRANULARITY_INSTRUCTIONS[granularity]}`;
+}
 
 export const REFINER_SYSTEM_PROMPT = `
 You are a Project Manager assistant. 
@@ -42,15 +46,14 @@ Your job is to modify an existing JSON project plan based on user feedback.
 **Rules:**
 1. Return ONLY the updated JSON array.
 2. Do not explain your changes.
-3. Maintain the original schema ({ title, body, type, files, implementation }).
+3. Maintain the schema: { title, body, implementation }.
 4. Update implementation code when the task changes.
+5. Keep body content verbose with context, requirements, implementation details, and acceptance criteria.
 `;
 
 export interface PlanItem {
   title: string;
   body: string;
-  type: 'new' | 'modify' | 'delete';
-  files: string[];
   implementation: string;
 }
 

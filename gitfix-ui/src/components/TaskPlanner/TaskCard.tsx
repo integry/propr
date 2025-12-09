@@ -36,16 +36,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             onChange={e => onChange({ ...task, body: e.target.value })}
             placeholder="Describe the task..."
           />
-          
-          {task.files.length > 0 && (
-            <div className="flex flex-wrap gap-2 mt-3">
-              {task.files.map(f => (
-                <span key={f} className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded font-mono">
-                  {f}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
         
         <div className="flex flex-col gap-1">

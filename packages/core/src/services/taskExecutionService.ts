@@ -28,10 +28,9 @@ interface TaskDraft {
 }
 
 interface PlanTask {
-  id: string;
   title: string;
   body: string;
-  files: string[];
+  implementation: string;
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -86,10 +85,9 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     const task = planJson[i];
 
     let issueBody = task.body || '';
-
-    if (task.files && task.files.length > 0) {
-      issueBody += '\n\n---\n\n**Relevant Files:**\n';
-      issueBody += task.files.map((f: string) => `- [ ] \`${f}\``).join('\n');
+    
+    if (task.implementation) {
+      issueBody += '\n\n---\n\n**Implementation:**\n```\n' + task.implementation + '\n```';
     }
 
     issueBody += '\n\n---\n*Created by GitFix AI Planner*';
