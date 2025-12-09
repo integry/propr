@@ -178,25 +178,29 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const VALID_GRANULARITIES = ['single', 'balanced', 'granular'] as const;
   const BRANCH_NAME_REGEX = /^[a-zA-Z0-9._/-]+$/;
 
+  function validatePreviewInput(body: Record<string, unknown>): { valid: boolean; error?: string } {
+    const { draftId, prompt, baseBranch, granularity, files } = body;
+    if (!draftId) return { valid: false, error: 'draftId is required' };
+    if (!prompt || typeof prompt !== 'string') return { valid: false, error: 'prompt is required' };
+    if (!baseBranch || typeof baseBranch !== 'string') return { valid: false, error: 'baseBranch is required' };
+    if (!BRANCH_NAME_REGEX.test(baseBranch as string)) return { valid: false, error: 'Invalid branch name format' };
+    if (granularity && !VALID_GRANULARITIES.includes(granularity as typeof VALID_GRANULARITIES[number])) return { valid: false, error: `granularity must be one of: ${VALID_GRANULARITIES.join(', ')}` };
+    if (files && (!Array.isArray(files) || !files.every(f => typeof f === 'string'))) return { valid: false, error: 'files must be an array of strings' };
+    return { valid: true };
+  }
+
+  async function getRepoAuthToken(accessToken: string): Promise<string> {
+    try { return await getGitHubInstallationToken(); } catch { return accessToken; }
+  }
+
   async function previewContext(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    const { draftId, prompt, baseBranch, granularity, files } = req.body;
-    
-    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
-    if (!prompt || typeof prompt !== 'string') { res.status(400).json({ error: 'prompt is required' }); return; }
-    if (!baseBranch || typeof baseBranch !== 'string') { res.status(400).json({ error: 'baseBranch is required' }); return; }
-    if (!BRANCH_NAME_REGEX.test(baseBranch)) { res.status(400).json({ error: 'Invalid branch name format' }); return; }
-    if (granularity && !VALID_GRANULARITIES.includes(granularity)) { 
-      res.status(400).json({ error: `granularity must be one of: ${VALID_GRANULARITIES.join(', ')}` }); 
-      return; 
-    }
-    if (files && (!Array.isArray(files) || !files.every(f => typeof f === 'string'))) {
-      res.status(400).json({ error: 'files must be an array of strings' });
-      return;
-    }
+    const validation = validatePreviewInput(req.body);
+    if (!validation.valid) { res.status(400).json({ error: validation.error }); return; }
 
+    const { draftId, prompt, baseBranch, granularity, files } = req.body;
     const correlationId = generateCorrelationId();
 
     try {
@@ -210,29 +214,14 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const accessToken = req.user?.accessToken;
       if (!accessToken) { res.status(401).json({ error: 'GitHub access token not available' }); return; }
 
-      let authToken: string;
-      try { authToken = await getGitHubInstallationToken(); } catch { authToken = accessToken; }
+      const authToken = await getRepoAuthToken(accessToken);
+      const worktreePath = await ensureRepoCloned(`https://github.com/${owner}/${repoName}.git`, owner, repoName, authToken);
 
-      const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-      const worktreePath = await ensureRepoCloned(repoUrl, owner, repoName, authToken);
-
-      const result = await generateContextPreview({
-        draftId,
-        prompt,
-        baseBranch,
-        granularity: (granularity || 'balanced') as Granularity,
-        files,
-        worktreePath,
-        correlationId
-      });
-
+      const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, files, worktreePath, correlationId });
       res.json(result);
     } catch (error) {
       console.error('Preview context error:', error);
-      if (error instanceof BranchNotFoundError) {
-        res.status(400).json({ error: error.message });
-        return;
-      }
+      if (error instanceof BranchNotFoundError) { res.status(400).json({ error: error.message }); return; }
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to preview context' });
     }
   }
