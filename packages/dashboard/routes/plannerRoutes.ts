@@ -101,12 +101,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
-      const { plan_json, context_config, status, name } = req.body;
+      const { plan_json, context_config, status, name, chat_history } = req.body;
       const updateData: Record<string, unknown> = { updated_at: db!.fn.now() };
       if (plan_json !== undefined) updateData.plan_json = JSON.stringify(plan_json);
       if (context_config !== undefined) updateData.context_config = JSON.stringify(context_config);
       if (status !== undefined) updateData.status = status;
       if (name !== undefined) updateData.name = name;
+      if (chat_history !== undefined) updateData.chat_history = JSON.stringify(chat_history);
 
       const [updated] = await db!('task_drafts').where({ draft_id: req.params.id }).update(updateData).returning('*');
       res.json(updated);
@@ -282,8 +283,36 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         });
       }
 
-      const plan = await generatePlan({ draftId, worktreePath, githubToken: authToken, correlationId });
-      res.json({ success: true, plan });
+      // Set status to 'generating' and return immediately
+      await db!('task_drafts').where({ draft_id: draftId }).update({
+        status: 'generating',
+        updated_at: db!.fn.now()
+      });
+
+      // Return 202 Accepted immediately - client should poll for status
+      res.status(202).json({ success: true, status: 'generating', message: 'Plan generation started' });
+
+      // Run generation in background (don't await)
+      generatePlan({ draftId, worktreePath, githubToken: authToken, correlationId })
+        .then(() => {
+          console.log(`[generate] Plan generation completed for draft ${draftId}`);
+        })
+        .catch(async (error) => {
+          console.error(`[generate] Plan generation failed for draft ${draftId}:`, error);
+          // Update draft status to indicate failure
+          try {
+            await db!('task_drafts').where({ draft_id: draftId }).update({
+              status: 'draft',
+              generation_trace: JSON.stringify({
+                steps: [],
+                error: error instanceof Error ? error.message : 'Plan generation failed'
+              }),
+              updated_at: db!.fn.now()
+            });
+          } catch (dbError) {
+            console.error(`[generate] Failed to update draft status after error:`, dbError);
+          }
+        });
     } catch (error) {
       console.error('Generate plan error:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to generate plan' });
@@ -291,31 +320,58 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   async function refine(req: Request, res: Response): Promise<void> {
-    const check = checkAuth(req.user?.id);
+    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
     const { draftId, plan: currentPlan, instruction } = req.body;
+    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
     if (!currentPlan || !Array.isArray(currentPlan)) { res.status(400).json({ error: 'currentPlan array is required' }); return; }
     if (!instruction || typeof instruction !== 'string') { res.status(400).json({ error: 'instruction is required' }); return; }
 
     const correlationId = generateCorrelationId();
 
     try {
-      const repoContext = await getRefineRepoContext(draftId, req.user?.accessToken || '');
-      const plan = await refinePlan({
-        currentPlan: currentPlan as Plan,
-        instruction,
-        worktreePath: repoContext.worktreePath,
-        repository: repoContext.repository,
-        githubToken: repoContext.authToken,
-        correlationId
+      // Verify ownership
+      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id, ['user_id']);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      // Set status to 'refining' and return immediately
+      await db!('task_drafts').where({ draft_id: draftId }).update({
+        status: 'refining',
+        updated_at: db!.fn.now()
       });
 
-      if (draftId && isDbEnabled && db) {
-        await db('task_drafts').where({ draft_id: draftId }).update({ plan_json: JSON.stringify(plan), updated_at: db.fn.now() });
-      }
+      // Return 202 Accepted immediately - client should poll for status
+      res.status(202).json({ success: true, status: 'refining', message: 'Plan refinement started' });
 
-      res.json({ success: true, plan, message: 'Plan refined successfully' });
+      // Run refinement in background
+      (async () => {
+        try {
+          const repoContext = await getRefineRepoContext(draftId, req.user?.accessToken || '');
+          const plan = await refinePlan({
+            currentPlan: currentPlan as Plan,
+            instruction,
+            worktreePath: repoContext.worktreePath,
+            repository: repoContext.repository,
+            githubToken: repoContext.authToken,
+            correlationId
+          });
+
+          await db!('task_drafts').where({ draft_id: draftId }).update({
+            plan_json: JSON.stringify(plan),
+            status: 'review',
+            updated_at: db!.fn.now()
+          });
+          console.log(`[refine] Plan refinement completed for draft ${draftId}`);
+        } catch (error) {
+          console.error(`[refine] Plan refinement failed for draft ${draftId}:`, error);
+          // Revert status to review on failure
+          await db!('task_drafts').where({ draft_id: draftId }).update({
+            status: 'review',
+            updated_at: db!.fn.now()
+          });
+        }
+      })();
     } catch (error) {
       console.error('Refine plan error:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to refine plan' });

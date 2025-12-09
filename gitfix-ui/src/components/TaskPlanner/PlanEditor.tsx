@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Undo2, Redo2, Check, Loader2, AlertCircle, FileText, GripVertical } from 'lucide-react';
+import { debounce } from 'lodash';
 import { usePlanRefinement, SaveStatus } from '../../hooks/usePlanRefinement';
-import { DraftWithPlan, finalizePlan } from '../../api/gitfixApi';
+import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage } from '../../api/gitfixApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
 
@@ -66,6 +67,21 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
     saveStatus,
     highlightedIds
   } = usePlanRefinement(draft.draft_id, draft.plan_json || []);
+
+  // Debounced save for chat history
+  const saveChatHistoryRef = useRef(
+    debounce(async (draftId: string, messages: ChatMessage[]) => {
+      try {
+        await updateDraft(draftId, { chat_history: messages });
+      } catch (err) {
+        console.error('Failed to save chat history:', err);
+      }
+    }, 1000)
+  );
+
+  const handleChatMessagesChange = useCallback((messages: ChatMessage[]) => {
+    saveChatHistoryRef.current(draft.draft_id, messages);
+  }, [draft.draft_id]);
 
   const handleFinalize = async () => {
     setIsFinalizing(true);
@@ -153,7 +169,11 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
           </PanelResizeHandle>
           
           <Panel defaultSize={40} minSize={25}>
-            <RefinementChat onSendMessage={handleRefine} />
+            <RefinementChat
+              onSendMessage={handleRefine}
+              initialMessages={draft.chat_history}
+              onMessagesChange={handleChatMessagesChange}
+            />
           </Panel>
         </PanelGroup>
       </div>

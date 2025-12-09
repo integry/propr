@@ -21,7 +21,7 @@ export interface PlannerDraft {
   draft_id: string;
   repository: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'generating';
+  status: 'draft' | 'review' | 'generating' | 'refining';
   attachments: PlannerAttachment[];
   created_at: string;
   generation_trace?: GenerationTrace;
@@ -155,8 +155,16 @@ export interface PlanTask {
   files: string[];
 }
 
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+}
+
 export interface DraftWithPlan extends PlannerDraft {
   plan_json: PlanTask[];
+  chat_history?: ChatMessage[];
 }
 
 export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
@@ -167,7 +175,7 @@ export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
   return response.json();
 };
 
-export const updateDraft = async (draftId: string, data: { plan_json: PlanTask[] }): Promise<void> => {
+export const updateDraft = async (draftId: string, data: { plan_json?: PlanTask[]; chat_history?: ChatMessage[] }): Promise<void> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -209,7 +217,7 @@ export interface DraftListItem {
   repository: string;
   name?: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'executed' | 'generating';
+  status: 'draft' | 'review' | 'executed' | 'generating' | 'refining';
   updated_at: string;
   created_at: string;
 }

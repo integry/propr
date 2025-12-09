@@ -199,52 +199,63 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       setError('Please fix the branch name before generating');
       return;
     }
-    
+
     setIsGenerating(true);
     setError(null);
     setGenerationTrace(undefined);
-    
-    const generatePromise = generatePlan(draft.draft_id, {
-      baseBranch: config.baseBranch,
-      granularity: config.granularity
-    });
-    
+
+    try {
+      // Start generation - returns immediately with 202
+      await generatePlan(draft.draft_id, {
+        baseBranch: config.baseBranch,
+        granularity: config.granularity
+      });
+    } catch (err) {
+      setError((err as Error).message || 'Failed to start plan generation');
+      setIsGenerating(false);
+      return;
+    }
+
+    // Poll for completion
     pollingIntervalRef.current = setInterval(async () => {
       try {
         const updatedDraft = await getDraft(draft.draft_id);
         if (updatedDraft.generation_trace) {
           setGenerationTrace(updatedDraft.generation_trace);
+          // Check for error in generation trace
+          const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
+          if (trace.error) {
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current);
+              pollingIntervalRef.current = null;
+            }
+            setError(trace.error);
+            setIsGenerating(false);
+            return;
+          }
         }
-        if (updatedDraft.status !== 'draft' && updatedDraft.status !== 'generating') {
+        // Check if generation completed (status changed to 'review')
+        if (updatedDraft.status === 'review') {
           if (pollingIntervalRef.current) {
             clearInterval(pollingIntervalRef.current);
             pollingIntervalRef.current = null;
           }
+          onGenerateComplete();
+        }
+        // Check if generation failed (status went back to 'draft')
+        if (updatedDraft.status === 'draft') {
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+          }
+          const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
+          setError(trace?.error || 'Plan generation failed');
+          setIsGenerating(false);
         }
       } catch (e) {
         console.error('Failed to poll draft status:', e);
       }
     }, 1000);
-
-    try {
-      await generatePromise;
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current);
-        pollingIntervalRef.current = null;
-      }
-      const finalDraft = await getDraft(draft.draft_id);
-      if (finalDraft.generation_trace) {
-        setGenerationTrace(finalDraft.generation_trace);
-      }
-      onGenerateComplete();
-    } catch (err) {
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current);
-        pollingIntervalRef.current = null;
-      }
-      setError((err as Error).message || 'Failed to generate plan');
-      setIsGenerating(false);
-    }
   };
 
   useEffect(() => {
