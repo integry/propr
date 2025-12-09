@@ -72,8 +72,8 @@ export { generateContext, SecurityException } from './services/contextService.js
 export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile } from './services/contextService.js';
 export { findRelevantFiles } from './services/relevanceService.js';
 export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';
-export { generatePlan, refinePlan, PlanningFailedError } from './services/taskPlanningService.js';
-export type { GeneratePlanOptions, RefinePlanOptions } from './services/taskPlanningService.js';
+export { generatePlan, refinePlan, generateContextPreview, checkoutBranch, PlanningFailedError, BranchNotFoundError } from './services/taskPlanningService.js';
+export type { GeneratePlanOptions, RefinePlanOptions, GenerateContextPreviewOptions, PreviewResult, PreviewStats, SmartFileSelection, TaskDraftConfig, Granularity } from './services/taskPlanningService.js';
 export { executeDraft } from './services/taskExecutionService.js';
 export type { IssueLink, ExecutionResult } from './services/taskExecutionService.js';
 export { AttachmentService } from './services/attachmentService.js';
