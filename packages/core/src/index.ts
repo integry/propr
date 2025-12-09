@@ -82,7 +82,8 @@ export { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT } from './claude/prompts/p
 export type { Plan, PlanItem } from './claude/prompts/plannerPrompts.js';
 export { parseLlmJson, JsonParseError } from './utils/jsonUtils.js';
 export { extractKeywords } from './services/relevance/keywordExtractor.js';
-export { mineGitHistory } from './services/relevance/gitMiner.js';
+export { mineGitHistory, mineGitHistoryWithLLM, getCommitHistory, formatCommitLog } from './services/relevance/gitMiner.js';
+export type { FileScore as GitFileScore, CommitInfo, SemanticMinerFile, SemanticMinerResponse, SemanticMiningOptions } from './services/relevance/gitMiner.js';
 export { scorePaths } from './services/relevance/pathScorer.js';
 
 export {
