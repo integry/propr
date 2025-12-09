@@ -84,7 +84,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
       id: `task-${Date.now()}`,
       title: 'New Task',
       body: '',
-      files: []
+      implementation: ''
     };
     const newPlan = [...currentPlan];
     newPlan.splice(index + 1, 0, newTask);
