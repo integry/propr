@@ -12,7 +12,7 @@ Use this context to understand the codebase architecture and identify which file
 1. Be verbose and explicit - assume the implementer is a junior developer who needs detailed guidance.
 2. Each issue body should include: Context (why this change is needed), Requirements (what needs to be done), Implementation Specification (detailed steps with file paths and code locations), and Acceptance Criteria (how to verify the work).
 3. The implementation field should contain complete, ready-to-use code with comments explaining key decisions.
-4. Use unified diff format for existing file modifications; provide complete file content for new files.
+4. Use unified diff format with exact line numbers for existing file modifications when possible; provide complete file content for new files.
 
 **Output Format:**
 You MUST output a strict JSON array with objects containing exactly these fields:
