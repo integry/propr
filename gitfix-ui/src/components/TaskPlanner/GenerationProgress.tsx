@@ -1,0 +1,157 @@
+import React from 'react';
+import { GenerationTrace } from '../../api/gitfixApi';
+
+interface GenerationProgressProps {
+  trace?: GenerationTrace;
+}
+
+const STEP_LABELS: Record<string, string> = {
+  relevance: 'Finding Relevant Files',
+  context: 'Building Context',
+  llm: 'Generating Plan'
+};
+
+const StatusIcon: React.FC<{ status: string }> = ({ status }) => {
+  if (status === 'completed') {
+    return (
+      <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+      </svg>
+    );
+  }
+  if (status === 'in_progress') {
+    return (
+      <svg className="animate-spin w-5 h-5 text-indigo-600" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+      </svg>
+    );
+  }
+  if (status === 'failed') {
+    return (
+      <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+      </svg>
+    );
+  }
+  return (
+    <div className="w-5 h-5 rounded-full border-2 border-gray-300" />
+  );
+};
+
+const getStatusBadgeClass = (status: string): string => {
+  switch (status) {
+    case 'completed':
+      return 'bg-green-100 text-green-800';
+    case 'in_progress':
+      return 'bg-indigo-100 text-indigo-800';
+    case 'failed':
+      return 'bg-red-100 text-red-800';
+    default:
+      return 'bg-gray-100 text-gray-600';
+  }
+};
+
+export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace }) => {
+  if (!trace || !trace.steps || trace.steps.length === 0) return null;
+
+  return (
+    <div className="mt-6 border rounded-lg overflow-hidden bg-gray-50">
+      <div className="p-4 bg-gray-100 font-semibold border-b flex items-center gap-2">
+        <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+        </svg>
+        Generation Progress
+      </div>
+      <div className="divide-y">
+        {trace.steps.map((step) => (
+          <div key={step.name} className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-3">
+                <StatusIcon status={step.status} />
+                <span className="font-medium text-gray-900">
+                  {STEP_LABELS[step.name] || step.name}
+                </span>
+              </div>
+              <span className={`text-xs px-2 py-1 rounded-full font-medium ${getStatusBadgeClass(step.status)}`}>
+                {step.status === 'in_progress' ? 'In Progress' : step.status}
+              </span>
+            </div>
+            
+            {step.name === 'relevance' && step.data && (
+              <div className="text-sm text-gray-600 ml-8">
+                {step.data.keywords && step.data.keywords.length > 0 && (
+                  <p className="mb-2">
+                    <span className="font-medium">Keywords:</span>{' '}
+                    {step.data.keywords.map((kw, idx) => (
+                      <span key={idx} className="inline-block bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded mr-1 mb-1 text-xs">
+                        {kw}
+                      </span>
+                    ))}
+                  </p>
+                )}
+                {step.data.files && step.data.files.length > 0 && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">
+                      Found {step.data.files.length} potential files
+                    </summary>
+                    <ul className="mt-2 max-h-40 overflow-y-auto bg-white rounded border p-2">
+                      {step.data.files.map((f) => (
+                        <li key={f.path} className="flex justify-between items-center py-1.5 border-b last:border-0">
+                          <span className="font-mono text-xs truncate flex-1">{f.path}</span>
+                          <div className="flex items-center gap-2 ml-2">
+                            <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
+                              {f.reason}
+                            </span>
+                            <span className="text-xs text-gray-400">
+                              {f.score.toFixed(2)}
+                            </span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            )}
+
+            {step.name === 'context' && step.data && (
+              <div className="text-sm text-gray-600 ml-8">
+                {step.data.tokenCount !== undefined && (
+                  <p className="mb-2">
+                    <span className="font-medium">Tokens Used:</span>{' '}
+                    <span className="bg-yellow-50 text-yellow-700 px-2 py-0.5 rounded">
+                      {step.data.tokenCount.toLocaleString()}
+                    </span>
+                  </p>
+                )}
+                {step.data.includedFiles && step.data.includedFiles.length > 0 && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">
+                      Included {step.data.includedFiles.length} files in context
+                    </summary>
+                    <ul className="mt-2 max-h-40 overflow-y-auto bg-white rounded border p-2 font-mono text-xs">
+                      {step.data.includedFiles.map((f) => (
+                        <li key={f} className="py-1 border-b last:border-0 text-gray-700">
+                          {f}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            )}
+
+            {step.name === 'llm' && step.status === 'in_progress' && (
+              <div className="text-sm text-gray-500 ml-8 italic">
+                AI is analyzing the context and generating the implementation plan...
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+export default GenerationProgress;

@@ -277,6 +277,23 @@ export const logout = (): void => {
   window.location.href = `${API_BASE_URL}/api/auth/logout`;
 };
 
+export interface GenerationStepData {
+  keywords?: string[];
+  files?: Array<{ path: string; reason: string; score: number }>;
+  includedFiles?: string[];
+  tokenCount?: number;
+}
+
+export interface GenerationStep {
+  name: 'relevance' | 'context' | 'llm';
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  data?: GenerationStepData;
+}
+
+export interface GenerationTrace {
+  steps: GenerationStep[];
+}
+
 export interface PlannerDraft {
   draft_id: string;
   repository: string;
@@ -284,6 +301,7 @@ export interface PlannerDraft {
   status: 'draft' | 'review' | 'generating';
   attachments: PlannerAttachment[];
   created_at: string;
+  generation_trace?: GenerationTrace;
 }
 
 export interface PlannerAttachment {
