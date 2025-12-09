@@ -37,7 +37,10 @@ async function updateTrace(
     .select('generation_trace')
     .first();
 
-  const trace: GenerationTrace = (draft?.generation_trace as GenerationTrace) || { steps: [] };
+  const rawTrace = draft?.generation_trace as GenerationTrace | undefined;
+  const trace: GenerationTrace = {
+    steps: Array.isArray(rawTrace?.steps) ? rawTrace.steps : []
+  };
 
   const existingStepIndex = trace.steps.findIndex((s) => s.name === step);
   if (existingStepIndex >= 0) {
@@ -126,9 +129,14 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   correlatedLogger.info({ fileCount: relevantFilePaths.length }, 'Generating context');
 
+  // Use a lower token limit for planner to leave room for system prompt, request, and response
+  // Default is 150K but we need ~10-15K for prompts and response
+  const PLANNER_CONTEXT_TOKEN_LIMIT = 100000;
+
   const contextResult = await generateContext({
     repoPath: worktreePath,
     filesToInclude: relevantFilePaths.length > 0 ? relevantFilePaths : undefined,
+    tokenLimit: PLANNER_CONTEXT_TOKEN_LIMIT,
     correlationId
   });
 

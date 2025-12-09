@@ -133,8 +133,9 @@ export async function generateContext(options: ContextGenerationOptions): Promis
 
       const selectedFiles: string[] = [];
       let currentTokens = 0;
-      // Reserve ~5000 tokens for directory structure and metadata
-      const effectiveLimit = tokenLimit - 5000;
+      // Reserve 20% of token limit for repomix overhead (directory structure, file headers, XML tags, etc.)
+      // Previous value of 5000 was insufficient - observed overhead can be 15-20% of total
+      const effectiveLimit = Math.floor(tokenLimit * 0.8);
 
       for (const [filePath, tokens] of fileTokenEntries) {
         if (currentTokens + tokens <= effectiveLimit) {
@@ -159,6 +160,18 @@ export async function generateContext(options: ContextGenerationOptions): Promis
         writeOutputToDisk: captureWriteOutput,
         copyToClipboardIfEnabled: noopCopyToClipboard,
       });
+
+      // Final safety check - warn if we still exceed the limit
+      if (limitedResult.totalTokens > tokenLimit) {
+        correlatedLogger.warn(
+          {
+            totalTokens: limitedResult.totalTokens,
+            tokenLimit,
+            overage: limitedResult.totalTokens - tokenLimit,
+          },
+          'Context still exceeds token limit after truncation - repomix overhead larger than expected'
+        );
+      }
 
       correlatedLogger.info(
         {

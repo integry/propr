@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { getContextStats, uploadAttachment, removeAttachment, generatePlan, PlannerDraft, PlannerAttachment, ContextStats } from '../../api/gitfixApi';
+import { getContextStats, uploadAttachment, removeAttachment, generatePlan, getDraft, PlannerDraft, PlannerAttachment, ContextStats, GenerationTrace } from '../../api/gitfixApi';
+import { GenerationProgress } from './GenerationProgress';
 
 interface SetupWizardProps {
   draft: PlannerDraft;
@@ -59,8 +60,10 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [generationTrace, setGenerationTrace] = useState<GenerationTrace | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchStats = useCallback(async (level: string) => {
     try {
@@ -120,15 +123,55 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const handleGenerate = async () => {
     setIsGenerating(true);
     setError(null);
+    setGenerationTrace(undefined);
     
+    const generatePromise = generatePlan(draft.draft_id);
+    
+    pollingIntervalRef.current = setInterval(async () => {
+      try {
+        const updatedDraft = await getDraft(draft.draft_id);
+        if (updatedDraft.generation_trace) {
+          setGenerationTrace(updatedDraft.generation_trace);
+        }
+        if (updatedDraft.status !== 'draft' && updatedDraft.status !== 'generating') {
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+          }
+        }
+      } catch (e) {
+        console.error('Failed to poll draft status:', e);
+      }
+    }, 1000);
+
     try {
-      await generatePlan(draft.draft_id);
+      await generatePromise;
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+      const finalDraft = await getDraft(draft.draft_id);
+      if (finalDraft.generation_trace) {
+        setGenerationTrace(finalDraft.generation_trace);
+      }
       onGenerateComplete();
     } catch (err) {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
       setError((err as Error).message || 'Failed to generate plan');
       setIsGenerating(false);
     }
   };
+
+  useEffect(() => {
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+    };
+  }, []);
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -255,6 +298,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           {error}
         </div>
       )}
+
+      {isGenerating && <GenerationProgress trace={generationTrace} />}
 
       <button 
         onClick={handleGenerate}
