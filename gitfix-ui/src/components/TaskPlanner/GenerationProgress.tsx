@@ -6,8 +6,6 @@ interface GenerationProgressProps {
 }
 
 const STEP_LABELS: Record<string, string> = {
-  relevance: 'Finding Relevant Files',
-  context: 'Building Context',
   llm: 'Generating Plan'
 };
 
@@ -55,6 +53,10 @@ const getStatusBadgeClass = (status: string): string => {
 export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace }) => {
   if (!trace || !trace.steps || trace.steps.length === 0) return null;
 
+  const visibleSteps = trace.steps.filter(step => step.name === 'llm');
+
+  if (visibleSteps.length === 0) return null;
+
   return (
     <div className="mt-6 border rounded-lg overflow-hidden bg-gray-50">
       <div className="p-4 bg-gray-100 font-semibold border-b flex items-center gap-2">
@@ -64,7 +66,7 @@ export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace })
         Generation Progress
       </div>
       <div className="divide-y">
-        {trace.steps.map((step) => (
+        {visibleSteps.map((step) => (
           <div key={step.name} className="p-4">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-3">
@@ -77,75 +79,17 @@ export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace })
                 {step.status === 'in_progress' ? 'In Progress' : step.status}
               </span>
             </div>
-            
-            {step.name === 'relevance' && step.data && (
-              <div className="text-sm text-gray-600 ml-8">
-                {step.data.keywords && step.data.keywords.length > 0 && (
-                  <p className="mb-2">
-                    <span className="font-medium">Keywords:</span>{' '}
-                    {step.data.keywords.map((kw, idx) => (
-                      <span key={idx} className="inline-block bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded mr-1 mb-1 text-xs">
-                        {kw}
-                      </span>
-                    ))}
-                  </p>
-                )}
-                {step.data.files && step.data.files.length > 0 && (
-                  <details className="mt-2">
-                    <summary className="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">
-                      Found {step.data.files.length} potential files
-                    </summary>
-                    <ul className="mt-2 max-h-40 overflow-y-auto bg-white rounded border p-2">
-                      {step.data.files.map((f) => (
-                        <li key={f.path} className="flex justify-between items-center py-1.5 border-b last:border-0">
-                          <span className="font-mono text-xs truncate flex-1">{f.path}</span>
-                          <div className="flex items-center gap-2 ml-2">
-                            <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
-                              {f.reason}
-                            </span>
-                            <span className="text-xs text-gray-400">
-                              {f.score.toFixed(2)}
-                            </span>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-              </div>
-            )}
-
-            {step.name === 'context' && step.data && (
-              <div className="text-sm text-gray-600 ml-8">
-                {step.data.tokenCount !== undefined && (
-                  <p className="mb-2">
-                    <span className="font-medium">Tokens Used:</span>{' '}
-                    <span className="bg-yellow-50 text-yellow-700 px-2 py-0.5 rounded">
-                      {step.data.tokenCount.toLocaleString()}
-                    </span>
-                  </p>
-                )}
-                {step.data.includedFiles && step.data.includedFiles.length > 0 && (
-                  <details className="mt-2">
-                    <summary className="cursor-pointer text-indigo-600 hover:text-indigo-700 font-medium">
-                      Included {step.data.includedFiles.length} files in context
-                    </summary>
-                    <ul className="mt-2 max-h-40 overflow-y-auto bg-white rounded border p-2 font-mono text-xs">
-                      {step.data.includedFiles.map((f) => (
-                        <li key={f} className="py-1 border-b last:border-0 text-gray-700">
-                          {f}
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-              </div>
-            )}
 
             {step.name === 'llm' && step.status === 'in_progress' && (
               <div className="text-sm text-gray-500 ml-8 italic">
                 AI is analyzing the context and generating the implementation plan...
               </div>
+            )}
+            
+            {step.status === 'failed' && (
+               <div className="text-sm text-red-600 ml-8 mt-1">
+                 Generation failed. Please try again.
+               </div>
             )}
           </div>
         ))}
