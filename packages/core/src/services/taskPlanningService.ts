@@ -2,7 +2,7 @@ import { db } from '../db/postgres.js';
 import { generateContext } from './contextService.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
-import { PLANNER_PROMPTS, REFINER_SYSTEM_PROMPT, Plan, PlanItem } from '../claude/prompts/plannerPrompts.js';
+import { getPlannerPrompt, REFINER_SYSTEM_PROMPT, Plan, PlanItem } from '../claude/prompts/plannerPrompts.js';
 import { parseLlmJson, JsonParseError } from '../utils/jsonUtils.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
@@ -182,7 +182,7 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<Plan> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
 
-  const userPrompt = `${PLANNER_PROMPTS[granularity]}\n\n<context>\n${context}\n</context>\n\n<request>\n${prompt}\n</request>\n\nRemember: Output ONLY a valid JSON array. No markdown, no explanations.`;
+  const userPrompt = `${getPlannerPrompt(granularity)}\n\n<context>\n${context}\n</context>\n\n<request>\n${prompt}\n</request>\n\nRemember: Output ONLY a valid JSON array. No markdown, no explanations.`;
   correlatedLogger.info('Calling LLM for plan generation');
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
