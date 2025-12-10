@@ -361,9 +361,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   const downloadContextHandler = createDownloadContextHandler({
-    db: db!,
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields),
-    validateInput: validatePreviewInput
+    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
   });
 
   async function downloadContext(req: Request, res: Response): Promise<void> {

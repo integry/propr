@@ -4,13 +4,9 @@ import {
   getGitHubInstallationToken,
   ensureRepoCloned,
   generateCorrelationId,
-  generateContext,
   generateContextPreview,
-  findRelevantFiles,
   BranchNotFoundError,
-  checkoutBranch,
-  AttachmentService,
-  getPlannerPrompt
+  AttachmentService
 } from '@gitfix/core';
 import type { Granularity, MulterFile } from '@gitfix/core';
 
@@ -129,9 +125,7 @@ export async function getRepoAuthToken(accessToken: string): Promise<string> {
 }
 
 interface DownloadContextDeps {
-  db: Knex;
   verifyOwnership: (draftId: string, userId: string, fields: string[]) => Promise<OwnershipResult>;
-  validateInput: (body: Record<string, unknown>) => { valid: boolean; error?: string };
 }
 
 interface PreviewContextDeps {
@@ -307,57 +301,28 @@ export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
 
 export function createDownloadContextHandler(deps: DownloadContextDeps) {
   return async function downloadContext(req: Request, res: Response): Promise<void> {
-    const validation = deps.validateInput(req.body);
-    if (!validation.valid) { res.status(400).json({ error: validation.error }); return; }
-
-    const { draftId, prompt, baseBranch, granularity, files } = req.body;
-    const correlationId = generateCorrelationId();
+    const { draftId } = req.body;
+    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
 
     try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
+      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'generated_context']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const draft = ownership.draft!;
-      const [owner, repoName] = (draft.repository as string).split('/');
-      if (!owner || !repoName) { res.status(400).json({ error: 'Invalid repository format' }); return; }
+      const generatedContext = draft.generated_context as string | undefined;
 
-      const accessToken = req.user?.accessToken;
-      if (!accessToken) { res.status(401).json({ error: 'GitHub access token not available' }); return; }
-
-      const authToken = await getRepoAuthToken(accessToken);
-      const worktreePath = await ensureRepoCloned(`https://github.com/${owner}/${repoName}.git`, owner, repoName, authToken);
-
-      try {
-        await checkoutBranch(worktreePath, baseBranch);
-      } catch (error) {
-        if (error instanceof BranchNotFoundError) { res.status(400).json({ error: error.message }); return; }
-        throw error;
+      if (!generatedContext) {
+        res.status(400).json({ error: 'No context has been generated yet. Please preview the context first.' });
+        return;
       }
-
-      const relevanceResult = await findRelevantFiles(worktreePath, prompt, { correlationId });
-      const manualFiles = files || [];
-      const autoFilePaths = relevanceResult.files.map((f: { path: string }) => f.path);
-      const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
-
-      const contextResult = await generateContext({
-        repoPath: worktreePath,
-        filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined,
-        tokenLimit: 100000,
-        correlationId,
-        includeFullDirectoryStructure: true
-      });
-
-      const effectiveGranularity = granularity || 'balanced';
-      const systemPrompt = getPlannerPrompt(effectiveGranularity as 'single' | 'balanced' | 'granular');
-      const fullContext = `${systemPrompt}\n\n<context>\n${contextResult.context}\n</context>\n\n<request>\n${prompt}\n</request>\n\nRemember: Output ONLY a valid JSON array. No markdown, no explanations.`;
 
       res.setHeader('Content-Type', 'text/plain');
       res.setHeader('Content-Disposition', `attachment; filename="context-${draftId}.txt"`);
-      res.send(fullContext);
+      res.send(generatedContext);
 
     } catch (error) {
       console.error('Download context error:', error);
-      res.status(500).json({ error: 'Failed to generate context' });
+      res.status(500).json({ error: 'Failed to download context' });
     }
   };
 }

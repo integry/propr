@@ -350,9 +350,13 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   if (contextResult.totalTokens > PREVIEW_TOKEN_LIMIT) warnings.push(`Context exceeds token limit (${contextResult.totalTokens} > ${PREVIEW_TOKEN_LIMIT})`);
 
+  const systemPrompt = getPlannerPrompt(granularity);
+  const fullContext = `${systemPrompt}\n\n<context>\n${contextResult.context}\n</context>\n\n<request>\n${prompt}\n</request>\n\nRemember: Output ONLY a valid JSON array. No markdown, no explanations.`;
+
   await db('task_drafts').where({ draft_id: draftId }).update({
     initial_prompt: prompt,
     context_config: JSON.stringify({ baseBranch, granularity, manualFiles, autoFiles: autoFilePaths }),
+    generated_context: fullContext,
     updated_at: db.fn.now()
   });
 
