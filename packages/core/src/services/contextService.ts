@@ -38,7 +38,7 @@ export class SecurityException extends Error {
 const DEFAULT_MAX_CONTEXT_TOKENS = 150000;
 
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
-  const { repoPath, filesToInclude, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId, includeFullDirectoryStructure = false } = options;
+  const { repoPath, filesToInclude, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId, includeFullDirectoryStructure = true } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   correlatedLogger.info({ repoPath, filesToInclude, tokenLimit }, 'Starting context generation with repomix');

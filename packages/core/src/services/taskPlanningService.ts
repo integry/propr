@@ -2,7 +2,7 @@ import { db } from '../db/postgres.js';
 import { generateContext } from './contextService.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
-import { getPlannerPrompt, REFINER_SYSTEM_PROMPT, Plan, PlanItem } from '../claude/prompts/plannerPrompts.js';
+import { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, Plan, PlanItem, GRANULARITY_INSTRUCTIONS, Granularity as GranularityType } from '../claude/prompts/plannerPrompts.js';
 import { parseLlmJson, JsonParseError } from '../utils/jsonUtils.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
@@ -14,6 +14,28 @@ export class PlanningFailedError extends Error {
     super(message);
     this.name = 'PlanningFailedError';
   }
+}
+
+interface BuildFullContextOptions {
+  userRequest: string;
+  repomixContext: string;
+  granularity: GranularityType;
+}
+
+export function buildFullContext(options: BuildFullContextOptions): string {
+  const { userRequest, repomixContext, granularity } = options;
+  const granularitySpec = GRANULARITY_INSTRUCTIONS[granularity];
+  
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<llm-context>
+  <system-prompt><![CDATA[${PLANNER_SYSTEM_PROMPT}]]></system-prompt>
+  <user-request><![CDATA[${userRequest}]]></user-request>
+  <granularity-spec><![CDATA[${granularitySpec}]]></granularity-spec>
+  <repository-context>
+${repomixContext}
+  </repository-context>
+  <output-guidelines><![CDATA[Output ONLY a valid JSON array. No markdown, no explanations.]]></output-guidelines>
+</llm-context>`;
 }
 
 interface GenerationTraceStep {
@@ -182,7 +204,7 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<Plan> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
 
-  const userPrompt = `${getPlannerPrompt(granularity)}\n\n<context>\n${context}\n</context>\n\n<request>\n${prompt}\n</request>\n\nRemember: Output ONLY a valid JSON array. No markdown, no explanations.`;
+  const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity });
   correlatedLogger.info('Calling LLM for plan generation');
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
@@ -350,8 +372,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   if (contextResult.totalTokens > PREVIEW_TOKEN_LIMIT) warnings.push(`Context exceeds token limit (${contextResult.totalTokens} > ${PREVIEW_TOKEN_LIMIT})`);
 
-  const systemPrompt = getPlannerPrompt(granularity);
-  const fullContext = `${systemPrompt}\n\n<context>\n${contextResult.context}\n</context>\n\n<request>\n${prompt}\n</request>\n\nRemember: Output ONLY a valid JSON array. No markdown, no explanations.`;
+  const fullContext = buildFullContext({ userRequest: prompt, repomixContext: contextResult.context, granularity });
 
   await db('task_drafts').where({ draft_id: draftId }).update({
     initial_prompt: prompt,

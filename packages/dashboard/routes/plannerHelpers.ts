@@ -316,8 +316,8 @@ export function createDownloadContextHandler(deps: DownloadContextDeps) {
         return;
       }
 
-      res.setHeader('Content-Type', 'text/plain');
-      res.setHeader('Content-Disposition', `attachment; filename="context-${draftId}.txt"`);
+      res.setHeader('Content-Type', 'application/xml');
+      res.setHeader('Content-Disposition', `attachment; filename="context-${draftId}.xml"`);
       res.send(generatedContext);
 
     } catch (error) {
