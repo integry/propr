@@ -4,22 +4,28 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs-extra';
 import {
-  AttachmentService,
   generatePlan,
   refinePlan,
   executeDraft,
   getGitHubInstallationToken,
   ensureRepoCloned,
-  generateCorrelationId,
-  generateContextPreview,
-  BranchNotFoundError
+  generateCorrelationId
 } from '@gitfix/core';
-import type { MulterFile, Plan, Granularity } from '@gitfix/core';
+import type { Plan } from '@gitfix/core';
 import {
   checkDbAndAuth,
   sendCheckError,
   verifyDraftOwnership,
-  setupRepoContext
+  setupRepoContext,
+  createDownloadContextHandler,
+  createGetRepositoryInfoHandler,
+  createGetAttachmentContentHandler,
+  createPreviewContextHandler,
+  createDeleteAttachmentHandler,
+  createUploadAttachmentHandler,
+  createGetContextStatsHandler,
+  validatePreviewInput,
+  VALID_GRANULARITIES
 } from './plannerHelpers.js';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
@@ -131,116 +137,45 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
+  const uploadAttachmentHandler = createUploadAttachmentHandler({
+    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
+  });
+
   async function uploadAttachment(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-    if (!req.file) { res.status(400).json({ error: 'No file uploaded' }); return; }
-
-    try {
-      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const attachment = await AttachmentService.processUpload(req.file as MulterFile, req.params.id);
-      res.json(attachment);
-    } catch (error) {
-      console.error('Upload attachment error:', error);
-      const message = error instanceof Error ? error.message : 'Processing failed';
-      const status = message.includes('not supported') || message.includes('Unsupported') ? 400 : 500;
-      res.status(status).json({ error: message });
-    }
+    return uploadAttachmentHandler(req, res);
   }
+
+  const getContextStatsHandler = createGetContextStatsHandler({
+    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
+  });
 
   async function getContextStats(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
-    const { draftId, level } = req.body;
-    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
-
-    try {
-      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const levelMultipliers: Record<string, number> = { low: 1, medium: 3, high: 10 };
-      const multiplier = levelMultipliers[level] || levelMultipliers.medium;
-      const baseTokens = 5000;
-      const tokenCount = baseTokens * multiplier;
-      const costEstimate = (tokenCount / 1_000_000) * 3;
-      const smartFiles = level === 'low' ? 0 : level === 'medium' ? 15 : 50;
-
-      res.json({ tokenCount, costEstimate, smartFiles });
-    } catch (error) {
-      console.error('Get context stats error:', error);
-      res.status(500).json({ error: 'Failed to get context stats' });
-    }
+    return getContextStatsHandler(req, res);
   }
 
-  const VALID_GRANULARITIES = ['single', 'balanced', 'granular'] as const;
-  const BRANCH_NAME_REGEX = /^[a-zA-Z0-9._/-]+$/;
-
-  function validatePreviewInput(body: Record<string, unknown>): { valid: boolean; error?: string } {
-    const { draftId, prompt, baseBranch, granularity, files } = body;
-    if (!draftId) return { valid: false, error: 'draftId is required' };
-    if (!prompt || typeof prompt !== 'string') return { valid: false, error: 'prompt is required' };
-    if (!baseBranch || typeof baseBranch !== 'string') return { valid: false, error: 'baseBranch is required' };
-    if (!BRANCH_NAME_REGEX.test(baseBranch as string)) return { valid: false, error: 'Invalid branch name format' };
-    if (granularity && !VALID_GRANULARITIES.includes(granularity as typeof VALID_GRANULARITIES[number])) return { valid: false, error: `granularity must be one of: ${VALID_GRANULARITIES.join(', ')}` };
-    if (files && (!Array.isArray(files) || !files.every(f => typeof f === 'string'))) return { valid: false, error: 'files must be an array of strings' };
-    return { valid: true };
-  }
-
-  async function getRepoAuthToken(accessToken: string): Promise<string> {
-    try { return await getGitHubInstallationToken(); } catch { return accessToken; }
-  }
+  const previewContextHandler = createPreviewContextHandler({
+    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields),
+    validateInput: validatePreviewInput
+  });
 
   async function previewContext(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
-    const validation = validatePreviewInput(req.body);
-    if (!validation.valid) { res.status(400).json({ error: validation.error }); return; }
-
-    const { draftId, prompt, baseBranch, granularity, files } = req.body;
-    const correlationId = generateCorrelationId();
-
-    try {
-      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id, ['user_id', 'repository']);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const draft = ownership.draft!;
-      const [owner, repoName] = (draft.repository as string).split('/');
-      if (!owner || !repoName) { res.status(400).json({ error: 'Invalid repository format' }); return; }
-
-      const accessToken = req.user?.accessToken;
-      if (!accessToken) { res.status(401).json({ error: 'GitHub access token not available' }); return; }
-
-      const authToken = await getRepoAuthToken(accessToken);
-      const worktreePath = await ensureRepoCloned(`https://github.com/${owner}/${repoName}.git`, owner, repoName, authToken);
-
-      const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, files, worktreePath, correlationId });
-      res.json(result);
-    } catch (error) {
-      console.error('Preview context error:', error);
-      if (error instanceof BranchNotFoundError) { res.status(400).json({ error: error.message }); return; }
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to preview context' });
-    }
+    return previewContextHandler(req, res);
   }
+
+  const deleteAttachmentHandler = createDeleteAttachmentHandler({
+    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
+  });
 
   async function deleteAttachment(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
-    try {
-      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      await AttachmentService.deleteAttachment(req.params.id, req.params.attachmentId);
-      res.status(204).send();
-    } catch (error) {
-      console.error('Delete attachment error:', error);
-      const message = error instanceof Error ? error.message : 'Failed to delete attachment';
-      res.status(message.includes('not found') ? 404 : 500).json({ error: message });
-    }
+    return deleteAttachmentHandler(req, res);
   }
 
   async function generate(req: Request, res: Response): Promise<void> {
@@ -405,62 +340,34 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
+  const getAttachmentContentHandler = createGetAttachmentContentHandler({
+    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
+  });
+
   async function getAttachmentContent(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
-    try {
-      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'attachments']);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const attachments = (ownership.draft?.attachments || []) as { id: string; storedPath: string; mimeType: string; originalName: string }[];
-      const attachment = attachments.find(a => a.id === req.params.attachmentId);
-      if (!attachment) { res.status(404).json({ error: 'Attachment not found' }); return; }
-
-      const content = await AttachmentService.getAttachmentContent(attachment.storedPath);
-      res.setHeader('Content-Type', attachment.mimeType);
-      res.setHeader('Content-Disposition', `inline; filename="${attachment.originalName}"`);
-      res.send(content);
-    } catch (error) {
-      console.error('Get attachment content error:', error);
-      res.status(500).json({ error: 'Failed to get attachment content' });
-    }
+    return getAttachmentContentHandler(req, res);
   }
+
+  const getRepositoryInfoHandler = createGetRepositoryInfoHandler({
+    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
+  });
 
   async function getRepositoryInfo(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
+    return getRepositoryInfoHandler(req, res);
+  }
 
-    try {
-      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'repository']);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+  const downloadContextHandler = createDownloadContextHandler({
+    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
+  });
 
-      const repository = ownership.draft?.repository as string;
-      if (!repository) { res.status(400).json({ error: 'Repository not found in draft' }); return; }
-
-      const [owner, repoName] = repository.split('/');
-      if (!owner || !repoName) { res.status(400).json({ error: 'Invalid repository format' }); return; }
-
-      const accessToken = req.user?.accessToken;
-      if (!accessToken) { res.status(401).json({ error: 'GitHub access token not available' }); return; }
-
-      const authToken = await getRepoAuthToken(accessToken);
-      const { Octokit } = await import('@octokit/core');
-      const octokit = new Octokit({ auth: authToken });
-
-      const [repoInfo, branchesResponse] = await Promise.all([
-        octokit.request('GET /repos/{owner}/{repo}', { owner, repo: repoName }),
-        octokit.request('GET /repos/{owner}/{repo}/branches', { owner, repo: repoName, per_page: 100 })
-      ]);
-
-      res.json({
-        defaultBranch: repoInfo.data.default_branch,
-        branches: branchesResponse.data.map(b => b.name)
-      });
-    } catch (error) {
-      console.error('Get repository info error:', error);
-      res.status(500).json({ error: 'Failed to get repository info' });
-    }
+  async function downloadContext(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+    return downloadContextHandler(req, res);
   }
 
   return {
@@ -475,6 +382,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     getRepositoryInfo,
     getContextStats,
     previewContext,
+    downloadContext,
     generate,
     refine,
     finalize

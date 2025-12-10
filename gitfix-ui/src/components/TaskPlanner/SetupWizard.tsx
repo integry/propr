@@ -5,6 +5,7 @@ import {
   generatePlan, 
   getDraft, 
   previewContext,
+  downloadContext,
   getRepositoryInfo,
   PlannerDraft, 
   PlannerAttachment, 
@@ -18,7 +19,7 @@ import { SmartFileSelection } from './SmartFileSelection';
 import { AttachmentUploader } from './AttachmentUploader';
 import { GranularitySelector } from './GranularitySelector';
 import { BranchSelector } from './BranchSelector';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Download } from 'lucide-react';
 
 interface SetupWizardProps {
   draft: PlannerDraft;
@@ -71,6 +72,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
 
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [isExporting, setIsExporting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [generationTrace, setGenerationTrace] = useState<GenerationTrace | undefined>(undefined);
   const [branchError, setBranchError] = useState<string | null>(null);
@@ -194,6 +196,39 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
   };
 
+  const handleExportContext = async () => {
+    if (!config.prompt.trim() || !config.baseBranch) {
+      setError('Please provide a prompt and select a branch before exporting');
+      return;
+    }
+    
+    setIsExporting(true);
+    setError(null);
+    
+    try {
+      const blob = await downloadContext({
+        draftId: draft.draft_id,
+        prompt: config.prompt,
+        baseBranch: config.baseBranch,
+        granularity: config.granularity,
+        files: config.files.map(f => f.originalName)
+      });
+      
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `context-${draft.draft_id}.xml`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err) {
+      setError((err as Error).message || 'Failed to export context');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const handleGenerate = async () => {
     if (branchError) {
       setError('Please fix the branch name before generating');
@@ -304,6 +339,21 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       />
 
       <CostPreview preview={preview} />
+
+      <div className="flex justify-end mb-4">
+        <button
+          onClick={handleExportContext}
+          disabled={isExporting || preview.isLoading || !config.prompt.trim() || !config.baseBranch}
+          className="text-sm text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1 disabled:text-gray-400 disabled:cursor-not-allowed"
+        >
+          {isExporting ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Download className="w-4 h-4" />
+          )}
+          Export Context (XML)
+        </button>
+      </div>
 
       {preview.data && (
         <SmartFileSelection smartSelection={preview.data.smartSelection} />

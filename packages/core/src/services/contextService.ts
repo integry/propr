@@ -6,6 +6,7 @@ export interface ContextGenerationOptions {
   filesToInclude?: string[];
   tokenLimit?: number;
   correlationId?: string;
+  includeFullDirectoryStructure?: boolean;
 }
 
 export interface ContextGenerationResult {
@@ -37,7 +38,7 @@ export class SecurityException extends Error {
 const DEFAULT_MAX_CONTEXT_TOKENS = 150000;
 
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
-  const { repoPath, filesToInclude, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId } = options;
+  const { repoPath, filesToInclude, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId, includeFullDirectoryStructure = true } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   correlatedLogger.info({ repoPath, filesToInclude, tokenLimit }, 'Starting context generation with repomix');
@@ -61,7 +62,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       showLineNumbers: false,
       truncateBase64: true,
       copyToClipboard: false,
-      includeFullDirectoryStructure: false,
+      includeFullDirectoryStructure: includeFullDirectoryStructure,
       tokenCountTree: false,
       git: {
         sortByChanges: false,
