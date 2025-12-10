@@ -1,5 +1,6 @@
 import { db } from '../db/postgres.js';
 import { generateContext } from './contextService.js';
+import { getEffectiveTokenLimit, ContextLevel } from '../config/modelLimits.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, Plan, PlanItem, GRANULARITY_INSTRUCTIONS, Granularity as GranularityType } from '../claude/prompts/plannerPrompts.js';
@@ -115,6 +116,7 @@ interface TaskDraft {
 export interface TaskDraftConfig {
   baseBranch: string;
   granularity: 'single' | 'balanced' | 'granular';
+  contextLevel?: ContextLevel;
   manualFiles: string[];
   autoFiles: string[];
 }
@@ -147,6 +149,7 @@ export interface GenerateContextPreviewOptions {
   prompt: string;
   baseBranch: string;
   granularity: Granularity;
+  contextLevel?: ContextLevel;
   files?: string[];
   worktreePath: string;
   correlationId?: string;
@@ -241,6 +244,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const contextConfig = draft.context_config as TaskDraftConfig | null;
   const baseBranch = contextConfig?.baseBranch;
   const granularity: Granularity = contextConfig?.granularity || 'balanced';
+  const contextLevel: ContextLevel = contextConfig?.contextLevel || 'balanced';
+  const tokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
 
   if (baseBranch) {
     try {
@@ -257,7 +262,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   await updateTrace(draftId, 'context', 'pending');
   correlatedLogger.info({ fileCount: relevantFilePaths.length }, 'Generating context');
 
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: relevantFilePaths.length > 0 ? relevantFilePaths : undefined, tokenLimit: 100000, correlationId });
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: relevantFilePaths.length > 0 ? relevantFilePaths : undefined, tokenLimit, correlationId });
   await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
 
   const plan = await callLLMForPlan({ draftId, context: contextResult.context, prompt: draft.initial_prompt, granularity, worktreePath, githubToken, repository: draft.repository, correlationId });
@@ -323,7 +328,7 @@ export async function checkoutBranch(repoPath: string, branch: string): Promise<
   }
 }
 
-const PREVIEW_TOKEN_LIMIT = 100000, DEFAULT_OUTPUT_TOKENS = 4000, SONNET_MODEL_ID = 'anthropic/claude-sonnet-4-20250514';
+const DEFAULT_OUTPUT_TOKENS = 4000, SONNET_MODEL_ID = 'anthropic/claude-sonnet-4-20250514';
 
 async function calculateCostEstimate(totalTokens: number, warnings: string[], correlatedLogger: { warn: typeof logger.warn }): Promise<number> {
   try {
@@ -338,7 +343,8 @@ async function calculateCostEstimate(totalTokens: number, warnings: string[], co
 }
 
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
-  const { draftId, prompt, baseBranch, granularity, files, worktreePath, correlationId } = options;
+  const { draftId, prompt, baseBranch, granularity, contextLevel = 'balanced', files, worktreePath, correlationId } = options;
+  const previewTokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   const warnings: string[] = [];
 
@@ -362,7 +368,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
   correlatedLogger.info({ manualCount: manualFiles.length, autoCount: autoFilePaths.length, combinedCount: combinedFiles.length }, 'Merged files');
 
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined, tokenLimit: PREVIEW_TOKEN_LIMIT, correlationId });
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined, tokenLimit: previewTokenLimit, correlationId });
   const costEstimate = await calculateCostEstimate(contextResult.totalTokens, warnings, correlatedLogger);
 
   const smartSelection: SmartFileSelection[] = [
@@ -370,13 +376,13 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     ...relevanceResult.files.map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
   ];
 
-  if (contextResult.totalTokens > PREVIEW_TOKEN_LIMIT) warnings.push(`Context exceeds token limit (${contextResult.totalTokens} > ${PREVIEW_TOKEN_LIMIT})`);
+  if (contextResult.totalTokens > previewTokenLimit) warnings.push(`Context exceeds token limit (${contextResult.totalTokens} > ${previewTokenLimit})`);
 
   const fullContext = buildFullContext({ userRequest: prompt, repomixContext: contextResult.context, granularity });
 
   await db('task_drafts').where({ draft_id: draftId }).update({
     initial_prompt: prompt,
-    context_config: JSON.stringify({ baseBranch, granularity, manualFiles, autoFiles: autoFilePaths }),
+    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, manualFiles, autoFiles: autoFilePaths }),
     generated_context: fullContext,
     updated_at: db.fn.now()
   });
