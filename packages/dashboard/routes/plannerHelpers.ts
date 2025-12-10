@@ -9,7 +9,8 @@ import {
   findRelevantFiles,
   BranchNotFoundError,
   checkoutBranch,
-  AttachmentService
+  AttachmentService,
+  getPlannerPrompt
 } from '@gitfix/core';
 import type { Granularity, MulterFile } from '@gitfix/core';
 
@@ -309,7 +310,7 @@ export function createDownloadContextHandler(deps: DownloadContextDeps) {
     const validation = deps.validateInput(req.body);
     if (!validation.valid) { res.status(400).json({ error: validation.error }); return; }
 
-    const { draftId, prompt, baseBranch, files } = req.body;
+    const { draftId, prompt, baseBranch, granularity, files } = req.body;
     const correlationId = generateCorrelationId();
 
     try {
@@ -342,12 +343,17 @@ export function createDownloadContextHandler(deps: DownloadContextDeps) {
         repoPath: worktreePath,
         filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined,
         tokenLimit: 100000,
-        correlationId
+        correlationId,
+        includeFullDirectoryStructure: true
       });
 
-      res.setHeader('Content-Type', 'text/xml');
-      res.setHeader('Content-Disposition', `attachment; filename="context-${draftId}.xml"`);
-      res.send(contextResult.context);
+      const effectiveGranularity = granularity || 'balanced';
+      const systemPrompt = getPlannerPrompt(effectiveGranularity as 'single' | 'balanced' | 'granular');
+      const fullContext = `${systemPrompt}\n\n<context>\n${contextResult.context}\n</context>\n\n<request>\n${prompt}\n</request>\n\nRemember: Output ONLY a valid JSON array. No markdown, no explanations.`;
+
+      res.setHeader('Content-Type', 'text/plain');
+      res.setHeader('Content-Disposition', `attachment; filename="context-${draftId}.txt"`);
+      res.send(fullContext);
 
     } catch (error) {
       console.error('Download context error:', error);
