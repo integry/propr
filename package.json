@@ -39,8 +39,9 @@
   "license": "ISC",
   "description": "Automated GitHub Issue Processor with AI-powered solution generation",
   "dependencies": {
-    "@gitfix/core": "*",
     "@anthropic-ai/claude-code": "^2.0.1",
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@gitfix/core": "*",
     "@octokit/auth-app": "^8.0.1",
     "@octokit/core": "^7.0.2",
     "@octokit/plugin-paginate-rest": "^13.1.1",
@@ -52,6 +53,7 @@
     "express-session": "^1.18.2",
     "fs-extra": "^11.3.0",
     "ioredis": "5.8.2",
+    "js-tiktoken": "^1.0.21",
     "jsonwebtoken": "^9.0.2",
     "knex": "^3.1.0",
     "passport": "^0.7.0",

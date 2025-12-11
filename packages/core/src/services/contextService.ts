@@ -1,5 +1,7 @@
 import { pack } from 'repomix';
 import logger from '../utils/logger.js';
+import { countTokens } from '../utils/tokenCalculation.js';
+import { TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
 
 export interface ContextGenerationOptions {
   repoPath: string;
@@ -76,7 +78,10 @@ export async function generateContext(options: ContextGenerationOptions): Promis
   const { repoPath, filesToInclude, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId, includeFullDirectoryStructure = true } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
-  correlatedLogger.info({ repoPath, filesToInclude, tokenLimit }, 'Starting context generation with repomix');
+  // Convert Claude token limit to tiktoken limit (tiktoken underestimates by ~36%)
+  const tiktokenLimit = Math.floor(tokenLimit / TIKTOKEN_TO_CLAUDE_RATIO);
+
+  correlatedLogger.info({ repoPath, filesToInclude, tokenLimit, tiktokenLimit }, 'Starting context generation with repomix');
 
   const config = {
     cwd: repoPath,
@@ -152,11 +157,12 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       );
     }
 
-    // Check if we need to truncate due to token limit
-    if (result.totalTokens > tokenLimit) {
+    // Check if we need to truncate due to token limit (using tiktoken limit for comparison)
+    if (result.totalTokens > tiktokenLimit) {
       correlatedLogger.warn(
         {
           totalTokens: result.totalTokens,
+          tiktokenLimit,
           tokenLimit,
           totalFiles: result.totalFiles,
         },
@@ -164,7 +170,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       );
 
       const fileTokenCounts = result.fileTokenCounts as Record<string, number>;
-      const effectiveLimit = Math.floor(tokenLimit * 0.8);
+      const effectiveLimit = Math.floor(tiktokenLimit * 0.8);
       const selection = selectFilesWithinLimit(fileTokenCounts, effectiveLimit, filesToInclude);
 
       correlatedLogger.info(
@@ -192,12 +198,13 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       });
 
       // Final safety check - warn if we still exceed the limit
-      if (limitedResult.totalTokens > tokenLimit) {
+      if (limitedResult.totalTokens > tiktokenLimit) {
         correlatedLogger.warn(
           {
             totalTokens: limitedResult.totalTokens,
+            tiktokenLimit,
             tokenLimit,
-            overage: limitedResult.totalTokens - tokenLimit,
+            overage: limitedResult.totalTokens - tiktokenLimit,
           },
           'Context still exceeds token limit after truncation - repomix overhead larger than expected'
         );

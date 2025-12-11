@@ -1,6 +1,6 @@
 import { db } from '../db/postgres.js';
 import { generateContext } from './contextService.js';
-import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL } from '../config/modelLimits.js';
+import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, Plan, PlanItem, GRANULARITY_INSTRUCTIONS, Granularity as GranularityType } from '../claude/prompts/plannerPrompts.js';
@@ -9,11 +9,68 @@ import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
 import { simpleGit } from 'simple-git';
 import { getModelPricing } from './pricingService.js';
+import { countTokens, estimateTokens } from '../utils/tokenCalculation.js';
 
 export class PlanningFailedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PlanningFailedError';
+  }
+}
+
+// Threshold for API validation (80% of model limit)
+const API_VALIDATION_THRESHOLD = 0.80;
+// Buffer for Claude Code overhead
+const CLAUDE_CODE_OVERHEAD = 5000;
+
+/**
+ * Validate prompt token count before sending to LLM.
+ * Uses tiktoken estimate first, then validates with Anthropic API if close to limit.
+ */
+async function validatePromptTokens(
+  prompt: string,
+  modelLimit: number,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  correlatedLogger: any
+): Promise<{ valid: boolean; tokenCount: number; source: 'tiktoken' | 'api' }> {
+  const tiktokenEstimate = estimateTokens(prompt);
+  const effectiveLimit = modelLimit - CLAUDE_CODE_OVERHEAD;
+
+  correlatedLogger.info({ tiktokenEstimate, effectiveLimit, modelLimit }, 'Initial token estimate');
+
+  // If well under the threshold, tiktoken is good enough
+  if (tiktokenEstimate < effectiveLimit * API_VALIDATION_THRESHOLD) {
+    return { valid: true, tokenCount: tiktokenEstimate, source: 'tiktoken' };
+  }
+
+  // Close to limit - try to validate with API if available
+  correlatedLogger.info('Token count close to limit, attempting API validation');
+
+  try {
+    const apiTokenCount = await countTokens(prompt);
+    correlatedLogger.info({ apiTokenCount, effectiveLimit }, 'API token count received');
+
+    if (apiTokenCount > effectiveLimit) {
+      correlatedLogger.warn({ apiTokenCount, effectiveLimit, overage: apiTokenCount - effectiveLimit },
+        'Prompt exceeds token limit according to API');
+      return { valid: false, tokenCount: apiTokenCount, source: 'api' };
+    }
+
+    return { valid: true, tokenCount: apiTokenCount, source: 'api' };
+  } catch (error) {
+    // API not available (no key or error) - fall back to tiktoken with conservative estimate
+    correlatedLogger.warn({ error: (error as Error).message }, 'API token counting failed, using tiktoken estimate');
+
+    // Apply conservative ratio since tiktoken underestimates
+    const conservativeEstimate = Math.ceil(tiktokenEstimate * TIKTOKEN_TO_CLAUDE_RATIO);
+    const valid = conservativeEstimate < effectiveLimit;
+
+    if (!valid) {
+      correlatedLogger.warn({ conservativeEstimate, effectiveLimit },
+        'Prompt likely exceeds token limit (conservative tiktoken estimate)');
+    }
+
+    return { valid, tokenCount: conservativeEstimate, source: 'tiktoken' };
   }
 }
 
@@ -131,7 +188,8 @@ export interface SmartFileSelection {
 }
 
 export interface PreviewStats {
-  totalTokens: number;
+  totalTokens: number;      // Estimated actual Claude tokens
+  tiktokenCount?: number;   // Raw tiktoken count (for debugging)
   costEstimate: number;
   contextLength: number;
   fileCount: number;
@@ -209,6 +267,19 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<Plan> {
 
   const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity });
   correlatedLogger.info('Calling LLM for plan generation');
+
+  // Validate token count before sending to LLM
+  const modelLimit = MODEL_LIMITS['default'];
+  const validation = await validatePromptTokens(userPrompt, modelLimit, correlatedLogger);
+
+  if (!validation.valid) {
+    throw new PlanningFailedError(
+      `Prompt exceeds token limit: ${validation.tokenCount} tokens (limit: ${modelLimit - CLAUDE_CODE_OVERHEAD}). ` +
+      `Try reducing the context level or selecting fewer files.`
+    );
+  }
+
+  correlatedLogger.info({ tokenCount: validation.tokenCount, source: validation.source }, 'Token validation passed');
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
   const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: 'opus', correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef });
@@ -386,6 +457,26 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     updated_at: db.fn.now()
   });
 
-  correlatedLogger.info({ totalTokens: contextResult.totalTokens, costEstimate, fileCount: contextResult.includedFiles.length }, 'Context preview completed');
-  return { success: true, stats: { totalTokens: contextResult.totalTokens, costEstimate, contextLength: contextResult.totalCharacters, fileCount: contextResult.includedFiles.length }, smartSelection, warnings };
+  // Convert tiktoken count to estimated actual Claude tokens for UI display
+  const estimatedActualTokens = Math.ceil(contextResult.totalTokens * TIKTOKEN_TO_CLAUDE_RATIO);
+
+  correlatedLogger.info({
+    tiktokenCount: contextResult.totalTokens,
+    estimatedActualTokens,
+    costEstimate,
+    fileCount: contextResult.includedFiles.length
+  }, 'Context preview completed');
+
+  return {
+    success: true,
+    stats: {
+      totalTokens: estimatedActualTokens,  // Show estimated actual Claude tokens
+      tiktokenCount: contextResult.totalTokens,  // Also include raw tiktoken for debugging
+      costEstimate,
+      contextLength: contextResult.totalCharacters,
+      fileCount: contextResult.includedFiles.length
+    },
+    smartSelection,
+    warnings
+  };
 }

@@ -242,13 +242,15 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
 
     if (systemPrompt !== undefined) {
         dockerArgs.push('--system-prompt', systemPrompt);
-        logger.debug({ issueNumber, systemPromptLength: systemPrompt.length }, 'Using custom system prompt');
+        logger.info({ issueNumber, systemPromptLength: systemPrompt.length }, 'Using custom system prompt');
     }
 
     if (tools !== undefined) {
         dockerArgs.push('--tools', tools);
-        logger.debug({ issueNumber, tools }, 'Using custom tools configuration');
+        logger.info({ issueNumber, tools }, 'Using custom tools configuration');
     }
+
+    logger.info({ issueNumber, hasSystemPrompt: systemPrompt !== undefined, hasTools: tools !== undefined }, 'Docker args built');
 
     return dockerArgs;
 }

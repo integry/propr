@@ -5,7 +5,14 @@ export const MAX_CONTEXT_LEVEL = 100;
 export const CONTEXT_LEVEL_STEP = 10;
 export const DEFAULT_CONTEXT_LEVEL = 50;
 
-export const EFFECTIVE_MAX_RATIO = 0.95;
+// With --tools "" and minimal system prompt, Claude Code overhead is ~1K tokens.
+// The tiktoken-to-Claude conversion is handled in contextService.ts.
+// Using 0.98 to leave just 2% (~4K tokens) for overhead since we validate before sending.
+export const EFFECTIVE_MAX_RATIO = 0.98;
+
+// Tiktoken (cl100k_base) underestimates tokens for code/XML content.
+// Tests show actual Claude tokens are ~36% higher than tiktoken estimates.
+export const TIKTOKEN_TO_CLAUDE_RATIO = 1.36;
 
 export const MODEL_LIMITS: Record<string, number> = {
   'default': 200000,
