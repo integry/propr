@@ -376,8 +376,6 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     ...relevanceResult.files.map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
   ];
 
-  if (contextResult.totalTokens > previewTokenLimit) warnings.push(`Context exceeds token limit (${contextResult.totalTokens} > ${previewTokenLimit})`);
-
   const fullContext = buildFullContext({ userRequest: prompt, repomixContext: contextResult.context, granularity });
 
   await db('task_drafts').where({ draft_id: draftId }).update({
