@@ -38,8 +38,15 @@ export class SecurityException extends Error {
 // Default max tokens - Claude's context is ~200K but we need room for the prompt and response
 const DEFAULT_MAX_CONTEXT_TOKENS = 150000;
 
+interface DroppedFile {
+  path: string;
+  tokens: number;
+  reason: string;
+}
+
 interface FileSelectionResult {
   selectedFiles: string[];
+  droppedFiles: DroppedFile[];
   currentTokens: number;
   strategy: 'relevance-order' | 'size-order';
 }
@@ -50,27 +57,37 @@ function selectFilesWithinLimit(
   filesToInclude?: string[]
 ): FileSelectionResult {
   const selectedFiles: string[] = [];
+  const droppedFiles: DroppedFile[] = [];
   let currentTokens = 0;
 
   if (filesToInclude && filesToInclude.length > 0) {
     for (const filePath of filesToInclude) {
       const tokens = fileTokenCounts[filePath];
-      if (tokens === undefined) continue;
-      if (currentTokens + tokens > effectiveLimit) continue;
+      if (tokens === undefined) {
+        droppedFiles.push({ path: filePath, tokens: 0, reason: 'not found in token counts' });
+        continue;
+      }
+      if (currentTokens + tokens > effectiveLimit) {
+        droppedFiles.push({ path: filePath, tokens, reason: `exceeds limit (would be ${currentTokens + tokens} > ${effectiveLimit})` });
+        continue;
+      }
       selectedFiles.push(filePath);
       currentTokens += tokens;
     }
-    return { selectedFiles, currentTokens, strategy: 'relevance-order' };
+    return { selectedFiles, droppedFiles, currentTokens, strategy: 'relevance-order' };
   }
 
   const fileTokenEntries = Object.entries(fileTokenCounts);
   fileTokenEntries.sort((a, b) => a[1] - b[1]);
   for (const [filePath, tokens] of fileTokenEntries) {
-    if (currentTokens + tokens > effectiveLimit) continue;
+    if (currentTokens + tokens > effectiveLimit) {
+      droppedFiles.push({ path: filePath, tokens, reason: `exceeds limit (would be ${currentTokens + tokens} > ${effectiveLimit})` });
+      continue;
+    }
     selectedFiles.push(filePath);
     currentTokens += tokens;
   }
-  return { selectedFiles, currentTokens, strategy: 'size-order' };
+  return { selectedFiles, droppedFiles, currentTokens, strategy: 'size-order' };
 }
 
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
@@ -178,6 +195,25 @@ export async function generateContext(options: ContextGenerationOptions): Promis
           ? 'Truncating by relevance order (most relevant files first)'
           : 'Truncating by file size (smallest files first)'
       );
+
+      // Detailed debug logging for file selection decisions
+      correlatedLogger.info({
+        selectionStrategy: selection.strategy,
+        effectiveLimit,
+        currentTokens: selection.currentTokens,
+        keptCount: selection.selectedFiles.length,
+        droppedCount: selection.droppedFiles.length,
+        keptFilesSample: selection.selectedFiles.slice(0, 5).map(path => ({
+          path,
+          tokens: fileTokenCounts[path]
+        })),
+        droppedFilesSample: selection.droppedFiles.slice(0, 5),
+        largestKept: selection.selectedFiles.length > 0 ? {
+          path: selection.selectedFiles[selection.selectedFiles.length - 1],
+          tokens: fileTokenCounts[selection.selectedFiles[selection.selectedFiles.length - 1]]
+        } : null,
+        largestDropped: selection.droppedFiles.length > 0 ? selection.droppedFiles[selection.droppedFiles.length - 1] : null
+      }, 'File selection details after truncation');
 
       correlatedLogger.info(
         {

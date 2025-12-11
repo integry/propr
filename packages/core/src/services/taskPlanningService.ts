@@ -230,7 +230,22 @@ async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]> {
 
   if (hasPrecomputedFiles) {
     const relevantFilePaths = [...new Set([...manualFiles, ...autoFiles])];
-    correlatedLogger.info({ manualCount: manualFiles.length, autoCount: autoFiles.length, totalCount: relevantFilePaths.length }, 'Using precomputed file selection');
+
+    // Detailed logging for precomputed file selection breakdown
+    correlatedLogger.info({
+      selectionSource: 'precomputed',
+      manualFiles: {
+        count: manualFiles.length,
+        files: manualFiles.slice(0, 10)
+      },
+      autoFiles: {
+        count: autoFiles.length,
+        files: autoFiles.slice(0, 10)
+      },
+      totalUniqueFiles: relevantFilePaths.length,
+      overlap: manualFiles.filter(f => autoFiles.includes(f)).length
+    }, 'File selection breakdown (precomputed)');
+
     await updateTrace(draftId, 'relevance', 'completed', {
       keywords: [],
       candidates: relevantFilePaths.map(p => ({ path: p, reason: manualFiles.includes(p) ? 'manual' : 'auto', score: 100 })),
@@ -242,6 +257,24 @@ async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]> {
   correlatedLogger.info({ repository: draft.repository }, 'Finding relevant files');
   const relevanceResult = await findRelevantFiles(worktreePath, draft.initial_prompt, { correlationId });
   const relevantFilePaths = relevanceResult.files.map(f => f.path);
+
+  // Detailed logging for relevance analysis results
+  correlatedLogger.info({
+    selectionSource: 'auto-relevance',
+    totalFound: relevanceResult.files.length,
+    keywordsDetected: relevanceResult.keywordsDetected,
+    topCandidates: relevanceResult.files.slice(0, 5).map(f => ({
+      path: f.path,
+      score: f.score,
+      reason: f.reason
+    })),
+    scoreDistribution: {
+      high: relevanceResult.files.filter(f => f.score > 80).length,
+      medium: relevanceResult.files.filter(f => f.score > 50 && f.score <= 80).length,
+      low: relevanceResult.files.filter(f => f.score <= 50).length
+    }
+  }, 'Relevance analysis complete');
+
   await updateTrace(draftId, 'relevance', 'completed', {
     keywords: relevanceResult.keywordsDetected,
     candidates: relevanceResult.files.map(f => ({ path: f.path, reason: f.reason, score: f.score }))
@@ -437,7 +470,29 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const relevanceResult = await findRelevantFiles(worktreePath, prompt, { correlationId });
   const manualFiles = files || [], autoFilePaths = relevanceResult.files.map(f => f.path);
   const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
-  correlatedLogger.info({ manualCount: manualFiles.length, autoCount: autoFilePaths.length, combinedCount: combinedFiles.length }, 'Merged files');
+
+  // Detailed logging for preview file selection breakdown
+  correlatedLogger.info({
+    manualFiles: {
+      count: manualFiles.length,
+      files: manualFiles.slice(0, 10)
+    },
+    autoFiles: {
+      count: autoFilePaths.length,
+      topCandidates: relevanceResult.files.slice(0, 5).map(f => ({
+        path: f.path,
+        score: f.score,
+        reason: f.reason
+      }))
+    },
+    scoreDistribution: {
+      high: relevanceResult.files.filter(f => f.score > 80).length,
+      medium: relevanceResult.files.filter(f => f.score > 50 && f.score <= 80).length,
+      low: relevanceResult.files.filter(f => f.score <= 50).length
+    },
+    combinedCount: combinedFiles.length,
+    overlap: manualFiles.filter(f => autoFilePaths.includes(f)).length
+  }, 'Preview file selection breakdown');
 
   const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined, tokenLimit: previewTokenLimit, correlationId });
   const costEstimate = await calculateCostEstimate(contextResult.totalTokens, warnings, correlatedLogger);
