@@ -80,7 +80,7 @@ export interface RunLightweightLLMAnalysisOptions {
 }
 
 export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Promise<ClaudeCodeResponse> {
-    const { worktreePath, issueRef, githubToken, customPrompt, isRetry = false, retryReason, branchName, modelName, issueDetails, onSessionId, onContainerId, systemPrompt, tools } = options;
+    const { worktreePath, issueRef, githubToken, customPrompt, isRetry = false, retryReason, branchName, modelName, issueDetails, onSessionId, onContainerId } = options;
     const startTime = Date.now();
 
     logger.info({

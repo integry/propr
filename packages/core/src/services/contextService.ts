@@ -1,6 +1,5 @@
 import { pack } from 'repomix';
 import logger from '../utils/logger.js';
-import { countTokens } from '../utils/tokenCalculation.js';
 import { TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
 
 export interface ContextGenerationOptions {
