@@ -23,7 +23,7 @@ export type { PaginatedOctokitInstance } from './auth/githubAuth.js';
 
 export * from './config/configRepoManager.js';
 export { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS } from './config/modelAliases.js';
-export { getEffectiveTokenLimit, MODEL_LIMITS, CONTEXT_RATIOS } from './config/modelLimits.js';
+export { getEffectiveTokenLimit, MODEL_LIMITS, MIN_CONTEXT_LEVEL, MAX_CONTEXT_LEVEL, CONTEXT_LEVEL_STEP, DEFAULT_CONTEXT_LEVEL, EFFECTIVE_MAX_RATIO } from './config/modelLimits.js';
 export type { ContextLevel } from './config/modelLimits.js';
 
 export { db, isEnabled, closeConnection, createKnexConfigForMigrations } from './db/postgres.js';

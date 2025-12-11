@@ -1,6 +1,6 @@
 import { db } from '../db/postgres.js';
 import { generateContext } from './contextService.js';
-import { getEffectiveTokenLimit, ContextLevel } from '../config/modelLimits.js';
+import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL } from '../config/modelLimits.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, Plan, PlanItem, GRANULARITY_INSTRUCTIONS, Granularity as GranularityType } from '../claude/prompts/plannerPrompts.js';
@@ -244,7 +244,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const contextConfig = draft.context_config as TaskDraftConfig | null;
   const baseBranch = contextConfig?.baseBranch;
   const granularity: Granularity = contextConfig?.granularity || 'balanced';
-  const contextLevel: ContextLevel = contextConfig?.contextLevel || 'balanced';
+  const contextLevel: ContextLevel = contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL;
   const tokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
 
   if (baseBranch) {
@@ -343,7 +343,7 @@ async function calculateCostEstimate(totalTokens: number, warnings: string[], co
 }
 
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
-  const { draftId, prompt, baseBranch, granularity, contextLevel = 'balanced', files, worktreePath, correlationId } = options;
+  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, files, worktreePath, correlationId } = options;
   const previewTokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   const warnings: string[] = [];
