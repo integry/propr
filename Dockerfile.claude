@@ -24,8 +24,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 # Use the existing node user (UID 1000) and give it sudo privileges
 RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
-# Install Claude Code CLI globally
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI globally (using latest version with --system-prompt and --tools support)
+RUN npm install -g @anthropic-ai/claude-code@latest
 
 # Create workspace directory only - Claude config will be mounted at runtime
 RUN mkdir -p /home/node/workspace && \

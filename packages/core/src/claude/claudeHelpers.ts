@@ -37,6 +37,8 @@ export interface DockerArgsParams {
     CLAUDE_DOCKER_IMAGE: string;
     CLAUDE_CONFIG_PATH: string;
     CLAUDE_MAX_TURNS: number;
+    systemPrompt?: string;
+    tools?: string;
 }
 
 export interface ConversationLogEntry {
@@ -205,7 +207,7 @@ export function verifyWorktreePostExecution(
 }
 
 export function buildDockerArgs(params: DockerArgsParams): string[] {
-    const { worktreePath, githubToken, modelName, issueNumber, CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS } = params;
+    const { worktreePath, githubToken, modelName, issueNumber, CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS, systemPrompt, tools } = params;
 
     // Always use stdin for prompt to avoid E2BIG errors with large prompts
     const dockerArgs: string[] = [
@@ -236,6 +238,16 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
         logger.info({ issueNumber, requestedModel: modelName }, 'Using specific model for Claude Code execution');
     } else {
         logger.debug({ issueNumber }, 'No model specified, Claude Code will use default');
+    }
+
+    if (systemPrompt !== undefined) {
+        dockerArgs.push('--system-prompt', systemPrompt);
+        logger.debug({ issueNumber, systemPromptLength: systemPrompt.length }, 'Using custom system prompt');
+    }
+
+    if (tools !== undefined) {
+        dockerArgs.push('--tools', tools);
+        logger.debug({ issueNumber, tools }, 'Using custom tools configuration');
     }
 
     return dockerArgs;
