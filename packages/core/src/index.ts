@@ -10,7 +10,7 @@ export type { TaskState, IssueRef, HistoryEntry, LastError, ClaudeResultSummary,
 export { validatePRCreation, generateEnhancedClaudePrompt, validateRepositoryInfo } from './utils/prValidation.js';
 export type { PRValidationResult, PRInfo, ValidatePRCreationOptions, CurrentIssueData, GenerateEnhancedClaudePromptOptions, RepoData, RepoValidationResult } from './utils/prValidation.js';
 export { IdempotentGitHubOps, IdempotentGitOps } from './utils/idempotentOps.js';
-export { estimateTokens, getUsageStats } from './utils/tokenCalculation.js';
+export { estimateTokens, countTokens, getUsageStats } from './utils/tokenCalculation.js';
 export { formatResetTime, addModelSpecificDelay } from './utils/scheduling.js';
 export { filterCommentByAuthor, checkCommentTrigger } from './utils/commentFilters.js';
 export { ensureGitRepository } from './utils/git/gitValidation.js';
@@ -23,6 +23,8 @@ export type { PaginatedOctokitInstance } from './auth/githubAuth.js';
 
 export * from './config/configRepoManager.js';
 export { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS } from './config/modelAliases.js';
+export { getEffectiveTokenLimit, DEFAULT_CONTEXT_LEVEL } from './config/modelLimits.js';
+export type { ContextLevel } from './config/modelLimits.js';
 
 export { db, isEnabled, closeConnection, createKnexConfigForMigrations } from './db/postgres.js';
 

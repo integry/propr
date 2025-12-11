@@ -1,5 +1,6 @@
 import { pack } from 'repomix';
 import logger from '../utils/logger.js';
+import { TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
 
 export interface ContextGenerationOptions {
   repoPath: string;
@@ -37,11 +38,49 @@ export class SecurityException extends Error {
 // Default max tokens - Claude's context is ~200K but we need room for the prompt and response
 const DEFAULT_MAX_CONTEXT_TOKENS = 150000;
 
+interface FileSelectionResult {
+  selectedFiles: string[];
+  currentTokens: number;
+  strategy: 'relevance-order' | 'size-order';
+}
+
+function selectFilesWithinLimit(
+  fileTokenCounts: Record<string, number>,
+  effectiveLimit: number,
+  filesToInclude?: string[]
+): FileSelectionResult {
+  const selectedFiles: string[] = [];
+  let currentTokens = 0;
+
+  if (filesToInclude && filesToInclude.length > 0) {
+    for (const filePath of filesToInclude) {
+      const tokens = fileTokenCounts[filePath];
+      if (tokens === undefined) continue;
+      if (currentTokens + tokens > effectiveLimit) continue;
+      selectedFiles.push(filePath);
+      currentTokens += tokens;
+    }
+    return { selectedFiles, currentTokens, strategy: 'relevance-order' };
+  }
+
+  const fileTokenEntries = Object.entries(fileTokenCounts);
+  fileTokenEntries.sort((a, b) => a[1] - b[1]);
+  for (const [filePath, tokens] of fileTokenEntries) {
+    if (currentTokens + tokens > effectiveLimit) continue;
+    selectedFiles.push(filePath);
+    currentTokens += tokens;
+  }
+  return { selectedFiles, currentTokens, strategy: 'size-order' };
+}
+
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
   const { repoPath, filesToInclude, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId, includeFullDirectoryStructure = true } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
-  correlatedLogger.info({ repoPath, filesToInclude, tokenLimit }, 'Starting context generation with repomix');
+  // Convert Claude token limit to tiktoken limit (tiktoken underestimates by ~36%)
+  const tiktokenLimit = Math.floor(tokenLimit / TIKTOKEN_TO_CLAUDE_RATIO);
+
+  correlatedLogger.info({ repoPath, filesToInclude, tokenLimit, tiktokenLimit }, 'Starting context generation with repomix');
 
   const config = {
     cwd: repoPath,
@@ -117,45 +156,40 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       );
     }
 
-    // Check if we need to truncate due to token limit
-    if (result.totalTokens > tokenLimit) {
+    // Check if we need to truncate due to token limit (using tiktoken limit for comparison)
+    if (result.totalTokens > tiktokenLimit) {
       correlatedLogger.warn(
         {
           totalTokens: result.totalTokens,
+          tiktokenLimit,
           tokenLimit,
           totalFiles: result.totalFiles,
         },
         'Context exceeds token limit, truncating by selecting files up to limit'
       );
 
-      // Sort files by token count and select until we hit the limit
-      const fileTokenEntries = Object.entries(result.fileTokenCounts as Record<string, number>);
-      fileTokenEntries.sort((a, b) => a[1] - b[1]); // Sort by token count ascending (smaller files first)
+      const fileTokenCounts = result.fileTokenCounts as Record<string, number>;
+      const effectiveLimit = Math.floor(tiktokenLimit * 0.8);
+      const selection = selectFilesWithinLimit(fileTokenCounts, effectiveLimit, filesToInclude);
 
-      const selectedFiles: string[] = [];
-      let currentTokens = 0;
-      // Reserve 20% of token limit for repomix overhead (directory structure, file headers, XML tags, etc.)
-      // Previous value of 5000 was insufficient - observed overhead can be 15-20% of total
-      const effectiveLimit = Math.floor(tokenLimit * 0.8);
-
-      for (const [filePath, tokens] of fileTokenEntries) {
-        if (currentTokens + tokens <= effectiveLimit) {
-          selectedFiles.push(filePath);
-          currentTokens += tokens;
-        }
-      }
+      correlatedLogger.info(
+        { strategy: selection.strategy, selectedCount: selection.selectedFiles.length },
+        selection.strategy === 'relevance-order'
+          ? 'Truncating by relevance order (most relevant files first)'
+          : 'Truncating by file size (smallest files first)'
+      );
 
       correlatedLogger.info(
         {
           originalFiles: result.totalFiles,
-          selectedFiles: selectedFiles.length,
-          estimatedTokens: currentTokens,
+          selectedFiles: selection.selectedFiles.length,
+          estimatedTokens: selection.currentTokens,
         },
         'Re-generating context with limited file set'
       );
 
       // Re-generate with selected files only
-      const limitedConfig = { ...config, include: selectedFiles };
+      const limitedConfig = { ...config, include: selection.selectedFiles };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const limitedResult = await (pack as any)([repoPath], limitedConfig, () => {}, {
         writeOutputToDisk: captureWriteOutput,
@@ -163,12 +197,13 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       });
 
       // Final safety check - warn if we still exceed the limit
-      if (limitedResult.totalTokens > tokenLimit) {
+      if (limitedResult.totalTokens > tiktokenLimit) {
         correlatedLogger.warn(
           {
             totalTokens: limitedResult.totalTokens,
+            tiktokenLimit,
             tokenLimit,
-            overage: limitedResult.totalTokens - tokenLimit,
+            overage: limitedResult.totalTokens - tiktokenLimit,
           },
           'Context still exceeds token limit after truncation - repomix overhead larger than expected'
         );
@@ -191,7 +226,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
         totalTokens: limitedResult.totalTokens,
         fileCharCounts: limitedResult.fileCharCounts,
         fileTokenCounts: limitedResult.fileTokenCounts,
-        includedFiles: selectedFiles,
+        includedFiles: selection.selectedFiles,
       };
     }
 

@@ -38,6 +38,8 @@ export interface ExecuteClaudeCodeOptions {
     issueDetails?: IssueDetails;
     onSessionId?: (sessionId: string, conversationId?: string) => void;
     onContainerId?: (containerId: string, containerName: string) => void;
+    systemPrompt?: string;
+    tools?: string;
 }
 
 export interface ClaudeCodeResponse {
@@ -103,7 +105,9 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             issueNumber: issueRef.number,
             CLAUDE_DOCKER_IMAGE,
             CLAUDE_CONFIG_PATH,
-            CLAUDE_MAX_TURNS
+            CLAUDE_MAX_TURNS,
+            systemPrompt: options.systemPrompt,
+            tools: options.tools
         });
 
         const result = await executeDockerCommand('docker', dockerArgs, {
@@ -181,6 +185,9 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
     }
 }
 
+const LIGHTWEIGHT_SYSTEM_PROMPT = 'You are a helpful assistant.';
+const LIGHTWEIGHT_TOOLS = '';
+
 export async function generateTaskSummary(options: GenerateTaskSummaryOptions): Promise<string> {
     const { summaryRequest, worktreePath, githubToken, issueRef, correlationId, modelAlias = 'haiku' } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -203,6 +210,8 @@ CRITICAL: Do not modify any files. Do not run any commands. Only output the summ
             customPrompt: summaryPrompt,
             branchName: 'summary-generation',
             modelName: model,
+            systemPrompt: LIGHTWEIGHT_SYSTEM_PROMPT,
+            tools: LIGHTWEIGHT_TOOLS
         });
 
         if (claudeResult.success && (claudeResult.finalResult?.result || claudeResult.summary)) {
@@ -243,6 +252,8 @@ CRITICAL: Do not modify any files. Do not run any commands. Only provide your an
             customPrompt: analysisPrompt,
             branchName: 'analysis-generation',
             modelName: resolvedModel,
+            systemPrompt: LIGHTWEIGHT_SYSTEM_PROMPT,
+            tools: LIGHTWEIGHT_TOOLS
         });
 
         // Check for results even if exitCode was non-zero - Claude may have produced valid output

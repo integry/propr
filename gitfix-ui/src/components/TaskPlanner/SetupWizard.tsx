@@ -18,6 +18,7 @@ import { CostPreview } from './CostPreview';
 import { SmartFileSelection } from './SmartFileSelection';
 import { AttachmentUploader } from './AttachmentUploader';
 import { GranularitySelector } from './GranularitySelector';
+import { ContextLevelSlider } from './ContextLevelSlider';
 import { BranchSelector } from './BranchSelector';
 import { Loader2, Download } from 'lucide-react';
 
@@ -33,6 +34,7 @@ interface PlannerConfig {
   prompt: string;
   baseBranch: string;
   granularity: Granularity;
+  contextLevel: number;
   files: PlannerAttachment[];
 }
 
@@ -54,6 +56,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     prompt: draft.initial_prompt || '',
     baseBranch: '',
     granularity: 'balanced',
+    contextLevel: 50,
     files: draft.attachments || []
   });
   
@@ -120,6 +123,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         prompt: currentConfig.prompt,
         baseBranch: currentConfig.baseBranch,
         granularity: currentConfig.granularity,
+        contextLevel: currentConfig.contextLevel,
         files: currentConfig.files.map(f => f.originalName)
       });
       
@@ -165,7 +169,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [config.prompt, config.baseBranch, config.granularity, fetchPreview, initialSyncDone]);
+  }, [config.prompt, config.baseBranch, config.granularity, config.contextLevel, fetchPreview, initialSyncDone]);
 
   useEffect(() => {
     if (initialSyncDone && config.files.length > 0) {
@@ -211,6 +215,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         prompt: config.prompt,
         baseBranch: config.baseBranch,
         granularity: config.granularity,
+        contextLevel: config.contextLevel,
         files: config.files.map(f => f.originalName)
       });
       
@@ -243,7 +248,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       // Start generation - returns immediately with 202
       await generatePlan(draft.draft_id, {
         baseBranch: config.baseBranch,
-        granularity: config.granularity
+        granularity: config.granularity,
+        contextLevel: config.contextLevel
       });
     } catch (err) {
       setError((err as Error).message || 'Failed to start plan generation');
@@ -336,6 +342,11 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       <GranularitySelector
         value={config.granularity}
         onChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
+      />
+
+      <ContextLevelSlider
+        value={config.contextLevel}
+        onChange={(contextLevel) => setConfig(prev => ({ ...prev, contextLevel }))}
       />
 
       <CostPreview preview={preview} />

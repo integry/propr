@@ -138,7 +138,7 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
     const validation = deps.validateInput(req.body);
     if (!validation.valid) { res.status(400).json({ error: validation.error }); return; }
 
-    const { draftId, prompt, baseBranch, granularity, files } = req.body;
+    const { draftId, prompt, baseBranch, granularity, contextLevel, files } = req.body;
     const correlationId = generateCorrelationId();
 
     try {
@@ -155,7 +155,7 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
       const authToken = await getRepoAuthToken(accessToken);
       const worktreePath = await ensureRepoCloned(`https://github.com/${owner}/${repoName}.git`, owner, repoName, authToken);
 
-      const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, files, worktreePath, correlationId });
+      const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, files, worktreePath, correlationId });
       res.json(result);
     } catch (error) {
       console.error('Preview context error:', error);

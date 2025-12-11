@@ -1,5 +1,6 @@
 import { db } from '../db/postgres.js';
 import { generateContext } from './contextService.js';
+import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, Plan, PlanItem, GRANULARITY_INSTRUCTIONS, Granularity as GranularityType } from '../claude/prompts/plannerPrompts.js';
@@ -8,11 +9,68 @@ import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
 import { simpleGit } from 'simple-git';
 import { getModelPricing } from './pricingService.js';
+import { countTokens, estimateTokens } from '../utils/tokenCalculation.js';
 
 export class PlanningFailedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PlanningFailedError';
+  }
+}
+
+// Threshold for API validation (80% of model limit)
+const API_VALIDATION_THRESHOLD = 0.80;
+// Buffer for Claude Code overhead
+const CLAUDE_CODE_OVERHEAD = 5000;
+
+/**
+ * Validate prompt token count before sending to LLM.
+ * Uses tiktoken estimate first, then validates with Anthropic API if close to limit.
+ */
+async function validatePromptTokens(
+  prompt: string,
+  modelLimit: number,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  correlatedLogger: any
+): Promise<{ valid: boolean; tokenCount: number; source: 'tiktoken' | 'api' }> {
+  const tiktokenEstimate = estimateTokens(prompt);
+  const effectiveLimit = modelLimit - CLAUDE_CODE_OVERHEAD;
+
+  correlatedLogger.info({ tiktokenEstimate, effectiveLimit, modelLimit }, 'Initial token estimate');
+
+  // If well under the threshold, tiktoken is good enough
+  if (tiktokenEstimate < effectiveLimit * API_VALIDATION_THRESHOLD) {
+    return { valid: true, tokenCount: tiktokenEstimate, source: 'tiktoken' };
+  }
+
+  // Close to limit - try to validate with API if available
+  correlatedLogger.info('Token count close to limit, attempting API validation');
+
+  try {
+    const apiTokenCount = await countTokens(prompt);
+    correlatedLogger.info({ apiTokenCount, effectiveLimit }, 'API token count received');
+
+    if (apiTokenCount > effectiveLimit) {
+      correlatedLogger.warn({ apiTokenCount, effectiveLimit, overage: apiTokenCount - effectiveLimit },
+        'Prompt exceeds token limit according to API');
+      return { valid: false, tokenCount: apiTokenCount, source: 'api' };
+    }
+
+    return { valid: true, tokenCount: apiTokenCount, source: 'api' };
+  } catch (error) {
+    // API not available (no key or error) - fall back to tiktoken with conservative estimate
+    correlatedLogger.warn({ error: (error as Error).message }, 'API token counting failed, using tiktoken estimate');
+
+    // Apply conservative ratio since tiktoken underestimates
+    const conservativeEstimate = Math.ceil(tiktokenEstimate * TIKTOKEN_TO_CLAUDE_RATIO);
+    const valid = conservativeEstimate < effectiveLimit;
+
+    if (!valid) {
+      correlatedLogger.warn({ conservativeEstimate, effectiveLimit },
+        'Prompt likely exceeds token limit (conservative tiktoken estimate)');
+    }
+
+    return { valid, tokenCount: conservativeEstimate, source: 'tiktoken' };
   }
 }
 
@@ -115,6 +173,7 @@ interface TaskDraft {
 export interface TaskDraftConfig {
   baseBranch: string;
   granularity: 'single' | 'balanced' | 'granular';
+  contextLevel?: ContextLevel;
   manualFiles: string[];
   autoFiles: string[];
 }
@@ -129,7 +188,8 @@ export interface SmartFileSelection {
 }
 
 export interface PreviewStats {
-  totalTokens: number;
+  totalTokens: number;      // Estimated actual Claude tokens
+  tiktokenCount?: number;   // Raw tiktoken count (for debugging)
   costEstimate: number;
   contextLength: number;
   fileCount: number;
@@ -147,6 +207,7 @@ export interface GenerateContextPreviewOptions {
   prompt: string;
   baseBranch: string;
   granularity: Granularity;
+  contextLevel?: ContextLevel;
   files?: string[];
   worktreePath: string;
   correlationId?: string;
@@ -207,6 +268,19 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<Plan> {
   const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity });
   correlatedLogger.info('Calling LLM for plan generation');
 
+  // Validate token count before sending to LLM
+  const modelLimit = MODEL_LIMITS['default'];
+  const validation = await validatePromptTokens(userPrompt, modelLimit, correlatedLogger);
+
+  if (!validation.valid) {
+    throw new PlanningFailedError(
+      `Prompt exceeds token limit: ${validation.tokenCount} tokens (limit: ${modelLimit - CLAUDE_CODE_OVERHEAD}). ` +
+      `Try reducing the context level or selecting fewer files.`
+    );
+  }
+
+  correlatedLogger.info({ tokenCount: validation.tokenCount, source: validation.source }, 'Token validation passed');
+
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
   const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: 'opus', correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef });
 
@@ -241,6 +315,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const contextConfig = draft.context_config as TaskDraftConfig | null;
   const baseBranch = contextConfig?.baseBranch;
   const granularity: Granularity = contextConfig?.granularity || 'balanced';
+  const contextLevel: ContextLevel = contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL;
+  const tokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
 
   if (baseBranch) {
     try {
@@ -257,7 +333,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   await updateTrace(draftId, 'context', 'pending');
   correlatedLogger.info({ fileCount: relevantFilePaths.length }, 'Generating context');
 
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: relevantFilePaths.length > 0 ? relevantFilePaths : undefined, tokenLimit: 100000, correlationId });
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: relevantFilePaths.length > 0 ? relevantFilePaths : undefined, tokenLimit, correlationId });
   await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
 
   const plan = await callLLMForPlan({ draftId, context: contextResult.context, prompt: draft.initial_prompt, granularity, worktreePath, githubToken, repository: draft.repository, correlationId });
@@ -323,7 +399,7 @@ export async function checkoutBranch(repoPath: string, branch: string): Promise<
   }
 }
 
-const PREVIEW_TOKEN_LIMIT = 100000, DEFAULT_OUTPUT_TOKENS = 4000, SONNET_MODEL_ID = 'anthropic/claude-sonnet-4-20250514';
+const DEFAULT_OUTPUT_TOKENS = 4000, SONNET_MODEL_ID = 'anthropic/claude-sonnet-4-20250514';
 
 async function calculateCostEstimate(totalTokens: number, warnings: string[], correlatedLogger: { warn: typeof logger.warn }): Promise<number> {
   try {
@@ -338,7 +414,8 @@ async function calculateCostEstimate(totalTokens: number, warnings: string[], co
 }
 
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
-  const { draftId, prompt, baseBranch, granularity, files, worktreePath, correlationId } = options;
+  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, files, worktreePath, correlationId } = options;
+  const previewTokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   const warnings: string[] = [];
 
@@ -362,25 +439,44 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
   correlatedLogger.info({ manualCount: manualFiles.length, autoCount: autoFilePaths.length, combinedCount: combinedFiles.length }, 'Merged files');
 
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined, tokenLimit: PREVIEW_TOKEN_LIMIT, correlationId });
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined, tokenLimit: previewTokenLimit, correlationId });
   const costEstimate = await calculateCostEstimate(contextResult.totalTokens, warnings, correlatedLogger);
 
+  const includedFilesSet = new Set(contextResult.includedFiles);
   const smartSelection: SmartFileSelection[] = [
-    ...manualFiles.map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
-    ...relevanceResult.files.map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
+    ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
+    ...relevanceResult.files.filter(f => includedFilesSet.has(f.path)).map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
   ];
-
-  if (contextResult.totalTokens > PREVIEW_TOKEN_LIMIT) warnings.push(`Context exceeds token limit (${contextResult.totalTokens} > ${PREVIEW_TOKEN_LIMIT})`);
 
   const fullContext = buildFullContext({ userRequest: prompt, repomixContext: contextResult.context, granularity });
 
   await db('task_drafts').where({ draft_id: draftId }).update({
     initial_prompt: prompt,
-    context_config: JSON.stringify({ baseBranch, granularity, manualFiles, autoFiles: autoFilePaths }),
+    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, manualFiles, autoFiles: autoFilePaths }),
     generated_context: fullContext,
     updated_at: db.fn.now()
   });
 
-  correlatedLogger.info({ totalTokens: contextResult.totalTokens, costEstimate, fileCount: contextResult.includedFiles.length }, 'Context preview completed');
-  return { success: true, stats: { totalTokens: contextResult.totalTokens, costEstimate, contextLength: contextResult.totalCharacters, fileCount: contextResult.includedFiles.length }, smartSelection, warnings };
+  // Convert tiktoken count to estimated actual Claude tokens for UI display
+  const estimatedActualTokens = Math.ceil(contextResult.totalTokens * TIKTOKEN_TO_CLAUDE_RATIO);
+
+  correlatedLogger.info({
+    tiktokenCount: contextResult.totalTokens,
+    estimatedActualTokens,
+    costEstimate,
+    fileCount: contextResult.includedFiles.length
+  }, 'Context preview completed');
+
+  return {
+    success: true,
+    stats: {
+      totalTokens: estimatedActualTokens,  // Show estimated actual Claude tokens
+      tiktokenCount: contextResult.totalTokens,  // Also include raw tiktoken for debugging
+      costEstimate,
+      contextLength: contextResult.totalCharacters,
+      fileCount: contextResult.includedFiles.length
+    },
+    smartSelection,
+    warnings
+  };
 }
