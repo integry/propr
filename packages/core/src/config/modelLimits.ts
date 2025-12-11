@@ -12,8 +12,6 @@ export const MODEL_LIMITS: Record<string, number> = {
   'claude-opus-4-5': 200000,
   'claude-sonnet-4-5': 200000,
   'claude-haiku-4-5': 200000,
-  'claude-3-5-sonnet-20240620': 200000,
-  'claude-3-opus-20240229': 200000,
 };
 
 export function getEffectiveTokenLimit(modelId: string | undefined, level: ContextLevel): number {
