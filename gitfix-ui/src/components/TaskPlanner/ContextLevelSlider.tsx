@@ -10,12 +10,10 @@ const MAX_LEVEL = 100;
 const STEP = 10;
 
 export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange }) => {
-  const effectivePercent = Math.round(value * 0.95);
-
   return (
     <div className="mb-6">
       <label className="block text-sm font-medium text-gray-700 mb-3">
-        Context Level: {value}% (effective: {effectivePercent}%)
+        Context Level: {value}%
       </label>
       <input
         type="range"
