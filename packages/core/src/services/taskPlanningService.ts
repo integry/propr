@@ -1,6 +1,6 @@
 import { db } from '../db/postgres.js';
 import { generateContext } from './contextService.js';
-import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
+import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, TIKTOKEN_TO_CLAUDE_RATIO, COMPRESSION_THRESHOLD_LEVEL } from '../config/modelLimits.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, Plan, PlanItem, GRANULARITY_INSTRUCTIONS, Granularity as GranularityType } from '../claude/prompts/plannerPrompts.js';
@@ -208,8 +208,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   await updateTrace(draftId, 'context', 'pending');
   correlatedLogger.info({ fileCount: relevantFilePaths.length }, 'Generating context');
 
-  // Enable compression for context level 90% or higher to fit more content
-  const useCompression = contextLevel >= 90;
+  // Enable compression for context level at or above threshold to fit more content
+  const useCompression = contextLevel >= COMPRESSION_THRESHOLD_LEVEL;
 
   const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: relevantFilePaths.length > 0 ? relevantFilePaths : undefined, tokenLimit, compress: useCompression, correlationId });
   await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
@@ -306,8 +306,8 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     overlap: manualFiles.filter(f => autoFilePaths.includes(f)).length
   }, 'Preview file selection breakdown');
 
-  // Enable compression for context level 90% or higher to fit more content
-  const useCompression = contextLevel >= 90;
+  // Enable compression for context level at or above threshold to fit more content
+  const useCompression = contextLevel >= COMPRESSION_THRESHOLD_LEVEL;
 
   const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined, tokenLimit: previewTokenLimit, compress: useCompression, correlationId });
   const costEstimate = await calculateCostEstimate(contextResult.totalTokens, warnings, correlatedLogger);
