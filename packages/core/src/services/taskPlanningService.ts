@@ -371,9 +371,10 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined, tokenLimit: previewTokenLimit, correlationId });
   const costEstimate = await calculateCostEstimate(contextResult.totalTokens, warnings, correlatedLogger);
 
+  const includedFilesSet = new Set(contextResult.includedFiles);
   const smartSelection: SmartFileSelection[] = [
-    ...manualFiles.map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
-    ...relevanceResult.files.map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
+    ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
+    ...relevanceResult.files.filter(f => includedFilesSet.has(f.path)).map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
   ];
 
   const fullContext = buildFullContext({ userRequest: prompt, repomixContext: contextResult.context, granularity });
