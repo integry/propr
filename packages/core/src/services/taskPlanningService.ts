@@ -208,7 +208,10 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   await updateTrace(draftId, 'context', 'pending');
   correlatedLogger.info({ fileCount: relevantFilePaths.length }, 'Generating context');
 
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: relevantFilePaths.length > 0 ? relevantFilePaths : undefined, tokenLimit, correlationId });
+  // Enable compression for max context level to fit more content
+  const useCompression = contextLevel === 'max';
+
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: relevantFilePaths.length > 0 ? relevantFilePaths : undefined, tokenLimit, compress: useCompression, correlationId });
   await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
 
   const plan = await callLLMForPlan({ draftId, context: contextResult.context, prompt: draft.initial_prompt, granularity, worktreePath, githubToken, repository: draft.repository, correlationId });
@@ -303,7 +306,10 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     overlap: manualFiles.filter(f => autoFilePaths.includes(f)).length
   }, 'Preview file selection breakdown');
 
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined, tokenLimit: previewTokenLimit, correlationId });
+  // Enable compression for max context level to fit more content
+  const useCompression = contextLevel === 'max';
+
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined, tokenLimit: previewTokenLimit, compress: useCompression, correlationId });
   const costEstimate = await calculateCostEstimate(contextResult.totalTokens, warnings, correlatedLogger);
 
   const includedFilesSet = new Set(contextResult.includedFiles);

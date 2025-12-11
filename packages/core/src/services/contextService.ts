@@ -8,6 +8,7 @@ export interface ContextGenerationOptions {
   tokenLimit?: number;
   correlationId?: string;
   includeFullDirectoryStructure?: boolean;
+  compress?: boolean;
 }
 
 export interface ContextGenerationResult {
@@ -91,13 +92,13 @@ function selectFilesWithinLimit(
 }
 
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
-  const { repoPath, filesToInclude, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId, includeFullDirectoryStructure = true } = options;
+  const { repoPath, filesToInclude, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId, includeFullDirectoryStructure = true, compress = false } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   // Convert Claude token limit to tiktoken limit (tiktoken underestimates by ~36%)
   const tiktokenLimit = Math.floor(tokenLimit / TIKTOKEN_TO_CLAUDE_RATIO);
 
-  correlatedLogger.info({ repoPath, filesToInclude, tokenLimit, tiktokenLimit }, 'Starting context generation with repomix');
+  correlatedLogger.info({ repoPath, filesToInclude, tokenLimit, tiktokenLimit, compress }, 'Starting context generation with repomix');
 
   const config = {
     cwd: repoPath,
@@ -113,7 +114,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       files: true,
       removeComments: false,
       removeEmptyLines: false,
-      compress: false,
+      compress: compress,
       topFilesLength: 10,
       showLineNumbers: false,
       truncateBase64: true,
