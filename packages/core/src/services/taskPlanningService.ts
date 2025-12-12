@@ -178,6 +178,43 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<Plan> {
   return plan;
 }
 
+interface ParsedContextConfig {
+  baseBranch?: string;
+  granularity: Granularity;
+  contextLevel: ContextLevel;
+  compress: boolean;
+  tokenLimit: number;
+  manualFiles: string[];
+  autoFiles: string[];
+}
+
+function parseContextConfig(contextConfig: TaskDraftConfig | null): ParsedContextConfig {
+  return {
+    baseBranch: contextConfig?.baseBranch,
+    granularity: contextConfig?.granularity || 'balanced',
+    contextLevel: contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL,
+    compress: contextConfig?.compress ?? false,
+    tokenLimit: getEffectiveTokenLimit(undefined, contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL),
+    manualFiles: contextConfig?.manualFiles || [],
+    autoFiles: contextConfig?.autoFiles || []
+  };
+}
+
+async function checkoutBaseBranch(
+  worktreePath: string,
+  baseBranch: string | undefined,
+  correlatedLogger: typeof logger
+): Promise<void> {
+  if (!baseBranch) return;
+  try {
+    await checkoutBranch(worktreePath, baseBranch);
+    correlatedLogger.info({ baseBranch, worktreePath }, 'Checked out configured base branch');
+  } catch (error) {
+    if (error instanceof BranchNotFoundError) throw error;
+    correlatedLogger.warn({ baseBranch, error: (error as Error).message }, 'Failed to checkout base branch');
+  }
+}
+
 export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> {
   const { draftId, worktreePath, githubToken, correlationId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -189,35 +226,21 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
   if (!draft.initial_prompt) throw new PlanningFailedError('Draft has no initial prompt');
 
-  const contextConfig = draft.context_config as TaskDraftConfig | null;
-  const baseBranch = contextConfig?.baseBranch;
-  const granularity: Granularity = contextConfig?.granularity || 'balanced';
-  const contextLevel: ContextLevel = contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL;
-  const compress: boolean = contextConfig?.compress ?? false;
-  const tokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
+  const config = parseContextConfig(draft.context_config as TaskDraftConfig | null);
+  await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 
-  if (baseBranch) {
-    try {
-      await checkoutBranch(worktreePath, baseBranch);
-      correlatedLogger.info({ baseBranch, worktreePath }, 'Checked out configured base branch');
-    } catch (error) {
-      if (error instanceof BranchNotFoundError) throw error;
-      correlatedLogger.warn({ baseBranch, error: (error as Error).message }, 'Failed to checkout base branch');
-    }
-  }
-
-  const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: contextConfig?.manualFiles || [], autoFiles: contextConfig?.autoFiles || [], correlationId });
+  const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId });
 
   await updateTrace(draftId, 'context', 'pending');
-  correlatedLogger.info({ fileCount: relevantFilePaths.length, compress }, 'Generating context');
+  correlatedLogger.info({ fileCount: relevantFilePaths.length, compress: config.compress }, 'Generating context');
 
   // When compression is enabled, include all files but prioritize relevant ones
-  const filesToInclude = compress ? undefined : (relevantFilePaths.length > 0 ? relevantFilePaths : undefined);
-  const priorityFiles = compress ? relevantFilePaths : undefined;
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit, compress, correlationId });
+  const filesToInclude = config.compress ? undefined : (relevantFilePaths.length > 0 ? relevantFilePaths : undefined);
+  const priorityFiles = config.compress ? relevantFilePaths : undefined;
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: config.tokenLimit, compress: config.compress, correlationId });
   await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
 
-  const plan = await callLLMForPlan({ draftId, context: contextResult.context, prompt: draft.initial_prompt, granularity, worktreePath, githubToken, repository: draft.repository, correlationId });
+  const plan = await callLLMForPlan({ draftId, context: contextResult.context, prompt: draft.initial_prompt, granularity: config.granularity, worktreePath, githubToken, repository: draft.repository, correlationId });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
   const validatedPlan = await PathValidationService.validateAndRepair(worktreePath, plan, { correlationId });
