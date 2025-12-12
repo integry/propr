@@ -35,6 +35,7 @@ interface PlannerConfig {
   baseBranch: string;
   granularity: Granularity;
   contextLevel: number;
+  compress: boolean;
   files: PlannerAttachment[];
 }
 
@@ -57,6 +58,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     baseBranch: '',
     granularity: 'balanced',
     contextLevel: 50,
+    compress: false,
     files: draft.attachments || []
   });
   
@@ -124,6 +126,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         baseBranch: currentConfig.baseBranch,
         granularity: currentConfig.granularity,
         contextLevel: currentConfig.contextLevel,
+        compress: currentConfig.compress,
         files: currentConfig.files.map(f => f.originalName)
       });
       
@@ -169,7 +172,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [config.prompt, config.baseBranch, config.granularity, config.contextLevel, fetchPreview, initialSyncDone]);
+  }, [config.prompt, config.baseBranch, config.granularity, config.contextLevel, config.compress, fetchPreview, initialSyncDone]);
 
   useEffect(() => {
     if (initialSyncDone && config.files.length > 0) {
@@ -216,6 +219,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         baseBranch: config.baseBranch,
         granularity: config.granularity,
         contextLevel: config.contextLevel,
+        compress: config.compress,
         files: config.files.map(f => f.originalName)
       });
       
@@ -249,7 +253,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       await generatePlan(draft.draft_id, {
         baseBranch: config.baseBranch,
         granularity: config.granularity,
-        contextLevel: config.contextLevel
+        contextLevel: config.contextLevel,
+        compress: config.compress
       });
     } catch (err) {
       setError((err as Error).message || 'Failed to start plan generation');
@@ -347,6 +352,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       <ContextLevelSlider
         value={config.contextLevel}
         onChange={(contextLevel) => setConfig(prev => ({ ...prev, contextLevel }))}
+        compress={config.compress}
+        onCompressChange={(compress) => setConfig(prev => ({ ...prev, compress }))}
       />
 
       <CostPreview preview={preview} />

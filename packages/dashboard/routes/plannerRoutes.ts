@@ -182,7 +182,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    const { draftId, baseBranch, granularity } = req.body;
+    const { draftId, baseBranch, granularity, contextLevel, compress } = req.body;
     if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
 
     const correlationId = generateCorrelationId();
@@ -204,12 +204,14 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
       const worktreePath = await ensureRepoCloned(repoUrl, owner, repoName, authToken);
 
-      if (baseBranch || granularity) {
+      if (baseBranch || granularity || contextLevel !== undefined || compress !== undefined) {
         const existingConfig = (draft.context_config as Record<string, unknown>) || {};
         const updatedConfig = {
           ...existingConfig,
           ...(baseBranch && { baseBranch }),
-          ...(granularity && VALID_GRANULARITIES.includes(granularity) && { granularity })
+          ...(granularity && VALID_GRANULARITIES.includes(granularity) && { granularity }),
+          ...(contextLevel !== undefined && { contextLevel }),
+          ...(compress !== undefined && { compress })
         };
         await db!('task_drafts').where({ draft_id: draftId }).update({
           context_config: JSON.stringify(updatedConfig),

@@ -5,6 +5,7 @@ import { TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
 export interface ContextGenerationOptions {
   repoPath: string;
   filesToInclude?: string[];
+  priorityFiles?: string[];  // Files to prioritize (include first) when truncating
   tokenLimit?: number;
   correlationId?: string;
   includeFullDirectoryStructure?: boolean;
@@ -49,13 +50,14 @@ interface FileSelectionResult {
   selectedFiles: string[];
   droppedFiles: DroppedFile[];
   currentTokens: number;
-  strategy: 'relevance-order' | 'size-order';
+  strategy: 'relevance-order' | 'size-order' | 'priority-then-size';
 }
 
 function selectFilesWithinLimit(
   fileTokenCounts: Record<string, number>,
   effectiveLimit: number,
-  filesToInclude?: string[]
+  filesToInclude?: string[],
+  priorityFiles?: string[]
 ): FileSelectionResult {
   const selectedFiles: string[] = [];
   const droppedFiles: DroppedFile[] = [];
@@ -78,9 +80,22 @@ function selectFilesWithinLimit(
     return { selectedFiles, droppedFiles, currentTokens, strategy: 'relevance-order' };
   }
 
-  const fileTokenEntries = Object.entries(fileTokenCounts);
-  fileTokenEntries.sort((a, b) => a[1] - b[1]);
-  for (const [filePath, tokens] of fileTokenEntries) {
+  // When no specific files requested, include all files but prioritize certain ones
+  const prioritySet = new Set(priorityFiles || []);
+  const allFiles = Object.entries(fileTokenCounts);
+
+  // Sort: priority files first (by their original order), then remaining files by size
+  const priorityFilesWithTokens = (priorityFiles || [])
+    .filter(p => fileTokenCounts[p] !== undefined)
+    .map(p => [p, fileTokenCounts[p]] as [string, number]);
+
+  const nonPriorityFiles = allFiles
+    .filter(([path]) => !prioritySet.has(path))
+    .sort((a, b) => a[1] - b[1]); // Sort by size (smallest first)
+
+  const sortedFiles = [...priorityFilesWithTokens, ...nonPriorityFiles];
+
+  for (const [filePath, tokens] of sortedFiles) {
     if (currentTokens + tokens > effectiveLimit) {
       droppedFiles.push({ path: filePath, tokens, reason: `exceeds limit (would be ${currentTokens + tokens} > ${effectiveLimit})` });
       continue;
@@ -88,11 +103,11 @@ function selectFilesWithinLimit(
     selectedFiles.push(filePath);
     currentTokens += tokens;
   }
-  return { selectedFiles, droppedFiles, currentTokens, strategy: 'size-order' };
+  return { selectedFiles, droppedFiles, currentTokens, strategy: priorityFiles?.length ? 'priority-then-size' : 'size-order' };
 }
 
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
-  const { repoPath, filesToInclude, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId, includeFullDirectoryStructure = true, compress = false } = options;
+  const { repoPath, filesToInclude, priorityFiles, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId, includeFullDirectoryStructure = true, compress = false } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   // Convert Claude token limit to tiktoken limit (tiktoken underestimates by ~36%)
@@ -188,13 +203,16 @@ export async function generateContext(options: ContextGenerationOptions): Promis
 
       const fileTokenCounts = result.fileTokenCounts as Record<string, number>;
       const effectiveLimit = Math.floor(tiktokenLimit * 0.8);
-      const selection = selectFilesWithinLimit(fileTokenCounts, effectiveLimit, filesToInclude);
+      const selection = selectFilesWithinLimit(fileTokenCounts, effectiveLimit, filesToInclude, priorityFiles);
 
+      const strategyMessages: Record<string, string> = {
+        'relevance-order': 'Truncating by relevance order (most relevant files first)',
+        'size-order': 'Truncating by file size (smallest files first)',
+        'priority-then-size': 'Truncating with priority files first, then by size'
+      };
       correlatedLogger.info(
         { strategy: selection.strategy, selectedCount: selection.selectedFiles.length },
-        selection.strategy === 'relevance-order'
-          ? 'Truncating by relevance order (most relevant files first)'
-          : 'Truncating by file size (smallest files first)'
+        strategyMessages[selection.strategy]
       );
 
       // Detailed debug logging for file selection decisions

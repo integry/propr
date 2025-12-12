@@ -5,9 +5,6 @@ export const MAX_CONTEXT_LEVEL = 100;
 export const CONTEXT_LEVEL_STEP = 10;
 export const DEFAULT_CONTEXT_LEVEL = 50;
 
-// Enable compression when context level reaches 90% or higher
-export const COMPRESSION_THRESHOLD_LEVEL = 90;
-
 // With --tools "" and minimal system prompt, Claude Code overhead is ~1K tokens.
 // The tiktoken-to-Claude conversion is handled in contextService.ts.
 // Using 0.98 to leave just 2% (~4K tokens) for overhead since we validate before sending.

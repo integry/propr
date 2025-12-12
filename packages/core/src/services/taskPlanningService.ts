@@ -1,6 +1,6 @@
 import { db } from '../db/postgres.js';
 import { generateContext } from './contextService.js';
-import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, TIKTOKEN_TO_CLAUDE_RATIO, COMPRESSION_THRESHOLD_LEVEL } from '../config/modelLimits.js';
+import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, Plan, PlanItem, GRANULARITY_INSTRUCTIONS, Granularity as GranularityType } from '../claude/prompts/plannerPrompts.js';
@@ -85,6 +85,7 @@ export interface TaskDraftConfig {
   baseBranch: string;
   granularity: 'single' | 'balanced' | 'granular';
   contextLevel?: ContextLevel;
+  compress?: boolean;
   manualFiles: string[];
   autoFiles: string[];
 }
@@ -119,6 +120,7 @@ export interface GenerateContextPreviewOptions {
   baseBranch: string;
   granularity: Granularity;
   contextLevel?: ContextLevel;
+  compress?: boolean;
   files?: string[];
   worktreePath: string;
   correlationId?: string;
@@ -191,6 +193,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const baseBranch = contextConfig?.baseBranch;
   const granularity: Granularity = contextConfig?.granularity || 'balanced';
   const contextLevel: ContextLevel = contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL;
+  const compress: boolean = contextConfig?.compress ?? false;
   const tokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
 
   if (baseBranch) {
@@ -206,12 +209,12 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: contextConfig?.manualFiles || [], autoFiles: contextConfig?.autoFiles || [], correlationId });
 
   await updateTrace(draftId, 'context', 'pending');
-  correlatedLogger.info({ fileCount: relevantFilePaths.length }, 'Generating context');
+  correlatedLogger.info({ fileCount: relevantFilePaths.length, compress }, 'Generating context');
 
-  // Enable compression for context level at or above threshold to fit more content
-  const useCompression = contextLevel >= COMPRESSION_THRESHOLD_LEVEL;
-
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: relevantFilePaths.length > 0 ? relevantFilePaths : undefined, tokenLimit, compress: useCompression, correlationId });
+  // When compression is enabled, include all files but prioritize relevant ones
+  const filesToInclude = compress ? undefined : (relevantFilePaths.length > 0 ? relevantFilePaths : undefined);
+  const priorityFiles = compress ? relevantFilePaths : undefined;
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit, compress, correlationId });
   await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
 
   const plan = await callLLMForPlan({ draftId, context: contextResult.context, prompt: draft.initial_prompt, granularity, worktreePath, githubToken, repository: draft.repository, correlationId });
@@ -259,7 +262,7 @@ export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
 export { checkoutBranch } from './planningHelpers.js';
 
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
-  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, files, worktreePath, correlationId } = options;
+  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId } = options;
   const previewTokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   const warnings: string[] = [];
@@ -306,23 +309,42 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     overlap: manualFiles.filter(f => autoFilePaths.includes(f)).length
   }, 'Preview file selection breakdown');
 
-  // Enable compression for context level at or above threshold to fit more content
-  const useCompression = contextLevel >= COMPRESSION_THRESHOLD_LEVEL;
-
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: combinedFiles.length > 0 ? combinedFiles : undefined, tokenLimit: previewTokenLimit, compress: useCompression, correlationId });
+  // When compression is enabled, include all files but prioritize relevant ones
+  // This allows repomix to pack as many files as possible within the budget
+  const filesToInclude = compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined);
+  const priorityFiles = compress ? combinedFiles : undefined;
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: previewTokenLimit, compress, correlationId });
   const costEstimate = await calculateCostEstimate(contextResult.totalTokens, warnings, correlatedLogger);
 
   const includedFilesSet = new Set(contextResult.includedFiles);
-  const smartSelection: SmartFileSelection[] = [
-    ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
-    ...relevanceResult.files.filter(f => includedFilesSet.has(f.path)).map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
-  ];
+
+  // Build smart selection - when compress is enabled, show all included files
+  let smartSelection: SmartFileSelection[];
+  if (compress) {
+    // Create a map of relevance scores for files that were found by relevance
+    const relevanceScores = new Map(relevanceResult.files.map(f => [f.path, f]));
+    smartSelection = contextResult.includedFiles.map(path => {
+      const relevanceInfo = relevanceScores.get(path);
+      if (manualFiles.includes(path)) {
+        return { path, reason: 'Explicitly included', source: 'manual' as const };
+      } else if (relevanceInfo) {
+        return { path, reason: `${relevanceInfo.reason} (score: ${relevanceInfo.score})`, source: 'auto' as const, score: relevanceInfo.score };
+      } else {
+        return { path, reason: 'Included via compression', source: 'auto' as const };
+      }
+    });
+  } else {
+    smartSelection = [
+      ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
+      ...relevanceResult.files.filter(f => includedFilesSet.has(f.path)).map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
+    ];
+  }
 
   const fullContext = buildFullContext({ userRequest: prompt, repomixContext: contextResult.context, granularity });
 
   await db('task_drafts').where({ draft_id: draftId }).update({
     initial_prompt: prompt,
-    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, manualFiles, autoFiles: autoFilePaths }),
+    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, compress, manualFiles, autoFiles: autoFilePaths }),
     generated_context: fullContext,
     updated_at: db.fn.now()
   });
