@@ -135,3 +135,13 @@ export {
 } from './daemon/configLoader.js';
 export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 
+// Agent abstraction exports
+export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
+export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
+export type {
+    Agent,
+    AgentConfig,
+    AgentTaskOptions,
+    AgentExecutionResult
+} from './agents/types.js';
+

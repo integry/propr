@@ -19,6 +19,28 @@ interface ConfigSettings {
     [key: string]: unknown;
 }
 
+/**
+ * Configuration for a specific agent instance.
+ * Stored in config.json under 'agents' array.
+ */
+export interface AgentConfig {
+    id: string;             // UUID v4
+    type: 'claude' | 'codex' | 'gemini';
+    alias: string;          // Human-readable ID (e.g., 'claude-prod', 'codex-beta')
+    enabled: boolean;
+
+    // Docker configuration
+    dockerImage: string;    // e.g., 'claude-code-processor:latest'
+    configPath: string;     // Host path to mount (e.g., '/root/.claude')
+
+    // Model configuration
+    supportedModels: string[]; // List of models this agent supports
+    defaultModel?: string;     // Default model if none specified
+
+    // Environment variables to inject into container
+    envVars?: Record<string, string>;
+}
+
 interface Config {
     followup_keywords?: string[];
     repos_to_monitor?: (string | RepoToMonitor)[];
@@ -26,6 +48,7 @@ interface Config {
     ai_primary_tag?: string;
     primary_processing_labels?: string[];
     settings?: ConfigSettings;
+    agents?: AgentConfig[];
     [key: string]: unknown;
 }
 
@@ -417,6 +440,64 @@ export async function savePrimaryProcessingLabels(primaryLabels: string[] | stri
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message }, 'Failed to save primary processing labels');
+        throw error;
+    }
+}
+
+/**
+ * Loads agent configurations from the config repository.
+ * Returns an empty array if no agents are configured.
+ */
+export async function loadAgents(): Promise<AgentConfig[]> {
+    try {
+        await cloneOrPullConfigRepo();
+
+        const config: Config = await fs.readJson(CONFIG_FILE_PATH);
+        const agents = config.agents || [];
+
+        logger.info({ agentCount: agents.length }, 'Successfully loaded agents configuration');
+        return agents;
+    } catch (error) {
+        const err = error as Error;
+        logger.warn({ error: err.message }, 'Failed to load agents from config repo, returning empty array');
+        return [];
+    }
+}
+
+/**
+ * Saves agent configurations to the config repository.
+ * Commits and pushes changes to the remote.
+ */
+export async function saveAgents(agents: AgentConfig[], commitMessage = 'Update agents configuration'): Promise<boolean> {
+    try {
+        await cloneOrPullConfigRepo();
+
+        const config: Config = await fs.readJson(CONFIG_FILE_PATH);
+        config.agents = agents;
+
+        await fs.writeJson(CONFIG_FILE_PATH, config, { spaces: 2 });
+
+        const git = simpleGit(LOCAL_CONFIG_PATH);
+
+        try {
+            await git.addConfig('user.email', 'gitfix@example.com');
+            await git.addConfig('user.name', 'GitFix Bot');
+        } catch {
+            // Ignore git config errors
+        }
+
+        await git.add('config.json');
+        await git.commit(commitMessage);
+
+        const authToken = await getGitHubInstallationToken();
+        const authenticatedUrl = CONFIG_REPO_URL.replace('https://', `https://x-access-token:${authToken}@`);
+        await git.push(authenticatedUrl, 'main');
+
+        logger.info({ agentCount: agents.length }, 'Successfully saved and pushed agents configuration');
+        return true;
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ error: err.message }, 'Failed to save agents configuration');
         throw error;
     }
 }
