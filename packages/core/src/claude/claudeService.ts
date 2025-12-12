@@ -17,6 +17,8 @@ import {
     ConversationLogEntry,
     ClaudeOutputResult
 } from './claudeHelpers.js';
+import { AgentRegistry } from '../agents/AgentRegistry.js';
+import { AgentExecutionResult } from '../agents/types.js';
 
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
@@ -25,6 +27,11 @@ const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'claude-c
 const CLAUDE_CONFIG_PATH: string = process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude');
 const CLAUDE_MAX_TURNS: number = parseInt(process.env.CLAUDE_MAX_TURNS || '1000', 10);
 const CLAUDE_TIMEOUT_MS: number = parseInt(process.env.CLAUDE_TIMEOUT_MS || '300000', 10);
+
+/**
+ * @deprecated Use AgentRegistry and Agent.executeTask() instead.
+ * This function is maintained for backward compatibility.
+ */
 
 export interface ExecuteClaudeCodeOptions {
     worktreePath: string;
@@ -79,6 +86,46 @@ export interface RunLightweightLLMAnalysisOptions {
     issueRef: IssueRef;
 }
 
+/**
+ * Converts AgentExecutionResult to ClaudeCodeResponse for backward compatibility.
+ */
+function convertAgentResultToClaudeResponse(
+    agentResult: AgentExecutionResult,
+    claudeOutput: ClaudeOutput | null
+): ClaudeCodeResponse {
+    return {
+        success: agentResult.success,
+        executionTime: agentResult.executionTimeMs,
+        output: claudeOutput,
+        logs: agentResult.logs,
+        exitCode: agentResult.exitCode,
+        rawOutput: agentResult.rawOutput,
+        conversationLog: claudeOutput?.conversationLog || [],
+        sessionId: agentResult.sessionId ?? null,
+        conversationId: agentResult.conversationId,
+        model: agentResult.modelUsed,
+        finalResult: claudeOutput?.finalResult ?? null,
+        modifiedFiles: agentResult.modifiedFiles,
+        commitMessage: agentResult.commitMessage ?? null,
+        summary: agentResult.summary ?? null,
+        prompt: agentResult.prompt,
+        error: agentResult.error
+    };
+}
+
+/**
+ * Executes Claude Code in a Docker container.
+ *
+ * @deprecated This function is maintained for backward compatibility.
+ * New code should use AgentRegistry to get an agent and call executeTask() directly:
+ *
+ * ```typescript
+ * const registry = AgentRegistry.getInstance();
+ * await registry.ensureInitialized();
+ * const agent = registry.getDefaultAgent();
+ * const result = await agent.executeTask(options);
+ * ```
+ */
 export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Promise<ClaudeCodeResponse> {
     const { worktreePath, issueRef, githubToken, customPrompt, isRetry = false, retryReason, branchName, modelName, issueDetails, onSessionId, onContainerId } = options;
     const startTime = Date.now();

@@ -3,6 +3,7 @@ import { RedisClientType } from 'redis';
 import path from 'path';
 import fs from 'fs-extra';
 import * as configRepoManager from '@gitfix/core';
+import { AgentRegistry } from '@gitfix/core';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -226,6 +227,95 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     res.status(result.status).json(result.body);
   }
 
+  async function getAgents(_req: Request, res: Response): Promise<void> {
+    try {
+      const agents = await configRepoManager.loadAgents();
+      res.json({ agents });
+    } catch (error) {
+      console.error('Error in /api/config/agents GET:', error);
+      res.status(500).json({ error: 'Failed to load agents configuration' });
+    }
+  }
+
+  async function postAgents(req: Request, res: Response): Promise<void> {
+    const result = await withConfigLock(redisClient, 'config:agents:lock', async () => {
+      const { agents } = req.body;
+
+      if (!Array.isArray(agents)) {
+        return { status: 400, body: { error: 'agents must be an array' } };
+      }
+
+      // Validate each agent configuration
+      const aliasRegex = /^[a-z0-9-]+$/;
+      const seenAliases = new Set<string>();
+      const validTypes = ['claude', 'codex', 'gemini'];
+
+      for (const agent of agents) {
+        // Validate required fields
+        if (!agent.id || typeof agent.id !== 'string') {
+          return { status: 400, body: { error: `Agent missing required 'id' field` } };
+        }
+        if (!agent.type || !validTypes.includes(agent.type)) {
+          return { status: 400, body: { error: `Agent '${agent.id}' has invalid type. Must be one of: ${validTypes.join(', ')}` } };
+        }
+        if (!agent.alias || typeof agent.alias !== 'string') {
+          return { status: 400, body: { error: `Agent '${agent.id}' missing required 'alias' field` } };
+        }
+        if (!aliasRegex.test(agent.alias)) {
+          return { status: 400, body: { error: `Agent '${agent.id}' has invalid alias '${agent.alias}'. Must match pattern ^[a-z0-9-]+$` } };
+        }
+        if (typeof agent.enabled !== 'boolean') {
+          return { status: 400, body: { error: `Agent '${agent.id}' missing required 'enabled' field` } };
+        }
+        if (!agent.dockerImage || typeof agent.dockerImage !== 'string') {
+          return { status: 400, body: { error: `Agent '${agent.id}' missing required 'dockerImage' field` } };
+        }
+        if (!agent.configPath || typeof agent.configPath !== 'string') {
+          return { status: 400, body: { error: `Agent '${agent.id}' missing required 'configPath' field` } };
+        }
+        if (!Array.isArray(agent.supportedModels)) {
+          return { status: 400, body: { error: `Agent '${agent.id}' missing required 'supportedModels' field` } };
+        }
+
+        // Check for duplicate aliases
+        if (seenAliases.has(agent.alias)) {
+          return { status: 400, body: { error: `Duplicate agent alias '${agent.alias}' found` } };
+        }
+        seenAliases.add(agent.alias);
+      }
+
+      // Save the agents configuration
+      await configRepoManager.saveAgents(
+        agents,
+        `Update agents configuration via UI by ${req.user?.username}`
+      );
+
+      // Refresh the AgentRegistry to apply changes immediately
+      try {
+        const registry = AgentRegistry.getInstance();
+        await registry.refresh();
+      } catch (refreshError) {
+        console.error('Warning: Failed to refresh agent registry:', refreshError);
+        // Don't fail the request, the config was saved successfully
+      }
+
+      const activity = {
+        id: `activity-${Date.now()}-agents-update`,
+        type: 'agents_updated',
+        timestamp: new Date().toISOString(),
+        user: req.user?.username,
+        description: `Updated agents configuration (${agents.length} agents)`,
+        status: 'success'
+      };
+      await redisClient.lPush('system:activity:log', JSON.stringify(activity));
+      await redisClient.lTrim('system:activity:log', 0, 999);
+
+      return { status: 200, body: { success: true, agents } };
+    });
+
+    res.status(result.status).json(result.body);
+  }
+
   return {
     getFollowupKeywords,
     postFollowupKeywords,
@@ -238,7 +328,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     getAiPrimaryTag,
     postAiPrimaryTag,
     getPrimaryProcessingLabels,
-    postPrimaryProcessingLabels
+    postPrimaryProcessingLabels,
+    getAgents,
+    postAgents
   };
 }
 
