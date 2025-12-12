@@ -17,9 +17,6 @@ import {
     ConversationLogEntry,
     ClaudeOutputResult
 } from './claudeHelpers.js';
-import { AgentRegistry } from '../agents/AgentRegistry.js';
-import { AgentExecutionResult } from '../agents/types.js';
-
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
 
@@ -86,32 +83,6 @@ export interface RunLightweightLLMAnalysisOptions {
     issueRef: IssueRef;
 }
 
-/**
- * Converts AgentExecutionResult to ClaudeCodeResponse for backward compatibility.
- */
-function convertAgentResultToClaudeResponse(
-    agentResult: AgentExecutionResult,
-    claudeOutput: ClaudeOutput | null
-): ClaudeCodeResponse {
-    return {
-        success: agentResult.success,
-        executionTime: agentResult.executionTimeMs,
-        output: claudeOutput,
-        logs: agentResult.logs,
-        exitCode: agentResult.exitCode,
-        rawOutput: agentResult.rawOutput,
-        conversationLog: claudeOutput?.conversationLog || [],
-        sessionId: agentResult.sessionId ?? null,
-        conversationId: agentResult.conversationId,
-        model: agentResult.modelUsed,
-        finalResult: claudeOutput?.finalResult ?? null,
-        modifiedFiles: agentResult.modifiedFiles,
-        commitMessage: agentResult.commitMessage ?? null,
-        summary: agentResult.summary ?? null,
-        prompt: agentResult.prompt,
-        error: agentResult.error
-    };
-}
 
 /**
  * Executes Claude Code in a Docker container.

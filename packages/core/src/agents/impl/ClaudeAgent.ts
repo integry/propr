@@ -204,10 +204,8 @@ export class ClaudeAgent implements Agent {
             ? `${prompt}\n\nContext:\n${context}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`
             : `${prompt}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`;
 
-        // For analysis, we need a temporary worktree path and a dummy issue ref
-        // We'll use a minimal Docker execution
+        // For analysis, we use a minimal Docker execution with a temporary worktree path
         const tempPath = '/tmp/claude-analysis';
-        const dummyIssueRef = { number: 0, repoOwner: 'analysis', repoName: 'task' };
 
         try {
             const dockerArgs = this.buildDockerArgs({
