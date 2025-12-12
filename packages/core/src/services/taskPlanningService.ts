@@ -1,4 +1,5 @@
 import { db } from '../db/postgres.js';
+import type { LogFn } from 'pino';
 import { generateContext } from './contextService.js';
 import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
 import { findRelevantFiles } from './relevanceService.js';
@@ -200,10 +201,13 @@ function parseContextConfig(contextConfig: TaskDraftConfig | null): ParsedContex
   };
 }
 
+/** Minimal logger interface compatible with both pino Logger and EnhancedLogger */
+type MinimalLogger = { info: LogFn; warn: LogFn };
+
 async function checkoutBaseBranch(
   worktreePath: string,
   baseBranch: string | undefined,
-  correlatedLogger: typeof logger
+  correlatedLogger: MinimalLogger
 ): Promise<void> {
   if (!baseBranch) return;
   try {
