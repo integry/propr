@@ -92,3 +92,4 @@ export interface Agent {
 
 // Re-export types that are commonly needed with agent types
 export type { IssueRef, IssueDetails };
+
