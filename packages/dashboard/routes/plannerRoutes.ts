@@ -199,7 +199,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const updatedConfig = {
       ...existingConfig,
       ...(baseBranch && { baseBranch }),
-      ...(granularity && VALID_GRANULARITIES.includes(granularity) && { granularity }),
+      ...(granularity && VALID_GRANULARITIES.includes(granularity as typeof VALID_GRANULARITIES[number]) && { granularity }),
       ...(contextLevel !== undefined && { contextLevel }),
       ...(compress !== undefined && { compress })
     };
