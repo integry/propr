@@ -1,9 +1,6 @@
-import path from 'path';
-import os from 'os';
-import fs from 'fs';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult } from '../types.js';
-import { executeDockerCommand, ExecutionResult } from '../../claude/docker/dockerExecutor.js';
+import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import {
     verifyWorktreeStructure,
     verifyWorktreePostExecution,

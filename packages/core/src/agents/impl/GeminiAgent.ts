@@ -1,9 +1,6 @@
-import path from 'path';
-import os from 'os';
-import fs from 'fs';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult } from '../types.js';
-import { executeDockerCommand, ExecutionResult } from '../../claude/docker/dockerExecutor.js';
+import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import {
     verifyWorktreeStructure,
     verifyWorktreePostExecution,
@@ -21,7 +18,8 @@ const DEFAULT_GEMINI_TIMEOUT_MS = 300000;
 const CONTAINER_CONFIG_PATH = '/home/node/.gemini';
 
 // ANSI escape code regex for stripping terminal formatting from TUI output
-const ANSI_REGEX = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+// Using String.fromCharCode() to construct the pattern dynamically, avoiding literal control chars
+const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
 
 export class GeminiAgent implements Agent {
     readonly config: AgentConfig;
