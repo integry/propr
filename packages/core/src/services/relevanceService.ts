@@ -22,7 +22,8 @@ export interface RelevanceOptions {
   semanticMiningOptions?: SemanticMiningOptions;
 }
 
-const DEFAULT_MAX_RESULTS = 20;
+// No artificial limit - let context service handle token-based truncation
+const DEFAULT_MAX_RESULTS = 500;
 const DEFAULT_MIN_SCORE = 30;
 const TIMEOUT_MS = 2000;
 const SEMANTIC_TIMEOUT_MS = 30000;

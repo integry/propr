@@ -178,11 +178,69 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     return deleteAttachmentHandler(req, res);
   }
 
+  interface GenerateRequestBody {
+    draftId?: string;
+    baseBranch?: string;
+    granularity?: string;
+    contextLevel?: number;
+    compress?: boolean;
+  }
+
+  async function updateDraftContextConfig(
+    draftId: string,
+    draft: Record<string, unknown>,
+    body: GenerateRequestBody
+  ): Promise<void> {
+    const { baseBranch, granularity, contextLevel, compress } = body;
+    const hasUpdates = baseBranch || granularity || contextLevel !== undefined || compress !== undefined;
+    if (!hasUpdates) return;
+
+    const existingConfig = (draft.context_config as Record<string, unknown>) || {};
+    const updatedConfig = {
+      ...existingConfig,
+      ...(baseBranch && { baseBranch }),
+      ...(granularity && VALID_GRANULARITIES.includes(granularity as typeof VALID_GRANULARITIES[number]) && { granularity }),
+      ...(contextLevel !== undefined && { contextLevel }),
+      ...(compress !== undefined && { compress })
+    };
+    await db!('task_drafts').where({ draft_id: draftId }).update({
+      context_config: JSON.stringify(updatedConfig),
+      updated_at: db!.fn.now()
+    });
+  }
+
+  function runBackgroundGeneration(
+    draftId: string,
+    worktreePath: string,
+    authToken: string,
+    correlationId: string
+  ): void {
+    generatePlan({ draftId, worktreePath, githubToken: authToken, correlationId })
+      .then(() => {
+        console.log(`[generate] Plan generation completed for draft ${draftId}`);
+      })
+      .catch(async (error) => {
+        console.error(`[generate] Plan generation failed for draft ${draftId}:`, error);
+        try {
+          await db!('task_drafts').where({ draft_id: draftId }).update({
+            status: 'draft',
+            generation_trace: JSON.stringify({
+              steps: [],
+              error: error instanceof Error ? error.message : 'Plan generation failed'
+            }),
+            updated_at: db!.fn.now()
+          });
+        } catch (dbError) {
+          console.error(`[generate] Failed to update draft status after error:`, dbError);
+        }
+      });
+  }
+
   async function generate(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    const { draftId, baseBranch, granularity } = req.body;
+    const { draftId, baseBranch, granularity, contextLevel, compress } = req.body as GenerateRequestBody;
     if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
 
     const correlationId = generateCorrelationId();
@@ -204,49 +262,16 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
       const worktreePath = await ensureRepoCloned(repoUrl, owner, repoName, authToken);
 
-      if (baseBranch || granularity) {
-        const existingConfig = (draft.context_config as Record<string, unknown>) || {};
-        const updatedConfig = {
-          ...existingConfig,
-          ...(baseBranch && { baseBranch }),
-          ...(granularity && VALID_GRANULARITIES.includes(granularity) && { granularity })
-        };
-        await db!('task_drafts').where({ draft_id: draftId }).update({
-          context_config: JSON.stringify(updatedConfig),
-          updated_at: db!.fn.now()
-        });
-      }
+      await updateDraftContextConfig(draftId, draft, { baseBranch, granularity, contextLevel, compress });
 
-      // Set status to 'generating' and return immediately
       await db!('task_drafts').where({ draft_id: draftId }).update({
         status: 'generating',
         updated_at: db!.fn.now()
       });
 
-      // Return 202 Accepted immediately - client should poll for status
       res.status(202).json({ success: true, status: 'generating', message: 'Plan generation started' });
 
-      // Run generation in background (don't await)
-      generatePlan({ draftId, worktreePath, githubToken: authToken, correlationId })
-        .then(() => {
-          console.log(`[generate] Plan generation completed for draft ${draftId}`);
-        })
-        .catch(async (error) => {
-          console.error(`[generate] Plan generation failed for draft ${draftId}:`, error);
-          // Update draft status to indicate failure
-          try {
-            await db!('task_drafts').where({ draft_id: draftId }).update({
-              status: 'draft',
-              generation_trace: JSON.stringify({
-                steps: [],
-                error: error instanceof Error ? error.message : 'Plan generation failed'
-              }),
-              updated_at: db!.fn.now()
-            });
-          } catch (dbError) {
-            console.error(`[generate] Failed to update draft status after error:`, dbError);
-          }
-        });
+      runBackgroundGeneration(draftId, worktreePath, authToken, correlationId);
     } catch (error) {
       console.error('Generate plan error:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to generate plan' });

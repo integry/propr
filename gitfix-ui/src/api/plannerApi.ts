@@ -70,6 +70,7 @@ export interface PreviewOptions {
   baseBranch: string;
   granularity: Granularity;
   contextLevel?: number;
+  compress?: boolean;
   files?: string[];
 }
 
@@ -77,6 +78,7 @@ export interface PlanGenerationOptions {
   baseBranch?: string;
   granularity?: Granularity;
   contextLevel?: number;
+  compress?: boolean;
 }
 
 export const createDraft = async (repository: string, prompt: string): Promise<PlannerDraft> => {
