@@ -16,6 +16,8 @@ export interface DockerCommandOptions {
     onContainerId?: (containerId: string, containerName: string) => void;
     worktreePath?: string;
     stdinData?: string; // Data to pipe to stdin
+    extraMounts?: string[]; // Additional volume mounts (e.g., ['/host/path:/container/path:rw'])
+    extraEnvVars?: Record<string, string>; // Additional environment variables
 }
 
 interface JsonLineMessage {

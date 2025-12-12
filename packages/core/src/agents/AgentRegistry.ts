@@ -3,6 +3,8 @@ import os from 'os';
 import logger from '../utils/logger.js';
 import { Agent, AgentConfig } from './types.js';
 import { ClaudeAgent } from './impl/ClaudeAgent.js';
+import { CodexAgent } from './impl/CodexAgent.js';
+import { GeminiAgent } from './impl/GeminiAgent.js';
 import * as configRepoManager from '../config/configRepoManager.js';
 
 /**
@@ -179,11 +181,9 @@ export class AgentRegistry {
             case 'claude':
                 return new ClaudeAgent(config);
             case 'codex':
-                // Placeholder for future Codex implementation
-                throw new Error(`Agent type '${config.type}' is not yet implemented`);
+                return new CodexAgent(config);
             case 'gemini':
-                // Placeholder for future Gemini implementation
-                throw new Error(`Agent type '${config.type}' is not yet implemented`);
+                return new GeminiAgent(config);
             default:
                 throw new Error(`Unknown agent type: ${config.type}`);
         }

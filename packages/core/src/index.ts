@@ -138,10 +138,14 @@ export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetectio
 // Agent abstraction exports
 export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
+export { CodexAgent } from './agents/impl/CodexAgent.js';
+export { GeminiAgent } from './agents/impl/GeminiAgent.js';
 export type {
     Agent,
     AgentConfig,
     AgentTaskOptions,
-    AgentExecutionResult
+    AgentExecutionResult,
+    AgentType
 } from './agents/types.js';
-
+export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
+export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath } from './config/configRepoManager.js';

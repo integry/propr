@@ -41,6 +41,34 @@ export interface AgentConfig {
     envVars?: Record<string, string>;
 }
 
+/**
+ * Default config paths for different agent types.
+ * These are the standard host paths where agent configs are typically stored.
+ */
+export const DEFAULT_CONFIG_PATHS: Record<AgentConfig['type'], string> = {
+    claude: '~/.claude',
+    codex: '~/.codex',
+    gemini: '~/.gemini'
+};
+
+/**
+ * Resolves a config path, expanding ~ to the home directory.
+ */
+export function resolveConfigPath(configPath: string): string {
+    if (configPath.startsWith('~')) {
+        const homeDir = process.env.HOME || process.env.USERPROFILE || '/root';
+        return path.join(homeDir, configPath.slice(1));
+    }
+    return configPath;
+}
+
+/**
+ * Gets the default config path for a given agent type.
+ */
+export function getDefaultConfigPath(agentType: AgentConfig['type']): string {
+    return resolveConfigPath(DEFAULT_CONFIG_PATHS[agentType]);
+}
+
 interface Config {
     followup_keywords?: string[];
     repos_to_monitor?: (string | RepoToMonitor)[];
