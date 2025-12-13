@@ -113,7 +113,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     setFormData(prev => ({
       ...prev,
       type: newType,
-      dockerImage: prev.dockerImage === AGENT_DEFAULTS[prev.type].dockerImage ? defaults.dockerImage : prev.dockerImage,
+      dockerImage: defaults.dockerImage, // Docker image is predefined and not editable
       configPath: prev.configPath === AGENT_DEFAULTS[prev.type].configPath ? defaults.configPath : prev.configPath,
       supportedModels: defaults.defaultModels,
       defaultModel: defaults.defaultModels[0]
@@ -164,10 +164,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       newErrors.alias = 'This alias is already in use';
     }
 
-    // Validate dockerImage
-    if (!formData.dockerImage) {
-      newErrors.dockerImage = 'Docker image is required';
-    }
+    // Note: dockerImage is predefined and not editable, so no validation needed
 
     // Validate configPath
     if (!formData.configPath) {
@@ -268,22 +265,17 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             </p>
           </div>
 
-          {/* Docker Image */}
+          {/* Docker Image (read-only for predefined agents) */}
           <div>
-            <label className="block text-gray-700 mb-2 font-medium" htmlFor="dockerImage">
+            <label className="block text-gray-700 mb-2 font-medium">
               Docker Image
             </label>
-            <input
-              type="text"
-              id="dockerImage"
-              value={formData.dockerImage}
-              onChange={(e) => setFormData(prev => ({ ...prev, dockerImage: e.target.value }))}
-              placeholder={AGENT_DEFAULTS[formData.type].dockerImage}
-              className={`w-full px-3 py-2 bg-gray-50 text-gray-900 border rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm ${
-                errors.dockerImage ? 'border-red-500' : 'border-gray-300'
-              }`}
-            />
-            {errors.dockerImage && <p className="mt-1 text-sm text-red-600">{errors.dockerImage}</p>}
+            <div className="w-full px-3 py-2 bg-gray-100 text-gray-700 border border-gray-300 rounded-md font-mono text-sm">
+              {formData.dockerImage}
+            </div>
+            <p className="mt-1 text-sm text-gray-500">
+              Docker image is predefined for each agent type and cannot be changed.
+            </p>
           </div>
 
           {/* Config Path */}
