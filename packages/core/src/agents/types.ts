@@ -93,3 +93,18 @@ export interface Agent {
 // Re-export types that are commonly needed with agent types
 export type { IssueRef, IssueDetails };
 
+/**
+ * Agent type identifier.
+ */
+export type AgentType = AgentConfig['type'];
+
+/**
+ * Container config paths for different agent types.
+ * These are the paths inside the Docker container where configs are mounted.
+ */
+export const CONTAINER_CONFIG_PATHS: Record<AgentType, string> = {
+    claude: '/home/node/.claude',
+    codex: '/home/node/.codex',
+    gemini: '/home/node/.gemini'
+};
+
