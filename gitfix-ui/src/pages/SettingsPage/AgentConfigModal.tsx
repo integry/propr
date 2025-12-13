@@ -10,21 +10,70 @@ interface AgentConfigModalProps {
 
 type AgentType = 'claude' | 'codex' | 'gemini';
 
+// Model info with ID, alias, and GitHub label for display
+interface ModelInfo {
+  id: string;
+  alias?: string;
+  githubLabel: string;
+}
+
+// Latest Claude models from official documentation
+const CLAUDE_MODELS: ModelInfo[] = [
+  // Latest models (Claude 4.5)
+  { id: 'claude-sonnet-4-5-20250929', alias: 'claude-sonnet-4-5', githubLabel: 'claude-sonnet-4.5' },
+  { id: 'claude-haiku-4-5-20251001', alias: 'claude-haiku-4-5', githubLabel: 'claude-haiku-4.5' },
+  { id: 'claude-opus-4-5-20251101', alias: 'claude-opus-4-5', githubLabel: 'claude-opus-4.5' },
+  // Legacy models (still available)
+  { id: 'claude-opus-4-1-20250805', alias: 'claude-opus-4-1', githubLabel: 'claude-opus-4.1' },
+  { id: 'claude-sonnet-4-20250514', alias: 'claude-sonnet-4-0', githubLabel: 'claude-sonnet-4' },
+  { id: 'claude-3-7-sonnet-20250219', alias: 'claude-3-7-sonnet-latest', githubLabel: 'claude-3.7-sonnet' },
+  { id: 'claude-opus-4-20250514', alias: 'claude-opus-4-0', githubLabel: 'claude-opus-4' },
+  { id: 'claude-3-5-haiku-20241022', alias: 'claude-3-5-haiku-latest', githubLabel: 'claude-3.5-haiku' },
+];
+
+// Codex models from official documentation
+const CODEX_MODELS: ModelInfo[] = [
+  // Recommended models
+  { id: 'gpt-5.1-codex-max', githubLabel: 'gpt-5.1-codex-max' },
+  { id: 'gpt-5.1-codex-mini', githubLabel: 'gpt-5.1-codex-mini' },
+  // Alternative models
+  { id: 'gpt-5.2', githubLabel: 'gpt-5.2' },
+  { id: 'gpt-5.1', githubLabel: 'gpt-5.1' },
+  { id: 'gpt-5.1-codex', githubLabel: 'gpt-5.1-codex' },
+  { id: 'gpt-5-codex', githubLabel: 'gpt-5-codex' },
+  { id: 'gpt-5-codex-mini', githubLabel: 'gpt-5-codex-mini' },
+  { id: 'gpt-5', githubLabel: 'gpt-5' },
+];
+
+// Gemini models from official documentation
+const GEMINI_MODELS: ModelInfo[] = [
+  { id: 'gemini-3-pro-preview', githubLabel: 'gemini-3-pro-preview' },
+  { id: 'gemini-2.5-pro', githubLabel: 'gemini-2.5-pro' },
+  { id: 'gemini-2.5-flash', githubLabel: 'gemini-2.5-flash' },
+  { id: 'gemini-2.5-flash-lite', githubLabel: 'gemini-2.5-flash-lite' },
+];
+
+const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
+  claude: CLAUDE_MODELS,
+  codex: CODEX_MODELS,
+  gemini: GEMINI_MODELS,
+};
+
 const AGENT_DEFAULTS: Record<AgentType, { dockerImage: string; configPath: string; defaultModels: string[] }> = {
   claude: {
     dockerImage: 'claude-code-processor:latest',
     configPath: '~/.claude',
-    defaultModels: ['claude-3-opus-20240229', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-opus-4-20250514', 'claude-sonnet-4-20250514']
+    defaultModels: CLAUDE_MODELS.map(m => m.id)
   },
   codex: {
     dockerImage: 'codex-cli:latest',
     configPath: '~/.codex',
-    defaultModels: ['codex-mini-latest', 'o3', 'o4-mini']
+    defaultModels: CODEX_MODELS.map(m => m.id)
   },
   gemini: {
     dockerImage: 'gemini-cli:latest',
     configPath: '~/.gemini',
-    defaultModels: ['gemini-2.5-pro', 'gemini-2.5-flash']
+    defaultModels: GEMINI_MODELS.map(m => m.id)
   }
 };
 
@@ -45,7 +94,6 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     supportedModels: AGENT_DEFAULTS.claude.defaultModels
   });
 
-  const [modelsInput, setModelsInput] = useState<string>('');
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -59,7 +107,6 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         configPath: agent.configPath,
         supportedModels: agent.supportedModels
       });
-      setModelsInput(agent.supportedModels.join(', '));
     }
   }, [agent]);
 
@@ -72,7 +119,25 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       configPath: prev.configPath === AGENT_DEFAULTS[prev.type].configPath ? defaults.configPath : prev.configPath,
       supportedModels: defaults.defaultModels
     }));
-    setModelsInput(defaults.defaultModels.join(', '));
+  };
+
+  const handleModelToggle = (modelId: string) => {
+    setFormData(prev => {
+      const isSelected = prev.supportedModels.includes(modelId);
+      const newModels = isSelected
+        ? prev.supportedModels.filter(m => m !== modelId)
+        : [...prev.supportedModels, modelId];
+      return { ...prev, supportedModels: newModels };
+    });
+  };
+
+  const handleSelectAllModels = () => {
+    const allModels = AGENT_MODELS[formData.type].map(m => m.id);
+    setFormData(prev => ({ ...prev, supportedModels: allModels }));
+  };
+
+  const handleDeselectAllModels = () => {
+    setFormData(prev => ({ ...prev, supportedModels: [] }));
   };
 
   const validateForm = (): boolean => {
@@ -100,8 +165,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     }
 
     // Validate supportedModels
-    const models = modelsInput.split(',').map(m => m.trim()).filter(m => m.length > 0);
-    if (models.length === 0) {
+    if (formData.supportedModels.length === 0) {
       newErrors.supportedModels = 'At least one model is required';
     }
 
@@ -116,8 +180,6 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       return;
     }
 
-    const models = modelsInput.split(',').map(m => m.trim()).filter(m => m.length > 0);
-
     const agentToSave: AgentConfig = {
       id: formData.id || crypto.randomUUID(),
       type: formData.type,
@@ -125,7 +187,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       enabled: formData.enabled,
       dockerImage: formData.dockerImage,
       configPath: formData.configPath,
-      supportedModels: models
+      supportedModels: formData.supportedModels
     };
 
     onSave(agentToSave);
@@ -233,22 +295,63 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
           {/* Supported Models */}
           <div>
-            <label className="block text-gray-700 mb-2 font-medium" htmlFor="supportedModels">
-              Supported Models
-            </label>
-            <textarea
-              id="supportedModels"
-              value={modelsInput}
-              onChange={(e) => setModelsInput(e.target.value)}
-              rows={3}
-              placeholder="Enter model IDs separated by commas"
-              className={`w-full px-3 py-2 bg-gray-50 text-gray-900 border rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm ${
-                errors.supportedModels ? 'border-red-500' : 'border-gray-300'
-              }`}
-            />
+            <div className="flex justify-between items-center mb-2">
+              <label className="block text-gray-700 font-medium">
+                Supported Models
+              </label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleSelectAllModels}
+                  className="text-xs text-primary-600 hover:text-primary-800 font-medium"
+                >
+                  Select All
+                </button>
+                <span className="text-gray-300">|</span>
+                <button
+                  type="button"
+                  onClick={handleDeselectAllModels}
+                  className="text-xs text-gray-500 hover:text-gray-700 font-medium"
+                >
+                  Deselect All
+                </button>
+              </div>
+            </div>
+            <div className={`border rounded-md p-3 bg-gray-50 max-h-64 overflow-y-auto ${
+              errors.supportedModels ? 'border-red-500' : 'border-gray-300'
+            }`}>
+              {AGENT_MODELS[formData.type].map(model => (
+                <label
+                  key={model.id}
+                  className="flex items-start gap-3 py-2 px-2 hover:bg-gray-100 rounded cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={formData.supportedModels.includes(model.id)}
+                    onChange={() => handleModelToggle(model.id)}
+                    className="mt-1 h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <code className="text-sm font-medium text-gray-900">{model.id}</code>
+                      {model.alias && (
+                        <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs rounded">
+                          alias: {model.alias}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1">
+                      <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 text-xs rounded">
+                        GitHub: {model.githubLabel}
+                      </span>
+                    </div>
+                  </div>
+                </label>
+              ))}
+            </div>
             {errors.supportedModels && <p className="mt-1 text-sm text-red-600">{errors.supportedModels}</p>}
             <p className="mt-1 text-sm text-gray-600">
-              Enter model IDs supported by this agent, separated by commas.
+              Select the models this agent supports. All models are selected by default.
             </p>
           </div>
 

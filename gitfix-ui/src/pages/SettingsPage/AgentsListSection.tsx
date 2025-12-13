@@ -14,6 +14,47 @@ interface AgentsListSectionProps {
 
 type AgentType = 'claude' | 'codex' | 'gemini';
 
+// Model info for display purposes (mirrors AgentConfigModal)
+interface ModelInfo {
+  id: string;
+  alias?: string;
+  githubLabel: string;
+}
+
+const CLAUDE_MODELS: ModelInfo[] = [
+  { id: 'claude-sonnet-4-5-20250929', alias: 'claude-sonnet-4-5', githubLabel: 'claude-sonnet-4.5' },
+  { id: 'claude-haiku-4-5-20251001', alias: 'claude-haiku-4-5', githubLabel: 'claude-haiku-4.5' },
+  { id: 'claude-opus-4-5-20251101', alias: 'claude-opus-4-5', githubLabel: 'claude-opus-4.5' },
+  { id: 'claude-opus-4-1-20250805', alias: 'claude-opus-4-1', githubLabel: 'claude-opus-4.1' },
+  { id: 'claude-sonnet-4-20250514', alias: 'claude-sonnet-4-0', githubLabel: 'claude-sonnet-4' },
+  { id: 'claude-3-7-sonnet-20250219', alias: 'claude-3-7-sonnet-latest', githubLabel: 'claude-3.7-sonnet' },
+  { id: 'claude-opus-4-20250514', alias: 'claude-opus-4-0', githubLabel: 'claude-opus-4' },
+  { id: 'claude-3-5-haiku-20241022', alias: 'claude-3-5-haiku-latest', githubLabel: 'claude-3.5-haiku' },
+];
+
+const CODEX_MODELS: ModelInfo[] = [
+  { id: 'gpt-5.1-codex-max', githubLabel: 'gpt-5.1-codex-max' },
+  { id: 'gpt-5.1-codex-mini', githubLabel: 'gpt-5.1-codex-mini' },
+  { id: 'gpt-5.2', githubLabel: 'gpt-5.2' },
+  { id: 'gpt-5.1', githubLabel: 'gpt-5.1' },
+  { id: 'gpt-5.1-codex', githubLabel: 'gpt-5.1-codex' },
+  { id: 'gpt-5-codex', githubLabel: 'gpt-5-codex' },
+  { id: 'gpt-5-codex-mini', githubLabel: 'gpt-5-codex-mini' },
+  { id: 'gpt-5', githubLabel: 'gpt-5' },
+];
+
+const GEMINI_MODELS: ModelInfo[] = [
+  { id: 'gemini-3-pro-preview', githubLabel: 'gemini-3-pro-preview' },
+  { id: 'gemini-2.5-pro', githubLabel: 'gemini-2.5-pro' },
+  { id: 'gemini-2.5-flash', githubLabel: 'gemini-2.5-flash' },
+  { id: 'gemini-2.5-flash-lite', githubLabel: 'gemini-2.5-flash-lite' },
+];
+
+const MODEL_INFO_MAP: Record<string, ModelInfo> = {};
+[...CLAUDE_MODELS, ...CODEX_MODELS, ...GEMINI_MODELS].forEach(m => {
+  MODEL_INFO_MAP[m.id] = m;
+});
+
 const typeBadgeColors: Record<AgentType, string> = {
   claude: 'bg-orange-100 text-orange-800 border-orange-300',
   codex: 'bg-green-100 text-green-800 border-green-300',
@@ -49,15 +90,33 @@ const AgentCard: React.FC<{
             <span className="font-medium">Path:</span>{' '}
             <code className="bg-gray-100 px-1 py-0.5 rounded text-xs">{agent.configPath}</code>
           </div>
-          <div className="flex flex-wrap gap-1 mt-2">
-            {agent.supportedModels.map(model => (
-              <span
-                key={model}
-                className="px-2 py-0.5 bg-gray-100 rounded text-xs text-gray-700 border border-gray-200"
-              >
-                {model}
-              </span>
-            ))}
+          <div className="mt-3">
+            <span className="font-medium text-gray-700">Supported Models ({agent.supportedModels.length}):</span>
+            <div className="flex flex-wrap gap-2 mt-2">
+              {agent.supportedModels.map(modelId => {
+                const modelInfo = MODEL_INFO_MAP[modelId];
+                return (
+                  <div
+                    key={modelId}
+                    className="inline-flex flex-col px-2 py-1.5 bg-gray-50 rounded border border-gray-200"
+                  >
+                    <code className="text-xs font-medium text-gray-900">{modelId}</code>
+                    {modelInfo && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {modelInfo.alias && (
+                          <span className="px-1 py-0.5 bg-blue-100 text-blue-700 text-[10px] rounded">
+                            {modelInfo.alias}
+                          </span>
+                        )}
+                        <span className="px-1 py-0.5 bg-purple-100 text-purple-700 text-[10px] rounded">
+                          {modelInfo.githubLabel}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>
