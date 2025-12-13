@@ -86,14 +86,10 @@ const AgentCard: React.FC<{
           </div>
           <div className="text-sm text-gray-600 space-y-1">
             <div>
-              <span className="font-medium">Image:</span>{' '}
-              <code className="bg-gray-100 px-1 py-0.5 rounded text-xs">{agent.dockerImage}</code>
-            </div>
-            <div>
               <span className="font-medium">Path:</span>{' '}
               <code className="bg-gray-100 px-1 py-0.5 rounded text-xs">{agent.configPath}</code>
             </div>
-            <div className="mt-3">
+            <div className="mt-2">
               <span className="font-medium text-gray-700">Supported Models ({agent.supportedModels.length}):</span>
               <div className="flex flex-col gap-2 mt-2">
                 {agent.supportedModels.map(modelId => {
