@@ -17,37 +17,26 @@ type AgentType = 'claude' | 'codex' | 'gemini';
 // Model info for display purposes (mirrors AgentConfigModal)
 interface ModelInfo {
   id: string;
-  alias?: string;
-  githubLabel: string;
+  name: string;           // Human-readable name
+  shortAlias: string;     // Short alias like "opus", "sonnet", "haiku"
+  githubLabel: string;    // Format: llm-<agent-alias>-<model-alias>
 }
 
 const CLAUDE_MODELS: ModelInfo[] = [
-  { id: 'claude-sonnet-4-5-20250929', alias: 'claude-sonnet-4-5', githubLabel: 'claude-sonnet-4.5' },
-  { id: 'claude-haiku-4-5-20251001', alias: 'claude-haiku-4-5', githubLabel: 'claude-haiku-4.5' },
-  { id: 'claude-opus-4-5-20251101', alias: 'claude-opus-4-5', githubLabel: 'claude-opus-4.5' },
-  { id: 'claude-opus-4-1-20250805', alias: 'claude-opus-4-1', githubLabel: 'claude-opus-4.1' },
-  { id: 'claude-sonnet-4-20250514', alias: 'claude-sonnet-4-0', githubLabel: 'claude-sonnet-4' },
-  { id: 'claude-3-7-sonnet-20250219', alias: 'claude-3-7-sonnet-latest', githubLabel: 'claude-3.7-sonnet' },
-  { id: 'claude-opus-4-20250514', alias: 'claude-opus-4-0', githubLabel: 'claude-opus-4' },
-  { id: 'claude-3-5-haiku-20241022', alias: 'claude-3-5-haiku-latest', githubLabel: 'claude-3.5-haiku' },
+  { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', shortAlias: 'sonnet', githubLabel: 'llm-claude-sonnet' },
+  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', shortAlias: 'haiku', githubLabel: 'llm-claude-haiku' },
+  { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', shortAlias: 'opus', githubLabel: 'llm-claude-opus' },
 ];
 
 const CODEX_MODELS: ModelInfo[] = [
-  { id: 'gpt-5.1-codex-max', githubLabel: 'gpt-5.1-codex-max' },
-  { id: 'gpt-5.1-codex-mini', githubLabel: 'gpt-5.1-codex-mini' },
-  { id: 'gpt-5.2', githubLabel: 'gpt-5.2' },
-  { id: 'gpt-5.1', githubLabel: 'gpt-5.1' },
-  { id: 'gpt-5.1-codex', githubLabel: 'gpt-5.1-codex' },
-  { id: 'gpt-5-codex', githubLabel: 'gpt-5-codex' },
-  { id: 'gpt-5-codex-mini', githubLabel: 'gpt-5-codex-mini' },
-  { id: 'gpt-5', githubLabel: 'gpt-5' },
+  { id: 'o3', name: 'OpenAI o3', shortAlias: 'o3', githubLabel: 'llm-codex-o3' },
+  { id: 'o4-mini', name: 'OpenAI o4-mini', shortAlias: 'o4-mini', githubLabel: 'llm-codex-o4-mini' },
+  { id: 'gpt-4.1', name: 'GPT-4.1', shortAlias: 'gpt-4.1', githubLabel: 'llm-codex-gpt-4.1' },
 ];
 
 const GEMINI_MODELS: ModelInfo[] = [
-  { id: 'gemini-3-pro-preview', githubLabel: 'gemini-3-pro-preview' },
-  { id: 'gemini-2.5-pro', githubLabel: 'gemini-2.5-pro' },
-  { id: 'gemini-2.5-flash', githubLabel: 'gemini-2.5-flash' },
-  { id: 'gemini-2.5-flash-lite', githubLabel: 'gemini-2.5-flash-lite' },
+  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', shortAlias: 'pro', githubLabel: 'llm-gemini-pro' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', shortAlias: 'flash', githubLabel: 'llm-gemini-flash' },
 ];
 
 const MODEL_INFO_MAP: Record<string, ModelInfo> = {};
@@ -92,26 +81,29 @@ const AgentCard: React.FC<{
           </div>
           <div className="mt-3">
             <span className="font-medium text-gray-700">Supported Models ({agent.supportedModels.length}):</span>
-            <div className="flex flex-wrap gap-2 mt-2">
+            <div className="flex flex-col gap-2 mt-2">
               {agent.supportedModels.map(modelId => {
                 const modelInfo = MODEL_INFO_MAP[modelId];
                 return (
                   <div
                     key={modelId}
-                    className="inline-flex flex-col px-2 py-1.5 bg-gray-50 rounded border border-gray-200"
+                    className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded border border-gray-200"
                   >
-                    <code className="text-xs font-medium text-gray-900">{modelId}</code>
-                    {modelInfo && (
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {modelInfo.alias && (
-                          <span className="px-1 py-0.5 bg-blue-100 text-blue-700 text-[10px] rounded">
-                            {modelInfo.alias}
-                          </span>
-                        )}
-                        <span className="px-1 py-0.5 bg-purple-100 text-purple-700 text-[10px] rounded">
-                          {modelInfo.githubLabel}
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium text-gray-900">
+                        {modelInfo?.name || modelId}
+                      </span>
+                      <code className="text-xs text-gray-500">{modelId}</code>
+                      {modelInfo && (
+                        <span className="text-xs text-blue-600 mt-0.5">
+                          alias: {modelInfo.shortAlias}
                         </span>
-                      </div>
+                      )}
+                    </div>
+                    {modelInfo && (
+                      <span className="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded font-mono whitespace-nowrap ml-4">
+                        {modelInfo.githubLabel}
+                      </span>
                     )}
                   </div>
                 );

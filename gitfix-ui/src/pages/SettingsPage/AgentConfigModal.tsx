@@ -10,47 +10,32 @@ interface AgentConfigModalProps {
 
 type AgentType = 'claude' | 'codex' | 'gemini';
 
-// Model info with ID, alias, and GitHub label for display
+// Model info with ID, human-readable name, short alias, and GitHub label
 interface ModelInfo {
   id: string;
-  alias?: string;
-  githubLabel: string;
+  name: string;           // Human-readable name
+  shortAlias: string;     // Short alias like "opus", "sonnet", "haiku"
+  githubLabel: string;    // Format: llm-<agent-alias>-<model-alias>
 }
 
-// Latest Claude models from official documentation
+// Claude models
 const CLAUDE_MODELS: ModelInfo[] = [
-  // Latest models (Claude 4.5)
-  { id: 'claude-sonnet-4-5-20250929', alias: 'claude-sonnet-4-5', githubLabel: 'claude-sonnet-4.5' },
-  { id: 'claude-haiku-4-5-20251001', alias: 'claude-haiku-4-5', githubLabel: 'claude-haiku-4.5' },
-  { id: 'claude-opus-4-5-20251101', alias: 'claude-opus-4-5', githubLabel: 'claude-opus-4.5' },
-  // Legacy models (still available)
-  { id: 'claude-opus-4-1-20250805', alias: 'claude-opus-4-1', githubLabel: 'claude-opus-4.1' },
-  { id: 'claude-sonnet-4-20250514', alias: 'claude-sonnet-4-0', githubLabel: 'claude-sonnet-4' },
-  { id: 'claude-3-7-sonnet-20250219', alias: 'claude-3-7-sonnet-latest', githubLabel: 'claude-3.7-sonnet' },
-  { id: 'claude-opus-4-20250514', alias: 'claude-opus-4-0', githubLabel: 'claude-opus-4' },
-  { id: 'claude-3-5-haiku-20241022', alias: 'claude-3-5-haiku-latest', githubLabel: 'claude-3.5-haiku' },
+  { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', shortAlias: 'sonnet', githubLabel: 'llm-claude-sonnet' },
+  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', shortAlias: 'haiku', githubLabel: 'llm-claude-haiku' },
+  { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', shortAlias: 'opus', githubLabel: 'llm-claude-opus' },
 ];
 
-// Codex models from official documentation
+// Codex (OpenAI) models
 const CODEX_MODELS: ModelInfo[] = [
-  // Recommended models
-  { id: 'gpt-5.1-codex-max', githubLabel: 'gpt-5.1-codex-max' },
-  { id: 'gpt-5.1-codex-mini', githubLabel: 'gpt-5.1-codex-mini' },
-  // Alternative models
-  { id: 'gpt-5.2', githubLabel: 'gpt-5.2' },
-  { id: 'gpt-5.1', githubLabel: 'gpt-5.1' },
-  { id: 'gpt-5.1-codex', githubLabel: 'gpt-5.1-codex' },
-  { id: 'gpt-5-codex', githubLabel: 'gpt-5-codex' },
-  { id: 'gpt-5-codex-mini', githubLabel: 'gpt-5-codex-mini' },
-  { id: 'gpt-5', githubLabel: 'gpt-5' },
+  { id: 'o3', name: 'OpenAI o3', shortAlias: 'o3', githubLabel: 'llm-codex-o3' },
+  { id: 'o4-mini', name: 'OpenAI o4-mini', shortAlias: 'o4-mini', githubLabel: 'llm-codex-o4-mini' },
+  { id: 'gpt-4.1', name: 'GPT-4.1', shortAlias: 'gpt-4.1', githubLabel: 'llm-codex-gpt-4.1' },
 ];
 
-// Gemini models from official documentation
+// Gemini models
 const GEMINI_MODELS: ModelInfo[] = [
-  { id: 'gemini-3-pro-preview', githubLabel: 'gemini-3-pro-preview' },
-  { id: 'gemini-2.5-pro', githubLabel: 'gemini-2.5-pro' },
-  { id: 'gemini-2.5-flash', githubLabel: 'gemini-2.5-flash' },
-  { id: 'gemini-2.5-flash-lite', githubLabel: 'gemini-2.5-flash-lite' },
+  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', shortAlias: 'pro', githubLabel: 'llm-gemini-pro' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', shortAlias: 'flash', githubLabel: 'llm-gemini-flash' },
 ];
 
 const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
@@ -323,29 +308,24 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               {AGENT_MODELS[formData.type].map(model => (
                 <label
                   key={model.id}
-                  className="flex items-start gap-3 py-2 px-2 hover:bg-gray-100 rounded cursor-pointer"
+                  className="flex items-center gap-3 py-2 px-2 hover:bg-gray-100 rounded cursor-pointer"
                 >
                   <input
                     type="checkbox"
                     checked={formData.supportedModels.includes(model.id)}
                     onChange={() => handleModelToggle(model.id)}
-                    className="mt-1 h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+                    className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
                   />
                   <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <code className="text-sm font-medium text-gray-900">{model.id}</code>
-                      {model.alias && (
-                        <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs rounded">
-                          alias: {model.alias}
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-1">
-                      <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 text-xs rounded">
-                        GitHub: {model.githubLabel}
-                      </span>
+                    <div className="text-sm font-medium text-gray-900">{model.name}</div>
+                    <code className="text-xs text-gray-500">{model.id}</code>
+                    <div className="text-xs text-blue-600 mt-0.5">
+                      alias: {model.shortAlias}
                     </div>
                   </div>
+                  <span className="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded font-mono whitespace-nowrap">
+                    {model.githubLabel}
+                  </span>
                 </label>
               ))}
             </div>
