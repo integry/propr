@@ -277,4 +277,35 @@ export const logout = (): void => {
   window.location.href = `${API_BASE_URL}/api/auth/logout`;
 };
 
+// Agent Configuration Types and API
+export interface AgentConfig {
+  id: string;
+  type: 'claude' | 'codex' | 'gemini';
+  alias: string;
+  enabled: boolean;
+  dockerImage: string;
+  configPath: string;
+  supportedModels: string[];
+  defaultModel?: string;
+  envVars?: Record<string, string>;
+}
+
+export const getAgents = async (): Promise<{ agents: AgentConfig[] }> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/agents`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const saveAgents = async (agents: AgentConfig[]): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/agents`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agents }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+};
+
 export * from './plannerApi';
