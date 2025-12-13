@@ -25,11 +25,11 @@ interface ModelInfo {
   githubLabel: string;    // Format: llm-<agent-alias>-<model-alias>
 }
 
-// Claude models
+// Claude models (Opus first as default, then Sonnet, then Haiku)
 const CLAUDE_MODELS: ModelInfo[] = [
+  { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', shortAlias: 'opus', githubLabel: 'llm-claude-opus' },
   { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', shortAlias: 'sonnet', githubLabel: 'llm-claude-sonnet' },
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', shortAlias: 'haiku', githubLabel: 'llm-claude-haiku' },
-  { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', shortAlias: 'opus', githubLabel: 'llm-claude-opus' },
 ];
 
 // Codex (OpenAI) models
@@ -55,21 +55,24 @@ const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
   gemini: GEMINI_MODELS,
 };
 
-const AGENT_DEFAULTS: Record<AgentType, { dockerImage: string; configPath: string; defaultModels: string[] }> = {
+const AGENT_DEFAULTS: Record<AgentType, { dockerImage: string; configPath: string; defaultModels: string[]; defaultAlias: string }> = {
   claude: {
     dockerImage: 'claude-code-processor:latest',
     configPath: '~/.claude',
-    defaultModels: CLAUDE_MODELS.map(m => m.id)
+    defaultModels: CLAUDE_MODELS.map(m => m.id),
+    defaultAlias: 'claude'
   },
   codex: {
     dockerImage: 'codex-cli:latest',
     configPath: '~/.codex',
-    defaultModels: CODEX_MODELS.map(m => m.id)
+    defaultModels: CODEX_MODELS.map(m => m.id),
+    defaultAlias: 'codex'
   },
   gemini: {
     dockerImage: 'gemini-cli:latest',
     configPath: '~/.gemini',
-    defaultModels: GEMINI_MODELS.map(m => m.id)
+    defaultModels: GEMINI_MODELS.map(m => m.id),
+    defaultAlias: 'gemini'
   }
 };
 
@@ -83,7 +86,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
   const [formData, setFormData] = useState<Omit<AgentConfig, 'id'> & { id?: string }>({
     type: 'claude',
-    alias: '',
+    alias: AGENT_DEFAULTS.claude.defaultAlias,
     enabled: true,
     dockerImage: AGENT_DEFAULTS.claude.dockerImage,
     configPath: AGENT_DEFAULTS.claude.configPath,
@@ -110,11 +113,14 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
   const handleTypeChange = (newType: AgentType) => {
     const defaults = AGENT_DEFAULTS[newType];
+    const prevDefaults = AGENT_DEFAULTS[formData.type];
     setFormData(prev => ({
       ...prev,
       type: newType,
+      // Update alias to new default if it was the previous default alias (for new agents)
+      alias: prev.alias === prevDefaults.defaultAlias ? defaults.defaultAlias : prev.alias,
       dockerImage: defaults.dockerImage, // Docker image is predefined and not editable
-      configPath: prev.configPath === AGENT_DEFAULTS[prev.type].configPath ? defaults.configPath : prev.configPath,
+      configPath: prev.configPath === prevDefaults.configPath ? defaults.configPath : prev.configPath,
       supportedModels: defaults.defaultModels,
       defaultModel: defaults.defaultModels[0]
     }));

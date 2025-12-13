@@ -29,10 +29,11 @@ interface ModelInfo {
   githubLabel: string;    // Format: llm-<agent-alias>-<model-alias>
 }
 
+// Claude models (Opus first as default, then Sonnet, then Haiku)
 const CLAUDE_MODELS: ModelInfo[] = [
+  { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', shortAlias: 'opus', githubLabel: 'llm-claude-opus' },
   { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', shortAlias: 'sonnet', githubLabel: 'llm-claude-sonnet' },
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', shortAlias: 'haiku', githubLabel: 'llm-claude-haiku' },
-  { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', shortAlias: 'opus', githubLabel: 'llm-claude-opus' },
 ];
 
 const CODEX_MODELS: ModelInfo[] = [
