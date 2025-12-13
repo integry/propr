@@ -9,14 +9,12 @@ import {
   getPrimaryProcessingLabels,
   updatePrimaryProcessingLabels,
   getAgents,
-  saveAgents,
   AgentConfig
 } from '../../api/gitfixApi';
 import { Settings } from './types';
 import GeneralSettingsSection from './GeneralSettingsSection';
 import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
-import AgentsListSection from './AgentsListSection';
 
 const SettingsPage: React.FC = () => {
   const [settings, setSettings] = useState<Settings>({
@@ -35,12 +33,10 @@ const SettingsPage: React.FC = () => {
   const [keywordsLoading, setKeywordsLoading] = useState<boolean>(true);
   const [prLabelLoading, setPrLabelLoading] = useState<boolean>(true);
   const [primaryLabelsLoading, setPrimaryLabelsLoading] = useState<boolean>(true);
-  const [agentsLoading, setAgentsLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [keywordsSaving, setKeywordsSaving] = useState<boolean>(false);
   const [prLabelSaving, setPrLabelSaving] = useState<boolean>(false);
   const [primaryLabelsSaving, setPrimaryLabelsSaving] = useState<boolean>(false);
-  const [agentsSaving, setAgentsSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [keywordsError, setKeywordsError] = useState<string | null>(null);
@@ -49,8 +45,6 @@ const SettingsPage: React.FC = () => {
   const [prLabelSuccess, setPrLabelSuccess] = useState<string | null>(null);
   const [primaryLabelsError, setPrimaryLabelsError] = useState<string | null>(null);
   const [primaryLabelsSuccess, setPrimaryLabelsSuccess] = useState<string | null>(null);
-  const [agentsError, setAgentsError] = useState<string | null>(null);
-  const [agentsSuccess, setAgentsSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -125,14 +119,10 @@ const SettingsPage: React.FC = () => {
   useEffect(() => {
     const loadAgents = async () => {
       try {
-        setAgentsLoading(true);
-        setAgentsError(null);
         const data = await getAgents();
         setAgents(data.agents || []);
       } catch (err) {
-        setAgentsError((err as Error).message || 'Failed to load agents');
-      } finally {
-        setAgentsLoading(false);
+        console.error('Failed to load agents for model selection:', err);
       }
     };
     loadAgents();
@@ -259,21 +249,6 @@ const SettingsPage: React.FC = () => {
     }
   };
 
-  const handleSaveAgents = async (updatedAgents: AgentConfig[]) => {
-    try {
-      setAgentsSaving(true);
-      setAgentsError(null);
-      setAgentsSuccess(null);
-      await saveAgents(updatedAgents);
-      setAgents(updatedAgents);
-      setAgentsSuccess('Agents updated successfully! The daemon will pick up changes within 5 minutes.');
-    } catch (err) {
-      setAgentsError((err as Error).message || 'Failed to update agents');
-    } finally {
-      setAgentsSaving(false);
-    }
-  };
-
   return (
     <div className="max-w-4xl">
       <h2 className="text-gray-900 text-2xl font-semibold mb-8">Settings</h2>
@@ -297,15 +272,6 @@ const SettingsPage: React.FC = () => {
         success={prLabelSuccess}
         onLabelChange={handleSettingChange}
         onSave={handleSavePrLabel}
-      />
-
-      <AgentsListSection
-        agents={agents}
-        loading={agentsLoading}
-        saving={agentsSaving}
-        error={agentsError}
-        success={agentsSuccess}
-        onSaveAgents={handleSaveAgents}
       />
 
       <TagListSection

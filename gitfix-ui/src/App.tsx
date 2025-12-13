@@ -6,7 +6,7 @@ import RepositoriesPage from './pages/RepositoriesPage'
 import TasksPage from './pages/TasksPage'
 import TaskPlannerPage from './pages/TaskPlannerPage'
 import PlansPage from './pages/PlansPage'
-import AiToolsPage from './pages/AiToolsPage'
+import AiAgentsPage from './pages/AiAgentsPage'
 import SettingsPage from './pages/SettingsPage'
 import LoginPage from './pages/LoginPage'
 import './App.css'
@@ -98,10 +98,10 @@ const App: React.FC = () => {
           }
         />
         <Route
-          path="/ai-tools"
+          path="/ai-agents"
           element={
             <Layout>
-              <AiToolsPage />
+              <AiAgentsPage />
             </Layout>
           }
         />

@@ -137,6 +137,8 @@ function setupRoutes(): void {
   app.post('/api/config/ai-primary-tag', ensureAuthenticated, configRoutes.postAiPrimaryTag);
   app.get('/api/config/primary-processing-labels', ensureAuthenticated, configRoutes.getPrimaryProcessingLabels);
   app.post('/api/config/primary-processing-labels', ensureAuthenticated, configRoutes.postPrimaryProcessingLabels);
+  app.get('/api/config/agents', ensureAuthenticated, configRoutes.getAgents);
+  app.post('/api/config/agents', ensureAuthenticated, configRoutes.postAgents);
 
   app.get('/api/queue/stats', ensureAuthenticated, queueRoutes.getQueueStats);
   app.get('/api/activity', ensureAuthenticated, queueRoutes.getActivity);
