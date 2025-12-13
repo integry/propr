@@ -8,6 +8,13 @@ interface AgentConfigModalProps {
   onSave: (agent: AgentConfig) => void;
 }
 
+// GitHub icon component
+const GitHubIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} fill="currentColor" viewBox="0 0 24 24">
+    <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd" />
+  </svg>
+);
+
 type AgentType = 'claude' | 'codex' | 'gemini';
 
 // Model info with ID, human-readable name, short alias, and GitHub label
@@ -80,7 +87,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     enabled: true,
     dockerImage: AGENT_DEFAULTS.claude.dockerImage,
     configPath: AGENT_DEFAULTS.claude.configPath,
-    supportedModels: AGENT_DEFAULTS.claude.defaultModels
+    supportedModels: AGENT_DEFAULTS.claude.defaultModels,
+    defaultModel: AGENT_DEFAULTS.claude.defaultModels[0]
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -94,7 +102,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         enabled: agent.enabled,
         dockerImage: agent.dockerImage,
         configPath: agent.configPath,
-        supportedModels: agent.supportedModels
+        supportedModels: agent.supportedModels,
+        defaultModel: agent.defaultModel || agent.supportedModels[0]
       });
     }
   }, [agent]);
@@ -106,7 +115,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       type: newType,
       dockerImage: prev.dockerImage === AGENT_DEFAULTS[prev.type].dockerImage ? defaults.dockerImage : prev.dockerImage,
       configPath: prev.configPath === AGENT_DEFAULTS[prev.type].configPath ? defaults.configPath : prev.configPath,
-      supportedModels: defaults.defaultModels
+      supportedModels: defaults.defaultModels,
+      defaultModel: defaults.defaultModels[0]
     }));
   };
 
@@ -116,8 +126,19 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       const newModels = isSelected
         ? prev.supportedModels.filter(m => m !== modelId)
         : [...prev.supportedModels, modelId];
-      return { ...prev, supportedModels: newModels };
+
+      // If deselecting the current default model, pick the first remaining model
+      let newDefaultModel = prev.defaultModel;
+      if (isSelected && prev.defaultModel === modelId) {
+        newDefaultModel = newModels[0] || undefined;
+      }
+
+      return { ...prev, supportedModels: newModels, defaultModel: newDefaultModel };
     });
+  };
+
+  const handleDefaultModelChange = (modelId: string) => {
+    setFormData(prev => ({ ...prev, defaultModel: modelId }));
   };
 
   const handleSelectAllModels = () => {
@@ -176,7 +197,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       enabled: formData.enabled,
       dockerImage: formData.dockerImage,
       configPath: formData.configPath,
-      supportedModels: formData.supportedModels
+      supportedModels: formData.supportedModels,
+      defaultModel: formData.defaultModel
     };
 
     onSave(agentToSave);
@@ -309,33 +331,63 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             <div className={`border rounded-md p-3 bg-gray-50 max-h-64 overflow-y-auto ${
               errors.supportedModels ? 'border-red-500' : 'border-gray-300'
             }`}>
-              {AGENT_MODELS[formData.type].map(model => (
-                <label
-                  key={model.id}
-                  className="flex items-center gap-3 py-2 px-2 hover:bg-gray-100 rounded cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={formData.supportedModels.includes(model.id)}
-                    onChange={() => handleModelToggle(model.id)}
-                    className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-gray-900">{model.name}</div>
-                    <code className="text-xs text-gray-500">{model.id}</code>
-                    <div className="text-xs text-blue-600 mt-0.5">
-                      alias: {model.shortAlias}
+              {AGENT_MODELS[formData.type].map(model => {
+                const isSupported = formData.supportedModels.includes(model.id);
+                const isDefault = formData.defaultModel === model.id;
+                const agentDefaultLabel = formData.alias ? `llm-${formData.alias}` : null;
+
+                return (
+                  <div
+                    key={model.id}
+                    className="flex items-center gap-3 py-2 px-2 hover:bg-gray-100 rounded"
+                  >
+                    {/* Checkbox for enabling/disabling model */}
+                    <input
+                      type="checkbox"
+                      checked={isSupported}
+                      onChange={() => handleModelToggle(model.id)}
+                      className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 cursor-pointer"
+                    />
+
+                    {/* Radio for default model selection */}
+                    <input
+                      type="radio"
+                      name="defaultModel"
+                      checked={isDefault}
+                      disabled={!isSupported}
+                      onChange={() => handleDefaultModelChange(model.id)}
+                      className="h-4 w-4 text-primary-600 border-gray-300 focus:ring-primary-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      title={isSupported ? 'Set as default model' : 'Enable this model to set as default'}
+                    />
+
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-gray-900">{model.name}</div>
+                      <code className="text-xs text-gray-500">{model.id}</code>
+                      <div className="text-xs text-blue-600 mt-0.5">
+                        alias: {model.shortAlias}
+                      </div>
+                    </div>
+
+                    {/* GitHub labels column */}
+                    <div className="flex flex-col gap-1 items-end">
+                      <span className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded font-mono whitespace-nowrap">
+                        <GitHubIcon className="w-3 h-3" />
+                        {model.githubLabel}
+                      </span>
+                      {isDefault && agentDefaultLabel && (
+                        <span className="inline-flex items-center gap-1 px-2 py-1 bg-teal-100 text-teal-700 text-xs rounded font-mono whitespace-nowrap">
+                          <GitHubIcon className="w-3 h-3" />
+                          {agentDefaultLabel}
+                        </span>
+                      )}
                     </div>
                   </div>
-                  <span className="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded font-mono whitespace-nowrap">
-                    {model.githubLabel}
-                  </span>
-                </label>
-              ))}
+                );
+              })}
             </div>
             {errors.supportedModels && <p className="mt-1 text-sm text-red-600">{errors.supportedModels}</p>}
             <p className="mt-1 text-sm text-gray-600">
-              Select the models this agent supports. All models are selected by default.
+              Use checkboxes to enable models. Use radio buttons to select the default model for this agent.
             </p>
           </div>
 
