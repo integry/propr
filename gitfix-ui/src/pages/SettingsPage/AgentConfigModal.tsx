@@ -27,15 +27,19 @@ const CLAUDE_MODELS: ModelInfo[] = [
 
 // Codex (OpenAI) models
 const CODEX_MODELS: ModelInfo[] = [
+  { id: 'gpt-5', name: 'GPT-5', shortAlias: 'gpt5', githubLabel: 'llm-codex-gpt5' },
+  { id: 'gpt-5-mini', name: 'GPT-5 Mini', shortAlias: 'gpt5-mini', githubLabel: 'llm-codex-gpt5-mini' },
+  { id: 'gpt-5-codex', name: 'GPT-5 Codex', shortAlias: 'codex', githubLabel: 'llm-codex-codex' },
   { id: 'o3', name: 'OpenAI o3', shortAlias: 'o3', githubLabel: 'llm-codex-o3' },
   { id: 'o4-mini', name: 'OpenAI o4-mini', shortAlias: 'o4-mini', githubLabel: 'llm-codex-o4-mini' },
-  { id: 'gpt-4.1', name: 'GPT-4.1', shortAlias: 'gpt-4.1', githubLabel: 'llm-codex-gpt-4.1' },
 ];
 
 // Gemini models
 const GEMINI_MODELS: ModelInfo[] = [
+  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview', shortAlias: 'pro-preview', githubLabel: 'llm-gemini-pro-preview' },
   { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', shortAlias: 'pro', githubLabel: 'llm-gemini-pro' },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', shortAlias: 'flash', githubLabel: 'llm-gemini-flash' },
+  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', shortAlias: 'flash-lite', githubLabel: 'llm-gemini-flash-lite' },
 ];
 
 const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
