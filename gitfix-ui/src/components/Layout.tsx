@@ -62,7 +62,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   }, []);
 
   return (
-    <div className="flex min-h-screen bg-light-100">
+    <div className={`flex min-h-screen ${location.pathname === '/ai-tools' ? 'bg-pink-100' : 'bg-light-100'}`}>
       {/* Sidebar */}
       <aside className="w-60 bg-white py-6 border-r border-gray-200 shadow-sm">
         <div className="px-4 mb-8">
