@@ -23,7 +23,7 @@ import { getDefaultModel } from '@gitfix/core';
 import { loadPrLabel, loadPrimaryProcessingLabels } from '@gitfix/core';
 import { filterCommentByAuthor } from '@gitfix/core';
 import { AgentRegistry, generateClaudePrompt } from '@gitfix/core';
-import type { Agent, AgentExecutionResult } from '@gitfix/core';
+import type { AgentExecutionResult } from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
