@@ -127,7 +127,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           )}
         </header>
 
-        <main className="flex-1 p-8 overflow-y-auto">
+        <main className={`flex-1 p-8 overflow-y-auto ${location.pathname === '/ai-tools' ? 'bg-pink-100' : ''}`}>
           {children}
         </main>
       </div>
