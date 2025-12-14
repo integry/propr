@@ -10,6 +10,7 @@ export interface IssueJobData {
     repoName: string;
     number: number;
     repository?: string;
+    agentAlias?: string;       // Agent to use (e.g., 'claude', 'gemini', 'codex')
     modelName?: string;
     correlationId?: string;
     triggeringLabel?: string;

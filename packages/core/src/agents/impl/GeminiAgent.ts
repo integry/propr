@@ -340,17 +340,19 @@ export class GeminiAgent implements Agent {
             ...envVars,
             '-w', '/home/node/workspace',
             dockerImage,
-            // Gemini CLI - runs as interactive TUI, we pipe prompt via stdin
-            'gemini'
+            // Gemini CLI - runs with --yolo to auto-approve tool calls, prompt piped via stdin
+            'gemini',
+            '--yolo'
         ];
 
-        // Add model selection if supported (Gemini CLI might use different mechanism)
+        // Add model selection via -m flag
         if (modelName) {
+            dockerArgs.push('-m', modelName);
             logger.info({
                 issueNumber,
                 requestedModel: modelName,
                 agentAlias: this.config.alias
-            }, 'Model specified for Gemini agent (note: model selection may need manual configuration in Gemini settings)');
+            }, 'Model specified for Gemini agent');
         } else {
             logger.debug({
                 issueNumber,

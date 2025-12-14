@@ -13,7 +13,7 @@ import type { WorktreeInfo, CommitResult } from '@gitfix/core';
 import { addModelSpecificDelay } from '@gitfix/core';
 import { safeAddLabel } from '@gitfix/core';
 import { ensureGitRepository } from '@gitfix/core';
-import { executeClaudeCode, UsageLimitError } from '@gitfix/core';
+import { UsageLimitError } from '@gitfix/core';
 import type { ClaudeCodeResponse } from '@gitfix/core';
 import type { ClaudeResult } from '@gitfix/core';
 import { recordLLMMetrics } from '@gitfix/core';
@@ -22,6 +22,8 @@ import type { RepoValidationResult } from '@gitfix/core';
 import { getDefaultModel } from '@gitfix/core';
 import { loadPrLabel, loadPrimaryProcessingLabels } from '@gitfix/core';
 import { filterCommentByAuthor } from '@gitfix/core';
+import { AgentRegistry, generateClaudePrompt } from '@gitfix/core';
+import type { Agent, AgentExecutionResult } from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
@@ -51,6 +53,7 @@ interface JobContext {
     correlationId: string;
     correlatedLogger: Logger;
     stateManager: WorkerStateManager;
+    agentAlias: string;
     modelName: string;
     taskId: string;
     AI_PROCESSING_TAG: string;
@@ -128,11 +131,21 @@ async function initializeJobContext(job: Job<IssueJobData>): Promise<JobContext>
 
     const primaryProcessingLabels = await getPrimaryProcessingLabels();
     const triggeringLabel = issueRef.triggeringLabel || primaryProcessingLabels[0] || 'AI';
-    const modelName = issueRef.modelName || DEFAULT_MODEL_NAME;
-    const taskId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${modelName}`;
+
+    // Get agent alias from job data, or use default agent
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+    const defaultAgent = registry.getDefaultAgent();
+    const agentAlias = issueRef.agentAlias || defaultAgent?.config.alias || 'default';
+
+    // Get model from job data, or use agent's default model
+    const agent = registry.getAgentByAlias(agentAlias);
+    const modelName = issueRef.modelName || agent?.config.defaultModel || DEFAULT_MODEL_NAME;
+
+    const taskId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentAlias}-${modelName}`;
 
     return {
-        jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId,
+        jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, agentAlias, modelName, taskId,
         AI_PROCESSING_TAG: `${triggeringLabel}-processing`,
         AI_DONE_TAG: `${triggeringLabel}-done`,
         AI_PRIMARY_TAG: triggeringLabel,
@@ -183,43 +196,106 @@ async function fetchIssueComments(octokit: ExecutionParams['octokit'], issueRef:
     }
 }
 
-function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
+function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
     return {
-        model: response.model,
+        model: response.modelUsed,
         success: response.success,
-        executionTime: response.executionTime,
+        executionTime: response.executionTimeMs,
         sessionId: response.sessionId,
         conversationId: response.conversationId,
-        finalResult: response.finalResult,
-        conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
+        finalResult: response.summary ? { type: 'result', result: response.summary } : null,
+        conversationLog: undefined,
         error: response.error
     };
 }
 
-async function executeClaudeAndRecordMetrics(executionParams: ExecutionParams, context: JobContext): Promise<ClaudeCodeResponse> {
-    const { worktreeInfo, issueRef, githubToken, currentIssueData, issueComments } = executionParams;
-    const { taskId, modelName, stateManager, correlatedLogger, correlationId } = context;
+/**
+ * Converts AgentExecutionResult to ClaudeCodeResponse for backwards compatibility
+ * with existing post-processing code.
+ */
+function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeResponse {
+    return {
+        success: result.success,
+        model: result.modelUsed,
+        executionTime: result.executionTimeMs,
+        output: null,
+        sessionId: result.sessionId || null,
+        conversationId: result.conversationId,
+        finalResult: result.summary ? { type: 'result', result: result.summary } : null,
+        rawOutput: result.rawOutput,
+        summary: result.summary || null,
+        logs: result.logs,
+        exitCode: result.exitCode ?? null,
+        error: result.error,
+        modifiedFiles: result.modifiedFiles,
+        commitMessage: result.commitMessage || null
+    };
+}
 
-    const claudeResult = await executeClaudeCode({
+async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, context: JobContext): Promise<ClaudeCodeResponse> {
+    const { worktreeInfo, issueRef, githubToken, currentIssueData, issueComments } = executionParams;
+    const { taskId, agentAlias, modelName, stateManager, correlatedLogger, correlationId } = context;
+
+    // Get the agent from registry
+    const registry = AgentRegistry.getInstance();
+    const agent = registry.getAgentByAlias(agentAlias);
+
+    if (!agent) {
+        throw new Error(`Agent not found: ${agentAlias}`);
+    }
+
+    correlatedLogger.info({
+        agentAlias,
+        agentType: agent.config.type,
+        modelName,
+        issueNumber: issueRef.number
+    }, 'Executing task with agent');
+
+    // Build prompt for the agent
+    const prompt = generateClaudePrompt(
+        { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
+        worktreeInfo.branchName,
+        modelName,
+        {
+            title: currentIssueData.data.title,
+            body: currentIssueData.data.body || undefined,
+            comments: issueComments,
+            labels: currentIssueData.data.labels,
+            created_at: currentIssueData.data.created_at,
+            user: currentIssueData.data.user
+        }
+    );
+
+    // Execute task via agent abstraction
+    const agentResult = await agent.executeTask({
         worktreePath: worktreeInfo.worktreePath,
         issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-        githubToken: githubToken.token, branchName: worktreeInfo.branchName, modelName,
-        issueDetails: {
-            title: currentIssueData.data.title, body: currentIssueData.data.body || undefined,
-            comments: issueComments, labels: currentIssueData.data.labels,
-            created_at: currentIssueData.data.created_at, user: currentIssueData.data.user
-        },
+        prompt,
+        model: modelName,
+        githubToken: githubToken.token,
+        branchName: worktreeInfo.branchName,
         onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
         onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger)
     });
 
+    // Convert to ClaudeCodeResponse for backwards compatibility
+    const claudeResult = agentResultToClaudeResponse(agentResult);
+
     await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
-        reason: 'Claude execution completed',
+        reason: `${agent.config.type} agent execution completed`,
         claudeResult: { success: claudeResult.success, sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, executionTime: claudeResult.executionTime },
         historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model }
     });
 
-    await recordLLMMetrics(toClaudeResult(claudeResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId });
+    await recordLLMMetrics(toClaudeResult(agentResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId });
+
+    correlatedLogger.info({
+        agentAlias,
+        success: agentResult.success,
+        executionTimeMs: agentResult.executionTimeMs,
+        modelUsed: agentResult.modelUsed
+    }, 'Agent execution completed');
+
     return claudeResult;
 }
 
@@ -232,7 +308,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     }
 
     const context = await initializeJobContext(job);
-    const { jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
+    const { jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, agentAlias, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
 
     await addModelSpecificDelay(modelName);
 
@@ -286,14 +362,14 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
 
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-                body: `🤖 AI processing has started for this issue using **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main'}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\``,
+                body: `🤖 AI processing has started for this issue using **${agentAlias}** agent with **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Agent: \`${agentAlias}\`\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main'}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\``,
             });
 
             await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
             await job.updateProgress(80);
 
             const issueComments = await fetchIssueComments(octokit, issueRef, correlatedLogger);
-            claudeResult = await executeClaudeAndRecordMetrics({ octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments }, context);
+            claudeResult = await executeAgentAndRecordMetrics({ octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments }, context);
 
             const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId, correlatedLogger });
             commitResult = postProcessResult.commitResult;
