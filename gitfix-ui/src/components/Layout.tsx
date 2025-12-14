@@ -35,6 +35,10 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   const isActive = (path: string): boolean => location.pathname === path;
 
+  // Change background for AI Tools page as per request
+  const isAiToolsPage = location.pathname === '/ai-tools';
+  const bgClass = isAiToolsPage ? 'bg-pink-100' : 'bg-light-100';
+
   useEffect(() => {
     const fetchStats = async () => {
       try {
@@ -62,7 +66,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   }, []);
 
   return (
-    <div className="flex min-h-screen bg-light-100">
+    <div className={`flex min-h-screen ${bgClass}`}>
       {/* Sidebar */}
       <aside className="w-60 bg-white py-6 border-r border-gray-200 shadow-sm">
         <div className="px-4 mb-8">
