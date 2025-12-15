@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { ChevronRight } from 'lucide-react';
 import { getTasks, getAvailableGithubRepos } from '../api/gitfixApi';
 
 interface Task {
@@ -29,6 +30,14 @@ interface LoadConfig {
   setLoadingState?: boolean;
 }
 
+interface TaskGroup {
+  key: string;
+  repoOwner: string;
+  repoName: string;
+  issueNumber?: number;
+  tasks: Task[]; // Sorted newest first
+}
+
 const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -42,6 +51,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
   const [totalTasks, setTotalTasks] = useState<number>(0);
   const [currentPage, setCurrentPage] = useState<number>(0);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
   const tasksPerPage = limit;
 
   const navigate = useNavigate();
@@ -66,7 +77,10 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
       try {
         setLoading(loadConfig?.setLoadingState ?? true);
         const offset = currentPage * tasksPerPage;
-        const data = await getTasks(filter, tasksPerPage, offset, repoFilter);
+        // Fetch more tasks if we are doing grouping, as grouping reduces visible items
+        // But for now respecting the limit passed to component to avoid breaking pagination logic entirely
+        // Ideally pagination should be group-aware or fetch more to fill the page
+        const data = await getTasks(filter, tasksPerPage * 2, offset, repoFilter); 
         setTasks(data.tasks || []);
         setTotalTasks(data.total || 0);
       } catch (err) {
@@ -82,50 +96,125 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     return () => clearInterval(interval);
   }, [filter, tasksPerPage, currentPage, repoFilter]);
 
-  const getStatusColor = (status: string): string => {
+  const groupedTasks = useMemo(() => {
+    const groups: Record<string, TaskGroup> = {};
+
+    tasks.forEach(task => {
+      // robustly handle owner/name splitting
+      let owner = task.repositoryOwner;
+      let name = task.repositoryName;
+
+      if (!owner || !name) {
+        const parts = (task.repository || 'unknown/unknown').split('/');
+        owner = parts[0] || 'unknown';
+        name = parts[1] || 'unknown';
+      }
+
+      const key = task.issueNumber 
+        ? `${owner}/${name}-${task.issueNumber}` 
+        : task.id;
+
+      if (!groups[key]) {
+        groups[key] = {
+          key,
+          repoOwner: owner,
+          repoName: name,
+          issueNumber: task.issueNumber,
+          tasks: []
+        };
+      }
+      groups[key].tasks.push(task);
+    });
+
+    return Object.values(groups).sort((a, b) => {
+      // Sort groups by the date of their most recent task
+      const dateA = new Date(a.tasks[0].createdAt).getTime();
+      const dateB = new Date(b.tasks[0].createdAt).getTime();
+      return dateB - dateA;
+    });
+  }, [tasks]);
+
+  const toggleGroup = (groupKey: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) {
+        next.delete(groupKey);
+      } else {
+        next.add(groupKey);
+      }
+      return next;
+    });
+  };
+
+  const getStatusPill = (status: string) => {
+    const baseClasses = "px-2 py-0.5 text-xs font-medium rounded-full inline-flex items-center gap-1.5";
+    
     switch (status) {
       case 'completed':
-        return '#10b981';
+        return (
+          <span className={`${baseClasses} bg-green-50 text-green-700 border border-green-200`}>
+             <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+             Completed
+          </span>
+        );
       case 'failed':
-        return '#ef4444';
+        return (
+          <span className={`${baseClasses} bg-red-50 text-red-700 border border-red-200`}>
+             <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+             Failed
+          </span>
+        );
       case 'active':
       case 'claude_execution':
       case 'processing':
-        return '#3b82f6';
+        return (
+          <span className={`${baseClasses} bg-blue-50 text-blue-700 border border-blue-200`}>
+             <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+             Implementing
+          </span>
+        );
       case 'waiting':
       case 'pending':
-        return '#8b5cf6';
+        return (
+          <span className={`${baseClasses} bg-purple-50 text-purple-700 border border-purple-200`}>
+             <span className="w-1.5 h-1.5 rounded-full bg-purple-500"></span>
+             Pending
+          </span>
+        );
       default:
-        return '#6b7280';
+        return (
+          <span className={`${baseClasses} bg-gray-100 text-gray-700 border border-gray-200`}>
+             <span className="w-1.5 h-1.5 rounded-full bg-gray-500"></span>
+             {status}
+          </span>
+        );
     }
   };
 
-  const getStatusDotClass = (status: string): string => {
-    switch (status) {
-      case 'completed':
-        return 'bg-green-500';
-      case 'failed':
-        return 'bg-red-500';
-      case 'active':
-      case 'claude_execution':
-      case 'processing':
-        return 'bg-blue-500 animate-pulse';
-      case 'waiting':
-      case 'pending':
-        return 'bg-purple-500';
-      default:
-        return 'bg-gray-500';
-    }
-  };
-
-  const formatDate = (dateString: string | undefined): string => {
-    if (!dateString) return 'N/A';
+  const formatRelativeTime = (dateString: string | undefined): string => {
+    if (!dateString) return '';
     const date = new Date(dateString);
-    return date.toLocaleString();
+    const now = new Date();
+    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+    
+    if (diffInSeconds < 60) return 'Just now';
+    
+    // Simple logic to avoid Intl dependency issues if environment is strict, though Intl is standard now
+    const minutes = Math.floor(diffInSeconds / 60);
+    if (minutes < 60) return `${minutes} min${minutes > 1 ? 's' : ''} ago`;
+    
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} hr${hours > 1 ? 's' : ''} ago`;
+    
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days} day${days > 1 ? 's' : ''} ago`;
+    
+    return date.toLocaleDateString();
   };
 
-  const formatDuration = (startTime: string | undefined, endTime: string | undefined, status: string): string => {
-    if (!startTime) return 'N/A';
+  const formatDuration = (startTime: string | undefined, endTime: string | undefined): string => {
+    if (!startTime) return '--';
     
     const end = endTime ? new Date(endTime) : new Date();
     const duration = end.getTime() - new Date(startTime).getTime();
@@ -133,17 +222,15 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     const minutes = Math.floor(duration / 60000);
     const seconds = Math.floor((duration % 60000) / 1000);
     
-    const isActive = ['active', 'claude_execution', 'processing'].includes(status);
-    const suffix = isActive ? ' (running)' : '';
-    return `${minutes}m ${seconds}s${suffix}`;
+    return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
   };
 
   const handleRowClick = (taskId: string) => {
     navigate(`/tasks/${taskId}`);
   };
 
-  if (loading && tasks.length === 0) return <div className="text-gray-500">Loading tasks...</div>;
-  if (error) return <div className="text-red-600">Error loading tasks: {error}</div>;
+  if (loading && tasks.length === 0) return <div className="text-gray-500 p-4">Loading tasks...</div>;
+  if (error) return <div className="text-red-600 p-4">Error loading tasks: {error}</div>;
 
   return (
     <div>
@@ -156,7 +243,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
                 value={repoFilter} 
                 onChange={(e) => { setRepoFilter(e.target.value); setCurrentPage(0); }}
                 disabled={reposLoading}
-                className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer disabled:opacity-50"
+                className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer disabled:opacity-50 text-sm"
               >
                 {reposLoading ? (
                   <option value="all">Loading repos...</option>
@@ -172,7 +259,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
               <select 
                 value={filter} 
                 onChange={(e) => { setFilter(e.target.value); setCurrentPage(0); }}
-                className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer"
+                className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 cursor-pointer text-sm"
               >
                 <option value="all">All Tasks</option>
                 <option value="active">Active</option>
@@ -183,7 +270,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
             </>
           )}
           {showViewAll && (
-            <Link to="/tasks" className="text-primary-600 hover:text-primary-700 transition-colors">
+            <Link to="/tasks" className="text-primary-600 hover:text-primary-700 transition-colors text-sm font-medium">
               View All Tasks
             </Link>
           )}
@@ -196,76 +283,149 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         <div className="overflow-x-auto bg-white border border-gray-200 rounded-lg shadow-sm">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-gray-200">
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Repository</th>
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Issue/Task</th>
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Created</th>
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Duration</th>
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+              <tr className="border-b border-gray-200 bg-gray-50/50">
+                <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-48">Repository</th>
+                <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Issue/Task</th>
+                <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-32">Status</th>
+                <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-32">Created</th>
+                <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-24">Duration</th>
+                <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-16"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
-              {tasks.map((task, index) => (
-                <tr 
-                  key={task.id}
-                  className={`hover:bg-gray-50 transition-colors cursor-pointer ${
-                    index % 2 === 0 ? 'bg-white' : 'bg-light-100/50'
-                  }`}
-                  onClick={() => handleRowClick(task.id)}
-                >
-                  <td className="py-4 px-4 text-sm text-gray-600 truncate">
-                    {task.repository || 'Unknown'}
-                  </td>
-                  <td className="py-4 px-4 max-w-xs">
-                    <div className="font-medium text-gray-800">
-                      {task.id.startsWith('pr-comments-batch') ? 
-                        `PR #${task.issueNumber || 'N/A'} Comments` : 
-                        task.issueNumber ? `Issue #${task.issueNumber}` : 'Task'
-                      }
-                    </div>
-                    {task.title && (
-                      <div className="text-sm text-gray-500 mt-1 truncate">
-                        {task.title.replace(/^(New Issue: |Followup: )/, '')}
-                      </div>
+            <tbody className="divide-y divide-gray-100">
+              {groupedTasks.map((group) => {
+                const parentTask = group.tasks[0];
+                const allChildren = group.tasks.slice(1);
+                
+                const isExpanded = expandedGroups.has(group.key);
+                
+                // The "Last 3" Rule
+                // If group has many items (e.g. > 5 total, so > 4 children), collapse by default
+                // show collapse trigger if children > 3
+                const shouldCollapse = allChildren.length > 3;
+                
+                let visibleChildren = allChildren;
+                let hiddenCount = 0;
+
+                if (shouldCollapse && !isExpanded) {
+                  visibleChildren = allChildren.slice(0, 3);
+                  hiddenCount = allChildren.length - 3;
+                }
+
+                return (
+                  <React.Fragment key={group.key}>
+                    {/* PARENT ROW */}
+                    <tr 
+                      className="hover:bg-gray-50 transition-colors cursor-pointer group bg-white"
+                      onClick={() => handleRowClick(parentTask.id)}
+                    >
+                      <td className="py-3 px-4 align-top">
+                        <div className="flex flex-col">
+                          <span className="text-xs text-gray-400 font-normal">{group.repoOwner}</span>
+                          <span className="text-sm font-bold text-gray-800">{group.repoName}</span>
+                        </div>
+                      </td>
+                      <td className="py-3 px-4 align-top">
+                        <div className="flex flex-col gap-0.5">
+                          {group.issueNumber ? (
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-bold text-primary-600 hover:text-primary-700">
+                                {parentTask.id.startsWith('pr-comments-batch') ? `PR #${group.issueNumber} (Batch)` : `PR #${group.issueNumber}`}
+                              </span>
+                            </div>
+                          ) : (
+                             <span className="text-sm font-bold text-gray-700">Task {parentTask.id.substring(0, 8)}</span>
+                          )}
+                          <div className="text-sm text-gray-900 font-medium">
+                             {parentTask.title || parentTask.subtitle || 'No title'}
+                          </div>
+                          {(parentTask.title && parentTask.subtitle) && (
+                            <div className="text-xs text-gray-500 mt-0.5 line-clamp-1">{parentTask.subtitle}</div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4 align-top">
+                        {getStatusPill(parentTask.status)}
+                      </td>
+                      <td className="py-3 px-4 align-top text-sm text-gray-500 whitespace-nowrap" title={new Date(parentTask.createdAt).toLocaleString()}>
+                        {formatRelativeTime(parentTask.createdAt)}
+                      </td>
+                      <td className="py-3 px-4 align-top text-sm text-gray-600 font-mono whitespace-nowrap">
+                        {formatDuration(parentTask.processedAt || parentTask.createdAt, parentTask.completedAt)}
+                      </td>
+                      <td className="py-3 px-4 align-top text-right">
+                        <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors">
+                          <ChevronRight size={16} />
+                        </button>
+                      </td>
+                    </tr>
+
+                    {/* COLLAPSE TRIGGER ROW */}
+                    {hiddenCount > 0 && (
+                      <tr className="bg-gray-50/30">
+                        <td className="p-0 border-r border-transparent">
+                           <div className="h-full w-full border-r-2 border-transparent"></div>
+                        </td>
+                        <td colSpan={5} className="py-1 px-4 text-xs">
+                           <button 
+                             onClick={(e) => toggleGroup(group.key, e)}
+                             className="flex items-center gap-1 text-primary-600 hover:text-primary-700 font-medium py-1 px-2 hover:bg-blue-50 rounded transition-colors ml-6"
+                           >
+                             <span className="text-lg leading-none opacity-40">↳</span>
+                             Show {hiddenCount} older updates...
+                           </button>
+                        </td>
+                      </tr>
                     )}
-                    {task.subtitle && (
-                      <div className="text-sm text-gray-400 mt-1 truncate">
-                        {task.subtitle}
-                      </div>
-                    )}
-                  </td>
-                  <td className="py-4 px-4">
-                    <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${getStatusDotClass(task.status)}`}></span>
-                      <span className="text-sm font-medium capitalize" style={{ color: getStatusColor(task.status) }}>
-                        {task.status === 'claude_execution' ? 'Implementing' : task.status}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="py-4 px-4 text-sm text-gray-600">
-                    {formatDate(task.createdAt)}
-                  </td>
-                  <td className="py-4 px-4 text-sm text-gray-600">
-                    {formatDuration(task.processedAt || task.createdAt, task.completedAt, task.status)}
-                  </td>
-                  <td className="py-4 px-4">
-                    <button className="px-3 py-1.5 bg-white border border-primary-600 text-primary-600 hover:bg-primary-600 hover:text-white text-sm rounded-md transition-colors">
-                      Details
-                    </button>
-                  </td>
-                </tr>
-              ))}
+
+                    {/* CHILDREN ROWS */}
+                    {visibleChildren.map((child) => {
+                      return (
+                        <tr 
+                          key={child.id}
+                          className="hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30"
+                          onClick={() => handleRowClick(child.id)}
+                        >
+                          <td className="py-2 px-4 align-top relative">
+                             {/* Visual connector line placeholder if we wanted one spanning rows */}
+                          </td>
+                          <td className="py-2 px-4 align-top">
+                            <div className="flex items-start gap-2 pl-2">
+                               <span className="text-gray-300 font-light select-none">└─</span>
+                               <span className="text-sm text-gray-600 line-clamp-1">{child.title || child.subtitle || 'Update'}</span>
+                            </div>
+                          </td>
+                          <td className="py-2 px-4 align-top">
+                            {getStatusPill(child.status)}
+                          </td>
+                          <td className="py-2 px-4 align-top text-sm text-gray-500 whitespace-nowrap" title={new Date(child.createdAt).toLocaleString()}>
+                            {formatRelativeTime(child.createdAt)}
+                          </td>
+                          <td className="py-2 px-4 align-top text-sm text-gray-600 font-mono whitespace-nowrap">
+                            {formatDuration(child.processedAt || child.createdAt, child.completedAt)}
+                          </td>
+                          <td className="py-2 px-4 align-top text-right">
+                             <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors">
+                                <ChevronRight size={16} />
+                             </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
 
+      {/* Pagination Controls - Simplified for now as grouping complicates total count logic */}
       {!hideFilters && totalTasks > tasksPerPage && (
-        <div className="flex justify-between items-center mt-4">
+        <div className="flex justify-between items-center mt-4 px-2">
           <div>
-            <span className="text-sm text-gray-600">
-              Showing {currentPage * tasksPerPage + 1} - {Math.min((currentPage + 1) * tasksPerPage, totalTasks)} of {totalTasks} tasks
+            <span className="text-sm text-gray-500">
+               Note: Tasks are grouped by context.
             </span>
           </div>
           <div className="flex gap-2">
