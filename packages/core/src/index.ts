@@ -22,7 +22,7 @@ export { getGitHubInstallationToken, getAuthenticatedOctokit } from './auth/gith
 export type { PaginatedOctokitInstance } from './auth/githubAuth.js';
 
 export * from './config/configRepoManager.js';
-export { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS, resolveLlmLabel } from './config/modelAliases.js';
+export { resolveModelAlias, getDefaultModel, getModelShortName, MODEL_ALIASES, MODEL_SHORT_NAMES, DEFAULT_MODEL_ALIAS, resolveLlmLabel } from './config/modelAliases.js';
 export type { LlmLabelResolution } from './config/modelAliases.js';
 export { getEffectiveTokenLimit, DEFAULT_CONTEXT_LEVEL } from './config/modelLimits.js';
 export type { ContextLevel } from './config/modelLimits.js';

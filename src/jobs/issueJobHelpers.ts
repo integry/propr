@@ -1,17 +1,17 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { ErrorCategories } from '@gitfix/core';
-import { safeRemoveLabel } from '@gitfix/core';
-import { generateCompletionComment } from '@gitfix/core';
-import { recordLLMMetrics } from '@gitfix/core';
-import type { ClaudeResult } from '@gitfix/core';
-import { formatResetTime } from '@gitfix/core';
-import { issueQueue, type IssueJobData, type JobResult } from '@gitfix/core';
-import { db, isEnabled as isDbEnabled } from '@gitfix/core';
-import type { WorkerStateManager } from '@gitfix/core';
-import type { ClaudeCodeResponse } from '@gitfix/core';
-import type { WorktreeInfo, CommitResult } from '@gitfix/core';
-import type { RepoValidationResult } from '@gitfix/core';
+import {
+    ErrorCategories,
+    safeRemoveLabel,
+    generateCompletionComment,
+    recordLLMMetrics,
+    formatResetTime,
+    issueQueue,
+    db,
+    isEnabled as isDbEnabled,
+    getModelShortName
+} from '@gitfix/core';
+import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, CommitResult, RepoValidationResult } from '@gitfix/core';
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -31,29 +31,8 @@ export type RepoValidation = RepoValidationResult;
 export const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || String(5 * 60 * 1000), 10);
 export const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || String(2 * 60 * 1000), 10);
 
-// Model ID to short name mapping for PR titles
-// This mirrors the UI constants in AgentsListSection.tsx
-const MODEL_SHORT_NAMES: Record<string, string> = {
-    // Claude models
-    'claude-opus-4-5-20251101': 'Claude Opus',
-    'claude-sonnet-4-5-20250929': 'Claude Sonnet',
-    'claude-haiku-4-5-20251001': 'Claude Haiku',
-    // OpenAI/Codex models
-    'gpt-5': 'GPT-5',
-    'gpt-5-mini': 'GPT-5 Mini',
-    'gpt-5-codex': 'Codex',
-    'o3': 'o3',
-    'o4-mini': 'o4-mini',
-    // Gemini models
-    'gemini-3-pro-preview': 'Gemini 3 Preview',
-    'gemini-2.5-pro': 'Gemini Pro',
-    'gemini-2.5-flash': 'Gemini Flash',
-    'gemini-2.5-flash-lite': 'Flash Lite',
-};
-
-export function getModelShortName(modelId: string): string {
-    return MODEL_SHORT_NAMES[modelId] || 'AI';
-}
+// Re-export getModelShortName for consumers that import from this file
+export { getModelShortName };
 
 export interface UsageLimitError extends Error {
     resetTimestamp?: number;
