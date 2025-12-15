@@ -27,6 +27,7 @@
     "dashboard:dev": "tsx watch packages/dashboard/server.ts",
     "config:repos": "tsx scripts/list-repo-configs.ts",
     "fix-labels": "tsx scripts/fix-issue-labels.ts",
+    "docs:update": "tsx scripts/update-library-docs.ts",
     "db:migrate": "npx knex migrate:latest --knexfile ./knexfile.ts",
     "compose:up": "./scripts/compose.sh up",
     "compose:dev": "./scripts/compose.sh dev",
@@ -77,10 +78,13 @@
     "@types/passport": "^1.0.16",
     "@types/passport-github2": "^1.2.9",
     "@types/pg": "^8.15.6",
+    "@types/turndown": "^5.0.6",
     "@types/uuid": "^10.0.0",
+    "cheerio": "^1.1.2",
     "eslint": "^9.39.1",
     "globals": "^16.3.0",
     "tsx": "^4.21.0",
+    "turndown": "^7.2.2",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.48.1"
   }
