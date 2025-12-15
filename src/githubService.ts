@@ -122,7 +122,8 @@ export async function completePostProcessing(options: CompletePostProcessingOpti
             branchName
         }, 'Checking if PR already exists for branch...');
 
-        const prContext: PRContext = { owner, repoName, branchName, baseBranch, issueNumber, issueTitle, commitMessage, worktreePath, repoUrl, authToken };
+        const modelName = claudeResult.model;
+        const prContext: PRContext = { owner, repoName, branchName, baseBranch, issueNumber, issueTitle, commitMessage, worktreePath, repoUrl, authToken, modelName };
         try {
             const octokit = await getAuthenticatedOctokit();
             const existingPRs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {

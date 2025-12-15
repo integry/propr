@@ -13,11 +13,13 @@ export interface ClaudeResult {
         subtype?: string | null;
     };
     sessionId?: string;
+    conversationId?: string;
     summary?: string;
     conversationLog?: ConversationLogEntry[];
     modifiedFiles?: string[];
     rawOutput?: string;
     exitCode?: number | string;
+    model?: string;
 }
 
 interface ConversationLogEntry {
