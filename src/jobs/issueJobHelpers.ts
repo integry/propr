@@ -31,6 +31,30 @@ export type RepoValidation = RepoValidationResult;
 export const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || String(5 * 60 * 1000), 10);
 export const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || String(2 * 60 * 1000), 10);
 
+// Model ID to short name mapping for PR titles
+// This mirrors the UI constants in AgentsListSection.tsx
+const MODEL_SHORT_NAMES: Record<string, string> = {
+    // Claude models
+    'claude-opus-4-5-20251101': 'Claude Opus',
+    'claude-sonnet-4-5-20250929': 'Claude Sonnet',
+    'claude-haiku-4-5-20251001': 'Claude Haiku',
+    // OpenAI/Codex models
+    'gpt-5': 'GPT-5',
+    'gpt-5-mini': 'GPT-5 Mini',
+    'gpt-5-codex': 'Codex',
+    'o3': 'o3',
+    'o4-mini': 'o4-mini',
+    // Gemini models
+    'gemini-3-pro-preview': 'Gemini 3 Preview',
+    'gemini-2.5-pro': 'Gemini Pro',
+    'gemini-2.5-flash': 'Gemini Flash',
+    'gemini-2.5-flash-lite': 'Flash Lite',
+};
+
+export function getModelShortName(modelId: string): string {
+    return MODEL_SHORT_NAMES[modelId] || 'AI';
+}
+
 export interface UsageLimitError extends Error {
     resetTimestamp?: number;
 }
@@ -291,9 +315,10 @@ export async function createPullRequest(
     const { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger, issueTitle } = options;
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
-    let prTitle = `AI Analysis for Issue #${issueRef.number}: ${issueTitle}`;
+    const modelShortName = getModelShortName(modelName);
+    let prTitle = `${modelShortName} Analysis for Issue #${issueRef.number}: ${issueTitle}`;
     if (commitResult) {
-        prTitle = `AI Fix for Issue #${issueRef.number}: ${issueTitle}`;
+        prTitle = `${modelShortName} Fix for Issue #${issueRef.number}: ${issueTitle}`;
     }
 
     const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });

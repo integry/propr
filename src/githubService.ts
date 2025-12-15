@@ -21,6 +21,31 @@ export const updateIssueLabels = updateIssueLabelsOps;
 
 export type { ClaudeResult, PRInfo, CreatePullRequestOptions, CreatePullRequestRobustParams, AddClaudeLogsCommentOptions, UpdateIssueLabelsOptions };
 
+// Model ID to short name mapping for PR titles
+// This mirrors the UI constants in AgentsListSection.tsx
+const MODEL_SHORT_NAMES: Record<string, string> = {
+    // Claude models
+    'claude-opus-4-5-20251101': 'Claude Opus',
+    'claude-sonnet-4-5-20250929': 'Claude Sonnet',
+    'claude-haiku-4-5-20251001': 'Claude Haiku',
+    // OpenAI/Codex models
+    'gpt-5': 'GPT-5',
+    'gpt-5-mini': 'GPT-5 Mini',
+    'gpt-5-codex': 'Codex',
+    'o3': 'o3',
+    'o4-mini': 'o4-mini',
+    // Gemini models
+    'gemini-3-pro-preview': 'Gemini 3 Preview',
+    'gemini-2.5-pro': 'Gemini Pro',
+    'gemini-2.5-flash': 'Gemini Flash',
+    'gemini-2.5-flash-lite': 'Flash Lite',
+};
+
+function getModelShortName(modelId: string | undefined): string {
+    if (!modelId) return 'AI';
+    return MODEL_SHORT_NAMES[modelId] || 'AI';
+}
+
 interface PRContext {
     owner: string;
     repoName: string;
@@ -32,6 +57,7 @@ interface PRContext {
     worktreePath?: string;
     repoUrl?: string;
     authToken?: string;
+    modelName?: string;
 }
 
 interface PRResult {
@@ -71,19 +97,20 @@ function handlePrResult(prResult: PRResult, logContext: Record<string, unknown>)
 }
 
 async function createNewPRForIssue(prContext: PRContext, claudeResult: ClaudeResult): Promise<PRInfo | null> {
-    const { owner, repoName, branchName, baseBranch, issueNumber, issueTitle, commitMessage, worktreePath, repoUrl, authToken } = prContext;
+    const { owner, repoName, branchName, baseBranch, issueNumber, issueTitle, commitMessage, worktreePath, repoUrl, authToken, modelName } = prContext;
     const hasRobustParams = worktreePath && baseBranch && repoUrl && authToken;
+    const modelShortName = getModelShortName(modelName);
 
     if (hasRobustParams) {
         const prResult = await createPullRequestRobust({
             owner, repoName, branchName, baseBranch, issueNumber,
-            prTitle: `AI Fix for Issue #${issueNumber}: ${issueTitle}`,
+            prTitle: `${modelShortName} Fix for Issue #${issueNumber}: ${issueTitle}`,
             prBody: generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult),
             worktreePath, repoUrl, authToken
         });
         return handlePrResult(prResult, { owner, repoName, branchName, issueNumber });
     }
-    return createPullRequest({ owner, repoName, branchName, issueNumber, issueTitle, commitMessage, claudeResult });
+    return createPullRequest({ owner, repoName, branchName, issueNumber, issueTitle, commitMessage, claudeResult, modelName });
 }
 
 export async function completePostProcessing(options: CompletePostProcessingOptions): Promise<PostProcessingResult> {
