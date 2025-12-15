@@ -10,6 +10,7 @@ WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 
 # Copy all workspace packages
+COPY packages/shared ./packages/shared
 COPY packages/core ./packages/core
 COPY packages/dashboard ./packages/dashboard
 
@@ -20,7 +21,11 @@ COPY config ./config
 # Install all dependencies (including linking workspaces)
 RUN npm ci
 
-# Build core first
+# Build shared first (required for @gitfix/shared imports)
+WORKDIR /app/packages/shared
+RUN npm run build
+
+# Build core (depends on shared)
 WORKDIR /app/packages/core
 RUN npm run build
 
@@ -36,7 +41,8 @@ WORKDIR /app
 # Copy root package files and install production dependencies with workspaces
 COPY --from=builder /app/package.json /app/package-lock.json ./
 
-# Copy built packages (core only needs dist)
+# Copy built packages (shared and core)
+COPY --from=builder /app/packages/shared ./packages/shared
 COPY --from=builder /app/packages/core ./packages/core
 COPY --from=builder /app/packages/dashboard/package.json ./packages/dashboard/
 

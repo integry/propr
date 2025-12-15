@@ -1,8 +1,5 @@
 import { Octokit } from '@octokit/core';
-import { getAuthenticatedOctokit } from '@gitfix/core';
-import { logger } from '@gitfix/core';
-import { ensureBranchAndPush } from '@gitfix/core';
-import { handleError } from '@gitfix/core';
+import { getAuthenticatedOctokit, logger, ensureBranchAndPush, handleError, getModelShortName } from '@gitfix/core';
 import { generatePRBody, generateClaudeLogsComment } from './prFormatters.js';
 
 const DEFAULT_BASE_BRANCH = process.env.GIT_DEFAULT_BRANCH || 'main';
@@ -93,6 +90,7 @@ export interface CreatePullRequestOptions {
     issueTitle: string;
     commitMessage: string;
     claudeResult: ClaudeResult;
+    modelName?: string;
 }
 
 export interface AddClaudeLogsCommentOptions {
@@ -304,13 +302,15 @@ export async function createPullRequest(options: CreatePullRequestOptions): Prom
         issueNumber,
         issueTitle,
         commitMessage,
-        claudeResult
+        claudeResult,
+        modelName
     } = options;
 
     try {
         const octokit = await getAuthenticatedOctokit();
 
-        const prTitle = `AI Fix for Issue #${issueNumber}: ${issueTitle}`;
+        const modelShortName = getModelShortName(modelName);
+        const prTitle = `${modelShortName} Fix for Issue #${issueNumber}: ${issueTitle}`;
         const prBody = generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult);
 
         logger.info({

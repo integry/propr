@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AgentConfig } from '../../api/gitfixApi';
 import Alert from './Alert';
 import AgentConfigModal from './AgentConfigModal';
+import { AgentType, MODEL_INFO_MAP, typeBadgeColors } from '../../config/modelDefinitions';
 
 // GitHub icon component
 const GitHubIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
@@ -18,49 +19,6 @@ interface AgentsListSectionProps {
   success: string | null;
   onSaveAgents: (agents: AgentConfig[]) => void;
 }
-
-type AgentType = 'claude' | 'codex' | 'gemini';
-
-// Model info for display purposes (mirrors AgentConfigModal)
-interface ModelInfo {
-  id: string;
-  name: string;           // Human-readable name
-  shortAlias: string;     // Short alias like "opus", "sonnet", "haiku"
-  githubLabel: string;    // Format: llm-<agent-alias>-<model-alias>
-}
-
-// Claude models (Opus first as default, then Sonnet, then Haiku)
-const CLAUDE_MODELS: ModelInfo[] = [
-  { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', shortAlias: 'opus', githubLabel: 'llm-claude-opus' },
-  { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', shortAlias: 'sonnet', githubLabel: 'llm-claude-sonnet' },
-  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', shortAlias: 'haiku', githubLabel: 'llm-claude-haiku' },
-];
-
-const CODEX_MODELS: ModelInfo[] = [
-  { id: 'gpt-5', name: 'GPT-5', shortAlias: 'gpt5', githubLabel: 'llm-codex-gpt5' },
-  { id: 'gpt-5-mini', name: 'GPT-5 Mini', shortAlias: 'gpt5-mini', githubLabel: 'llm-codex-gpt5-mini' },
-  { id: 'gpt-5-codex', name: 'GPT-5 Codex', shortAlias: 'codex', githubLabel: 'llm-codex-codex' },
-  { id: 'o3', name: 'OpenAI o3', shortAlias: 'o3', githubLabel: 'llm-codex-o3' },
-  { id: 'o4-mini', name: 'OpenAI o4-mini', shortAlias: 'o4-mini', githubLabel: 'llm-codex-o4-mini' },
-];
-
-const GEMINI_MODELS: ModelInfo[] = [
-  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview', shortAlias: 'pro-preview', githubLabel: 'llm-gemini-pro-preview' },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', shortAlias: 'pro', githubLabel: 'llm-gemini-pro' },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', shortAlias: 'flash', githubLabel: 'llm-gemini-flash' },
-  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', shortAlias: 'flash-lite', githubLabel: 'llm-gemini-flash-lite' },
-];
-
-const MODEL_INFO_MAP: Record<string, ModelInfo> = {};
-[...CLAUDE_MODELS, ...CODEX_MODELS, ...GEMINI_MODELS].forEach(m => {
-  MODEL_INFO_MAP[m.id] = m;
-});
-
-const typeBadgeColors: Record<AgentType, string> = {
-  claude: 'bg-orange-100 text-orange-800 border-orange-300',
-  codex: 'bg-green-100 text-green-800 border-green-300',
-  gemini: 'bg-blue-100 text-blue-800 border-blue-300'
-};
 
 const AgentCard: React.FC<{
   agent: AgentConfig;
@@ -107,6 +65,11 @@ const AgentCard: React.FC<{
                           <span className="text-sm font-medium text-gray-900">
                             {modelInfo?.name || modelId}
                           </span>
+                          {modelInfo?.contextWindow && (
+                            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 text-[10px] rounded font-medium" title="Context Window Size">
+                              {modelInfo.contextWindow}
+                            </span>
+                          )}
                           {isDefault && (
                             <span className="px-1.5 py-0.5 bg-teal-600 text-white text-xs rounded font-medium">
                               Default

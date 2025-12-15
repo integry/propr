@@ -1,17 +1,17 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { ErrorCategories } from '@gitfix/core';
-import { safeRemoveLabel } from '@gitfix/core';
-import { generateCompletionComment } from '@gitfix/core';
-import { recordLLMMetrics } from '@gitfix/core';
-import type { ClaudeResult } from '@gitfix/core';
-import { formatResetTime } from '@gitfix/core';
-import { issueQueue, type IssueJobData, type JobResult } from '@gitfix/core';
-import { db, isEnabled as isDbEnabled } from '@gitfix/core';
-import type { WorkerStateManager } from '@gitfix/core';
-import type { ClaudeCodeResponse } from '@gitfix/core';
-import type { WorktreeInfo, CommitResult } from '@gitfix/core';
-import type { RepoValidationResult } from '@gitfix/core';
+import {
+    ErrorCategories,
+    safeRemoveLabel,
+    generateCompletionComment,
+    recordLLMMetrics,
+    formatResetTime,
+    issueQueue,
+    db,
+    isEnabled as isDbEnabled,
+    getModelShortName
+} from '@gitfix/core';
+import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, CommitResult, RepoValidationResult } from '@gitfix/core';
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -30,6 +30,9 @@ export type RepoValidation = RepoValidationResult;
 
 export const REQUEUE_BUFFER_MS = parseInt(process.env.REQUEUE_BUFFER_MS || String(5 * 60 * 1000), 10);
 export const REQUEUE_JITTER_MS = parseInt(process.env.REQUEUE_JITTER_MS || String(2 * 60 * 1000), 10);
+
+// Re-export getModelShortName for consumers that import from this file
+export { getModelShortName };
 
 export interface UsageLimitError extends Error {
     resetTimestamp?: number;
@@ -291,9 +294,10 @@ export async function createPullRequest(
     const { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger, issueTitle } = options;
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
-    let prTitle = `AI Analysis for Issue #${issueRef.number}: ${issueTitle}`;
+    const modelShortName = getModelShortName(modelName);
+    let prTitle = `${modelShortName} Analysis for Issue #${issueRef.number}: ${issueTitle}`;
     if (commitResult) {
-        prTitle = `AI Fix for Issue #${issueRef.number}: ${issueTitle}`;
+        prTitle = `${modelShortName} Fix for Issue #${issueRef.number}: ${issueTitle}`;
     }
 
     const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });

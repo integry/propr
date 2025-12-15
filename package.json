@@ -4,7 +4,8 @@
   "type": "module",
   "main": "index.js",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "gitfix-ui"
   ],
   "scripts": {
     "build": "tsc",

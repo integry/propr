@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
 
 # Copy package files (including workspace packages)
 COPY package*.json ./
+COPY packages/shared/package*.json ./packages/shared/
 COPY packages/core/package*.json ./packages/core/
 COPY packages/dashboard/package*.json ./packages/dashboard/
 
@@ -20,7 +21,10 @@ RUN npm install
 
 COPY . .
 
-# Build core package first (required for @gitfix/core imports)
+# Build shared package first (required for @gitfix/shared imports)
+RUN cd packages/shared && npm run build
+
+# Build core package (required for @gitfix/core imports)
 RUN cd packages/core && npm run build
 
 # Build TypeScript to JavaScript

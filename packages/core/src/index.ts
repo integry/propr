@@ -22,8 +22,10 @@ export { getGitHubInstallationToken, getAuthenticatedOctokit } from './auth/gith
 export type { PaginatedOctokitInstance } from './auth/githubAuth.js';
 
 export * from './config/configRepoManager.js';
-export { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS, resolveLlmLabel } from './config/modelAliases.js';
+export { resolveModelAlias, getDefaultModel, getModelShortName, MODEL_ALIASES, MODEL_SHORT_NAMES, DEFAULT_MODEL_ALIAS, resolveLlmLabel } from './config/modelAliases.js';
 export type { LlmLabelResolution } from './config/modelAliases.js';
+export { CLAUDE_MODELS, CODEX_MODELS, GEMINI_MODELS, ALL_MODELS, AGENT_MODELS, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
+export type { AgentType as ModelAgentType, ModelInfo } from './config/modelDefinitions.js';
 export { getEffectiveTokenLimit, DEFAULT_CONTEXT_LEVEL } from './config/modelLimits.js';
 export type { ContextLevel } from './config/modelLimits.js';
 

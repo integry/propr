@@ -1,8 +1,23 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
+import { MODEL_SHORT_NAMES, MODEL_INFO_MAP } from './modelDefinitions.js';
 
 export type ModelAlias = string;
 export type ModelId = string;
+
+// Re-export MODEL_SHORT_NAMES from modelDefinitions for backwards compatibility
+export { MODEL_SHORT_NAMES };
+
+/**
+ * Gets the short display name for a model ID.
+ * Used for PR titles and other display purposes.
+ * Sources short names from modelDefinitions.ts (single source of truth).
+ */
+export function getModelShortName(modelId: string | undefined): string {
+    if (!modelId) return 'AI';
+    const modelInfo = MODEL_INFO_MAP[modelId];
+    return modelInfo?.shortName || 'AI';
+}
 
 /**
  * Result of resolving an LLM label to agent and model.
