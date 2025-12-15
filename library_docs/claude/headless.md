@@ -82,9 +82,7 @@ Append to system prompt (only with `--print`)
 
 `--allowedTools`
 
-Space-separated list of allowed tools, or  
-  
-string of comma-separated list of allowed tools
+Tools that execute without prompting for permission (use `--tools` to restrict available tools)
 
 `claude --allowedTools mcp__slack mcp__filesystem`  
   
@@ -92,9 +90,7 @@ string of comma-separated list of allowed tools
 
 `--disallowedTools`
 
-Space-separated list of denied tools, or  
-  
-string of comma-separated list of denied tools
+Tools removed from the model’s context (cannot be used)
 
 `claude --disallowedTools mcp__splunk mcp__github`  
   

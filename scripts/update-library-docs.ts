@@ -61,6 +61,24 @@ const EXCLUDED_FILES = new Set([
   // User-facing support
   'troubleshooting.md', // Installation and IDE plugin issues
 
+  // API Key Required (Gitfix uses subscription-based auth)
+  'batches.md', // Batch API operations - requires API key
+  'bash-tool.md', // Bash tool via API - requires API key
+  'code-execution-tool.md', // Code execution via API - requires API key
+  'count_tokens.md', // Token counting API - requires API key
+  'files.md', // File upload/management API - requires API key
+  'fine-grained-tool-streaming.md', // Tool streaming API - requires API key
+  'mcp-connector.md', // MCP connector API - requires API key
+  'memory-tool.md', // Memory tool API - requires API key
+  'messages.md', // Core Messages API - requires API key
+  'models.md', // Model information API - requires API key
+  'openai-sdk.md', // OpenAI-compatible API access - requires API key
+  'overview.md', // API overview with examples - requires API key
+  'programmatic-tool-calling.md', // Tool calling API - requires API key
+  'versions.md', // API versions - requires API key
+  'web-fetch-tool.md', // Web fetch via API - requires API key
+  'web-search-tool.md', // Web search via API - requires API key
+
   // === CODEX DOCUMENTATION EXCLUSIONS ===
 
   // Legal/Administrative
