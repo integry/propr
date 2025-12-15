@@ -1,6 +1,6 @@
 // Shared model definitions for AI agents
-// IMPORTANT: Keep this file in sync with packages/core/src/config/modelDefinitions.ts
-// The backend (packages/core) is the source of truth for model information.
+// This file provides a single source of truth for model information
+// Both backend (packages/core) and frontend (gitfix-ui) should use this
 
 export type AgentType = 'claude' | 'codex' | 'gemini';
 
@@ -37,6 +37,9 @@ export const GEMINI_MODELS: ModelInfo[] = [
   { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', shortName: 'Flash Lite', shortAlias: 'flash-lite', githubLabel: 'llm-gemini-flash-lite', contextWindow: '1M' },
 ];
 
+// All models combined
+export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...GEMINI_MODELS];
+
 // Map of agent types to their models
 export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
   claude: CLAUDE_MODELS,
@@ -46,8 +49,14 @@ export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
 
 // Lookup map for all models by ID
 export const MODEL_INFO_MAP: Record<string, ModelInfo> = {};
-[...CLAUDE_MODELS, ...CODEX_MODELS, ...GEMINI_MODELS].forEach(m => {
+ALL_MODELS.forEach(m => {
   MODEL_INFO_MAP[m.id] = m;
+});
+
+// Generate MODEL_SHORT_NAMES from MODEL_INFO_MAP for backwards compatibility
+export const MODEL_SHORT_NAMES: Record<string, string> = {};
+ALL_MODELS.forEach(m => {
+  MODEL_SHORT_NAMES[m.id] = m.shortName;
 });
 
 // Agent default configurations
@@ -72,7 +81,7 @@ export const AGENT_DEFAULTS: Record<AgentType, { dockerImage: string; configPath
   }
 };
 
-// Badge colors for each agent type
+// Badge colors for each agent type (for UI)
 export const typeBadgeColors: Record<AgentType, string> = {
   claude: 'bg-orange-100 text-orange-800 border-orange-300',
   codex: 'bg-green-100 text-green-800 border-green-300',

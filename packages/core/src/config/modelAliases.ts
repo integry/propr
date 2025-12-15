@@ -1,38 +1,22 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
+import { MODEL_SHORT_NAMES, MODEL_INFO_MAP } from './modelDefinitions.js';
 
 export type ModelAlias = string;
 export type ModelId = string;
 
-/**
- * Model ID to short name mapping for PR titles.
- * Single source of truth for model display names.
- */
-export const MODEL_SHORT_NAMES: Record<string, string> = {
-    // Claude models
-    'claude-opus-4-5-20251101': 'Claude Opus',
-    'claude-sonnet-4-5-20250929': 'Claude Sonnet',
-    'claude-haiku-4-5-20251001': 'Claude Haiku',
-    // OpenAI/Codex models
-    'gpt-5': 'GPT-5',
-    'gpt-5-mini': 'GPT-5 Mini',
-    'gpt-5-codex': 'Codex',
-    'o3': 'o3',
-    'o4-mini': 'o4-mini',
-    // Gemini models
-    'gemini-3-pro-preview': 'Gemini 3 Preview',
-    'gemini-2.5-pro': 'Gemini Pro',
-    'gemini-2.5-flash': 'Gemini Flash',
-    'gemini-2.5-flash-lite': 'Flash Lite',
-};
+// Re-export MODEL_SHORT_NAMES from modelDefinitions for backwards compatibility
+export { MODEL_SHORT_NAMES };
 
 /**
  * Gets the short display name for a model ID.
  * Used for PR titles and other display purposes.
+ * Sources short names from modelDefinitions.ts (single source of truth).
  */
 export function getModelShortName(modelId: string | undefined): string {
     if (!modelId) return 'AI';
-    return MODEL_SHORT_NAMES[modelId] || 'AI';
+    const modelInfo = MODEL_INFO_MAP[modelId];
+    return modelInfo?.shortName || 'AI';
 }
 
 /**
