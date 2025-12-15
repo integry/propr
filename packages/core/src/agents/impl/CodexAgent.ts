@@ -8,6 +8,7 @@ import {
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias } from '../../config/modelAliases.js';
+import { resolveConfigPath } from '../../config/configRepoManager.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -334,7 +335,7 @@ export class CodexAgent implements Agent {
         } = params;
 
         const dockerImage = this.config.dockerImage;
-        const configPath = this.config.configPath;
+        const configPath = resolveConfigPath(this.config.configPath);
 
         // Inject any custom environment variables from config
         const envVars: string[] = [];
