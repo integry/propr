@@ -21,6 +21,7 @@ export interface ClaudeResult {
     modifiedFiles?: string[];
     rawOutput?: string;
     exitCode?: number | string;
+    model?: string;
 }
 
 interface ConversationLogEntry {
@@ -310,7 +311,9 @@ export async function createPullRequest(options: CreatePullRequestOptions): Prom
     try {
         const octokit = await getAuthenticatedOctokit();
 
-        const prTitle = `AI Fix for Issue #${issueNumber}: ${issueTitle}`;
+        // Use the model name from the result, defaulting to 'AI' if missing
+        const modelName = claudeResult.model || 'AI';
+        const prTitle = `${modelName} Fix for Issue #${issueNumber}: ${issueTitle}`;
         const prBody = generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult);
 
         logger.info({

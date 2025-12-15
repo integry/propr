@@ -75,9 +75,12 @@ async function createNewPRForIssue(prContext: PRContext, claudeResult: ClaudeRes
     const hasRobustParams = worktreePath && baseBranch && repoUrl && authToken;
 
     if (hasRobustParams) {
+        // Use the model name from the result, defaulting to 'AI' if missing
+        const modelName = claudeResult.model || 'AI';
+
         const prResult = await createPullRequestRobust({
             owner, repoName, branchName, baseBranch, issueNumber,
-            prTitle: `AI Fix for Issue #${issueNumber}: ${issueTitle}`,
+            prTitle: `${modelName} Fix for Issue #${issueNumber}: ${issueTitle}`,
             prBody: generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult),
             worktreePath, repoUrl, authToken
         });
