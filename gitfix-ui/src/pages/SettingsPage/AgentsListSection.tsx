@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { AgentConfig } from '../../api/gitfixApi';
 import Alert from './Alert';
 import AgentConfigModal from './AgentConfigModal';
-import { ModelAgentType as AgentType, MODEL_INFO_MAP, typeBadgeColors } from '@gitfix/core';
+import { AgentType, MODEL_INFO_MAP, typeBadgeColors } from '../../config/modelDefinitions';
 
 // GitHub icon component
 const GitHubIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (

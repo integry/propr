@@ -10,7 +10,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@gitfix/core": "workspace:*",
     "@types/lodash": "^4.17.21",
     "@types/react-syntax-highlighter": "^15.5.13",
     "lodash": "^4.17.21",
