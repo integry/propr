@@ -11,6 +11,98 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DOCS_ROOT = path.join(__dirname, '../library_docs');
 const OCTOKIT_TOKEN = process.env.GITHUB_TOKEN;
 
+// Track statistics
+let totalSkipped = 0;
+let totalSaved = 0;
+
+/**
+ * Files to exclude from documentation fetching with explanations
+ * These files are not relevant for Gitfix's automated GitHub issue processing
+ */
+const EXCLUDED_FILES = new Set([
+  // === CLAUDE DOCUMENTATION EXCLUSIONS ===
+
+  // Extremely large/low-value files
+  'beta.md', // Raw TypeScript API definitions - extremely large file with high token cost
+  'llms-full.txt', // Build artifact/raw text dump
+
+  // UI/Batch operation files
+  'cancel.md', // Batch operation UI
+  'create.md', // File operation UI
+  'delete.md', // File operation UI
+  'download.md', // File operation UI
+  'list.md', // File operation UI
+  'retrieve.md', // File operation UI
+  'retrieve_metadata.md', // Batch operation UI
+  'results.md', // Batch operation UI
+  'upload.md', // File operation UI
+
+  // Feature-specific (not applicable to Gitfix)
+  'claude-for-sheets.md', // Google Sheets add-on
+  'completions.md', // Legacy completions API
+  'computer-use-tool.md', // Desktop automation tool
+  'customer-support-chat.md', // Support agent guidelines
+
+  // Interactive UI features (Gitfix is headless/automated)
+  'hooks-guide.md', // Interactive user hooks
+  'hosting.md', // Hosting Claude apps
+  'output-styles.md', // UI formatting
+  'plugins.md', // Plugin system (UI-based)
+  'sessions.md', // Session management (interactive)
+  'slash-commands.md', // Interactive commands
+  'subagents.md', // Interactive subagent spawning
+  'text-editor-tool.md', // Editor integration
+  'todo-tracking.md', // Interactive todo tracking
+  'tool-search-tool.md', // Tool discovery UI
+
+  // Wrong language SDK
+  'python.md', // Python SDK - Gitfix uses TypeScript
+
+  // User-facing support
+  'troubleshooting.md', // Installation and IDE plugin issues
+
+  // === CODEX DOCUMENTATION EXCLUSIONS ===
+
+  // Legal/Administrative
+  'CLA.md', // Contributor License Agreement
+  'contributing.md', // Contributing guide
+  'license.md', // Repository license
+  'open-source-fund.md', // Marketing/funding
+  'zdr.md', // Zero Data Retention policy
+
+  // Platform-specific (Gitfix uses Linux containers)
+  'platform-sandboxing.md', // Platform-specific sandboxing
+  'windows_sandbox_security.md', // Windows-specific, agent runs in Linux
+
+  // Installation (Gitfix uses Docker)
+  'install.md', // Manual installation guide, agent uses Docker
+
+  // Interactive/UI
+  'slash_commands.md', // Interactive commands
+
+  // User support
+  'faq.md', // General user FAQ
+
+  // Experimental
+  'experimental.md', // Experimental features
+
+  // === GEMINI DOCUMENTATION EXCLUSIONS ===
+
+  // Internal architecture/development
+  'architecture.md', // Internal design of the CLI tool itself
+  'integration-tests.md', // Internal: How to test Gemini CLI
+  'issue-and-pr-automation.md', // Internal: GitHub Actions for Gemini CLI
+  'local-development.md', // Internal: How to develop Gemini CLI locally
+  'release-confidence.md', // Internal Google release checklists
+  'releases.md', // Internal: Release process for maintainers
+
+  // Legal/Administrative
+  'CONTRIBUTING.md', // Guide for contributing to Gemini CLI
+  'tos-privacy.md', // Legal: Terms of Service
+
+  // User support (duplicates removed as 'faq.md' already listed)
+]);
+
 const turndownService = new TurndownService({
   headingStyle: 'atx',
   codeBlockStyle: 'fenced'
@@ -39,11 +131,19 @@ async function fetchGithubDocs(owner: string, repo: string, dirPath: string, des
 
     for (const item of data) {
       if (item.type === 'file' && item.name.endsWith('.md')) {
+        // Check if file is excluded
+        if (EXCLUDED_FILES.has(item.name)) {
+          console.log(`  Skipped ${item.name} (excluded)`);
+          totalSkipped++;
+          continue;
+        }
+
         // Fetch raw content
         const contentResponse = await fetch(item.download_url as string);
         const content = await contentResponse.text();
         await fs.writeFile(path.join(destDir, item.name), content);
         console.log(`  Saved ${item.name}`);
+        totalSaved++;
       }
     }
   } catch (error) {
@@ -55,6 +155,13 @@ async function fetchGithubDocs(owner: string, repo: string, dirPath: string, des
  * Fetch a web page and convert its main content to Markdown
  */
 async function fetchWebPageToMarkdown(url: string, destDir: string, filename: string): Promise<void> {
+  // Check if file is excluded
+  if (EXCLUDED_FILES.has(filename)) {
+    console.log(`  Skipped ${filename} (excluded)`);
+    totalSkipped++;
+    return;
+  }
+
   console.log(`  Fetching web page ${url}...`);
   try {
     const res = await fetch(url);
@@ -90,6 +197,7 @@ async function fetchWebPageToMarkdown(url: string, destDir: string, filename: st
       await fs.ensureDir(destDir);
       await fs.writeFile(path.join(destDir, filename), markdown);
       console.log(`    Saved ${filename}`);
+      totalSaved++;
     }
   } catch (error) {
     console.error(`  Error fetching ${url}:`, error);
@@ -156,6 +264,13 @@ function parseLlmsTxt(content: string): { title: string; url: string }[] {
  * Fetch a markdown file from a URL and save it
  */
 async function fetchMarkdownFile(url: string, destDir: string, filename: string): Promise<void> {
+  // Check if file is excluded
+  if (EXCLUDED_FILES.has(filename)) {
+    console.log(`    Skipped ${filename} (excluded)`);
+    totalSkipped++;
+    return;
+  }
+
   console.log(`    Fetching ${url}...`);
   try {
     const res = await fetch(url);
@@ -167,6 +282,7 @@ async function fetchMarkdownFile(url: string, destDir: string, filename: string)
     await fs.ensureDir(destDir);
     await fs.writeFile(path.join(destDir, filename), content);
     console.log(`      Saved ${filename}`);
+    totalSaved++;
   } catch (error) {
     console.error(`    Error fetching ${url}:`, error);
   }
@@ -213,9 +329,9 @@ async function fetchClaudeDocs(destDir: string): Promise<void> {
     } else {
       const content = await res.text();
 
-      // Save the original llms.txt
-      await fs.writeFile(path.join(destDir, 'llms-full.txt'), content);
-      console.log('    Saved llms-full.txt');
+      // Skip saving llms-full.txt as it's excluded (raw text dump)
+      console.log('    Skipped llms-full.txt (excluded - raw text dump)');
+      totalSkipped++;
 
       // Parse and fetch relevant linked documents
       const links = parseLlmsTxt(content);
@@ -261,9 +377,54 @@ async function fetchClaudeDocs(destDir: string): Promise<void> {
   }
 }
 
+/**
+ * Remove excluded files from existing documentation directories
+ */
+async function removeExcludedFiles(): Promise<void> {
+  console.log('=== Removing Excluded Files ===');
+  const dirs = ['claude', 'codex', 'gemini'];
+  let removedCount = 0;
+
+  for (const dir of dirs) {
+    const dirPath = path.join(DOCS_ROOT, dir);
+    if (await fs.pathExists(dirPath)) {
+      const files = await fs.readdir(dirPath);
+      for (const file of files) {
+        if (EXCLUDED_FILES.has(file)) {
+          const filePath = path.join(dirPath, file);
+          await fs.remove(filePath);
+          console.log(`  Removed ${dir}/${file}`);
+          removedCount++;
+        }
+      }
+    }
+  }
+
+  // Also check root level files
+  if (await fs.pathExists(DOCS_ROOT)) {
+    const files = await fs.readdir(DOCS_ROOT);
+    for (const file of files) {
+      if (EXCLUDED_FILES.has(file)) {
+        const filePath = path.join(DOCS_ROOT, file);
+        if ((await fs.stat(filePath)).isFile()) {
+          await fs.remove(filePath);
+          console.log(`  Removed ${file}`);
+          removedCount++;
+        }
+      }
+    }
+  }
+
+  console.log(`Removed ${removedCount} excluded files`);
+  console.log();
+}
+
 async function main(): Promise<void> {
   console.log('Starting documentation update...\n');
   await fs.ensureDir(DOCS_ROOT);
+
+  // First, remove any existing excluded files
+  await removeExcludedFiles();
 
   // 1. Gemini CLI
   console.log('=== Gemini CLI Documentation ===');
@@ -281,6 +442,14 @@ async function main(): Promise<void> {
   console.log();
 
   console.log('Documentation update complete!');
+  console.log();
+  console.log('=== SUMMARY ===');
+  console.log(`Files saved: ${totalSaved}`);
+  console.log(`Files skipped (excluded): ${totalSkipped}`);
+  console.log(`Total excluded files configured: ${EXCLUDED_FILES.size}`);
+  console.log();
+  console.log('Excluded files help reduce context size and focus on Gitfix-relevant documentation.');
+  console.log('See comments in EXCLUDED_FILES for rationale behind each exclusion.');
 }
 
 main().catch(console.error);
