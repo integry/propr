@@ -23,16 +23,16 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 // Codex (OpenAI) models
 export const CODEX_MODELS: ModelInfo[] = [
   { id: 'gpt-5', name: 'GPT-5', shortName: 'GPT-5', shortAlias: 'gpt5', githubLabel: 'llm-codex-gpt5', contextWindow: '400K' },
-  { id: 'gpt-5-mini', name: 'GPT-5 Mini', shortName: 'GPT-5 Mini', shortAlias: 'gpt5-mini', githubLabel: 'llm-codex-gpt5-mini', contextWindow: '128K' },
+  { id: 'gpt-5-mini', name: 'GPT-5 Mini', shortName: 'GPT-5 Mini', shortAlias: 'gpt5-mini', githubLabel: 'llm-codex-gpt5-mini', contextWindow: '400K' },
   { id: 'gpt-5-codex', name: 'GPT-5 Codex', shortName: 'Codex', shortAlias: 'codex', githubLabel: 'llm-codex-codex', contextWindow: '400K' },
-  { id: 'o3', name: 'OpenAI o3', shortName: 'o3', shortAlias: 'o3', githubLabel: 'llm-codex-o3', contextWindow: '200K' },
-  { id: 'o4-mini', name: 'OpenAI o4-mini', shortName: 'o4-mini', shortAlias: 'o4-mini', githubLabel: 'llm-codex-o4-mini', contextWindow: '128K' },
+  { id: 'o3', name: 'OpenAI o3', shortName: 'o3', shortAlias: 'o3', githubLabel: 'llm-codex-o3', contextWindow: '128K' },
+  { id: 'o4-mini', name: 'OpenAI o4-mini', shortName: 'o4-mini', shortAlias: 'o4-mini', contextWindow: '128K', githubLabel: 'llm-codex-o4-mini' },
 ];
 
 // Gemini models
 export const GEMINI_MODELS: ModelInfo[] = [
-  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview', shortName: 'Gemini 3 Preview', shortAlias: 'pro-preview', githubLabel: 'llm-gemini-pro-preview', contextWindow: '2M' },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', shortName: 'Gemini Pro', shortAlias: 'pro', githubLabel: 'llm-gemini-pro', contextWindow: '2M' },
+  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview', shortName: 'Gemini 3 Preview', shortAlias: 'pro-preview', githubLabel: 'llm-gemini-pro-preview', contextWindow: '1M' },
+  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', shortName: 'Gemini Pro', shortAlias: 'pro', githubLabel: 'llm-gemini-pro', contextWindow: '1M' },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', shortName: 'Gemini Flash', shortAlias: 'flash', githubLabel: 'llm-gemini-flash', contextWindow: '1M' },
   { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', shortName: 'Flash Lite', shortAlias: 'flash-lite', githubLabel: 'llm-gemini-flash-lite', contextWindow: '1M' },
 ];
