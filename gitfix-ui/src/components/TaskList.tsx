@@ -5,6 +5,8 @@ import { getTasks, getAvailableGithubRepos } from '../api/gitfixApi';
 interface Task {
   id: string;
   repository?: string;
+  repositoryOwner?: string;
+  repositoryName?: string;
   issueNumber?: number;
   title?: string;
   subtitle?: string;
@@ -12,6 +14,9 @@ interface Task {
   createdAt: string;
   processedAt?: string;
   completedAt?: string;
+  modelName?: string;
+  model?: string;
+  llmProvider?: string;
 }
 
 interface TaskListProps {
