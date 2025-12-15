@@ -3,7 +3,7 @@ import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
 import path from 'path';
 import * as configRepoManager from '@gitfix/core';
-import { getExecutionAnalysis } from '@gitfix/core';
+import { getExecutionAnalysis, resolveAgentFromSetting, resolveModelAlias, AgentRegistry } from '@gitfix/core';
 
 interface ExecutionRoutesDeps {
   redisClient: RedisClientType;
@@ -112,7 +112,21 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
       }
       const task = await db('tasks').where({ task_id: taskId }).first('correlation_id');
       const settings = await configRepoManager.loadSettings();
-      const advancedModel = (settings.analysis_model_advanced as string) || process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514';
+      const configuredSetting = (settings.analysis_model_advanced as string) || process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514';
+
+      // Ensure agent registry is initialized for alias resolution
+      const registry = AgentRegistry.getInstance();
+      await registry.ensureInitialized();
+
+      // Try to resolve as alias:model format first, fall back to model alias resolution
+      let advancedModel: string;
+      const agentResolution = resolveAgentFromSetting(configuredSetting);
+      if (agentResolution) {
+        advancedModel = agentResolution.model;
+      } else {
+        advancedModel = resolveModelAlias(configuredSetting);
+      }
+
       const analysisReport = await getExecutionAnalysis({ executionId: latestExecution.execution_id, sessionId: latestExecution.session_id, correlationId: task?.correlation_id || `deep-dive-${Date.now()}`, model: advancedModel });
       await db('llm_executions').where({ execution_id: latestExecution.execution_id }).update({ analysis_report: analysisReport });
       res.json({ analysis: analysisReport });

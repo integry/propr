@@ -8,6 +8,8 @@ import { db } from '@gitfix/core';
 import { getExecutionAnalysis } from '@gitfix/core';
 import { loadSettings } from '@gitfix/core';
 import { resolveModelAlias } from '@gitfix/core';
+import { resolveAgentFromSetting } from '@gitfix/core';
+import { AgentRegistry } from '@gitfix/core';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in analysis worker');
@@ -29,9 +31,33 @@ async function processAnalysisJob(job: Job<AnalysisJobData>): Promise<AnalysisRe
     correlatedLogger.info({ executionId }, 'Starting execution analysis job...');
 
     try {
+        // Ensure agent registry is initialized
+        const registry = AgentRegistry.getInstance();
+        await registry.ensureInitialized();
+
         const settings = await loadSettings();
-        const configuredModel = (settings.analysis_model_fast as string) || 'haiku';
-        const fastModel = resolveModelAlias(configuredModel);
+        const configuredSetting = (settings.analysis_model_fast as string) || 'haiku';
+
+        // Try to resolve as alias:model format first, fall back to model alias resolution
+        let fastModel: string;
+        const agentResolution = resolveAgentFromSetting(configuredSetting);
+
+        if (agentResolution) {
+            // Setting was in alias:model format or matched an agent alias
+            fastModel = agentResolution.model;
+            correlatedLogger.info({
+                configuredSetting,
+                agentAlias: agentResolution.agent.config.alias,
+                resolvedModel: fastModel
+            }, 'Resolved analysis model from agent setting');
+        } else {
+            // Fall back to legacy model alias resolution
+            fastModel = resolveModelAlias(configuredSetting);
+            correlatedLogger.info({
+                configuredSetting,
+                resolvedModel: fastModel
+            }, 'Resolved analysis model from model alias (legacy)');
+        }
 
         const analysisReport = await getExecutionAnalysis({
             executionId,
