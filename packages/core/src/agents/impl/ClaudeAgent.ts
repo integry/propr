@@ -14,6 +14,7 @@ import {
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, getDefaultModel } from '../../config/modelAliases.js';
+import { resolveConfigPath } from '../../config/configRepoManager.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -299,7 +300,7 @@ export class ClaudeAgent implements Agent {
 
         // Use config values instead of environment defaults
         const dockerImage = this.config.dockerImage;
-        const configPath = this.config.configPath;
+        const configPath = resolveConfigPath(this.config.configPath);
 
         // Inject any custom environment variables from config
         const envVars: string[] = [];
