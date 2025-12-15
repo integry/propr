@@ -2,13 +2,8 @@ import React, { useState } from 'react';
 import { AgentConfig } from '../../api/gitfixApi';
 import Alert from './Alert';
 import AgentConfigModal from './AgentConfigModal';
-
-// GitHub icon component
-const GitHubIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
-  <svg className={className} fill="currentColor" viewBox="0 0 24 24">
-    <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd" />
-  </svg>
-);
+import { GitHubIcon } from './GitHubIcon';
+import { AgentType, ModelInfo, CLAUDE_MODELS, CODEX_MODELS, GEMINI_MODELS } from './agentModels';
 
 interface AgentsListSectionProps {
   agents: AgentConfig[];
@@ -18,124 +13,6 @@ interface AgentsListSectionProps {
   success: string | null;
   onSaveAgents: (agents: AgentConfig[]) => void;
 }
-
-type AgentType = 'claude' | 'codex' | 'gemini';
-
-// Model info for display purposes (mirrors AgentConfigModal)
-interface ModelInfo {
-  id: string;
-  name: string;
-  shortName: string;     // New Field: Human readable short name
-  shortAlias: string;
-  githubLabel: string;
-  contextWindow: string; // New Field: Display badge value
-}
-
-// Claude models (Opus first as default, then Sonnet, then Haiku)
-const CLAUDE_MODELS: ModelInfo[] = [
-  { 
-    id: 'claude-opus-4-5-20251101', 
-    name: 'Claude Opus 4.5', 
-    shortName: 'Claude Opus',
-    shortAlias: 'opus', 
-    githubLabel: 'llm-claude-opus', 
-    contextWindow: '200K' 
-  },
-  { 
-    id: 'claude-sonnet-4-5-20250929', 
-    name: 'Claude Sonnet 4.5', 
-    shortName: 'Claude Sonnet',
-    shortAlias: 'sonnet', 
-    githubLabel: 'llm-claude-sonnet', 
-    contextWindow: '200K' 
-  },
-  { 
-    id: 'claude-haiku-4-5-20251001', 
-    name: 'Claude Haiku 4.5', 
-    shortName: 'Claude Haiku',
-    shortAlias: 'haiku', 
-    githubLabel: 'llm-claude-haiku', 
-    contextWindow: '200K' 
-  },
-];
-
-const CODEX_MODELS: ModelInfo[] = [
-  { 
-    id: 'gpt-5', 
-    name: 'GPT-5', 
-    shortName: 'GPT-5',
-    shortAlias: 'gpt5', 
-    githubLabel: 'llm-codex-gpt5', 
-    contextWindow: '400K' 
-  },
-  { 
-    id: 'gpt-5-mini', 
-    name: 'GPT-5 Mini', 
-    shortName: 'GPT-5 Mini',
-    shortAlias: 'gpt5-mini', 
-    githubLabel: 'llm-codex-gpt5-mini', 
-    contextWindow: '128K' 
-  },
-  { 
-    id: 'gpt-5-codex', 
-    name: 'GPT-5 Codex', 
-    shortName: 'Codex',
-    shortAlias: 'codex', 
-    githubLabel: 'llm-codex-codex', 
-    contextWindow: '400K' 
-  },
-  { 
-    id: 'o3', 
-    name: 'OpenAI o3', 
-    shortName: 'o3',
-    shortAlias: 'o3', 
-    githubLabel: 'llm-codex-o3', 
-    contextWindow: '200K' 
-  },
-  { 
-    id: 'o4-mini', 
-    name: 'OpenAI o4-mini', 
-    shortName: 'o4-mini', 
-    shortAlias: 'o4-mini', 
-    githubLabel: 'llm-codex-o4-mini', 
-    contextWindow: '128K' 
-  },
-];
-
-const GEMINI_MODELS: ModelInfo[] = [
-  { 
-    id: 'gemini-3-pro-preview', 
-    name: 'Gemini 3 Pro Preview', 
-    shortName: 'Gemini 3 Preview',
-    shortAlias: 'pro-preview', 
-    githubLabel: 'llm-gemini-pro-preview', 
-    contextWindow: '2M' 
-  },
-  { 
-    id: 'gemini-2.5-pro', 
-    name: 'Gemini 2.5 Pro', 
-    shortName: 'Gemini Pro',
-    shortAlias: 'pro', 
-    githubLabel: 'llm-gemini-pro', 
-    contextWindow: '2M' 
-  },
-  { 
-    id: 'gemini-2.5-flash', 
-    name: 'Gemini 2.5 Flash', 
-    shortName: 'Gemini Flash',
-    shortAlias: 'flash', 
-    githubLabel: 'llm-gemini-flash', 
-    contextWindow: '1M' 
-  },
-  { 
-    id: 'gemini-2.5-flash-lite', 
-    name: 'Gemini 2.5 Flash Lite', 
-    shortName: 'Flash Lite',
-    shortAlias: 'flash-lite', 
-    githubLabel: 'llm-gemini-flash-lite', 
-    contextWindow: '1M' 
-  },
-];
 
 const MODEL_INFO_MAP: Record<string, ModelInfo> = {};
 [...CLAUDE_MODELS, ...CODEX_MODELS, ...GEMINI_MODELS].forEach(m => {
