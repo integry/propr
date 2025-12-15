@@ -21,32 +21,118 @@ type AgentType = 'claude' | 'codex' | 'gemini';
 interface ModelInfo {
   id: string;
   name: string;           // Human-readable name
+  shortName: string;     // New Field: Human readable short name
   shortAlias: string;     // Short alias like "opus", "sonnet", "haiku"
   githubLabel: string;    // Format: llm-<agent-alias>-<model-alias>
+  contextWindow: string; // New Field: Display badge value
 }
 
 // Claude models (Opus first as default, then Sonnet, then Haiku)
 const CLAUDE_MODELS: ModelInfo[] = [
-  { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', shortAlias: 'opus', githubLabel: 'llm-claude-opus' },
-  { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', shortAlias: 'sonnet', githubLabel: 'llm-claude-sonnet' },
-  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', shortAlias: 'haiku', githubLabel: 'llm-claude-haiku' },
+  { 
+    id: 'claude-opus-4-5-20251101', 
+    name: 'Claude Opus 4.5', 
+    shortName: 'Claude Opus',
+    shortAlias: 'opus', 
+    githubLabel: 'llm-claude-opus', 
+    contextWindow: '200K' 
+  },
+  { 
+    id: 'claude-sonnet-4-5-20250929', 
+    name: 'Claude Sonnet 4.5', 
+    shortName: 'Claude Sonnet',
+    shortAlias: 'sonnet', 
+    githubLabel: 'llm-claude-sonnet', 
+    contextWindow: '200K' 
+  },
+  { 
+    id: 'claude-haiku-4-5-20251001', 
+    name: 'Claude Haiku 4.5', 
+    shortName: 'Claude Haiku',
+    shortAlias: 'haiku', 
+    githubLabel: 'llm-claude-haiku', 
+    contextWindow: '200K' 
+  },
 ];
 
 // Codex (OpenAI) models
 const CODEX_MODELS: ModelInfo[] = [
-  { id: 'gpt-5', name: 'GPT-5', shortAlias: 'gpt5', githubLabel: 'llm-codex-gpt5' },
-  { id: 'gpt-5-mini', name: 'GPT-5 Mini', shortAlias: 'gpt5-mini', githubLabel: 'llm-codex-gpt5-mini' },
-  { id: 'gpt-5-codex', name: 'GPT-5 Codex', shortAlias: 'codex', githubLabel: 'llm-codex-codex' },
-  { id: 'o3', name: 'OpenAI o3', shortAlias: 'o3', githubLabel: 'llm-codex-o3' },
-  { id: 'o4-mini', name: 'OpenAI o4-mini', shortAlias: 'o4-mini', githubLabel: 'llm-codex-o4-mini' },
+  { 
+    id: 'gpt-5', 
+    name: 'GPT-5', 
+    shortName: 'GPT-5',
+    shortAlias: 'gpt5', 
+    githubLabel: 'llm-codex-gpt5', 
+    contextWindow: '400K' 
+  },
+  { 
+    id: 'gpt-5-mini', 
+    name: 'GPT-5 Mini', 
+    shortName: 'GPT-5 Mini',
+    shortAlias: 'gpt5-mini', 
+    githubLabel: 'llm-codex-gpt5-mini', 
+    contextWindow: '128K' 
+  },
+  { 
+    id: 'gpt-5-codex', 
+    name: 'GPT-5 Codex', 
+    shortName: 'Codex',
+    shortAlias: 'codex', 
+    githubLabel: 'llm-codex-codex', 
+    contextWindow: '400K' 
+  },
+  { 
+    id: 'o3', 
+    name: 'OpenAI o3', 
+    shortName: 'o3',
+    shortAlias: 'o3', 
+    githubLabel: 'llm-codex-o3', 
+    contextWindow: '200K' 
+  },
+  { 
+    id: 'o4-mini', 
+    name: 'OpenAI o4-mini', 
+    shortName: 'o4-mini', 
+    shortAlias: 'o4-mini', 
+    githubLabel: 'llm-codex-o4-mini', 
+    contextWindow: '128K' 
+  },
 ];
 
 // Gemini models
 const GEMINI_MODELS: ModelInfo[] = [
-  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview', shortAlias: 'pro-preview', githubLabel: 'llm-gemini-pro-preview' },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', shortAlias: 'pro', githubLabel: 'llm-gemini-pro' },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', shortAlias: 'flash', githubLabel: 'llm-gemini-flash' },
-  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', shortAlias: 'flash-lite', githubLabel: 'llm-gemini-flash-lite' },
+  { 
+    id: 'gemini-3-pro-preview', 
+    name: 'Gemini 3 Pro Preview', 
+    shortName: 'Gemini 3 Preview',
+    shortAlias: 'pro-preview', 
+    githubLabel: 'llm-gemini-pro-preview', 
+    contextWindow: '2M' 
+  },
+  { 
+    id: 'gemini-2.5-pro', 
+    name: 'Gemini 2.5 Pro', 
+    shortName: 'Gemini Pro',
+    shortAlias: 'pro', 
+    githubLabel: 'llm-gemini-pro', 
+    contextWindow: '2M' 
+  },
+  { 
+    id: 'gemini-2.5-flash', 
+    name: 'Gemini 2.5 Flash', 
+    shortName: 'Gemini Flash',
+    shortAlias: 'flash', 
+    githubLabel: 'llm-gemini-flash', 
+    contextWindow: '1M' 
+  },
+  { 
+    id: 'gemini-2.5-flash-lite', 
+    name: 'Gemini 2.5 Flash Lite', 
+    shortName: 'Flash Lite',
+    shortAlias: 'flash-lite', 
+    githubLabel: 'llm-gemini-flash-lite', 
+    contextWindow: '1M' 
+  },
 ];
 
 const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
@@ -346,7 +432,16 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                     />
 
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-gray-900">{model.name}</div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-gray-900">{model.name}</span>
+                        
+                        {/* Context Window Badge */}
+                        {model.contextWindow && (
+                          <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 text-[10px] rounded font-medium">
+                            {model.contextWindow}
+                          </span>
+                        )}
+                      </div>
                       <code className="text-xs text-gray-500">{model.id}</code>
                       <div className="text-xs text-blue-600 mt-0.5">
                         alias: {model.shortAlias}
