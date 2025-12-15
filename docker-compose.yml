@@ -81,6 +81,7 @@ services:
       - ./repos:/usr/src/app/repos
       - /tmp/git-processor:/tmp/git-processor
       - ~/.claude:/root/.claude
+      - ~/.gemini:/root/.gemini
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
     env_file:

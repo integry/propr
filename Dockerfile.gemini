@@ -1,0 +1,57 @@
+# Dockerfile for Gemini CLI execution environment
+# Based on the Claude Code processor setup for secure AI code execution
+
+FROM node:20-slim
+
+# Install required system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    ca-certificates \
+    iptables \
+    sudo \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install GitHub CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update \
+    && apt-get install gh -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Use the existing node user (UID 1000) and give it sudo privileges
+RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Install Gemini CLI globally
+RUN npm install -g @google/gemini-cli@latest
+
+# Create workspace directory only - Gemini config will be mounted at runtime
+RUN mkdir -p /home/node/workspace && \
+    chown -R node:node /home/node
+
+# Copy firewall initialization script
+COPY scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
+RUN chmod +x /usr/local/bin/init-firewall.sh
+
+# Switch to non-root user
+USER node
+WORKDIR /home/node/workspace
+
+# Set up Git configuration for the container user
+RUN git config --global user.name "Gemini Code Bot" && \
+    git config --global user.email "gemini-bot@google.com" && \
+    git config --global init.defaultBranch main && \
+    git config --global --add safe.directory '*'
+
+# Copy gh wrapper script
+COPY --chown=node:node scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
+RUN chmod +x /usr/local/bin/gh-wrapper
+
+# Create entrypoint script for Gemini
+COPY --chown=node:node scripts/gemini-entrypoint.sh /home/node/gemini-entrypoint.sh
+RUN chmod +x /home/node/gemini-entrypoint.sh
+
+# Set default entrypoint
+ENTRYPOINT ["/home/node/gemini-entrypoint.sh"]

@@ -9,7 +9,8 @@ import type { RepoValidationResult } from '@gitfix/core';
 
 type RepoValidation = RepoValidationResult;
 import { issueQueue, type IssueJobData, type JobResult } from '@gitfix/core';
-import { getDefaultModel, resolveModelAlias } from '@gitfix/core';
+import { getDefaultModel, resolveLlmLabel } from '@gitfix/core';
+import { AgentRegistry } from '@gitfix/core';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
@@ -24,7 +25,8 @@ interface BaseToProcess {
     label: string | null;
 }
 
-interface ModelToProcess {
+interface AgentModelToProcess {
+    agentAlias: string;
     model: string;
     label: string | null;
 }
@@ -62,7 +64,6 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         }
 
         const defaultBranch = repoValidation.repoData?.defaultBranch || 'main';
-        const defaultModel = DEFAULT_MODEL_NAME;
         const labels = currentIssueData.data.labels.map(l => l.name);
 
         const baseLabels = labels.filter(l => l.startsWith('base-'));
@@ -72,22 +73,45 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
             ? baseLabels.map(l => ({ branch: l.substring('base-'.length), label: l }))
             : [{ branch: defaultBranch, label: null }];
 
-        const modelsToProcess: ModelToProcess[] = llmLabels.length > 0
-            ? llmLabels.map(l => ({
-                model: resolveModelAlias(l.substring('llm-'.length)),
-                label: l
-              }))
-            : [{ model: defaultModel, label: null }];
+        // Resolve LLM labels to agent + model pairs
+        const agentModelsToProcess: AgentModelToProcess[] = [];
+        if (llmLabels.length > 0) {
+            for (const label of llmLabels) {
+                const llmPart = label.substring('llm-'.length);
+                const resolution = await resolveLlmLabel(llmPart);
+                agentModelsToProcess.push({
+                    agentAlias: resolution.agentAlias,
+                    model: resolution.model,
+                    label
+                });
+                correlatedLogger.debug({
+                    label,
+                    resolvedAgent: resolution.agentAlias,
+                    resolvedModel: resolution.model
+                }, 'Resolved LLM label');
+            }
+        } else {
+            // No LLM labels - use default agent
+            const registry = AgentRegistry.getInstance();
+            await registry.ensureInitialized();
+            const defaultAgent = registry.getDefaultAgent();
+            agentModelsToProcess.push({
+                agentAlias: defaultAgent?.config.alias || 'default',
+                model: defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME,
+                label: null
+            });
+        }
 
         let jobsEnqueued = 0;
         for (const base of basesToProcess) {
-            for (const model of modelsToProcess) {
+            for (const agentModel of agentModelsToProcess) {
                 const newJobData: IssueJobData = {
                     ...issueRef,
                     baseBranch: base.branch,
                     baseLabel: base.label,
-                    modelName: model.model,
-                    modelLabel: model.label,
+                    agentAlias: agentModel.agentAlias,
+                    modelName: agentModel.model,
+                    modelLabel: agentModel.label,
                     isChildJob: true,
                     issuePayload: currentIssueData.data as unknown as Record<string, unknown>,
                     repoPayload: repoValidation.repoData as unknown as Record<string, unknown>
@@ -95,7 +119,13 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
 
                 await issueQueue.add(jobName, newJobData);
                 jobsEnqueued++;
-                correlatedLogger.info({ jobId, issue: issueRef.number, base: base.branch, model: model.model }, 'Enqueued child job');
+                correlatedLogger.info({
+                    jobId,
+                    issue: issueRef.number,
+                    base: base.branch,
+                    agent: agentModel.agentAlias,
+                    model: agentModel.model
+                }, 'Enqueued child job');
             }
         }
 

@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  getSettings, 
-  updateSettings, 
-  getFollowupKeywords, 
-  updateFollowupKeywords, 
-  getPrLabel, 
-  updatePrLabel, 
-  getPrimaryProcessingLabels, 
-  updatePrimaryProcessingLabels 
+import {
+  getSettings,
+  updateSettings,
+  getFollowupKeywords,
+  updateFollowupKeywords,
+  getPrLabel,
+  updatePrLabel,
+  getPrimaryProcessingLabels,
+  updatePrimaryProcessingLabels,
+  getAgents,
+  AgentConfig
 } from '../../api/gitfixApi';
 import { Settings } from './types';
 import GeneralSettingsSection from './GeneralSettingsSection';
@@ -26,6 +28,7 @@ const SettingsPage: React.FC = () => {
   const [newKeyword, setNewKeyword] = useState<string>('');
   const [primaryLabels, setPrimaryLabels] = useState<string[]>([]);
   const [newPrimaryLabel, setNewPrimaryLabel] = useState<string>('');
+  const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [keywordsLoading, setKeywordsLoading] = useState<boolean>(true);
   const [prLabelLoading, setPrLabelLoading] = useState<boolean>(true);
@@ -113,7 +116,19 @@ const SettingsPage: React.FC = () => {
     loadPrimaryProcessingLabels();
   }, []);
 
-  const handleSettingChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  useEffect(() => {
+    const loadAgents = async () => {
+      try {
+        const data = await getAgents();
+        setAgents(data.agents || []);
+      } catch (err) {
+        console.error('Failed to load agents for model selection:', err);
+      }
+    };
+    loadAgents();
+  }, []);
+
+  const handleSettingChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setSettings(prev => ({ ...prev, [name]: value }));
   };
@@ -240,6 +255,7 @@ const SettingsPage: React.FC = () => {
       
       <GeneralSettingsSection
         settings={settings}
+        agents={agents}
         loading={loading}
         saving={saving}
         error={error}

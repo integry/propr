@@ -29,7 +29,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { name: 'Repositories', href: '/repositories', icon: RepoIcon },
     { name: 'Tasks', href: '/tasks', icon: TaskIcon },
     { name: 'Plans', href: '/plans', icon: PlansIcon },
-    { name: 'AI Tools', href: '/ai-tools', icon: AiIcon },
+    { name: 'AI Agents', href: '/ai-agents', icon: AiIcon },
     { name: 'Settings', href: '/settings', icon: SettingsIcon },
   ];
 
