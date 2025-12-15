@@ -126,8 +126,9 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
     const now = new Date();
     const shortTimestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
 
+    const branchModelPrefix = modelName ? `${modelName}-` : '';
+    const branchName = `${issueId}/${branchModelPrefix}${sanitizedTitle}-${shortTimestamp}-${randomString}`;
     const modelSuffix = modelName ? `-${modelName}` : '';
-    const branchName = `ai-fix/${issueId}-${sanitizedTitle}-${shortTimestamp}${modelSuffix}-${randomString}`;
     const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelSuffix}-${randomString}`;
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
 
