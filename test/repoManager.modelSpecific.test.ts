@@ -56,36 +56,43 @@ describe('Repository Manager - Model-Specific Features', () => {
                 .replace(/-+/g, '-')
                 .replace(/^-|-$/g, '')
                 .substring(0, 25);
-            
+
             const randomString = Math.random().toString(36).substring(2, 5);
-            
+
             const now = new Date();
             const shortTimestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-            
-            const modelSuffix = modelName ? `-${modelName}` : '';
-            const branchName = `ai-fix/${issueId}-${sanitizedTitle}-${shortTimestamp}${modelSuffix}-${randomString}`;
-            const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelSuffix}-${randomString}`;
+
+            // New branch format: {issue}/{model}-{slug}-{timestamp}-{suffix}
+            const sanitizedModel = modelName
+                ? modelName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+                : '';
+            const branchName = sanitizedModel
+                ? `${issueId}/${sanitizedModel}-${sanitizedTitle}-${shortTimestamp}-${randomString}`
+                : `${issueId}/ai-${sanitizedTitle}-${shortTimestamp}-${randomString}`;
+            const modelDirSuffix = sanitizedModel ? `-${sanitizedModel}` : '';
+            const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelDirSuffix}-${randomString}`;
             const worktreePath = path.join('/tmp/worktrees', 'owner', 'repo', worktreeDirName);
-            
+
             return { branchName, worktreeDirName, worktreePath, randomString };
         }
-        
+
         const issueId = 42;
         const issueTitle = 'Fix Authentication Bug';
-        
+
         const opusResult = generateWorktreeNames(issueId, issueTitle, 'opus');
         const sonnetResult = generateWorktreeNames(issueId, issueTitle, 'sonnet');
         const noModelResult = generateWorktreeNames(issueId, issueTitle, null);
-        
+
         assert.notStrictEqual(opusResult.branchName, sonnetResult.branchName);
         assert.notStrictEqual(opusResult.worktreeDirName, sonnetResult.worktreeDirName);
         assert.notStrictEqual(opusResult.worktreePath, sonnetResult.worktreePath);
-        
-        assert(opusResult.branchName.includes('-opus-'));
-        assert(sonnetResult.branchName.includes('-sonnet-'));
-        assert(!noModelResult.branchName.includes('-opus-'));
-        assert(!noModelResult.branchName.includes('-sonnet-'));
-        
+
+        assert(opusResult.branchName.includes('opus-'));
+        assert(sonnetResult.branchName.includes('sonnet-'));
+        assert(noModelResult.branchName.includes('/ai-'));
+        assert(!noModelResult.branchName.includes('opus'));
+        assert(!noModelResult.branchName.includes('sonnet'));
+
         assert.strictEqual(opusResult.randomString.length, 3);
         assert.strictEqual(sonnetResult.randomString.length, 3);
         assert(/^[a-z0-9]{3}$/.test(opusResult.randomString));
@@ -222,10 +229,15 @@ describe('Repository Manager - Model-Specific Features', () => {
     
     test('branch name construction follows git naming conventions', () => {
         function generateBranchName(issueId: number, sanitizedTitle: string, timestamp: string, modelName: string | null, randomString: string): string {
-            const modelSuffix = modelName ? `-${modelName}` : '';
-            return `ai-fix/${issueId}-${sanitizedTitle}-${timestamp}${modelSuffix}-${randomString}`;
+            // New branch format: {issue}/{model}-{slug}-{timestamp}-{suffix}
+            const sanitizedModel = modelName
+                ? modelName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+                : '';
+            return sanitizedModel
+                ? `${issueId}/${sanitizedModel}-${sanitizedTitle}-${timestamp}-${randomString}`
+                : `${issueId}/ai-${sanitizedTitle}-${timestamp}-${randomString}`;
         }
-        
+
         const testCases: BranchTestCase[] = [
             {
                 issueId: 42,
@@ -233,7 +245,7 @@ describe('Repository Manager - Model-Specific Features', () => {
                 timestamp: '20240528-1430',
                 modelName: 'opus',
                 randomString: 'abc',
-                expected: 'ai-fix/42-fix-bug-20240528-1430-opus-abc'
+                expected: '42/opus-fix-bug-20240528-1430-abc'
             },
             {
                 issueId: 123,
@@ -241,7 +253,7 @@ describe('Repository Manager - Model-Specific Features', () => {
                 timestamp: '20240528-1445',
                 modelName: 'sonnet',
                 randomString: 'xyz',
-                expected: 'ai-fix/123-feature-request-20240528-1445-sonnet-xyz'
+                expected: '123/sonnet-feature-request-20240528-1445-xyz'
             },
             {
                 issueId: 1,
@@ -249,10 +261,10 @@ describe('Repository Manager - Model-Specific Features', () => {
                 timestamp: '20240528-1500',
                 modelName: null,
                 randomString: '123',
-                expected: 'ai-fix/1-urgent-fix-20240528-1500-123'
+                expected: '1/ai-urgent-fix-20240528-1500-123'
             }
         ];
-        
+
         testCases.forEach((testCase, index) => {
             const result = generateBranchName(
                 testCase.issueId,
@@ -261,10 +273,10 @@ describe('Repository Manager - Model-Specific Features', () => {
                 testCase.modelName,
                 testCase.randomString
             );
-            
+
             assert.strictEqual(result, testCase.expected, `Test case ${index + 1} failed`);
-            
-            assert(result.startsWith('ai-fix/'), 'Branch should start with ai-fix/');
+
+            assert(result.includes('/'), 'Branch should contain issue number followed by /');
             assert(!result.includes('..'), 'Branch should not contain consecutive dots');
             assert(!result.includes(' '), 'Branch should not contain spaces');
             assert(!result.endsWith('/'), 'Branch should not end with slash');
@@ -274,25 +286,24 @@ describe('Repository Manager - Model-Specific Features', () => {
 });
 
 describe('Repository Manager - Model Integration Edge Cases', () => {
-    
+
     test('handles model names with special characters', () => {
         function sanitizeModelName(modelName: string): string {
-            return modelName;
+            return modelName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
         }
-        
+
         function generateBranchWithModel(issueId: number, modelName: string): string {
             const sanitizedModel = sanitizeModelName(modelName);
-            const modelSuffix = sanitizedModel ? `-${sanitizedModel}` : '';
-            return `ai-fix/${issueId}-test${modelSuffix}-abc`;
+            return `${issueId}/${sanitizedModel}-test-abc`;
         }
-        
+
         const testCases = [
-            { model: 'claude-3.5-sonnet', expected: 'ai-fix/42-test-claude-3.5-sonnet-abc' },
-            { model: 'gpt-4o', expected: 'ai-fix/42-test-gpt-4o-abc' },
-            { model: 'opus', expected: 'ai-fix/42-test-opus-abc' },
-            { model: 'model_with_underscores', expected: 'ai-fix/42-test-model_with_underscores-abc' }
+            { model: 'claude-3.5-sonnet', expected: '42/claude-3-5-sonnet-test-abc' },
+            { model: 'gpt-4o', expected: '42/gpt-4o-test-abc' },
+            { model: 'opus', expected: '42/opus-test-abc' },
+            { model: 'model_with_underscores', expected: '42/model-with-underscores-test-abc' }
         ];
-        
+
         testCases.forEach((testCase, index) => {
             const result = generateBranchWithModel(42, testCase.model);
             assert.strictEqual(result, testCase.expected, `Test case ${index + 1} failed`);
@@ -306,20 +317,25 @@ describe('Repository Manager - Model Integration Edge Cases', () => {
                 const randomString = Math.random().toString(36).substring(2, 5);
                 const sanitizedTitle = title.toLowerCase().replace(/[^a-z0-9_\\-]/g, '-').substring(0, 25);
                 const timestamp = '20240528-1430';
-                const modelSuffix = modelName ? `-${modelName}` : '';
-                const branchName = `ai-fix/${issueId}-${sanitizedTitle}-${timestamp}${modelSuffix}-${randomString}`;
+                // New branch format: {issue}/{model}-{slug}-{timestamp}-{suffix}
+                const sanitizedModel = modelName
+                    ? modelName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+                    : '';
+                const branchName = sanitizedModel
+                    ? `${issueId}/${sanitizedModel}-${sanitizedTitle}-${timestamp}-${randomString}`
+                    : `${issueId}/ai-${sanitizedTitle}-${timestamp}-${randomString}`;
                 names.push(branchName);
             }
             return names;
         }
-        
+
         const names = generateMultipleNames(42, 'Test Issue', 'opus', 10);
-        
+
         const uniqueNames = new Set(names);
         assert.strictEqual(uniqueNames.size, names.length, 'All generated names should be unique');
-        
+
         names.forEach((name, index) => {
-            assert(name.startsWith('ai-fix/42-test-issue-20240528-1430-opus-'), `Name ${index + 1} has wrong format`);
+            assert(name.startsWith('42/opus-test-issue-20240528-1430-'), `Name ${index + 1} has wrong format`);
             const randomPart = name.split('-').pop();
             assert.strictEqual(randomPart?.length, 3, `Name ${index + 1} has wrong random part length`);
         });

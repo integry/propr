@@ -31,27 +31,34 @@ test('Git module has valid environment configuration', () => {
 });
 
 test('Branch name generation from issue title', () => {
-    function generateBranchName(issueNumber: number, title: string): string {
+    function generateBranchName(issueNumber: number, title: string, modelName: string | null = null): string {
         const safeName = title
             .toLowerCase()
             .replace(/[^a-z0-9\s-]/g, '')
             .trim()
             .replace(/\s+/g, '-')
             .substring(0, 50);
-        
-        return `ai-fix/${issueNumber}-${safeName}`;
+
+        // New branch format: {issue}/{model}-{slug}-{timestamp}-{suffix}
+        const sanitizedModel = modelName
+            ? modelName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+            : '';
+
+        return sanitizedModel
+            ? `${issueNumber}/${sanitizedModel}-${safeName}`
+            : `${issueNumber}/ai-${safeName}`;
     }
-    
+
     const branchName = generateBranchName(123, 'Fix the bug with special chars!');
-    assert.strictEqual(branchName, 'ai-fix/123-fix-the-bug-with-special-chars');
-    
+    assert.strictEqual(branchName, '123/ai-fix-the-bug-with-special-chars');
+
     const longTitle = 'This is a very long issue title that should be truncated to prevent extremely long branch names';
     const longBranchName = generateBranchName(456, longTitle);
-    
-    assert.ok(longBranchName.startsWith('ai-fix/456-'));
+
+    assert.ok(longBranchName.startsWith('456/ai-'));
     assert.ok(/^[a-zA-Z0-9\/-]+$/.test(longBranchName));
-    
-    const titlePart = longBranchName.replace('ai-fix/456-', '');
+
+    const titlePart = longBranchName.replace('456/ai-', '');
     assert.ok(titlePart.length > 0);
     assert.ok(titlePart.includes('this-is-a-very-long-issue-title'));
 });

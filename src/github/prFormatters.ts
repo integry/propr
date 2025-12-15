@@ -2,6 +2,71 @@ import { getUsageStats } from '@gitfix/core';
 
 const MAX_COMMENT_LENGTH = 65000;
 
+/**
+ * Converts a model identifier to a human-readable LLM name for PR titles.
+ * Examples:
+ *   - 'claude-opus-4-5' → 'Claude Opus'
+ *   - 'claude-sonnet-4-5' → 'Claude Sonnet'
+ *   - 'gemini-2.5-pro' → 'Gemini Pro'
+ *   - 'codex' → 'Codex'
+ */
+export function formatModelNameForDisplay(modelName: string | undefined | null): string {
+    // Handle empty or undefined
+    if (!modelName) return 'AI';
+
+    const lowerModel = modelName.toLowerCase();
+
+    // Claude models
+    if (lowerModel.includes('claude')) {
+        if (lowerModel.includes('opus')) return 'Claude Opus';
+        if (lowerModel.includes('sonnet')) return 'Claude Sonnet';
+        if (lowerModel.includes('haiku')) return 'Claude Haiku';
+        return 'Claude';
+    }
+
+    // Gemini models
+    if (lowerModel.includes('gemini')) {
+        if (lowerModel.includes('pro')) return 'Gemini Pro';
+        if (lowerModel.includes('flash')) return 'Gemini Flash';
+        return 'Gemini';
+    }
+
+    // Codex models
+    if (lowerModel.includes('codex')) {
+        return 'Codex';
+    }
+
+    // GPT models
+    if (lowerModel.includes('gpt')) {
+        if (lowerModel.includes('4')) return 'GPT-4';
+        if (lowerModel.includes('3')) return 'GPT-3';
+        return 'GPT';
+    }
+
+    // Fallback: capitalize first letter, remove version numbers
+    const formatted = modelName
+        .split(/[-_]/)
+        .filter(part => !/^\d+$/.test(part) && !/^\d+\.\d+/.test(part))
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+        .join(' ');
+
+    return formatted || 'AI';
+}
+
+/**
+ * Generates the PR title with the model-specific prefix.
+ * @param issueNumber - The GitHub issue number
+ * @param issueTitle - The title of the issue
+ * @param modelName - The model identifier (e.g., 'claude-opus-4-5')
+ * @param hasChanges - Whether the PR includes code changes (fix) or just analysis
+ * @returns Formatted PR title like "Claude Opus Fix for Issue #123: Issue Title"
+ */
+export function generatePRTitle(issueNumber: number, issueTitle: string, modelName?: string, hasChanges: boolean = true): string {
+    const modelDisplayName = formatModelNameForDisplay(modelName);
+    const actionWord = hasChanges ? 'Fix' : 'Analysis';
+    return `${modelDisplayName} ${actionWord} for Issue #${issueNumber}: ${issueTitle}`;
+}
+
 interface ContentBlock {
     text?: string;
 }

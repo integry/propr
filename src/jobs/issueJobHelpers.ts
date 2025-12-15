@@ -12,6 +12,7 @@ import type { WorkerStateManager } from '@gitfix/core';
 import type { ClaudeCodeResponse } from '@gitfix/core';
 import type { WorktreeInfo, CommitResult } from '@gitfix/core';
 import type { RepoValidationResult } from '@gitfix/core';
+import { generatePRTitle } from '../github/prFormatters.js';
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -291,10 +292,7 @@ export async function createPullRequest(
     const { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger, issueTitle } = options;
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
-    let prTitle = `AI Analysis for Issue #${issueRef.number}: ${issueTitle}`;
-    if (commitResult) {
-        prTitle = `AI Fix for Issue #${issueRef.number}: ${issueTitle}`;
-    }
+    const prTitle = generatePRTitle(issueRef.number, issueTitle, modelName, !!commitResult);
 
     const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
     const prBody = `## AI Implementation Summary

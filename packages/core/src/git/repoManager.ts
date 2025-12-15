@@ -126,9 +126,18 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
     const now = new Date();
     const shortTimestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
 
-    const modelSuffix = modelName ? `-${modelName}` : '';
-    const branchName = `ai-fix/${issueId}-${sanitizedTitle}-${shortTimestamp}${modelSuffix}-${randomString}`;
-    const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelSuffix}-${randomString}`;
+    // Sanitize model name for branch (replace invalid chars)
+    const sanitizedModel = modelName
+        ? modelName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+        : '';
+
+    // New branch format: {issue}/{model}-{slug}-{timestamp}-{suffix}
+    // If no model, fall back to: {issue}/ai-{slug}-{timestamp}-{suffix}
+    const branchName = sanitizedModel
+        ? `${issueId}/${sanitizedModel}-${sanitizedTitle}-${shortTimestamp}-${randomString}`
+        : `${issueId}/ai-${sanitizedTitle}-${shortTimestamp}-${randomString}`;
+    const modelDirSuffix = sanitizedModel ? `-${sanitizedModel}` : '';
+    const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelDirSuffix}-${randomString}`;
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
 
     try {

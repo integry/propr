@@ -59,45 +59,51 @@ describe('Worker Integration - Concurrent Model Execution', () => {
                 .replace(/-+/g, '-')
                 .replace(/^-|-$/g, '')
                 .substring(0, 25);
-            
+
             const randomString = Math.random().toString(36).substring(2, 5);
             const now = new Date();
             const shortTimestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-            
-            const modelSuffix = modelName ? `-${modelName}` : '';
-            const branchName = `ai-fix/${issueId}-${sanitizedTitle}-${shortTimestamp}${modelSuffix}-${randomString}`;
-            const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelSuffix}-${randomString}`;
+
+            // New branch format: {issue}/{model}-{slug}-{timestamp}-{suffix}
+            const sanitizedModel = modelName
+                ? modelName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+                : '';
+            const branchName = sanitizedModel
+                ? `${issueId}/${sanitizedModel}-${sanitizedTitle}-${shortTimestamp}-${randomString}`
+                : `${issueId}/ai-${sanitizedTitle}-${shortTimestamp}-${randomString}`;
+            const modelDirSuffix = sanitizedModel ? `-${sanitizedModel}` : '';
+            const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelDirSuffix}-${randomString}`;
             const worktreePath = path.join(process.env.WORKTREES_BASE_PATH!, 'testuser', 'testrepo', worktreeDirName);
-            
+
             return { worktreePath, branchName, modelName };
         }
-        
+
         const issueId = 42;
         const issueTitle = 'Test Concurrent Issue';
-        
+
         const opusWorktree = simulateWorktreeCreation(issueId, issueTitle, 'opus');
         const sonnetWorktree = simulateWorktreeCreation(issueId, issueTitle, 'sonnet');
-        
+
         assert.notStrictEqual(opusWorktree.worktreePath, sonnetWorktree.worktreePath);
         assert.notStrictEqual(opusWorktree.branchName, sonnetWorktree.branchName);
-        
-        assert(opusWorktree.branchName.includes('-opus-'));
-        assert(sonnetWorktree.branchName.includes('-sonnet-'));
+
+        assert(opusWorktree.branchName.includes('opus-'));
+        assert(sonnetWorktree.branchName.includes('sonnet-'));
         assert(opusWorktree.worktreePath.includes('-opus-'));
         assert(sonnetWorktree.worktreePath.includes('-sonnet-'));
-        
+
         await fs.ensureDir(opusWorktree.worktreePath);
         await fs.ensureDir(sonnetWorktree.worktreePath);
-        
+
         await fs.writeFile(path.join(opusWorktree.worktreePath, 'opus-file.txt'), 'opus work');
         await fs.writeFile(path.join(sonnetWorktree.worktreePath, 'sonnet-file.txt'), 'sonnet work');
-        
+
         const opusFiles = await fs.readdir(opusWorktree.worktreePath);
         const sonnetFiles = await fs.readdir(sonnetWorktree.worktreePath);
-        
+
         assert(opusFiles.includes('opus-file.txt'));
         assert(!opusFiles.includes('sonnet-file.txt'));
-        
+
         assert(sonnetFiles.includes('sonnet-file.txt'));
         assert(!sonnetFiles.includes('opus-file.txt'));
     });

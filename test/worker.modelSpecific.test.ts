@@ -115,33 +115,39 @@ describe('Worker - Branch and Worktree Naming', () => {
                 .replace(/-+/g, '-')
                 .replace(/^-|-$/g, '')
                 .substring(0, 25);
-            
+
             const randomString = Math.random().toString(36).substring(2, 5);
-            
+
             const now = new Date();
             const shortTimestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-            
-            const modelSuffix = modelName ? `-${modelName}` : '';
-            const branchName = `ai-fix/${issueId}-${sanitizedTitle}-${shortTimestamp}${modelSuffix}-${randomString}`;
-            const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelSuffix}-${randomString}`;
-            
+
+            // New branch format: {issue}/{model}-{slug}-{timestamp}-{suffix}
+            const sanitizedModel = modelName
+                ? modelName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+                : '';
+            const branchName = sanitizedModel
+                ? `${issueId}/${sanitizedModel}-${sanitizedTitle}-${shortTimestamp}-${randomString}`
+                : `${issueId}/ai-${sanitizedTitle}-${shortTimestamp}-${randomString}`;
+            const modelDirSuffix = sanitizedModel ? `-${sanitizedModel}` : '';
+            const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelDirSuffix}-${randomString}`;
+
             return { branchName, worktreeDirName, randomString };
         }
-        
+
         const issueId = 42;
         const issueTitle = 'Fix Critical Bug in Authentication System';
         const modelName = 'opus';
-        
+
         const result = generateWorktreeNames(issueId, issueTitle, modelName);
-        
-        assert(result.branchName.startsWith('ai-fix/42-fix-critical-bug-in'));
-        assert(result.branchName.includes('-opus-'));
+
+        assert(result.branchName.startsWith('42/opus-fix-critical-bug-in'));
+        assert(result.branchName.includes('opus-'));
         assert(result.branchName.endsWith(`-${result.randomString}`));
-        
+
         assert(result.worktreeDirName.startsWith('issue-42-'));
         assert(result.worktreeDirName.includes('-opus-'));
         assert(result.worktreeDirName.endsWith(`-${result.randomString}`));
-        
+
         assert.strictEqual(result.randomString.length, 3);
         assert(/^[a-z0-9]{3}$/.test(result.randomString));
     });
@@ -154,33 +160,40 @@ describe('Worker - Branch and Worktree Naming', () => {
                 .replace(/-+/g, '-')
                 .replace(/^-|-$/g, '')
                 .substring(0, 25);
-            
+
             const randomString = Math.random().toString(36).substring(2, 5);
-            
+
             const now = new Date();
             const shortTimestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-            
-            const modelSuffix = modelName ? `-${modelName}` : '';
-            const branchName = `ai-fix/${issueId}-${sanitizedTitle}-${shortTimestamp}${modelSuffix}-${randomString}`;
-            const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelSuffix}-${randomString}`;
-            
+
+            // New branch format: {issue}/{model}-{slug}-{timestamp}-{suffix}
+            const sanitizedModel = modelName
+                ? modelName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+                : '';
+            const branchName = sanitizedModel
+                ? `${issueId}/${sanitizedModel}-${sanitizedTitle}-${shortTimestamp}-${randomString}`
+                : `${issueId}/ai-${sanitizedTitle}-${shortTimestamp}-${randomString}`;
+            const modelDirSuffix = sanitizedModel ? `-${sanitizedModel}` : '';
+            const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelDirSuffix}-${randomString}`;
+
             return { branchName, worktreeDirName };
         }
-        
+
         const issueId = 42;
         const issueTitle = 'Test Issue';
-        
+
         const opusResult = generateWorktreeNames(issueId, issueTitle, 'opus');
         const sonnetResult = generateWorktreeNames(issueId, issueTitle, 'sonnet');
         const defaultResult = generateWorktreeNames(issueId, issueTitle, null);
-        
+
         assert.notStrictEqual(opusResult.branchName, sonnetResult.branchName);
         assert.notStrictEqual(opusResult.worktreeDirName, sonnetResult.worktreeDirName);
-        
-        assert(opusResult.branchName.includes('-opus-'));
-        assert(sonnetResult.branchName.includes('-sonnet-'));
-        assert(!defaultResult.branchName.includes('-opus-'));
-        assert(!defaultResult.branchName.includes('-sonnet-'));
+
+        assert(opusResult.branchName.includes('opus-'));
+        assert(sonnetResult.branchName.includes('sonnet-'));
+        assert(defaultResult.branchName.includes('/ai-'));
+        assert(!defaultResult.branchName.includes('opus'));
+        assert(!defaultResult.branchName.includes('sonnet'));
     });
     
     test('createWorktreeForIssue sanitizes issue titles correctly', () => {
@@ -249,10 +262,10 @@ describe('Worker - Model-Specific Job Processing', () => {
             modelName: 'opus',
             correlationId: 'test-correlation-id'
         };
-        
+
         const modelName = issueRef.modelName || 'default';
         assert.strictEqual(modelName, 'opus');
-        
+
         function simulateWorktreeNaming(issueId: number, issueTitle: string, modelName: string): string {
             const sanitizedTitle = issueTitle
                 .toLowerCase()
@@ -260,18 +273,23 @@ describe('Worker - Model-Specific Job Processing', () => {
                 .replace(/-+/g, '-')
                 .replace(/^-|-$/g, '')
                 .substring(0, 25);
-            
+
             const randomString = 'abc';
             const timestamp = '20240528-1430';
-            const modelSuffix = modelName ? `-${modelName}` : '';
-            const branchName = `ai-fix/${issueId}-${sanitizedTitle}-${timestamp}${modelSuffix}-${randomString}`;
-            
+            // New branch format: {issue}/{model}-{slug}-{timestamp}-{suffix}
+            const sanitizedModel = modelName
+                ? modelName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+                : '';
+            const branchName = sanitizedModel
+                ? `${issueId}/${sanitizedModel}-${sanitizedTitle}-${timestamp}-${randomString}`
+                : `${issueId}/ai-${sanitizedTitle}-${timestamp}-${randomString}`;
+
             return branchName;
         }
-        
+
         const branchName = simulateWorktreeNaming(issueRef.number, 'Test Issue', modelName);
-        assert(branchName.includes('-opus-'), `Branch name should contain model: ${branchName}`);
-        assert.strictEqual(branchName, 'ai-fix/42-test-issue-20240528-1430-opus-abc');
+        assert(branchName.includes('opus-'), `Branch name should contain model: ${branchName}`);
+        assert.strictEqual(branchName, '42/opus-test-issue-20240528-1430-abc');
     });
     
     test('processGitHubIssueJob handles missing modelName gracefully', async () => {
