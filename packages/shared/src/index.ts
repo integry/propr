@@ -1,5 +1,4 @@
-// Re-export all model definitions from @gitfix/shared
-// This ensures gitfix-ui uses the same single source of truth as @gitfix/core
+// Export all model definitions
 export {
   type AgentType,
   type ModelInfo,
@@ -12,4 +11,4 @@ export {
   MODEL_SHORT_NAMES,
   AGENT_DEFAULTS,
   typeBadgeColors,
-} from '@gitfix/shared';
+} from './modelDefinitions.js';
