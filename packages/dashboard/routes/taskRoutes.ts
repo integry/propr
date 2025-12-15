@@ -12,6 +12,7 @@ interface JobData {
     subtitle?: string;
     comments?: unknown[];
     modelName?: string;
+    agentAlias?: string;
 }
 
 interface JobReturnValue {
@@ -136,6 +137,19 @@ async function getTasksFromDb(
 function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unknown> {
   let title = null;
   let subtitle = null;
+  let llmProvider = null;
+  let repositoryOwner = null;
+  let repositoryName = null;
+
+  // Parse repository into owner and name
+  if (row.repository && typeof row.repository === 'string') {
+    const parts = row.repository.split('/');
+    if (parts.length === 2) {
+      repositoryOwner = parts[0];
+      repositoryName = parts[1];
+    }
+  }
+
   if (row.initial_job_data) {
     try {
       const jobData = typeof row.initial_job_data === 'string'
@@ -143,6 +157,7 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
         : row.initial_job_data;
       title = jobData.title || (jobData.issueRef ? jobData.issueRef.title : null) || null;
       subtitle = jobData.subtitle || null;
+      llmProvider = jobData.agentAlias || null;
     } catch (e) {
       console.error('Failed to parse initial_job_data', e);
     }
@@ -151,6 +166,8 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
     id: row.task_id,
     issueId: row.task_id,
     repository: row.repository,
+    repositoryOwner: repositoryOwner,
+    repositoryName: repositoryName,
     issueNumber: row.issue_number,
     title: title,
     subtitle: subtitle,
@@ -161,7 +178,9 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
     failedReason: row.state === 'failed' ? row.failedReason : null,
     progress: (row.state === 'completed' || row.state === 'failed') ? 100 : (row.state === 'processing' ? 50 : 0),
     attemptsMade: 1,
-    modelName: row.model_name
+    modelName: row.model_name,
+    model: row.model_name,
+    llmProvider: llmProvider
   };
 }
 
@@ -234,10 +253,25 @@ function getJobStatus(job: Job<JobData, JobReturnValue>): string {
 }
 
 function mapQueueJobToResponse(job: Job<JobData, JobReturnValue>): Record<string, unknown> {
+  const repository = getJobRepository(job);
+  let repositoryOwner = null;
+  let repositoryName = null;
+
+  // Parse repository into owner and name
+  if (repository && repository !== 'Unknown') {
+    const parts = repository.split('/');
+    if (parts.length === 2) {
+      repositoryOwner = parts[0];
+      repositoryName = parts[1];
+    }
+  }
+
   return {
     id: job.id,
     issueId: job.id,
-    repository: getJobRepository(job),
+    repository: repository,
+    repositoryOwner: repositoryOwner,
+    repositoryName: repositoryName,
     issueNumber: getJobIssueNumber(job),
     title: job.returnvalue?.issueTitle || job.data?.title || null,
     subtitle: job.data?.subtitle || null,
@@ -248,6 +282,8 @@ function mapQueueJobToResponse(job: Job<JobData, JobReturnValue>): Record<string
     failedReason: job.failedReason,
     progress: job.progress,
     attemptsMade: job.attemptsMade,
-    modelName: job.data?.modelName
+    modelName: job.data?.modelName,
+    model: job.data?.modelName || null,
+    llmProvider: job.data?.agentAlias || null
   };
 }

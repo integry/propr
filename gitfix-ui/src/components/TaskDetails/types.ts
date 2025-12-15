@@ -22,6 +22,8 @@ export interface TaskInfo {
   repoOwner?: string;
   repoName?: string;
   modelName?: string;
+  model?: string;
+  llmProvider?: string;
 }
 
 export interface PromptData {

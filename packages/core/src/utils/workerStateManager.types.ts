@@ -16,6 +16,7 @@ export interface IssueRef {
     repoName: string;
     type?: string;
     modelName?: string;
+    agentAlias?: string;
     [key: string]: unknown;
 }
 
