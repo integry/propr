@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AgentConfig } from '../../api/gitfixApi';
-import { AgentType, AGENT_MODELS, AGENT_DEFAULTS, typeBadgeColors } from '../../config/modelDefinitions';
+import { ModelAgentType as AgentType, AGENT_MODELS, AGENT_DEFAULTS, typeBadgeColors } from '@gitfix/core';
 
 interface AgentConfigModalProps {
   agent: AgentConfig | null;
