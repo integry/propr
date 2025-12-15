@@ -420,13 +420,11 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         </div>
       )}
 
-      {/* Pagination Controls - Simplified for now as grouping complicates total count logic */}
+      {/* Pagination Controls */}
       {!hideFilters && totalTasks > tasksPerPage && (
         <div className="flex justify-between items-center mt-4 px-2">
-          <div>
-            <span className="text-sm text-gray-500">
-               Note: Tasks are grouped by context.
-            </span>
+          <div className="text-sm text-gray-500">
+            Showing {currentPage * tasksPerPage + 1} - {Math.min((currentPage + 1) * tasksPerPage, totalTasks)} of {totalTasks} tasks
           </div>
           <div className="flex gap-2">
             <button
