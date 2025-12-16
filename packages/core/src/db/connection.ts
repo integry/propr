@@ -1,0 +1,150 @@
+import knex, { Knex } from 'knex';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import logger from '../utils/logger.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+type KnexEnvironment = 'development' | 'production';
+
+// Get database filename from env or use default
+function getDbFilename(): string {
+    if (process.env.DB_FILENAME) {
+        return process.env.DB_FILENAME;
+    }
+    // Default path: /usr/src/app/data/gitfix.sqlite (inside container)
+    // or ./data/gitfix.sqlite (local development)
+    const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), 'data');
+    return path.join(dataDir, 'gitfix.sqlite');
+}
+
+function ensureDataDirectory(filename: string): void {
+    const dir = path.dirname(filename);
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+        logger.info({ directory: dir }, 'Created data directory for SQLite database');
+    }
+}
+
+function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
+    const dbFilename = getDbFilename();
+
+    return {
+        development: {
+            client: 'better-sqlite3',
+            connection: {
+                filename: dbFilename
+            },
+            useNullAsDefault: true,
+            migrations: {
+                directory: path.join(__dirname, 'migrations'),
+                tableName: 'knex_migrations'
+            },
+            pool: {
+                afterCreate: (conn: { pragma: (arg: string) => void }, done: (err: Error | null) => void) => {
+                    conn.pragma('foreign_keys = ON');
+                    done(null);
+                }
+            }
+        },
+        production: {
+            client: 'better-sqlite3',
+            connection: {
+                filename: dbFilename
+            },
+            useNullAsDefault: true,
+            migrations: {
+                directory: path.join(__dirname, 'migrations'),
+                tableName: 'knex_migrations'
+            },
+            pool: {
+                afterCreate: (conn: { pragma: (arg: string) => void }, done: (err: Error | null) => void) => {
+                    conn.pragma('foreign_keys = ON');
+                    done(null);
+                }
+            }
+        }
+    };
+}
+
+let db: Knex;
+
+try {
+    const environment = (process.env.NODE_ENV ?? 'development') as KnexEnvironment;
+    const knexConfig = createKnexConfig();
+    const config = knexConfig[environment];
+
+    if (!config) {
+        throw new Error(`No database configuration found for environment: ${environment}`);
+    }
+
+    const dbFilename = (config.connection as { filename: string }).filename;
+
+    // Ensure data directory exists
+    ensureDataDirectory(dbFilename);
+
+    db = knex(config);
+
+    // Test connection
+    db.raw('SELECT 1')
+        .then(() => {
+            logger.info({
+                filename: dbFilename,
+                environment
+            }, 'SQLite database connection established successfully');
+        })
+        .catch((error: Error) => {
+            logger.error({
+                error: error.message,
+                filename: dbFilename
+            }, 'SQLite database connection test failed');
+        });
+
+} catch (error) {
+    const err = error as Error;
+    logger.error({
+        error: err.message,
+        stack: err.stack
+    }, 'Failed to initialize SQLite database connection');
+    throw err;
+}
+
+// Database is now mandatory - this constant is kept for backwards compatibility
+const isEnabled = true;
+
+export { db, isEnabled };
+
+export function createKnexConfigForMigrations(): Record<KnexEnvironment, Knex.Config> {
+    return createKnexConfig();
+}
+
+export async function runMigrations(): Promise<void> {
+    try {
+        logger.info('Running database migrations...');
+        await db.migrate.latest();
+        logger.info('Database migrations completed successfully');
+    } catch (error) {
+        const err = error as Error;
+        logger.error({
+            error: err.message,
+            stack: err.stack
+        }, 'Failed to run database migrations');
+        throw err;
+    }
+}
+
+export async function closeConnection(): Promise<void> {
+    if (db) {
+        try {
+            await db.destroy();
+            logger.info('SQLite database connection closed');
+        } catch (error) {
+            const err = error as Error;
+            logger.error({
+                error: err.message
+            }, 'Error closing SQLite database connection');
+        }
+    }
+}

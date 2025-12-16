@@ -5,7 +5,7 @@ import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from '@gitfix/core';
 import type { IssueJobData, CommentJobData, TaskImportJobData, JobResult } from '@gitfix/core';
 import { logger } from '@gitfix/core';
 import { generateCorrelationId } from '@gitfix/core';
-import { db, isEnabled as isDbEnabled } from '@gitfix/core';
+import { db, isEnabled as isDbEnabled, runMigrations } from '@gitfix/core';
 import { buildClaudeDockerImage } from '@gitfix/core';
 import { loadAiPrimaryTag, loadSettings } from '@gitfix/core';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';

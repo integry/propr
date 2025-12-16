@@ -1,4 +1,4 @@
-import { db } from '../db/postgres.js';
+import { db } from '../db/connection.js';
 import type { LogFn } from 'pino';
 import { generateContext } from './contextService.js';
 import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';

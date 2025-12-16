@@ -1,6 +1,6 @@
 import { Redis } from 'ioredis';
 import logger from './logger.js';
-import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
+import { db } from '../db/connection.js';
 import { analysisQueue } from '../queue/taskQueue.js';
 import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
@@ -133,7 +133,7 @@ function buildConversationDetail(params: ConversationDetailParams): Conversation
 }
 
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics, correlationId?: string): Promise<void> {
-    if (!isDbEnabled || !db || !taskId) return;
+    if (!taskId) return;
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd } = metrics;
     try {
         const executionData = {

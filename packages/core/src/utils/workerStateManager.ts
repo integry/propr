@@ -1,6 +1,6 @@
 import { Redis } from 'ioredis';
 import logger, { generateCorrelationId } from './logger.js';
-import { db, isEnabled as isDbEnabled } from '../db/postgres.js';
+import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
@@ -54,25 +54,23 @@ export class WorkerStateManager {
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`, state: TaskStates.PENDING
         }, 'Task state created');
 
-        if (isDbEnabled && db) {
-            try {
-                const taskData = {
-                    task_id: taskId, job_id: null, correlation_id: state.correlationId,
-                    repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-                    issue_number: issueRef.number, task_type: issueRef.type ?? 'issue',
-                    model_name: issueRef.modelName ?? null, created_at: state.createdAt,
-                    initial_job_data: JSON.stringify(issueRef)
-                };
-                await db('tasks').insert(taskData).onConflict('task_id').ignore();
-                const historyData = {
-                    task_id: taskId, state: TaskStates.PENDING,
-                    timestamp: state.createdAt, reason: 'Task created', metadata: JSON.stringify({})
-                };
-                await db('task_history').insert(historyData);
-                correlatedLogger.debug({ taskId }, 'Task state persisted to database');
-            } catch (error) {
-                correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
-            }
+        try {
+            const taskData = {
+                task_id: taskId, job_id: null, correlation_id: state.correlationId,
+                repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
+                issue_number: issueRef.number, task_type: issueRef.type ?? 'issue',
+                model_name: issueRef.modelName ?? null, created_at: state.createdAt,
+                initial_job_data: JSON.stringify(issueRef)
+            };
+            await db('tasks').insert(taskData).onConflict('task_id').ignore();
+            const historyData = {
+                task_id: taskId, state: TaskStates.PENDING,
+                timestamp: state.createdAt, reason: 'Task created', metadata: JSON.stringify({})
+            };
+            await db('task_history').insert(historyData);
+            correlatedLogger.debug({ taskId }, 'Task state persisted to database');
+        } catch (error) {
+            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
         }
         return state;
     }
@@ -118,22 +116,20 @@ export class WorkerStateManager {
             previousState, newState, attempts: state.attempts
         }, 'Task state updated');
 
-        if (isDbEnabled && db) {
-            try {
-                const historyData = {
-                    task_id: taskId, state: newState, timestamp: new Date().toISOString(),
-                    reason: metadata.reason ?? `State changed from ${previousState}`,
-                    metadata: JSON.stringify({
-                        ...(metadata.historyMetadata ?? {}), previousState, attempts: state.attempts,
-                        error: metadata.error, worktreeInfo: metadata.worktreeInfo,
-                        claudeResult: metadata.claudeResult, prResult: metadata.prResult, commitHash: metadata.commitHash
+        try {
+            const historyData = {
+                task_id: taskId, state: newState, timestamp: new Date().toISOString(),
+                reason: metadata.reason ?? `State changed from ${previousState}`,
+                metadata: JSON.stringify({
+                    ...(metadata.historyMetadata ?? {}), previousState, attempts: state.attempts,
+                    error: metadata.error, worktreeInfo: metadata.worktreeInfo,
+                    claudeResult: metadata.claudeResult, prResult: metadata.prResult, commitHash: metadata.commitHash
                     })
                 };
                 await db('task_history').insert(historyData);
-                correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
-            } catch (error) {
-                correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
-            }
+            correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
+        } catch (error) {
+            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
         }
         return state;
     }

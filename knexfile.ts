@@ -11,42 +11,45 @@ interface KnexConfig {
     production: Knex.Config;
 }
 
+// Default database path
+const defaultDbPath = path.join(__dirname, 'data', 'gitfix.sqlite');
+const dbFilename = process.env.DB_FILENAME ?? defaultDbPath;
+
 const config: KnexConfig = {
     development: {
-        client: 'pg',
+        client: 'better-sqlite3',
         connection: {
-            host: process.env.DB_HOST ?? 'localhost',
-            port: parseInt(process.env.DB_PORT ?? '5432', 10),
-            user: process.env.DB_USER ?? 'gitfix_user',
-            password: process.env.DB_PASSWORD ?? 'gitfix_password',
-            database: process.env.DB_NAME ?? 'gitfix_history'
+            filename: dbFilename
         },
+        useNullAsDefault: true,
         migrations: {
             directory: path.join(__dirname, 'packages/core/src/db/migrations'),
             tableName: 'knex_migrations'
         },
         pool: {
-            min: 2,
-            max: 10
+            afterCreate: (conn: { pragma: (arg: string) => void }, done: (err: Error | null) => void) => {
+                // Enable foreign keys for SQLite
+                conn.pragma('foreign_keys = ON');
+                done(null);
+            }
         }
     },
 
     production: {
-        client: 'pg',
+        client: 'better-sqlite3',
         connection: {
-            host: process.env.DB_HOST ?? 'db',
-            port: parseInt(process.env.DB_PORT ?? '5432', 10),
-            user: process.env.DB_USER,
-            password: process.env.DB_PASSWORD,
-            database: process.env.DB_NAME
+            filename: dbFilename
         },
+        useNullAsDefault: true,
         migrations: {
             directory: path.join(__dirname, 'packages/core/src/db/migrations'),
             tableName: 'knex_migrations'
         },
         pool: {
-            min: 2,
-            max: 20
+            afterCreate: (conn: { pragma: (arg: string) => void }, done: (err: Error | null) => void) => {
+                conn.pragma('foreign_keys = ON');
+                done(null);
+            }
         }
     }
 };
