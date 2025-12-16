@@ -1,5 +1,5 @@
 import { Redis } from 'ioredis';
-import { db } from '../db/postgres.js';
+import { db } from '../db/connection.js';
 import { generateExecutionAnalysisPrompt } from '../claude/prompts/promptGenerator.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import logger from '../utils/logger.js';

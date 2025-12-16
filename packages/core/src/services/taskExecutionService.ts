@@ -1,4 +1,4 @@
-import { db } from '../db/postgres.js';
+import { db } from '../db/connection.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 

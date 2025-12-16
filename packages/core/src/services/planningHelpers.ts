@@ -1,4 +1,4 @@
-import { db } from '../db/postgres.js';
+import { db } from '../db/connection.js';
 import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
 import { countTokens, estimateTokens } from '../utils/tokenCalculation.js';
 import { findRelevantFiles } from './relevanceService.js';

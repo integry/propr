@@ -11,44 +11,6 @@ services:
     networks:
       - gitfix-net
 
-  db:
-    image: postgres:15-alpine
-    container_name: gitfix-postgres
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=${DB_NAME}
-      - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - '5433:5432'
-    networks:
-      - gitfix-net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: gitfix-pgadmin
-    restart: unless-stopped
-    environment:
-      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL:-admin@example.com}
-      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD:-admin}
-      - PGADMIN_CONFIG_SERVER_MODE=False
-      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
-    ports:
-      - '5050:80'
-    networks:
-      - gitfix-net
-    depends_on:
-      - db
-
   daemon:
     build:
       context: .
@@ -57,6 +19,7 @@ services:
     command: npm run daemon
     volumes:
       - ./logs:/usr/src/app/logs
+      - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor
     env_file:
       - .env
@@ -65,8 +28,6 @@ services:
     depends_on:
       redis:
         condition: service_started
-      db:
-        condition: service_healthy
     networks:
       - gitfix-net
 
@@ -79,6 +40,7 @@ services:
     volumes:
       - ./logs:/usr/src/app/logs
       - ./repos:/usr/src/app/repos
+      - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor
       - ~/.claude:/root/.claude
       - ~/.gemini:/root/.gemini
@@ -89,8 +51,6 @@ services:
     depends_on:
       redis:
         condition: service_started
-      db:
-        condition: service_healthy
     networks:
       - gitfix-net
 
@@ -102,6 +62,7 @@ services:
     command: npm run analysis-worker
     volumes:
       - ./logs:/usr/src/app/logs
+      - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor:ro
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -110,8 +71,6 @@ services:
     depends_on:
       redis:
         condition: service_started
-      db:
-        condition: service_healthy
     networks:
       - gitfix-net
 
@@ -137,6 +96,7 @@ services:
       - '4000:4000'
     volumes:
       - ~/.claude:/root/.claude:ro
+      - ./data:/usr/src/app/data
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/git-processor:/tmp/git-processor
@@ -147,8 +107,6 @@ services:
     depends_on:
       redis:
         condition: service_started
-      db:
-        condition: service_healthy
       daemon:
         condition: service_started
     networks:
@@ -171,5 +129,3 @@ networks:
 
 volumes:
   redis_data:
-  postgres_data:
-  pgadmin_data:

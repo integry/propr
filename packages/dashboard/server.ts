@@ -26,7 +26,6 @@ import {
   processWebhookEvent,
   initializeWebhookHandler,
   db,
-  isEnabled as isDbEnabled,
   loadSettingsFromConfig,
   processDetectedIssue as processDetectedIssueBase,
   handleCommentDeleted,
@@ -108,16 +107,16 @@ async function initRedis(): Promise<void> {
 
 function setupRoutes(): void {
   const statusRoutes = createStatusRoutes({ redisClient });
-  const taskRoutes = createTaskRoutes({ taskQueue, db, isDbEnabled });
-  const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db, isDbEnabled });
-  const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db, isDbEnabled });
+  const taskRoutes = createTaskRoutes({ db });
+  const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
+  const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
   const configRoutes = createConfigRoutes({ redisClient });
   const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
-  const executionRoutes = createExecutionRoutes({ redisClient, db, isDbEnabled });
+  const executionRoutes = createExecutionRoutes({ redisClient, db });
   const dockerRoutes = createDockerRoutes({ redisClient });
-  const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db, isDbEnabled });
+  const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db });
   const llmMetricsRoutes = createLLMMetricsRoutes();
-  const plannerRoutes = createPlannerRoutes({ db, isDbEnabled });
+  const plannerRoutes = createPlannerRoutes({ db });
   const relevanceRoutes = createRelevanceRoutes();
 
   app.get('/api/status', ensureAuthenticated, statusRoutes.getStatus);
@@ -220,14 +219,12 @@ app.get('/health', (_req: Request, res: Response) => {
 
 async function start(): Promise<void> {
   try {
-    if (isDbEnabled && db) {
-      console.log('PostgreSQL persistence is enabled');
-      try {
-        await db.migrate.latest();
-        console.log('Database migrations completed successfully');
-      } catch (error) {
-        console.error('Database migration failed:', error);
-      }
+    console.log('SQLite persistence is enabled');
+    try {
+      await db.migrate.latest();
+      console.log('Database migrations completed successfully');
+    } catch (error) {
+      console.error('Database migration failed:', error);
     }
     await initRedis();
     setupRoutes();

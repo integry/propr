@@ -19,6 +19,7 @@ coverage/
 *.swo
 *~
 .config_repo/
+data/
 
 # TypeScript build artifacts in source directories
 src/**/*.js

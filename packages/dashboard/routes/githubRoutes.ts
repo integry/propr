@@ -3,20 +3,14 @@ import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import { Knex } from 'knex';
 
-interface JobData {
-  repoOwner?: string;
-  repoName?: string;
-}
-
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Queue;
-  db: Knex | null;
-  isDbEnabled: boolean;
+  db: Knex;
 }
 
 export function createGitHubRoutes(deps: GitHubRoutesDeps) {
-  const { redisClient, taskQueue, db, isDbEnabled } = deps;
+  const { redisClient, taskQueue, db } = deps;
 
   async function importTasks(req: Request, res: Response): Promise<void> {
     try {
@@ -44,19 +38,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
 
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
-      let repos: string[] = [];
-      if (isDbEnabled && db) {
-        const distinctRepos = await db('tasks').distinct('repository').whereNotNull('repository').orderBy('repository', 'asc');
-        repos = distinctRepos.map((row: { repository: string }) => row.repository).filter(r => r && r !== 'Unknown');
-      } else {
-        const allJobs = await Promise.all([taskQueue.getJobs(['completed'], 0, 1000), taskQueue.getJobs(['failed'], 0, 1000), taskQueue.getJobs(['active'], 0, 1000), taskQueue.getJobs(['waiting'], 0, 1000)]);
-        const repoSet = new Set<string>();
-        allJobs.flat().forEach(job => {
-          const data = job.data as JobData | undefined;
-          if (data?.repoOwner && data?.repoName) repoSet.add(`${data.repoOwner}/${data.repoName}`);
-        });
-        repos = Array.from(repoSet).sort();
-      }
+      const distinctRepos = await db('tasks').distinct('repository').whereNotNull('repository').orderBy('repository', 'asc');
+      const repos = distinctRepos.map((row: { repository: string }) => row.repository).filter(r => r && r !== 'Unknown');
       res.json({ repos });
     } catch (error) {
       console.error('Error in /api/github/repos:', error);

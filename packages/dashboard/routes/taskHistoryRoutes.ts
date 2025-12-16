@@ -37,35 +37,32 @@ interface JobReturnValue {
 interface TaskHistoryRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Queue;
-  db: Knex | null;
-  isDbEnabled: boolean;
+  db: Knex;
 }
 
 export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
-  const { redisClient, taskQueue, db, isDbEnabled } = deps;
+  const { redisClient, taskQueue, db } = deps;
 
   async function getTaskHistory(req: Request, res: Response): Promise<void> {
     try {
       const { taskId } = req.params;
-      
+
       let history: Array<Record<string, unknown>> = [];
       let taskInfo: Record<string, unknown> | null = null;
-      
-      if (isDbEnabled && db) {
-        const dbResult = await getHistoryFromDb(db, taskId);
-        if (dbResult) {
-          res.json({ taskId, history: dbResult.history, taskInfo: dbResult.taskInfo });
-          return;
-        }
-        console.log(`Task ${taskId} not found in PostgreSQL, falling back to Redis`);
+
+      const dbResult = await getHistoryFromDb(db, taskId);
+      if (dbResult) {
+        res.json({ taskId, history: dbResult.history, taskInfo: dbResult.taskInfo });
+        return;
       }
-      
+      console.log(`Task ${taskId} not found in SQLite, falling back to Redis`);
+
       const redisResult = await getHistoryFromRedis(redisClient, taskId);
       if (redisResult) {
         history = redisResult.history;
         taskInfo = redisResult.taskInfo;
       }
-      
+
       if (history.length === 0 && taskQueue) {
         const queueResult = await getHistoryFromQueue(taskQueue, taskId);
         if (queueResult) {
@@ -73,7 +70,7 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
           history = queueResult.history;
         }
       }
-      
+
       res.json({ taskId, history, taskInfo });
     } catch (error) {
       console.error('Error in /api/task/:taskId/history:', error);
@@ -89,7 +86,7 @@ async function getHistoryFromDb(
   taskId: string
 ): Promise<{ history: Array<Record<string, unknown>>; taskInfo: Record<string, unknown> } | null> {
   try {
-    console.log(`Fetching task history from PostgreSQL for taskId: ${taskId}`);
+    console.log(`Fetching task history from SQLite for taskId: ${taskId}`);
     const task = await db('tasks').where({ task_id: taskId }).first();
     const historyRecords = await db('task_history')
       .where({ task_id: taskId })
@@ -128,10 +125,10 @@ async function getHistoryFromDb(
       mapDbHistoryRecord(record, executionsByHistoryId)
     );
     
-    console.log(`Fetched ${history.length} history records from PostgreSQL for task ${taskId}`);
+    console.log(`Fetched ${history.length} history records from SQLite for task ${taskId}`);
     return { history, taskInfo };
   } catch (error) {
-    console.error('Error fetching task history from PostgreSQL:', error);
+    console.error('Error fetching task history from SQLite:', error);
     console.log('Falling back to Redis for task history...');
     return null;
   }

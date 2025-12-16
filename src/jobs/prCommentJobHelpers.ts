@@ -5,7 +5,7 @@ import type { Redis } from 'ioredis';
 import { TaskStates } from '@gitfix/core';
 import type { WorkerStateManager } from '@gitfix/core';
 import { getUsageStats, type ClaudeResult as TokenClaudeResult } from '@gitfix/core';
-import { db, isEnabled as isDbEnabled } from '@gitfix/core';
+import { db } from '@gitfix/core';
 import { filterCommentByAuthor } from '@gitfix/core';
 import type { UnprocessedComment, CommentJobData } from '@gitfix/core';
 import type { ClaudeCodeResponse } from '@gitfix/core';
@@ -271,13 +271,11 @@ interface UpdateTaskTitleOptions {
 
 export async function updateTaskTitleForPR(options: UpdateTaskTitleOptions): Promise<void> {
     const { taskId, jobData, stateManager, correlatedLogger, redisClient } = options;
-    if (isDbEnabled && db) {
-        try {
-            await db('tasks').where({ task_id: taskId }).update({ initial_job_data: JSON.stringify(jobData) });
-            correlatedLogger.info({ taskId, title: jobData.title, subtitle: jobData.subtitle }, 'Updated task with title/subtitle in DB');
-        } catch (dbError) {
-            correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to update task with title/subtitle in DB');
-        }
+    try {
+        await db('tasks').where({ task_id: taskId }).update({ initial_job_data: JSON.stringify(jobData) });
+        correlatedLogger.info({ taskId, title: jobData.title, subtitle: jobData.subtitle }, 'Updated task with title/subtitle in DB');
+    } catch (dbError) {
+        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to update task with title/subtitle in DB');
     }
     if (redisClient) {
         try {

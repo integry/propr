@@ -15,24 +15,6 @@ services:
       timeout: 5s
       retries: 3
 
-  db:
-    image: postgres:15-alpine
-    container_name: gitfix-postgres
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=${DB_NAME}
-      - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - gitfix-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   dashboard:
     build:
       context: .
@@ -55,17 +37,12 @@ services:
       GH_OAUTH_CALLBACK_URL: ${GH_OAUTH_CALLBACK_URL}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      ENABLE_DB_PERSISTENCE: ${ENABLE_DB_PERSISTENCE:-false}
-      DB_HOST: ${DB_HOST:-db}
-      DB_PORT: ${DB_PORT:-5432}
-      DB_USER: ${DB_USER}
-      DB_NAME: ${DB_NAME}
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_FILENAME: /app/data/gitfix.sqlite
       GH_WEBHOOK_SECRET: ${GH_WEBHOOK_SECRET}
+    volumes:
+      - sqlite-data:/app/data
     depends_on:
       redis:
-        condition: service_healthy
-      db:
         condition: service_healthy
       daemon:
         condition: service_started
@@ -89,18 +66,12 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
-      ENABLE_DB_PERSISTENCE: ${ENABLE_DB_PERSISTENCE:-false}
-      DB_HOST: ${DB_HOST:-db}
-      DB_PORT: ${DB_PORT:-5432}
-      DB_USER: ${DB_USER}
-      DB_NAME: ${DB_NAME}
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_FILENAME: /app/data/gitfix.sqlite
     volumes:
       - ./logs:/app/logs
+      - sqlite-data:/app/data
     depends_on:
       redis:
-        condition: service_healthy
-      db:
         condition: service_healthy
     networks:
       - gitfix-network
@@ -123,20 +94,14 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
-      ENABLE_DB_PERSISTENCE: ${ENABLE_DB_PERSISTENCE:-false}
-      DB_HOST: ${DB_HOST:-db}
-      DB_PORT: ${DB_PORT:-5432}
-      DB_USER: ${DB_USER}
-      DB_NAME: ${DB_NAME}
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_FILENAME: /app/data/gitfix.sqlite
     volumes:
       - ./logs:/app/logs
       - ./repos:/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
+      - sqlite-data:/app/data
     depends_on:
       redis:
-        condition: service_healthy
-      db:
         condition: service_healthy
     networks:
       - gitfix-network
@@ -148,4 +113,4 @@ networks:
 
 volumes:
   redis-data:
-  postgres-data:
+  sqlite-data:

@@ -23,13 +23,9 @@ export interface DbCheckSuccess {
 export type DbCheck = DbCheckResult | DbCheckSuccess;
 
 export function checkDbAndAuth(
-  isDbEnabled: boolean,
-  db: Knex | null,
+  db: Knex,
   userId: string | undefined
 ): DbCheck {
-  if (!isDbEnabled || !db) {
-    return { valid: false, error: 'Database not available', status: 503 };
-  }
   if (!userId) {
     return { valid: false, error: 'User not authenticated', status: 401 };
   }

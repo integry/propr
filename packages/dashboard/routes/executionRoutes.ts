@@ -7,12 +7,11 @@ import { getExecutionAnalysis } from '@gitfix/core';
 
 interface ExecutionRoutesDeps {
   redisClient: RedisClientType;
-  db: Knex | null;
-  isDbEnabled: boolean;
+  db: Knex;
 }
 
 export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
-  const { redisClient, db, isDbEnabled } = deps;
+  const { redisClient, db } = deps;
 
   async function getPrompt(req: Request, res: Response): Promise<void> {
     try {
@@ -73,10 +72,6 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
   }
 
   async function getAnalysis(req: Request, res: Response): Promise<void> {
-    if (!isDbEnabled || !db) {
-      res.status(503).json({ error: 'Database persistence is not enabled.' });
-      return;
-    }
     try {
       const latestExecution = await db('llm_executions').where({ task_id: req.params.taskId }).orderBy('start_time', 'desc').first('execution_id', 'analysis_report');
       if (!latestExecution) {
@@ -95,10 +90,6 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
   }
 
   async function runDeepDiveAnalysis(req: Request, res: Response): Promise<void> {
-    if (!isDbEnabled || !db) {
-      res.status(503).json({ error: 'Database persistence is not enabled.' });
-      return;
-    }
     try {
       const { taskId } = req.params;
       const latestExecution = await db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'desc').first('execution_id', 'session_id', 'analysis_report');

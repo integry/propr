@@ -8,7 +8,6 @@ import {
     formatResetTime,
     issueQueue,
     db,
-    isEnabled as isDbEnabled,
     getModelShortName
 } from '@gitfix/core';
 import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, CommitResult, RepoValidationResult } from '@gitfix/core';
@@ -260,15 +259,13 @@ export async function updateTaskTitleInStorage(
     stateManager: WorkerStateManager,
     correlatedLogger: Logger
 ): Promise<void> {
-    if (isDbEnabled && db) {
-        try {
-            await db('tasks')
-                .where({ task_id: taskId })
-                .update({ initial_job_data: JSON.stringify(issueRef) });
-            correlatedLogger.info({ taskId, title: issueRef.title }, 'Updated task with title/subtitle in DB');
-        } catch (dbError) {
-            correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to update task with title/subtitle in DB');
-        }
+    try {
+        await db('tasks')
+            .where({ task_id: taskId })
+            .update({ initial_job_data: JSON.stringify(issueRef) });
+        correlatedLogger.info({ taskId, title: issueRef.title }, 'Updated task with title/subtitle in DB');
+    } catch (dbError) {
+        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to update task with title/subtitle in DB');
     }
     try {
         const state = await stateManager.getTaskState(taskId);

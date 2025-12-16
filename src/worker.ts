@@ -5,7 +5,7 @@ import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from '@gitfix/core';
 import type { IssueJobData, CommentJobData, TaskImportJobData, JobResult } from '@gitfix/core';
 import { logger } from '@gitfix/core';
 import { generateCorrelationId } from '@gitfix/core';
-import { db, isEnabled as isDbEnabled } from '@gitfix/core';
+import { db } from '@gitfix/core';
 import { buildClaudeDockerImage } from '@gitfix/core';
 import { loadAiPrimaryTag, loadSettings } from '@gitfix/core';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
@@ -159,18 +159,16 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         resetPerformed: options.reset || false
     }, 'Starting GitHub Issue Worker...');
 
-    if (isDbEnabled && db) {
-        try {
-            logger.info('Running database migrations...');
-            await db.migrate.latest();
-            logger.info('Database migrations completed successfully');
-        } catch (error) {
-            const err = error as Error;
-            logger.error({
-                error: err.message,
-                stack: err.stack
-            }, 'Database migration failed - worker will continue but database persistence may not work');
-        }
+    try {
+        logger.info('Running database migrations...');
+        await db.migrate.latest();
+        logger.info('Database migrations completed successfully');
+    } catch (error) {
+        const err = error as Error;
+        logger.error({
+            error: err.message,
+            stack: err.stack
+        }, 'Database migration failed - worker will continue but database persistence may not work');
     }
 
     const heartbeatRedis = new Redis({

@@ -2,7 +2,7 @@ import sharp from 'sharp';
 import fs from 'fs-extra';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { db } from '../db/postgres.js';
+import { db } from '../db/connection.js';
 
 const STORAGE_ROOT = path.join(process.cwd(), 'storage', 'drafts');
 const MAX_TEXT_CHARS = 100000;

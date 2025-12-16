@@ -39,15 +39,14 @@ const upload = multer({
 export const attachmentUpload = upload.single('file');
 
 interface PlannerRoutesDeps {
-  db: Knex | null;
-  isDbEnabled: boolean;
+  db: Knex;
 }
 
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
-  const { db, isDbEnabled } = deps;
+  const { db } = deps;
 
   async function listDrafts(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
     try {
@@ -65,7 +64,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   async function createDraft(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
     const { repository, prompt } = req.body;
@@ -84,7 +83,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   async function getDraft(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
     try {
@@ -99,7 +98,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   async function updateDraft(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
     try {
@@ -123,7 +122,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   async function deleteDraft(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
     try {
@@ -142,7 +141,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   });
 
   async function uploadAttachment(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return uploadAttachmentHandler(req, res);
   }
@@ -152,7 +151,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   });
 
   async function getContextStats(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return getContextStatsHandler(req, res);
   }
@@ -163,7 +162,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   });
 
   async function previewContext(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return previewContextHandler(req, res);
   }
@@ -173,7 +172,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   });
 
   async function deleteAttachment(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return deleteAttachmentHandler(req, res);
   }
@@ -237,7 +236,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   async function generate(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
     const { draftId, baseBranch, granularity, contextLevel, compress } = req.body as GenerateRequestBody;
@@ -279,7 +278,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   async function refine(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
     const { draftId, plan: currentPlan, instruction } = req.body;
@@ -338,7 +337,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   async function getRefineRepoContext(draftId: string | undefined, fallbackToken: string) {
-    if (!draftId || !isDbEnabled || !db) {
+    if (!draftId) {
       return { worktreePath: process.cwd(), authToken: fallbackToken, repository: 'unknown/unknown' };
     }
     const draft = await db('task_drafts').where({ draft_id: draftId }).first();
@@ -347,7 +346,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   }
 
   async function finalize(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
     const { draftId } = req.body;
@@ -370,7 +369,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   });
 
   async function getAttachmentContent(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return getAttachmentContentHandler(req, res);
   }
@@ -380,7 +379,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   });
 
   async function getRepositoryInfo(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return getRepositoryInfoHandler(req, res);
   }
@@ -390,7 +389,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   });
 
   async function downloadContext(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(isDbEnabled, db, req.user?.id);
+    const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return downloadContextHandler(req, res);
   }
