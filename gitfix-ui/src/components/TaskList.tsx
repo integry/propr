@@ -187,13 +187,13 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
                   <React.Fragment key={group.key}>
                     <ParentTaskRow group={group} task={parentTask} onRowClick={handleRowClick} />
 
-                    {hiddenCount > 0 && (
-                      <CollapseToggleRow groupKey={group.key} hiddenCount={hiddenCount} onToggle={toggleGroup} />
-                    )}
-
                     {visibleChildren.map((child) => (
                       <ChildTaskRow key={child.id} task={child} onRowClick={handleRowClick} />
                     ))}
+
+                    {hiddenCount > 0 && (
+                      <CollapseToggleRow groupKey={group.key} hiddenCount={hiddenCount} onToggle={toggleGroup} />
+                    )}
                   </React.Fragment>
                 );
               })}
