@@ -11,7 +11,6 @@ import {
     shutdownQueue,
     getDefaultModel,
     db,
-    isEnabled as isDbEnabled,
     initializeWebhookHandler,
     handleCommentDeleted,
     handleCommentEdited,
@@ -135,15 +134,13 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         process.exit(1);
     }
 
-    if (isDbEnabled && db) {
-        try {
-            logger.info('Running database migrations...');
-            await db.migrate.latest();
-            logger.info('Database migrations completed successfully');
-        } catch (error) {
-            const err = error as Error;
-            logger.error({ error: err.message, stack: err.stack }, 'Database migration failed - daemon will continue but database persistence may not work');
-        }
+    try {
+        logger.info('Running database migrations...');
+        await db.migrate.latest();
+        logger.info('Database migrations completed successfully');
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ error: err.message, stack: err.stack }, 'Database migration failed - daemon will continue but database persistence may not work');
     }
 
     if (options.reset) {

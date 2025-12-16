@@ -37,24 +37,18 @@ interface JobReturnValue {
 
 interface TaskRoutesDeps {
   taskQueue: Queue;
-  db: Knex | null;
-  isDbEnabled: boolean;
+  db: Knex;
 }
 
 export function createTaskRoutes(deps: TaskRoutesDeps) {
-  const { taskQueue, db, isDbEnabled } = deps;
+  const { db } = deps;
 
   async function getTasks(req: Request, res: Response): Promise<void> {
     try {
       const { status = 'all', limit = '50', offset = '0', repository = 'all' } = req.query as Record<string, string>;
 
-      if (isDbEnabled && db) {
-        const result = await getTasksFromDb({ db, status, repository, limit: parseInt(limit), offset: parseInt(offset) });
-        res.json(result);
-      } else {
-        const result = await getTasksFromQueue({ taskQueue, status, repository, limit: parseInt(limit), offset: parseInt(offset) });
-        res.json(result);
-      }
+      const result = await getTasksFromDb({ db, status, repository, limit: parseInt(limit), offset: parseInt(offset) });
+      res.json(result);
     } catch (error) {
       console.error('Error in /api/tasks:', error);
       res.status(500).json({ error: 'Internal server error' });

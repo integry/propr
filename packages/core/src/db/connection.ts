@@ -111,10 +111,7 @@ try {
     throw err;
 }
 
-// Database is now mandatory - this constant is kept for backwards compatibility
-const isEnabled = true;
-
-export { db, isEnabled };
+export { db };
 
 export function createKnexConfigForMigrations(): Record<KnexEnvironment, Knex.Config> {
     return createKnexConfig();

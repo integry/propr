@@ -29,7 +29,7 @@ export type { AgentType as ModelAgentType, ModelInfo } from './config/modelDefin
 export { getEffectiveTokenLimit, DEFAULT_CONTEXT_LEVEL } from './config/modelLimits.js';
 export type { ContextLevel } from './config/modelLimits.js';
 
-export { db, isEnabled, closeConnection, createKnexConfigForMigrations, runMigrations } from './db/connection.js';
+export { db, closeConnection, createKnexConfigForMigrations, runMigrations } from './db/connection.js';
 
 export { getRepoConfigKey, detectDefaultBranch, listRepositoryBranchConfigurations } from './git/branchConfig.js';
 export type { BranchConfiguration } from './git/branchConfig.js';

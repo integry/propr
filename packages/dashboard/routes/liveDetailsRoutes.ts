@@ -7,12 +7,11 @@ import fs from 'fs-extra';
 
 interface LiveDetailsRoutesDeps {
   redisClient: RedisClientType;
-  db: Knex | null;
-  isDbEnabled: boolean;
+  db: Knex;
 }
 
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
-  const { redisClient, db, isDbEnabled } = deps;
+  const { redisClient, db } = deps;
 
   async function getLiveDetails(req: Request, res: Response): Promise<void> {
     try {
@@ -21,9 +20,9 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
 
       console.log(`[live-details] jobId: ${jobId}, taskId: ${taskId}`);
 
-      const sessionId = await findSessionId(redisClient, db, isDbEnabled, taskId);
+      const sessionId = await findSessionId(redisClient, db, taskId);
       if (!sessionId) {
-        console.log('[live-details] No sessionId found in either PostgreSQL or Redis');
+        console.log('[live-details] No sessionId found in either SQLite or Redis');
         res.json({ events: [], todos: [], currentTask: null });
         return;
       }
@@ -64,33 +63,30 @@ function normalizeTaskId(jobId: string): string {
 
 async function findSessionId(
   redisClient: RedisClientType,
-  db: Knex | null,
-  isDbEnabled: boolean,
+  db: Knex,
   taskId: string
 ): Promise<string | null> {
-  if (isDbEnabled && db) {
-    const sessionId = await findSessionIdFromDb(db, taskId);
-    if (sessionId) return sessionId;
-  }
+  const sessionId = await findSessionIdFromDb(db, taskId);
+  if (sessionId) return sessionId;
   return findSessionIdFromRedis(redisClient, taskId);
 }
 
 async function findSessionIdFromDb(db: Knex, taskId: string): Promise<string | null> {
   try {
-    console.log(`[live-details] Fetching sessionId from PostgreSQL for taskId: ${taskId}`);
+    console.log(`[live-details] Fetching sessionId from SQLite for taskId: ${taskId}`);
     const llmExecution = await db('llm_executions')
       .where({ task_id: taskId })
       .orderBy('start_time', 'desc')
       .first();
 
     if (llmExecution && llmExecution.session_id) {
-      console.log(`[live-details] Found sessionId in PostgreSQL: ${llmExecution.session_id}`);
+      console.log(`[live-details] Found sessionId in SQLite: ${llmExecution.session_id}`);
       return llmExecution.session_id as string;
     }
-    console.log('[live-details] No LLM execution found in PostgreSQL');
+    console.log('[live-details] No LLM execution found in SQLite');
     return null;
   } catch (error) {
-    console.error('[live-details] Error fetching from PostgreSQL:', error);
+    console.error('[live-details] Error fetching from SQLite:', error);
     console.log('[live-details] Falling back to Redis');
     return null;
   }
