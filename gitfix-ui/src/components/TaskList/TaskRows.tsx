@@ -171,16 +171,16 @@ interface CollapseToggleRowProps {
 
 export const CollapseToggleRow: React.FC<CollapseToggleRowProps> = ({ groupKey, hiddenCount, onToggle }) => (
   <tr className="bg-gray-50/30">
-    <td className="p-0 border-r border-transparent">
-       <div className="h-full w-full border-r-2 border-transparent"></div>
+    <td className="py-3 px-4 align-top relative">
+       {/* Empty cell for repository column alignment */}
     </td>
-    <td colSpan={5} className="py-0 px-4 text-xs relative">
+    <td colSpan={5} className="py-0 px-4 align-top text-xs relative">
        {/* Vertical line connecting to the tree structure - extends from top to the horizontal arm */}
        <div className="absolute left-6 top-0 w-0.5 bg-gray-200" style={{ height: '50%' }}></div>
        {/* Horizontal arm */}
        <div className="absolute left-6 top-1/2 w-4 h-0.5 bg-gray-200" style={{ transform: 'translateY(-50%)' }}></div>
 
-       <div className="pl-6 py-1">
+       <div className="pl-6 py-3">
          <button
            onClick={(e) => onToggle(groupKey, e)}
            className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium py-1 px-2 hover:bg-blue-50 rounded transition-colors ml-4"
