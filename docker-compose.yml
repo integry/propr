@@ -11,27 +11,6 @@ services:
     networks:
       - gitfix-net
 
-  # PostgreSQL kept temporarily for data migration - remove after migration
-  db:
-    image: postgres:15-alpine
-    container_name: gitfix-postgres
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=${DB_NAME}
-      - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - '5433:5432'
-    networks:
-      - gitfix-net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   daemon:
     build:
       context: .
@@ -150,4 +129,3 @@ networks:
 
 volumes:
   redis_data:
-  postgres_data:
