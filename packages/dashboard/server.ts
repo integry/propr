@@ -107,7 +107,7 @@ async function initRedis(): Promise<void> {
 
 function setupRoutes(): void {
   const statusRoutes = createStatusRoutes({ redisClient });
-  const taskRoutes = createTaskRoutes({ taskQueue, db });
+  const taskRoutes = createTaskRoutes({ db });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
   const configRoutes = createConfigRoutes({ redisClient });

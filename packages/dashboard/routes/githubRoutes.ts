@@ -3,11 +3,6 @@ import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import { Knex } from 'knex';
 
-interface JobData {
-  repoOwner?: string;
-  repoName?: string;
-}
-
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Queue;
