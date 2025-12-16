@@ -1,4 +1,4 @@
-import type { Task, TaskTypeInfo, TaskType } from './types';
+import type { Task, TaskTypeInfo } from './types';
 
 export const getTaskTypeInfo = (task: Task): TaskTypeInfo => {
   const title = task.title || '';

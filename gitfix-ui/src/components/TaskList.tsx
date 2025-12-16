@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getTasks, getAvailableGithubRepos } from '../api/gitfixApi';
 import type { Task, TaskListProps, LoadConfig, TaskGroup } from './TaskList/types';
-import { getTaskTypeInfo } from './TaskList/utils.tsx';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';
 import { ParentTaskRow, ChildTaskRow, CollapseToggleRow } from './TaskList/TaskRows';
@@ -79,18 +78,15 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         name = parts[1] || 'unknown';
       }
 
-      // Determine if this is a PR comment/followup task or a new issue task
-      const taskTypeInfo = getTaskTypeInfo(task);
-      const isFollowupTask = task.id.startsWith('pr-comments-batch-') || taskTypeInfo.type === 'followup';
-
-      // For followup tasks (PR comments), group by PR number
-      // For new issue tasks, each implementation is separate, so use task ID as unique key
+      // Group tasks by PR number if available, otherwise use task ID
+      // Both new issue tasks and followup tasks should be grouped by their PR number
+      // since they all belong to the same PR (e.g., PR #380 for issue #379)
       let key: string;
-      if (isFollowupTask && task.issueNumber) {
-        // Group followup tasks by their PR number
+      if (task.issueNumber) {
+        // Group by PR number (issueNumber field contains the PR number)
         key = `${owner}/${name}-pr-${task.issueNumber}`;
       } else {
-        // Each new issue implementation is unique, use task ID
+        // Fallback to task ID if no PR number is available
         key = task.id;
       }
 
