@@ -119,8 +119,8 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
       <td className="py-0 px-4 align-top relative">
         {/* Vertical line - positioned absolutely to span across td boundaries with z-index to sit above row borders */}
         <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200 z-10" style={{ height: isLastChild ? 'calc(50% + 1px)' : 'calc(100% + 1px)', top: '-1px' }}></div>
-        {/* Horizontal arm - aligned with the top of the text content */}
-        <div className="absolute left-6 w-4 h-0.5 bg-gray-200 z-10" style={{ top: 'calc(0.75rem + 0.25em)' }}></div>
+        {/* Horizontal arm - aligned with the middle of the text content */}
+        <div className="absolute left-6 w-4 h-0.5 bg-gray-200 z-10" style={{ top: 'calc(0.75rem + 0.5em)' }}></div>
 
         <div className="flex flex-col gap-1 pl-6 py-3">
           <div className="flex items-start gap-2 pl-4">
@@ -177,8 +177,8 @@ export const CollapseToggleRow: React.FC<CollapseToggleRowProps> = ({ groupKey, 
     <td colSpan={5} className="py-0 px-4 align-top text-xs relative">
        {/* Vertical line connecting to the tree structure - extends from top to the horizontal arm with z-index to sit above row borders */}
        <div className="absolute left-6 top-0 w-0.5 bg-gray-200 z-10" style={{ height: 'calc(50% + 1px)', top: '-1px' }}></div>
-       {/* Horizontal arm - aligned with the top of the button text */}
-       <div className="absolute left-6 w-4 h-0.5 bg-gray-200 z-10" style={{ top: 'calc(0.75rem + 0.5rem + 0.25em)' }}></div>
+       {/* Horizontal arm - aligned with the middle of the button text */}
+       <div className="absolute left-6 w-4 h-0.5 bg-gray-200 z-10" style={{ top: 'calc(0.75rem + 0.5rem + 0.5em)' }}></div>
 
        <div className="pl-6 py-3">
          <button
