@@ -12,7 +12,6 @@ import {
     getDefaultModel,
     db,
     isEnabled as isDbEnabled,
-    runMigrations,
     initializeWebhookHandler,
     handleCommentDeleted,
     handleCommentEdited,
