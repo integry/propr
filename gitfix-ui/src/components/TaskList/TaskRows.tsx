@@ -118,7 +118,7 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
       </td>
       <td className="py-0 px-4 align-top relative">
         {/* Vertical line - positioned absolutely to span across td boundaries with z-index to sit above row borders */}
-        <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200 z-10" style={{ height: isLastChild ? '50%' : '100%' }}></div>
+        <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200 z-10" style={{ height: isLastChild ? 'calc(50% + 1px)' : 'calc(100% + 1px)', top: '-1px' }}></div>
         {/* Horizontal arm */}
         <div className="absolute left-6 top-1/2 w-4 h-0.5 bg-gray-200 z-10" style={{ transform: 'translateY(-50%)' }}></div>
 
@@ -176,7 +176,7 @@ export const CollapseToggleRow: React.FC<CollapseToggleRowProps> = ({ groupKey, 
     </td>
     <td colSpan={5} className="py-0 px-4 align-top text-xs relative">
        {/* Vertical line connecting to the tree structure - extends from top to the horizontal arm with z-index to sit above row borders */}
-       <div className="absolute left-6 top-0 w-0.5 bg-gray-200 z-10" style={{ height: '50%' }}></div>
+       <div className="absolute left-6 top-0 w-0.5 bg-gray-200 z-10" style={{ height: 'calc(50% + 1px)', top: '-1px' }}></div>
        {/* Horizontal arm */}
        <div className="absolute left-6 top-1/2 w-4 h-0.5 bg-gray-200 z-10" style={{ transform: 'translateY(-50%)' }}></div>
 
