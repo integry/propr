@@ -20,6 +20,13 @@ interface Task {
   llmProvider?: string;
 }
 
+type TaskType = 'new-issue' | 'followup' | 'unknown';
+
+interface TaskTypeInfo {
+  type: TaskType;
+  cleanTitle: string;
+}
+
 interface TaskListProps {
   limit: number;
   showViewAll?: boolean;
@@ -37,6 +44,49 @@ interface TaskGroup {
   issueNumber?: number;
   tasks: Task[]; // Sorted newest first
 }
+
+const getTaskTypeInfo = (task: Task): TaskTypeInfo => {
+  const title = task.title || '';
+
+  if (title.startsWith('New Issue:')) {
+    return {
+      type: 'new-issue',
+      cleanTitle: title.replace(/^New Issue:\s*/, '').trim()
+    };
+  }
+
+  if (title.startsWith('Followup:')) {
+    return {
+      type: 'followup',
+      cleanTitle: title.replace(/^Followup:\s*/, '').trim()
+    };
+  }
+
+  return {
+    type: 'unknown',
+    cleanTitle: title
+  };
+};
+
+const TaskTypeBadge: React.FC<{ type: TaskType }> = ({ type }) => {
+  if (type === 'new-issue') {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 border border-blue-200">
+        New Issue
+      </span>
+    );
+  }
+
+  if (type === 'followup') {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 border border-purple-200">
+        Followup
+      </span>
+    );
+  }
+
+  return null;
+};
 
 const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -110,9 +160,20 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         name = parts[1] || 'unknown';
       }
 
-      const key = task.issueNumber 
-        ? `${owner}/${name}-${task.issueNumber}` 
-        : task.id;
+      // Determine if this is a PR comment/followup task or a new issue task
+      const taskTypeInfo = getTaskTypeInfo(task);
+      const isFollowupTask = task.id.startsWith('pr-comments-batch-') || taskTypeInfo.type === 'followup';
+
+      // For followup tasks (PR comments), group by PR number
+      // For new issue tasks, each implementation is separate, so use task ID as unique key
+      let key: string;
+      if (isFollowupTask && task.issueNumber) {
+        // Group followup tasks by their PR number
+        key = `${owner}/${name}-pr-${task.issueNumber}`;
+      } else {
+        // Each new issue implementation is unique, use task ID
+        key = task.id;
+      }
 
       if (!groups[key]) {
         groups[key] = {
@@ -326,22 +387,43 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
                         </div>
                       </td>
                       <td className="py-3 px-4 align-top">
-                        <div className="flex flex-col gap-0.5">
-                          {group.issueNumber ? (
-                            <div className="flex items-center gap-2">
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-2">
+                            {group.issueNumber ? (
                               <span className="text-sm font-bold text-primary-600 hover:text-primary-700">
-                                {parentTask.id.startsWith('pr-comments-batch') ? `PR #${group.issueNumber} (Batch)` : `PR #${group.issueNumber}`}
+                                PR #{group.issueNumber}
                               </span>
-                            </div>
-                          ) : (
-                             <span className="text-sm font-bold text-gray-700">Task {parentTask.id.substring(0, 8)}</span>
-                          )}
-                          <div className="text-sm text-gray-900 font-medium">
-                             {parentTask.title || parentTask.subtitle || 'No title'}
+                            ) : (
+                              <span className="text-sm font-bold text-gray-700">Task {parentTask.id.substring(0, 8)}</span>
+                            )}
+                            <TaskTypeBadge type={getTaskTypeInfo(parentTask).type} />
                           </div>
-                          {(parentTask.title && parentTask.subtitle) && (
-                            <div className="text-xs text-gray-500 mt-0.5 line-clamp-1">{parentTask.subtitle}</div>
-                          )}
+                          <div className="text-sm text-gray-900 font-medium">
+                            {(() => {
+                              const typeInfo = getTaskTypeInfo(parentTask);
+                              // For followup tasks, prefer subtitle if available
+                              if (typeInfo.type === 'followup' && parentTask.subtitle) {
+                                return parentTask.subtitle;
+                              }
+                              // Otherwise use the clean title
+                              return typeInfo.cleanTitle || parentTask.subtitle || 'No title';
+                            })()}
+                          </div>
+                          {(() => {
+                            // Show agent/model info if available
+                            const agent = parentTask.llmProvider || '';
+                            const model = parentTask.model || parentTask.modelName || '';
+                            if (agent || model) {
+                              return (
+                                <div className="flex items-center gap-2 text-xs text-gray-500">
+                                  {agent && <span className="font-medium">{agent}</span>}
+                                  {agent && model && <span>•</span>}
+                                  {model && <span>{model}</span>}
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                       </td>
                       <td className="py-3 px-4 align-top">
@@ -380,8 +462,18 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
                     {/* CHILDREN ROWS */}
                     {visibleChildren.map((child) => {
+                      const childTypeInfo = getTaskTypeInfo(child);
+                      const childDisplayTitle = (() => {
+                        // For followup tasks, prefer subtitle if available
+                        if (childTypeInfo.type === 'followup' && child.subtitle) {
+                          return child.subtitle;
+                        }
+                        // Otherwise use the clean title
+                        return childTypeInfo.cleanTitle || child.subtitle || 'Update';
+                      })();
+
                       return (
-                        <tr 
+                        <tr
                           key={child.id}
                           className="hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30"
                           onClick={() => handleRowClick(child.id)}
@@ -390,9 +482,26 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
                              {/* Visual connector line placeholder if we wanted one spanning rows */}
                           </td>
                           <td className="py-2 px-4 align-top">
-                            <div className="flex items-start gap-2 pl-2">
-                               <span className="text-gray-300 font-light select-none">└─</span>
-                               <span className="text-sm text-gray-600 line-clamp-1">{child.title || child.subtitle || 'Update'}</span>
+                            <div className="flex flex-col gap-1 pl-2">
+                              <div className="flex items-start gap-2">
+                                <span className="text-gray-300 font-light select-none">└─</span>
+                                <span className="text-sm text-gray-600 line-clamp-1">{childDisplayTitle}</span>
+                              </div>
+                              {(() => {
+                                // Show agent/model info if available
+                                const agent = child.llmProvider || '';
+                                const model = child.model || child.modelName || '';
+                                if (agent || model) {
+                                  return (
+                                    <div className="flex items-center gap-2 text-xs text-gray-500 ml-5">
+                                      {agent && <span className="font-medium">{agent}</span>}
+                                      {agent && model && <span>•</span>}
+                                      {model && <span>{model}</span>}
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              })()}
                             </div>
                           </td>
                           <td className="py-2 px-4 align-top">
