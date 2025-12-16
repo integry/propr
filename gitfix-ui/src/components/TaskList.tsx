@@ -82,9 +82,9 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
       // Both new issue tasks and followup tasks should be grouped by their PR number
       // since they all belong to the same PR (e.g., PR #380 for issue #379)
       let key: string;
-      if (task.issueNumber) {
-        // Group by PR number (issueNumber field contains the PR number)
-        key = `${owner}/${name}-pr-${task.issueNumber}`;
+      if (task.prNumber) {
+        // Group by PR number
+        key = `${owner}/${name}-pr-${task.prNumber}`;
       } else {
         // Fallback to task ID if no PR number is available
         key = task.id;
@@ -95,7 +95,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
           key,
           repoOwner: owner,
           repoName: name,
-          issueNumber: task.issueNumber,
+          prNumber: task.prNumber,
           tasks: []
         };
       }

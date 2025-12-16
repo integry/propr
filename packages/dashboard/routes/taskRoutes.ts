@@ -140,6 +140,7 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
   let llmProvider = null;
   let repositoryOwner = null;
   let repositoryName = null;
+  let prNumber = null;
 
   // Parse repository into owner and name
   if (row.repository && typeof row.repository === 'string') {
@@ -158,10 +159,29 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
       title = jobData.title || (jobData.issueRef ? jobData.issueRef.title : null) || null;
       subtitle = jobData.subtitle || null;
       llmProvider = jobData.agentAlias || null;
+      // For PR comment jobs, pullRequestNumber is the PR number
+      if (jobData.pullRequestNumber) {
+        prNumber = jobData.pullRequestNumber;
+      }
     } catch (e) {
       console.error('Failed to parse initial_job_data', e);
     }
   }
+
+  // For issue jobs, try to extract PR number from final_result if not already set
+  if (!prNumber && row.final_result) {
+    try {
+      const finalResult = typeof row.final_result === 'string'
+        ? JSON.parse(row.final_result)
+        : row.final_result;
+      if (finalResult?.postProcessing?.pr?.number) {
+        prNumber = finalResult.postProcessing.pr.number;
+      }
+    } catch (e) {
+      // Silently ignore parse errors for final_result
+    }
+  }
+
   return {
     id: row.task_id,
     issueId: row.task_id,
@@ -169,6 +189,7 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
     repositoryOwner: repositoryOwner,
     repositoryName: repositoryName,
     issueNumber: row.issue_number,
+    prNumber: prNumber,
     title: title,
     subtitle: subtitle,
     status: row.state,
@@ -256,6 +277,7 @@ function mapQueueJobToResponse(job: Job<JobData, JobReturnValue>): Record<string
   const repository = getJobRepository(job);
   let repositoryOwner = null;
   let repositoryName = null;
+  let prNumber = null;
 
   // Parse repository into owner and name
   if (repository && repository !== 'Unknown') {
@@ -266,6 +288,15 @@ function mapQueueJobToResponse(job: Job<JobData, JobReturnValue>): Record<string
     }
   }
 
+  // For PR comment jobs, pullRequestNumber is the PR number
+  if (job.data?.pullRequestNumber) {
+    prNumber = job.data.pullRequestNumber;
+  }
+  // For issue jobs, extract PR number from return value's postProcessing result
+  else if (job.returnvalue?.postProcessing?.pr?.number) {
+    prNumber = job.returnvalue.postProcessing.pr.number;
+  }
+
   return {
     id: job.id,
     issueId: job.id,
@@ -273,6 +304,7 @@ function mapQueueJobToResponse(job: Job<JobData, JobReturnValue>): Record<string
     repositoryOwner: repositoryOwner,
     repositoryName: repositoryName,
     issueNumber: getJobIssueNumber(job),
+    prNumber: prNumber,
     title: job.returnvalue?.issueTitle || job.data?.title || null,
     subtitle: job.data?.subtitle || null,
     status: getJobStatus(job),

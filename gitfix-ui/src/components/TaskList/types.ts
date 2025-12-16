@@ -4,6 +4,7 @@ export interface Task {
   repositoryOwner?: string;
   repositoryName?: string;
   issueNumber?: number;
+  prNumber?: number;
   title?: string;
   subtitle?: string;
   status: string;
@@ -36,6 +37,6 @@ export interface TaskGroup {
   key: string;
   repoOwner: string;
   repoName: string;
-  issueNumber?: number;
+  prNumber?: number;
   tasks: Task[]; // Sorted newest first
 }

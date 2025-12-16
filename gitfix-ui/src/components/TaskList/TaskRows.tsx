@@ -27,9 +27,9 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
       <td className="py-3 px-4 align-top">
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            {group.issueNumber ? (
+            {group.prNumber ? (
               <span className="text-sm font-bold text-primary-600 hover:text-primary-700">
-                PR #{group.issueNumber}
+                PR #{group.prNumber}
               </span>
             ) : (
               <span className="text-sm font-bold text-gray-700">Task {task.id.substring(0, 8)}</span>
