@@ -31,6 +31,10 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
               <span className="text-sm font-bold text-primary-600 hover:text-primary-700">
                 PR #{group.prNumber}
               </span>
+            ) : task.issueNumber ? (
+              <span className="text-sm font-bold text-primary-600 hover:text-primary-700">
+                Issue #{task.issueNumber}
+              </span>
             ) : (
               <span className="text-sm font-bold text-gray-700">Task {task.id.substring(0, 8)}</span>
             )}
