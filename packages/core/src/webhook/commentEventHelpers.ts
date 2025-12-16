@@ -4,7 +4,7 @@ import type { Label } from '@octokit/webhooks-types';
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
 
-const DEFAULT_MODEL_LABEL_PATTERN = '^llm-claude-(.+)$';
+const DEFAULT_MODEL_LABEL_PATTERN = '^llm-(.+)$';
 
 export function extractLlmFromKeywords(commentBody: string, keywords: string[]): string | null {
     for (const keyword of keywords) {

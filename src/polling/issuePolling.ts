@@ -3,14 +3,14 @@ import { generateCorrelationId } from '@gitfix/core';
 import type { Logger } from 'pino';
 import { handleError } from '@gitfix/core';
 import { withRetry, retryConfigs } from '@gitfix/core';
-import { resolveModelAlias, getDefaultModel } from '@gitfix/core';
+import { getDefaultModel, resolveLlmLabel } from '@gitfix/core';
 import { issueQueue, type IssueJobData } from '@gitfix/core';
 import { Redis } from 'ioredis';
 
 const AI_PRIMARY_TAG = process.env.AI_PRIMARY_TAG || 'AI';
 const AI_EXCLUDE_TAGS_PROCESSING = process.env.AI_EXCLUDE_TAGS_PROCESSING || 'AI-processing';
 const AI_DONE_TAG = process.env.AI_DONE_TAG || 'AI-done';
-const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-claude-(.+)$';
+const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
 const redisClient = new Redis({
@@ -34,6 +34,11 @@ interface GitHubIssue {
     updated_at: string;
 }
 
+export interface TargetConfig {
+    agent: string;
+    model: string;
+}
+
 export interface DetectedIssue {
     id: number;
     number: number;
@@ -42,7 +47,7 @@ export interface DetectedIssue {
     repoOwner: string;
     repoName: string;
     labels: string[];
-    targetModels: string[];
+    targetConfigs: TargetConfig[];
     createdAt: string;
     updatedAt: string;
 }
@@ -120,16 +125,31 @@ export async function fetchIssuesForRepo(
             count: response.data.items.length
         }, `Found ${response.data.items.length} matching issues.`);
 
-        return response.data.items.map(issue => {
-            const identifiedModels: string[] = [];
+        // Process issues with async resolution of LLM labels
+        const issues = await Promise.all(response.data.items.map(async (issue) => {
+            const identifiedConfigs: TargetConfig[] = [];
             const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
 
             for (const label of issue.labels) {
                 const match = label.name.match(modelLabelRegex);
                 if (match && match[1]) {
-                    const resolvedModel = resolveModelAlias(match[1]);
-                    identifiedModels.push(resolvedModel);
+                    // Resolve both agent and model from the label suffix
+                    const resolution = await resolveLlmLabel(match[1]);
+                    identifiedConfigs.push({
+                        agent: resolution.agentAlias,
+                        model: resolution.model
+                    });
                 }
+            }
+
+            // If no LLM labels found, use default config
+            let targetConfigs = identifiedConfigs;
+            if (identifiedConfigs.length === 0) {
+                const defaultResolution = await resolveLlmLabel(DEFAULT_MODEL_NAME);
+                targetConfigs = [{
+                    agent: defaultResolution.agentAlias,
+                    model: defaultResolution.model
+                }];
             }
 
             return {
@@ -140,11 +160,13 @@ export async function fetchIssuesForRepo(
                 repoOwner: owner,
                 repoName: repo,
                 labels: issue.labels.map(l => l.name),
-                targetModels: identifiedModels.length > 0 ? identifiedModels : [DEFAULT_MODEL_NAME],
+                targetConfigs,
                 createdAt: issue.created_at,
                 updatedAt: issue.updated_at
             };
-        });
+        }));
+
+        return issues;
     } catch (error) {
         handleError(error, `fetch_issues_${repoFullName}`, { correlationId });
 
@@ -160,16 +182,18 @@ export async function fetchIssuesForRepo(
 async function enqueueIssueForModel(
     issue: DetectedIssue,
     modelName: string,
+    agentAlias: string,
     repoFullName: string,
     options: EnqueueOptions
 ): Promise<void> {
     const { correlationId, correlatedLogger } = options;
     const timestamp = Date.now();
-    const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${modelName}-${timestamp}`;
+    const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${agentAlias}-${modelName}-${timestamp}`;
     const issueJob: IssueJobData = {
         repoOwner: issue.repoOwner,
         repoName: issue.repoName,
         number: issue.number,
+        agentAlias: agentAlias,
         modelName: modelName,
         correlationId: generateCorrelationId()
     };
@@ -213,15 +237,15 @@ async function processIssue(
 ): Promise<void> {
     correlatedLogger.info({
         issueId: issue.id, issueNumber: issue.number, issueTitle: issue.title,
-        issueUrl: issue.url, repository: repoFullName, targetModels: issue.targetModels
+        issueUrl: issue.url, repository: repoFullName, targetConfigs: issue.targetConfigs
     }, 'Detected eligible issue');
 
-    for (const modelName of issue.targetModels) {
-        correlatedLogger.info({ issueId: issue.id, issueNumber: issue.number, repository: repoFullName, modelName }, `Enqueueing job for model: ${modelName}`);
+    for (const config of issue.targetConfigs) {
+        correlatedLogger.info({ issueId: issue.id, issueNumber: issue.number, repository: repoFullName, agent: config.agent, model: config.model }, `Enqueueing job for agent: ${config.agent}, model: ${config.model}`);
         try {
-            await enqueueIssueForModel(issue, modelName, repoFullName, { correlationId, correlatedLogger });
+            await enqueueIssueForModel(issue, config.model, config.agent, repoFullName, { correlationId, correlatedLogger });
         } catch (error) {
-            handleError(error, `Failed to add issue ${issue.number} with model ${modelName} to queue`, { correlationId });
+            handleError(error, `Failed to add issue ${issue.number} with agent ${config.agent} model ${config.model} to queue`, { correlationId });
         }
     }
 }

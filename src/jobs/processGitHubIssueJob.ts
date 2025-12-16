@@ -22,7 +22,7 @@ import type { RepoValidationResult } from '@gitfix/core';
 import { getDefaultModel } from '@gitfix/core';
 import { loadPrLabel, loadPrimaryProcessingLabels } from '@gitfix/core';
 import { filterCommentByAuthor } from '@gitfix/core';
-import { AgentRegistry, generateClaudePrompt } from '@gitfix/core';
+import { AgentRegistry, generateClaudePrompt, resolveLlmLabel } from '@gitfix/core';
 import type { AgentExecutionResult } from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
@@ -132,15 +132,30 @@ async function initializeJobContext(job: Job<IssueJobData>): Promise<JobContext>
     const primaryProcessingLabels = await getPrimaryProcessingLabels();
     const triggeringLabel = issueRef.triggeringLabel || primaryProcessingLabels[0] || 'AI';
 
-    // Get agent alias from job data, or use default agent
+    // Get agent alias from job data, or resolve from model name, or use default
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
-    const defaultAgent = registry.getDefaultAgent();
-    const agentAlias = issueRef.agentAlias || defaultAgent?.config.alias || 'default';
 
-    // Get model from job data, or use agent's default model
+    let agentAlias = issueRef.agentAlias;
+    let modelName = issueRef.modelName;
+
+    // If agentAlias is missing but we have a modelName, try to resolve the agent from the model
+    if (!agentAlias && modelName) {
+        const resolution = await resolveLlmLabel(modelName);
+        agentAlias = resolution.agentAlias;
+        // Keep original modelName if it was specific, otherwise use resolved one
+        correlatedLogger.debug({ originalModel: modelName, resolvedAgent: agentAlias }, 'Resolved agent from model name');
+    }
+
+    // Fallback to default agent if still missing
+    if (!agentAlias) {
+        const defaultAgent = registry.getDefaultAgent();
+        agentAlias = defaultAgent?.config.alias || 'default';
+    }
+
+    // Get model if still missing (use agent's default model)
     const agent = registry.getAgentByAlias(agentAlias);
-    const modelName = issueRef.modelName || agent?.config.defaultModel || DEFAULT_MODEL_NAME;
+    modelName = modelName || agent?.config.defaultModel || DEFAULT_MODEL_NAME;
 
     const taskId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentAlias}-${modelName}`;
 
