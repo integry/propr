@@ -1,0 +1,193 @@
+import React from 'react';
+import { ChevronRight } from 'lucide-react';
+import type { Task, TaskGroup } from './types';
+import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration } from './utils.tsx';
+import { TaskTypeBadge } from './TaskTypeBadge';
+
+interface ParentTaskRowProps {
+  group: TaskGroup;
+  task: Task;
+  onRowClick: (taskId: string) => void;
+  isDuplicateRepo?: boolean;
+}
+
+export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRowClick, isDuplicateRepo = false }) => {
+  const typeInfo = getTaskTypeInfo(task);
+
+  return (
+    <tr
+      className="hover:bg-gray-50 transition-colors cursor-pointer group bg-white"
+      onClick={() => onRowClick(task.id)}
+    >
+      <td className="py-3 px-4 align-top">
+        <div className={`flex flex-col ${isDuplicateRepo ? 'opacity-30' : ''}`}>
+          <span className="text-xs text-gray-400 font-normal">{group.repoOwner}</span>
+          <span className="text-sm font-bold text-gray-800">{group.repoName}</span>
+        </div>
+      </td>
+      <td className="py-3 px-4 align-top">
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            {group.prNumber ? (
+              <span className="text-sm font-bold text-primary-600 hover:text-primary-700">
+                PR #{group.prNumber}
+              </span>
+            ) : task.issueNumber ? (
+              <span className="text-sm font-bold text-primary-600 hover:text-primary-700">
+                Issue #{task.issueNumber}
+              </span>
+            ) : (
+              <span className="text-sm font-bold text-gray-700">Task {task.id.substring(0, 8)}</span>
+            )}
+            <TaskTypeBadge type={typeInfo.type} />
+          </div>
+          <div className="text-sm text-gray-900 font-medium">
+            {(() => {
+              // For followup tasks, prefer subtitle if available
+              if (typeInfo.type === 'followup' && task.subtitle) {
+                return task.subtitle;
+              }
+              // Otherwise use the clean title
+              return typeInfo.cleanTitle || task.subtitle || 'No title';
+            })()}
+          </div>
+          {(() => {
+            // Show agent/model info if available
+            const agent = task.llmProvider || '';
+            const model = task.model || task.modelName || '';
+            if (agent || model) {
+              const displayText = agent && model ? `${agent} ${model}` : agent || model;
+              return (
+                <div className="flex items-center gap-1 text-xs">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
+                    <span>🤖</span>
+                    <span>{displayText}</span>
+                  </span>
+                </div>
+              );
+            }
+            return null;
+          })()}
+        </div>
+      </td>
+      <td className="py-3 px-4 align-top">
+        {getStatusPill(task.status)}
+      </td>
+      <td className="py-3 px-4 align-top text-sm text-gray-500 whitespace-nowrap" title={new Date(task.createdAt).toLocaleString()}>
+        {formatRelativeTime(task.createdAt)}
+      </td>
+      <td className="py-3 px-4 align-top text-sm text-gray-600 font-mono whitespace-nowrap text-right">
+        {formatDuration(task.processedAt || task.createdAt, task.completedAt)}
+      </td>
+      <td className="py-3 px-4 align-top text-right">
+        <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors">
+          <ChevronRight size={16} />
+        </button>
+      </td>
+    </tr>
+  );
+};
+
+interface ChildTaskRowProps {
+  task: Task;
+  onRowClick: (taskId: string) => void;
+}
+
+interface ChildTaskRowExtraProps extends ChildTaskRowProps {
+  isLastChild?: boolean;
+}
+
+export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClick, isLastChild = false }) => {
+  const childTypeInfo = getTaskTypeInfo(task);
+  const childDisplayTitle = (() => {
+    // For followup tasks, prefer subtitle if available
+    if (childTypeInfo.type === 'followup' && task.subtitle) {
+      return task.subtitle;
+    }
+    // Otherwise use the clean title
+    return childTypeInfo.cleanTitle || task.subtitle || 'Update';
+  })();
+
+  return (
+    <tr
+      className="hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30"
+      onClick={() => onRowClick(task.id)}
+    >
+      <td className="py-3 px-4 align-top relative">
+         {/* Visual connector line placeholder if we wanted one spanning rows */}
+      </td>
+      <td className="py-0 px-4 align-top relative">
+        {/* Vertical line - positioned absolutely to span across td boundaries with z-index to sit above row borders */}
+        <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200 z-10" style={{ height: isLastChild ? 'calc(0.75rem + 0.5em + 1px)' : 'calc(100% + 1px)', top: '-1px' }}></div>
+        {/* Horizontal arm - aligned with the middle of the text content */}
+        <div className="absolute left-6 w-4 h-0.5 bg-gray-200 z-10" style={{ top: 'calc(0.75rem + 0.5em)' }}></div>
+
+        <div className="flex flex-col gap-1 pl-6 py-3">
+          <div className="flex items-start gap-2 pl-4">
+            <span className="text-sm text-gray-600 line-clamp-1">{childDisplayTitle}</span>
+          </div>
+          {(() => {
+            // Show agent/model info if available
+            const agent = task.llmProvider || '';
+            const model = task.model || task.modelName || '';
+            if (agent || model) {
+              const displayText = agent && model ? `${agent} ${model}` : agent || model;
+              return (
+                <div className="flex items-center gap-1 text-xs pl-4">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
+                    <span>🤖</span>
+                    <span>{displayText}</span>
+                  </span>
+                </div>
+              );
+            }
+            return null;
+          })()}
+        </div>
+      </td>
+      <td className="py-3 px-4 align-top">
+        {getStatusPill(task.status)}
+      </td>
+      <td className="py-3 px-4 align-top text-sm text-gray-500 whitespace-nowrap" title={new Date(task.createdAt).toLocaleString()}>
+        {formatRelativeTime(task.createdAt)}
+      </td>
+      <td className="py-3 px-4 align-top text-sm text-gray-600 font-mono whitespace-nowrap text-right">
+        {formatDuration(task.processedAt || task.createdAt, task.completedAt)}
+      </td>
+      <td className="py-3 px-4 align-top text-right">
+         <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors">
+            <ChevronRight size={16} />
+         </button>
+      </td>
+    </tr>
+  );
+};
+
+interface CollapseToggleRowProps {
+  groupKey: string;
+  hiddenCount: number;
+  onToggle: (groupKey: string, e: React.MouseEvent) => void;
+}
+
+export const CollapseToggleRow: React.FC<CollapseToggleRowProps> = ({ groupKey, hiddenCount, onToggle }) => (
+  <tr className="bg-gray-50/30">
+    <td className="py-3 px-4 align-top relative">
+       {/* Empty cell for repository column alignment */}
+    </td>
+    <td colSpan={5} className="py-0 px-4 align-top text-xs relative">
+       {/* Vertical line connecting to the tree structure - extends from top to the horizontal arm with z-index to sit above row borders */}
+       <div className="absolute left-6 top-0 w-0.5 bg-gray-200 z-10" style={{ height: 'calc(0.75rem + 0.5rem + 0.5em - 2px)', top: '-1px' }}></div>
+       {/* Horizontal arm - aligned with the middle of the button text */}
+       <div className="absolute left-6 w-4 h-0.5 bg-gray-200 z-10" style={{ top: 'calc(0.75rem + 0.5rem + 0.5em - 3px)' }}></div>
+
+       <div className="pl-6 py-3">
+         <button
+           onClick={(e) => onToggle(groupKey, e)}
+           className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium py-1 px-2 hover:bg-blue-50 rounded transition-colors pl-4"
+         >
+           Show {hiddenCount} older updates...
+         </button>
+       </div>
+    </td>
+  </tr>
+);
