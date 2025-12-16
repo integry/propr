@@ -8,9 +8,10 @@ interface ParentTaskRowProps {
   group: TaskGroup;
   task: Task;
   onRowClick: (taskId: string) => void;
+  isDuplicateRepo?: boolean;
 }
 
-export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRowClick }) => {
+export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRowClick, isDuplicateRepo = false }) => {
   const typeInfo = getTaskTypeInfo(task);
 
   return (
@@ -19,7 +20,7 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
       onClick={() => onRowClick(task.id)}
     >
       <td className="py-3 px-4 align-top">
-        <div className="flex flex-col">
+        <div className={`flex flex-col ${isDuplicateRepo ? 'opacity-30' : ''}`}>
           <span className="text-xs text-gray-400 font-normal">{group.repoOwner}</span>
           <span className="text-sm font-bold text-gray-800">{group.repoName}</span>
         </div>
@@ -55,11 +56,13 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
             const agent = task.llmProvider || '';
             const model = task.model || task.modelName || '';
             if (agent || model) {
+              const displayText = agent && model ? `${agent} ${model}` : agent || model;
               return (
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  {agent && <span className="font-medium">{agent}</span>}
-                  {agent && model && <span>•</span>}
-                  {model && <span>{model}</span>}
+                <div className="flex items-center gap-1 text-xs">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
+                    <span>🤖</span>
+                    <span>{displayText}</span>
+                  </span>
                 </div>
               );
             }
@@ -73,7 +76,7 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
       <td className="py-3 px-4 align-top text-sm text-gray-500 whitespace-nowrap" title={new Date(task.createdAt).toLocaleString()}>
         {formatRelativeTime(task.createdAt)}
       </td>
-      <td className="py-3 px-4 align-top text-sm text-gray-600 font-mono whitespace-nowrap">
+      <td className="py-3 px-4 align-top text-sm text-gray-600 font-mono whitespace-nowrap text-right">
         {formatDuration(task.processedAt || task.createdAt, task.completedAt)}
       </td>
       <td className="py-3 px-4 align-top text-right">
@@ -106,13 +109,12 @@ export const ChildTaskRow: React.FC<ChildTaskRowProps> = ({ task, onRowClick }) 
       className="hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30"
       onClick={() => onRowClick(task.id)}
     >
-      <td className="py-2 px-4 align-top relative">
+      <td className="py-3 px-4 align-top relative">
          {/* Visual connector line placeholder if we wanted one spanning rows */}
       </td>
-      <td className="py-2 px-4 align-top">
-        <div className="flex flex-col gap-1 pl-2">
-          <div className="flex items-start gap-2">
-            <span className="text-gray-300 font-light select-none">└─</span>
+      <td className="py-3 px-4 align-top">
+        <div className="flex flex-col gap-1 pl-6 border-l-2 border-gray-200">
+          <div className="flex items-start gap-2 pl-2">
             <span className="text-sm text-gray-600 line-clamp-1">{childDisplayTitle}</span>
           </div>
           {(() => {
@@ -120,11 +122,13 @@ export const ChildTaskRow: React.FC<ChildTaskRowProps> = ({ task, onRowClick }) 
             const agent = task.llmProvider || '';
             const model = task.model || task.modelName || '';
             if (agent || model) {
+              const displayText = agent && model ? `${agent} ${model}` : agent || model;
               return (
-                <div className="flex items-center gap-2 text-xs text-gray-500 ml-5">
-                  {agent && <span className="font-medium">{agent}</span>}
-                  {agent && model && <span>•</span>}
-                  {model && <span>{model}</span>}
+                <div className="flex items-center gap-1 text-xs pl-2">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
+                    <span>🤖</span>
+                    <span>{displayText}</span>
+                  </span>
                 </div>
               );
             }
@@ -132,16 +136,16 @@ export const ChildTaskRow: React.FC<ChildTaskRowProps> = ({ task, onRowClick }) 
           })()}
         </div>
       </td>
-      <td className="py-2 px-4 align-top">
+      <td className="py-3 px-4 align-top">
         {getStatusPill(task.status)}
       </td>
-      <td className="py-2 px-4 align-top text-sm text-gray-500 whitespace-nowrap" title={new Date(task.createdAt).toLocaleString()}>
+      <td className="py-3 px-4 align-top text-sm text-gray-500 whitespace-nowrap" title={new Date(task.createdAt).toLocaleString()}>
         {formatRelativeTime(task.createdAt)}
       </td>
-      <td className="py-2 px-4 align-top text-sm text-gray-600 font-mono whitespace-nowrap">
+      <td className="py-3 px-4 align-top text-sm text-gray-600 font-mono whitespace-nowrap text-right">
         {formatDuration(task.processedAt || task.createdAt, task.completedAt)}
       </td>
-      <td className="py-2 px-4 align-top text-right">
+      <td className="py-3 px-4 align-top text-right">
          <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors">
             <ChevronRight size={16} />
          </button>
@@ -164,7 +168,7 @@ export const CollapseToggleRow: React.FC<CollapseToggleRowProps> = ({ groupKey, 
     <td colSpan={5} className="py-1 px-4 text-xs">
        <button
          onClick={(e) => onToggle(groupKey, e)}
-         className="flex items-center gap-1 text-primary-600 hover:text-primary-700 font-medium py-1 px-2 hover:bg-blue-50 rounded transition-colors ml-6"
+         className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium py-1 px-2 hover:bg-blue-50 rounded transition-colors ml-6"
        >
          <span className="text-lg leading-none opacity-40">↳</span>
          Show {hiddenCount} older updates...

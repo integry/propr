@@ -164,7 +164,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {groupedTasks.map((group) => {
+              {groupedTasks.map((group, index) => {
                 const parentTask = group.tasks[0];
                 const allChildren = group.tasks.slice(1);
 
@@ -183,9 +183,15 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
                   hiddenCount = allChildren.length - 3;
                 }
 
+                // Check if this group's repository is the same as the previous one
+                const prevGroup = index > 0 ? groupedTasks[index - 1] : null;
+                const isDuplicateRepo = prevGroup
+                  ? prevGroup.repoOwner === group.repoOwner && prevGroup.repoName === group.repoName
+                  : false;
+
                 return (
                   <React.Fragment key={group.key}>
-                    <ParentTaskRow group={group} task={parentTask} onRowClick={handleRowClick} />
+                    <ParentTaskRow group={group} task={parentTask} onRowClick={handleRowClick} isDuplicateRepo={isDuplicateRepo} />
 
                     {visibleChildren.map((child) => (
                       <ChildTaskRow key={child.id} task={child} onRowClick={handleRowClick} />
