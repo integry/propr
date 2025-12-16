@@ -116,13 +116,13 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
       <td className="py-3 px-4 align-top relative">
          {/* Visual connector line placeholder if we wanted one spanning rows */}
       </td>
-      <td className="py-3 px-4 align-top">
-        <div className="flex flex-col gap-1 pl-6 relative">
-          {/* Vertical line - extends full height of cell */}
-          <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200" style={{ height: isLastChild ? '50%' : '100%' }}></div>
-          {/* Horizontal arm */}
-          <div className="absolute left-6 top-1/2 w-4 h-0.5 bg-gray-200" style={{ transform: 'translateY(-50%)' }}></div>
+      <td className="py-0 px-4 align-top relative">
+        {/* Vertical line - positioned absolutely to span across td boundaries */}
+        <div className="absolute left-10 top-0 bottom-0 w-0.5 bg-gray-200" style={{ height: isLastChild ? '50%' : '100%' }}></div>
+        {/* Horizontal arm */}
+        <div className="absolute left-10 top-1/2 w-4 h-0.5 bg-gray-200" style={{ transform: 'translateY(-50%)' }}></div>
 
+        <div className="flex flex-col gap-1 pl-6 py-3">
           <div className="flex items-start gap-2 pl-6">
             <span className="text-sm text-gray-600 line-clamp-1">{childDisplayTitle}</span>
           </div>
@@ -174,18 +174,17 @@ export const CollapseToggleRow: React.FC<CollapseToggleRowProps> = ({ groupKey, 
     <td className="p-0 border-r border-transparent">
        <div className="h-full w-full border-r-2 border-transparent"></div>
     </td>
-    <td colSpan={5} className="py-1 px-4 text-xs">
-       <div className="relative pl-6">
-         {/* Vertical line connecting to the tree structure */}
-         <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200"></div>
-         {/* Horizontal arm */}
-         <div className="absolute left-6 top-1/2 w-4 h-0.5 bg-gray-200" style={{ transform: 'translateY(-50%)' }}></div>
+    <td colSpan={5} className="py-0 px-4 text-xs relative">
+       {/* Vertical line connecting to the tree structure - only extends to the horizontal arm */}
+       <div className="absolute left-10 top-0 w-0.5 bg-gray-200" style={{ height: '50%' }}></div>
+       {/* Horizontal arm */}
+       <div className="absolute left-10 top-1/2 w-4 h-0.5 bg-gray-200" style={{ transform: 'translateY(-50%)' }}></div>
 
+       <div className="pl-6 py-1">
          <button
            onClick={(e) => onToggle(groupKey, e)}
-           className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium py-1 px-2 hover:bg-blue-50 rounded transition-colors ml-4"
+           className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium py-1 px-2 hover:bg-blue-50 rounded transition-colors ml-6"
          >
-           <span className="text-lg leading-none opacity-40">↳</span>
            Show {hiddenCount} older updates...
          </button>
        </div>
