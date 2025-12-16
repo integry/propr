@@ -193,8 +193,13 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
                   <React.Fragment key={group.key}>
                     <ParentTaskRow group={group} task={parentTask} onRowClick={handleRowClick} isDuplicateRepo={isDuplicateRepo} />
 
-                    {visibleChildren.map((child) => (
-                      <ChildTaskRow key={child.id} task={child} onRowClick={handleRowClick} />
+                    {visibleChildren.map((child, childIndex) => (
+                      <ChildTaskRow
+                        key={child.id}
+                        task={child}
+                        onRowClick={handleRowClick}
+                        isLastChild={childIndex === visibleChildren.length - 1 && hiddenCount === 0}
+                      />
                     ))}
 
                     {hiddenCount > 0 && (
