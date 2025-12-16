@@ -9,8 +9,8 @@ import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitC
 import type { WorktreeInfo } from '@gitfix/core';
 import { ensureGitRepository } from '@gitfix/core';
 import { createLogFiles } from '@gitfix/core';
-import { executeClaudeCode, UsageLimitError, generateTaskSummary } from '@gitfix/core';
-import type { ClaudeCodeResponse } from '@gitfix/core';
+import { UsageLimitError, generateTaskSummary, AgentRegistry, resolveLlmLabel } from '@gitfix/core';
+import type { ClaudeCodeResponse, AgentExecutionResult } from '@gitfix/core';
 import type { ClaudeResult } from '@gitfix/core';
 import { recordLLMMetrics } from '@gitfix/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@gitfix/core';
@@ -36,6 +36,29 @@ function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
         finalResult: response.finalResult,
         conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
         error: response.error
+    };
+}
+
+/**
+ * Converts AgentExecutionResult to ClaudeCodeResponse for backwards compatibility
+ * with existing post-processing code.
+ */
+function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeResponse {
+    return {
+        success: result.success,
+        model: result.modelUsed,
+        executionTime: result.executionTimeMs,
+        output: null,
+        sessionId: result.sessionId || null,
+        conversationId: result.conversationId,
+        finalResult: result.summary ? { type: 'result', result: result.summary } : null,
+        rawOutput: result.rawOutput,
+        summary: result.summary || null,
+        logs: result.logs,
+        exitCode: result.exitCode ?? null,
+        error: result.error,
+        modifiedFiles: result.modifiedFiles,
+        commitMessage: result.commitMessage || null
     };
 }
 
@@ -224,24 +247,49 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
 
-    state.claudeResult = await executeClaudeCode({
+    // Resolve agent and model using resolveLlmLabel
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+
+    const modelToUse = llm || DEFAULT_MODEL_NAME;
+    const resolution = await resolveLlmLabel(modelToUse);
+    const agent = registry.getAgentByAlias(resolution.agentAlias);
+
+    if (!agent) {
+        throw new Error(`Agent not found for alias: ${resolution.agentAlias}`);
+    }
+
+    correlatedLogger.info({
+        agentAlias: resolution.agentAlias,
+        agentType: agent.config.type,
+        model: resolution.model,
+        pullRequestNumber
+    }, 'Executing PR comment task with agent');
+
+    // Execute task via agent abstraction
+    const agentResult = await agent.executeTask({
         worktreePath: state.worktreeInfo.worktreePath,
         issueRef: { number: pullRequestNumber, repoOwner, repoName },
-        githubToken: githubToken.token, customPrompt: prompt, branchName: state.worktreeInfo.branchName,
-        modelName: llm || DEFAULT_MODEL_NAME,
-        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: llm || DEFAULT_MODEL_NAME, stateManager, correlatedLogger, redisClient }),
+        prompt,
+        model: resolution.model,
+        githubToken: githubToken.token,
+        branchName: state.worktreeInfo.branchName,
+        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolution.model, stateManager, correlatedLogger, redisClient }),
         onContainerId: createContainerIdCallbackForPR(taskId, stateManager)
     });
+
+    // Convert to ClaudeCodeResponse for backwards compatibility
+    state.claudeResult = agentResultToClaudeResponse(agentResult);
 
     await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
     await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
     await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
-        reason: 'Claude execution completed',
+        reason: `${agent.config.type} agent execution completed`,
         claudeResult: { success: state.claudeResult.success, sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, executionTime: state.claudeResult.executionTime },
         historyMetadata: { sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, model: state.claudeResult.model }
     });
 
-    if (!state.claudeResult.success) throw new Error(`Claude execution failed: ${state.claudeResult.error || 'Unknown error'}`);
+    if (!state.claudeResult.success) throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
 
     const changesSummary = state.claudeResult.summary || state.claudeResult.finalResult?.result || '';
     const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText });

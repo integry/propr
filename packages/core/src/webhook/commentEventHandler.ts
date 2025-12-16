@@ -188,7 +188,7 @@ async function getPRBranchAndLabels(eventType: CommentEventType, payload: IssueC
 
 async function enqueueNewCommentJob(comment: { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
-    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-claude-(.+)$' } = options;
+    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$' } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     let llm: string | null = PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? extractLlmFromKeywords(comment.body, PR_FOLLOWUP_TRIGGER_KEYWORDS) : null;

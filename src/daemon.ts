@@ -51,7 +51,7 @@ const redisClient = new Redis({
 });
 
 const POLLING_INTERVAL_MS = parseInt(process.env.POLLING_INTERVAL_MS || '60000', 10);
-const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-claude-(.+)$';
+const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
@@ -66,6 +66,7 @@ function getCommentConfig(): CommentEventConfig {
             processCommentEvent(payload, eventType, correlationId, getCommentConfig())
     };
 }
+
 
 async function pollForIssues(): Promise<DetectedIssue[]> {
     const correlationId = generateCorrelationId();
@@ -303,7 +304,7 @@ Environment Variables:
   GITHUB_REPOS_TO_MONITOR    Comma-separated list of repositories to monitor
   POLLING_INTERVAL_MS        Polling interval in milliseconds (default: 60000)
   AI_PRIMARY_TAG             Primary tag to look for (default: AI)
-  MODEL_LABEL_PATTERN        Regex pattern for model labels (default: ^llm-claude-(.+)$)
+  MODEL_LABEL_PATTERN        Regex pattern for model labels (default: ^llm-(.+)$)
   DEFAULT_CLAUDE_MODEL       Default model when no model labels found
   GITHUB_BOT_USERNAME        Bot username to exclude from PR comment monitoring
   GITHUB_USER_WHITELIST      Comma-separated list of allowed users for PR comments
