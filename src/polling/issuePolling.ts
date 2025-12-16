@@ -65,6 +65,8 @@ interface ActivityLog {
 interface EnqueueOptions {
     correlationId: string;
     correlatedLogger: Logger;
+    modelName: string;
+    agentAlias: string;
 }
 
 type Octokit = {
@@ -181,12 +183,10 @@ export async function fetchIssuesForRepo(
 
 async function enqueueIssueForModel(
     issue: DetectedIssue,
-    modelName: string,
-    agentAlias: string,
     repoFullName: string,
     options: EnqueueOptions
 ): Promise<void> {
-    const { correlationId, correlatedLogger } = options;
+    const { correlationId, correlatedLogger, modelName, agentAlias } = options;
     const timestamp = Date.now();
     const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${agentAlias}-${modelName}-${timestamp}`;
     const issueJob: IssueJobData = {
@@ -243,7 +243,12 @@ async function processIssue(
     for (const config of issue.targetConfigs) {
         correlatedLogger.info({ issueId: issue.id, issueNumber: issue.number, repository: repoFullName, agent: config.agent, model: config.model }, `Enqueueing job for agent: ${config.agent}, model: ${config.model}`);
         try {
-            await enqueueIssueForModel(issue, config.model, config.agent, repoFullName, { correlationId, correlatedLogger });
+            await enqueueIssueForModel(issue, repoFullName, {
+                correlationId,
+                correlatedLogger,
+                modelName: config.model,
+                agentAlias: config.agent
+            });
         } catch (error) {
             handleError(error, `Failed to add issue ${issue.number} with agent ${config.agent} model ${config.model} to queue`, { correlationId });
         }
