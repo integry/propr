@@ -67,6 +67,7 @@ function getCommentConfig(): CommentEventConfig {
     };
 }
 
+
 async function pollForIssues(): Promise<DetectedIssue[]> {
     const correlationId = generateCorrelationId();
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
