@@ -173,17 +173,17 @@ post_pr_comment() {
     echo "Checking for previous preview environment comments..."
     COMMENTS_JSON=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
         -H "Accept: application/vnd.github.v3+json" \
-        "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments")
+        "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")
 
-    # Extract comment IDs that contain our marker
-    COMMENT_IDS=$(echo "$COMMENTS_JSON" | grep -B5 "$COMMENT_MARKER" | grep '"id":' | grep -oE '[0-9]+' || true)
+    # Extract comment IDs that contain our marker using jq
+    COMMENT_IDS=$(echo "$COMMENTS_JSON" | jq -r '.[] | select(.body | contains("preview-env-comment")) | .id' || true)
 
     for COMMENT_ID in $COMMENT_IDS; do
         echo "Deleting previous preview comment: $COMMENT_ID"
         curl -s -X DELETE \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments/${COMMENT_ID}"
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}"
     done
 
     # Post new comment
