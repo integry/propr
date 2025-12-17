@@ -53,7 +53,19 @@ echo "  UI URL:     http://pr-${PR_NUMBER}.gitfix.dev"
 echo "  API URL:    http://pr-${PR_NUMBER}-api.gitfix.dev"
 echo "============================================"
 
-# 2. Deploy using the main compose file with Env Overrides
+# 2. Detect docker compose command (v2 plugin vs v1 standalone)
+if docker compose version >/dev/null 2>&1; then
+    DOCKER_COMPOSE="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    DOCKER_COMPOSE="docker-compose"
+else
+    echo "Error: Neither 'docker compose' (v2) nor 'docker-compose' (v1) found"
+    exit 1
+fi
+
+echo "Using compose command: $DOCKER_COMPOSE"
+
+# 3. Deploy using the main compose file with Env Overrides
 # -f: Points to the compose file at repository root
 # -p: Sets the project name (isolates the stack)
 # --build: Ensures we build the latest code from the branch
@@ -61,10 +73,10 @@ UI_PORT=$UI_PORT \
 API_PORT=$API_PORT \
 API_PUBLIC_URL="http://pr-${PR_NUMBER}-api.gitfix.dev" \
 VITE_API_BASE_URL="http://pr-${PR_NUMBER}-api.gitfix.dev" \
-docker compose -f "$REPO_ROOT/docker-compose.yml" -p "gitfix-pr-${PR_NUMBER}" up -d --build
+$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" -p "gitfix-pr-${PR_NUMBER}" up -d --build
 
-# 3. Database State Handling - copy from staging site
-CONTAINER_ID=$(docker compose -f "$REPO_ROOT/docker-compose.yml" -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
+# 4. Database State Handling - copy from staging site
+CONTAINER_ID=$($DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
 
 if [ -n "$CONTAINER_ID" ]; then
     echo "Preview environment deployed successfully!"

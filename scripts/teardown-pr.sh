@@ -42,9 +42,21 @@ echo "  PR Number:  #$PR_NUMBER"
 echo "  Project:    $PROJECT_NAME"
 echo "============================================"
 
+# Detect docker compose command (v2 plugin vs v1 standalone)
+if docker compose version >/dev/null 2>&1; then
+    DOCKER_COMPOSE="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    DOCKER_COMPOSE="docker-compose"
+else
+    echo "Error: Neither 'docker compose' (v2) nor 'docker-compose' (v1) found"
+    exit 1
+fi
+
+echo "Using compose command: $DOCKER_COMPOSE"
+
 # Check if the project exists
 # -f: Points to the compose file at repository root
-if ! docker compose -f "$REPO_ROOT/docker-compose.yml" -p "$PROJECT_NAME" ps -q >/dev/null 2>&1; then
+if ! $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" -p "$PROJECT_NAME" ps -q >/dev/null 2>&1; then
     echo "Warning: No containers found for project $PROJECT_NAME"
     echo "The environment may have already been torn down."
     exit 0
@@ -52,7 +64,7 @@ fi
 
 # Stop containers and remove anonymous volumes
 echo "Stopping containers..."
-docker compose -f "$REPO_ROOT/docker-compose.yml" -p "$PROJECT_NAME" down -v
+$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" -p "$PROJECT_NAME" down -v
 
 # Optional: Clean up any orphaned networks
 echo "Cleaning up networks..."
