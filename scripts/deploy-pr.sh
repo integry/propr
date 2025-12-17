@@ -71,7 +71,6 @@ fi
 
 # 4. Post GitHub PR Comment with build link
 UI_URL="https://pr-${PR_NUMBER}.gitfix.dev"
-API_URL="https://pr-${PR_NUMBER}-api.gitfix.dev"
 
 post_pr_comment() {
     if [ -z "$GITHUB_TOKEN" ] || [ -z "$GITHUB_REPOSITORY" ]; then
@@ -107,10 +106,7 @@ post_pr_comment() {
 
 Your PR preview environment is now available:
 
-| Service | URL |
-|---------|-----|
-| **UI** | ${UI_URL} |
-| **API** | ${API_URL} |
+**UI:** ${UI_URL}
 
 ---
 *This comment is automatically updated on each deployment.*"
@@ -132,4 +128,3 @@ post_pr_comment
 echo ""
 echo "Preview environment is now available at:"
 echo "  UI:  $UI_URL"
-echo "  API: $API_URL"
