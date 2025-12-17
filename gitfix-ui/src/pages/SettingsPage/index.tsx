@@ -273,6 +273,12 @@ const SettingsPage: React.FC = () => {
             helperText="State labels (-processing, -done) are generated automatically."
           />
 
+          <PrLabelSection
+            prLabel={prLabel}
+            onLabelChange={(e) => setPrLabel(e.target.value)}
+            onBlur={triggerAutoSave}
+          />
+
           <TagListSection
             title="Follow-up Keywords"
             description="Triggers processing when found in comments."
@@ -284,12 +290,6 @@ const SettingsPage: React.FC = () => {
             placeholder="e.g., GITFIX"
             emptyMessage="No keywords configured."
             showEmptyIcon={true}
-          />
-
-          <PrLabelSection
-            prLabel={prLabel}
-            onLabelChange={(e) => setPrLabel(e.target.value)}
-            onBlur={triggerAutoSave}
           />
         </div>
       </div>
