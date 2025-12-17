@@ -44,6 +44,7 @@ fi
 UI_PORT=$((10000 + PR_NUMBER))
 API_PORT=$((20000 + PR_NUMBER))
 DOCS_PORT=$((30000 + PR_NUMBER))
+REDIS_EXTERNAL_PORT=$((50000 + PR_NUMBER))
 
 echo "============================================"
 echo "Deploying PR Preview Environment"
@@ -116,11 +117,18 @@ fi
 #   to the compose file location (the repo root)
 #
 # Deploy all services for preview environments
+# Note: VITE_OAUTH_API_URL points to main API for OAuth to avoid registering multiple callback URLs
+# SESSION_REDIS_HOST points to host's Redis to share sessions across all APIs
 UI_PORT=$UI_PORT \
 API_PORT=$API_PORT \
 DOCS_PORT=$DOCS_PORT \
+REDIS_EXTERNAL_PORT=$REDIS_EXTERNAL_PORT \
 API_PUBLIC_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
 VITE_API_BASE_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
+VITE_OAUTH_API_URL="https://api.gitfix.dev" \
+FRONTEND_URL="https://pr-${PR_NUMBER}.gitfix.dev" \
+SESSION_REDIS_HOST="host.docker.internal" \
+SESSION_REDIS_PORT="6380" \
 STAGING_ENV_FILE="" \
 $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "gitfix-pr-${PR_NUMBER}" up -d --build
 

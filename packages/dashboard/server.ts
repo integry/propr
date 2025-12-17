@@ -68,13 +68,42 @@ const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentE
 const app = express();
 const PORT = process.env.DASHBOARD_API_PORT || 4000;
 
+// Trust proxy for secure cookies behind reverse proxy (Cloudflare, nginx, etc.)
+app.set('trust proxy', 1);
+
 if (!process.env.FRONTEND_URL) {
   console.error('FRONTEND_URL environment variable is required');
   process.exit(1);
 }
 
+// Allow all subdomains of COOKIE_DOMAIN for CORS to support PR preview environments
+// that share sessions via cross-subdomain cookies
+const cookieDomain = process.env.COOKIE_DOMAIN || '.gitfix.dev';
+// Remove leading dot if present for hostname matching
+const baseDomain = cookieDomain.startsWith('.') ? cookieDomain.slice(1) : cookieDomain;
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (e.g., mobile apps, curl, etc.)
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    try {
+      const url = new URL(origin);
+      // Allow the base domain and any subdomain
+      if (url.hostname === baseDomain || url.hostname.endsWith('.' + baseDomain)) {
+        callback(null, true);
+      } else if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
+        // Allow localhost for development
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    } catch {
+      callback(new Error('Invalid origin'));
+    }
+  },
   credentials: true
 }));
 

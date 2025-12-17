@@ -1,6 +1,10 @@
 services:
   redis:
     image: redis:alpine
+    ports:
+      # Expose Redis for PR preview environments to share sessions
+      # REDIS_EXTERNAL_PORT allows different ports for different stacks
+      - '${REDIS_EXTERNAL_PORT:-6380}:6379'
     volumes:
       - redis_data:/data
     networks:
@@ -72,6 +76,7 @@ services:
       dockerfile: gitfix-ui/Dockerfile
       args:
         - VITE_API_BASE_URL=${VITE_API_BASE_URL}
+        - VITE_OAUTH_API_URL=${VITE_OAUTH_API_URL}
     ports:
       # Allow injection of UI_PORT for PR preview environments, default to 5173
       - '${UI_PORT:-5173}:5173'
@@ -83,6 +88,8 @@ services:
       context: .
       dockerfile: Dockerfile.node
     command: sh -c "cd /usr/src/app/packages/dashboard && npx tsx server.ts"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       # Allow injection of API_PORT for PR preview environments, default to 4000
       - '${API_PORT:-4000}:4000'
@@ -101,6 +108,13 @@ services:
       - CONFIG_REPO_PATH=/tmp/config_repo
       # Allow injection of API_PUBLIC_URL for PR preview environments
       - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:4000}
+      # Allow injection of FRONTEND_URL for CORS in PR preview environments
+      - FRONTEND_URL=${FRONTEND_URL:-https://ui.gitfix.dev}
+      # Allow injection of GH_OAUTH_CALLBACK_URL for PR preview environments
+      - GH_OAUTH_CALLBACK_URL=${GH_OAUTH_CALLBACK_URL:-https://api.gitfix.dev/api/auth/github/callback}
+      # Allow PR previews to share sessions via host Redis
+      - SESSION_REDIS_HOST=${SESSION_REDIS_HOST:-redis}
+      - SESSION_REDIS_PORT=${SESSION_REDIS_PORT:-6379}
     depends_on:
       redis:
         condition: service_started

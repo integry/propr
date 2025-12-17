@@ -2,13 +2,18 @@ import React from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+// For OAuth, use main API to avoid registering multiple callback URLs
+// Falls back to API_BASE_URL for main site
+const OAUTH_API_URL = import.meta.env.VITE_OAUTH_API_URL || API_BASE_URL;
 
 const LoginPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const loggedOut = searchParams.get('logged_out') === 'true';
 
   const handleLogin = () => {
-    window.location.href = `${API_BASE_URL}/api/auth/github`;
+    // Pass redirect_to for PR preview environments to redirect back after auth
+    const redirectTo = encodeURIComponent(window.location.origin + '/');
+    window.location.href = `${OAUTH_API_URL}/api/auth/github?redirect_to=${redirectTo}`;
   };
 
   return (
