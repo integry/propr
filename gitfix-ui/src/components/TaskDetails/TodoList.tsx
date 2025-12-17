@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback } from 'react';
 import { LiveDetails, HistoryItem } from './types';
 
 interface TodoListProps {
@@ -7,6 +7,41 @@ interface TodoListProps {
 }
 
 const TodoList: React.FC<TodoListProps> = ({ liveDetails, history }) => {
+  const scrollToThinkingLog = useCallback((todoId: string, todoContent: string) => {
+    // First try to find the specific thinking log group for this todo by ID
+    let element = document.getElementById(`thinking-log-${todoId}`);
+
+    // If not found, try to find by data-todo-id attribute
+    if (!element) {
+      element = document.querySelector(`[data-todo-id="${todoId}"]`) as HTMLElement;
+    }
+
+    // If still not found, try to find by matching content (the todo text)
+    // This handles cases where IDs don't match but the content is the same
+    if (!element) {
+      element = document.querySelector(`[data-todo-content="${CSS.escape(todoContent)}"]`) as HTMLElement;
+    }
+
+    // If still not found, scroll to the thinking log section header
+    if (!element) {
+      element = document.getElementById('thinking-log-section');
+    }
+
+    // If still not found, scroll to the execution event log
+    if (!element) {
+      element = document.getElementById('execution-event-log-section');
+    }
+
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Add a brief highlight effect
+      element.classList.add('ring-2', 'ring-blue-400', 'ring-offset-2');
+      setTimeout(() => {
+        element.classList.remove('ring-2', 'ring-blue-400', 'ring-offset-2');
+      }, 2000);
+    }
+  }, []);
+
   if (liveDetails.todos.length === 0 || history.length === 0) {
     return null;
   }
@@ -31,11 +66,13 @@ const TodoList: React.FC<TodoListProps> = ({ liveDetails, history }) => {
       <h5 className="mt-4 mb-2 text-blue-900">To-do List:</h5>
       <ul className="list-none pl-0 m-0">
         {liveDetails.todos.map(todo => (
-          <li 
-            key={todo.id} 
-            className={`flex items-center mb-2 p-2 rounded transition-colors ${
+          <li
+            key={todo.id}
+            className={`flex items-center mb-2 p-2 rounded transition-colors cursor-pointer hover:bg-blue-100 ${
               todo.status === 'in_progress' ? 'bg-blue-100' : ''
             }`}
+            onClick={() => scrollToThinkingLog(todo.id, todo.content)}
+            title="Click to scroll to related thinking log"
           >
             <span className="mr-2 text-lg">
               {todo.status === 'completed' ? '✅' : todo.status === 'in_progress' ? '⏳' : '📋'}

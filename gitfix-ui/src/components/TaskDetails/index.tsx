@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import DeepDiveAnalysis from '../DeepDiveAnalysis';
 import { renderMarkdown } from './renderMarkdown';
@@ -11,6 +11,7 @@ import LogFilesModal from './LogFilesModal';
 import MetadataBar from './MetadataBar';
 import TaskHeader from './TaskHeader';
 import RealTimeStats from './RealTimeStats';
+import ProgressBar from './ProgressBar';
 import { useTaskData, usePromptData, useLogFilesData } from './hooks';
 import { useThinkingLog } from './useThinkingLog';
 import { getHistoryDerivedData } from './useHistoryData';
@@ -22,14 +23,23 @@ const TaskDetails: React.FC = () => {
   const logFilesData = useLogFilesData();
   const thinkingLog = useThinkingLog(taskData.liveDetails, taskData.history);
 
+  // Calculate total duration from history
+  const totalDuration = useMemo(() => {
+    if (!taskData.history || taskData.history.length === 0) return null;
+    const firstTimestamp = taskData.history[0]?.timestamp;
+    const lastTimestamp = taskData.history[taskData.history.length - 1]?.timestamp;
+    if (!firstTimestamp || !lastTimestamp) return null;
+    return new Date(lastTimestamp).getTime() - new Date(firstTimestamp).getTime();
+  }, [taskData.history]);
+
   if (taskData.loading) {
     return <div className="text-gray-600">Loading task details...</div>;
   }
-  
+
   if (taskData.error) {
     return <div className="text-red-600">Error loading task details: {taskData.error}</div>;
   }
-  
+
   if (!taskData.history || taskData.history.length === 0) {
     return <div className="text-gray-600">No history found for task {taskId}</div>;
   }
@@ -37,9 +47,8 @@ const TaskDetails: React.FC = () => {
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
 
   return (
-    <div>
-      <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
-
+    <div className="min-h-screen bg-gray-50">
+      {/* Sticky Header with Metadata */}
       <MetadataBar
         taskInfo={taskData.taskInfo}
         currentStatus={derivedData.currentStatus}
@@ -50,38 +59,68 @@ const TaskDetails: React.FC = () => {
         onStopExecution={taskData.handleStopExecution}
         onViewPrompt={promptData.fetchPrompt}
         onViewLogs={logFilesData.fetchLogFilesData}
+        duration={totalDuration}
       />
-      
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-        <TaskStatusTable history={taskData.history} />
-        <RealTimeStats />
+
+      {/* Progress Bar */}
+      <ProgressBar todos={taskData.liveDetails.todos} />
+
+      {/* Main Content */}
+      <div className="max-w-[1600px] mx-auto p-6">
+        {/* Task Header */}
+        <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
+
+        {/* Split-Pane Layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* LEFT COLUMN: The Plan (35% - 4/12 cols) */}
+          <div className="lg:col-span-4 space-y-6">
+            {/* Compact Status Timeline */}
+            <div className="bg-white rounded-lg shadow-sm">
+              <TaskStatusTable history={taskData.history} compact={true} />
+            </div>
+
+            {/* Todo List */}
+            <TodoList liveDetails={taskData.liveDetails} history={taskData.history} />
+
+            {/* Real-time Stats */}
+            <RealTimeStats />
+          </div>
+
+          {/* RIGHT COLUMN: The Execution (65% - 8/12 cols) */}
+          <div className="lg:col-span-8 space-y-6">
+            {/* Deep Dive Analysis */}
+            <DeepDiveAnalysis
+              analysis={taskData.analysis}
+              loading={taskData.analysisLoading || taskData.deepDiveLoading}
+              renderMarkdown={renderMarkdown}
+              title="Execution Analysis"
+              colorScheme="gray"
+              showButton={true}
+              buttonText="Run Deep-Dive Analysis"
+              onRunAnalysis={taskData.handleDeepDive}
+              emptyStateText="Automated analysis is pending..."
+            />
+
+            {/* Thinking Log */}
+            <ThinkingLog
+              events={thinkingLog.thinkingLogWithTimestamps}
+              todos={taskData.liveDetails.todos}
+            />
+
+            {/* Execution Event Log */}
+            <ExecutionEventLog
+              events={taskData.liveDetails.events}
+              collapsed={thinkingLog.eventsCollapsed}
+              onToggleCollapse={thinkingLog.toggleEventsCollapse}
+              lastThought={thinkingLog.lastThought}
+              isTaskActive={derivedData.isTaskActive}
+              taskInfo={taskData.taskInfo}
+            />
+          </div>
+        </div>
       </div>
 
-      <TodoList liveDetails={taskData.liveDetails} history={taskData.history} />
-
-      <DeepDiveAnalysis
-        analysis={taskData.analysis}
-        loading={taskData.analysisLoading || taskData.deepDiveLoading}
-        renderMarkdown={renderMarkdown}
-        title="Execution Analysis"
-        colorScheme="gray"
-        showButton={true}
-        buttonText="Run Deep-Dive Analysis"
-        onRunAnalysis={taskData.handleDeepDive}
-        emptyStateText="Automated analysis is pending..."
-      />
-
-      <ThinkingLog events={thinkingLog.thinkingLogWithTimestamps} />
-
-      <ExecutionEventLog
-        events={taskData.liveDetails.events}
-        collapsed={thinkingLog.eventsCollapsed}
-        onToggleCollapse={thinkingLog.toggleEventsCollapse}
-        lastThought={thinkingLog.lastThought}
-        isTaskActive={derivedData.isTaskActive}
-        taskInfo={taskData.taskInfo}
-      />
-
+      {/* Modals */}
       <PromptModal
         prompt={promptData.selectedPrompt}
         loading={promptData.loadingPrompt}
