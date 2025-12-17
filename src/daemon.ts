@@ -125,15 +125,7 @@ interface DaemonOptions {
 }
 
 async function startDaemon(options: DaemonOptions = {}): Promise<void> {
-    await loadAllConfigs();
-
-    const repos = getRepos();
-
-    if (repos.length === 0) {
-        logger.error('No repositories configured. Set GITHUB_REPOS_TO_MONITOR or CONFIG_REPO. Exiting.');
-        process.exit(1);
-    }
-
+    // Run migrations first, before loading any configs from the database
     try {
         logger.info('Running database migrations...');
         await db.migrate.latest();
@@ -141,6 +133,15 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message, stack: err.stack }, 'Database migration failed - daemon will continue but database persistence may not work');
+    }
+
+    await loadAllConfigs();
+
+    const repos = getRepos();
+
+    if (repos.length === 0) {
+        logger.error('No repositories configured. Set GITHUB_REPOS_TO_MONITOR or CONFIG_REPO. Exiting.');
+        process.exit(1);
     }
 
     if (options.reset) {

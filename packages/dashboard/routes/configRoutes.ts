@@ -1,7 +1,5 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
-import path from 'path';
-import fs from 'fs-extra';
 import * as configRepoManager from '@gitfix/core';
 import { AgentRegistry } from '@gitfix/core';
 
@@ -42,16 +40,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
-      await configRepoManager.cloneOrPullConfigRepo();
-      const configRepoPath = process.env.CONFIG_REPO_PATH || path.join(process.cwd(), '.config_repo');
-      const configPath = path.join(configRepoPath, 'config.json');
-      const config = await fs.readJson(configPath) as { repos_to_monitor?: Array<string | { name: string; enabled: boolean }> };
-      let repos = config.repos_to_monitor || [];
-
-      if (repos.length > 0 && typeof repos[0] === 'string') {
-        repos = (repos as string[]).map(repo => ({ name: repo, enabled: true }));
-      }
-
+      const repos = await configRepoManager.loadMonitoredReposRaw();
       res.json({ repos_to_monitor: repos });
     } catch (error) {
       console.error('Error in /api/config/repos GET:', error);
