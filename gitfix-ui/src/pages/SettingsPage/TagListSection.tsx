@@ -1,22 +1,18 @@
 import React from 'react';
-import Alert from './Alert';
 
 interface TagListSectionProps {
   title: string;
   description: string;
   items: string[];
   newItem: string;
-  loading: boolean;
-  saving: boolean;
-  error: string | null;
-  success: string | null;
   placeholder: string;
   emptyMessage: string;
   helperText?: string;
+  showEmptyIcon?: boolean;
   onNewItemChange: (value: string) => void;
   onAddItem: () => void;
   onRemoveItem: (item: string) => void;
-  onSave: () => void;
+  className?: string;
 }
 
 const TagListSection: React.FC<TagListSectionProps> = ({
@@ -24,90 +20,81 @@ const TagListSection: React.FC<TagListSectionProps> = ({
   description,
   items,
   newItem,
-  loading,
-  saving,
-  error,
-  success,
   placeholder,
   emptyMessage,
   helperText,
+  showEmptyIcon,
   onNewItemChange,
   onAddItem,
   onRemoveItem,
-  onSave
+  className
 }) => {
   const isAddDisabled = !newItem || items.includes(newItem);
-  const isSaveDisabled = saving || items.length === 0;
 
   return (
-    <div className="mb-8">
-      <h3 className="text-gray-900 text-xl font-semibold mb-4">{title}</h3>
-      <p className="text-gray-600 mb-4">{description}</p>
-      
-      {error && <Alert message={error} type="error" />}
-      {success && <Alert message={success} type="success" />}
-      
-      {loading ? (
-        <p className="text-gray-600">Loading...</p>
-      ) : (
-        <>
-          <div className="flex gap-4 mb-4">
-            <input
-              value={newItem}
-              onChange={(e) => onNewItemChange(e.target.value)}
-              onKeyPress={(e: React.KeyboardEvent) => e.key === 'Enter' && onAddItem()}
-              placeholder={placeholder}
-              className="flex-1 px-3 py-2 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-            />
-            <button
-              onClick={onAddItem}
-              disabled={isAddDisabled}
-              className={`px-4 py-2 font-medium rounded-md transition-colors ${
-                isAddDisabled
-                  ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
-                  : 'bg-green-600 text-white hover:bg-green-700 cursor-pointer'
-              }`}
-            >
-              Add
-            </button>
-          </div>
+    <div className={`bg-white shadow rounded-lg p-6 ${className || ''}`}>
+      <h3 className="text-gray-900 text-lg font-medium mb-2">{title}</h3>
+      <p className="text-gray-500 text-sm mb-4">{description}</p>
 
-          <div className="space-y-2 mb-4">
+      <div className="flex gap-2 mb-4">
+        <input
+          value={newItem}
+          onChange={(e) => onNewItemChange(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && !isAddDisabled && onAddItem()}
+          placeholder={placeholder}
+          className="flex-1 rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+        />
+        <button
+          onClick={onAddItem}
+          disabled={isAddDisabled}
+          className={`inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white ${
+            isAddDisabled
+              ? 'bg-gray-300 cursor-not-allowed'
+              : 'bg-primary-600 hover:bg-primary-700'
+          }`}
+        >
+          Add
+        </button>
+      </div>
+
+      <div className="min-h-[3rem] bg-gray-50 rounded-md p-3 border border-gray-100">
+        {items.length === 0 ? (
+          showEmptyIcon ? (
+            <div className="flex flex-col items-center justify-center py-2">
+              <svg className="w-5 h-5 text-gray-400 mb-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+              </svg>
+              <p className="text-gray-500 text-sm">{emptyMessage}</p>
+            </div>
+          ) : (
+            <p className="text-gray-400 text-sm italic">{emptyMessage}</p>
+          )
+        ) : (
+          <div className="flex flex-wrap gap-2">
             {items.map(item => (
-              <div
+              <span
                 key={item}
-                className="flex items-center justify-between px-4 py-3 bg-gray-50 border border-gray-200 rounded-md"
+                className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
               >
-                <span className="font-mono text-gray-900">{item}</span>
+                {item}
                 <button
+                  type="button"
                   onClick={() => onRemoveItem(item)}
-                  className="bg-red-600 hover:bg-red-700 text-xs px-3 py-1 text-white rounded-md font-medium transition-colors"
+                  className="ml-1.5 inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-blue-400 hover:bg-blue-200 hover:text-blue-500 focus:bg-blue-500 focus:text-white focus:outline-none"
                 >
-                  Remove
+                  <span className="sr-only">Remove {item}</span>
+                  <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                  </svg>
                 </button>
-              </div>
+              </span>
             ))}
-            {items.length === 0 && (
-              <p className="text-gray-600 text-center py-8">{emptyMessage}</p>
-            )}
           </div>
+        )}
+      </div>
 
-          {helperText && (
-            <p className="text-sm text-gray-600 mb-4">{helperText}</p>
-          )}
-          
-          <button
-            onClick={onSave}
-            disabled={isSaveDisabled}
-            className={`px-6 py-3 font-medium rounded-md transition-colors ${
-              isSaveDisabled
-                ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
-                : 'bg-primary-600 text-white hover:bg-primary-700 cursor-pointer'
-            }`}
-          >
-            {saving ? 'Saving...' : `Save ${title}`}
-          </button>
-        </>
+      {helperText && (
+        <p className="mt-3 text-sm text-gray-500">{helperText}</p>
       )}
     </div>
   );

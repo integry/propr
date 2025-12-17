@@ -1,9 +1,8 @@
 export interface Settings {
   worker_concurrency: string;
-  github_user_whitelist: string;
   analysis_model_fast: string;
   analysis_model_advanced: string;
-  pr_label: string;
+  // github_user_whitelist is now handled as string[] in main state
 }
 
 export interface AlertProps {

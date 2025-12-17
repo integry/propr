@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   getSettings,
   updateSettings,
@@ -17,297 +17,282 @@ import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
 
 const SettingsPage: React.FC = () => {
+  // Global state
+  const [loading, setLoading] = useState(true);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [globalError, setGlobalError] = useState<string | null>(null);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Data state
   const [settings, setSettings] = useState<Settings>({
     worker_concurrency: '',
-    github_user_whitelist: '',
     analysis_model_fast: '',
-    analysis_model_advanced: '',
-    pr_label: ''
+    analysis_model_advanced: ''
   });
-  const [keywords, setKeywords] = useState<string[]>([]);
-  const [newKeyword, setNewKeyword] = useState<string>('');
-  const [primaryLabels, setPrimaryLabels] = useState<string[]>([]);
-  const [newPrimaryLabel, setNewPrimaryLabel] = useState<string>('');
-  const [agents, setAgents] = useState<AgentConfig[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [keywordsLoading, setKeywordsLoading] = useState<boolean>(true);
-  const [prLabelLoading, setPrLabelLoading] = useState<boolean>(true);
-  const [primaryLabelsLoading, setPrimaryLabelsLoading] = useState<boolean>(true);
-  const [saving, setSaving] = useState<boolean>(false);
-  const [keywordsSaving, setKeywordsSaving] = useState<boolean>(false);
-  const [prLabelSaving, setPrLabelSaving] = useState<boolean>(false);
-  const [primaryLabelsSaving, setPrimaryLabelsSaving] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const [keywordsError, setKeywordsError] = useState<string | null>(null);
-  const [keywordsSuccess, setKeywordsSuccess] = useState<string | null>(null);
-  const [prLabelError, setPrLabelError] = useState<string | null>(null);
-  const [prLabelSuccess, setPrLabelSuccess] = useState<string | null>(null);
-  const [primaryLabelsError, setPrimaryLabelsError] = useState<string | null>(null);
-  const [primaryLabelsSuccess, setPrimaryLabelsSuccess] = useState<string | null>(null);
+  const [prLabel, setPrLabel] = useState('');
 
+  // Lists state
+  const [whitelist, setWhitelist] = useState<string[]>([]);
+  const [newWhitelistItem, setNewWhitelistItem] = useState('');
+
+  const [primaryLabels, setPrimaryLabels] = useState<string[]>([]);
+  const [newPrimaryLabel, setNewPrimaryLabel] = useState('');
+
+  const [keywords, setKeywords] = useState<string[]>([]);
+  const [newKeyword, setNewKeyword] = useState('');
+
+  const [agents, setAgents] = useState<AgentConfig[]>([]);
+
+  // Load all data with Promise.all
   useEffect(() => {
-    const loadSettings = async () => {
+    const loadData = async () => {
+      setLoading(true);
       try {
-        setLoading(true);
-        setError(null);
-        const data = await getSettings();
-        setSettings(prev => ({
-          ...prev,
-          worker_concurrency: data.worker_concurrency || '',
-          github_user_whitelist: (data.github_user_whitelist || []).join(', '),
-          analysis_model_fast: data.analysis_model_fast || 'claude-3-5-haiku-20241022',
-          analysis_model_advanced: data.analysis_model_advanced || 'claude-opus-4-20250514'
-        }));
+        const [sData, kData, pLabelData, pLabelsData, aData] = await Promise.all([
+          getSettings(),
+          getFollowupKeywords(),
+          getPrLabel(),
+          getPrimaryProcessingLabels(),
+          getAgents()
+        ]);
+
+        // Type assertions for API responses
+        const settingsData = sData as {
+          worker_concurrency?: string;
+          analysis_model_fast?: string;
+          analysis_model_advanced?: string;
+          github_user_whitelist?: string[];
+        };
+        const keywordsData = kData as { followup_keywords?: string[] };
+        const prLabelDataTyped = pLabelData as { pr_label?: string };
+        const primaryLabelsData = pLabelsData as { primary_processing_labels?: string[] };
+        const agentsData = aData as { agents?: AgentConfig[] };
+
+        // Parse Settings
+        setSettings({
+          worker_concurrency: settingsData.worker_concurrency || '',
+          analysis_model_fast: settingsData.analysis_model_fast || '',
+          analysis_model_advanced: settingsData.analysis_model_advanced || ''
+        });
+
+        // Parse Whitelist
+        const whitelistRaw = settingsData.github_user_whitelist || [];
+        setWhitelist(Array.isArray(whitelistRaw) ? whitelistRaw : []);
+
+        setKeywords(keywordsData.followup_keywords || []);
+        setPrLabel(prLabelDataTyped.pr_label || 'gitfix');
+        setPrimaryLabels(primaryLabelsData.primary_processing_labels || ['AI']);
+        setAgents(agentsData.agents || []);
       } catch (err) {
-        setError((err as Error).message || 'Failed to load settings');
+        setGlobalError((err as Error).message || 'Failed to load settings');
       } finally {
         setLoading(false);
       }
     };
-    loadSettings();
+    loadData();
   }, []);
 
-  useEffect(() => {
-    const loadKeywords = async () => {
-      try {
-        setKeywordsLoading(true);
-        setKeywordsError(null);
-        const data = await getFollowupKeywords();
-        setKeywords(data.followup_keywords || []);
-      } catch (err) {
-        setKeywordsError((err as Error).message || 'Failed to load keywords');
-      } finally {
-        setKeywordsLoading(false);
-      }
-    };
-    loadKeywords();
-  }, []);
+  // Auto-save function
+  const performAutoSave = useCallback(async (
+    settingsToSave: Settings,
+    whitelistToSave: string[],
+    prLabelToSave: string,
+    primaryLabelsToSave: string[],
+    keywordsToSave: string[]
+  ) => {
+    // Clear any pending save timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
 
-  useEffect(() => {
-    const loadPrLabel = async () => {
-      try {
-        setPrLabelLoading(true);
-        setPrLabelError(null);
-        const data = await getPrLabel();
-        setSettings(prev => ({ ...prev, pr_label: data.pr_label || 'gitfix' }));
-      } catch (err) {
-        setPrLabelError((err as Error).message || 'Failed to load PR label');
-      } finally {
-        setPrLabelLoading(false);
-      }
-    };
-    loadPrLabel();
-  }, []);
+    setSaveStatus('saving');
+    setGlobalError(null);
 
-  useEffect(() => {
-    const loadPrimaryProcessingLabels = async () => {
-      try {
-        setPrimaryLabelsLoading(true);
-        setPrimaryLabelsError(null);
-        const data = await getPrimaryProcessingLabels();
-        setPrimaryLabels(data.primary_processing_labels || ['AI']);
-      } catch (err) {
-        setPrimaryLabelsError((err as Error).message || 'Failed to load primary processing labels');
-      } finally {
-        setPrimaryLabelsLoading(false);
-      }
-    };
-    loadPrimaryProcessingLabels();
-  }, []);
-
-  useEffect(() => {
-    const loadAgents = async () => {
-      try {
-        const data = await getAgents();
-        setAgents(data.agents || []);
-      } catch (err) {
-        console.error('Failed to load agents for model selection:', err);
-      }
-    };
-    loadAgents();
-  }, []);
-
-  const handleSettingChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    setSettings(prev => ({ ...prev, [name]: value }));
-  };
-
-  const handleSaveSettings = async () => {
     try {
-      setSaving(true);
-      setError(null);
-      setSuccess(null);
-
-      const updatedSettings: Record<string, unknown> = {
-        worker_concurrency: settings.worker_concurrency,
-        github_user_whitelist: settings.github_user_whitelist
-          .split(',')
-          .map(u => u.trim())
-          .filter(u => u.length > 0),
-        analysis_model_fast: settings.analysis_model_fast,
-        analysis_model_advanced: settings.analysis_model_advanced
-      };
-
-      if (updatedSettings.worker_concurrency) {
-        updatedSettings.worker_concurrency = parseInt(updatedSettings.worker_concurrency as string);
-        if (isNaN(updatedSettings.worker_concurrency as number)) {
-          throw new Error('Worker concurrency must be a number');
-        }
-      } else {
-        delete updatedSettings.worker_concurrency;
+      // Validate
+      const concurrency = parseInt(settingsToSave.worker_concurrency);
+      if (settingsToSave.worker_concurrency && isNaN(concurrency)) {
+        throw new Error('Worker concurrency must be a number');
+      }
+      if (!prLabelToSave.trim()) {
+        throw new Error('PR Label cannot be empty');
+      }
+      if (primaryLabelsToSave.length === 0) {
+        throw new Error('At least one primary processing label is required');
       }
 
-      await updateSettings(updatedSettings);
-      setSuccess('Settings updated successfully! The daemon will pick up changes within 5 minutes.');
+      await Promise.all([
+        updateSettings({
+          worker_concurrency: settingsToSave.worker_concurrency ? concurrency : undefined,
+          github_user_whitelist: whitelistToSave,
+          analysis_model_fast: settingsToSave.analysis_model_fast,
+          analysis_model_advanced: settingsToSave.analysis_model_advanced
+        }),
+        updatePrLabel(prLabelToSave.trim()),
+        updatePrimaryProcessingLabels(primaryLabelsToSave),
+        updateFollowupKeywords(keywordsToSave)
+      ]);
+
+      setSaveStatus('saved');
+
+      // Clear "Saved" status after 3s
+      saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (err) {
-      setError((err as Error).message || 'Failed to update settings');
-    } finally {
-      setSaving(false);
+      setSaveStatus('error');
+      setGlobalError((err as Error).message || 'Failed to save settings');
     }
+  }, []);
+
+  // Trigger auto-save (called on blur and list changes)
+  const triggerAutoSave = useCallback(() => {
+    performAutoSave(settings, whitelist, prLabel, primaryLabels, keywords);
+  }, [settings, whitelist, prLabel, primaryLabels, keywords, performAutoSave]);
+
+  // List management functions that trigger auto-save
+  const addWhitelistItem = () => {
+    if (!newWhitelistItem.trim() || whitelist.includes(newWhitelistItem.trim())) return;
+    const newList = [...whitelist, newWhitelistItem.trim()];
+    setWhitelist(newList);
+    setNewWhitelistItem('');
+    performAutoSave(settings, newList, prLabel, primaryLabels, keywords);
   };
 
-  const handleAddKeyword = () => {
-    if (!newKeyword) return;
-    if (keywords.includes(newKeyword)) {
-      alert(`Keyword "${newKeyword}" has already been added to the list.`);
-      return;
-    }
-    setKeywords([...keywords, newKeyword]);
-    setNewKeyword('');
+  const removeWhitelistItem = (item: string) => {
+    const newList = whitelist.filter(i => i !== item);
+    setWhitelist(newList);
+    performAutoSave(settings, newList, prLabel, primaryLabels, keywords);
   };
 
-  const handleRemoveKeyword = (keyword: string) => {
-    if (confirm(`Are you sure you want to remove the keyword "${keyword}"?`)) {
-      setKeywords(keywords.filter(k => k !== keyword));
-    }
-  };
-
-  const handleSaveKeywords = async () => {
-    try {
-      setKeywordsSaving(true);
-      setKeywordsError(null);
-      setKeywordsSuccess(null);
-      await updateFollowupKeywords(keywords);
-      setKeywordsSuccess('Keywords updated successfully! The daemon will pick up changes within 5 minutes.');
-    } catch (err) {
-      setKeywordsError((err as Error).message || 'Failed to update keywords');
-    } finally {
-      setKeywordsSaving(false);
-    }
-  };
-
-  const handleAddPrimaryLabel = () => {
-    if (!newPrimaryLabel) return;
-    if (primaryLabels.includes(newPrimaryLabel)) {
-      alert(`Label "${newPrimaryLabel}" has already been added to the list.`);
-      return;
-    }
-    setPrimaryLabels([...primaryLabels, newPrimaryLabel]);
+  const addPrimaryLabel = () => {
+    if (!newPrimaryLabel.trim() || primaryLabels.includes(newPrimaryLabel.trim())) return;
+    const newList = [...primaryLabels, newPrimaryLabel.trim()];
+    setPrimaryLabels(newList);
     setNewPrimaryLabel('');
+    performAutoSave(settings, whitelist, prLabel, newList, keywords);
   };
 
-  const handleRemovePrimaryLabel = (label: string) => {
-    if (confirm(`Are you sure you want to remove the label "${label}"?`)) {
-      setPrimaryLabels(primaryLabels.filter(l => l !== label));
-    }
+  const removePrimaryLabel = (item: string) => {
+    const newList = primaryLabels.filter(i => i !== item);
+    setPrimaryLabels(newList);
+    performAutoSave(settings, whitelist, prLabel, newList, keywords);
   };
 
-  const handleSavePrimaryProcessingLabels = async () => {
-    try {
-      setPrimaryLabelsSaving(true);
-      setPrimaryLabelsError(null);
-      setPrimaryLabelsSuccess(null);
-      if (primaryLabels.length === 0) {
-        setPrimaryLabelsError('At least one primary processing label is required');
-        return;
-      }
-      await updatePrimaryProcessingLabels(primaryLabels);
-      setPrimaryLabelsSuccess('Primary Processing Labels updated successfully! The daemon will pick up changes within 5 minutes.');
-    } catch (err) {
-      setPrimaryLabelsError((err as Error).message || 'Failed to update primary processing labels');
-    } finally {
-      setPrimaryLabelsSaving(false);
-    }
+  const addKeyword = () => {
+    if (!newKeyword.trim() || keywords.includes(newKeyword.trim())) return;
+    const newList = [...keywords, newKeyword.trim()];
+    setKeywords(newList);
+    setNewKeyword('');
+    performAutoSave(settings, whitelist, prLabel, primaryLabels, newList);
   };
 
-  const handleSavePrLabel = async () => {
-    try {
-      setPrLabelSaving(true);
-      setPrLabelError(null);
-      setPrLabelSuccess(null);
-      if (!settings.pr_label || settings.pr_label.trim() === '') {
-        setPrLabelError('PR Label cannot be empty');
-        return;
-      }
-      await updatePrLabel(settings.pr_label.trim());
-      setPrLabelSuccess('PR Label updated successfully! The worker will pick up changes immediately.');
-    } catch (err) {
-      setPrLabelError((err as Error).message || 'Failed to update PR label');
-    } finally {
-      setPrLabelSaving(false);
-    }
+  const removeKeyword = (item: string) => {
+    const newList = keywords.filter(i => i !== item);
+    setKeywords(newList);
+    performAutoSave(settings, whitelist, prLabel, primaryLabels, newList);
   };
+
+  if (loading) {
+    return (
+      <div className="p-8 text-center text-gray-500">
+        Loading settings configuration...
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-4xl">
-      <h2 className="text-gray-900 text-2xl font-semibold mb-8">Settings</h2>
-      
-      <GeneralSettingsSection
-        settings={settings}
-        agents={agents}
-        loading={loading}
-        saving={saving}
-        error={error}
-        success={success}
-        onSettingChange={handleSettingChange}
-        onSave={handleSaveSettings}
-      />
+    <div className="max-w-7xl mx-auto pb-8">
+      <div className="flex justify-between items-center mb-8">
+        <h2 className="text-gray-900 text-2xl font-semibold">Settings</h2>
+        {/* Auto-save status indicator */}
+        <div className="flex items-center gap-2">
+          {saveStatus === 'saving' && (
+            <span className="flex items-center gap-1.5 text-sm text-gray-500">
+              <svg className="animate-spin h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              Saving...
+            </span>
+          )}
+          {saveStatus === 'saved' && (
+            <span className="flex items-center gap-1.5 text-sm text-green-600">
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+              Saved
+            </span>
+          )}
+          {saveStatus === 'error' && globalError && (
+            <span className="flex items-center gap-1.5 text-sm text-red-600">
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              {globalError}
+            </span>
+          )}
+        </div>
+      </div>
 
-      <PrLabelSection
-        prLabel={settings.pr_label}
-        loading={prLabelLoading}
-        saving={prLabelSaving}
-        error={prLabelError}
-        success={prLabelSuccess}
-        onLabelChange={handleSettingChange}
-        onSave={handleSavePrLabel}
-      />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Left Column */}
+        <div className="space-y-6">
+          <GeneralSettingsSection
+            settings={settings}
+            agents={agents}
+            onSettingChange={(e) =>
+              setSettings(prev => ({ ...prev, [e.target.name]: e.target.value }))
+            }
+            onBlur={triggerAutoSave}
+          />
 
-      <TagListSection
-        title="Primary Processing Labels"
-        description="Configure multiple primary labels that GitFix uses to identify issues for processing. Issues with any of these labels will be automatically processed. State labels (-processing, -done) are dynamically generated based on the specific label found on each issue."
-        items={primaryLabels}
-        newItem={newPrimaryLabel}
-        loading={primaryLabelsLoading}
-        saving={primaryLabelsSaving}
-        error={primaryLabelsError}
-        success={primaryLabelsSuccess}
-        placeholder="Add a label (e.g., AI, gitfix)"
-        emptyMessage="No labels configured. Add at least one label to enable issue processing."
-        helperText='Issues with any of these labels will be processed. For each label, state labels will be automatically generated (e.g., "AI-processing", "AI-done", "gitfix-processing", "gitfix-done")'
-        onNewItemChange={setNewPrimaryLabel}
-        onAddItem={handleAddPrimaryLabel}
-        onRemoveItem={handleRemovePrimaryLabel}
-        onSave={handleSavePrimaryProcessingLabels}
-      />
+          <TagListSection
+            title="GitHub User Whitelist"
+            description="Only process issues/comments from these users."
+            items={whitelist}
+            newItem={newWhitelistItem}
+            onNewItemChange={setNewWhitelistItem}
+            onAddItem={addWhitelistItem}
+            onRemoveItem={removeWhitelistItem}
+            placeholder="e.g., octocat"
+            emptyMessage="Allowed for all users (Empty whitelist)."
+          />
+        </div>
 
-      <TagListSection
-        title="Follow-up Keywords"
-        description="When these keywords are found in follow-up comments on issues with the configured AI primary label, the bot will process them automatically."
-        items={keywords}
-        newItem={newKeyword}
-        loading={keywordsLoading}
-        saving={keywordsSaving}
-        error={keywordsError}
-        success={keywordsSuccess}
-        placeholder="Add a keyword (e.g., GITFIX)"
-        emptyMessage="No keywords configured. Add a keyword to enable follow-up comment processing."
-        onNewItemChange={setNewKeyword}
-        onAddItem={handleAddKeyword}
-        onRemoveItem={handleRemoveKeyword}
-        onSave={handleSaveKeywords}
-      />
+        {/* Right Column */}
+        <div className="space-y-6">
+          <TagListSection
+            title="Primary Processing Labels"
+            description="Issues with these labels will be auto-processed."
+            items={primaryLabels}
+            newItem={newPrimaryLabel}
+            onNewItemChange={setNewPrimaryLabel}
+            onAddItem={addPrimaryLabel}
+            onRemoveItem={removePrimaryLabel}
+            placeholder="e.g., AI"
+            emptyMessage="No labels configured."
+            helperText="State labels (-processing, -done) are generated automatically."
+          />
+
+          <PrLabelSection
+            prLabel={prLabel}
+            onLabelChange={(e) => setPrLabel(e.target.value)}
+            onBlur={triggerAutoSave}
+          />
+
+          <TagListSection
+            title="Follow-up Keywords"
+            description="Triggers processing when found in comments."
+            items={keywords}
+            newItem={newKeyword}
+            onNewItemChange={setNewKeyword}
+            onAddItem={addKeyword}
+            onRemoveItem={removeKeyword}
+            placeholder="e.g., GITFIX"
+            emptyMessage="No keywords configured."
+            showEmptyIcon={true}
+          />
+        </div>
+      </div>
     </div>
   );
 };
