@@ -28,10 +28,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'followup_keywords must be an array of strings' } };
       }
 
-      await configManager.saveFollowupKeywords(
-        followup_keywords,
-        `Update PR followup keywords via UI by ${req.user?.username}`
-      );
+      await configManager.saveFollowupKeywords(followup_keywords);
       return { status: 200, body: { success: true, followup_keywords } };
     });
 
@@ -65,10 +62,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         }
       }
 
-      await configManager.saveMonitoredRepos(
-        repos_to_monitor,
-        `Update monitored repositories via UI by ${req.user?.username}`
-      );
+      await configManager.saveMonitoredRepos(repos_to_monitor);
 
       const activity = {
         id: `activity-${Date.now()}-config-update`,
@@ -117,10 +111,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'settings object is required' } };
       }
 
-      await configManager.saveSettings(
-        settings,
-        'Update settings via UI by ' + req.user?.username
-      );
+      await configManager.saveSettings(settings);
       return { status: 200, body: { success: true, settings } };
     });
 
@@ -145,10 +136,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'pr_label must be a non-empty string' } };
       }
 
-      await configManager.savePrLabel(
-        pr_label.trim(),
-        `Update PR label via UI by ${req.user?.username}`
-      );
+      await configManager.savePrLabel(pr_label.trim());
       return { status: 200, body: { success: true, pr_label: pr_label.trim() } };
     });
 
@@ -173,10 +161,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'ai_primary_tag must be a non-empty string' } };
       }
 
-      await configManager.saveAiPrimaryTag(
-        ai_primary_tag.trim(),
-        `Update AI primary tag via UI by ${req.user?.username}`
-      );
+      await configManager.saveAiPrimaryTag(ai_primary_tag.trim());
       return { status: 200, body: { success: true, ai_primary_tag: ai_primary_tag.trim() } };
     });
 
@@ -206,10 +191,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'At least one valid label is required' } };
       }
 
-      await configManager.savePrimaryProcessingLabels(
-        labels,
-        `Update primary processing labels via UI by ${req.user?.username}`
-      );
+      await configManager.savePrimaryProcessingLabels(labels);
       return { status: 200, body: { success: true, primary_processing_labels: labels } };
     });
 
@@ -274,10 +256,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       // Save the agents configuration
-      await configManager.saveAgents(
-        agents,
-        `Update agents configuration via UI by ${req.user?.username}`
-      );
+      await configManager.saveAgents(agents);
 
       // Refresh the AgentRegistry to apply changes immediately
       try {
