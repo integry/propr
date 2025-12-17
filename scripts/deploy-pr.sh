@@ -43,16 +43,17 @@ echo "  API URL:    http://pr-${PR_NUMBER}-api.gitfix.dev"
 echo "============================================"
 
 # 2. Deploy using the main compose file with Env Overrides
+# -f: Points to the compose file at repository root (script runs from packages/dashboard)
 # -p: Sets the project name (isolates the stack)
 # --build: Ensures we build the latest code from the branch
 UI_PORT=$UI_PORT \
 API_PORT=$API_PORT \
 API_PUBLIC_URL="http://pr-${PR_NUMBER}-api.gitfix.dev" \
 VITE_API_BASE_URL="http://pr-${PR_NUMBER}-api.gitfix.dev" \
-docker compose -p "gitfix-pr-${PR_NUMBER}" up -d --build
+docker compose -f ../../docker-compose.yml -p "gitfix-pr-${PR_NUMBER}" up -d --build
 
 # 3. Database State Handling - copy from staging site
-CONTAINER_ID=$(docker compose -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
+CONTAINER_ID=$(docker compose -f ../../docker-compose.yml -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
 
 if [ -n "$CONTAINER_ID" ]; then
     echo "Preview environment deployed successfully!"

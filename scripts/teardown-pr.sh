@@ -32,7 +32,8 @@ echo "  Project:    $PROJECT_NAME"
 echo "============================================"
 
 # Check if the project exists
-if ! docker compose -p "$PROJECT_NAME" ps -q >/dev/null 2>&1; then
+# -f: Points to the compose file at repository root (script runs from packages/dashboard)
+if ! docker compose -f ../../docker-compose.yml -p "$PROJECT_NAME" ps -q >/dev/null 2>&1; then
     echo "Warning: No containers found for project $PROJECT_NAME"
     echo "The environment may have already been torn down."
     exit 0
@@ -40,7 +41,7 @@ fi
 
 # Stop containers and remove anonymous volumes
 echo "Stopping containers..."
-docker compose -p "$PROJECT_NAME" down -v
+docker compose -f ../../docker-compose.yml -p "$PROJECT_NAME" down -v
 
 # Optional: Clean up any orphaned networks
 echo "Cleaning up networks..."
