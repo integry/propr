@@ -166,7 +166,7 @@ const TimelineItemContent: React.FC<TimelineItemContentProps> = ({
   isHighlighted,
   isRunning
 }) => (
-  <div className="flex-grow pb-6 pt-0.5">
+  <div className="flex-grow pb-6">
     <div className="flex justify-between items-start">
       <div>
         <div className={`text-sm ${isHighlighted ? 'font-bold text-gray-900' : 'font-medium text-gray-700'}`}>
@@ -225,8 +225,8 @@ const TimelineItem: React.FC<TimelineItemProps> = ({
     <React.Fragment>
       {showDateDivider && currentDate && <DateDivider date={currentDate} />}
 
-      <div className="flex group min-h-[3rem]">
-        <div className="w-24 flex-shrink-0 text-right pr-4 pt-1">
+      <div className="flex items-center group min-h-[3rem]">
+        <div className="w-24 flex-shrink-0 text-right pr-4">
           <span className="text-sm text-gray-500 font-mono">
             {item.timestamp ? formatTimeOnly(item.timestamp) : '--:--:--'}
           </span>
