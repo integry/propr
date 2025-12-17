@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { TaskInfo, HistoryItem } from './types';
+import { FileText, Terminal, StopCircle } from 'lucide-react';
 
 interface MetadataBarProps {
   taskInfo: TaskInfo | null;
@@ -11,6 +12,8 @@ interface MetadataBarProps {
   onStopExecution: () => void;
   onViewPrompt: (promptPath: string) => void;
   onViewLogs: (logsPath: string) => void;
+  startTime?: string;
+  endTime?: string;
 }
 
 const MetadataBar: React.FC<MetadataBarProps> = ({
@@ -22,87 +25,102 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   stoppingExecution,
   onStopExecution,
   onViewPrompt,
-  onViewLogs
+  onViewLogs,
+  startTime,
+  endTime
 }) => {
   const isActive = ['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
 
+  const duration = useMemo(() => {
+    if (!startTime) return null;
+    const start = new Date(startTime).getTime();
+    const end = endTime ? new Date(endTime).getTime() : new Date().getTime();
+    const diff = end - start;
+    
+    if (diff < 0) return null;
+
+    const minutes = Math.floor(diff / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    return `${minutes}m ${seconds}s`;
+  }, [startTime, endTime]);
+
   return (
-    <div className="flex justify-between items-center mb-6 p-4 bg-gray-50 rounded-md border border-gray-200">
-      <div className="flex items-center gap-4 flex-wrap">
-        {isActive && (
-          <>
-            <button
-              onClick={onStopExecution}
-              disabled={stoppingExecution}
-              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-                stoppingExecution
-                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  : 'bg-red-600 text-white hover:bg-red-700'
-              }`}
-            >
-              {stoppingExecution ? 'Stopping...' : 'Stop Execution'}
-            </button>
-            <span className="text-gray-400 hidden md:inline">|</span>
-          </>
-        )}
+    <div className="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm px-4 py-2 flex justify-between items-center">
+      {/* Left: Context */}
+      <div className="flex items-center gap-3 text-sm">
         {taskInfo && (
           <>
-            <span className="text-gray-700 font-semibold">Repository:</span>
-            <a
-              href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-700 underline"
-            >
+            <span className="font-semibold text-gray-900">
               {taskInfo.repoOwner}/{taskInfo.repoName}
-            </a>
-            <span className="text-gray-400">•</span>
-            <span className="text-gray-700 font-semibold">
-              {taskInfo.type === 'pr-comment' ? 'Pull Request:' : 'Issue:'}
             </span>
+            <span className="text-gray-400">#</span>
             <a
               href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/${taskInfo.type === 'pr-comment' ? 'pull' : 'issues'}/${taskInfo.number}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-700 underline"
+              className="text-blue-600 hover:underline"
             >
-              #{taskInfo.number}
+              {taskInfo.number}
             </a>
           </>
         )}
-        <span className="text-gray-400">•</span>
-        <span className="text-gray-700 font-semibold">Model:</span>
-        <span className="text-blue-600">{modelName}</span>
+        <div className="h-4 w-px bg-gray-300 mx-2" />
+        <span className="flex items-center gap-1 bg-purple-50 text-purple-700 px-2 py-0.5 rounded text-xs border border-purple-100">
+          {modelName}
+        </span>
         {prInfo?.url && (
+            <>
+                <div className="h-4 w-px bg-gray-300 mx-2" />
+                <span className="text-gray-500 text-xs">PR: </span>
+                <a
+                href={prInfo.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:underline text-xs"
+                >
+                #{prInfo.number}
+                </a>
+            </>
+        )}
+        {duration && (
           <>
-            <span className="text-gray-400">•</span>
-            <span className="text-gray-700 font-semibold">Pull Request:</span>
-            <a
-              href={prInfo.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-700 underline"
-            >
-              #{prInfo.number}
-            </a>
+            <div className="h-4 w-px bg-gray-300 mx-2" />
+            <span className="text-gray-500 text-xs">
+              {duration}
+            </span>
           </>
         )}
       </div>
-      <div className="flex gap-2">
+
+      {/* Right: Actions */}
+      <div className="flex items-center gap-2">
+        {isActive && (
+          <button
+            onClick={onStopExecution}
+            disabled={stoppingExecution}
+            title="Stop Execution"
+            className={`p-2 rounded hover:bg-gray-100 ${stoppingExecution ? 'text-gray-400' : 'text-red-600'}`}
+          >
+            <StopCircle size={18} />
+          </button>
+        )}
+
         {historyItemWithPaths?.promptPath && (
           <button
             onClick={() => onViewPrompt(historyItemWithPaths.promptPath!)}
-            className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
+            title="View Prompt"
+            className="p-2 hover:bg-gray-100 rounded text-gray-600"
           >
-            View Prompt
+            <FileText size={18} />
           </button>
         )}
         {historyItemWithPaths?.logsPath && (
           <button
             onClick={() => onViewLogs(historyItemWithPaths.logsPath!)}
-            className="px-3 py-1.5 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 transition-colors"
+            title="View Logs"
+            className="p-2 hover:bg-gray-100 rounded text-gray-600"
           >
-            View Log Files
+            <Terminal size={18} />
           </button>
         )}
       </div>

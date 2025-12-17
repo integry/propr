@@ -56,7 +56,8 @@ export const formatRelativeTime = (milliseconds: number): string => {
 export const getStatusIcon = (status: string): string => {
   if (status === 'COMPLETED') return '✅';
   if (status === 'FAILED') return '❌';
-  if (['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(status)) return '⏳';
+  if (status === 'PENDING') return '⏳';
+  if (['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(status)) return '⚙️';
   return '📋';
 };
 
