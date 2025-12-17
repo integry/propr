@@ -139,13 +139,19 @@ if [ -n "$CONTAINER_ID" ]; then
     echo "Preview environment deployed successfully!"
     echo "Dashboard API container: $CONTAINER_ID"
 
-    # Copy database from staging if STAGING_DB_PATH is set
-    if [ -n "$STAGING_DB_PATH" ] && [ -f "$STAGING_DB_PATH" ]; then
+    # Copy database from staging site
+    # When running inside a container, docker cp uses the container's filesystem
+    # The daemon has the staging DB mounted at /usr/src/app/data/gitfix.sqlite
+    STAGING_DB_CONTAINER_PATH="/usr/src/app/data/gitfix.sqlite"
+    if [ -f "$STAGING_DB_CONTAINER_PATH" ]; then
         echo "Copying database from staging site..."
-        docker cp "$STAGING_DB_PATH" "$CONTAINER_ID":/usr/src/app/data/gitfix.sqlite
-        echo "Database seeded successfully from: $STAGING_DB_PATH"
-    elif [ -n "$STAGING_DB_PATH" ]; then
-        echo "Warning: STAGING_DB_PATH is set but file does not exist: $STAGING_DB_PATH"
+        if docker cp "$STAGING_DB_CONTAINER_PATH" "$CONTAINER_ID":/usr/src/app/data/gitfix.sqlite; then
+            echo "Database seeded successfully"
+        else
+            echo "Warning: Failed to copy database"
+        fi
+    else
+        echo "Warning: Staging database not found at $STAGING_DB_CONTAINER_PATH"
     fi
 fi
 
