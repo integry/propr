@@ -2,6 +2,7 @@ import logger from '../utils/logger.js';
 import { fetch } from 'undici';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { getGitHubInstallationToken } from '../auth/githubAuth.js';
 import type {
     IssuesEvent,
     IssuesLabeledEvent,
@@ -217,8 +218,17 @@ async function handleInfrastructureEvents(
     try {
         if (['opened', 'reopened', 'synchronize'].includes(action)) {
             log.info({ prNumber, action }, 'Triggering Preview Deployment...');
+            // Get GitHub App installation token for PR comments
+            const githubToken = await getGitHubInstallationToken();
+            const githubRepository = prEvent.repository.full_name;
             // Use absolute path - scripts are copied to /usr/src/app/scripts/ in the container
-            await execAsync(`/usr/src/app/scripts/deploy-pr.sh ${prNumber}`);
+            await execAsync(`/usr/src/app/scripts/deploy-pr.sh ${prNumber}`, {
+                env: {
+                    ...process.env,
+                    GITHUB_TOKEN: githubToken,
+                    GITHUB_REPOSITORY: githubRepository
+                }
+            });
         } else if (action === 'closed') {
             log.info({ prNumber, action }, 'Triggering Preview Teardown...');
             await execAsync(`/usr/src/app/scripts/teardown-pr.sh ${prNumber}`);
