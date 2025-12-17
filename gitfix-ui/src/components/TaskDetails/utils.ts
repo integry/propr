@@ -22,6 +22,14 @@ export const formatDisplayPath = (fullPath: string): string => {
   return fullPath;
 };
 
+export const formatDateOnly = (dateString: string): string => {
+  return new Date(dateString).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+export const formatTimeOnly = (dateString: string): string => {
+  return new Date(dateString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+};
+
 export const formatDate = (dateString: string): string => {
   return new Date(dateString).toLocaleString();
 };
