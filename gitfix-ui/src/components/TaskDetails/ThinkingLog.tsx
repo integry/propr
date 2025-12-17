@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { LiveEvent, TodoItem } from './types';
 import { renderMarkdown } from './renderMarkdown';
-import { Brain, Lightbulb, Wrench, Search, CheckCircle2 } from 'lucide-react';
+import { MessageSquareText, Lightbulb, Wrench, Search, CheckCircle2, ListChecks } from 'lucide-react';
 
 interface ThinkingLogEvent extends LiveEvent {
   relativeTime?: string | null;
@@ -88,7 +88,7 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
         {isCompleted ? (
           <CheckCircle2 className="h-4 w-4 text-green-600" />
         ) : (
-          <Brain className="h-4 w-4 text-gray-600" />
+          <ListChecks className="h-4 w-4 text-gray-600" />
         )}
         <span className={`text-sm font-medium ${isCompleted ? 'text-green-800' : 'text-gray-700'}`}>
           {title}
@@ -199,9 +199,9 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [] }) => {
   }
 
   return (
-    <div className="mb-6">
+    <div className="mb-6" id="thinking-log-section">
       <div className="flex items-center gap-2 mb-4">
-        <Brain className="h-5 w-5 text-gray-700" />
+        <MessageSquareText className="h-5 w-5 text-gray-700" />
         <h4 className="text-lg font-semibold text-gray-900">Thinking Log</h4>
         <span className="text-sm text-gray-500">({events.length} thoughts)</span>
       </div>

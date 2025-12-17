@@ -8,7 +8,24 @@ interface TodoListProps {
 
 const TodoList: React.FC<TodoListProps> = ({ liveDetails, history }) => {
   const scrollToThinkingLog = useCallback((todoId: string) => {
-    const element = document.getElementById(`thinking-log-${todoId}`);
+    // First try to find the specific thinking log group for this todo
+    let element = document.getElementById(`thinking-log-${todoId}`);
+
+    // If not found, try to find by data attribute
+    if (!element) {
+      element = document.querySelector(`[data-todo-id="${todoId}"]`) as HTMLElement;
+    }
+
+    // If still not found, scroll to the thinking log section header
+    if (!element) {
+      element = document.getElementById('thinking-log-section');
+    }
+
+    // If still not found, scroll to the execution event log
+    if (!element) {
+      element = document.getElementById('execution-event-log-section');
+    }
+
     if (element) {
       element.scrollIntoView({ behavior: 'smooth', block: 'start' });
       // Add a brief highlight effect

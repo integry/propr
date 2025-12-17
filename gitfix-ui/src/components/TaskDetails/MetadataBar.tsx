@@ -66,26 +66,32 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
       <div className="flex items-center gap-3 text-sm flex-wrap">
         {/* Repository & Issue/PR grouped together */}
         {taskInfo && (
-          <div className="flex items-center gap-1.5">
-            <GitHubIcon size={16} className="text-gray-700" />
-            <a
-              href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-semibold text-gray-900 hover:text-blue-600 transition-colors"
-            >
-              {taskInfo.repoOwner}/{taskInfo.repoName}
-            </a>
+          <>
+            <div className="flex items-center gap-1.5">
+              <GitHubIcon size={16} className="text-gray-700" />
+              <a
+                href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-semibold text-gray-900 hover:text-blue-600 transition-colors"
+              >
+                {taskInfo.repoOwner}/{taskInfo.repoName}
+              </a>
+            </div>
+
+            <div className="h-4 w-px bg-gray-300" />
+
             <a
               href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/${taskInfo.type === 'pr-comment' ? 'pull' : 'issues'}/${taskInfo.number}`}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium"
             >
+              <GitHubIcon size={14} className="text-blue-600" />
               #{taskInfo.number}
               <ExternalLink size={12} aria-hidden="true" />
             </a>
-          </div>
+          </>
         )}
 
         <div className="h-4 w-px bg-gray-300" />

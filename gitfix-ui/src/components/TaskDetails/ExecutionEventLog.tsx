@@ -380,7 +380,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   }
 
   return (
-    <div className="mb-6">
+    <div className="mb-6" id="execution-event-log-section">
       <div
         className="flex items-center justify-between cursor-pointer p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors border border-gray-200"
         onClick={onToggleCollapse}
@@ -399,7 +399,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
       </div>
 
       {!collapsed && (
-        <div className="mt-4 space-y-4 p-4 bg-white border border-gray-200 rounded-lg max-h-[800px] overflow-y-auto">
+        <div className="mt-4 space-y-4 p-4 bg-white border border-gray-200 rounded-lg">
           {eventsWithDefaults.map(({ event, prevToolUse, defaultCollapsed }, index) => (
             <EventItem
               key={index}
