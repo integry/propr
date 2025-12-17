@@ -1,14 +1,16 @@
 import React, { useMemo } from 'react';
 import { HistoryItem } from './types';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
+import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest } from 'lucide-react';
 
 interface TaskStatusTableProps {
   history: HistoryItem[];
+  compact?: boolean;
 }
 
 const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[]): string => {
   const stateUpper = item.state?.toUpperCase();
-  
+
   if (stateUpper === 'PENDING') return 'Task Queued';
   if (stateUpper === 'PROCESSING') return 'Analyzing Request';
   if (stateUpper === 'CLAUDE_EXECUTION' || stateUpper === 'CLAUDE_EXECUTION_STARTED') {
@@ -27,7 +29,7 @@ const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: Hist
     const s = h.state?.toUpperCase();
     return s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED';
   }).length;
-  
+
   if (item.reason?.toLowerCase().includes('completed')) return 'Implementation Completed';
   if (item.reason?.toLowerCase().includes('started')) {
     return claudeCount === 1 ? 'Implementing Changes' : `Retry Implementation ${claudeCount}`;
@@ -36,45 +38,58 @@ const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: Hist
   return claudeCount === 1 ? 'Implementing Changes' : `Retry Implementation ${claudeCount}`;
 };
 
-const TimelineIcon: React.FC<{ isRunning: boolean; isFailure: boolean }> = ({ isRunning, isFailure }) => {
+const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boolean }> = ({
+  state,
+  isRunning,
+  isFailure
+}) => {
+  const stateUpper = state?.toUpperCase() || '';
+
   if (isRunning) {
     return (
-      <div className="h-4 w-4">
-        <svg className="animate-spin h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-        </svg>
+      <div className="h-5 w-5 text-blue-600">
+        <Loader2 className="h-5 w-5 animate-spin" />
       </div>
     );
   }
+
   if (isFailure) {
-    return (
-      <div className="h-4 w-4 rounded-full bg-red-100 border border-red-500 flex items-center justify-center">
-        <span className="text-[10px] text-red-600 font-bold">✕</span>
-      </div>
-    );
+    return <XCircle className="h-5 w-5 text-red-500" />;
   }
-  return (
-    <div className="h-4 w-4 rounded-full bg-green-100 border border-green-500 flex items-center justify-center">
-      <svg className="w-2.5 h-2.5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-      </svg>
-    </div>
-  );
+
+  // Specific icons for different states
+  if (stateUpper === 'PENDING') {
+    return <Clock className="h-5 w-5 text-gray-400" />;
+  }
+  if (stateUpper === 'PROCESSING') {
+    return <Timer className="h-5 w-5 text-blue-500" />;
+  }
+  if (stateUpper === 'POST_PROCESSING') {
+    return <GitPullRequest className="h-5 w-5 text-purple-500" />;
+  }
+  if (stateUpper === 'COMPLETED') {
+    return <CheckCircle2 className="h-5 w-5 text-green-500" />;
+  }
+  if (stateUpper.includes('CLAUDE_EXECUTION')) {
+    return <CircleDot className="h-5 w-5 text-blue-500" />;
+  }
+
+  return <CheckCircle2 className="h-5 w-5 text-green-500" />;
 };
 
 const TimelineDateDivider: React.FC<{
   prevDate: string | null;
   currentDate: string | null;
-}> = ({ prevDate, currentDate }) => {
+  compact?: boolean;
+}> = ({ prevDate, currentDate, compact }) => {
   const showDateDivider = prevDate && currentDate && prevDate !== currentDate;
 
   if (!showDateDivider) return null;
 
   return (
-    <div className="flex items-center my-4 ml-24">
+    <div className={`flex items-center my-2 ${compact ? 'ml-16' : 'ml-24'}`}>
       <div className="h-px bg-gray-200 flex-grow"></div>
-      <span className="px-3 text-xs font-medium text-gray-400 uppercase tracking-wider">{currentDate}</span>
+      <span className="px-2 text-xs font-medium text-gray-400 uppercase tracking-wider">{currentDate}</span>
       <div className="h-px bg-gray-200 flex-grow"></div>
     </div>
   );
@@ -86,15 +101,16 @@ const TimelineContent: React.FC<{
   history: HistoryItem[];
   maxDurationIndex: number;
   isRunning: boolean;
-}> = ({ item, index, history, maxDurationIndex, isRunning }) => {
+  compact?: boolean;
+}> = ({ item, index, history, maxDurationIndex, isRunning, compact }) => {
   const displayLabel = getDisplayLabel(item, index, history);
   const prInfo = item.metadata?.pr || item.metadata?.pullRequest;
 
   return (
-    <div className="flex-grow pb-6">
+    <div className={`flex-grow ${compact ? 'pb-3' : 'pb-6'}`}>
       <div className="flex justify-between items-start">
         <div>
-          <div className={`text-sm ${index === maxDurationIndex ? 'font-bold text-gray-900' : 'font-medium text-gray-700'}`}>
+          <div className={`${compact ? 'text-xs' : 'text-sm'} ${index === maxDurationIndex ? 'font-bold text-gray-900' : 'font-medium text-gray-700'}`}>
             {displayLabel}
             {prInfo?.url && (
               <a
@@ -115,12 +131,12 @@ const TimelineContent: React.FC<{
         {/* Duration */}
         <div className="text-right pl-4">
           {item.duration !== null && (
-            <span className={`text-sm ${index === maxDurationIndex ? 'font-bold text-gray-800' : 'text-gray-500'}`}>
+            <span className={`${compact ? 'text-xs' : 'text-sm'} ${index === maxDurationIndex ? 'font-bold text-gray-800' : 'text-gray-500'}`}>
               {formatRelativeTime(item.duration)}
             </span>
           )}
           {isRunning && (
-            <span className="text-xs text-blue-600 animate-pulse font-medium">Running...</span>
+            <span className={`${compact ? 'text-xs' : 'text-xs'} text-blue-600 animate-pulse font-medium`}>Running...</span>
           )}
         </div>
       </div>
@@ -134,7 +150,8 @@ const TaskTimelineItem: React.FC<{
   history: HistoryItem[];
   maxDurationIndex: number;
   isLast: boolean;
-}> = ({ item, index, history, maxDurationIndex, isLast }) => {
+  compact?: boolean;
+}> = ({ item, index, history, maxDurationIndex, isLast, compact }) => {
   const stateUpper = item.state?.toUpperCase() || '';
   const isCompletedState = ['COMPLETED', 'FAILED'].includes(stateUpper);
   const isRunning = isLast && !isCompletedState;
@@ -146,24 +163,24 @@ const TaskTimelineItem: React.FC<{
 
   return (
     <React.Fragment>
-      <TimelineDateDivider prevDate={prevDate} currentDate={currentDate} />
+      <TimelineDateDivider prevDate={prevDate} currentDate={currentDate} compact={compact} />
 
-      <div className="flex group min-h-[3rem]">
+      <div className={`flex group ${compact ? 'min-h-[2rem]' : 'min-h-[3rem]'}`}>
         {/* Time Column */}
-        <div className="w-24 flex-shrink-0 text-right pr-4">
-          <span className="text-sm text-gray-500 font-mono">
+        <div className={`${compact ? 'w-16' : 'w-24'} flex-shrink-0 text-right pr-3`}>
+          <span className={`${compact ? 'text-xs' : 'text-sm'} text-gray-500 font-mono`}>
             {item.timestamp ? formatTimeOnly(item.timestamp) : '--:--'}
           </span>
         </div>
 
         {/* Timeline Graphic */}
-        <div className="relative flex flex-col items-center mr-4">
+        <div className="relative flex flex-col items-center mr-3">
           {/* Upper Line */}
           <div className={`w-0.5 bg-gray-200 absolute top-0 bottom-0 left-1/2 -translate-x-1/2 ${index === 0 ? 'top-3' : ''} ${isLast ? 'h-3' : ''}`}></div>
 
           {/* Icon/Dot */}
           <div className="relative z-10 bg-white p-0.5">
-            <TimelineIcon isRunning={isRunning} isFailure={isFailure} />
+            <TimelineIcon state={stateUpper} isRunning={isRunning} isFailure={isFailure} />
           </div>
         </div>
 
@@ -174,13 +191,14 @@ const TaskTimelineItem: React.FC<{
           history={history}
           maxDurationIndex={maxDurationIndex}
           isRunning={isRunning}
+          compact={compact}
         />
       </div>
     </React.Fragment>
   );
 };
 
-const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history }) => {
+const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = false }) => {
   // Pre-calculate durations to find the longest one for highlighting
   const { itemsWithDuration, maxDurationIndex, startDate } = useMemo(() => {
     if (!history || history.length === 0) {
@@ -214,14 +232,14 @@ const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history }) => {
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-      <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
-        <h4 className="text-lg font-semibold text-gray-900">
+      <div className={`bg-gray-50 ${compact ? 'px-4 py-3' : 'px-6 py-4'} border-b border-gray-200`}>
+        <h4 className={`${compact ? 'text-base' : 'text-lg'} font-semibold text-gray-900`}>
           Status Timeline
-          {startDate && <span className="ml-2 text-sm font-normal text-gray-500">(Started {startDate})</span>}
+          {startDate && <span className={`ml-2 ${compact ? 'text-xs' : 'text-sm'} font-normal text-gray-500`}>(Started {startDate})</span>}
         </h4>
       </div>
 
-      <div className="p-6">
+      <div className={compact ? 'p-4' : 'p-6'}>
         <div className="relative">
           {itemsWithDuration.map((item, index) => (
             <TaskTimelineItem
@@ -231,6 +249,7 @@ const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history }) => {
               history={history}
               maxDurationIndex={maxDurationIndex}
               isLast={index === itemsWithDuration.length - 1}
+              compact={compact}
             />
           ))}
         </div>
