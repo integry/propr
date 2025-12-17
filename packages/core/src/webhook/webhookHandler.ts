@@ -217,11 +217,11 @@ async function handleInfrastructureEvents(
     try {
         if (['opened', 'reopened', 'synchronize'].includes(action)) {
             log.info({ prNumber, action }, 'Triggering Preview Deployment...');
-            // Scripts are at repository root, dashboard-api runs from /usr/src/app/packages/dashboard
-            await execAsync(`../../scripts/deploy-pr.sh ${prNumber}`);
+            // Use absolute path - scripts are copied to /usr/src/app/scripts/ in the container
+            await execAsync(`/usr/src/app/scripts/deploy-pr.sh ${prNumber}`);
         } else if (action === 'closed') {
             log.info({ prNumber, action }, 'Triggering Preview Teardown...');
-            await execAsync(`../../scripts/teardown-pr.sh ${prNumber}`);
+            await execAsync(`/usr/src/app/scripts/teardown-pr.sh ${prNumber}`);
         }
     } catch (err) {
         log.error({ err, prNumber }, 'Failed to execute infrastructure script');
