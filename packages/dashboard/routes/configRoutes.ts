@@ -1,8 +1,6 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
-import path from 'path';
-import fs from 'fs-extra';
-import * as configRepoManager from '@gitfix/core';
+import * as configManager from '@gitfix/core';
 import { AgentRegistry } from '@gitfix/core';
 
 interface ConfigRoutesDeps {
@@ -14,7 +12,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getFollowupKeywords(_req: Request, res: Response): Promise<void> {
     try {
-      const keywords = await configRepoManager.loadFollowupKeywords();
+      const keywords = await configManager.loadFollowupKeywords();
       res.json({ followup_keywords: keywords });
     } catch (error) {
       console.error('Error in /api/config/followup-keywords GET:', error);
@@ -30,10 +28,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'followup_keywords must be an array of strings' } };
       }
 
-      await configRepoManager.saveFollowupKeywords(
-        followup_keywords,
-        `Update PR followup keywords via UI by ${req.user?.username}`
-      );
+      await configManager.saveFollowupKeywords(followup_keywords);
       return { status: 200, body: { success: true, followup_keywords } };
     });
 
@@ -42,16 +37,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
-      await configRepoManager.cloneOrPullConfigRepo();
-      const configRepoPath = process.env.CONFIG_REPO_PATH || path.join(process.cwd(), '.config_repo');
-      const configPath = path.join(configRepoPath, 'config.json');
-      const config = await fs.readJson(configPath) as { repos_to_monitor?: Array<string | { name: string; enabled: boolean }> };
-      let repos = config.repos_to_monitor || [];
-
-      if (repos.length > 0 && typeof repos[0] === 'string') {
-        repos = (repos as string[]).map(repo => ({ name: repo, enabled: true }));
-      }
-
+      const repos = await configManager.loadMonitoredReposRaw();
       res.json({ repos_to_monitor: repos });
     } catch (error) {
       console.error('Error in /api/config/repos GET:', error);
@@ -76,10 +62,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         }
       }
 
-      await configRepoManager.saveMonitoredRepos(
-        repos_to_monitor,
-        `Update monitored repositories via UI by ${req.user?.username}`
-      );
+      await configManager.saveMonitoredRepos(repos_to_monitor);
 
       const activity = {
         id: `activity-${Date.now()}-config-update`,
@@ -100,7 +83,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const settings = await configRepoManager.loadSettings();
+      const settings = await configManager.loadSettings();
       const envDefaults = {
         worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
         github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()),
@@ -128,10 +111,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'settings object is required' } };
       }
 
-      await configRepoManager.saveSettings(
-        settings,
-        'Update settings via UI by ' + req.user?.username
-      );
+      await configManager.saveSettings(settings);
       return { status: 200, body: { success: true, settings } };
     });
 
@@ -140,7 +120,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getPrLabel(_req: Request, res: Response): Promise<void> {
     try {
-      const prLabel = await configRepoManager.loadPrLabel();
+      const prLabel = await configManager.loadPrLabel();
       res.json({ pr_label: prLabel });
     } catch (error) {
       console.error('Error in /api/config/pr-label GET:', error);
@@ -156,10 +136,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'pr_label must be a non-empty string' } };
       }
 
-      await configRepoManager.savePrLabel(
-        pr_label.trim(),
-        `Update PR label via UI by ${req.user?.username}`
-      );
+      await configManager.savePrLabel(pr_label.trim());
       return { status: 200, body: { success: true, pr_label: pr_label.trim() } };
     });
 
@@ -168,7 +145,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getAiPrimaryTag(_req: Request, res: Response): Promise<void> {
     try {
-      const aiPrimaryTag = await configRepoManager.loadAiPrimaryTag();
+      const aiPrimaryTag = await configManager.loadAiPrimaryTag();
       res.json({ ai_primary_tag: aiPrimaryTag });
     } catch (error) {
       console.error('Error in /api/config/ai-primary-tag GET:', error);
@@ -184,10 +161,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'ai_primary_tag must be a non-empty string' } };
       }
 
-      await configRepoManager.saveAiPrimaryTag(
-        ai_primary_tag.trim(),
-        `Update AI primary tag via UI by ${req.user?.username}`
-      );
+      await configManager.saveAiPrimaryTag(ai_primary_tag.trim());
       return { status: 200, body: { success: true, ai_primary_tag: ai_primary_tag.trim() } };
     });
 
@@ -196,7 +170,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getPrimaryProcessingLabels(_req: Request, res: Response): Promise<void> {
     try {
-      const primaryLabels = await configRepoManager.loadPrimaryProcessingLabels();
+      const primaryLabels = await configManager.loadPrimaryProcessingLabels();
       res.json({ primary_processing_labels: primaryLabels });
     } catch (error) {
       console.error('Error in /api/config/primary-processing-labels GET:', error);
@@ -217,10 +191,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'At least one valid label is required' } };
       }
 
-      await configRepoManager.savePrimaryProcessingLabels(
-        labels,
-        `Update primary processing labels via UI by ${req.user?.username}`
-      );
+      await configManager.savePrimaryProcessingLabels(labels);
       return { status: 200, body: { success: true, primary_processing_labels: labels } };
     });
 
@@ -229,7 +200,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getAgents(_req: Request, res: Response): Promise<void> {
     try {
-      const agents = await configRepoManager.loadAgents();
+      const agents = await configManager.loadAgents();
       res.json({ agents });
     } catch (error) {
       console.error('Error in /api/config/agents GET:', error);
@@ -285,10 +256,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       // Save the agents configuration
-      await configRepoManager.saveAgents(
-        agents,
-        `Update agents configuration via UI by ${req.user?.username}`
-      );
+      await configManager.saveAgents(agents);
 
       // Refresh the AgentRegistry to apply changes immediately
       try {

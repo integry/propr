@@ -33,7 +33,7 @@ import {
   processCommentEvent
 } from '@gitfix/core';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@gitfix/core';
-import * as configRepoManager from '@gitfix/core';
+import * as configManager from '@gitfix/core';
 
 const ioRedisClient = new Redis({
   host: process.env.REDIS_HOST || '127.0.0.1',
@@ -228,7 +228,7 @@ async function start(): Promise<void> {
     }
     await initRedis();
     setupRoutes();
-    try { await configRepoManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config repository:', (error as Error).message); }
+    try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
     try { await initializeWebhookHandler(processDetectedIssue, processCommentEventWrapper, handleCommentDeletedWrapper, handleCommentEditedWrapper); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
     app.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT}`); });

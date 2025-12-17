@@ -8,7 +8,7 @@ import {
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias } from '../../config/modelAliases.js';
-import { resolveConfigPath } from '../../config/configRepoManager.js';
+import { resolveConfigPath } from '../../config/configManager.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };

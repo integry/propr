@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
 import path from 'path';
-import * as configRepoManager from '@gitfix/core';
+import * as configManager from '@gitfix/core';
 import { getExecutionAnalysis } from '@gitfix/core';
 
 interface ExecutionRoutesDeps {
@@ -102,7 +102,7 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
         return;
       }
       const task = await db('tasks').where({ task_id: taskId }).first('correlation_id');
-      const settings = await configRepoManager.loadSettings();
+      const settings = await configManager.loadSettings();
       const advancedModel = (settings.analysis_model_advanced as string) || process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514';
       const analysisReport = await getExecutionAnalysis({ executionId: latestExecution.execution_id, sessionId: latestExecution.session_id, correlationId: task?.correlation_id || `deep-dive-${Date.now()}`, model: advancedModel });
       await db('llm_executions').where({ execution_id: latestExecution.execution_id }).update({ analysis_report: analysisReport });

@@ -3,11 +3,11 @@ import assert from 'node:assert';
 import { AgentRegistry, ClaudeAgent } from '@gitfix/core';
 import type { AgentConfig } from '@gitfix/core';
 
-// Mock configRepoManager
+// Mock configManager
 const mockLoadAgents = mock.fn<() => Promise<AgentConfig[]>>();
 
 // Store original module for restoration
-let originalConfigRepoManager: typeof import('@gitfix/core');
+let originalConfigManager: typeof import('@gitfix/core');
 
 test('AgentRegistry', async (t) => {
     beforeEach(() => {
@@ -25,7 +25,7 @@ test('AgentRegistry', async (t) => {
     await t.test('should create default agent when no configs exist', async () => {
         const registry = AgentRegistry.getInstance();
 
-        // Since we can't easily mock the configRepoManager, we test the default behavior
+        // Since we can't easily mock the configManager, we test the default behavior
         // The refresh() method will fall back to default agent on errors
         await registry.refresh();
 

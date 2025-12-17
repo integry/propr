@@ -128,6 +128,19 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
     let workerConcurrency = parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
     let aiPrimaryTag = 'AI';
 
+    // Run migrations first, before loading any configs from the database
+    try {
+        logger.info('Running database migrations...');
+        await db.migrate.latest();
+        logger.info('Database migrations completed successfully');
+    } catch (error) {
+        const err = error as Error;
+        logger.error({
+            error: err.message,
+            stack: err.stack
+        }, 'Database migration failed - worker will continue but database persistence may not work');
+    }
+
     try {
         if (process.env.CONFIG_REPO) {
             const settings = await loadSettings();
@@ -158,18 +171,6 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         concurrency: workerConcurrency,
         resetPerformed: options.reset || false
     }, 'Starting GitHub Issue Worker...');
-
-    try {
-        logger.info('Running database migrations...');
-        await db.migrate.latest();
-        logger.info('Database migrations completed successfully');
-    } catch (error) {
-        const err = error as Error;
-        logger.error({
-            error: err.message,
-            stack: err.stack
-        }, 'Database migration failed - worker will continue but database persistence may not work');
-    }
 
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',

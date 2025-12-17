@@ -5,7 +5,7 @@ import { Agent, AgentConfig } from './types.js';
 import { ClaudeAgent } from './impl/ClaudeAgent.js';
 import { CodexAgent } from './impl/CodexAgent.js';
 import { GeminiAgent } from './impl/GeminiAgent.js';
-import * as configRepoManager from '../config/configRepoManager.js';
+import * as configManager from '../config/configManager.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -33,14 +33,14 @@ export class AgentRegistry {
     }
 
     /**
-     * Reloads configuration from configRepoManager and instantiates agents.
+     * Reloads configuration from configManager and instantiates agents.
      * This should be called at startup and whenever configuration changes.
      */
     async refresh(): Promise<void> {
         logger.info('Refreshing agent registry...');
 
         try {
-            const configs = await configRepoManager.loadAgents();
+            const configs = await configManager.loadAgents();
 
             // Clear existing maps
             this.agents.clear();
@@ -148,7 +148,7 @@ export class AgentRegistry {
      */
     async getAllConfigs(): Promise<AgentConfig[]> {
         try {
-            return await configRepoManager.loadAgents();
+            return await configManager.loadAgents();
         } catch (error) {
             const err = error as Error;
             logger.error({ error: err.message }, 'Failed to load agent configs');
