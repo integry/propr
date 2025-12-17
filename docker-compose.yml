@@ -100,9 +100,11 @@ services:
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/git-processor:/tmp/git-processor
-      - ./.env:/usr/src/app/.env:ro
+      # Mount the env file - uses STAGING_ENV_FILE if set, defaults to ./.env
+      - ${STAGING_ENV_FILE:-./.env}:/usr/src/app/.env:ro
     env_file:
-      - .env
+      # Use the same env file for environment variable injection
+      - ${STAGING_ENV_FILE:-.env}
     environment:
       - CONFIG_REPO_PATH=/tmp/config_repo
       # Allow injection of API_PUBLIC_URL for PR preview environments
