@@ -51,18 +51,20 @@ let handleCommentDeleted: CommentDeletedHandler | null = null;
 let handleCommentEdited: CommentEditedHandler | null = null;
 let processPullRequest: PullRequestProcessor | null = null;
 
-export async function initializeWebhookHandler(
-    issueProcessor: IssueProcessor,
-    commentProcessor: CommentProcessor,
-    commentDeletedHandler: CommentDeletedHandler,
-    commentEditedHandler: CommentEditedHandler,
-    pullRequestProcessor?: PullRequestProcessor
-): Promise<void> {
-    processDetectedIssue = issueProcessor;
-    processCommentEvent = commentProcessor;
-    handleCommentDeleted = commentDeletedHandler;
-    handleCommentEdited = commentEditedHandler;
-    processPullRequest = pullRequestProcessor || null;
+export interface WebhookHandlerOptions {
+    issueProcessor: IssueProcessor;
+    commentProcessor: CommentProcessor;
+    commentDeletedHandler: CommentDeletedHandler;
+    commentEditedHandler: CommentEditedHandler;
+    pullRequestProcessor?: PullRequestProcessor;
+}
+
+export async function initializeWebhookHandler(options: WebhookHandlerOptions): Promise<void> {
+    processDetectedIssue = options.issueProcessor;
+    processCommentEvent = options.commentProcessor;
+    handleCommentDeleted = options.commentDeletedHandler;
+    handleCommentEdited = options.commentEditedHandler;
+    processPullRequest = options.pullRequestProcessor || null;
     logger.info('Webhook handler initialized');
 }
 

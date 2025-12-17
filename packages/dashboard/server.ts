@@ -230,7 +230,7 @@ async function start(): Promise<void> {
     setupRoutes();
     try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
-    try { await initializeWebhookHandler(processDetectedIssue, processCommentEventWrapper, handleCommentDeletedWrapper, handleCommentEditedWrapper); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
+    try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
     app.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT}`); });
   } catch (error) {
     console.error('Failed to start server:', error);
