@@ -7,6 +7,7 @@ interface GeneralSettingsSectionProps {
   settings: Settings;
   agents: AgentConfig[];
   onSettingChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => void;
+  onBlur?: () => void;
   className?: string;
 }
 
@@ -20,6 +21,7 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
   settings,
   agents,
   onSettingChange,
+  onBlur,
   className
 }) => {
   // Helper to get pretty name from MODEL_INFO_MAP
@@ -57,8 +59,9 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             name="worker_concurrency"
             value={settings.worker_concurrency}
             onChange={onSettingChange}
-            placeholder="Number of concurrent workers (e.g., 2)"
-            className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+            onBlur={onBlur}
+            placeholder="e.g., 2"
+            className="w-[100px] rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
           />
           <p className="mt-1 text-sm text-gray-500">
             Number of issues to process simultaneously.
@@ -74,7 +77,7 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
               id="analysis_model_fast"
               name="analysis_model_fast"
               value={settings.analysis_model_fast}
-              onChange={onSettingChange}
+              onChange={(e) => { onSettingChange(e); onBlur?.(); }}
               className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
             >
               <option value="">Select a model...</option>
@@ -104,6 +107,7 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
               name="analysis_model_fast"
               value={settings.analysis_model_fast}
               onChange={onSettingChange}
+              onBlur={onBlur}
               placeholder="e.g., claude-3-5-haiku-20241022"
               className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
             />
@@ -123,7 +127,7 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
               id="analysis_model_advanced"
               name="analysis_model_advanced"
               value={settings.analysis_model_advanced}
-              onChange={onSettingChange}
+              onChange={(e) => { onSettingChange(e); onBlur?.(); }}
               className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
             >
               <option value="">Select a model...</option>
@@ -153,6 +157,7 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
               name="analysis_model_advanced"
               value={settings.analysis_model_advanced}
               onChange={onSettingChange}
+              onBlur={onBlur}
               placeholder="e.g., claude-opus-4-20250514"
               className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
             />

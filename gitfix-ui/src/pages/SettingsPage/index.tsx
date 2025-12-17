@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   getSettings,
   updateSettings,
@@ -20,8 +20,9 @@ const SettingsPage: React.FC = () => {
   // Global state
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [globalError, setGlobalError] = useState<string | null>(null);
-  const [globalSuccess, setGlobalSuccess] = useState<string | null>(null);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Data state
   const [settings, setSettings] = useState<Settings>({
@@ -92,67 +93,106 @@ const SettingsPage: React.FC = () => {
     loadData();
   }, []);
 
-  // Global save handler
-  const handleSaveAll = async () => {
+  // Auto-save function
+  const performAutoSave = useCallback(async (
+    settingsToSave: Settings,
+    whitelistToSave: string[],
+    prLabelToSave: string,
+    primaryLabelsToSave: string[],
+    keywordsToSave: string[]
+  ) => {
+    // Clear any pending save timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
     setSaving(true);
+    setSaveStatus('saving');
     setGlobalError(null);
-    setGlobalSuccess(null);
 
     try {
       // Validate
-      const concurrency = parseInt(settings.worker_concurrency);
-      if (settings.worker_concurrency && isNaN(concurrency)) {
+      const concurrency = parseInt(settingsToSave.worker_concurrency);
+      if (settingsToSave.worker_concurrency && isNaN(concurrency)) {
         throw new Error('Worker concurrency must be a number');
       }
-      if (!prLabel.trim()) {
+      if (!prLabelToSave.trim()) {
         throw new Error('PR Label cannot be empty');
       }
-      if (primaryLabels.length === 0) {
+      if (primaryLabelsToSave.length === 0) {
         throw new Error('At least one primary processing label is required');
       }
 
       await Promise.all([
         updateSettings({
-          worker_concurrency: settings.worker_concurrency ? concurrency : undefined,
-          github_user_whitelist: whitelist,
-          analysis_model_fast: settings.analysis_model_fast,
-          analysis_model_advanced: settings.analysis_model_advanced
+          worker_concurrency: settingsToSave.worker_concurrency ? concurrency : undefined,
+          github_user_whitelist: whitelistToSave,
+          analysis_model_fast: settingsToSave.analysis_model_fast,
+          analysis_model_advanced: settingsToSave.analysis_model_advanced
         }),
-        updatePrLabel(prLabel.trim()),
-        updatePrimaryProcessingLabels(primaryLabels),
-        updateFollowupKeywords(keywords)
+        updatePrLabel(prLabelToSave.trim()),
+        updatePrimaryProcessingLabels(primaryLabelsToSave),
+        updateFollowupKeywords(keywordsToSave)
       ]);
 
-      setGlobalSuccess('All settings saved successfully! Changes will be picked up by the daemon shortly.');
+      setSaveStatus('saved');
 
-      // Clear success after 5s
-      setTimeout(() => setGlobalSuccess(null), 5000);
+      // Clear "Saved" status after 3s
+      saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (err) {
+      setSaveStatus('error');
       setGlobalError((err as Error).message || 'Failed to save settings');
     } finally {
       setSaving(false);
     }
+  }, []);
+
+  // Trigger auto-save (called on blur and list changes)
+  const triggerAutoSave = useCallback(() => {
+    performAutoSave(settings, whitelist, prLabel, primaryLabels, keywords);
+  }, [settings, whitelist, prLabel, primaryLabels, keywords, performAutoSave]);
+
+  // List management functions that trigger auto-save
+  const addWhitelistItem = () => {
+    if (!newWhitelistItem.trim() || whitelist.includes(newWhitelistItem.trim())) return;
+    const newList = [...whitelist, newWhitelistItem.trim()];
+    setWhitelist(newList);
+    setNewWhitelistItem('');
+    performAutoSave(settings, newList, prLabel, primaryLabels, keywords);
   };
 
-  // Helper for adding to lists
-  const addToList = (
-    item: string,
-    list: string[],
-    setList: (l: string[]) => void,
-    clearInput: () => void
-  ) => {
-    if (!item.trim() || list.includes(item.trim())) return;
-    setList([...list, item.trim()]);
-    clearInput();
+  const removeWhitelistItem = (item: string) => {
+    const newList = whitelist.filter(i => i !== item);
+    setWhitelist(newList);
+    performAutoSave(settings, newList, prLabel, primaryLabels, keywords);
   };
 
-  // Helper for removing from lists
-  const removeFromList = (
-    item: string,
-    list: string[],
-    setList: (l: string[]) => void
-  ) => {
-    setList(list.filter(i => i !== item));
+  const addPrimaryLabel = () => {
+    if (!newPrimaryLabel.trim() || primaryLabels.includes(newPrimaryLabel.trim())) return;
+    const newList = [...primaryLabels, newPrimaryLabel.trim()];
+    setPrimaryLabels(newList);
+    setNewPrimaryLabel('');
+    performAutoSave(settings, whitelist, prLabel, newList, keywords);
+  };
+
+  const removePrimaryLabel = (item: string) => {
+    const newList = primaryLabels.filter(i => i !== item);
+    setPrimaryLabels(newList);
+    performAutoSave(settings, whitelist, prLabel, newList, keywords);
+  };
+
+  const addKeyword = () => {
+    if (!newKeyword.trim() || keywords.includes(newKeyword.trim())) return;
+    const newList = [...keywords, newKeyword.trim()];
+    setKeywords(newList);
+    setNewKeyword('');
+    performAutoSave(settings, whitelist, prLabel, primaryLabels, newList);
+  };
+
+  const removeKeyword = (item: string) => {
+    const newList = keywords.filter(i => i !== item);
+    setKeywords(newList);
+    performAutoSave(settings, whitelist, prLabel, primaryLabels, newList);
   };
 
   if (loading) {
@@ -164,9 +204,37 @@ const SettingsPage: React.FC = () => {
   }
 
   return (
-    <div className="max-w-7xl mx-auto pb-24">
+    <div className="max-w-7xl mx-auto pb-8">
       <div className="flex justify-between items-center mb-8">
         <h2 className="text-gray-900 text-2xl font-semibold">Settings</h2>
+        {/* Auto-save status indicator */}
+        <div className="flex items-center gap-2">
+          {saveStatus === 'saving' && (
+            <span className="flex items-center gap-1.5 text-sm text-gray-500">
+              <svg className="animate-spin h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              Saving...
+            </span>
+          )}
+          {saveStatus === 'saved' && (
+            <span className="flex items-center gap-1.5 text-sm text-green-600">
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+              Saved
+            </span>
+          )}
+          {saveStatus === 'error' && globalError && (
+            <span className="flex items-center gap-1.5 text-sm text-red-600">
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              {globalError}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -178,11 +246,19 @@ const SettingsPage: React.FC = () => {
             onSettingChange={(e) =>
               setSettings(prev => ({ ...prev, [e.target.name]: e.target.value }))
             }
+            onBlur={triggerAutoSave}
           />
 
-          <PrLabelSection
-            prLabel={prLabel}
-            onLabelChange={(e) => setPrLabel(e.target.value)}
+          <TagListSection
+            title="GitHub User Whitelist"
+            description="Only process issues/comments from these users."
+            items={whitelist}
+            newItem={newWhitelistItem}
+            onNewItemChange={setNewWhitelistItem}
+            onAddItem={addWhitelistItem}
+            onRemoveItem={removeWhitelistItem}
+            placeholder="e.g., octocat"
+            emptyMessage="Allowed for all users (Empty whitelist)."
           />
         </div>
 
@@ -194,14 +270,8 @@ const SettingsPage: React.FC = () => {
             items={primaryLabels}
             newItem={newPrimaryLabel}
             onNewItemChange={setNewPrimaryLabel}
-            onAddItem={() =>
-              addToList(newPrimaryLabel, primaryLabels, setPrimaryLabels, () =>
-                setNewPrimaryLabel('')
-              )
-            }
-            onRemoveItem={(item) =>
-              removeFromList(item, primaryLabels, setPrimaryLabels)
-            }
+            onAddItem={addPrimaryLabel}
+            onRemoveItem={removePrimaryLabel}
             placeholder="e.g., AI"
             emptyMessage="No labels configured."
             helperText="State labels (-processing, -done) are generated automatically."
@@ -213,54 +283,18 @@ const SettingsPage: React.FC = () => {
             items={keywords}
             newItem={newKeyword}
             onNewItemChange={setNewKeyword}
-            onAddItem={() =>
-              addToList(newKeyword, keywords, setKeywords, () => setNewKeyword(''))
-            }
-            onRemoveItem={(item) => removeFromList(item, keywords, setKeywords)}
+            onAddItem={addKeyword}
+            onRemoveItem={removeKeyword}
             placeholder="e.g., GITFIX"
             emptyMessage="No keywords configured."
+            showEmptyIcon={true}
           />
 
-          <TagListSection
-            title="GitHub User Whitelist"
-            description="Only process issues/comments from these users."
-            items={whitelist}
-            newItem={newWhitelistItem}
-            onNewItemChange={setNewWhitelistItem}
-            onAddItem={() =>
-              addToList(newWhitelistItem, whitelist, setWhitelist, () =>
-                setNewWhitelistItem('')
-              )
-            }
-            onRemoveItem={(item) => removeFromList(item, whitelist, setWhitelist)}
-            placeholder="e.g., octocat"
-            emptyMessage="Allowed for all users (Empty whitelist)."
+          <PrLabelSection
+            prLabel={prLabel}
+            onLabelChange={(e) => setPrLabel(e.target.value)}
+            onBlur={triggerAutoSave}
           />
-        </div>
-      </div>
-
-      {/* Sticky Footer */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-4 shadow-lg z-50">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex-1 mr-4">
-            {globalError && (
-              <span className="text-red-600 font-medium">{globalError}</span>
-            )}
-            {globalSuccess && (
-              <span className="text-green-600 font-medium">{globalSuccess}</span>
-            )}
-          </div>
-          <button
-            onClick={handleSaveAll}
-            disabled={saving}
-            className={`px-6 py-2.5 font-medium rounded-md text-white shadow-sm transition-colors ${
-              saving
-                ? 'bg-gray-400 cursor-not-allowed'
-                : 'bg-primary-600 hover:bg-primary-700'
-            }`}
-          >
-            {saving ? 'Saving Changes...' : 'Save Changes'}
-          </button>
         </div>
       </div>
     </div>

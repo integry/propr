@@ -3,12 +3,14 @@ import React from 'react';
 interface PrLabelSectionProps {
   prLabel: string;
   onLabelChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onBlur?: () => void;
   className?: string;
 }
 
 const PrLabelSection: React.FC<PrLabelSectionProps> = ({
   prLabel,
   onLabelChange,
+  onBlur,
   className
 }) => {
   return (
@@ -28,6 +30,7 @@ const PrLabelSection: React.FC<PrLabelSectionProps> = ({
           name="pr_label"
           value={prLabel}
           onChange={onLabelChange}
+          onBlur={onBlur}
           placeholder="e.g., gitfix"
           required
           className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
