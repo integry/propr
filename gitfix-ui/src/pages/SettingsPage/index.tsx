@@ -1,15 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import {
-  getSettings,
-  updateSettings,
-  getFollowupKeywords,
-  updateFollowupKeywords,
-  getPrLabel,
-  updatePrLabel,
-  getPrimaryProcessingLabels,
-  updatePrimaryProcessingLabels,
-  getAgents,
-  AgentConfig
+  getSettings, updateSettings,
+  getFollowupKeywords, updateFollowupKeywords,
+  getPrLabel, updatePrLabel,
+  getPrimaryProcessingLabels, updatePrimaryProcessingLabels,
+  getAgents, AgentConfig
 } from '../../api/gitfixApi';
 import { Settings } from './types';
 import GeneralSettingsSection from './GeneralSettingsSection';
@@ -17,297 +12,197 @@ import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
 
 const SettingsPage: React.FC = () => {
+  // State
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [globalError, setGlobalError] = useState<string | null>(null);
+  const [globalSuccess, setGlobalSuccess] = useState<string | null>(null);
+
+  // Data State
   const [settings, setSettings] = useState<Settings>({
     worker_concurrency: '',
-    github_user_whitelist: '',
     analysis_model_fast: '',
-    analysis_model_advanced: '',
-    pr_label: ''
+    analysis_model_advanced: ''
   });
-  const [keywords, setKeywords] = useState<string[]>([]);
-  const [newKeyword, setNewKeyword] = useState<string>('');
+  const [prLabel, setPrLabel] = useState('');
+  
+  // Lists
+  const [whitelist, setWhitelist] = useState<string[]>([]);
+  const [newWhitelistItem, setNewWhitelistItem] = useState('');
+  
   const [primaryLabels, setPrimaryLabels] = useState<string[]>([]);
-  const [newPrimaryLabel, setNewPrimaryLabel] = useState<string>('');
+  const [newPrimaryLabel, setNewPrimaryLabel] = useState('');
+  
+  const [keywords, setKeywords] = useState<string[]>([]);
+  const [newKeyword, setNewKeyword] = useState('');
+  
   const [agents, setAgents] = useState<AgentConfig[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [keywordsLoading, setKeywordsLoading] = useState<boolean>(true);
-  const [prLabelLoading, setPrLabelLoading] = useState<boolean>(true);
-  const [primaryLabelsLoading, setPrimaryLabelsLoading] = useState<boolean>(true);
-  const [saving, setSaving] = useState<boolean>(false);
-  const [keywordsSaving, setKeywordsSaving] = useState<boolean>(false);
-  const [prLabelSaving, setPrLabelSaving] = useState<boolean>(false);
-  const [primaryLabelsSaving, setPrimaryLabelsSaving] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const [keywordsError, setKeywordsError] = useState<string | null>(null);
-  const [keywordsSuccess, setKeywordsSuccess] = useState<string | null>(null);
-  const [prLabelError, setPrLabelError] = useState<string | null>(null);
-  const [prLabelSuccess, setPrLabelSuccess] = useState<string | null>(null);
-  const [primaryLabelsError, setPrimaryLabelsError] = useState<string | null>(null);
-  const [primaryLabelsSuccess, setPrimaryLabelsSuccess] = useState<string | null>(null);
 
+  // Load All Data
   useEffect(() => {
-    const loadSettings = async () => {
+    const loadData = async () => {
+      setLoading(true);
       try {
-        setLoading(true);
-        setError(null);
-        const data = await getSettings();
-        setSettings(prev => ({
-          ...prev,
-          worker_concurrency: data.worker_concurrency || '',
-          github_user_whitelist: (data.github_user_whitelist || []).join(', '),
-          analysis_model_fast: data.analysis_model_fast || 'claude-3-5-haiku-20241022',
-          analysis_model_advanced: data.analysis_model_advanced || 'claude-opus-4-20250514'
-        }));
+        const [sData, kData, pLabelData, pLabelsData, aData] = await Promise.all([
+          getSettings(),
+          getFollowupKeywords(),
+          getPrLabel(),
+          getPrimaryProcessingLabels(),
+          getAgents()
+        ]);
+
+        // Parse Settings
+        setSettings({
+          worker_concurrency: sData.worker_concurrency || '',
+          analysis_model_fast: sData.analysis_model_fast || '',
+          analysis_model_advanced: sData.analysis_model_advanced || ''
+        });
+        
+        // Parse Whitelist (came as array from API, though UI previously treated as string)
+        const whitelistRaw = sData.github_user_whitelist || [];
+        setWhitelist(Array.isArray(whitelistRaw) ? whitelistRaw : []);
+
+        setKeywords(kData.followup_keywords || []);
+        setPrLabel(pLabelData.pr_label || 'gitfix');
+        setPrimaryLabels(pLabelsData.primary_processing_labels || ['AI']);
+        setAgents(aData.agents || []);
       } catch (err) {
-        setError((err as Error).message || 'Failed to load settings');
+        setGlobalError((err as Error).message || 'Failed to load settings');
       } finally {
         setLoading(false);
       }
     };
-    loadSettings();
+    loadData();
   }, []);
 
-  useEffect(() => {
-    const loadKeywords = async () => {
-      try {
-        setKeywordsLoading(true);
-        setKeywordsError(null);
-        const data = await getFollowupKeywords();
-        setKeywords(data.followup_keywords || []);
-      } catch (err) {
-        setKeywordsError((err as Error).message || 'Failed to load keywords');
-      } finally {
-        setKeywordsLoading(false);
-      }
-    };
-    loadKeywords();
-  }, []);
+  // Handlers
+  const handleSaveAll = async () => {
+    setSaving(true);
+    setGlobalError(null);
+    setGlobalSuccess(null);
 
-  useEffect(() => {
-    const loadPrLabel = async () => {
-      try {
-        setPrLabelLoading(true);
-        setPrLabelError(null);
-        const data = await getPrLabel();
-        setSettings(prev => ({ ...prev, pr_label: data.pr_label || 'gitfix' }));
-      } catch (err) {
-        setPrLabelError((err as Error).message || 'Failed to load PR label');
-      } finally {
-        setPrLabelLoading(false);
-      }
-    };
-    loadPrLabel();
-  }, []);
-
-  useEffect(() => {
-    const loadPrimaryProcessingLabels = async () => {
-      try {
-        setPrimaryLabelsLoading(true);
-        setPrimaryLabelsError(null);
-        const data = await getPrimaryProcessingLabels();
-        setPrimaryLabels(data.primary_processing_labels || ['AI']);
-      } catch (err) {
-        setPrimaryLabelsError((err as Error).message || 'Failed to load primary processing labels');
-      } finally {
-        setPrimaryLabelsLoading(false);
-      }
-    };
-    loadPrimaryProcessingLabels();
-  }, []);
-
-  useEffect(() => {
-    const loadAgents = async () => {
-      try {
-        const data = await getAgents();
-        setAgents(data.agents || []);
-      } catch (err) {
-        console.error('Failed to load agents for model selection:', err);
-      }
-    };
-    loadAgents();
-  }, []);
-
-  const handleSettingChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    setSettings(prev => ({ ...prev, [name]: value }));
-  };
-
-  const handleSaveSettings = async () => {
     try {
-      setSaving(true);
-      setError(null);
-      setSuccess(null);
+      // Validate
+      const concurrency = parseInt(settings.worker_concurrency);
+      if (isNaN(concurrency)) throw new Error('Worker concurrency must be a number');
+      if (!prLabel.trim()) throw new Error('PR Label cannot be empty');
+      if (primaryLabels.length === 0) throw new Error('At least one primary processing label is required');
 
-      const updatedSettings: Record<string, unknown> = {
-        worker_concurrency: settings.worker_concurrency,
-        github_user_whitelist: settings.github_user_whitelist
-          .split(',')
-          .map(u => u.trim())
-          .filter(u => u.length > 0),
-        analysis_model_fast: settings.analysis_model_fast,
-        analysis_model_advanced: settings.analysis_model_advanced
-      };
+      await Promise.all([
+        updateSettings({
+          ...settings,
+          worker_concurrency: concurrency,
+          github_user_whitelist: whitelist
+        }),
+        updatePrLabel(prLabel),
+        updatePrimaryProcessingLabels(primaryLabels),
+        updateFollowupKeywords(keywords)
+      ]);
 
-      if (updatedSettings.worker_concurrency) {
-        updatedSettings.worker_concurrency = parseInt(updatedSettings.worker_concurrency as string);
-        if (isNaN(updatedSettings.worker_concurrency as number)) {
-          throw new Error('Worker concurrency must be a number');
-        }
-      } else {
-        delete updatedSettings.worker_concurrency;
-      }
-
-      await updateSettings(updatedSettings);
-      setSuccess('Settings updated successfully! The daemon will pick up changes within 5 minutes.');
+      setGlobalSuccess('All settings saved successfully! Changes will be picked up by the daemon shortly.');
+      
+      // Clear success after 5s
+      setTimeout(() => setGlobalSuccess(null), 5000);
     } catch (err) {
-      setError((err as Error).message || 'Failed to update settings');
+      setGlobalError((err as Error).message || 'Failed to save settings');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleAddKeyword = () => {
-    if (!newKeyword) return;
-    if (keywords.includes(newKeyword)) {
-      alert(`Keyword "${newKeyword}" has already been added to the list.`);
-      return;
-    }
-    setKeywords([...keywords, newKeyword]);
-    setNewKeyword('');
+  // Helper for Lists
+  const addToList = (item: string, list: string[], setList: (l: string[]) => void, clearInput: () => void) => {
+    if (!item.trim() || list.includes(item.trim())) return;
+    setList([...list, item.trim()]);
+    clearInput();
   };
 
-  const handleRemoveKeyword = (keyword: string) => {
-    if (confirm(`Are you sure you want to remove the keyword "${keyword}"?`)) {
-      setKeywords(keywords.filter(k => k !== keyword));
-    }
+  const removeFromList = (item: string, list: string[], setList: (l: string[]) => void) => {
+    setList(list.filter(i => i !== item));
   };
 
-  const handleSaveKeywords = async () => {
-    try {
-      setKeywordsSaving(true);
-      setKeywordsError(null);
-      setKeywordsSuccess(null);
-      await updateFollowupKeywords(keywords);
-      setKeywordsSuccess('Keywords updated successfully! The daemon will pick up changes within 5 minutes.');
-    } catch (err) {
-      setKeywordsError((err as Error).message || 'Failed to update keywords');
-    } finally {
-      setKeywordsSaving(false);
-    }
-  };
-
-  const handleAddPrimaryLabel = () => {
-    if (!newPrimaryLabel) return;
-    if (primaryLabels.includes(newPrimaryLabel)) {
-      alert(`Label "${newPrimaryLabel}" has already been added to the list.`);
-      return;
-    }
-    setPrimaryLabels([...primaryLabels, newPrimaryLabel]);
-    setNewPrimaryLabel('');
-  };
-
-  const handleRemovePrimaryLabel = (label: string) => {
-    if (confirm(`Are you sure you want to remove the label "${label}"?`)) {
-      setPrimaryLabels(primaryLabels.filter(l => l !== label));
-    }
-  };
-
-  const handleSavePrimaryProcessingLabels = async () => {
-    try {
-      setPrimaryLabelsSaving(true);
-      setPrimaryLabelsError(null);
-      setPrimaryLabelsSuccess(null);
-      if (primaryLabels.length === 0) {
-        setPrimaryLabelsError('At least one primary processing label is required');
-        return;
-      }
-      await updatePrimaryProcessingLabels(primaryLabels);
-      setPrimaryLabelsSuccess('Primary Processing Labels updated successfully! The daemon will pick up changes within 5 minutes.');
-    } catch (err) {
-      setPrimaryLabelsError((err as Error).message || 'Failed to update primary processing labels');
-    } finally {
-      setPrimaryLabelsSaving(false);
-    }
-  };
-
-  const handleSavePrLabel = async () => {
-    try {
-      setPrLabelSaving(true);
-      setPrLabelError(null);
-      setPrLabelSuccess(null);
-      if (!settings.pr_label || settings.pr_label.trim() === '') {
-        setPrLabelError('PR Label cannot be empty');
-        return;
-      }
-      await updatePrLabel(settings.pr_label.trim());
-      setPrLabelSuccess('PR Label updated successfully! The worker will pick up changes immediately.');
-    } catch (err) {
-      setPrLabelError((err as Error).message || 'Failed to update PR label');
-    } finally {
-      setPrLabelSaving(false);
-    }
-  };
+  if (loading) return <div className="p-8 text-center text-gray-500">Loading settings configuration...</div>;
 
   return (
-    <div className="max-w-4xl">
-      <h2 className="text-gray-900 text-2xl font-semibold mb-8">Settings</h2>
-      
-      <GeneralSettingsSection
-        settings={settings}
-        agents={agents}
-        loading={loading}
-        saving={saving}
-        error={error}
-        success={success}
-        onSettingChange={handleSettingChange}
-        onSave={handleSaveSettings}
-      />
+    <div className="max-w-7xl mx-auto pb-24">
+      <div className="flex justify-between items-center mb-8">
+        <h2 className="text-gray-900 text-2xl font-semibold">Settings</h2>
+      </div>
 
-      <PrLabelSection
-        prLabel={settings.pr_label}
-        loading={prLabelLoading}
-        saving={prLabelSaving}
-        error={prLabelError}
-        success={prLabelSuccess}
-        onLabelChange={handleSettingChange}
-        onSave={handleSavePrLabel}
-      />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Left Column */}
+        <div className="space-y-6">
+          <GeneralSettingsSection
+            settings={settings}
+            agents={agents}
+            onSettingChange={(e) => setSettings(prev => ({ ...prev, [e.target.name]: e.target.value }))}
+          />
+          
+          <PrLabelSection
+            prLabel={prLabel}
+            onLabelChange={(e) => setPrLabel(e.target.value)}
+          />
+        </div>
 
-      <TagListSection
-        title="Primary Processing Labels"
-        description="Configure multiple primary labels that GitFix uses to identify issues for processing. Issues with any of these labels will be automatically processed. State labels (-processing, -done) are dynamically generated based on the specific label found on each issue."
-        items={primaryLabels}
-        newItem={newPrimaryLabel}
-        loading={primaryLabelsLoading}
-        saving={primaryLabelsSaving}
-        error={primaryLabelsError}
-        success={primaryLabelsSuccess}
-        placeholder="Add a label (e.g., AI, gitfix)"
-        emptyMessage="No labels configured. Add at least one label to enable issue processing."
-        helperText='Issues with any of these labels will be processed. For each label, state labels will be automatically generated (e.g., "AI-processing", "AI-done", "gitfix-processing", "gitfix-done")'
-        onNewItemChange={setNewPrimaryLabel}
-        onAddItem={handleAddPrimaryLabel}
-        onRemoveItem={handleRemovePrimaryLabel}
-        onSave={handleSavePrimaryProcessingLabels}
-      />
+        {/* Right Column */}
+        <div className="space-y-6">
+          <TagListSection
+            title="Primary Processing Labels"
+            description="Issues with these labels will be auto-processed."
+            items={primaryLabels}
+            newItem={newPrimaryLabel}
+            onNewItemChange={setNewPrimaryLabel}
+            onAddItem={() => addToList(newPrimaryLabel, primaryLabels, setPrimaryLabels, () => setNewPrimaryLabel(''))}
+            onRemoveItem={(item) => removeFromList(item, primaryLabels, setPrimaryLabels)}
+            placeholder="e.g., AI"
+            emptyMessage="No labels configured."
+            helperText="State labels (-processing, -done) are generated automatically."
+          />
 
-      <TagListSection
-        title="Follow-up Keywords"
-        description="When these keywords are found in follow-up comments on issues with the configured AI primary label, the bot will process them automatically."
-        items={keywords}
-        newItem={newKeyword}
-        loading={keywordsLoading}
-        saving={keywordsSaving}
-        error={keywordsError}
-        success={keywordsSuccess}
-        placeholder="Add a keyword (e.g., GITFIX)"
-        emptyMessage="No keywords configured. Add a keyword to enable follow-up comment processing."
-        onNewItemChange={setNewKeyword}
-        onAddItem={handleAddKeyword}
-        onRemoveItem={handleRemoveKeyword}
-        onSave={handleSaveKeywords}
-      />
+          <TagListSection
+            title="Follow-up Keywords"
+            description="Triggers processing when found in comments."
+            items={keywords}
+            newItem={newKeyword}
+            onNewItemChange={setNewKeyword}
+            onAddItem={() => addToList(newKeyword, keywords, setKeywords, () => setNewKeyword(''))}
+            onRemoveItem={(item) => removeFromList(item, keywords, setKeywords)}
+            placeholder="e.g., GITFIX"
+            emptyMessage="No keywords configured."
+          />
+
+          <TagListSection
+            title="GitHub User Whitelist"
+            description="Only process issues/comments from these users."
+            items={whitelist}
+            newItem={newWhitelistItem}
+            onNewItemChange={setNewWhitelistItem}
+            onAddItem={() => addToList(newWhitelistItem, whitelist, setWhitelist, () => setNewWhitelistItem(''))}
+            onRemoveItem={(item) => removeFromList(item, whitelist, setWhitelist)}
+            placeholder="e.g., octocat"
+            emptyMessage="Allowed for all users (Empty whitelist)."
+          />
+        </div>
+      </div>
+
+      {/* Sticky Footer */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-4 shadow-lg z-50">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex-1 mr-4">
+            {globalError && <span className="text-red-600 font-medium">{globalError}</span>}
+            {globalSuccess && <span className="text-green-600 font-medium">{globalSuccess}</span>}
+          </div>
+          <button
+            onClick={handleSaveAll}
+            disabled={saving}
+            className={`px-6 py-2.5 font-medium rounded-md text-white shadow-sm transition-colors ${
+              saving ? 'bg-gray-400 cursor-not-allowed' : 'bg-primary-600 hover:bg-primary-700'
+            }`}
+          >
+            {saving ? 'Saving Changes...' : 'Save Changes'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 };
