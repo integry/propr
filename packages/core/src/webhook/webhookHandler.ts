@@ -13,7 +13,9 @@ import type {
     PullRequestReviewCommentCreatedEvent,
     PullRequestReviewCommentDeletedEvent,
     PullRequestReviewCommentEditedEvent,
-    PullRequestEvent
+    PullRequestEvent,
+    PullRequestLabeledEvent,
+    PullRequestUnlabeledEvent
 } from '@octokit/webhooks-types';
 
 const execAsync = promisify(exec);
@@ -26,18 +28,30 @@ export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review
 // The 'preview-env' label is applied to gitfix repo PRs (not source issues/PRs).
 // When a gitfix PR has this label, it becomes the active processor for all webhooks.
 // The routing logic is simple:
-// - If PROCESSOR_PR_NUMBER is set, forward all webhooks to that PR's preview instance
-// - If not set (label removed, PR closed/merged), process locally on main instance
+// - If an open PR is assigned the label, it becomes the processor (overriding any previous)
+// - If the label is removed, the main instance becomes the processor again
+// - If the PR is closed/merged, the main instance becomes the processor again
 // - Source issues/comments do NOT need any special labels for processing
 //
 // ENABLE_PREVIEW_ROUTING: Set to 'true' to enable the preview environment feature.
 const ENABLE_PREVIEW_ROUTING = process.env.ENABLE_PREVIEW_ROUTING === 'true';
-// PROCESSOR_PR_NUMBER: Set this env var to the gitfix PR number that has the 'preview-env' label.
+// PROCESSOR_LABEL: The label that designates a gitfix PR as the active processor.
+const PROCESSOR_LABEL = process.env.PROCESSOR_LABEL || 'preview-env';
+// GITFIX_REPO: The gitfix repository in 'owner/repo' format. Label events from this repo
+// trigger processor assignment changes.
+const GITFIX_REPO = process.env.GITFIX_REPO || 'integry/gitfix';
+// processorPrNumber: Dynamically tracks which gitfix PR has the 'preview-env' label.
 // When set, all webhooks are forwarded to that PR's preview instance.
-// When unset or empty, webhooks are processed by the main instance.
-const PROCESSOR_PR_NUMBER = process.env.PROCESSOR_PR_NUMBER ? parseInt(process.env.PROCESSOR_PR_NUMBER, 10) : null;
+// When null, webhooks are processed by the main instance.
+// Can be initialized from PROCESSOR_PR_NUMBER env var for backward compatibility.
+let processorPrNumber: number | null = process.env.PROCESSOR_PR_NUMBER ? parseInt(process.env.PROCESSOR_PR_NUMBER, 10) : null;
 const API_PORT_BASE = 20000;
 const HOST_ADDRESS = process.env.HOST_GATEWAY_ADDRESS || 'http://host.docker.internal';
+
+// Export getter for current processor PR number (useful for monitoring/debugging)
+export function getProcessorPrNumber(): number | null {
+    return processorPrNumber;
+}
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
 
 export interface DetectedIssue {
@@ -125,6 +139,68 @@ function isPullRequestEvent(payload: unknown): payload is PullRequestEvent {
     return typeof payload === 'object' && payload !== null && 'pull_request' in payload && 'action' in payload && !('comment' in payload);
 }
 
+function isPullRequestLabeledEvent(payload: PullRequestEvent): payload is PullRequestLabeledEvent {
+    return payload.action === 'labeled';
+}
+
+function isPullRequestUnlabeledEvent(payload: PullRequestEvent): payload is PullRequestUnlabeledEvent {
+    return payload.action === 'unlabeled';
+}
+
+// --- PROCESSOR LABEL MANAGEMENT: Track 'preview-env' label on gitfix repo PRs ---
+// This function handles label events from the gitfix repo itself to dynamically
+// update which PR is the active processor for webhook routing.
+function handleProcessorLabelChange(
+    payload: PullRequestEvent,
+    correlationId: string
+): void {
+    const log = logger.withCorrelation(correlationId);
+    const repoFullName = payload.repository.full_name;
+
+    // Only process label events from the gitfix repo
+    if (repoFullName !== GITFIX_REPO) {
+        return;
+    }
+
+    const prNumber = payload.pull_request.number;
+    const prState = payload.pull_request.state;
+
+    // Handle labeled event - set this PR as the processor if label matches
+    if (isPullRequestLabeledEvent(payload)) {
+        const labelName = payload.label?.name;
+        if (labelName === PROCESSOR_LABEL && prState === 'open') {
+            const previousProcessor = processorPrNumber;
+            processorPrNumber = prNumber;
+            log.info(
+                { prNumber, previousProcessor, label: PROCESSOR_LABEL },
+                'Processor PR updated: gitfix PR labeled with preview-env'
+            );
+        }
+        return;
+    }
+
+    // Handle unlabeled event - reset processor if this PR was the processor
+    if (isPullRequestUnlabeledEvent(payload)) {
+        const labelName = payload.label?.name;
+        if (labelName === PROCESSOR_LABEL && processorPrNumber === prNumber) {
+            log.info(
+                { prNumber, label: PROCESSOR_LABEL },
+                'Processor PR reset: preview-env label removed from current processor'
+            );
+            processorPrNumber = null;
+        }
+        return;
+    }
+
+    // Handle closed/merged event - reset processor if this PR was the processor
+    if (payload.action === 'closed' && processorPrNumber === prNumber) {
+        log.info(
+            { prNumber, merged: payload.pull_request.merged },
+            'Processor PR reset: gitfix PR closed/merged'
+        );
+        processorPrNumber = null;
+    }
+}
 
 // --- INFRASTRUCTURE MANAGEMENT: Handle PR lifecycle for preview environments ---
 async function handleInfrastructureEvents(
@@ -242,26 +318,32 @@ export async function processWebhookEvent(
 ): Promise<void> {
     const correlatedLogger = logger.withCorrelation(correlationId);
 
-    // 1. Handle Infrastructure Events (Always run for PR events when preview routing is enabled)
+    // 1. Handle Processor Label Changes (Watch for 'preview-env' label on gitfix repo PRs)
+    // This must run BEFORE routing decisions to ensure processor state is current.
+    if (ENABLE_PREVIEW_ROUTING && eventType === 'pull_request' && isPullRequestEvent(payload)) {
+        handleProcessorLabelChange(payload, correlationId);
+    }
+
+    // 2. Handle Infrastructure Events (Always run for PR events when preview routing is enabled)
     if (ENABLE_PREVIEW_ROUTING) {
         await handleInfrastructureEvents(payload, eventType, correlationId);
     }
 
-    // 2. Routing Decision: Forward to preview instance if applicable
-    // Note: PROCESSOR_PR_NUMBER refers to a gitfix repo PR that has the 'preview-env' label.
+    // 3. Routing Decision: Forward to preview instance if applicable
+    // Note: processorPrNumber refers to a gitfix repo PR that has the 'preview-env' label.
     // When set, ALL webhooks (from any source repo) are routed to that PR's preview instance.
     // The source issues/PRs do NOT need any special labels - routing is based solely on
-    // whether a gitfix PR is designated as the processor via PROCESSOR_PR_NUMBER.
-    if (ENABLE_PREVIEW_ROUTING && PROCESSOR_PR_NUMBER) {
+    // whether a gitfix PR is designated as the processor via the 'preview-env' label.
+    if (ENABLE_PREVIEW_ROUTING && processorPrNumber) {
         correlatedLogger.info(
-            { processorPrNumber: PROCESSOR_PR_NUMBER },
+            { processorPrNumber },
             'Forwarding webhook to designated processor PR instance'
         );
-        await forwardToProcessor(payload, PROCESSOR_PR_NUMBER, correlationId);
+        await forwardToProcessor(payload, processorPrNumber, correlationId);
         return;
     }
 
-    // 3. Standard Local Processing
+    // 4. Standard Local Processing
     if (!processDetectedIssue || !processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
         correlatedLogger.error('Webhook handler not properly initialized');
         throw new Error('Webhook handler not initialized');
