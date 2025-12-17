@@ -53,9 +53,71 @@ echo "  PR Number:  #$PR_NUMBER"
 echo "  UI Port:    $UI_PORT"
 echo "  API Port:   $API_PORT"
 echo "  Docs Port:  $DOCS_PORT"
-echo "  UI URL:     http://pr-${PR_NUMBER}.gitfix.dev"
-echo "  API URL:    http://pr-${PR_NUMBER}-api.gitfix.dev"
+echo "  UI URL:     https://pr-${PR_NUMBER}.gitfix.dev"
+echo "  API URL:    https://pr-${PR_NUMBER}-api.gitfix.dev"
 echo "============================================"
+
+# 1.5. Setup PR branch checkout
+PR_CHECKOUT_BASE="/tmp/pr-worktrees"
+PR_CHECKOUT_DIR="$PR_CHECKOUT_BASE/pr-${PR_NUMBER}"
+
+# Get the PR branch name from GitHub API
+if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPOSITORY" ]; then
+    echo "Fetching PR branch info..."
+    PR_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+        -H "Accept: application/vnd.github.v3+json" \
+        "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+    PR_BRANCH=$(echo "$PR_INFO" | jq -r '.head.ref')
+    PR_SHA=$(echo "$PR_INFO" | jq -r '.head.sha')
+    PR_CLONE_URL=$(echo "$PR_INFO" | jq -r '.head.repo.clone_url')
+
+    if [ "$PR_BRANCH" = "null" ] || [ -z "$PR_BRANCH" ]; then
+        echo "Warning: Could not get PR branch, using current code"
+    else
+        echo "PR Branch: $PR_BRANCH"
+        echo "PR SHA: ${PR_SHA:0:8}"
+
+        mkdir -p "$PR_CHECKOUT_BASE"
+
+        if [ -d "$PR_CHECKOUT_DIR/.git" ]; then
+            # Update existing checkout
+            echo "Updating existing checkout..."
+            git -C "$PR_CHECKOUT_DIR" fetch origin "$PR_BRANCH" --depth=1 2>/dev/null || true
+            git -C "$PR_CHECKOUT_DIR" checkout -f "$PR_BRANCH" 2>/dev/null || true
+            git -C "$PR_CHECKOUT_DIR" reset --hard "origin/$PR_BRANCH" 2>/dev/null || true
+        else
+            # Fresh shallow clone of just this branch
+            echo "Cloning PR branch (shallow)..."
+            rm -rf "$PR_CHECKOUT_DIR" 2>/dev/null || true
+            # Use token for auth if available
+            CLONE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            if git clone --depth=1 --single-branch --branch "$PR_BRANCH" "$CLONE_URL" "$PR_CHECKOUT_DIR" 2>/dev/null; then
+                echo "Clone successful"
+            else
+                echo "Warning: Clone failed, using current code"
+            fi
+        fi
+
+        if [ -f "$PR_CHECKOUT_DIR/docker-compose.yml" ]; then
+            echo "Using PR checkout at: $PR_CHECKOUT_DIR"
+            # Copy .env file to checkout (needed for docker compose)
+            if [ -f "/usr/src/app/.env" ]; then
+                cp /usr/src/app/.env "$PR_CHECKOUT_DIR/.env"
+            fi
+            # Copy private key file (gitignored, needed for GitHub App auth)
+            for pemfile in /usr/src/app/*.pem; do
+                if [ -f "$pemfile" ]; then
+                    cp "$pemfile" "$PR_CHECKOUT_DIR/"
+                fi
+            done
+            REPO_ROOT="$PR_CHECKOUT_DIR"
+        else
+            echo "Warning: PR checkout failed or incomplete, using current code"
+        fi
+    fi
+else
+    echo "Warning: GITHUB_TOKEN not set, cannot fetch PR branch info"
+fi
 
 # 2. Detect docker compose command (v2 plugin vs v1 standalone)
 if docker compose version >/dev/null 2>&1; then

@@ -21,6 +21,8 @@ services:
       - /tmp/git-processor:/tmp/git-processor
       # Docker socket for PR preview deployments
       - /var/run/docker.sock:/var/run/docker.sock
+      # Worktrees directory for PR branch checkouts
+      - /tmp/pr-worktrees:/tmp/pr-worktrees
       # Mount .env for deploy-pr.sh script
       - ./.env:/usr/src/app/.env:ro
     env_file:
@@ -104,6 +106,8 @@ services:
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/git-processor:/tmp/git-processor
+      # Worktrees directory for PR branch checkouts
+      - /tmp/pr-worktrees:/tmp/pr-worktrees
       # Mount the env file - uses STAGING_ENV_FILE if set, defaults to ./.env
       - ${STAGING_ENV_FILE:-./.env}:/usr/src/app/.env:ro
     env_file:
