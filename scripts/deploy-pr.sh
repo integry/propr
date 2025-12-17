@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # Deploy PR Preview Environment
 #
@@ -15,6 +15,11 @@
 
 set -e
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Get the repository root (parent of scripts directory)
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 PR_NUMBER=$1
 
 if [ -z "$PR_NUMBER" ]; then
@@ -22,8 +27,14 @@ if [ -z "$PR_NUMBER" ]; then
   exit 1
 fi
 
-# Validate PR_NUMBER is a positive integer and within safe range
-if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || [ "$PR_NUMBER" -lt 1 ] || [ "$PR_NUMBER" -gt 9999 ]; then
+# Validate PR_NUMBER is a positive integer and within safe range (POSIX-compatible)
+case "$PR_NUMBER" in
+  ''|*[!0-9]*)
+    echo "Error: PR number must be a positive integer between 1 and 9999"
+    exit 1
+    ;;
+esac
+if [ "$PR_NUMBER" -lt 1 ] || [ "$PR_NUMBER" -gt 9999 ]; then
   echo "Error: PR number must be a positive integer between 1 and 9999"
   exit 1
 fi
@@ -43,17 +54,17 @@ echo "  API URL:    http://pr-${PR_NUMBER}-api.gitfix.dev"
 echo "============================================"
 
 # 2. Deploy using the main compose file with Env Overrides
-# -f: Points to the compose file at repository root (script runs from packages/dashboard)
+# -f: Points to the compose file at repository root
 # -p: Sets the project name (isolates the stack)
 # --build: Ensures we build the latest code from the branch
 UI_PORT=$UI_PORT \
 API_PORT=$API_PORT \
 API_PUBLIC_URL="http://pr-${PR_NUMBER}-api.gitfix.dev" \
 VITE_API_BASE_URL="http://pr-${PR_NUMBER}-api.gitfix.dev" \
-docker compose -f ../../docker-compose.yml -p "gitfix-pr-${PR_NUMBER}" up -d --build
+docker compose -f "$REPO_ROOT/docker-compose.yml" -p "gitfix-pr-${PR_NUMBER}" up -d --build
 
 # 3. Database State Handling - copy from staging site
-CONTAINER_ID=$(docker compose -f ../../docker-compose.yml -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
+CONTAINER_ID=$(docker compose -f "$REPO_ROOT/docker-compose.yml" -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
 
 if [ -n "$CONTAINER_ID" ]; then
     echo "Preview environment deployed successfully!"

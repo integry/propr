@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # Teardown PR Preview Environment
 #
@@ -9,6 +9,11 @@
 
 set -e
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Get the repository root (parent of scripts directory)
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 PR_NUMBER=$1
 
 if [ -z "$PR_NUMBER" ]; then
@@ -16,8 +21,14 @@ if [ -z "$PR_NUMBER" ]; then
   exit 1
 fi
 
-# Validate PR_NUMBER is a positive integer
-if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || [ "$PR_NUMBER" -lt 1 ] || [ "$PR_NUMBER" -gt 9999 ]; then
+# Validate PR_NUMBER is a positive integer (POSIX-compatible)
+case "$PR_NUMBER" in
+  ''|*[!0-9]*)
+    echo "Error: PR number must be a positive integer between 1 and 9999"
+    exit 1
+    ;;
+esac
+if [ "$PR_NUMBER" -lt 1 ] || [ "$PR_NUMBER" -gt 9999 ]; then
   echo "Error: PR number must be a positive integer between 1 and 9999"
   exit 1
 fi
@@ -32,8 +43,8 @@ echo "  Project:    $PROJECT_NAME"
 echo "============================================"
 
 # Check if the project exists
-# -f: Points to the compose file at repository root (script runs from packages/dashboard)
-if ! docker compose -f ../../docker-compose.yml -p "$PROJECT_NAME" ps -q >/dev/null 2>&1; then
+# -f: Points to the compose file at repository root
+if ! docker compose -f "$REPO_ROOT/docker-compose.yml" -p "$PROJECT_NAME" ps -q >/dev/null 2>&1; then
     echo "Warning: No containers found for project $PROJECT_NAME"
     echo "The environment may have already been torn down."
     exit 0
@@ -41,7 +52,7 @@ fi
 
 # Stop containers and remove anonymous volumes
 echo "Stopping containers..."
-docker compose -f ../../docker-compose.yml -p "$PROJECT_NAME" down -v
+docker compose -f "$REPO_ROOT/docker-compose.yml" -p "$PROJECT_NAME" down -v
 
 # Optional: Clean up any orphaned networks
 echo "Cleaning up networks..."
