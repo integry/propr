@@ -67,14 +67,34 @@ fi
 echo "Using compose command: $DOCKER_COMPOSE"
 
 # 3. Determine the env file to use (staging .env provides base config)
-# Default to the main .env file in the repository root
-ENV_FILE="${STAGING_ENV_FILE:-$REPO_ROOT/.env}"
+# When running inside a container, STAGING_ENV_FILE may point to a host path
+# that doesn't exist inside the container. We need to check multiple locations.
+#
+# Priority:
+# 1. STAGING_ENV_FILE if it exists (for host execution)
+# 2. /usr/src/app/.env (mounted inside container via docker-compose.yml)
+# 3. $REPO_ROOT/.env (fallback for local development)
 
-if [ -f "$ENV_FILE" ]; then
+ENV_FILE=""
+if [ -n "$STAGING_ENV_FILE" ] && [ -f "$STAGING_ENV_FILE" ]; then
+    # STAGING_ENV_FILE is set and exists (running on host or correctly mounted)
+    ENV_FILE="$STAGING_ENV_FILE"
+elif [ -f "/usr/src/app/.env" ]; then
+    # Running inside container - use the mounted .env file
+    ENV_FILE="/usr/src/app/.env"
+elif [ -f "$REPO_ROOT/.env" ]; then
+    # Fallback to repo root (local development)
+    ENV_FILE="$REPO_ROOT/.env"
+fi
+
+if [ -n "$ENV_FILE" ]; then
     echo "Using env file: $ENV_FILE"
     ENV_FILE_ARG="--env-file $ENV_FILE"
 else
-    echo "Warning: Env file not found at $ENV_FILE, proceeding without it"
+    echo "Warning: No env file found, proceeding without it"
+    echo "  Checked: STAGING_ENV_FILE=${STAGING_ENV_FILE:-<not set>}"
+    echo "  Checked: /usr/src/app/.env"
+    echo "  Checked: $REPO_ROOT/.env"
     # Don't pass --env-file at all when no env file exists
     ENV_FILE_ARG=""
 fi
