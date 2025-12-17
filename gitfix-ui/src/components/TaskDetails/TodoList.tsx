@@ -7,13 +7,19 @@ interface TodoListProps {
 }
 
 const TodoList: React.FC<TodoListProps> = ({ liveDetails, history }) => {
-  const scrollToThinkingLog = useCallback((todoId: string) => {
-    // First try to find the specific thinking log group for this todo
+  const scrollToThinkingLog = useCallback((todoId: string, todoContent: string) => {
+    // First try to find the specific thinking log group for this todo by ID
     let element = document.getElementById(`thinking-log-${todoId}`);
 
-    // If not found, try to find by data attribute
+    // If not found, try to find by data-todo-id attribute
     if (!element) {
       element = document.querySelector(`[data-todo-id="${todoId}"]`) as HTMLElement;
+    }
+
+    // If still not found, try to find by matching content (the todo text)
+    // This handles cases where IDs don't match but the content is the same
+    if (!element) {
+      element = document.querySelector(`[data-todo-content="${CSS.escape(todoContent)}"]`) as HTMLElement;
     }
 
     // If still not found, scroll to the thinking log section header
@@ -65,7 +71,7 @@ const TodoList: React.FC<TodoListProps> = ({ liveDetails, history }) => {
             className={`flex items-center mb-2 p-2 rounded transition-colors cursor-pointer hover:bg-blue-100 ${
               todo.status === 'in_progress' ? 'bg-blue-100' : ''
             }`}
-            onClick={() => scrollToThinkingLog(todo.id)}
+            onClick={() => scrollToThinkingLog(todo.id, todo.content)}
             title="Click to scroll to related thinking log"
           >
             <span className="mr-2 text-lg">

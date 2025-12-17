@@ -82,7 +82,7 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
   if (events.length === 0) return null;
 
   return (
-    <div className="mb-4" id={todoId ? `thinking-log-${todoId}` : undefined} data-todo-id={todoId}>
+    <div className="mb-4" id={todoId ? `thinking-log-${todoId}` : undefined} data-todo-id={todoId} data-todo-content={title}>
       {/* Group Header */}
       <div className={`flex items-center gap-2 mb-2 px-3 py-1.5 rounded-t-lg ${isCompleted ? 'bg-green-100' : 'bg-gray-100'}`}>
         {isCompleted ? (
