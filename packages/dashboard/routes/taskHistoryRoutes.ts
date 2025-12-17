@@ -97,13 +97,19 @@ async function getHistoryFromDb(
     }
 
     const [repoOwner, repoName] = (task.repository as string).split('/');
-    const { title, subtitle } = parseJobData(task.initial_job_data);
-    
+    const { title, subtitle, pullRequestNumber } = parseJobData(task.initial_job_data);
+
+    // Determine task type: check task_type from DB, but also verify using taskId prefix
+    // and pullRequestNumber from job data to correctly identify PR tasks
+    const isPr = task.task_type === 'pr-comment' ||
+                 taskId.startsWith('pr-comments-batch-') ||
+                 !!pullRequestNumber;
+
     const taskInfo = {
       repoOwner,
       repoName,
       number: task.issue_number,
-      type: task.task_type,
+      type: isPr ? 'pr-comment' : (task.task_type || 'issue'),
       correlationId: task.correlation_id,
       title,
       subtitle,
@@ -134,20 +140,22 @@ async function getHistoryFromDb(
   }
 }
 
-function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null } {
+function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null } {
   let title = null;
   let subtitle = null;
+  let pullRequestNumber = null;
   if (initialJobData) {
     try {
       const jobData = typeof initialJobData === 'string' ? JSON.parse(initialJobData) : initialJobData;
       title = jobData.title || (jobData.issueRef ? jobData.issueRef.title : null) || null;
       subtitle = jobData.subtitle || null;
+      pullRequestNumber = jobData.pullRequestNumber || (jobData.issueRef ? jobData.issueRef.pullRequestNumber : null) || null;
       if (!title && jobData.issueRef) title = jobData.issueRef.title;
     } catch (e) {
       console.error('Failed to parse initial_job_data', e);
     }
   }
-  return { title, subtitle };
+  return { title, subtitle, pullRequestNumber };
 }
 
 function mapDbHistoryRecord(
