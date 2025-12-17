@@ -153,7 +153,12 @@ const AgentCard: React.FC<{
                 <th className="px-4 py-2 border-b border-gray-200 w-1/3">Model Name</th>
                 <th className="px-4 py-2 border-b border-gray-200 w-24">Context</th>
                 <th className="px-4 py-2 border-b border-gray-200">ID / Alias</th>
-                <th className="px-4 py-2 border-b border-gray-200 text-right">Issue labels</th>
+                <th className="px-4 py-2 border-b border-gray-200 text-right">
+                  <span className="inline-flex items-center gap-1.5 justify-end">
+                    <GitHubIcon className="w-3.5 h-3.5" />
+                    Issue labels
+                  </span>
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
