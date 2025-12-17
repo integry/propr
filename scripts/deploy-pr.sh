@@ -113,18 +113,13 @@ fi
 # - By unsetting it, docker-compose.yml will use the default "./.env" which is relative
 #   to the compose file location (the repo root)
 #
-# NOTE: We explicitly specify the services to deploy for PR previews:
-# - redis: Required for caching/queues
-# - daemon: Background processing
-# - web-ui: The frontend
-# - dashboard-api: The API backend
-# We exclude: docs (not needed), worker (not needed for preview), analysis-worker (not needed for preview)
+# All services are deployed for preview environments to ensure full functionality
 UI_PORT=$UI_PORT \
 API_PORT=$API_PORT \
 API_PUBLIC_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
 VITE_API_BASE_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
 STAGING_ENV_FILE="" \
-$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "gitfix-pr-${PR_NUMBER}" up -d --build redis daemon web-ui dashboard-api
+$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "gitfix-pr-${PR_NUMBER}" up -d --build
 
 # 5. Database State Handling - copy from staging site
 CONTAINER_ID=$(STAGING_ENV_FILE="" $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
