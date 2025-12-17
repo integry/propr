@@ -19,7 +19,6 @@ import TagListSection from './TagListSection';
 const SettingsPage: React.FC = () => {
   // Global state
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [globalError, setGlobalError] = useState<string | null>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -106,7 +105,6 @@ const SettingsPage: React.FC = () => {
       clearTimeout(saveTimeoutRef.current);
     }
 
-    setSaving(true);
     setSaveStatus('saving');
     setGlobalError(null);
 
@@ -142,8 +140,6 @@ const SettingsPage: React.FC = () => {
     } catch (err) {
       setSaveStatus('error');
       setGlobalError((err as Error).message || 'Failed to save settings');
-    } finally {
-      setSaving(false);
     }
   }, []);
 
