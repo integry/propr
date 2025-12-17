@@ -136,7 +136,7 @@ export async function loadFollowupKeywords(): Promise<string[]> {
     return keywords;
 }
 
-export async function saveFollowupKeywords(keywords: string[], _commitMessage?: string): Promise<boolean> {
+export async function saveFollowupKeywords(keywords: string[]): Promise<boolean> {
     await saveConfig('followup_keywords', keywords);
     logger.info({ keywords }, 'Successfully saved followup keywords');
     return true;
@@ -159,7 +159,7 @@ export async function loadMonitoredReposRaw(): Promise<RepoToMonitor[]> {
     return rawRepos;
 }
 
-export async function saveMonitoredRepos(repos: RepoToMonitor[], _commitMessage?: string): Promise<boolean> {
+export async function saveMonitoredRepos(repos: RepoToMonitor[]): Promise<boolean> {
     await saveConfig('repos_to_monitor', repos);
     logger.info({ repos }, 'Successfully saved monitored repositories');
     return true;
@@ -171,7 +171,7 @@ export async function loadSettings(): Promise<ConfigSettings> {
     return settings;
 }
 
-export async function saveSettings(settings: ConfigSettings, _commitMessage?: string): Promise<boolean> {
+export async function saveSettings(settings: ConfigSettings): Promise<boolean> {
     // Merge with existing settings to avoid overwriting unrelated keys
     const existing = await getConfig<ConfigSettings>('settings', {});
     const merged = { ...existing, ...settings };
@@ -188,7 +188,7 @@ export async function loadPrLabel(): Promise<string> {
     return label;
 }
 
-export async function savePrLabel(prLabel: string, _commitMessage?: string): Promise<boolean> {
+export async function savePrLabel(prLabel: string): Promise<boolean> {
     await saveConfig('pr_label', prLabel);
     logger.info({ pr_label: prLabel }, 'Successfully saved PR label');
     return true;
@@ -201,7 +201,7 @@ export async function loadAiPrimaryTag(): Promise<string> {
     return tag;
 }
 
-export async function saveAiPrimaryTag(aiPrimaryTag: string, _commitMessage?: string): Promise<boolean> {
+export async function saveAiPrimaryTag(aiPrimaryTag: string): Promise<boolean> {
     await saveConfig('ai_primary_tag', aiPrimaryTag);
     logger.info({ ai_primary_tag: aiPrimaryTag }, 'Successfully saved AI primary tag');
     return true;
@@ -217,7 +217,7 @@ export async function loadPrimaryProcessingLabels(): Promise<string[]> {
     return labels;
 }
 
-export async function savePrimaryProcessingLabels(primaryLabels: string[] | string, _commitMessage?: string): Promise<boolean> {
+export async function savePrimaryProcessingLabels(primaryLabels: string[] | string): Promise<boolean> {
     const labels = Array.isArray(primaryLabels) ? primaryLabels : primaryLabels.split(',').map(l => l.trim()).filter(l => l);
     await saveConfig('primary_processing_labels', labels);
     logger.info({ primary_processing_labels: labels }, 'Successfully saved primary processing labels');
@@ -237,7 +237,7 @@ export async function loadAgents(): Promise<AgentConfig[]> {
 /**
  * Saves agent configurations to the database.
  */
-export async function saveAgents(agents: AgentConfig[], _commitMessage?: string): Promise<boolean> {
+export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
     await saveConfig('agents', agents);
     logger.info({ agentCount: agents.length }, 'Successfully saved agents configuration');
     return true;
