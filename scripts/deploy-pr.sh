@@ -105,14 +105,22 @@ fi
 # --env-file: Load staging .env as base configuration
 # Inline env vars override the env file values for PR-specific settings
 # --build: Ensures we build the latest code from the branch
+#
+# IMPORTANT: We must unset STAGING_ENV_FILE when running docker compose because:
+# - docker-compose.yml uses ${STAGING_ENV_FILE:-./.env} for volume mounts
+# - If STAGING_ENV_FILE is set to a HOST path (e.g., /root/gitfix/.env), docker compose
+#   will try to mount that path, which doesn't exist inside the container
+# - By unsetting it, docker-compose.yml will use the default "./.env" which is relative
+#   to the compose file location (the repo root)
 UI_PORT=$UI_PORT \
 API_PORT=$API_PORT \
 API_PUBLIC_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
 VITE_API_BASE_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
+STAGING_ENV_FILE="" \
 $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "gitfix-pr-${PR_NUMBER}" up -d --build
 
 # 5. Database State Handling - copy from staging site
-CONTAINER_ID=$($DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
+CONTAINER_ID=$(STAGING_ENV_FILE="" $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
 
 if [ -n "$CONTAINER_ID" ]; then
     echo "Preview environment deployed successfully!"
