@@ -1,7 +1,8 @@
 FROM node:20-alpine
 
-# Install git, sudo, docker client, and build tools for native modules (better-sqlite3)
-RUN apk add --no-cache git sudo docker-cli python3 make g++
+# Install git, sudo, docker client, curl, jq, and build tools for native modules (better-sqlite3)
+# curl and jq are required for deploy-pr.sh script execution
+RUN apk add --no-cache git sudo docker-cli curl jq python3 make g++
 
 WORKDIR /usr/src/app
 
