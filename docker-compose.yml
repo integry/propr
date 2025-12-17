@@ -82,7 +82,8 @@ services:
         - VITE_API_BASE_URL=${VITE_API_BASE_URL}
     container_name: gitfix-web-ui
     ports:
-      - '5173:5173'
+      # Allow injection of UI_PORT for PR preview environments, default to 5173
+      - '${UI_PORT:-5173}:5173'
     networks:
       - gitfix-net
 
@@ -93,7 +94,8 @@ services:
     container_name: gitfix-dashboard-api
     command: sh -c "cd /usr/src/app/packages/dashboard && npx tsx server.ts"
     ports:
-      - '4000:4000'
+      # Allow injection of API_PORT for PR preview environments, default to 4000
+      - '${API_PORT:-4000}:4000'
     volumes:
       - ~/.claude:/root/.claude:ro
       - ./data:/usr/src/app/data
@@ -104,6 +106,8 @@ services:
       - .env
     environment:
       - CONFIG_REPO_PATH=/tmp/config_repo
+      # Allow injection of API_PUBLIC_URL for PR preview environments
+      - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:4000}
     depends_on:
       redis:
         condition: service_started
