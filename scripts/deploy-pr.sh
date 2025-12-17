@@ -8,6 +8,7 @@
 # Usage: ./scripts/deploy-pr.sh <pr_number>
 #
 # Environment Variables:
+#   STAGING_ENV_FILE    - Path to the staging .env file (defaults to /home/node/workspace/.env)
 #   STAGING_DB_PATH     - Path to the staging database file to copy (optional)
 #   GITHUB_REPOSITORY   - Repository in format owner/repo (required for PR comments)
 #   GITHUB_TOKEN        - GitHub token for API calls (required for PR comments)
@@ -65,19 +66,32 @@ fi
 
 echo "Using compose command: $DOCKER_COMPOSE"
 
-# 3. Deploy using the main compose file with Env Overrides
+# 3. Determine the env file to use (staging .env provides base config)
+# Default to the main .env file in the repository root
+ENV_FILE="${STAGING_ENV_FILE:-$REPO_ROOT/.env}"
+
+if [ -f "$ENV_FILE" ]; then
+    echo "Using env file: $ENV_FILE"
+    ENV_FILE_ARG="--env-file $ENV_FILE"
+else
+    echo "Warning: Env file not found at $ENV_FILE, proceeding without it"
+    ENV_FILE_ARG="--env-file /dev/null"
+fi
+
+# 4. Deploy using the main compose file
 # -f: Points to the compose file at repository root
 # -p: Sets the project name (isolates the stack)
-# --env-file /dev/null: Ignore .env file since we pass all required vars inline
+# --env-file: Load staging .env as base configuration
+# Inline env vars override the env file values for PR-specific settings
 # --build: Ensures we build the latest code from the branch
 UI_PORT=$UI_PORT \
 API_PORT=$API_PORT \
-API_PUBLIC_URL="http://pr-${PR_NUMBER}-api.gitfix.dev" \
-VITE_API_BASE_URL="http://pr-${PR_NUMBER}-api.gitfix.dev" \
-$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" --env-file /dev/null -p "gitfix-pr-${PR_NUMBER}" up -d --build
+API_PUBLIC_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
+VITE_API_BASE_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
+$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "gitfix-pr-${PR_NUMBER}" up -d --build
 
-# 4. Database State Handling - copy from staging site
-CONTAINER_ID=$($DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" --env-file /dev/null -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
+# 5. Database State Handling - copy from staging site
+CONTAINER_ID=$($DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
 
 if [ -n "$CONTAINER_ID" ]; then
     echo "Preview environment deployed successfully!"
@@ -93,7 +107,7 @@ if [ -n "$CONTAINER_ID" ]; then
     fi
 fi
 
-# 4. Post GitHub PR Comment with build link
+# 6. Post GitHub PR Comment with build link
 UI_URL="https://pr-${PR_NUMBER}.gitfix.dev"
 
 post_pr_comment() {
