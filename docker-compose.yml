@@ -133,4 +133,3 @@ networks:
 
 volumes:
   redis_data:
-
