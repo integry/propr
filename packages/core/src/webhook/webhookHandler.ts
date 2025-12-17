@@ -21,8 +21,21 @@ const execAsync = promisify(exec);
 export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review_comment' | 'pull_request';
 
 // --- PREVIEW ENVIRONMENT CONFIGURATION ---
-const PROCESSOR_LABEL = 'preview-env';
+// This implements the "Singleton Processor" pattern for webhook routing.
+//
+// The 'preview-env' label is applied to gitfix repo PRs (not source issues/PRs).
+// When a gitfix PR has this label, it becomes the active processor for all webhooks.
+// The routing logic is simple:
+// - If PROCESSOR_PR_NUMBER is set, forward all webhooks to that PR's preview instance
+// - If not set (label removed, PR closed/merged), process locally on main instance
+// - Source issues/comments do NOT need any special labels for processing
+//
+// ENABLE_PREVIEW_ROUTING: Set to 'true' to enable the preview environment feature.
 const ENABLE_PREVIEW_ROUTING = process.env.ENABLE_PREVIEW_ROUTING === 'true';
+// PROCESSOR_PR_NUMBER: Set this env var to the gitfix PR number that has the 'preview-env' label.
+// When set, all webhooks are forwarded to that PR's preview instance.
+// When unset or empty, webhooks are processed by the main instance.
+const PROCESSOR_PR_NUMBER = process.env.PROCESSOR_PR_NUMBER ? parseInt(process.env.PROCESSOR_PR_NUMBER, 10) : null;
 const API_PORT_BASE = 20000;
 const HOST_ADDRESS = process.env.HOST_GATEWAY_ADDRESS || 'http://host.docker.internal';
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
@@ -112,28 +125,6 @@ function isPullRequestEvent(payload: unknown): payload is PullRequestEvent {
     return typeof payload === 'object' && payload !== null && 'pull_request' in payload && 'action' in payload && !('comment' in payload);
 }
 
-// --- HELPER: Extract Routing Context for Preview Environments ---
-function getRoutingContext(payload: unknown): { prNumber?: number; labels: string[] } {
-    let prNumber: number | undefined;
-    let labels: string[] = [];
-
-    const p = payload as Record<string, unknown>;
-
-    if (p.issue && typeof p.issue === 'object') {
-        const issue = p.issue as Record<string, unknown>;
-        prNumber = typeof issue.number === 'number' ? issue.number : undefined;
-        labels = Array.isArray(issue.labels)
-            ? issue.labels.map((l: unknown) => (typeof l === 'string' ? l : (l as { name?: string })?.name || ''))
-            : [];
-    } else if (p.pull_request && typeof p.pull_request === 'object') {
-        const pr = p.pull_request as Record<string, unknown>;
-        prNumber = typeof pr.number === 'number' ? pr.number : undefined;
-        labels = Array.isArray(pr.labels)
-            ? pr.labels.map((l: unknown) => (typeof l === 'string' ? l : (l as { name?: string })?.name || ''))
-            : [];
-    }
-    return { prNumber, labels };
-}
 
 // --- INFRASTRUCTURE MANAGEMENT: Handle PR lifecycle for preview environments ---
 async function handleInfrastructureEvents(
@@ -257,14 +248,17 @@ export async function processWebhookEvent(
     }
 
     // 2. Routing Decision: Forward to preview instance if applicable
-    if (ENABLE_PREVIEW_ROUTING) {
-        const { prNumber, labels } = getRoutingContext(payload);
-
-        if (prNumber && labels.includes(PROCESSOR_LABEL)) {
-            // Forward to preview instance and stop local processing
-            await forwardToProcessor(payload, prNumber, correlationId);
-            return;
-        }
+    // Note: PROCESSOR_PR_NUMBER refers to a gitfix repo PR that has the 'preview-env' label.
+    // When set, ALL webhooks (from any source repo) are routed to that PR's preview instance.
+    // The source issues/PRs do NOT need any special labels - routing is based solely on
+    // whether a gitfix PR is designated as the processor via PROCESSOR_PR_NUMBER.
+    if (ENABLE_PREVIEW_ROUTING && PROCESSOR_PR_NUMBER) {
+        correlatedLogger.info(
+            { processorPrNumber: PROCESSOR_PR_NUMBER },
+            'Forwarding webhook to designated processor PR instance'
+        );
+        await forwardToProcessor(payload, PROCESSOR_PR_NUMBER, correlationId);
+        return;
     }
 
     // 3. Standard Local Processing
