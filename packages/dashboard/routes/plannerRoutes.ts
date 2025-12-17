@@ -90,7 +90,26 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const draft = await db!('task_drafts').where({ draft_id: req.params.id }).first();
       if (!draft) { res.status(404).json({ error: 'Draft not found' }); return; }
       if (draft.user_id !== req.user!.id) { res.status(403).json({ error: 'Unauthorized access to draft' }); return; }
-      res.json(draft);
+
+      // Parse JSON string fields before returning
+      const parsedDraft = { ...draft };
+      if (typeof parsedDraft.plan_json === 'string') {
+        try { parsedDraft.plan_json = JSON.parse(parsedDraft.plan_json); } catch { parsedDraft.plan_json = []; }
+      }
+      if (typeof parsedDraft.chat_history === 'string') {
+        try { parsedDraft.chat_history = JSON.parse(parsedDraft.chat_history); } catch { parsedDraft.chat_history = []; }
+      }
+      if (typeof parsedDraft.context_config === 'string') {
+        try { parsedDraft.context_config = JSON.parse(parsedDraft.context_config); } catch { parsedDraft.context_config = {}; }
+      }
+      if (typeof parsedDraft.attachments === 'string') {
+        try { parsedDraft.attachments = JSON.parse(parsedDraft.attachments); } catch { parsedDraft.attachments = []; }
+      }
+      if (typeof parsedDraft.generation_trace === 'string') {
+        try { parsedDraft.generation_trace = JSON.parse(parsedDraft.generation_trace); } catch { parsedDraft.generation_trace = null; }
+      }
+
+      res.json(parsedDraft);
     } catch (error) {
       console.error('Get draft error:', error);
       res.status(500).json({ error: 'Failed to fetch draft' });

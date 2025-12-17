@@ -109,9 +109,13 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
           const draft = await getDraftWithPlan(draftId);
 
           if (draft.status === 'review') {
-            // Refinement complete
-            if (draft.plan_json && Array.isArray(draft.plan_json)) {
-              updatePlan(draft.plan_json, 'ai');
+            // Refinement complete - defensively parse plan_json if it's a string
+            let planJson = draft.plan_json;
+            if (typeof planJson === 'string') {
+              try { planJson = JSON.parse(planJson); } catch { planJson = []; }
+            }
+            if (planJson && Array.isArray(planJson)) {
+              updatePlan(planJson, 'ai');
               return { success: true, message: 'Plan refined successfully' };
             }
             return { success: false, message: 'Refinement completed but no plan returned' };

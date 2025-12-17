@@ -54,6 +54,15 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
 
+  // Defensively ensure plan_json is an array
+  const initialPlan = (() => {
+    let planJson = draft.plan_json;
+    if (typeof planJson === 'string') {
+      try { planJson = JSON.parse(planJson); } catch { return []; }
+    }
+    return Array.isArray(planJson) ? planJson : [];
+  })();
+
   const {
     plan,
     updateTask,
@@ -66,7 +75,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
     canRedo,
     saveStatus,
     highlightedIds
-  } = usePlanRefinement(draft.draft_id, draft.plan_json || []);
+  } = usePlanRefinement(draft.draft_id, initialPlan);
 
   // Debounced save for chat history
   const saveChatHistoryRef = useRef(

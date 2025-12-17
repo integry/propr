@@ -8,6 +8,24 @@ interface UseDraftResult {
   refetch: () => Promise<void>;
 }
 
+// Helper to safely parse JSON string fields that should be arrays/objects
+function parseJsonFields<T extends Record<string, unknown>>(data: T): T {
+  const result = { ...data };
+  const jsonFields = ['plan_json', 'chat_history', 'attachments'] as const;
+  for (const field of jsonFields) {
+    if (typeof result[field] === 'string') {
+      try { result[field] = JSON.parse(result[field] as string); } catch { result[field] = []; }
+    }
+  }
+  if (typeof result.context_config === 'string') {
+    try { result.context_config = JSON.parse(result.context_config as string); } catch { result.context_config = {}; }
+  }
+  if (typeof result.generation_trace === 'string') {
+    try { result.generation_trace = JSON.parse(result.generation_trace as string); } catch { result.generation_trace = null; }
+  }
+  return result;
+}
+
 export const useDraft = (draftId: string): UseDraftResult => {
   const [draft, setDraft] = useState<PlannerDraft | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -15,12 +33,13 @@ export const useDraft = (draftId: string): UseDraftResult => {
 
   const fetchDraft = useCallback(async () => {
     if (!draftId) return;
-    
+
     try {
       setLoading(true);
       setError(null);
       const data = await getDraft(draftId);
-      setDraft(data);
+      // Defensively parse JSON fields in case backend returns strings
+      setDraft(parseJsonFields(data));
     } catch (err) {
       setError((err as Error).message || 'Failed to fetch draft');
     } finally {
