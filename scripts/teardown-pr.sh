@@ -56,8 +56,7 @@ echo "Using compose command: $DOCKER_COMPOSE"
 
 # Check if the project exists
 # -f: Points to the compose file at repository root
-# --env-file /dev/null: Ignore .env file since it may not exist in container
-if ! $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" --env-file /dev/null -p "$PROJECT_NAME" ps -q >/dev/null 2>&1; then
+if ! $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" -p "$PROJECT_NAME" ps -q >/dev/null 2>&1; then
     echo "Warning: No containers found for project $PROJECT_NAME"
     echo "The environment may have already been torn down."
     exit 0
@@ -65,7 +64,7 @@ fi
 
 # Stop containers and remove anonymous volumes
 echo "Stopping containers..."
-$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" --env-file /dev/null -p "$PROJECT_NAME" down -v
+$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" -p "$PROJECT_NAME" down -v
 
 # Optional: Clean up any orphaned networks
 echo "Cleaning up networks..."

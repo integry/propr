@@ -75,7 +75,8 @@ if [ -f "$ENV_FILE" ]; then
     ENV_FILE_ARG="--env-file $ENV_FILE"
 else
     echo "Warning: Env file not found at $ENV_FILE, proceeding without it"
-    ENV_FILE_ARG="--env-file /dev/null"
+    # Don't pass --env-file at all when no env file exists
+    ENV_FILE_ARG=""
 fi
 
 # 4. Deploy using the main compose file
