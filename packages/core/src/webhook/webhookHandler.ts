@@ -43,8 +43,7 @@ const GITFIX_REPO = process.env.GITFIX_REPO || 'integry/gitfix';
 // processorPrNumber: Dynamically tracks which gitfix PR has the 'preview-env' label.
 // When set, all webhooks are forwarded to that PR's preview instance.
 // When null, webhooks are processed by the main instance.
-// Can be initialized from PROCESSOR_PR_NUMBER env var for backward compatibility.
-let processorPrNumber: number | null = process.env.PROCESSOR_PR_NUMBER ? parseInt(process.env.PROCESSOR_PR_NUMBER, 10) : null;
+let processorPrNumber: number | null = null;
 const API_PORT_BASE = 20000;
 const HOST_ADDRESS = process.env.HOST_GATEWAY_ADDRESS || 'http://host.docker.internal';
 
