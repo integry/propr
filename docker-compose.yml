@@ -1,9 +1,6 @@
 services:
   redis:
     image: redis:alpine
-    container_name: gitfix-redis
-    ports:
-      - '6380:6379'
     volumes:
       - redis_data:/data
     networks:
@@ -13,7 +10,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
-    container_name: gitfix-daemon
     command: npm run daemon
     volumes:
       - ./logs:/usr/src/app/logs
@@ -33,7 +29,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
-    container_name: gitfix-worker
     command: npm run worker
     volumes:
       - ./logs:/usr/src/app/logs
@@ -56,7 +51,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
-    container_name: gitfix-analysis-worker
     command: npm run analysis-worker
     volumes:
       - ./logs:/usr/src/app/logs
@@ -78,7 +72,6 @@ services:
       dockerfile: gitfix-ui/Dockerfile
       args:
         - VITE_API_BASE_URL=${VITE_API_BASE_URL}
-    container_name: gitfix-web-ui
     ports:
       # Allow injection of UI_PORT for PR preview environments, default to 5173
       - '${UI_PORT:-5173}:5173'
@@ -89,7 +82,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
-    container_name: gitfix-dashboard-api
     command: sh -c "cd /usr/src/app/packages/dashboard && npx tsx server.ts"
     ports:
       # Allow injection of API_PORT for PR preview environments, default to 4000
@@ -121,9 +113,9 @@ services:
     build:
       context: ./docs
       dockerfile: Dockerfile
-    container_name: gitfix-docs
     ports:
-      - '8080:3000'
+      # Allow injection of DOCS_PORT for PR preview environments, default to 8080
+      - '${DOCS_PORT:-8080}:3000'
     networks:
       - gitfix-net
     restart: unless-stopped
