@@ -75,13 +75,14 @@ interface ThoughtGroupProps {
   title: string;
   events: ThinkingLogEvent[];
   isCompleted: boolean;
+  todoId?: string;
 }
 
-const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted }) => {
+const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted, todoId }) => {
   if (events.length === 0) return null;
 
   return (
-    <div className="mb-4">
+    <div className="mb-4" id={todoId ? `thinking-log-${todoId}` : undefined} data-todo-id={todoId}>
       {/* Group Header */}
       <div className={`flex items-center gap-2 mb-2 px-3 py-1.5 rounded-t-lg ${isCompleted ? 'bg-green-100' : 'bg-gray-100'}`}>
         {isCompleted ? (
@@ -130,7 +131,7 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [] }) => {
   const groupedEvents = useMemo(() => {
     if (todos.length === 0) {
       // No todos, just show all events ungrouped
-      return [{ title: 'Thinking Process', events, isCompleted: false }];
+      return [{ title: 'Thinking Process', events, isCompleted: false, todoId: undefined }];
     }
 
     // For now, create logical groups based on event timing and todo completion
@@ -144,14 +145,14 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [] }) => {
 
     // If we have events but no clear grouping, show them in a single group
     if (completedTodos.length === 0 && !inProgressTodo) {
-      return [{ title: 'Initial Analysis', events, isCompleted: false }];
+      return [{ title: 'Initial Analysis', events, isCompleted: false, todoId: undefined }];
     }
 
     // Simple strategy: split events roughly equally among completed todos + current
     const totalGroups = completedTodos.length + (inProgressTodo ? 1 : 0);
 
     if (totalGroups === 0 || events.length === 0) {
-      return [{ title: 'Thinking Process', events, isCompleted: false }];
+      return [{ title: 'Thinking Process', events, isCompleted: false, todoId: undefined }];
     }
 
     const eventsPerGroup = Math.ceil(events.length / totalGroups);
@@ -165,7 +166,8 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [] }) => {
         groups.push({
           title: todo.content,
           events: groupEvents,
-          isCompleted: true
+          isCompleted: true,
+          todoId: todo.id
         });
       }
     });
@@ -178,14 +180,15 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [] }) => {
         groups.push({
           title: inProgressTodo.content,
           events: groupEvents,
-          isCompleted: false
+          isCompleted: false,
+          todoId: inProgressTodo.id
         });
       }
     }
 
     // If no groups were created, show all events
     if (groups.length === 0) {
-      return [{ title: 'Thinking Process', events, isCompleted: false }];
+      return [{ title: 'Thinking Process', events, isCompleted: false, todoId: undefined }];
     }
 
     return groups;
@@ -203,7 +206,7 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [] }) => {
         <span className="text-sm text-gray-500">({events.length} thoughts)</span>
       </div>
 
-      <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 max-h-[600px] overflow-y-auto">
+      <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
         {/* Legend */}
         <div className="flex flex-wrap gap-4 mb-4 pb-3 border-b border-gray-200 text-xs">
           <div className="flex items-center gap-1">
@@ -227,10 +230,11 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [] }) => {
         {/* Grouped Events */}
         {groupedEvents.map((group, index) => (
           <ThoughtGroup
-            key={index}
+            key={group.todoId || index}
             title={group.title}
             events={group.events}
             isCompleted={group.isCompleted}
+            todoId={group.todoId}
           />
         ))}
       </div>
