@@ -223,11 +223,14 @@ async function getHistoryFromRedis(
     
     let taskInfo: Record<string, unknown> | null = null;
     if (state.issueRef) {
+      // Check for pullRequestNumber in state.issueRef to correctly detect PR tasks
+      const isPr = taskId.startsWith('pr-comments-batch-') ||
+                   !!(state.issueRef as Record<string, unknown>).pullRequestNumber;
       taskInfo = {
         repoOwner: state.issueRef.repoOwner,
         repoName: state.issueRef.repoName,
         number: state.issueRef.number,
-        type: taskId.startsWith('pr-comments-batch-') ? 'pr-comment' : 'issue',
+        type: isPr ? 'pr-comment' : 'issue',
         comments: state.issueRef.comments,
         title: state.issueRef.title || null,
         subtitle: state.issueRef.subtitle || null,
@@ -262,11 +265,13 @@ async function getHistoryFromQueue(
 
 function buildTaskInfoFromJob(job: Job<JobData, JobReturnValue>, taskId: string): Record<string, unknown> | null {
   if (!job.data?.repoOwner || !job.data?.repoName) return null;
+  // Check for pullRequestNumber in job.data to correctly detect PR tasks
+  const isPr = taskId.startsWith('pr-comments-batch-') || !!job.data.pullRequestNumber;
   return {
     repoOwner: job.data.repoOwner,
     repoName: job.data.repoName,
     number: job.data.pullRequestNumber || job.data.number,
-    type: taskId.startsWith('pr-comments-batch-') ? 'pr-comment' : 'issue',
+    type: isPr ? 'pr-comment' : 'issue',
     comments: job.data.comments,
     title: job.data.title || null,
     subtitle: job.data.subtitle || null,
