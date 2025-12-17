@@ -31,7 +31,7 @@ const renderClickablePath = (fullPath: string, taskInfo: TaskInfo | null): React
   }
 
   const REPO_BASE_URL = taskInfo?.repoOwner && taskInfo?.repoName
-    ? `https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/blob/main`
+    ? `https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/blob/main` 
     : null;
 
   if (!REPO_BASE_URL) {
@@ -79,6 +79,90 @@ const getFileIcon = (filePath: string) => {
     return <File size={14} className="text-gray-400" />;
 };
 
+const ThoughtEvent: React.FC<{ content?: string }> = ({ content }) => (
+  <div className="text-gray-700 italic whitespace-pre-wrap">{content}</div>
+);
+
+const ToolUseEvent: React.FC<{ 
+  event: LiveEvent; 
+  taskInfo: TaskInfo | null; 
+  isExpanded: boolean; 
+  setIsExpanded: (val: boolean) => void 
+}> = ({ event, taskInfo, isExpanded, setIsExpanded }) => (
+  <div className="text-sm">
+    <div 
+        className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1 rounded -ml-1"
+        onClick={() => setIsExpanded(!isExpanded)}
+    >
+        {isExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
+        <p className="font-semibold text-gray-800 flex items-center gap-2">
+        Tool: <span className="font-mono bg-gray-100 px-2 py-0.5 rounded border border-gray-300 text-xs">{event.toolName}</span>
+        </p>
+    </div>
+
+    {isExpanded && (
+        <div className="mt-2 pl-4 border-l-2 border-gray-100 space-y-2">
+            {event.input?.file_path && (
+            <p className="text-gray-600 flex items-center gap-2">
+                {getFileIcon(event.input.file_path)}
+                File: {renderClickablePath(event.input.file_path, taskInfo)}
+            </p>
+            )}
+            {event.input?.command && (
+            <p className="text-gray-600">
+                Command: <code className="bg-gray-100 p-1 rounded font-mono text-xs border border-gray-300">{event.input.command}</code>
+            </p>
+            )}
+            {/* Show other input params if needed, or JSON dump */}
+            {!event.input?.file_path && !event.input?.command && event.input && (
+                <pre className="text-xs text-gray-500 bg-gray-50 p-2 rounded border border-gray-100 overflow-x-auto">
+                    {JSON.stringify(event.input, null, 2)}
+                </pre>
+            )}
+        </div>
+    )}
+  </div>
+);
+
+const ToolResultEvent: React.FC<{
+  event: LiveEvent;
+  isExpanded: boolean;
+  setIsExpanded: (val: boolean) => void;
+}> = ({ event, isExpanded, setIsExpanded }) => {
+  const formattedResult = formatToolResult(event.result);
+  const isDiff = formattedResult.includes('\n') && (formattedResult.includes('\n+ ') || formattedResult.includes('\n- '));
+  const language = isDiff ? 'diff' : 'typescript';
+
+  return (
+    <div className={`text-sm rounded ${event.isError ? 'bg-red-50 border border-red-100' : 'bg-white border border-gray-200'}`}>
+       <div 
+          className={`p-2 cursor-pointer flex justify-between items-center ${event.isError ? 'text-red-700' : 'text-gray-700'}`}
+          onClick={() => setIsExpanded(!isExpanded)}
+       >
+          <div className="flex items-center gap-2">
+              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              <span className={`font-semibold ${event.isError ? 'text-red-600' : 'text-green-600'}`}>
+              Tool Result {event.isError ? '(Error)' : '(Success)'}
+              </span>
+          </div>
+       </div>
+      
+      {isExpanded && (
+          <div className="px-2 pb-2">
+              <SyntaxHighlighter 
+                  language={language} 
+                  style={github}
+                  customStyle={{ fontSize: '12px', background: 'transparent', padding: '0.5rem' }}
+                  wrapLongLines={true}
+              >
+                  {formattedResult}
+              </SyntaxHighlighter>
+          </div>
+      )}
+    </div>
+  );
+};
+
 interface EventItemProps {
   event: LiveEvent;
   taskInfo: TaskInfo | null;
@@ -94,10 +178,6 @@ const EventItem: React.FC<EventItemProps> = ({ event, taskInfo }) => {
     return <FileText className="text-gray-500" size={18} />;
   };
 
-  const formattedResult = event.type === 'tool_result' ? formatToolResult(event.result) : '';
-  const isDiff = formattedResult.includes('\n') && (formattedResult.includes('\n+ ') || formattedResult.includes('\n- '));
-  const language = isDiff ? 'diff' : 'typescript';
-
   return (
     <div className="flex items-start gap-4">
       <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center border border-gray-200">
@@ -105,70 +185,22 @@ const EventItem: React.FC<EventItemProps> = ({ event, taskInfo }) => {
       </div>
       <div className="flex-1 pt-1 min-w-0">
         {event.type === 'thought' && (
-          <div className="text-gray-700 italic whitespace-pre-wrap">{event.content}</div>
+          <ThoughtEvent content={event.content} />
         )}
         {event.type === 'tool_use' && (
-          <div className="text-sm">
-            <div 
-                className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1 rounded -ml-1"
-                onClick={() => setIsExpanded(!isExpanded)}
-            >
-                {isExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
-                <p className="font-semibold text-gray-800 flex items-center gap-2">
-                Tool: <span className="font-mono bg-gray-100 px-2 py-0.5 rounded border border-gray-300 text-xs">{event.toolName}</span>
-                </p>
-            </div>
-
-            {isExpanded && (
-                <div className="mt-2 pl-4 border-l-2 border-gray-100 space-y-2">
-                    {event.input?.file_path && (
-                    <p className="text-gray-600 flex items-center gap-2">
-                        {getFileIcon(event.input.file_path)}
-                        File: {renderClickablePath(event.input.file_path, taskInfo)}
-                    </p>
-                    )}
-                    {event.input?.command && (
-                    <p className="text-gray-600">
-                        Command: <code className="bg-gray-100 p-1 rounded font-mono text-xs border border-gray-300">{event.input.command}</code>
-                    </p>
-                    )}
-                    {/* Show other input params if needed, or JSON dump */}
-                    {!event.input?.file_path && !event.input?.command && event.input && (
-                        <pre className="text-xs text-gray-500 bg-gray-50 p-2 rounded border border-gray-100 overflow-x-auto">
-                            {JSON.stringify(event.input, null, 2)}
-                        </pre>
-                    )}
-                </div>
-            )}
-          </div>
+          <ToolUseEvent 
+            event={event} 
+            taskInfo={taskInfo} 
+            isExpanded={isExpanded} 
+            setIsExpanded={setIsExpanded} 
+          />
         )}
         {event.type === 'tool_result' && (
-          <div className={`text-sm rounded ${event.isError ? 'bg-red-50 border border-red-100' : 'bg-white border border-gray-200'}`}>
-             <div 
-                className={`p-2 cursor-pointer flex justify-between items-center ${event.isError ? 'text-red-700' : 'text-gray-700'}`}
-                onClick={() => setIsExpanded(!isExpanded)}
-             >
-                <div className="flex items-center gap-2">
-                    {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    <span className={`font-semibold ${event.isError ? 'text-red-600' : 'text-green-600'}`}>
-                    Tool Result {event.isError ? '(Error)' : '(Success)'}
-                    </span>
-                </div>
-             </div>
-            
-            {isExpanded && (
-                <div className="px-2 pb-2">
-                    <SyntaxHighlighter 
-                        language={language} 
-                        style={github}
-                        customStyle={{ fontSize: '12px', background: 'transparent', padding: '0.5rem' }}
-                        wrapLongLines={true}
-                    >
-                        {formattedResult}
-                    </SyntaxHighlighter>
-                </div>
-            )}
-          </div>
+          <ToolResultEvent 
+            event={event} 
+            isExpanded={isExpanded} 
+            setIsExpanded={setIsExpanded} 
+          />
         )}
       </div>
     </div>
