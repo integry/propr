@@ -1,11 +1,10 @@
-version: '3.8'
-
 services:
   redis:
     image: redis:alpine
-    container_name: gitfix-redis
     ports:
-      - '6380:6379'
+      # Expose Redis for PR preview environments to share sessions
+      # REDIS_EXTERNAL_PORT allows different ports for different stacks
+      - '${REDIS_EXTERNAL_PORT:-6380}:6379'
     volumes:
       - redis_data:/data
     networks:
@@ -15,16 +14,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
-    container_name: gitfix-daemon
     command: npm run daemon
     volumes:
       - ./logs:/usr/src/app/logs
       - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor
+      # Docker socket for PR preview deployments
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount .env for deploy-pr.sh script
+      - ./.env:/usr/src/app/.env:ro
     env_file:
       - .env
     environment:
       - GITHUB_BOT_USERNAME=gitfixio[bot]
+      - STAGING_ENV_FILE=/usr/src/app/.env
     depends_on:
       redis:
         condition: service_started
@@ -35,7 +38,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
-    container_name: gitfix-worker
     command: npm run worker
     volumes:
       - ./logs:/usr/src/app/logs
@@ -58,7 +60,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
-    container_name: gitfix-analysis-worker
     command: npm run analysis-worker
     volumes:
       - ./logs:/usr/src/app/logs
@@ -80,9 +81,10 @@ services:
       dockerfile: gitfix-ui/Dockerfile
       args:
         - VITE_API_BASE_URL=${VITE_API_BASE_URL}
-    container_name: gitfix-web-ui
+        - VITE_OAUTH_API_URL=${VITE_OAUTH_API_URL}
     ports:
-      - '5173:5173'
+      # Allow injection of UI_PORT for PR preview environments, default to 5173
+      - '${UI_PORT:-5173}:5173'
     networks:
       - gitfix-net
 
@@ -90,20 +92,34 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
-    container_name: gitfix-dashboard-api
     command: sh -c "cd /usr/src/app/packages/dashboard && npx tsx server.ts"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - '4000:4000'
+      # Allow injection of API_PORT for PR preview environments, default to 4000
+      - '${API_PORT:-4000}:4000'
     volumes:
       - ~/.claude:/root/.claude:ro
       - ./data:/usr/src/app/data
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/git-processor:/tmp/git-processor
+      # Mount the env file - uses STAGING_ENV_FILE if set, defaults to ./.env
+      - ${STAGING_ENV_FILE:-./.env}:/usr/src/app/.env:ro
     env_file:
-      - .env
+      # Use the same env file for environment variable injection
+      - ${STAGING_ENV_FILE:-.env}
     environment:
       - CONFIG_REPO_PATH=/tmp/config_repo
+      # Allow injection of API_PUBLIC_URL for PR preview environments
+      - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:4000}
+      # Allow injection of FRONTEND_URL for CORS in PR preview environments
+      - FRONTEND_URL=${FRONTEND_URL:-https://ui.gitfix.dev}
+      # Allow injection of GH_OAUTH_CALLBACK_URL for PR preview environments
+      - GH_OAUTH_CALLBACK_URL=${GH_OAUTH_CALLBACK_URL:-https://api.gitfix.dev/api/auth/github/callback}
+      # Allow PR previews to share sessions via host Redis
+      - SESSION_REDIS_HOST=${SESSION_REDIS_HOST:-redis}
+      - SESSION_REDIS_PORT=${SESSION_REDIS_PORT:-6379}
     depends_on:
       redis:
         condition: service_started
@@ -116,9 +132,9 @@ services:
     build:
       context: ./docs
       dockerfile: Dockerfile
-    container_name: gitfix-docs
     ports:
-      - '8080:3000'
+      # Allow injection of DOCS_PORT for PR preview environments, default to 8080
+      - '${DOCS_PORT:-8080}:3000'
     networks:
       - gitfix-net
     restart: unless-stopped

@@ -1,6 +1,8 @@
 import passport from 'passport';
 import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
 import session from 'express-session';
+import { RedisStore } from 'connect-redis';
+import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
 
 interface GitHubUser {
@@ -33,14 +35,34 @@ export function setupAuth(app: Express): void {
         throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
     }
 
+    // Create Redis client for session store
+    // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
+    const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
+    const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
+    const redisClient = createClient({
+        url: `redis://${sessionRedisHost}:${sessionRedisPort}`
+    });
+    redisClient.connect().catch(console.error);
+
+    // Use Redis store for sessions to share across subdomains
+    const redisStore = new RedisStore({
+        client: redisClient,
+        prefix: 'gitfix:session:'
+    });
+
     app.use(session({
+        store: redisStore,
         secret: process.env.SESSION_SECRET || 'your-secret-key-here',
         resave: false,
         saveUninitialized: false,
         cookie: {
-            secure: process.env.NODE_ENV === 'production',
+            // Always secure since gitfix.dev uses HTTPS
+            secure: true,
             httpOnly: true,
-            maxAge: 24 * 60 * 60 * 1000 // 24 hours
+            maxAge: 24 * 60 * 60 * 1000, // 24 hours
+            // Set domain to .gitfix.dev to share cookies across all subdomains
+            domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
+            sameSite: 'lax'
         }
     }));
     app.use(passport.initialize());
@@ -70,13 +92,44 @@ export function setupAuth(app: Express): void {
     passport.deserializeUser((obj: Express.User, done) => done(null, obj));
 
     // Routes
-    app.get('/api/auth/github', passport.authenticate('github', { scope: ['user:email', 'read:org', 'repo'] }));
+    // Accept optional redirect_to parameter for PR preview environments
+    app.get('/api/auth/github', (req: Request, res: Response, next: NextFunction) => {
+        const redirectTo = req.query.redirect_to as string | undefined;
+        if (redirectTo) {
+            // Validate redirect URL to prevent open redirect attacks
+            // Only allow redirects to *.gitfix.dev domains
+            try {
+                const url = new URL(redirectTo);
+                if (url.hostname.endsWith('.gitfix.dev') || url.hostname === 'gitfix.dev') {
+                    (req.session as session.Session & { redirectTo?: string }).redirectTo = redirectTo;
+                }
+            } catch {
+                // Invalid URL, ignore
+            }
+        }
+        passport.authenticate('github', { scope: ['user:email', 'read:org', 'repo'] })(req, res, next);
+    });
 
     app.get('/api/auth/github/callback',
         passport.authenticate('github', { failureRedirect: '/login' }),
         (req: Request, res: Response) => {
-            // Successful authentication, redirect to the dashboard.
-            res.redirect(`${process.env.FRONTEND_URL}/`);
+            // Check for stored redirect URL (for PR preview environments)
+            const redirectTo = (req.session as session.Session & { redirectTo?: string }).redirectTo;
+            if (redirectTo) {
+                // Clear the stored redirect
+                delete (req.session as session.Session & { redirectTo?: string }).redirectTo;
+            }
+
+            const finalRedirect = redirectTo || `${process.env.FRONTEND_URL}/`;
+
+            // Explicitly save session before redirect to ensure cookie is set
+            // This is required when using Redis store with async operations
+            req.session.save((err) => {
+                if (err) {
+                    console.error('Session save error:', err);
+                }
+                res.redirect(finalRedirect);
+            });
         }
     );
 
@@ -98,6 +151,7 @@ export function setupAuth(app: Express): void {
     app.get('/api/auth/user', ensureAuthenticated, (req: Request, res: Response) => {
         res.json(req.user);
     });
+
 }
 
 export function ensureAuthenticated(req: Request, res: Response, next: NextFunction): void {

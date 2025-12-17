@@ -203,12 +203,12 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             logger.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
         }
 
-        await initializeWebhookHandler(
-            (issue: DetectedIssue, correlationId: string) => processDetectedIssue(issue, correlationId, redisClient),
-            (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => processCommentEvent(payload, eventType, correlationId, commentConfig),
-            (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
-            (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig)
-        );
+        await initializeWebhookHandler({
+            issueProcessor: (issue: DetectedIssue, correlationId: string) => processDetectedIssue(issue, correlationId, redisClient),
+            commentProcessor: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => processCommentEvent(payload, eventType, correlationId, commentConfig),
+            commentDeletedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
+            commentEditedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig)
+        });
         logger.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');
     } else {
         logger.info({
