@@ -100,6 +100,7 @@ services:
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/git-processor:/tmp/git-processor
+      - ./.env:/usr/src/app/.env:ro
     env_file:
       - .env
     environment:
