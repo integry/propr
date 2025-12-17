@@ -24,6 +24,24 @@ const CheckIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) 
   </svg>
 );
 
+const TagIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+  </svg>
+);
+
+const PencilIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+  </svg>
+);
+
+const TrashIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+  </svg>
+);
+
 // --- Components ---
 
 interface CopyButtonProps {
@@ -93,7 +111,25 @@ const AgentCard: React.FC<{
           </div>
         </div>
 
-        <div className="flex flex-col gap-2 ml-4 items-end">
+        <div className="flex items-center gap-3 ml-4">
+          {/* Action Buttons */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onEdit}
+              className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
+              title="Edit agent"
+            >
+              <PencilIcon className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onDelete}
+              className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+              title="Delete agent"
+            >
+              <TrashIcon className="w-4 h-4" />
+            </button>
+          </div>
+
           {/* Toggle Switch */}
           <label className="relative inline-flex items-center cursor-pointer">
             <input
@@ -104,22 +140,6 @@ const AgentCard: React.FC<{
             />
             <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
           </label>
-
-          {/* Action Buttons */}
-          <div className="flex gap-2 mt-2">
-            <button
-              onClick={onEdit}
-              className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md border border-gray-300 transition-colors"
-            >
-              Edit
-            </button>
-            <button
-              onClick={onDelete}
-              className="px-3 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors"
-            >
-              Delete
-            </button>
-          </div>
         </div>
       </div>
 
@@ -150,7 +170,7 @@ const AgentCard: React.FC<{
                           {modelInfo?.name || modelId}
                         </span>
                         {isDefault && (
-                          <span className="px-1.5 py-0.5 bg-teal-50 text-teal-700 border border-teal-200 text-[10px] rounded uppercase font-bold tracking-wide">
+                          <span className="px-1.5 py-0.5 bg-teal-50 text-teal-700 border border-teal-200 text-[9px] rounded uppercase font-semibold tracking-wide">
                             Default
                           </span>
                         )}
@@ -191,13 +211,13 @@ const AgentCard: React.FC<{
                       <div className="flex flex-col gap-1 items-end">
                         {modelInfo?.githubLabel && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 text-gray-500 hover:text-gray-900 border border-transparent hover:border-gray-200 rounded text-xs transition-all cursor-default opacity-70 hover:opacity-100">
-                            <GitHubIcon className="w-3 h-3" />
+                            <TagIcon className="w-3 h-3" />
                             {modelInfo.githubLabel}
                           </span>
                         )}
                         {isDefault && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 text-teal-600 border border-transparent rounded text-xs opacity-70">
-                            <GitHubIcon className="w-3 h-3" />
+                            <TagIcon className="w-3 h-3" />
                             {agentDefaultLabel}
                           </span>
                         )}
