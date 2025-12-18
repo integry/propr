@@ -229,7 +229,7 @@ const formatToolResult = (result: string | object | undefined): string => {
 
 // Sub-components for EventItem to reduce complexity
 const ThoughtContent: React.FC<{ content?: string }> = ({ content }) => (
-  <div className="text-gray-700 italic text-sm">
+  <div className="text-gray-700 text-sm">
     <MarkdownRenderer text={content} />
   </div>
 );
