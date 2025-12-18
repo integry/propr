@@ -10,6 +10,9 @@ ENV VITE_OAUTH_API_URL=$VITE_OAUTH_API_URL
 
 WORKDIR /app
 
+# Install build dependencies for native modules (better-sqlite3)
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+
 # Copy root package files for workspace resolution
 COPY package*.json ./
 COPY packages/shared/package*.json ./packages/shared/
