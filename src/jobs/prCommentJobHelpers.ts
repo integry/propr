@@ -10,6 +10,7 @@ import { filterCommentByAuthor } from '@gitfix/core';
 import type { UnprocessedComment, CommentJobData } from '@gitfix/core';
 import type { ClaudeCodeResponse } from '@gitfix/core';
 import type { CommitResult } from '@gitfix/core';
+import type { IssueRef } from '@gitfix/core';
 
 interface ValidationComment {
     id: number;
@@ -294,17 +295,15 @@ export async function updateTaskTitleForPR(options: UpdateTaskTitleOptions): Pro
             const state = await stateManager.getTaskState(taskId);
             if (state) {
                 // Include issueNumber in issueRef if we have a linked issue
-                const issueRef: Record<string, unknown> = {
+                const issueRef: IssueRef = {
                     number: jobData.pullRequestNumber,
                     repoOwner: jobData.repoOwner,
                     repoName: jobData.repoName,
                     pullRequestNumber: jobData.pullRequestNumber,
                     title: jobData.title,
-                    subtitle: jobData.subtitle
+                    subtitle: jobData.subtitle,
+                    ...(linkedIssueNumber && { issueNumber: linkedIssueNumber })
                 };
-                if (linkedIssueNumber) {
-                    issueRef.issueNumber = linkedIssueNumber;
-                }
                 state.issueRef = issueRef;
                 await redisClient.setex(stateManager.getTaskKey(taskId), 7 * 24 * 3600, JSON.stringify(state));
                 correlatedLogger.info({ taskId, title: jobData.title, linkedIssueNumber }, 'Updated task with title/subtitle in Redis');
