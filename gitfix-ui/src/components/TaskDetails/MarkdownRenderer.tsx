@@ -82,6 +82,39 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
               {children}
             </blockquote>
           ),
+          // Table styling with borders, padding, and visual separation
+          table: ({ children }) => (
+            <div className="my-4 overflow-x-auto">
+              <table className="min-w-full border-collapse border border-gray-300 rounded-md">
+                {children}
+              </table>
+            </div>
+          ),
+          thead: ({ children }) => (
+            <thead className="bg-gray-100">
+              {children}
+            </thead>
+          ),
+          tbody: ({ children }) => (
+            <tbody className="divide-y divide-gray-200">
+              {children}
+            </tbody>
+          ),
+          tr: ({ children }) => (
+            <tr className="hover:bg-gray-50">
+              {children}
+            </tr>
+          ),
+          th: ({ children }) => (
+            <th className="px-4 py-2 text-left text-sm font-semibold text-gray-700 border border-gray-300 bg-gray-100">
+              {children}
+            </th>
+          ),
+          td: ({ children }) => (
+            <td className="px-4 py-2 text-sm text-gray-700 border border-gray-300">
+              {children}
+            </td>
+          ),
         }}
       >
         {text}
