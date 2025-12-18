@@ -145,6 +145,12 @@ async function getHistoryFromDb(
   }
 }
 
+function extractIssueNumberFromTitle(title: string | null | undefined): number | null {
+  if (!title) return null;
+  const issueMatch = title.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
+  return issueMatch ? parseInt(issueMatch[1], 10) : null;
+}
+
 function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null; issueNumber: number | null } {
   let title = null;
   let subtitle = null;
@@ -161,10 +167,7 @@ function parseJobData(initialJobData: unknown): { title: string | null; subtitle
 
       // Try to extract issue number from title if it contains "Closes #XXX" pattern
       if (!issueNumber && title) {
-        const issueMatch = title.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
-        if (issueMatch) {
-          issueNumber = parseInt(issueMatch[1], 10);
-        }
+        issueNumber = extractIssueNumberFromTitle(title);
       }
     } catch (e) {
       console.error('Failed to parse initial_job_data', e);
@@ -262,14 +265,8 @@ async function getHistoryFromRedis(
 
       // Include issueNumber for PR tasks if available (the original issue that the PR addresses)
       if (isPr) {
-        let issueNumber = (state.issueRef as Record<string, unknown>).issueNumber as number | null | undefined;
-        // Try to extract issue number from title if it contains "Closes #XXX" pattern
-        if (!issueNumber && state.issueRef.title) {
-          const issueMatch = (state.issueRef.title as string).match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
-          if (issueMatch) {
-            issueNumber = parseInt(issueMatch[1], 10);
-          }
-        }
+        const issueNumber = (state.issueRef as Record<string, unknown>).issueNumber as number | null | undefined
+          || extractIssueNumberFromTitle(state.issueRef.title as string | null | undefined);
         if (issueNumber) {
           taskInfo.issueNumber = issueNumber;
         }
@@ -318,14 +315,8 @@ function buildTaskInfoFromJob(job: Job<JobData, JobReturnValue>, taskId: string)
 
   // Include issueNumber for PR tasks if available (the original issue that the PR addresses)
   if (isPr) {
-    let issueNumber = (job.data as Record<string, unknown>).issueNumber as number | null | undefined;
-    // Try to extract issue number from title if it contains "Closes #XXX" pattern
-    if (!issueNumber && job.data.title) {
-      const issueMatch = job.data.title.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
-      if (issueMatch) {
-        issueNumber = parseInt(issueMatch[1], 10);
-      }
-    }
+    const issueNumber = (job.data as Record<string, unknown>).issueNumber as number | null | undefined
+      || extractIssueNumberFromTitle(job.data.title);
     if (issueNumber) {
       taskInfo.issueNumber = issueNumber;
     }
