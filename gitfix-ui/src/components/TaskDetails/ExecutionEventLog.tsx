@@ -3,6 +3,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { LiveEvent, TaskInfo } from './types';
 import { formatDisplayPath, stripWorkspacePrefixes } from './utils';
+import MarkdownRenderer from './MarkdownRenderer';
 import {
   FileText,
   FileCode,
@@ -228,7 +229,9 @@ const formatToolResult = (result: string | object | undefined): string => {
 
 // Sub-components for EventItem to reduce complexity
 const ThoughtContent: React.FC<{ content?: string }> = ({ content }) => (
-  <div className="text-gray-700 italic whitespace-pre-wrap text-sm">{content}</div>
+  <div className="text-gray-700 italic text-sm">
+    <MarkdownRenderer text={content} />
+  </div>
 );
 
 const ToolUseContent: React.FC<{ event: LiveEvent; taskInfo: TaskInfo | null }> = ({ event, taskInfo }) => (
