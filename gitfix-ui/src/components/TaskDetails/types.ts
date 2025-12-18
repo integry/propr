@@ -88,9 +88,3 @@ export interface AnalysisData {
   content?: string;
   error?: string;
 }
-
-export interface MarkdownPart {
-  type: 'text' | 'code';
-  content: string;
-  language?: string;
-}
