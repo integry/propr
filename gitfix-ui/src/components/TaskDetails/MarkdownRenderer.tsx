@@ -65,12 +65,12 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
           },
           // Typography mappings to match original design
           h1: ({ children }) => <h1 className="text-xl font-bold text-gray-900 mt-6 mb-3">{children}</h1>,
-          h2: ({ children }) => <h2 className="text-lg font-bold text-gray-900 mt-4 mb-2">{children}</h2>,
-          h3: ({ children }) => <h3 className="text-base font-semibold text-gray-800 mt-3 mb-1">{children}</h3>,
-          h4: ({ children }) => <h4 className="text-sm font-semibold text-gray-700 mt-2 mb-1">{children}</h4>,
-          p: ({ children }) => <p className="mb-2 text-gray-700 leading-relaxed">{children}</p>,
-          ul: ({ children }) => <ul className="list-disc list-inside space-y-1 my-2 ml-2">{children}</ul>,
-          ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 my-2 ml-2">{children}</ol>,
+          h2: ({ children }) => <h2 className="text-lg font-bold text-gray-900 mt-5 mb-3">{children}</h2>,
+          h3: ({ children }) => <h3 className="text-base font-semibold text-gray-800 mt-4 mb-2">{children}</h3>,
+          h4: ({ children }) => <h4 className="text-sm font-semibold text-gray-700 mt-3 mb-1">{children}</h4>,
+          p: ({ children }) => <p className="mb-4 text-gray-700 leading-relaxed">{children}</p>,
+          ul: ({ children }) => <ul className="list-disc list-inside space-y-1 my-4 ml-2">{children}</ul>,
+          ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 my-4 ml-2">{children}</ol>,
           li: ({ children }) => <li className="ml-2 text-gray-700">{children}</li>,
           a: ({ href, children }) => (
             <a href={href} className="text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer">
@@ -78,7 +78,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
             </a>
           ),
           blockquote: ({ children }) => (
-            <blockquote className="border-l-4 border-gray-300 pl-4 italic my-2 text-gray-600">
+            <blockquote className="border-l-4 border-gray-300 pl-4 italic my-4 text-gray-600">
               {children}
             </blockquote>
           ),
