@@ -86,11 +86,30 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium"
+              title={taskInfo.type === 'pr-comment' ? `Pull Request #${taskInfo.number}` : `Issue #${taskInfo.number}`}
             >
               <GitHubIcon size={14} className="text-blue-600" />
-              #{taskInfo.number}
+              {taskInfo.type === 'pr-comment' ? `PR #${taskInfo.number}` : `#${taskInfo.number}`}
               <ExternalLink size={12} aria-hidden="true" />
             </a>
+
+            {/* Show linked issue for PR tasks */}
+            {taskInfo.type === 'pr-comment' && taskInfo.issueNumber && (
+              <>
+                <div className="h-4 w-px bg-gray-300" />
+                <a
+                  href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/issues/${taskInfo.issueNumber}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 text-orange-600 hover:text-orange-700 font-medium"
+                  title={`Original Issue #${taskInfo.issueNumber}`}
+                >
+                  <GitHubIcon size={14} className="text-orange-600" />
+                  Issue #{taskInfo.issueNumber}
+                  <ExternalLink size={12} aria-hidden="true" />
+                </a>
+              </>
+            )}
           </>
         )}
 

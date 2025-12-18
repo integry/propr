@@ -97,7 +97,7 @@ async function getHistoryFromDb(
     }
 
     const [repoOwner, repoName] = (task.repository as string).split('/');
-    const { title, subtitle, pullRequestNumber } = parseJobData(task.initial_job_data);
+    const { title, subtitle, pullRequestNumber, issueNumber } = parseJobData(task.initial_job_data);
 
     // Determine task type: check task_type from DB, but also verify using taskId prefix
     // and pullRequestNumber from job data to correctly identify PR tasks
@@ -105,7 +105,7 @@ async function getHistoryFromDb(
                  taskId.startsWith('pr-comments-batch-') ||
                  !!pullRequestNumber;
 
-    const taskInfo = {
+    const taskInfo: Record<string, unknown> = {
       repoOwner,
       repoName,
       number: task.issue_number,
@@ -115,6 +115,11 @@ async function getHistoryFromDb(
       subtitle,
       modelName: task.model_name
     };
+
+    // Include issueNumber for PR tasks if available (the original issue that the PR addresses)
+    if (isPr && issueNumber) {
+      taskInfo.issueNumber = issueNumber;
+    }
     
     const llmExecutions = await db('llm_executions')
       .where({ task_id: taskId })
@@ -140,22 +145,32 @@ async function getHistoryFromDb(
   }
 }
 
-function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null } {
+function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null; issueNumber: number | null } {
   let title = null;
   let subtitle = null;
   let pullRequestNumber = null;
+  let issueNumber = null;
   if (initialJobData) {
     try {
       const jobData = typeof initialJobData === 'string' ? JSON.parse(initialJobData) : initialJobData;
       title = jobData.title || (jobData.issueRef ? jobData.issueRef.title : null) || null;
       subtitle = jobData.subtitle || null;
       pullRequestNumber = jobData.pullRequestNumber || (jobData.issueRef ? jobData.issueRef.pullRequestNumber : null) || null;
+      issueNumber = jobData.issueNumber || (jobData.issueRef ? jobData.issueRef.issueNumber : null) || null;
       if (!title && jobData.issueRef) title = jobData.issueRef.title;
+
+      // Try to extract issue number from title if it contains "Closes #XXX" pattern
+      if (!issueNumber && title) {
+        const issueMatch = title.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
+        if (issueMatch) {
+          issueNumber = parseInt(issueMatch[1], 10);
+        }
+      }
     } catch (e) {
       console.error('Failed to parse initial_job_data', e);
     }
   }
-  return { title, subtitle, pullRequestNumber };
+  return { title, subtitle, pullRequestNumber, issueNumber };
 }
 
 function mapDbHistoryRecord(
@@ -244,6 +259,21 @@ async function getHistoryFromRedis(
         subtitle: state.issueRef.subtitle || null,
         modelName: state.issueRef.modelName
       };
+
+      // Include issueNumber for PR tasks if available (the original issue that the PR addresses)
+      if (isPr) {
+        let issueNumber = (state.issueRef as Record<string, unknown>).issueNumber as number | null | undefined;
+        // Try to extract issue number from title if it contains "Closes #XXX" pattern
+        if (!issueNumber && state.issueRef.title) {
+          const issueMatch = (state.issueRef.title as string).match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
+          if (issueMatch) {
+            issueNumber = parseInt(issueMatch[1], 10);
+          }
+        }
+        if (issueNumber) {
+          taskInfo.issueNumber = issueNumber;
+        }
+      }
     }
     
     return { history, taskInfo };
@@ -275,7 +305,7 @@ function buildTaskInfoFromJob(job: Job<JobData, JobReturnValue>, taskId: string)
   if (!job.data?.repoOwner || !job.data?.repoName) return null;
   // Check for pullRequestNumber in job.data to correctly detect PR tasks
   const isPr = taskId.startsWith('pr-comments-batch-') || !!job.data.pullRequestNumber;
-  return {
+  const taskInfo: Record<string, unknown> = {
     repoOwner: job.data.repoOwner,
     repoName: job.data.repoName,
     number: job.data.pullRequestNumber || job.data.number,
@@ -285,6 +315,23 @@ function buildTaskInfoFromJob(job: Job<JobData, JobReturnValue>, taskId: string)
     subtitle: job.data.subtitle || null,
     modelName: job.data?.modelName
   };
+
+  // Include issueNumber for PR tasks if available (the original issue that the PR addresses)
+  if (isPr) {
+    let issueNumber = (job.data as Record<string, unknown>).issueNumber as number | null | undefined;
+    // Try to extract issue number from title if it contains "Closes #XXX" pattern
+    if (!issueNumber && job.data.title) {
+      const issueMatch = job.data.title.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
+      if (issueMatch) {
+        issueNumber = parseInt(issueMatch[1], 10);
+      }
+    }
+    if (issueNumber) {
+      taskInfo.issueNumber = issueNumber;
+    }
+  }
+
+  return taskInfo;
 }
 
 function buildHistoryFromJob(job: Job<JobData, JobReturnValue>): Array<Record<string, unknown>> {
