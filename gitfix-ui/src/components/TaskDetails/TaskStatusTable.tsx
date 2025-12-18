@@ -107,7 +107,7 @@ const TimelineContent: React.FC<{
   const prInfo = item.metadata?.pr || item.metadata?.pullRequest;
 
   return (
-    <div className={`flex-grow ${compact ? 'pb-3' : 'pb-6'}`}>
+    <div className={`flex-grow mt-1 ${compact ? 'pb-3' : 'pb-6'}`}>
       <div className="flex justify-between items-center">
         <div>
           <div className={`${compact ? 'text-xs' : 'text-sm'} ${index === maxDurationIndex ? 'font-bold text-gray-900' : 'font-medium text-gray-700'}`}>
