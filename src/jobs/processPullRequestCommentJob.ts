@@ -221,7 +221,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
     const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    const originalTaskSpec = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
+    const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
+    const originalTaskSpec = linkedIssueResult.context;
+    const linkedIssueNumber = linkedIssueResult.linkedIssueNumber;
     const commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
 
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -243,7 +245,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const summaryTitle = await generateSummaryTitle({ combinedCommentBody, worktreeInfo: state.worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger });
     job.data.title = `Followup: ${prData!.data.title}`;
     job.data.subtitle = summaryTitle;
-    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient });
+    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber });
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
 
