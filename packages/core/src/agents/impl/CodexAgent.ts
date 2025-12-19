@@ -7,6 +7,11 @@ import {
     setWorktreeOwnership,
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
+import {
+    buildCodexPrompt,
+    parseCodexStreamOutput,
+    storeCodexPromptInRedis
+} from '../../codex/codexHelpers.js';
 import { resolveModelAlias } from '../../config/modelAliases.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 
@@ -18,30 +23,6 @@ const DEFAULT_CODEX_TIMEOUT_MS = 300000;
 
 // Container path for Codex config
 const CONTAINER_CONFIG_PATH = '/home/node/.codex';
-
-/**
- * Parsed event from Codex JSON output
- */
-interface CodexEvent {
-    type?: string;
-    role?: string;
-    content?: string;
-    tool?: string;
-    params?: Record<string, unknown>;
-    message?: string;
-    status?: string;
-    result?: string;
-}
-
-/**
- * Parsed output from Codex execution
- */
-interface CodexParsedOutput {
-    success: boolean;
-    logs: string;
-    result?: string;
-    error?: string;
-}
 
 export class CodexAgent implements Agent {
     readonly config: AgentConfig;
@@ -60,8 +41,11 @@ export class CodexAgent implements Agent {
             issueRef,
             prompt: customPrompt,
             model,
+            systemPrompt,
             isRetry = false,
             retryReason,
+            branchName,
+            issueDetails,
             onSessionId,
             onContainerId,
             githubToken
@@ -81,11 +65,17 @@ export class CodexAgent implements Agent {
         }, isRetry ? 'Starting Codex agent execution (RETRY)...' : 'Starting Codex agent execution...');
 
         try {
-            // Build prompt with retry context if applicable
-            let prompt = customPrompt;
-            if (isRetry && retryReason) {
-                prompt = `${customPrompt}\n\n---\n\n**RETRY CONTEXT**: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
-            }
+            // Build comprehensive prompt using helpers
+            const prompt = buildCodexPrompt({
+                customPrompt,
+                issueRef,
+                branchName,
+                modelName: effectiveModel,
+                issueDetails,
+                isRetry,
+                retryReason,
+                systemPrompt
+            });
 
             // Set worktree ownership for container compatibility
             await setWorktreeOwnership(worktreePath, issueRef.number);
@@ -112,6 +102,10 @@ export class CodexAgent implements Agent {
             });
 
             const executionTime = Date.now() - startTime;
+
+            // Parse the NDJSON output using the helper
+            const parsedOutput = parseCodexStreamOutput(result.stdout);
+
             logger.info({
                 issueNumber: issueRef.number,
                 repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
@@ -119,13 +113,11 @@ export class CodexAgent implements Agent {
                 outputLength: result.stdout?.length || 0,
                 success: result.exitCode === 0,
                 exitCode: result.exitCode,
-                agentAlias: this.config.alias
+                agentAlias: this.config.alias,
+                sessionId: parsedOutput.sessionId
             }, 'Codex agent execution completed');
 
-            // Parse the NDJSON output
-            const parsedOutput = this.parseCodexOutput(result.stdout);
-
-            const modelUsed = effectiveModel || 'unknown';
+            const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
 
             const response: AgentExecutionResult = {
                 success: parsedOutput.success && result.exitCode === 0,
@@ -134,6 +126,8 @@ export class CodexAgent implements Agent {
                 exitCode: result.exitCode,
                 rawOutput: result.stdout,
                 modelUsed,
+                sessionId: parsedOutput.sessionId,
+                conversationId: parsedOutput.conversationId,
                 modifiedFiles: [],
                 commitMessage: null,
                 summary: parsedOutput.result ?? undefined,
@@ -141,12 +135,23 @@ export class CodexAgent implements Agent {
                 error: parsedOutput.error
             };
 
+            // Store prompt in Redis for audit trail
+            await storeCodexPromptInRedis({
+                codexOutput: parsedOutput,
+                prompt,
+                issueRef,
+                model: modelUsed,
+                isRetry,
+                retryReason
+            });
+
             if (!response.success) {
                 logger.error({
                     issueNumber: issueRef.number,
                     exitCode: result.exitCode,
                     stderr: result.stderr,
-                    agentAlias: this.config.alias
+                    agentAlias: this.config.alias,
+                    error: parsedOutput.error
                 }, 'Codex agent execution failed');
             } else {
                 logger.info({
@@ -197,7 +202,7 @@ export class CodexAgent implements Agent {
             hasContext: !!context
         }, 'Running lightweight analysis via Codex agent...');
 
-        const model = resolveModelAlias('haiku');
+        const model = resolveModelAlias('haiku'); // Or appropriate Codex analysis model
 
         const analysisPrompt = context
             ? `${prompt}\n\nContext:\n${context}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`
@@ -216,7 +221,7 @@ export class CodexAgent implements Agent {
                 stdinData: analysisPrompt
             });
 
-            const parsedOutput = this.parseCodexOutput(result.stdout);
+            const parsedOutput = parseCodexStreamOutput(result.stdout);
 
             if (parsedOutput.success || parsedOutput.result) {
                 const analysisText = (parsedOutput.result || '').trim();
@@ -267,55 +272,6 @@ export class CodexAgent implements Agent {
             }, 'Health check failed with error');
             return false;
         }
-    }
-
-    /**
-     * Parses Codex NDJSON output into structured data.
-     * Codex with --json outputs newline-delimited JSON events.
-     */
-    private parseCodexOutput(stdout: string): CodexParsedOutput {
-        let logs = '';
-        let result: string | undefined;
-        let isError = false;
-        let errorMessage: string | undefined;
-
-        const lines = stdout.split('\n');
-        for (const line of lines) {
-            if (!line.trim()) continue;
-
-            try {
-                const event: CodexEvent = JSON.parse(line);
-
-                if (event.type === 'message') {
-                    logs += `[${event.role || 'unknown'}] ${event.content || ''}\n`;
-                } else if (event.type === 'tool_use') {
-                    logs += `[Tool] ${event.tool} params: ${JSON.stringify(event.params)}\n`;
-                } else if (event.type === 'error') {
-                    isError = true;
-                    errorMessage = event.message;
-                    logs += `[Error] ${event.message}\n`;
-                } else if (event.type === 'result') {
-                    result = event.result || event.content;
-                    if (event.status === 'error') {
-                        isError = true;
-                        errorMessage = event.message || 'Unknown error';
-                    }
-                } else {
-                    // Handle other event types or unknown types
-                    logs += `[${event.type || 'unknown'}] ${JSON.stringify(event)}\n`;
-                }
-            } catch {
-                // Fallback for non-JSON lines (e.g., strict system errors)
-                logs += line + '\n';
-            }
-        }
-
-        return {
-            success: !isError,
-            logs,
-            result,
-            error: errorMessage
-        };
     }
 
     /**
@@ -373,6 +329,7 @@ export class CodexAgent implements Agent {
         // Add model if specified
         if (modelName) {
             const codexIndex = dockerArgs.indexOf('codex');
+            // Assuming CLI supports --model argument for override
             dockerArgs.splice(codexIndex + 2, 0, '--model', modelName);
             logger.info({
                 issueNumber,
