@@ -111,7 +111,8 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
                 <Icon className={`h-4 w-4 ${styles.iconColor}`} />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-gray-700 text-sm whitespace-pre-wrap break-words">
+                {/* Changed from whitespace-pre-wrap to allow ReactMarkdown to handle spacing */}
+                <div className="text-gray-700 text-sm break-words">
                   {renderMarkdown(event.content)}
                 </div>
                 {event.relativeTime && (
