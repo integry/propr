@@ -61,59 +61,59 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   const isActive = ['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
 
   return (
-    <div className="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm px-4 py-2 flex justify-between items-center">
+    <div className="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm px-3 sm:px-4 py-2 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-3">
       {/* Left: Context */}
-      <div className="flex items-center gap-3 text-sm flex-wrap">
+      <div className="flex items-center gap-2 sm:gap-3 text-sm flex-wrap w-full sm:w-auto">
         {/* Repository & Issue/PR grouped together */}
         {taskInfo && (
           <>
             <div className="flex items-center gap-1.5">
-              <GitHubIcon size={16} className="text-gray-700" />
+              <GitHubIcon size={16} className="text-gray-700 hidden sm:block" />
               <a
                 href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="font-semibold text-gray-900 hover:text-blue-600 transition-colors"
+                className="font-semibold text-gray-900 hover:text-blue-600 transition-colors text-xs sm:text-sm"
               >
                 {taskInfo.repoOwner}/{taskInfo.repoName}
               </a>
             </div>
 
-            <div className="h-4 w-px bg-gray-300" />
+            <div className="h-4 w-px bg-gray-300 hidden sm:block" />
 
             <a
               href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/${taskInfo.type === 'pr-comment' ? 'pull' : 'issues'}/${taskInfo.number}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium"
+              className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium text-xs sm:text-sm"
               title={taskInfo.type === 'pr-comment' ? `Pull Request #${taskInfo.number}` : `Issue #${taskInfo.number}`}
             >
               <GitHubIcon size={14} className="text-blue-600" />
               {taskInfo.type === 'pr-comment' ? `PR #${taskInfo.number}` : `#${taskInfo.number}`}
-              <ExternalLink size={12} aria-hidden="true" />
+              <ExternalLink size={12} aria-hidden="true" className="hidden sm:block" />
             </a>
 
             {/* Show linked issue for PR tasks */}
             {taskInfo.type === 'pr-comment' && taskInfo.issueNumber && (
               <>
-                <div className="h-4 w-px bg-gray-300" />
+                <div className="h-4 w-px bg-gray-300 hidden sm:block" />
                 <a
                   href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/issues/${taskInfo.issueNumber}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-orange-600 hover:text-orange-700 font-medium"
+                  className="flex items-center gap-1 text-orange-600 hover:text-orange-700 font-medium text-xs sm:text-sm"
                   title={`Original Issue #${taskInfo.issueNumber}`}
                 >
                   <GitHubIcon size={14} className="text-orange-600" />
                   Issue #{taskInfo.issueNumber}
-                  <ExternalLink size={12} aria-hidden="true" />
+                  <ExternalLink size={12} aria-hidden="true" className="hidden sm:block" />
                 </a>
               </>
             )}
           </>
         )}
 
-        <div className="h-4 w-px bg-gray-300" />
+        <div className="h-4 w-px bg-gray-300 hidden sm:block" />
 
         {/* Model with distinct style */}
         <span
@@ -126,16 +126,16 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
         {/* PR info if available */}
         {prInfo?.url && (
           <>
-            <div className="h-4 w-px bg-gray-300" />
+            <div className="h-4 w-px bg-gray-300 hidden sm:block" />
             <a
               href={prInfo.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1 text-green-600 hover:text-green-700 font-medium"
+              className="flex items-center gap-1 text-green-600 hover:text-green-700 font-medium text-xs sm:text-sm"
             >
               <GitPullRequest size={14} aria-hidden="true" />
               PR #{prInfo.number}
-              <ExternalLink size={12} aria-hidden="true" />
+              <ExternalLink size={12} aria-hidden="true" className="hidden sm:block" />
             </a>
           </>
         )}
@@ -143,8 +143,8 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
         {/* Duration/Timestamps */}
         {duration !== null && duration !== undefined && (
           <>
-            <div className="h-4 w-px bg-gray-300" />
-            <span className="flex items-center gap-1 text-gray-600">
+            <div className="h-4 w-px bg-gray-300 hidden sm:block" />
+            <span className="flex items-center gap-1 text-gray-600 text-xs sm:text-sm">
               <Clock size={14} />
               {formatRelativeTime(duration)}
             </span>
@@ -153,20 +153,20 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
       </div>
 
       {/* Right: Actions */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 self-end sm:self-auto">
         {/* Stop Execution Button */}
         {isActive && (
           <button
             onClick={onStopExecution}
             disabled={stoppingExecution}
             title={stoppingExecution ? 'Stopping...' : 'Stop Execution'}
-            className={`p-2 rounded transition-colors ${
+            className={`p-1.5 sm:p-2 rounded transition-colors ${
               stoppingExecution
                 ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                 : 'hover:bg-red-50 text-red-600 hover:text-red-700'
             }`}
           >
-            <Square size={18} fill={stoppingExecution ? 'currentColor' : 'none'} />
+            <Square size={16} className="sm:w-[18px] sm:h-[18px]" fill={stoppingExecution ? 'currentColor' : 'none'} />
           </button>
         )}
 
@@ -175,9 +175,9 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
           <button
             onClick={() => onViewPrompt(historyItemWithPaths.promptPath!)}
             title="View Prompt"
-            className="p-2 hover:bg-blue-50 rounded text-blue-600 hover:text-blue-700 transition-colors"
+            className="p-1.5 sm:p-2 hover:bg-blue-50 rounded text-blue-600 hover:text-blue-700 transition-colors"
           >
-            <FileText size={18} />
+            <FileText size={16} className="sm:w-[18px] sm:h-[18px]" />
           </button>
         )}
 
@@ -186,9 +186,9 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
           <button
             onClick={() => onViewLogs(historyItemWithPaths.logsPath!)}
             title="View Logs"
-            className="p-2 hover:bg-green-50 rounded text-green-600 hover:text-green-700 transition-colors"
+            className="p-1.5 sm:p-2 hover:bg-green-50 rounded text-green-600 hover:text-green-700 transition-colors"
           >
-            <Terminal size={18} />
+            <Terminal size={16} className="sm:w-[18px] sm:h-[18px]" />
           </button>
         )}
       </div>

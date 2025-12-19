@@ -87,7 +87,7 @@ const TimelineDateDivider: React.FC<{
   if (!showDateDivider) return null;
 
   return (
-    <div className={`flex items-center my-2 ${compact ? 'ml-16' : 'ml-24'}`}>
+    <div className={`flex items-center my-2 ${compact ? 'ml-12 sm:ml-16' : 'ml-14 sm:ml-24'}`}>
       <div className="h-px bg-gray-200 flex-grow"></div>
       <span className="px-2 text-xs font-medium text-gray-400 uppercase tracking-wider">{currentDate}</span>
       <div className="h-px bg-gray-200 flex-grow"></div>
@@ -166,16 +166,16 @@ const TaskTimelineItem: React.FC<{
     <React.Fragment>
       <TimelineDateDivider prevDate={prevDate} currentDate={currentDate} compact={compact} />
 
-      <div className={`flex group ${compact ? 'min-h-[2rem]' : 'min-h-[3rem]'}`}>
+      <div className={`flex group ${compact ? 'min-h-[2rem]' : 'min-h-[2.5rem] sm:min-h-[3rem]'}`}>
         {/* Time Column */}
-        <div className={`${compact ? 'w-16' : 'w-24'} flex-shrink-0 text-right pr-3`}>
-          <span className={`${compact ? 'text-xs' : 'text-sm'} text-gray-500 font-mono`}>
+        <div className={`${compact ? 'w-12 sm:w-16' : 'w-14 sm:w-24'} flex-shrink-0 text-right pr-2 sm:pr-3`}>
+          <span className={`${compact ? 'text-xs' : 'text-xs sm:text-sm'} text-gray-500 font-mono`}>
             {item.timestamp ? formatTimeOnly(item.timestamp) : '--:--'}
           </span>
         </div>
 
         {/* Timeline Graphic */}
-        <div className="relative flex flex-col items-center mr-3">
+        <div className="relative flex flex-col items-center mr-2 sm:mr-3">
           {/* Upper Line */}
           <div className={`w-0.5 bg-gray-200 absolute top-0 bottom-0 left-1/2 -translate-x-1/2 ${index === 0 ? 'top-3' : ''} ${isLast ? 'h-3' : ''}`}></div>
 
@@ -233,14 +233,14 @@ const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = fa
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-      <div className={`bg-gray-50 ${compact ? 'px-4 py-3' : 'px-6 py-4'} border-b border-gray-200`}>
-        <h4 className={`${compact ? 'text-base' : 'text-lg'} font-semibold text-gray-900`}>
+      <div className={`bg-gray-50 ${compact ? 'px-3 sm:px-4 py-2 sm:py-3' : 'px-4 sm:px-6 py-3 sm:py-4'} border-b border-gray-200`}>
+        <h4 className={`${compact ? 'text-sm sm:text-base' : 'text-base sm:text-lg'} font-semibold text-gray-900`}>
           Status Timeline
-          {startDate && <span className={`ml-2 ${compact ? 'text-xs' : 'text-sm'} font-normal text-gray-500`}>(Started {startDate})</span>}
+          {startDate && <span className={`ml-2 ${compact ? 'text-xs' : 'text-xs sm:text-sm'} font-normal text-gray-500`}>(Started {startDate})</span>}
         </h4>
       </div>
 
-      <div className={compact ? 'p-4' : 'p-6'}>
+      <div className={compact ? 'p-3 sm:p-4' : 'p-4 sm:p-6'}>
         <div className="relative">
           {itemsWithDuration.map((item, index) => (
             <TaskTimelineItem

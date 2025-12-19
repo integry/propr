@@ -66,14 +66,14 @@ const TaskDetails: React.FC = () => {
       <ProgressBar todos={taskData.liveDetails.todos} />
 
       {/* Main Content */}
-      <div className="max-w-[1600px] mx-auto p-6">
+      <div className="max-w-[1600px] mx-auto p-4 sm:p-6">
         {/* Task Header */}
         <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
 
         {/* Split-Pane Layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
           {/* LEFT COLUMN: The Plan (35% - 4/12 cols) */}
-          <div className="lg:col-span-4 space-y-6">
+          <div className="lg:col-span-4 space-y-4 sm:space-y-6">
             {/* Compact Status Timeline */}
             <div className="bg-white rounded-lg shadow-sm">
               <TaskStatusTable history={taskData.history} compact={true} />
@@ -87,7 +87,7 @@ const TaskDetails: React.FC = () => {
           </div>
 
           {/* RIGHT COLUMN: The Execution (65% - 8/12 cols) */}
-          <div className="lg:col-span-8 space-y-6">
+          <div className="lg:col-span-8 space-y-4 sm:space-y-6">
             {/* Deep Dive Analysis */}
             <DeepDiveAnalysis
               analysis={taskData.analysis}
