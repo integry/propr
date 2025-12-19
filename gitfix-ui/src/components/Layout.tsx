@@ -23,6 +23,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
   const [user, setUser] = useState<User | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const navigation: NavItem[] = [
     { name: 'Dashboard', href: '/', icon: HomeIcon },
@@ -34,6 +35,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   ];
 
   const isActive = (path: string): boolean => location.pathname === path;
+
+  // Close sidebar on route change (mobile)
+  useEffect(() => {
+    setIsSidebarOpen(false);
+  }, [location]);
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -62,13 +68,33 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   }, []);
 
   return (
-    <div className="flex min-h-screen bg-light-100">
-      {/* Sidebar */}
-      <aside className="w-60 bg-white py-6 border-r border-gray-200 shadow-sm">
-        <div className="px-4 mb-8">
+    <div className="flex min-h-screen bg-light-100 relative">
+      {/* Mobile Overlay */}
+      {isSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-gray-600 bg-opacity-75 z-20 lg:hidden"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar - Responsive */}
+      <aside className={`
+        fixed lg:static inset-y-0 left-0 z-30
+        w-60 bg-white border-r border-gray-200 shadow-sm
+        transform transition-transform duration-200 ease-in-out
+        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+      `}>
+        <div className="flex items-center justify-between px-4 py-6 h-16">
           <h2 className="text-primary-600 text-xl font-bold">GitFix</h2>
+          <button
+            onClick={() => setIsSidebarOpen(false)}
+            className="lg:hidden text-gray-500 hover:text-gray-700 p-1"
+            aria-label="Close menu"
+          >
+            <CloseIcon className="w-6 h-6" />
+          </button>
         </div>
-        <nav className="flex flex-col gap-1">
+        <nav className="flex flex-col gap-1 overflow-y-auto h-[calc(100%-4rem)]">
           {navigation.map((item) => (
             <Link
               key={item.name}
@@ -92,42 +118,56 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       </aside>
 
       {/* Main content wrapper */}
-      <div className="flex-1 flex flex-col">
-        <header className="bg-white border-b border-gray-200 h-16 flex items-center justify-end px-8 shadow-sm z-10">
-          {user && (
-            <div className="flex items-center gap-4">
-              <div className="flex flex-col items-end hidden sm:flex">
-                <span className="text-sm font-semibold text-gray-700">
-                  {user.displayName || user.username}
-                </span>
-                <span className="text-xs text-gray-500">@{user.username}</span>
-              </div>
-              
-              {user.avatarUrl ? (
-                <img 
-                  src={user.avatarUrl} 
-                  alt={user.username} 
-                  className="w-8 h-8 rounded-full border border-gray-200"
-                />
-              ) : (
-                <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs">
-                  {user.username.slice(0, 2).toUpperCase()}
+      <div className="flex-1 flex flex-col min-w-0">
+        <header className="bg-white border-b border-gray-200 h-16 flex items-center justify-between px-4 sm:px-8 shadow-sm z-10 sticky top-0">
+          {/* Mobile Toggle */}
+          <button
+            onClick={() => setIsSidebarOpen(true)}
+            className="lg:hidden p-2 -ml-2 text-gray-500 hover:text-gray-700"
+            aria-label="Open menu"
+          >
+            <MenuIcon className="w-6 h-6" />
+          </button>
+
+          {/* Spacer for desktop when no hamburger is shown */}
+          <div className="hidden lg:block"></div>
+
+          <div className="flex items-center gap-4">
+            {user && (
+              <>
+                <div className="hidden sm:flex flex-col items-end">
+                  <span className="text-sm font-semibold text-gray-700">
+                    {user.displayName || user.username}
+                  </span>
+                  <span className="text-xs text-gray-500">@{user.username}</span>
                 </div>
-              )}
 
-              <div className="h-6 w-px bg-gray-200 mx-1"></div>
+                {user.avatarUrl ? (
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.username}
+                    className="w-8 h-8 rounded-full border border-gray-200"
+                  />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs">
+                    {user.username.slice(0, 2).toUpperCase()}
+                  </div>
+                )}
 
-              <button
-                onClick={logout}
-                className="text-sm text-gray-500 hover:text-red-600 font-medium transition-colors"
-              >
-                Logout
-              </button>
-            </div>
-          )}
+                <div className="h-6 w-px bg-gray-200 mx-1"></div>
+
+                <button
+                  onClick={logout}
+                  className="text-sm text-gray-500 hover:text-red-600 font-medium transition-colors"
+                >
+                  Logout
+                </button>
+              </>
+            )}
+          </div>
         </header>
 
-        <main className="flex-1 p-8 overflow-y-auto">
+        <main className="flex-1 p-4 sm:p-8 overflow-y-auto">
           {children}
         </main>
       </div>
@@ -174,6 +214,18 @@ const SettingsIcon: React.FC<IconProps> = ({ className }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+  </svg>
+);
+
+const MenuIcon: React.FC<IconProps> = ({ className }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+  </svg>
+);
+
+const CloseIcon: React.FC<IconProps> = ({ className }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
   </svg>
 );
 
