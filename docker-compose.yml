@@ -48,6 +48,7 @@ services:
       - /tmp/git-processor:/tmp/git-processor
       - ~/.claude:/root/.claude
       - ~/.gemini:/root/.gemini
+      - ~/.codex:/root/.codex
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
     env_file:
@@ -68,6 +69,7 @@ services:
       - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor:ro
       - /tmp/claude-logs:/tmp/claude-logs:ro
+      - ~/.codex:/root/.codex:ro
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
@@ -102,6 +104,7 @@ services:
       - '${API_PORT:-4000}:4000'
     volumes:
       - ~/.claude:/root/.claude:ro
+      - ~/.codex:/root/.codex:ro
       - ./data:/usr/src/app/data
       - /tmp/claude-logs:/tmp/claude-logs:ro
       - /var/run/docker.sock:/var/run/docker.sock
