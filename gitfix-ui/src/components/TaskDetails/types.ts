@@ -19,6 +19,7 @@ export interface TaskInfo {
   subtitle?: string;
   type?: string;
   number?: number;
+  issueNumber?: number;
   repoOwner?: string;
   repoName?: string;
   modelName?: string;

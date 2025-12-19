@@ -10,6 +10,7 @@ import { filterCommentByAuthor } from '@gitfix/core';
 import type { UnprocessedComment, CommentJobData } from '@gitfix/core';
 import type { ClaudeCodeResponse } from '@gitfix/core';
 import type { CommitResult } from '@gitfix/core';
+import type { IssueRef } from '@gitfix/core';
 
 interface ValidationComment {
     id: number;
@@ -121,18 +122,23 @@ export function filterUnprocessedComments(
     });
 }
 
+export interface LinkedIssueResult {
+    context: string;
+    linkedIssueNumber: number | null;
+}
+
 export async function fetchLinkedIssueContext(
     octokit: Octokit,
     prData: PRData,
     repoContext: RepoContext,
     options: FetchLinkedIssueOptions
-): Promise<string> {
+): Promise<LinkedIssueResult> {
     const { repoOwner, repoName, pullRequestNumber } = repoContext;
     const { correlationId, correlatedLogger } = options;
     let originalTaskSpec = '';
     const linkedIssueMatch = prData.data.body?.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
 
-    if (!linkedIssueMatch) return originalTaskSpec;
+    if (!linkedIssueMatch) return { context: originalTaskSpec, linkedIssueNumber: null };
 
     const linkedIssueNumber = parseInt(linkedIssueMatch[1], 10);
     correlatedLogger.info({ pullRequestNumber, linkedIssueNumber }, 'Found linked issue in PR body');
@@ -166,7 +172,7 @@ export async function fetchLinkedIssueContext(
         correlatedLogger.warn({ pullRequestNumber, linkedIssueNumber, error: (issueError as Error).message }, 'Failed to fetch linked issue data, continuing without it');
     }
 
-    return originalTaskSpec;
+    return { context: originalTaskSpec, linkedIssueNumber };
 }
 
 export function formatCommentForPrompt(body: string | null): string {
@@ -267,13 +273,20 @@ interface UpdateTaskTitleOptions {
     stateManager: WorkerStateManager;
     correlatedLogger: Logger;
     redisClient?: InstanceType<typeof Redis>;
+    linkedIssueNumber?: number | null;
 }
 
 export async function updateTaskTitleForPR(options: UpdateTaskTitleOptions): Promise<void> {
-    const { taskId, jobData, stateManager, correlatedLogger, redisClient } = options;
+    const { taskId, jobData, stateManager, correlatedLogger, redisClient, linkedIssueNumber } = options;
+
+    // Add linkedIssueNumber to jobData for DB storage
+    const jobDataWithIssue = linkedIssueNumber
+        ? { ...jobData, issueNumber: linkedIssueNumber }
+        : jobData;
+
     try {
-        await db('tasks').where({ task_id: taskId }).update({ initial_job_data: JSON.stringify(jobData) });
-        correlatedLogger.info({ taskId, title: jobData.title, subtitle: jobData.subtitle }, 'Updated task with title/subtitle in DB');
+        await db('tasks').where({ task_id: taskId }).update({ initial_job_data: JSON.stringify(jobDataWithIssue) });
+        correlatedLogger.info({ taskId, title: jobData.title, subtitle: jobData.subtitle, linkedIssueNumber }, 'Updated task with title/subtitle in DB');
     } catch (dbError) {
         correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to update task with title/subtitle in DB');
     }
@@ -281,9 +294,19 @@ export async function updateTaskTitleForPR(options: UpdateTaskTitleOptions): Pro
         try {
             const state = await stateManager.getTaskState(taskId);
             if (state) {
-                state.issueRef = { number: jobData.pullRequestNumber, repoOwner: jobData.repoOwner, repoName: jobData.repoName };
+                // Include issueNumber in issueRef if we have a linked issue
+                const issueRef: IssueRef = {
+                    number: jobData.pullRequestNumber,
+                    repoOwner: jobData.repoOwner,
+                    repoName: jobData.repoName,
+                    pullRequestNumber: jobData.pullRequestNumber,
+                    title: jobData.title,
+                    subtitle: jobData.subtitle,
+                    ...(linkedIssueNumber && { issueNumber: linkedIssueNumber })
+                };
+                state.issueRef = issueRef;
                 await redisClient.setex(stateManager.getTaskKey(taskId), 7 * 24 * 3600, JSON.stringify(state));
-                correlatedLogger.info({ taskId, title: jobData.title }, 'Updated task with title/subtitle in Redis');
+                correlatedLogger.info({ taskId, title: jobData.title, linkedIssueNumber }, 'Updated task with title/subtitle in Redis');
             }
         } catch (redisError) {
             correlatedLogger.warn({ taskId, error: (redisError as Error).message }, 'Failed to update task with title/subtitle in Redis');
