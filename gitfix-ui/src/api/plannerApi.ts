@@ -157,6 +157,7 @@ export interface PlanTask {
   title: string;
   body: string;
   implementation: string;
+  notes?: string;
 }
 
 export interface ChatMessage {
