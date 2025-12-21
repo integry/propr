@@ -1,8 +1,6 @@
 import React, { useState, forwardRef } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { FileText, MessageSquare, StickyNote, Trash2, Eye, Code, GripVertical } from 'lucide-react';
-import { useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { FileText, MessageSquare, StickyNote, Trash2, Eye, Code } from 'lucide-react';
 import { PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 
@@ -12,8 +10,6 @@ interface TaskCardProps {
   onChange: (task: PlanTask) => void;
   onDelete: () => void;
   onAddBelow: () => void;
-  isDragging?: boolean;
-  dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
 }
 
 type EditableField = 'title' | 'body' | 'implementation' | 'notes' | null;
@@ -24,8 +20,6 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   isHighlighted,
   onChange,
   onDelete,
-  isDragging = false,
-  dragHandleProps
 }, ref) => {
   const [editingField, setEditingField] = useState<EditableField>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
@@ -90,20 +84,11 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
       ref={ref}
       className={
         'group relative transition-all duration-500 ' +
-        (isHighlighted ? 'ring-2 ring-indigo-400 shadow-lg' : 'hover:shadow-md') +
-        (isDragging ? ' opacity-50 shadow-2xl scale-[1.02]' : '')
+        (isHighlighted ? 'ring-2 ring-indigo-400 shadow-lg' : 'hover:shadow-md')
       }
     >
-      {/* Drag Handle - appears on hover */}
-      <div
-        {...dragHandleProps}
-        className="absolute left-0 top-0 bottom-0 w-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing z-10 bg-gradient-to-r from-gray-100/80 to-transparent rounded-l-xl"
-      >
-        <GripVertical size={18} className="text-gray-400" />
-      </div>
-
       {/* Main Card Container */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden ml-8">
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
         {/* View Mode Toggle */}
         <div className="absolute top-3 right-12 opacity-0 group-hover:opacity-100 transition-opacity z-10">
           <div className="flex items-center bg-gray-100 rounded-lg p-0.5 text-xs">
@@ -158,13 +143,13 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 </div>
               )}
               <div className="mt-2">
-                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Context</span>
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Context</span>
                 {renderEditableContent(
                   'body',
                   task.body,
                   'Describe the context...',
-                  'w-full mt-1 text-gray-600 leading-relaxed',
-                  'w-full mt-1 text-gray-600 leading-relaxed'
+                  'w-full mt-1 text-gray-800 leading-relaxed',
+                  'w-full mt-1 text-gray-800 leading-relaxed'
                 )}
               </div>
             </div>
@@ -185,8 +170,8 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 'implementation',
                 task.implementation,
                 'Implementation details...',
-                'w-full font-mono text-sm text-slate-700 bg-transparent transition-colors',
-                'w-full font-mono text-sm text-slate-700'
+                'w-full font-mono text-sm text-gray-800 bg-transparent transition-colors',
+                'w-full font-mono text-sm text-gray-800'
               )}
             </div>
           </div>
@@ -199,13 +184,13 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
               <StickyNote size={16} />
             </div>
             <div className="flex-1">
-              <span className="text-xs font-semibold text-yellow-600/70 uppercase tracking-wider block mb-1">User Notes</span>
+              <span className="text-xs font-semibold text-yellow-700 uppercase tracking-wider block mb-1">User Notes</span>
               {renderEditableContent(
                 'notes',
                 task.notes || '',
                 'Add your notes here...',
-                'w-full text-sm text-gray-600 bg-transparent placeholder-yellow-600/30',
-                'w-full text-sm text-gray-600'
+                'w-full text-sm text-gray-800 bg-transparent placeholder-yellow-600/30',
+                'w-full text-sm text-gray-800'
               )}
             </div>
           </div>
@@ -223,33 +208,5 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
 });
 
 TaskCard.displayName = 'TaskCard';
-
-// Sortable wrapper for TaskCard
-export const SortableTaskCard: React.FC<Omit<TaskCardProps, 'dragHandleProps' | 'isDragging'>> = (props) => {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: props.task.id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  return (
-    <div style={style}>
-      <TaskCard
-        ref={setNodeRef}
-        {...props}
-        isDragging={isDragging}
-        dragHandleProps={{ ...attributes, ...listeners }}
-      />
-    </div>
-  );
-};
 
 export default TaskCard;

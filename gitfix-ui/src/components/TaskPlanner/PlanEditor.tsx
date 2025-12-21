@@ -126,7 +126,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
     <div className="h-full flex flex-col bg-white rounded-lg shadow overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
         <div className="flex items-center gap-4">
-          <h2 className="font-semibold text-gray-900">Plan Editor</h2>
+          <div className="text-sm text-gray-500 truncate max-w-md">{draft.task_title || draft.title || 'Untitled Task'}</div>
           <StatusBadge status={draft.status} />
           <SaveIndicator status={saveStatus} />
         </div>
