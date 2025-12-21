@@ -10,6 +10,7 @@ interface ThinkingLogEvent extends LiveEvent {
 interface ThinkingLogProps {
   events: ThinkingLogEvent[];
   todos?: TodoItem[];
+  highlightedTodoId?: string | null;
 }
 
 // Pattern lists for thought type detection
@@ -76,13 +77,21 @@ interface ThoughtGroupProps {
   events: ThinkingLogEvent[];
   isCompleted: boolean;
   todoId?: string;
+  isHighlighted?: boolean;
 }
 
-const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted, todoId }) => {
+const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted, todoId, isHighlighted }) => {
   if (events.length === 0) return null;
 
   return (
-    <div className="mb-4" id={todoId ? `thinking-log-${todoId}` : undefined} data-todo-id={todoId} data-todo-content={title}>
+    <div
+      className={`mb-4 transition-all duration-300 ${
+        isHighlighted ? 'ring-2 ring-blue-400 ring-offset-2 rounded-lg' : ''
+      }`}
+      id={todoId ? `thinking-log-${todoId}` : undefined}
+      data-todo-id={todoId}
+      data-todo-content={title}
+    >
       {/* Group Header */}
       <div className={`flex items-center gap-2 mb-2 px-3 py-1.5 rounded-t-lg ${isCompleted ? 'bg-green-100' : 'bg-gray-100'}`}>
         {isCompleted ? (
@@ -127,7 +136,7 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
   );
 };
 
-const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [] }) => {
+const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlightedTodoId }) => {
   // Group events by todo items if available
   const groupedEvents = useMemo(() => {
     if (todos.length === 0) {
@@ -236,6 +245,7 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [] }) => {
             events={group.events}
             isCompleted={group.isCompleted}
             todoId={group.todoId}
+            isHighlighted={highlightedTodoId === group.todoId}
           />
         ))}
       </div>

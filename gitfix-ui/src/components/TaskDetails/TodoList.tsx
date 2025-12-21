@@ -4,9 +4,10 @@ import { LiveDetails, HistoryItem } from './types';
 interface TodoListProps {
   liveDetails: LiveDetails;
   history: HistoryItem[];
+  onTodoHover?: (todoId: string | null) => void;
 }
 
-const TodoList: React.FC<TodoListProps> = ({ liveDetails, history }) => {
+const TodoList: React.FC<TodoListProps> = ({ liveDetails, history, onTodoHover }) => {
   const scrollToThinkingLog = useCallback((todoId: string, todoContent: string) => {
     // First try to find the specific thinking log group for this todo by ID
     let element = document.getElementById(`thinking-log-${todoId}`);
@@ -53,11 +54,17 @@ const TodoList: React.FC<TodoListProps> = ({ liveDetails, history }) => {
       {isTaskActive && (
         <>
           <h4 className="mt-0 text-blue-900 flex items-center gap-2">
-            <span className="text-xl">⚡</span>
-            Live Task Progress
+            <span className="text-xl animate-pulse">⚡</span>
+            <span className="flex items-center gap-2">
+              Live Task Progress
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+              </span>
+            </span>
           </h4>
           {liveDetails.currentTask && (
-            <p className="mb-4 p-3 bg-blue-100 rounded-md border-l-4 border-blue-500">
+            <p className="mb-4 p-3 bg-blue-100 rounded-md border-l-4 border-blue-500 animate-pulse">
               <strong className="text-blue-900">Current Task:</strong> {liveDetails.currentTask}
             </p>
           )}
@@ -72,6 +79,8 @@ const TodoList: React.FC<TodoListProps> = ({ liveDetails, history }) => {
               todo.status === 'in_progress' ? 'bg-blue-100' : ''
             }`}
             onClick={() => scrollToThinkingLog(todo.id, todo.content)}
+            onMouseEnter={() => onTodoHover?.(todo.id)}
+            onMouseLeave={() => onTodoHover?.(null)}
             title="Click to scroll to related thinking log"
           >
             <span className="mr-2 text-lg">

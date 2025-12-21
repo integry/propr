@@ -44,6 +44,10 @@ interface MetadataBarProps {
   onViewPrompt: (promptPath: string) => void;
   onViewLogs: (logsPath: string) => void;
   duration?: number | null;
+  stats?: {
+    filesChanged?: number;
+    linesChanged?: number;
+  };
 }
 
 const MetadataBar: React.FC<MetadataBarProps> = ({
@@ -56,7 +60,8 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   onStopExecution,
   onViewPrompt,
   onViewLogs,
-  duration
+  duration,
+  stats
 }) => {
   const isActive = ['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
 
@@ -123,6 +128,11 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
           {getDisplayModelName(modelName)}
         </span>
 
+        {/* Environment Badge */}
+        <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
+          DEV
+        </span>
+
         {/* PR info if available */}
         {prInfo?.url && (
           <>
@@ -150,20 +160,31 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
             </span>
           </>
         )}
+
+        {/* Stats Display (from RealTimeStats) */}
+        {stats && (
+          <>
+            <div className="h-4 w-px bg-gray-300 hidden sm:block" />
+            <div className="flex items-center gap-3 text-xs text-gray-500">
+              <span>Files: {stats.filesChanged ?? '-'}</span>
+              <span>Lines: {stats.linesChanged ?? '-'}</span>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Right: Actions */}
       <div className="flex items-center gap-2 self-end sm:self-auto">
-        {/* Stop Execution Button */}
+        {/* Stop Execution Button - Red background to distinguish from navigation */}
         {isActive && (
           <button
             onClick={onStopExecution}
             disabled={stoppingExecution}
-            title={stoppingExecution ? 'Stopping...' : 'Stop Execution'}
+            title={stoppingExecution ? 'Stopping execution...' : 'Stop Execution'}
             className={`p-1.5 sm:p-2 rounded transition-colors ${
               stoppingExecution
                 ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                : 'hover:bg-red-50 text-red-600 hover:text-red-700'
+                : 'bg-red-100 hover:bg-red-200 text-red-600 hover:text-red-700 border border-red-200'
             }`}
           >
             <Square size={16} className="sm:w-[18px] sm:h-[18px]" fill={stoppingExecution ? 'currentColor' : 'none'} />
@@ -174,7 +195,7 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
         {historyItemWithPaths?.promptPath && (
           <button
             onClick={() => onViewPrompt(historyItemWithPaths.promptPath!)}
-            title="View Prompt"
+            title="View Prompt - View the original prompt sent to the AI"
             className="p-1.5 sm:p-2 hover:bg-blue-50 rounded text-blue-600 hover:text-blue-700 transition-colors"
           >
             <FileText size={16} className="sm:w-[18px] sm:h-[18px]" />
@@ -185,7 +206,7 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
         {historyItemWithPaths?.logsPath && (
           <button
             onClick={() => onViewLogs(historyItemWithPaths.logsPath!)}
-            title="View Logs"
+            title="View Logs - View execution logs and terminal output"
             className="p-1.5 sm:p-2 hover:bg-green-50 rounded text-green-600 hover:text-green-700 transition-colors"
           >
             <Terminal size={16} className="sm:w-[18px] sm:h-[18px]" />

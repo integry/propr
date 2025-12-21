@@ -353,6 +353,32 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   isTaskActive,
   taskInfo
 }) => {
+  // Check for any errors in the event stream
+  const hasErrors = useMemo(() => events.some(e => e.isError), [events]);
+
+  // Get the last significant message (terminal output or tool result)
+  const summaryMessage = useMemo(() => {
+    if (events.length === 0) return '';
+
+    // Look backwards for the most relevant event
+    for (let i = events.length - 1; i >= 0; i--) {
+      const event = events[i];
+      if (event.type === 'tool_result') {
+        const resultStr = formatToolResult(event.result);
+        const truncated = resultStr.slice(0, 60).replace(/\n/g, ' ');
+        return `Result: ${truncated}${resultStr.length > 60 ? '...' : ''}`;
+      }
+      if (event.type === 'tool_use' && event.toolName) {
+        if (event.input?.command) {
+          return `> ${event.input.command.slice(0, 50)}${event.input.command.length > 50 ? '...' : ''}`;
+        }
+        return `Exec: ${event.toolName}`;
+      }
+    }
+
+    return lastThought ? `Thinking: ${lastThought.substring(0, 60)}${lastThought.length > 60 ? '...' : ''}` : '';
+  }, [events, lastThought]);
+
   // Memoize default collapse states based on tool type
   const eventsWithDefaults = useMemo(() => {
     return events.map((event, index) => {
@@ -385,18 +411,27 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   return (
     <div className="mb-6" id="execution-event-log-section">
       <div
-        className="flex items-center justify-between cursor-pointer p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors border border-gray-200"
+        className={`flex items-center justify-between cursor-pointer p-4 rounded-lg transition-colors border ${
+          hasErrors
+            ? 'bg-red-50 border-red-200 hover:bg-red-100'
+            : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+        }`}
         onClick={onToggleCollapse}
       >
-        <h4 className="text-lg font-semibold text-gray-900 flex items-center gap-3">
-          <span className="text-gray-500">{collapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}</span>
-          <Terminal className="h-5 w-5 text-gray-600" />
+        <h4 className={`text-lg font-semibold flex items-center gap-3 ${hasErrors ? 'text-red-900' : 'text-gray-900'}`}>
+          <span className={hasErrors ? 'text-red-500' : 'text-gray-500'}>{collapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}</span>
+          <Terminal className={`h-5 w-5 ${hasErrors ? 'text-red-600' : 'text-gray-600'}`} />
           <span>{isTaskActive ? 'Full Execution Event Log' : 'Execution Event Log'}</span>
-          <span className="text-sm font-normal text-gray-500">({events.length} events)</span>
+          <span className={`text-sm font-normal ${hasErrors ? 'text-red-500' : 'text-gray-500'}`}>({events.length} events)</span>
+          {hasErrors && (
+            <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 rounded border border-red-200">
+              Errors
+            </span>
+          )}
         </h4>
-        {collapsed && lastThought && (
-          <div className="text-sm text-gray-600 italic max-w-md truncate">
-            Thinking: {lastThought.substring(0, 100)}{lastThought.length > 100 ? '...' : ''}
+        {collapsed && summaryMessage && (
+          <div className={`text-sm italic max-w-md truncate ${hasErrors ? 'text-red-700' : 'text-gray-600'}`}>
+            {summaryMessage}
           </div>
         )}
       </div>
