@@ -10,6 +10,7 @@ interface UsePlanRefinementResult {
   updateTask: (taskId: string, updates: Partial<PlanTask>) => void;
   addTask: (afterTaskId: string) => void;
   deleteTask: (taskId: string) => void;
+  reorderTasks: (activeId: string, overId: string) => void;
   handleRefine: (instruction: string) => Promise<{ success: boolean; message: string }>;
   undo: () => void;
   redo: () => void;
@@ -96,6 +97,19 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     updatePlan(newPlan, 'user');
   }, [currentPlan, updatePlan]);
 
+  const reorderTasks = useCallback((activeId: string, overId: string) => {
+    const oldIndex = currentPlan.findIndex(t => t.id === activeId);
+    const newIndex = currentPlan.findIndex(t => t.id === overId);
+
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const newPlan = [...currentPlan];
+    const [removed] = newPlan.splice(oldIndex, 1);
+    newPlan.splice(newIndex, 0, removed);
+
+    updatePlan(newPlan, 'user');
+  }, [currentPlan, updatePlan]);
+
   const handleRefine = useCallback(async (instruction: string): Promise<{ success: boolean; message: string }> => {
     try {
       // Start refinement - returns immediately with 202
@@ -158,6 +172,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     updateTask,
     addTask,
     deleteTask,
+    reorderTasks,
     handleRefine,
     undo,
     redo,

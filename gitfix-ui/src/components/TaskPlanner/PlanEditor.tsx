@@ -68,6 +68,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
     updateTask,
     addTask,
     deleteTask,
+    reorderTasks,
     handleRefine,
     undo,
     redo,
@@ -170,6 +171,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
               onTaskChange={updateTask}
               onAddTask={addTask}
               onDeleteTask={deleteTask}
+              onReorderTasks={reorderTasks}
             />
           </Panel>
           

@@ -1,7 +1,10 @@
-import React from 'react';
+import React, { useState, forwardRef } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { FileText, MessageSquare, StickyNote, Trash2 } from 'lucide-react';
+import { FileText, MessageSquare, StickyNote, Trash2, Eye, Code, GripVertical } from 'lucide-react';
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { PlanTask } from '../../api/gitfixApi';
+import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 
 interface TaskCardProps {
   task: PlanTask;
@@ -9,18 +12,125 @@ interface TaskCardProps {
   onChange: (task: PlanTask) => void;
   onDelete: () => void;
   onAddBelow: () => void;
+  isDragging?: boolean;
+  dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
 }
 
-export const TaskCard: React.FC<TaskCardProps> = ({
+type EditableField = 'title' | 'body' | 'implementation' | 'notes' | null;
+type ViewMode = 'preview' | 'markdown';
+
+export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   task,
   isHighlighted,
   onChange,
-  onDelete
-}) => {
+  onDelete,
+  isDragging = false,
+  dragHandleProps
+}, ref) => {
+  const [editingField, setEditingField] = useState<EditableField>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('preview');
+
+  const handleFieldClick = (field: EditableField) => {
+    if (viewMode === 'markdown') {
+      setEditingField(field);
+    }
+  };
+
+  const handleBlur = () => {
+    setEditingField(null);
+  };
+
+  const renderEditableContent = (
+    field: EditableField,
+    value: string,
+    placeholder: string,
+    className: string,
+    markdownClassName?: string
+  ) => {
+    const isEditing = editingField === field || viewMode === 'markdown';
+
+    if (isEditing) {
+      return (
+        <TextareaAutosize
+          value={value}
+          onChange={e => onChange({ ...task, [field as string]: e.target.value })}
+          onBlur={handleBlur}
+          onFocus={() => setEditingField(field)}
+          autoFocus={editingField === field}
+          className={`${className} resize-none focus:outline-none focus:bg-gray-50 rounded p-1 -ml-1 cursor-text`}
+          placeholder={placeholder}
+        />
+      );
+    }
+
+    // Preview mode - render markdown
+    if (!value || value.trim() === '') {
+      return (
+        <div
+          onClick={() => handleFieldClick(field)}
+          className={`${markdownClassName || className} cursor-pointer hover:bg-gray-50 rounded p-1 -ml-1 min-h-[24px] text-gray-400 italic`}
+        >
+          {placeholder}
+        </div>
+      );
+    }
+
+    return (
+      <div
+        onClick={() => handleFieldClick(field)}
+        className={`${markdownClassName || className} cursor-pointer hover:bg-gray-50 rounded p-1 -ml-1`}
+      >
+        <MarkdownRenderer text={value} className="prose prose-sm max-w-none" />
+      </div>
+    );
+  };
+
   return (
-    <div className={'group relative mb-6 transition-all duration-500 ' + (isHighlighted ? 'ring-2 ring-indigo-400 shadow-lg' : 'hover:shadow-md')}>
+    <div
+      ref={ref}
+      className={
+        'group relative transition-all duration-500 ' +
+        (isHighlighted ? 'ring-2 ring-indigo-400 shadow-lg' : 'hover:shadow-md') +
+        (isDragging ? ' opacity-50 shadow-2xl scale-[1.02]' : '')
+      }
+    >
+      {/* Drag Handle - appears on hover */}
+      <div
+        {...dragHandleProps}
+        className="absolute left-0 top-0 bottom-0 w-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing z-10 bg-gradient-to-r from-gray-100/80 to-transparent rounded-l-xl"
+      >
+        <GripVertical size={18} className="text-gray-400" />
+      </div>
+
       {/* Main Card Container */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden ml-8">
+        {/* View Mode Toggle */}
+        <div className="absolute top-3 right-12 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+          <div className="flex items-center bg-gray-100 rounded-lg p-0.5 text-xs">
+            <button
+              onClick={() => { setViewMode('preview'); setEditingField(null); }}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
+                viewMode === 'preview'
+                  ? 'bg-white text-gray-700 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Eye size={12} />
+              Preview
+            </button>
+            <button
+              onClick={() => setViewMode('markdown')}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
+                viewMode === 'markdown'
+                  ? 'bg-white text-gray-700 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Code size={12} />
+              Markdown
+            </button>
+          </div>
+        </div>
 
         {/* SECTION 1: ISSUE HEADER (Title & Context) */}
         <div className="p-6 pb-4">
@@ -29,20 +139,33 @@ export const TaskCard: React.FC<TaskCardProps> = ({
               <FileText size={18} />
             </div>
             <div className="flex-1">
-              <input
-                value={task.title}
-                onChange={e => onChange({ ...task, title: e.target.value })}
-                className="w-full text-lg font-bold text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-100 rounded px-1 -ml-1"
-                placeholder="Task Title"
-              />
+              {viewMode === 'markdown' || editingField === 'title' ? (
+                <input
+                  value={task.title}
+                  onChange={e => onChange({ ...task, title: e.target.value })}
+                  onBlur={handleBlur}
+                  onFocus={() => setEditingField('title')}
+                  autoFocus={editingField === 'title'}
+                  className="w-full text-lg font-bold text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-100 rounded px-1 -ml-1"
+                  placeholder="Task Title"
+                />
+              ) : (
+                <div
+                  onClick={() => handleFieldClick('title')}
+                  className="w-full text-lg font-bold text-gray-900 cursor-pointer hover:bg-gray-50 rounded px-1 -ml-1"
+                >
+                  {task.title || <span className="text-gray-400 italic font-normal">Task Title</span>}
+                </div>
+              )}
               <div className="mt-2">
                 <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Context</span>
-                <TextareaAutosize
-                  value={task.body}
-                  onChange={e => onChange({ ...task, body: e.target.value })}
-                  className="w-full mt-1 text-gray-600 leading-relaxed resize-none focus:outline-none focus:bg-gray-50 rounded p-1 -ml-1"
-                  placeholder="Describe the context..."
-                />
+                {renderEditableContent(
+                  'body',
+                  task.body,
+                  'Describe the context...',
+                  'w-full mt-1 text-gray-600 leading-relaxed',
+                  'w-full mt-1 text-gray-600 leading-relaxed'
+                )}
               </div>
             </div>
           </div>
@@ -58,12 +181,13 @@ export const TaskCard: React.FC<TaskCardProps> = ({
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Suggested Implementation</span>
               </div>
-              <TextareaAutosize
-                value={task.implementation}
-                onChange={e => onChange({ ...task, implementation: e.target.value })}
-                className="w-full font-mono text-sm text-slate-700 bg-transparent resize-none focus:outline-none focus:bg-white focus:ring-1 focus:ring-slate-200 rounded p-2 -ml-2 transition-colors"
-                placeholder="Implementation details..."
-              />
+              {renderEditableContent(
+                'implementation',
+                task.implementation,
+                'Implementation details...',
+                'w-full font-mono text-sm text-slate-700 bg-transparent transition-colors',
+                'w-full font-mono text-sm text-slate-700'
+              )}
             </div>
           </div>
         </div>
@@ -76,16 +200,16 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             </div>
             <div className="flex-1">
               <span className="text-xs font-semibold text-yellow-600/70 uppercase tracking-wider block mb-1">User Notes</span>
-              <TextareaAutosize
-                value={task.notes || ''}
-                onChange={e => onChange({ ...task, notes: e.target.value })}
-                className="w-full text-sm text-gray-600 bg-transparent resize-none focus:outline-none placeholder-yellow-600/30"
-                placeholder="Add your notes here..."
-              />
+              {renderEditableContent(
+                'notes',
+                task.notes || '',
+                'Add your notes here...',
+                'w-full text-sm text-gray-600 bg-transparent placeholder-yellow-600/30',
+                'w-full text-sm text-gray-600'
+              )}
             </div>
           </div>
         </div>
-
       </div>
 
       {/* Hidden Hover Actions */}
@@ -94,6 +218,36 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             <Trash2 size={16} />
          </button>
       </div>
+    </div>
+  );
+});
+
+TaskCard.displayName = 'TaskCard';
+
+// Sortable wrapper for TaskCard
+export const SortableTaskCard: React.FC<Omit<TaskCardProps, 'dragHandleProps' | 'isDragging'>> = (props) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: props.task.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div style={style}>
+      <TaskCard
+        ref={setNodeRef}
+        {...props}
+        isDragging={isDragging}
+        dragHandleProps={{ ...attributes, ...listeners }}
+      />
     </div>
   );
 };
