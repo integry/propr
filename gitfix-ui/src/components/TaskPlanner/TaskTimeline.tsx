@@ -78,12 +78,12 @@ const SortableStep: React.FC<SortableStepProps> = ({
       )}
 
       {/* Step indicator with drag handle */}
-      <div className="group relative flex items-center">
+      <div className="group relative flex items-center overflow-visible">
         {/* Drag handle */}
         <div
           {...attributes}
           {...listeners}
-          className="absolute -left-6 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
+          className="absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing z-10"
         >
           <GripVertical size={14} className="text-gray-400" />
         </div>
@@ -94,11 +94,11 @@ const SortableStep: React.FC<SortableStepProps> = ({
             isDragging
               ? 'bg-indigo-600 text-white shadow-lg scale-110'
               : isActive
-              ? 'bg-indigo-600 text-white shadow-md scale-110'
+              ? 'bg-indigo-600 text-white shadow-md ring-2 ring-indigo-300 ring-offset-2'
               : isCompleted
               ? 'bg-green-500 text-white'
               : isPast
-              ? 'bg-indigo-200 text-indigo-600'
+              ? 'bg-indigo-100 text-indigo-500'
               : 'bg-gray-200 text-gray-500 hover:bg-gray-300'
           }`}
           title={title}
@@ -110,7 +110,7 @@ const SortableStep: React.FC<SortableStepProps> = ({
           )}
 
           {/* Tooltip on hover */}
-          <div className="absolute left-full ml-2 px-3 py-1.5 bg-gray-900 text-white text-sm font-medium rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20 max-w-[250px] whitespace-normal">
+          <div className="absolute left-full ml-3 px-3 py-1.5 bg-gray-900 text-white text-sm font-medium rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 max-w-[250px] whitespace-normal">
             {title}
           </div>
         </button>
@@ -162,8 +162,8 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   const ids = taskIds.length > 0 ? taskIds : Array.from({ length: taskCount }, (_, i) => `step-${i}`);
 
   return (
-    <div className="sticky top-0 h-full w-16 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 overflow-y-auto">
-      <div className="flex flex-col items-center">
+    <div className="sticky top-0 h-full w-20 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 overflow-visible">
+      <div className="flex flex-col items-center overflow-visible">
         {/* Timeline header */}
         <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">
           Steps

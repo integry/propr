@@ -1,12 +1,13 @@
-import React, { useState, forwardRef } from 'react';
+import { useState, forwardRef } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { FileText, MessageSquare, StickyNote, Trash2, Eye, Code } from 'lucide-react';
+import { MessageSquare, StickyNote, Trash2, Eye, Code } from 'lucide-react';
 import { PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 
 interface TaskCardProps {
   task: PlanTask;
   isHighlighted: boolean;
+  stepNumber: number;
   onChange: (task: PlanTask) => void;
   onDelete: () => void;
   onAddBelow: () => void;
@@ -18,6 +19,7 @@ type ViewMode = 'preview' | 'markdown';
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   task,
   isHighlighted,
+  stepNumber,
   onChange,
   onDelete,
 }, ref) => {
@@ -117,11 +119,11 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
           </div>
         </div>
 
-        {/* SECTION 1: ISSUE HEADER (Title & Context) */}
+        {/* SECTION 1: ISSUE HEADER (Title & Specification) */}
         <div className="p-6 pb-4">
           <div className="flex items-start gap-3 mb-4">
-            <div className="mt-1 p-1.5 bg-blue-50 text-blue-600 rounded-md">
-              <FileText size={18} />
+            <div className="mt-1 w-8 h-8 flex items-center justify-center bg-indigo-600 text-white rounded-full font-semibold text-sm flex-shrink-0">
+              {stepNumber}
             </div>
             <div className="flex-1">
               {viewMode === 'markdown' || editingField === 'title' ? (
@@ -143,7 +145,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 </div>
               )}
               <div className="mt-2">
-                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Context</span>
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Specification</span>
                 {renderEditableContent(
                   'body',
                   task.body,

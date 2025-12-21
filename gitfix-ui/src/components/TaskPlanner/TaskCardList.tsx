@@ -176,6 +176,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                   <TaskCard
                     task={task}
                     isHighlighted={isHighlighted}
+                    stepNumber={index + 1}
                     onChange={(updatedTask) => onTaskChange(task.id, updatedTask)}
                     onDelete={() => onDeleteTask(task.id)}
                     onAddBelow={() => onAddTask(task.id)}
