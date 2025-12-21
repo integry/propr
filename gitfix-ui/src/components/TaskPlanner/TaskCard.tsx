@@ -64,7 +64,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
       return (
         <div
           onClick={() => handleFieldClick(field)}
-          className={`${markdownClassName || className} cursor-pointer hover:bg-gray-50 rounded p-1 -ml-1 min-h-[24px] text-gray-400 italic`}
+          className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1 min-h-[24px] text-gray-400 italic`}
         >
           {placeholder}
         </div>
@@ -74,7 +74,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     return (
       <div
         onClick={() => handleFieldClick(field)}
-        className={`${markdownClassName || className} cursor-pointer hover:bg-gray-50 rounded p-1 -ml-1`}
+        className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1`}
       >
         <MarkdownRenderer text={value} className="prose prose-sm max-w-none" />
       </div>
@@ -91,32 +91,35 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     >
       {/* Main Card Container */}
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-        {/* View Mode Toggle */}
-        <div className="absolute top-3 right-12 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-          <div className="flex items-center bg-gray-100 rounded-lg p-0.5 text-xs">
+        {/* View Mode Toggle and Delete - positioned at top right, not overlaying title */}
+        <div className="absolute -top-3 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 flex items-center gap-2">
+          <div className="flex items-center bg-gray-100 rounded-lg p-1">
             <button
               onClick={() => { setViewMode('preview'); setEditingField(null); }}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors text-sm ${
                 viewMode === 'preview'
                   ? 'bg-white text-gray-700 shadow-sm'
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
-              <Eye size={12} />
+              <Eye size={14} />
               Preview
             </button>
             <button
               onClick={() => setViewMode('markdown')}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors text-sm ${
                 viewMode === 'markdown'
                   ? 'bg-white text-gray-700 shadow-sm'
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
-              <Code size={12} />
-              Markdown
+              <Code size={14} />
+              Edit
             </button>
           </div>
+          <button onClick={onDelete} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors bg-gray-100">
+            <Trash2 size={16} />
+          </button>
         </div>
 
         {/* SECTION 1: ISSUE HEADER (Title & Specification) */}
@@ -139,7 +142,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
               ) : (
                 <div
                   onClick={() => handleFieldClick('title')}
-                  className="w-full text-lg font-bold text-gray-900 cursor-pointer hover:bg-gray-50 rounded px-1 -ml-1"
+                  className="w-full text-lg font-bold text-gray-900 cursor-default hover:bg-gray-50 rounded px-1 -ml-1"
                 >
                   {task.title || <span className="text-gray-400 italic font-normal">Task Title</span>}
                 </div>
@@ -159,7 +162,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         </div>
 
         {/* SECTION 2: IMPLEMENTATION (Comment Style) */}
-        <div className="bg-slate-50 border-t border-gray-100 p-6 pt-4">
+        <div className="bg-slate-50 border-t border-gray-100 p-6 pt-4 group/impl">
           <div className="flex items-start gap-3">
             <div className="mt-1 p-1.5 bg-slate-200 text-slate-600 rounded-md">
               <MessageSquare size={16} />
@@ -167,6 +170,15 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
             <div className="flex-1">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Suggested Implementation</span>
+                {task.implementation && (
+                  <button
+                    onClick={() => onChange({ ...task, implementation: '' })}
+                    className="opacity-0 group-hover/impl:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                    title="Clear implementation"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
               {renderEditableContent(
                 'implementation',
@@ -199,12 +211,6 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         </div>
       </div>
 
-      {/* Hidden Hover Actions */}
-      <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
-         <button onClick={onDelete} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors">
-            <Trash2 size={16} />
-         </button>
-      </div>
     </div>
   );
 });

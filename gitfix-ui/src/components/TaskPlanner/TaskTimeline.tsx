@@ -78,14 +78,15 @@ const SortableStep: React.FC<SortableStepProps> = ({
       )}
 
       {/* Step indicator with drag handle */}
-      <div className="group relative flex items-center overflow-visible">
-        {/* Drag handle */}
+      <div className="group relative flex items-center">
+        {/* Drag handle - positioned to be fully visible and draggable */}
         <div
           {...attributes}
           {...listeners}
-          className="absolute -left-4 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing z-10"
+          className="absolute -left-6 w-5 h-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing z-20"
+          style={{ touchAction: 'none' }}
         >
-          <GripVertical size={14} className="text-gray-400" />
+          <GripVertical size={14} className="text-gray-400 hover:text-gray-600" />
         </div>
 
         <button
@@ -110,7 +111,7 @@ const SortableStep: React.FC<SortableStepProps> = ({
           )}
 
           {/* Tooltip on hover */}
-          <div className="absolute left-full ml-3 px-3 py-1.5 bg-gray-900 text-white text-sm font-medium rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 max-w-[250px] whitespace-normal">
+          <div className="absolute left-full ml-3 px-3 py-1.5 bg-gray-900 text-white text-sm font-medium rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none max-w-[250px] whitespace-normal" style={{ zIndex: 9999 }}>
             {title}
           </div>
         </button>
@@ -162,8 +163,8 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   const ids = taskIds.length > 0 ? taskIds : Array.from({ length: taskCount }, (_, i) => `step-${i}`);
 
   return (
-    <div className="sticky top-0 h-full w-20 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 overflow-visible">
-      <div className="flex flex-col items-center overflow-visible">
+    <div className="sticky top-0 h-full w-24 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 pl-4">
+      <div className="flex flex-col items-center">
         {/* Timeline header */}
         <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">
           Steps
