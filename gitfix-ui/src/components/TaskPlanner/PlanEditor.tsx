@@ -6,7 +6,7 @@ import { usePlanRefinement, SaveStatus } from '../../hooks/usePlanRefinement';
 import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage } from '../../api/gitfixApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
-import { useToast } from '../ui/Toast';
+import { useToast } from '../ui/useToast';
 
 interface PlanEditorProps {
   draft: DraftWithPlan;

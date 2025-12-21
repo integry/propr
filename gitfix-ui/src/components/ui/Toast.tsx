@@ -1,29 +1,7 @@
-import React, { useEffect, useState, useCallback, createContext, useContext } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Undo2, CheckCircle, AlertCircle, Info } from 'lucide-react';
-
-export interface Toast {
-  id: string;
-  type: 'success' | 'error' | 'info' | 'undo';
-  message: string;
-  duration?: number;
-  onUndo?: () => void;
-}
-
-interface ToastContextType {
-  addToast: (toast: Omit<Toast, 'id'>) => string;
-  removeToast: (id: string) => void;
-}
-
-const ToastContext = createContext<ToastContextType | null>(null);
-
-export const useToast = () => {
-  const context = useContext(ToastContext);
-  if (!context) {
-    throw new Error('useToast must be used within a ToastProvider');
-  }
-  return context;
-};
+import { Toast, ToastContext } from './useToast';
 
 const ToastItem: React.FC<{ toast: Toast; onRemove: () => void }> = ({ toast, onRemove }) => {
   useEffect(() => {
