@@ -6,6 +6,7 @@ import { usePlanRefinement, SaveStatus } from '../../hooks/usePlanRefinement';
 import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage } from '../../api/gitfixApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
+import { useToast } from '../ui/Toast';
 
 interface PlanEditorProps {
   draft: DraftWithPlan;
@@ -53,6 +54,7 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
 export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => {
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
+  const { addToast } = useToast();
 
   // Defensively ensure plan_json is an array
   const initialPlan = (() => {
@@ -68,6 +70,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
     updateTask,
     addTask,
     deleteTask,
+    restoreTask,
     reorderTasks,
     handleRefine,
     undo,
@@ -77,6 +80,19 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
     saveStatus,
     highlightedIds
   } = usePlanRefinement(draft.draft_id, initialPlan);
+
+  // Handle soft delete with undo toast
+  const handleDeleteTask = useCallback((taskId: string) => {
+    const deleted = deleteTask(taskId);
+    if (deleted) {
+      addToast({
+        type: 'undo',
+        message: `Task "${deleted.task.title}" deleted`,
+        duration: 5000,
+        onUndo: () => restoreTask(deleted)
+      });
+    }
+  }, [deleteTask, restoreTask, addToast]);
 
   // Debounced save for chat history
   const saveChatHistoryRef = useRef(
@@ -170,7 +186,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
               highlightedIds={highlightedIds}
               onTaskChange={updateTask}
               onAddTask={addTask}
-              onDeleteTask={deleteTask}
+              onDeleteTask={handleDeleteTask}
               onReorderTasks={reorderTasks}
             />
           </Panel>

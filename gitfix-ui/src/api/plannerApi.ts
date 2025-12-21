@@ -21,7 +21,7 @@ export interface PlannerDraft {
   draft_id: string;
   repository: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'generating' | 'refining';
+  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed';
   attachments: PlannerAttachment[];
   created_at: string;
   generation_trace?: GenerationTrace;
@@ -158,6 +158,8 @@ export interface PlanTask {
   body: string;
   implementation: string;
   notes?: string;
+  issue_number?: number;
+  issue_url?: string;
 }
 
 export interface ChatMessage {
@@ -222,7 +224,7 @@ export interface DraftListItem {
   repository: string;
   name?: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'executed' | 'generating' | 'refining';
+  status: 'draft' | 'review' | 'executed' | 'generating' | 'refining' | 'approved';
   updated_at: string;
   created_at: string;
 }

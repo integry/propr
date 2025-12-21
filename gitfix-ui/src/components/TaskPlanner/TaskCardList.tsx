@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { Plus } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   DndContext,
   closestCenter,
@@ -194,19 +195,54 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
               {/* Hover zone before first task */}
               <HoverZone taskId="" onAddTask={() => onAddTask('')} />
 
-              {tasks.map((task, index) => (
-                <div key={task.id} data-task-index={index}>
-                  <SortableTaskCard
-                    task={task}
-                    isHighlighted={highlightedIds.includes(task.id)}
-                    onChange={(updatedTask) => onTaskChange(task.id, updatedTask)}
-                    onDelete={() => onDeleteTask(task.id)}
-                    onAddBelow={() => onAddTask(task.id)}
-                  />
-                  {/* Hover zone after each task */}
-                  <HoverZone taskId={task.id} onAddTask={onAddTask} />
-                </div>
-              ))}
+              <AnimatePresence mode="popLayout">
+                {tasks.map((task, index) => {
+                  const isHighlighted = highlightedIds.includes(task.id);
+                  return (
+                    <motion.div
+                      key={task.id}
+                      data-task-index={index}
+                      layout
+                      initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                      animate={{
+                        opacity: 1,
+                        y: 0,
+                        scale: 1,
+                        boxShadow: isHighlighted
+                          ? '0 0 0 3px rgba(129, 140, 248, 0.4), 0 4px 20px rgba(129, 140, 248, 0.15)'
+                          : 'none',
+                      }}
+                      exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                      transition={{
+                        layout: { duration: 0.3 },
+                        opacity: { duration: 0.2 },
+                        scale: { duration: 0.2 },
+                        boxShadow: { duration: 0.3 },
+                      }}
+                      className="relative"
+                    >
+                      {/* Highlight pulse effect */}
+                      {isHighlighted && (
+                        <motion.div
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: [0.5, 0.2, 0.5] }}
+                          transition={{ duration: 1.5, repeat: Infinity }}
+                          className="absolute inset-0 bg-indigo-100 rounded-xl -z-10 ml-8"
+                        />
+                      )}
+                      <SortableTaskCard
+                        task={task}
+                        isHighlighted={isHighlighted}
+                        onChange={(updatedTask) => onTaskChange(task.id, updatedTask)}
+                        onDelete={() => onDeleteTask(task.id)}
+                        onAddBelow={() => onAddTask(task.id)}
+                      />
+                      {/* Hover zone after each task */}
+                      <HoverZone taskId={task.id} onAddTask={onAddTask} />
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
             </div>
           </SortableContext>
 
