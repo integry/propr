@@ -9,6 +9,7 @@ import PlansPage from './pages/PlansPage'
 import AiAgentsPage from './pages/AiAgentsPage'
 import SettingsPage from './pages/SettingsPage'
 import LoginPage from './pages/LoginPage'
+import { ToastProvider } from './components/ui/Toast'
 import './App.css'
 import { getSystemStatus } from './api/gitfixApi'
 
@@ -46,75 +47,77 @@ const App: React.FC = () => {
   }, []);
 
   return (
-    <Router>
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route
-          path="/"
-          element={
-            <Layout>
-              <Dashboard />
-            </Layout>
-          }
-        />
-        <Route
-          path="/repositories"
-          element={
-            <Layout>
-              <RepositoriesPage />
-            </Layout>
-          }
-        />
-        <Route
-          path="/tasks"
-          element={
-            <Layout>
-              <TasksPage />
-            </Layout>
-          }
-        />
-        <Route
-          path="/tasks/:taskId"
-          element={
-            <Layout>
-              <TasksPage />
-            </Layout>
-          }
-        />
-        <Route
-          path="/tasks/plan/:draftId"
-          element={
-            <Layout>
-              <TaskPlannerPage />
-            </Layout>
-          }
-        />
-        <Route
-          path="/plans"
-          element={
-            <Layout>
-              <PlansPage />
-            </Layout>
-          }
-        />
-        <Route
-          path="/ai-agents"
-          element={
-            <Layout>
-              <AiAgentsPage />
-            </Layout>
-          }
-        />
-        <Route
-          path="/settings"
-          element={
-            <Layout>
-              <SettingsPage />
-            </Layout>
-          }
-        />
-      </Routes>
-    </Router>
+    <ToastProvider>
+      <Router>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route
+            path="/"
+            element={
+              <Layout>
+                <Dashboard />
+              </Layout>
+            }
+          />
+          <Route
+            path="/repositories"
+            element={
+              <Layout>
+                <RepositoriesPage />
+              </Layout>
+            }
+          />
+          <Route
+            path="/tasks"
+            element={
+              <Layout>
+                <TasksPage />
+              </Layout>
+            }
+          />
+          <Route
+            path="/tasks/:taskId"
+            element={
+              <Layout>
+                <TasksPage />
+              </Layout>
+            }
+          />
+          <Route
+            path="/tasks/plan/:draftId"
+            element={
+              <Layout>
+                <TaskPlannerPage />
+              </Layout>
+            }
+          />
+          <Route
+            path="/plans"
+            element={
+              <Layout>
+                <PlansPage />
+              </Layout>
+            }
+          />
+          <Route
+            path="/ai-agents"
+            element={
+              <Layout>
+                <AiAgentsPage />
+              </Layout>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <Layout>
+                <SettingsPage />
+              </Layout>
+            }
+          />
+        </Routes>
+      </Router>
+    </ToastProvider>
   )
 }
 

@@ -1,22 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { Plus } from 'lucide-react';
-import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  DragEndEvent,
-  DragOverlay,
-  DragStartEvent,
-} from '@dnd-kit/core';
-import {
-  SortableContext,
-  sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
-import { TaskCard, SortableTaskCard } from './TaskCard';
+import { motion, AnimatePresence } from 'framer-motion';
+import TaskCard from './TaskCard';
 import TaskTimeline from './TaskTimeline';
 import { PlanTask } from '../../api/gitfixApi';
 
@@ -83,39 +68,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
   onDeleteTask,
   onReorderTasks,
 }) => {
-  const [activeId, setActiveId] = useState<string | null>(null);
   const [activeTaskIndex, setActiveTaskIndex] = useState<number>(0);
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: {
-        distance: 8,
-      },
-    }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  );
-
-  const handleDragStart = (event: DragStartEvent) => {
-    setActiveId(event.active.id as string);
-  };
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-
-    if (over && active.id !== over.id && onReorderTasks) {
-      onReorderTasks(active.id as string, over.id as string);
-    }
-
-    setActiveId(null);
-  };
-
-  const handleDragCancel = () => {
-    setActiveId(null);
-  };
-
-  const activeTask = activeId ? tasks.find(t => t.id === activeId) : null;
 
   // Handle scroll-based timeline highlighting
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
@@ -165,12 +118,14 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
 
   return (
     <div className="flex h-full">
-      {/* Sticky Timeline Sidebar */}
+      {/* Sticky Timeline Sidebar with Drag & Drop */}
       <TaskTimeline
         taskCount={tasks.length}
         activeIndex={activeTaskIndex}
         onStepClick={handleTimelineClick}
         taskTitles={tasks.map(t => t.title)}
+        taskIds={tasks.map(t => t.id)}
+        onReorderTasks={onReorderTasks}
       />
 
       {/* Main Task List */}
@@ -179,53 +134,60 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
         data-task-list
         onScroll={handleScroll}
       >
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
-          onDragCancel={handleDragCancel}
-        >
-          <SortableContext
-            items={tasks.map(t => t.id)}
-            strategy={verticalListSortingStrategy}
-          >
-            <div className="space-y-2">
-              {/* Hover zone before first task */}
-              <HoverZone taskId="" onAddTask={() => onAddTask('')} />
+        <div className="space-y-2">
+          {/* Hover zone before first task */}
+          <HoverZone taskId="" onAddTask={() => onAddTask('')} />
 
-              {tasks.map((task, index) => (
-                <div key={task.id} data-task-index={index}>
-                  <SortableTaskCard
+          <AnimatePresence mode="popLayout">
+            {tasks.map((task, index) => {
+              const isHighlighted = highlightedIds.includes(task.id);
+              return (
+                <motion.div
+                  key={task.id}
+                  data-task-index={index}
+                  layout
+                  initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                  animate={{
+                    opacity: 1,
+                    y: 0,
+                    scale: 1,
+                    boxShadow: isHighlighted
+                      ? '0 0 0 3px rgba(129, 140, 248, 0.4), 0 4px 20px rgba(129, 140, 248, 0.15)'
+                      : 'none',
+                  }}
+                  exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                  transition={{
+                    layout: { duration: 0.3 },
+                    opacity: { duration: 0.2 },
+                    scale: { duration: 0.2 },
+                    boxShadow: { duration: 0.3 },
+                  }}
+                  className="relative"
+                >
+                  {/* Highlight pulse effect */}
+                  {isHighlighted && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: [0.5, 0.2, 0.5] }}
+                      transition={{ duration: 1.5, repeat: Infinity }}
+                      className="absolute inset-0 bg-indigo-100 rounded-xl -z-10"
+                    />
+                  )}
+                  <TaskCard
                     task={task}
-                    isHighlighted={highlightedIds.includes(task.id)}
+                    isHighlighted={isHighlighted}
+                    stepNumber={index + 1}
                     onChange={(updatedTask) => onTaskChange(task.id, updatedTask)}
                     onDelete={() => onDeleteTask(task.id)}
                     onAddBelow={() => onAddTask(task.id)}
                   />
                   {/* Hover zone after each task */}
                   <HoverZone taskId={task.id} onAddTask={onAddTask} />
-                </div>
-              ))}
-            </div>
-          </SortableContext>
-
-          {/* Drag overlay for visual feedback */}
-          <DragOverlay>
-            {activeTask ? (
-              <div className="opacity-90 shadow-2xl">
-                <TaskCard
-                  task={activeTask}
-                  isHighlighted={false}
-                  onChange={() => {}}
-                  onDelete={() => {}}
-                  onAddBelow={() => {}}
-                  isDragging
-                />
-              </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
+                </motion.div>
+              );
+            })}
+          </AnimatePresence>
+        </div>
       </div>
     </div>
   );

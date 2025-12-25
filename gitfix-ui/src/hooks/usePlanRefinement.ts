@@ -4,12 +4,18 @@ import { updateDraft, refinePlan, getDraftWithPlan, PlanTask } from '../api/gitf
 
 export type SaveStatus = 'saved' | 'saving' | 'error';
 
+export interface DeletedTask {
+  task: PlanTask;
+  index: number;
+}
+
 interface UsePlanRefinementResult {
   plan: PlanTask[];
   updatePlan: (newPlan: PlanTask[], origin?: 'user' | 'ai') => void;
   updateTask: (taskId: string, updates: Partial<PlanTask>) => void;
   addTask: (afterTaskId: string) => void;
-  deleteTask: (taskId: string) => void;
+  deleteTask: (taskId: string) => DeletedTask | null;
+  restoreTask: (deleted: DeletedTask) => void;
   reorderTasks: (activeId: string, overId: string) => void;
   handleRefine: (instruction: string) => Promise<{ success: boolean; message: string }>;
   undo: () => void;
@@ -92,8 +98,22 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     updatePlan(newPlan, 'user');
   }, [currentPlan, updatePlan]);
 
-  const deleteTask = useCallback((taskId: string) => {
+  const deleteTask = useCallback((taskId: string): DeletedTask | null => {
+    const index = currentPlan.findIndex(t => t.id === taskId);
+    if (index === -1) return null;
+
+    const task = currentPlan[index];
     const newPlan = currentPlan.filter(t => t.id !== taskId);
+    updatePlan(newPlan, 'user');
+
+    return { task, index };
+  }, [currentPlan, updatePlan]);
+
+  const restoreTask = useCallback((deleted: DeletedTask) => {
+    const newPlan = [...currentPlan];
+    // Insert at the original index, or at the end if the index is out of bounds
+    const insertIndex = Math.min(deleted.index, newPlan.length);
+    newPlan.splice(insertIndex, 0, deleted.task);
     updatePlan(newPlan, 'user');
   }, [currentPlan, updatePlan]);
 
@@ -172,6 +192,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     updateTask,
     addTask,
     deleteTask,
+    restoreTask,
     reorderTasks,
     handleRefine,
     undo,
