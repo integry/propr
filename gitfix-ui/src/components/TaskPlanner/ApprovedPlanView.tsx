@@ -1,6 +1,6 @@
-import React from 'react';
-import { motion } from 'framer-motion';
-import { ExternalLink, CheckCircle, MessageSquare, StickyNote, Github } from 'lucide-react';
+import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { ExternalLink, CheckCircle, MessageSquare, StickyNote, Github, ChevronDown } from 'lucide-react';
 import { DraftWithPlan, PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 
@@ -14,6 +14,18 @@ interface ViewOnlyTaskCardProps {
 }
 
 const ViewOnlyTaskCard: React.FC<ViewOnlyTaskCardProps> = ({ task, index }) => {
+  const [isImplementationCollapsed, setIsImplementationCollapsed] = useState(true);
+
+  const toggleImplementationCollapse = () => {
+    setIsImplementationCollapsed(prev => !prev);
+  };
+
+  const getImplementationPreview = () => {
+    if (!task.implementation) return 'No implementation details';
+    const firstLine = task.implementation.split('\n')[0];
+    return firstLine.length > 80 ? firstLine.substring(0, 80) + '...' : firstLine || 'Click to expand';
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -63,20 +75,59 @@ const ViewOnlyTaskCard: React.FC<ViewOnlyTaskCardProps> = ({ task, index }) => {
         {/* SECTION 2: IMPLEMENTATION (Comment Style) */}
         <div className="bg-slate-50 border-t border-gray-100 p-6 pt-4">
           <div className="flex items-start gap-3">
-            <div className="mt-1 p-1.5 bg-slate-200 text-slate-600 rounded-md">
+            <div
+              className="mt-1 p-1.5 bg-slate-200 text-slate-600 rounded-md cursor-pointer hover:bg-slate-300 transition-colors"
+              onClick={toggleImplementationCollapse}
+            >
               <MessageSquare size={16} />
             </div>
             <div className="flex-1">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Suggested Implementation</span>
-              </div>
-              {task.implementation ? (
-                <div className="font-mono text-sm text-slate-700">
-                  <MarkdownRenderer text={task.implementation} className="prose prose-sm max-w-none" />
+              <div
+                className="flex items-center justify-between mb-2 cursor-pointer select-none"
+                onClick={toggleImplementationCollapse}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Suggested Implementation</span>
+                  <motion.div
+                    animate={{ rotate: isImplementationCollapsed ? 0 : 180 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <ChevronDown size={16} className="text-slate-400" />
+                  </motion.div>
                 </div>
-              ) : (
-                <p className="text-slate-400 italic text-sm">No implementation details</p>
-              )}
+              </div>
+
+              <AnimatePresence initial={false}>
+                {isImplementationCollapsed ? (
+                  <motion.div
+                    key="collapsed"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="text-sm text-slate-400 italic truncate cursor-pointer"
+                    onClick={toggleImplementationCollapse}
+                  >
+                    {getImplementationPreview()}
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="expanded"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    {task.implementation ? (
+                      <div className="font-mono text-sm text-slate-700">
+                        <MarkdownRenderer text={task.implementation} className="prose prose-sm max-w-none" />
+                      </div>
+                    ) : (
+                      <p className="text-slate-400 italic text-sm">No implementation details</p>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </div>
         </div>
