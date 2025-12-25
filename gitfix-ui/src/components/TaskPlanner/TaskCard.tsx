@@ -1,19 +1,16 @@
-import React, { useState, forwardRef } from 'react';
+import { useState, forwardRef } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { FileText, MessageSquare, StickyNote, Trash2, Eye, Code, GripVertical } from 'lucide-react';
-import { useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { MessageSquare, StickyNote, Trash2, Eye, Code } from 'lucide-react';
 import { PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 
 interface TaskCardProps {
   task: PlanTask;
   isHighlighted: boolean;
+  stepNumber: number;
   onChange: (task: PlanTask) => void;
   onDelete: () => void;
   onAddBelow: () => void;
-  isDragging?: boolean;
-  dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
 }
 
 type EditableField = 'title' | 'body' | 'implementation' | 'notes' | null;
@@ -22,10 +19,9 @@ type ViewMode = 'preview' | 'markdown';
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   task,
   isHighlighted,
+  stepNumber,
   onChange,
   onDelete,
-  isDragging = false,
-  dragHandleProps
 }, ref) => {
   const [editingField, setEditingField] = useState<EditableField>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
@@ -68,7 +64,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
       return (
         <div
           onClick={() => handleFieldClick(field)}
-          className={`${markdownClassName || className} cursor-pointer hover:bg-gray-50 rounded p-1 -ml-1 min-h-[24px] text-gray-400 italic`}
+          className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1 min-h-[24px] text-gray-400 italic`}
         >
           {placeholder}
         </div>
@@ -78,7 +74,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     return (
       <div
         onClick={() => handleFieldClick(field)}
-        className={`${markdownClassName || className} cursor-pointer hover:bg-gray-50 rounded p-1 -ml-1`}
+        className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1`}
       >
         <MarkdownRenderer text={value} className="prose prose-sm max-w-none" />
       </div>
@@ -90,53 +86,47 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
       ref={ref}
       className={
         'group relative transition-all duration-500 ' +
-        (isHighlighted ? 'ring-2 ring-indigo-400 shadow-lg' : 'hover:shadow-md') +
-        (isDragging ? ' opacity-50 shadow-2xl scale-[1.02]' : '')
+        (isHighlighted ? 'ring-2 ring-indigo-400 shadow-lg' : 'hover:shadow-md')
       }
     >
-      {/* Drag Handle - appears on hover */}
-      <div
-        {...dragHandleProps}
-        className="absolute left-0 top-0 bottom-0 w-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing z-10 bg-gradient-to-r from-gray-100/80 to-transparent rounded-l-xl"
-      >
-        <GripVertical size={18} className="text-gray-400" />
-      </div>
-
       {/* Main Card Container */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden ml-8">
-        {/* View Mode Toggle */}
-        <div className="absolute top-3 right-12 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-          <div className="flex items-center bg-gray-100 rounded-lg p-0.5 text-xs">
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+        {/* View Mode Toggle and Delete - positioned at top right, not overlaying title */}
+        <div className="absolute -top-3 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 flex items-center gap-2">
+          <div className="flex items-center bg-gray-100 rounded-lg p-1">
             <button
               onClick={() => { setViewMode('preview'); setEditingField(null); }}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors text-sm ${
                 viewMode === 'preview'
                   ? 'bg-white text-gray-700 shadow-sm'
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
-              <Eye size={12} />
+              <Eye size={14} />
               Preview
             </button>
             <button
               onClick={() => setViewMode('markdown')}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors text-sm ${
                 viewMode === 'markdown'
                   ? 'bg-white text-gray-700 shadow-sm'
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
-              <Code size={12} />
-              Markdown
+              <Code size={14} />
+              Edit
             </button>
           </div>
+          <button onClick={onDelete} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors bg-gray-100">
+            <Trash2 size={16} />
+          </button>
         </div>
 
-        {/* SECTION 1: ISSUE HEADER (Title & Context) */}
+        {/* SECTION 1: ISSUE HEADER (Title & Specification) */}
         <div className="p-6 pb-4">
           <div className="flex items-start gap-3 mb-4">
-            <div className="mt-1 p-1.5 bg-blue-50 text-blue-600 rounded-md">
-              <FileText size={18} />
+            <div className="mt-1 w-8 h-8 flex items-center justify-center bg-indigo-600 text-white rounded-full font-semibold text-sm flex-shrink-0">
+              {stepNumber}
             </div>
             <div className="flex-1">
               {viewMode === 'markdown' || editingField === 'title' ? (
@@ -152,19 +142,19 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
               ) : (
                 <div
                   onClick={() => handleFieldClick('title')}
-                  className="w-full text-lg font-bold text-gray-900 cursor-pointer hover:bg-gray-50 rounded px-1 -ml-1"
+                  className="w-full text-lg font-bold text-gray-900 cursor-default hover:bg-gray-50 rounded px-1 -ml-1"
                 >
                   {task.title || <span className="text-gray-400 italic font-normal">Task Title</span>}
                 </div>
               )}
               <div className="mt-2">
-                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Context</span>
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Specification</span>
                 {renderEditableContent(
                   'body',
                   task.body,
                   'Describe the context...',
-                  'w-full mt-1 text-gray-600 leading-relaxed',
-                  'w-full mt-1 text-gray-600 leading-relaxed'
+                  'w-full mt-1 text-gray-800 leading-relaxed',
+                  'w-full mt-1 text-gray-800 leading-relaxed'
                 )}
               </div>
             </div>
@@ -172,7 +162,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         </div>
 
         {/* SECTION 2: IMPLEMENTATION (Comment Style) */}
-        <div className="bg-slate-50 border-t border-gray-100 p-6 pt-4">
+        <div className="bg-slate-50 border-t border-gray-100 p-6 pt-4 group/impl">
           <div className="flex items-start gap-3">
             <div className="mt-1 p-1.5 bg-slate-200 text-slate-600 rounded-md">
               <MessageSquare size={16} />
@@ -180,13 +170,22 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
             <div className="flex-1">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Suggested Implementation</span>
+                {task.implementation && (
+                  <button
+                    onClick={() => onChange({ ...task, implementation: '' })}
+                    className="opacity-0 group-hover/impl:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                    title="Clear implementation"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
               {renderEditableContent(
                 'implementation',
                 task.implementation,
                 'Implementation details...',
-                'w-full font-mono text-sm text-slate-700 bg-transparent transition-colors',
-                'w-full font-mono text-sm text-slate-700'
+                'w-full font-mono text-sm text-gray-800 bg-transparent transition-colors',
+                'w-full font-mono text-sm text-gray-800'
               )}
             </div>
           </div>
@@ -199,57 +198,23 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
               <StickyNote size={16} />
             </div>
             <div className="flex-1">
-              <span className="text-xs font-semibold text-yellow-600/70 uppercase tracking-wider block mb-1">User Notes</span>
+              <span className="text-xs font-semibold text-yellow-700 uppercase tracking-wider block mb-1">User Notes</span>
               {renderEditableContent(
                 'notes',
                 task.notes || '',
                 'Add your notes here...',
-                'w-full text-sm text-gray-600 bg-transparent placeholder-yellow-600/30',
-                'w-full text-sm text-gray-600'
+                'w-full text-sm text-gray-800 bg-transparent placeholder-yellow-600/30',
+                'w-full text-sm text-gray-800'
               )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Hidden Hover Actions */}
-      <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
-         <button onClick={onDelete} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors">
-            <Trash2 size={16} />
-         </button>
-      </div>
     </div>
   );
 });
 
 TaskCard.displayName = 'TaskCard';
-
-// Sortable wrapper for TaskCard
-export const SortableTaskCard: React.FC<Omit<TaskCardProps, 'dragHandleProps' | 'isDragging'>> = (props) => {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: props.task.id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  return (
-    <div style={style}>
-      <TaskCard
-        ref={setNodeRef}
-        {...props}
-        isDragging={isDragging}
-        dragHandleProps={{ ...attributes, ...listeners }}
-      />
-    </div>
-  );
-};
 
 export default TaskCard;

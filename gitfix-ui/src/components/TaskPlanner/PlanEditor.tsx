@@ -6,6 +6,7 @@ import { usePlanRefinement, SaveStatus } from '../../hooks/usePlanRefinement';
 import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage } from '../../api/gitfixApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
+import { useToast } from '../ui/useToast';
 
 interface PlanEditorProps {
   draft: DraftWithPlan;
@@ -53,6 +54,7 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
 export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => {
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
+  const { addToast } = useToast();
 
   // Defensively ensure plan_json is an array
   const initialPlan = (() => {
@@ -68,6 +70,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
     updateTask,
     addTask,
     deleteTask,
+    restoreTask,
     reorderTasks,
     handleRefine,
     undo,
@@ -77,6 +80,19 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
     saveStatus,
     highlightedIds
   } = usePlanRefinement(draft.draft_id, initialPlan);
+
+  // Handle soft delete with undo toast
+  const handleDeleteTask = useCallback((taskId: string) => {
+    const deleted = deleteTask(taskId);
+    if (deleted) {
+      addToast({
+        type: 'undo',
+        message: `Task "${deleted.task.title}" deleted`,
+        duration: 5000,
+        onUndo: () => restoreTask(deleted)
+      });
+    }
+  }, [deleteTask, restoreTask, addToast]);
 
   // Debounced save for chat history
   const saveChatHistoryRef = useRef(
@@ -110,7 +126,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
     <div className="h-full flex flex-col bg-white rounded-lg shadow overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
         <div className="flex items-center gap-4">
-          <h2 className="font-semibold text-gray-900">Plan Editor</h2>
+          <div className="text-sm text-gray-500 truncate max-w-md">{(draft as DraftWithPlan & { name?: string }).name || draft.initial_prompt || 'Untitled Task'}</div>
           <StatusBadge status={draft.status} />
           <SaveIndicator status={saveStatus} />
         </div>
@@ -170,7 +186,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
               highlightedIds={highlightedIds}
               onTaskChange={updateTask}
               onAddTask={addTask}
-              onDeleteTask={deleteTask}
+              onDeleteTask={handleDeleteTask}
               onReorderTasks={reorderTasks}
             />
           </Panel>
