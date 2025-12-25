@@ -18,7 +18,7 @@ import {
   CheckCircle2,
   XCircle,
   Wrench,
-  Brain,
+  Lightbulb,
   Globe
 } from 'lucide-react';
 
@@ -301,7 +301,7 @@ const ToolResultContent: React.FC<ToolResultContentProps> = ({
 };
 
 const getEventIcon = (event: LiveEvent): React.ReactNode => {
-  if (event.type === 'thought') return <Brain className="h-4 w-4 text-purple-500" />;
+  if (event.type === 'thought') return <Lightbulb className="h-4 w-4 text-purple-500" />;
   if (event.type === 'tool_use') return getToolIcon(event.toolName || '');
   if (event.type === 'tool_result') {
     return event.isError ? <XCircle className="h-4 w-4 text-red-500" /> : <CheckCircle2 className="h-4 w-4 text-green-500" />;
@@ -395,7 +395,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
           <span className="text-sm font-normal text-gray-500">({events.length} events)</span>
         </h4>
         {collapsed && lastThought && (
-          <div className="text-sm text-gray-600 italic max-w-md truncate">
+          <div className="text-sm text-gray-600 max-w-md truncate">
             Thinking: {lastThought.substring(0, 100)}{lastThought.length > 100 ? '...' : ''}
           </div>
         )}
