@@ -353,9 +353,6 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   isTaskActive,
   taskInfo
 }) => {
-  // Check for any errors in the event stream
-  const hasErrors = useMemo(() => events.some(e => e.isError), [events]);
-
   // Get the last significant message (terminal output or tool result)
   const summaryMessage = useMemo(() => {
     if (events.length === 0) return '';
@@ -419,11 +416,6 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
           <Terminal className="h-5 w-5 text-gray-600" />
           <span>{isTaskActive ? 'Full Execution Event Log' : 'Execution Event Log'}</span>
           <span className="text-sm font-normal text-gray-500">({events.length} events)</span>
-          {hasErrors && (
-            <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded border border-amber-200">
-              Errors
-            </span>
-          )}
         </h4>
         {collapsed && summaryMessage && (
           <div className="text-sm italic max-w-md truncate text-gray-600">
