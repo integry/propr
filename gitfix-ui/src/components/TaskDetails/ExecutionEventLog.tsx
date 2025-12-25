@@ -411,26 +411,22 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   return (
     <div className="mb-6" id="execution-event-log-section">
       <div
-        className={`flex items-center justify-between cursor-pointer p-4 rounded-lg transition-colors border ${
-          hasErrors
-            ? 'bg-red-50 border-red-200 hover:bg-red-100'
-            : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
-        }`}
+        className="flex items-center justify-between cursor-pointer p-4 rounded-lg transition-colors border bg-gray-50 border-gray-200 hover:bg-gray-100"
         onClick={onToggleCollapse}
       >
-        <h4 className={`text-lg font-semibold flex items-center gap-3 ${hasErrors ? 'text-red-900' : 'text-gray-900'}`}>
-          <span className={hasErrors ? 'text-red-500' : 'text-gray-500'}>{collapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}</span>
-          <Terminal className={`h-5 w-5 ${hasErrors ? 'text-red-600' : 'text-gray-600'}`} />
+        <h4 className="text-lg font-semibold flex items-center gap-3 text-gray-900">
+          <span className="text-gray-500">{collapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}</span>
+          <Terminal className="h-5 w-5 text-gray-600" />
           <span>{isTaskActive ? 'Full Execution Event Log' : 'Execution Event Log'}</span>
-          <span className={`text-sm font-normal ${hasErrors ? 'text-red-500' : 'text-gray-500'}`}>({events.length} events)</span>
+          <span className="text-sm font-normal text-gray-500">({events.length} events)</span>
           {hasErrors && (
-            <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 rounded border border-red-200">
+            <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded border border-amber-200">
               Errors
             </span>
           )}
         </h4>
         {collapsed && summaryMessage && (
-          <div className={`text-sm italic max-w-md truncate ${hasErrors ? 'text-red-700' : 'text-gray-600'}`}>
+          <div className="text-sm italic max-w-md truncate text-gray-600">
             {summaryMessage}
           </div>
         )}
