@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { CheckCircle2, GripVertical } from 'lucide-react';
 import {
   DndContext,
@@ -8,6 +8,8 @@ import {
   useSensor,
   useSensors,
   DragEndEvent,
+  DragStartEvent,
+  DragOverlay,
 } from '@dnd-kit/core';
 import {
   SortableContext,
@@ -60,6 +62,7 @@ const SortableStep: React.FC<SortableStepProps> = ({
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
+    opacity: isDragging ? 0.5 : 1,
   };
 
   return (
@@ -79,14 +82,14 @@ const SortableStep: React.FC<SortableStepProps> = ({
 
       {/* Step indicator with drag handle */}
       <div className="group relative flex items-center">
-        {/* Drag handle - positioned to be fully visible and draggable */}
+        {/* Drag handle - inline next to step circle */}
         <div
           {...attributes}
           {...listeners}
-          className="absolute -left-6 w-5 h-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing z-20"
+          className="mr-1 w-4 h-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
           style={{ touchAction: 'none' }}
         >
-          <GripVertical size={14} className="text-gray-400 hover:text-gray-600" />
+          <GripVertical size={12} className="text-gray-400 hover:text-gray-600" />
         </div>
 
         <button
@@ -129,6 +132,51 @@ const SortableStep: React.FC<SortableStepProps> = ({
   );
 };
 
+// Component to render the step circle during drag overlay
+interface DragOverlayStepProps {
+  index: number;
+  isActive: boolean;
+  isCompleted: boolean;
+  isPast: boolean;
+  title: string;
+}
+
+const DragOverlayStep: React.FC<DragOverlayStepProps> = ({
+  index,
+  isActive,
+  isCompleted,
+  isPast,
+  title,
+}) => {
+  return (
+    <div className="flex items-center bg-white rounded-lg shadow-xl p-2 border-2 border-indigo-400">
+      <div className="mr-2 w-4 h-8 flex items-center justify-center cursor-grabbing">
+        <GripVertical size={12} className="text-gray-600" />
+      </div>
+      <div
+        className={`flex items-center justify-center w-8 h-8 rounded-full ${
+          isActive
+            ? 'bg-indigo-600 text-white'
+            : isCompleted
+            ? 'bg-green-500 text-white'
+            : isPast
+            ? 'bg-indigo-100 text-indigo-500'
+            : 'bg-gray-200 text-gray-500'
+        }`}
+      >
+        {isCompleted ? (
+          <CheckCircle2 size={16} />
+        ) : (
+          <span className="text-xs font-semibold">{index + 1}</span>
+        )}
+      </div>
+      <span className="ml-2 text-sm font-medium text-gray-700 max-w-[150px] truncate">
+        {title}
+      </span>
+    </div>
+  );
+};
+
 export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   taskCount,
   activeIndex,
@@ -138,10 +186,12 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   completedIndices = [],
   onReorderTasks,
 }) => {
+  const [activeId, setActiveId] = useState<string | null>(null);
+
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
-        distance: 8,
+        distance: 5,
       },
     }),
     useSensor(KeyboardSensor, {
@@ -149,8 +199,14 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
     })
   );
 
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveId(event.active.id as string);
+  };
+
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
+
+    setActiveId(null);
 
     if (over && active.id !== over.id && onReorderTasks) {
       onReorderTasks(active.id as string, over.id as string);
@@ -162,8 +218,15 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   // Generate IDs if not provided
   const ids = taskIds.length > 0 ? taskIds : Array.from({ length: taskCount }, (_, i) => `step-${i}`);
 
+  // Find active item details for drag overlay
+  const activeIndex_ = activeId ? ids.indexOf(activeId) : -1;
+  const activeTitle = activeIndex_ >= 0 ? (taskTitles[activeIndex_] || `Step ${activeIndex_ + 1}`) : '';
+  const activeIsActive = activeIndex_ === activeIndex;
+  const activeIsCompleted = activeIndex_ >= 0 && completedIndices.includes(activeIndex_);
+  const activeIsPast = activeIndex_ < activeIndex;
+
   return (
-    <div className="sticky top-0 h-full w-24 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 pl-4">
+    <div className="sticky top-0 h-full w-28 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 px-2">
       <div className="flex flex-col items-center">
         {/* Timeline header */}
         <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">
@@ -174,6 +237,7 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
           <SortableContext
@@ -203,6 +267,19 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
               })}
             </div>
           </SortableContext>
+
+          {/* Drag overlay for visual feedback */}
+          <DragOverlay dropAnimation={null}>
+            {activeId && activeIndex_ >= 0 ? (
+              <DragOverlayStep
+                index={activeIndex_}
+                isActive={activeIsActive}
+                isCompleted={activeIsCompleted}
+                isPast={activeIsPast}
+                title={activeTitle}
+              />
+            ) : null}
+          </DragOverlay>
         </DndContext>
 
         {/* Progress indicator */}
