@@ -79,23 +79,14 @@ if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPOSITORY" ]; then
 
         mkdir -p "$PR_CHECKOUT_BASE"
 
-        if [ -d "$PR_CHECKOUT_DIR/.git" ]; then
-            # Update existing checkout
-            echo "Updating existing checkout..."
-            git -C "$PR_CHECKOUT_DIR" fetch origin "$PR_BRANCH" --depth=1 2>/dev/null || true
-            git -C "$PR_CHECKOUT_DIR" checkout -f "$PR_BRANCH" 2>/dev/null || true
-            git -C "$PR_CHECKOUT_DIR" reset --hard "origin/$PR_BRANCH" 2>/dev/null || true
+        # Always fresh clone - shallow clones don't update well and it's fast anyway
+        echo "Cloning PR branch (shallow)..."
+        rm -rf "$PR_CHECKOUT_DIR" 2>/dev/null || true
+        CLONE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+        if git clone --depth=1 --single-branch --branch "$PR_BRANCH" "$CLONE_URL" "$PR_CHECKOUT_DIR" 2>/dev/null; then
+            echo "Clone successful"
         else
-            # Fresh shallow clone of just this branch
-            echo "Cloning PR branch (shallow)..."
-            rm -rf "$PR_CHECKOUT_DIR" 2>/dev/null || true
-            # Use token for auth if available
-            CLONE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-            if git clone --depth=1 --single-branch --branch "$PR_BRANCH" "$CLONE_URL" "$PR_CHECKOUT_DIR" 2>/dev/null; then
-                echo "Clone successful"
-            else
-                echo "Warning: Clone failed, using current code"
-            fi
+            echo "Warning: Clone failed, using current code"
         fi
 
         if [ -f "$PR_CHECKOUT_DIR/docker-compose.yml" ]; then
