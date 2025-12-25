@@ -56,20 +56,24 @@ const SortableStep: React.FC<SortableStepProps> = ({
     attributes,
     listeners,
     setNodeRef,
+    setActivatorNodeRef,
     transform,
     transition,
+    isDragging,
   } = useSortable({ id });
 
-  const style = {
+  const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
-    transition,
+    transition: transition || undefined,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 50 : undefined,
   };
 
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`relative flex flex-col items-center ${isBeingDragged ? 'z-50 opacity-50' : ''}`}
+      className="relative flex flex-col items-center"
     >
       {/* Connecting line (above) */}
       {index > 0 && (
@@ -83,14 +87,17 @@ const SortableStep: React.FC<SortableStepProps> = ({
       {/* Step indicator with drag handle */}
       <div className="group relative flex items-center">
         {/* Drag handle - inline next to step circle */}
-        <div
+        <button
+          type="button"
+          ref={setActivatorNodeRef}
           {...attributes}
           {...listeners}
-          className="mr-1 w-4 h-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
+          className="mr-1 w-4 h-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing focus:outline-none"
           style={{ touchAction: 'none' }}
+          tabIndex={0}
         >
           <GripVertical size={12} className="text-gray-400 hover:text-gray-600" />
-        </div>
+        </button>
 
         <button
           onClick={() => onStepClick(index)}
