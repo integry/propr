@@ -18,7 +18,7 @@ import {
   CheckCircle2,
   XCircle,
   Wrench,
-  Brain,
+  Lightbulb,
   Globe
 } from 'lucide-react';
 
@@ -301,7 +301,7 @@ const ToolResultContent: React.FC<ToolResultContentProps> = ({
 };
 
 const getEventIcon = (event: LiveEvent): React.ReactNode => {
-  if (event.type === 'thought') return <Brain className="h-4 w-4 text-purple-500" />;
+  if (event.type === 'thought') return <Lightbulb className="h-4 w-4 text-blue-600" />;
   if (event.type === 'tool_use') return getToolIcon(event.toolName || '');
   if (event.type === 'tool_result') {
     return event.isError ? <XCircle className="h-4 w-4 text-red-500" /> : <CheckCircle2 className="h-4 w-4 text-green-500" />;
