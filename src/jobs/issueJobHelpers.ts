@@ -292,10 +292,8 @@ export async function createPullRequest(
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
     const modelShortName = getModelShortName(modelName);
-    let prTitle = `${modelShortName} Analysis for Issue #${issueRef.number}: ${issueTitle}`;
-    if (commitResult) {
-        prTitle = `${modelShortName} Fix for Issue #${issueRef.number}: ${issueTitle}`;
-    }
+    // New format: [412 by Claude Opus] Title
+    const prTitle = '[' + issueRef.number + ' by ' + modelShortName + '] ' + issueTitle;
 
     const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
     const prBody = `## AI Implementation Summary
