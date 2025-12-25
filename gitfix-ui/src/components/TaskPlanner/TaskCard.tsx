@@ -1,6 +1,7 @@
 import { useState, forwardRef } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { MessageSquare, StickyNote, Trash2, Eye, Code } from 'lucide-react';
+import { MessageSquare, StickyNote, Trash2, Eye, Code, ChevronDown } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 
@@ -25,6 +26,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
 }, ref) => {
   const [editingField, setEditingField] = useState<EditableField>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
+  const [isImplementationCollapsed, setIsImplementationCollapsed] = useState(true);
 
   const handleFieldClick = (field: EditableField) => {
     if (viewMode === 'markdown') {
@@ -79,6 +81,18 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         <MarkdownRenderer text={value} className="prose prose-sm max-w-none" />
       </div>
     );
+  };
+
+  const toggleImplementationCollapse = () => {
+    setIsImplementationCollapsed(prev => !prev);
+  };
+
+  // Generate a preview snippet for collapsed state
+  const getImplementationPreview = () => {
+    if (!task.implementation) return 'No implementation details';
+    const firstLine = task.implementation.split('\n')[0];
+    const preview = firstLine.length > 80 ? firstLine.substring(0, 80) + '...' : firstLine;
+    return preview || 'Click to expand';
   };
 
   return (
@@ -164,15 +178,32 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         {/* SECTION 2: IMPLEMENTATION (Comment Style) */}
         <div className="bg-slate-50 border-t border-gray-100 p-6 pt-4 group/impl">
           <div className="flex items-start gap-3">
-            <div className="mt-1 p-1.5 bg-slate-200 text-slate-600 rounded-md">
+            <div
+              className="mt-1 p-1.5 bg-slate-200 text-slate-600 rounded-md cursor-pointer hover:bg-slate-300 transition-colors"
+              onClick={toggleImplementationCollapse}
+            >
               <MessageSquare size={16} />
             </div>
             <div className="flex-1">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Suggested Implementation</span>
+              <div
+                className="flex items-center justify-between mb-2 cursor-pointer select-none"
+                onClick={toggleImplementationCollapse}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Suggested Implementation</span>
+                  <motion.div
+                    animate={{ rotate: isImplementationCollapsed ? 0 : 180 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <ChevronDown size={16} className="text-slate-400" />
+                  </motion.div>
+                </div>
                 {task.implementation && (
                   <button
-                    onClick={() => onChange({ ...task, implementation: '' })}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChange({ ...task, implementation: '' });
+                    }}
                     className="opacity-0 group-hover/impl:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
                     title="Clear implementation"
                   >
@@ -180,13 +211,38 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                   </button>
                 )}
               </div>
-              {renderEditableContent(
-                'implementation',
-                task.implementation,
-                'Implementation details...',
-                'w-full font-mono text-sm text-gray-800 bg-transparent transition-colors',
-                'w-full font-mono text-sm text-gray-800'
-              )}
+
+              <AnimatePresence initial={false}>
+                {isImplementationCollapsed ? (
+                  <motion.div
+                    key="collapsed"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="text-sm text-slate-400 italic truncate cursor-pointer"
+                    onClick={toggleImplementationCollapse}
+                  >
+                    {getImplementationPreview()}
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="expanded"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    {renderEditableContent(
+                      'implementation',
+                      task.implementation,
+                      'Implementation details...',
+                      'w-full font-mono text-sm text-gray-800 bg-transparent transition-colors',
+                      'w-full font-mono text-sm text-gray-800'
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </div>
         </div>
