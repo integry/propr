@@ -18,7 +18,7 @@ import {
   CheckCircle2,
   XCircle,
   Wrench,
-  Brain,
+  Lightbulb,
   Globe
 } from 'lucide-react';
 
@@ -301,7 +301,7 @@ const ToolResultContent: React.FC<ToolResultContentProps> = ({
 };
 
 const getEventIcon = (event: LiveEvent): React.ReactNode => {
-  if (event.type === 'thought') return <Brain className="h-4 w-4 text-purple-500" />;
+  if (event.type === 'thought') return <Lightbulb className="h-4 w-4 text-blue-600" />;
   if (event.type === 'tool_use') return getToolIcon(event.toolName || '');
   if (event.type === 'tool_result') {
     return event.isError ? <XCircle className="h-4 w-4 text-red-500" /> : <CheckCircle2 className="h-4 w-4 text-green-500" />;
@@ -353,6 +353,29 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   isTaskActive,
   taskInfo
 }) => {
+  // Get the last significant message (terminal output or tool result)
+  const summaryMessage = useMemo(() => {
+    if (events.length === 0) return '';
+
+    // Look backwards for the most relevant event
+    for (let i = events.length - 1; i >= 0; i--) {
+      const event = events[i];
+      if (event.type === 'tool_result') {
+        const resultStr = formatToolResult(event.result);
+        const truncated = resultStr.slice(0, 60).replace(/\n/g, ' ');
+        return `Result: ${truncated}${resultStr.length > 60 ? '...' : ''}`;
+      }
+      if (event.type === 'tool_use' && event.toolName) {
+        if (event.input?.command) {
+          return `> ${event.input.command.slice(0, 50)}${event.input.command.length > 50 ? '...' : ''}`;
+        }
+        return `Exec: ${event.toolName}`;
+      }
+    }
+
+    return lastThought ? `Thinking: ${lastThought.substring(0, 60)}${lastThought.length > 60 ? '...' : ''}` : '';
+  }, [events, lastThought]);
+
   // Memoize default collapse states based on tool type
   const eventsWithDefaults = useMemo(() => {
     return events.map((event, index) => {
@@ -385,18 +408,18 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   return (
     <div className="mb-6" id="execution-event-log-section">
       <div
-        className="flex items-center justify-between cursor-pointer p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors border border-gray-200"
+        className="flex items-center justify-between cursor-pointer p-4 rounded-lg transition-colors border bg-gray-50 border-gray-200 hover:bg-gray-100"
         onClick={onToggleCollapse}
       >
-        <h4 className="text-lg font-semibold text-gray-900 flex items-center gap-3">
+        <h4 className="text-lg font-semibold flex items-center gap-3 text-gray-900">
           <span className="text-gray-500">{collapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}</span>
           <Terminal className="h-5 w-5 text-gray-600" />
           <span>{isTaskActive ? 'Full Execution Event Log' : 'Execution Event Log'}</span>
           <span className="text-sm font-normal text-gray-500">({events.length} events)</span>
         </h4>
-        {collapsed && lastThought && (
-          <div className="text-sm text-gray-600 italic max-w-md truncate">
-            Thinking: {lastThought.substring(0, 100)}{lastThought.length > 100 ? '...' : ''}
+        {collapsed && summaryMessage && (
+          <div className="text-sm italic max-w-md truncate text-gray-600">
+            {summaryMessage}
           </div>
         )}
       </div>

@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import DeepDiveAnalysis from '../DeepDiveAnalysis';
 import { renderMarkdown } from './renderMarkdown';
@@ -10,7 +10,6 @@ import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
 import MetadataBar from './MetadataBar';
 import TaskHeader from './TaskHeader';
-import RealTimeStats from './RealTimeStats';
 import ProgressBar from './ProgressBar';
 import { useTaskData, usePromptData, useLogFilesData } from './hooks';
 import { useThinkingLog } from './useThinkingLog';
@@ -22,6 +21,9 @@ const TaskDetails: React.FC = () => {
   const promptData = usePromptData();
   const logFilesData = useLogFilesData();
   const thinkingLog = useThinkingLog(taskData.liveDetails, taskData.history);
+
+  // State for bi-directional highlighting between TodoList and ThinkingLog
+  const [highlightedTodoId, setHighlightedTodoId] = useState<string | null>(null);
 
   // Calculate total duration from history
   const totalDuration = useMemo(() => {
@@ -80,31 +82,35 @@ const TaskDetails: React.FC = () => {
             </div>
 
             {/* Todo List */}
-            <TodoList liveDetails={taskData.liveDetails} history={taskData.history} />
-
-            {/* Real-time Stats */}
-            <RealTimeStats />
+            <TodoList
+              liveDetails={taskData.liveDetails}
+              history={taskData.history}
+              onTodoHover={setHighlightedTodoId}
+            />
           </div>
 
           {/* RIGHT COLUMN: The Execution (65% - 8/12 cols) */}
           <div className="lg:col-span-8 space-y-4 sm:space-y-6">
-            {/* Deep Dive Analysis */}
-            <DeepDiveAnalysis
-              analysis={taskData.analysis}
-              loading={taskData.analysisLoading || taskData.deepDiveLoading}
-              renderMarkdown={renderMarkdown}
-              title="Execution Analysis"
-              colorScheme="gray"
-              showButton={true}
-              buttonText="Run Deep-Dive Analysis"
-              onRunAnalysis={taskData.handleDeepDive}
-              emptyStateText="Automated analysis is pending..."
-            />
+            {/* Deep Dive Analysis - only show when we have data or are loading */}
+            {(taskData.analysis || taskData.analysisLoading || taskData.deepDiveLoading) && (
+              <DeepDiveAnalysis
+                analysis={taskData.analysis}
+                loading={taskData.analysisLoading || taskData.deepDiveLoading}
+                renderMarkdown={renderMarkdown}
+                title="Execution Analysis"
+                colorScheme="gray"
+                showButton={true}
+                buttonText="Run Deep-Dive Analysis"
+                onRunAnalysis={taskData.handleDeepDive}
+                emptyStateText="Automated analysis is pending..."
+              />
+            )}
 
             {/* Thinking Log */}
             <ThinkingLog
               events={thinkingLog.thinkingLogWithTimestamps}
               todos={taskData.liveDetails.todos}
+              highlightedTodoId={highlightedTodoId}
             />
 
             {/* Execution Event Log */}
