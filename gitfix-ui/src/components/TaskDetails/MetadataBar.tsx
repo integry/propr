@@ -166,11 +166,6 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
           {getDisplayModelName(modelName)}
         </span>
 
-        {/* Environment Badge */}
-        <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
-          DEV
-        </span>
-
         {/* PR info if available */}
         <PRInfoLink prInfo={prInfo} />
 
