@@ -38,6 +38,7 @@ interface SortableStepProps {
   title: string;
   onStepClick: (index: number) => void;
   isLast: boolean;
+  isBeingDragged: boolean;
 }
 
 const SortableStep: React.FC<SortableStepProps> = ({
@@ -49,6 +50,7 @@ const SortableStep: React.FC<SortableStepProps> = ({
   title,
   onStepClick,
   isLast,
+  isBeingDragged,
 }) => {
   const {
     attributes,
@@ -56,20 +58,18 @@ const SortableStep: React.FC<SortableStepProps> = ({
     setNodeRef,
     transform,
     transition,
-    isDragging,
   } = useSortable({ id });
 
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.5 : 1,
   };
 
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`relative flex flex-col items-center ${isDragging ? 'z-50' : ''}`}
+      className={`relative flex flex-col items-center ${isBeingDragged ? 'z-50 opacity-50' : ''}`}
     >
       {/* Connecting line (above) */}
       {index > 0 && (
@@ -95,7 +95,7 @@ const SortableStep: React.FC<SortableStepProps> = ({
         <button
           onClick={() => onStepClick(index)}
           className={`relative flex items-center justify-center w-8 h-8 rounded-full transition-all duration-200 ${
-            isDragging
+            isBeingDragged
               ? 'bg-indigo-600 text-white shadow-lg scale-110'
               : isActive
               ? 'bg-indigo-600 text-white shadow-md ring-2 ring-indigo-300 ring-offset-2'
@@ -246,22 +246,24 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
           >
             <div className="relative flex flex-col items-center gap-0">
               {ids.map((id, index) => {
-                const isActive = index === activeIndex;
+                const isActiveStep = index === activeIndex;
                 const isCompleted = completedIndices.includes(index);
                 const isPast = index < activeIndex;
                 const title = taskTitles[index] || `Step ${index + 1}`;
+                const isBeingDragged = activeId === id;
 
                 return (
                   <SortableStep
                     key={id}
                     id={id}
                     index={index}
-                    isActive={isActive}
+                    isActive={isActiveStep}
                     isCompleted={isCompleted}
                     isPast={isPast}
                     title={title}
                     onStepClick={onStepClick}
                     isLast={index === taskCount - 1}
+                    isBeingDragged={isBeingDragged}
                   />
                 );
               })}
