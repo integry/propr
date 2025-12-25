@@ -79,7 +79,8 @@ async function createNewPRForIssue(prContext: PRContext, claudeResult: ClaudeRes
     if (hasRobustParams) {
         const prResult = await createPullRequestRobust({
             owner, repoName, branchName, baseBranch, issueNumber,
-            prTitle: `${modelShortName} Fix for Issue #${issueNumber}: ${issueTitle}`,
+            // Format: [412 by Claude Opus] Title
+            prTitle: `[${issueNumber} by ${modelShortName}] ${issueTitle}`,
             prBody: generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult),
             worktreePath, repoUrl, authToken
         });

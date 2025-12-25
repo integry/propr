@@ -312,7 +312,8 @@ export async function createPullRequest(options: CreatePullRequestOptions): Prom
         const octokit = await getAuthenticatedOctokit();
 
         const modelShortName = getModelShortName(modelName);
-        const prTitle = `${modelShortName} Fix for Issue #${issueNumber}: ${issueTitle}`;
+        // Format: [412 by Claude Opus] Title
+        const prTitle = `[${issueNumber} by ${modelShortName}] ${issueTitle}`;
         const prBody = generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult);
 
         logger.info({
