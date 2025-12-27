@@ -1,12 +1,16 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
+import { Queue } from 'bullmq';
+import { generateCorrelationId } from '@gitfix/core';
+import type { SystemTaskJobData } from '@gitfix/core';
 
 interface TaskRoutesDeps {
   db: Knex;
+  taskQueue?: Queue;
 }
 
 export function createTaskRoutes(deps: TaskRoutesDeps) {
-  const { db } = deps;
+  const { db, taskQueue } = deps;
 
   async function getTasks(req: Request, res: Response): Promise<void> {
     try {
@@ -20,7 +24,54 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
     }
   }
 
-  return { getTasks };
+  async function revertChanges(req: Request, res: Response): Promise<void> {
+    try {
+      if (!taskQueue) {
+        res.status(503).json({ error: 'Task queue not available' });
+        return;
+      }
+
+      const { repo, pr, commit, commentId, branch, owner } = req.body;
+
+      // Validate required parameters
+      if (!repo || !pr || !commit || !commentId || !branch || !owner) {
+        res.status(400).json({
+          error: 'Missing required parameters',
+          required: ['repo', 'pr', 'commit', 'commentId', 'branch', 'owner']
+        });
+        return;
+      }
+
+      const correlationId = generateCorrelationId();
+
+      const jobData: SystemTaskJobData = {
+        type: 'revert',
+        repoName: repo,
+        prNumber: parseInt(pr, 10),
+        commitHash: commit,
+        targetCommentId: parseInt(commentId, 10),
+        prBranch: branch,
+        owner: owner,
+        correlationId
+      };
+
+      const job = await taskQueue.add('processSystemTask', jobData);
+
+      console.log(`[revert] Queued revert job ${job.id} for PR #${pr} in ${owner}/${repo}`);
+
+      res.json({
+        success: true,
+        jobId: job.id,
+        correlationId,
+        message: `Revert task queued for PR #${pr}`
+      });
+    } catch (error) {
+      console.error('Error in /api/tasks/revert:', error);
+      res.status(500).json({ error: 'Failed to queue revert task' });
+    }
+  }
+
+  return { getTasks, revertChanges };
 }
 
 interface TaskQuery {

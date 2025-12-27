@@ -144,7 +144,7 @@ async function initRedis(): Promise<void> {
 
 function setupRoutes(): void {
   const statusRoutes = createStatusRoutes({ redisClient });
-  const taskRoutes = createTaskRoutes({ db });
+  const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
   const configRoutes = createConfigRoutes({ redisClient });
@@ -158,6 +158,7 @@ function setupRoutes(): void {
 
   app.get('/api/status', ensureAuthenticated, statusRoutes.getStatus);
   app.get('/api/tasks', ensureAuthenticated, taskRoutes.getTasks);
+  app.post('/api/tasks/revert', ensureAuthenticated, taskRoutes.revertChanges);
   app.get('/api/task/:taskId/history', ensureAuthenticated, taskHistoryRoutes.getTaskHistory);
   app.get('/api/task/:taskId/live-details', ensureAuthenticated, liveDetailsRoutes.getLiveDetails);
 

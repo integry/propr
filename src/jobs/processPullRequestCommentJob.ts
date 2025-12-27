@@ -300,7 +300,18 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     if (commitResult) {
         await pushBranch(state.worktreeInfo.worktreePath, state.worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
     }
-    const prCommentBody = buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText }, state.claudeResult);
+
+    // Build undo context using the first instruction comment (user's original request)
+    const instructionCommentId = state.unprocessedComments.length > 0 ? state.unprocessedComments[0].id : 0;
+    const undoContext = commitResult && instructionCommentId ? {
+        repoOwner,
+        repoName,
+        prNumber: pullRequestNumber,
+        branchName: state.worktreeInfo.branchName,
+        instructionCommentId
+    } : undefined;
+
+    const prCommentBody = buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext }, state.claudeResult);
     const completionComment = await state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
 
