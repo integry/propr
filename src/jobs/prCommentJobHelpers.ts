@@ -61,6 +61,7 @@ interface CommentContext {
     commitMessage: string;
     llm: string | null | undefined;
     authorsText: string;
+    undoContext?: UndoLinkContext;
 }
 
 interface UndoLinkContext {
@@ -326,10 +327,9 @@ export function buildCompletionComment(
     commitResult: CommitResult | null,
     unprocessedComments: UnprocessedComment[],
     commentContext: CommentContext,
-    claudeResult: ClaudeCodeResponse,
-    undoContext?: UndoLinkContext
+    claudeResult: ClaudeCodeResponse
 ): string {
-    const { changesSummary, commitMessage, llm, authorsText } = commentContext;
+    const { changesSummary, commitMessage, llm, authorsText, undoContext } = commentContext;
 
     if (commitResult) {
         let prCommentBody = `✅ **Applied the requested follow-up changes** in commit ${commitResult.commitHash.substring(0, 7)}\n\n`;
