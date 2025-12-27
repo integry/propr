@@ -55,6 +55,7 @@ export type {
     CommentJobData,
     TaskImportJobData,
     AnalysisJobData,
+    SystemTaskJobData,
     JobData,
     JobResult,
     ClaudeResult,

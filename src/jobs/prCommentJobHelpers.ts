@@ -63,6 +63,14 @@ interface CommentContext {
     authorsText: string;
 }
 
+interface UndoLinkContext {
+    repoOwner: string;
+    repoName: string;
+    prNumber: number;
+    branchName: string;
+    instructionCommentId: number;
+}
+
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
     paginate: <T>(endpoint: string, options: Record<string, unknown>) => Promise<T[]>;
@@ -318,7 +326,8 @@ export function buildCompletionComment(
     commitResult: CommitResult | null,
     unprocessedComments: UnprocessedComment[],
     commentContext: CommentContext,
-    claudeResult: ClaudeCodeResponse
+    claudeResult: ClaudeCodeResponse,
+    undoContext?: UndoLinkContext
 ): string {
     const { changesSummary, commitMessage, llm, authorsText } = commentContext;
 
@@ -339,6 +348,13 @@ export function buildCompletionComment(
         }
 
         prCommentBody += buildMetricsSection(claudeResult, llm, authorsText);
+
+        // Add undo link if we have the context and a commit was made
+        if (undoContext) {
+            const undoLink = buildUndoLink(undoContext, commitResult.commitHash);
+            prCommentBody += `\n\n[Undo Changes](${undoLink})`;
+        }
+
         prCommentBody += `\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
 
         return prCommentBody;
@@ -355,6 +371,22 @@ export function buildCompletionComment(
 
         return noChangesBody;
     }
+}
+
+function buildUndoLink(undoContext: UndoLinkContext, commitHash: string): string {
+    const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
+    const { repoOwner, repoName, prNumber, branchName, instructionCommentId } = undoContext;
+
+    const params = new URLSearchParams({
+        repo: repoName,
+        owner: repoOwner,
+        pr: String(prNumber),
+        commit: commitHash,
+        commentId: String(instructionCommentId),
+        branch: branchName
+    });
+
+    return `${webUiUrl}/revert?${params.toString()}`;
 }
 
 function buildMetricsSection(
