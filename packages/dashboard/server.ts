@@ -107,6 +107,14 @@ app.use(cors({
   credentials: true
 }));
 
+// Prevent caching of API responses to avoid stale CORS issues
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
+
 app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
