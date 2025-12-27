@@ -62,7 +62,18 @@ export interface AnalysisJobData {
     correlationId: string;
 }
 
-export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData;
+export interface SystemTaskJobData {
+    type: 'revert';
+    repoName: string;
+    prNumber: number;
+    commitHash: string;
+    targetCommentId: number;
+    prBranch: string;
+    owner: string;
+    correlationId: string;
+}
+
+export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData | SystemTaskJobData;
 
 export interface ClaudeOutputResult {
     type?: string;
