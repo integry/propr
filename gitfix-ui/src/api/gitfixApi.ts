@@ -308,4 +308,23 @@ export const saveAgents = async (agents: AgentConfig[]): Promise<void> => {
   await handleApiResponse(response);
 };
 
+// Revert API
+export interface RevertParams {
+  repo: string;
+  pr: string;
+  commit: string;
+  commentId: string;
+  owner: string;
+}
+
+export const revertCommit = async (params: RevertParams): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/tasks/revert`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+};
+
 export * from './plannerApi';
