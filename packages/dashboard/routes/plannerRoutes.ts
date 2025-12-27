@@ -3,6 +3,7 @@ import { Knex } from 'knex';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs-extra';
+import crypto from 'crypto';
 import {
   generatePlan,
   refinePlan,
@@ -71,10 +72,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     if (!repository) { res.status(400).json({ error: 'Repository is required' }); return; }
 
     try {
+      const draftId = crypto.randomUUID();
       const name = prompt ? prompt.substring(0, 50) + (prompt.length > 50 ? '...' : '') : 'Untitled Plan';
-      const [draft] = await db!('task_drafts')
-        .insert({ user_id: req.user!.id, repository, initial_prompt: prompt, name })
-        .returning('*');
+      await db!('task_drafts')
+        .insert({ draft_id: draftId, user_id: req.user!.id, repository, initial_prompt: prompt, name });
+
+      // Fetch the created draft (SQLite doesn't support returning() properly)
+      const draft = await db!('task_drafts').where({ draft_id: draftId }).first();
       res.status(201).json(draft);
     } catch (error) {
       console.error('Create draft error:', error);
@@ -132,7 +136,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       if (name !== undefined) updateData.name = name;
       if (chat_history !== undefined) updateData.chat_history = JSON.stringify(chat_history);
 
-      const [updated] = await db!('task_drafts').where({ draft_id: req.params.id }).update(updateData).returning('*');
+      await db!('task_drafts').where({ draft_id: req.params.id }).update(updateData);
+      // Fetch the updated draft (SQLite doesn't support returning() properly)
+      const updated = await db!('task_drafts').where({ draft_id: req.params.id }).first();
       res.json(updated);
     } catch (error) {
       console.error('Update draft error:', error);
