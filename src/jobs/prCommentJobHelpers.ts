@@ -331,6 +331,14 @@ export function buildCompletionComment(
 ): string {
     const { changesSummary, commitMessage, llm, authorsText, undoContext } = commentContext;
 
+    // Helper to clean up LLM output that might contain metadata
+    const cleanBody = (text: string) => {
+        return text
+            .replace(/^(PR|Comment by|Model):.*/gm, '') // Remove metadata lines
+            .replace(/\n{3,}/g, '\n\n') // Fix spacing
+            .trim();
+    };
+
     if (commitResult) {
         let prCommentBody = `✅ **Applied the requested follow-up changes** in commit ${commitResult.commitHash.substring(0, 7)}\n\n`;
 
@@ -344,10 +352,11 @@ export function buildCompletionComment(
 
         if (changesSummary) {
             const commitBody = commitMessage.split('\n\n').slice(1).join('\n\n').trim();
-            prCommentBody += `## Summary of Changes\n\n${commitBody || changesSummary}\n\n`;
+            const contentToShow = commitBody || changesSummary;
+            prCommentBody += `## Summary of Changes\n\n${cleanBody(contentToShow)}\n\n`;
         }
 
-        prCommentBody += buildMetricsSection(claudeResult, llm, authorsText);
+        prCommentBody += buildMetricsSection(claudeResult, llm, authorsText, false);
 
         // Add undo link if we have the context and a commit was made
         if (undoContext) {
@@ -362,7 +371,7 @@ export function buildCompletionComment(
         let noChangesBody = `ℹ️ **Analyzed the follow-up request** by ${authorsText}\n\n`;
 
         if (changesSummary) {
-            noChangesBody += `## Analysis Summary\n\n${changesSummary}\n\n`;
+            noChangesBody += `## Analysis Summary\n\n${cleanBody(changesSummary)}\n\n`;
         }
 
         noChangesBody += `No code changes were necessary based on the current state of the branch.\n\n`;
@@ -396,27 +405,24 @@ function buildMetricsSection(
     isAnalysis = false
 ): string {
     const defaultModel = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
-    let section = `---\n🤖 **${isAnalysis ? 'Analysis' : 'Implemented'} by Claude Code**\n`;
-
-    if (!isAnalysis) section += `- Requested by: ${authorsText}\n`;
-    section += `- Model: ${claudeResult.model || llm || defaultModel}\n`;
-
-    if ((claudeResult.finalResult as { num_turns?: number } | null)?.num_turns) {
-        section += `- Turns: ${(claudeResult.finalResult as { num_turns?: number }).num_turns}\n`;
-    }
-    if (claudeResult.executionTime) {
-        section += `- ${isAnalysis ? 'Analysis' : 'Execution'} time: ${Math.round(claudeResult.executionTime / 1000)}s\n`;
-    }
+    const model = claudeResult.model || llm || defaultModel;
+    const executionTime = claudeResult.executionTime ? `${Math.round(claudeResult.executionTime / 1000)}s` : null;
+    const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
 
     const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as TokenClaudeResult['conversationLog'] });
-    if (totalTokens > 0) {
-        section += `- Tokens used: ${totalTokens.toLocaleString()} [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
-    }
 
     const cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
-    if (cost != null) {
-        section += `- Cost: $${cost.toFixed(2)}\n`;
-    }
+
+    let section = `\n---\n`;
+    section += `### 🤖 ${isAnalysis ? 'Analysis' : 'Implementation'} Details\n\n`;
+
+    section += `* **Model:** ${model}\n`;
+    if (!isAnalysis) section += `* **Requested By:** ${authorsText}\n`;
+    if (numTurns) section += `* **Turns:** ${numTurns}\n`;
+    if (executionTime) section += `* **Time:** ${executionTime}\n`;
+    if (totalTokens > 0) section += `* **Tokens:** ${totalTokens.toLocaleString()} (${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out)\n`;
+    if (cost != null) section += `* **Cost:** $${cost.toFixed(2)}\n`;
 
     return section;
 }
+
