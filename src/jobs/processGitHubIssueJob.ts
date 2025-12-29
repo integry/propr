@@ -25,7 +25,7 @@ import { filterCommentByAuthor } from '@gitfix/core';
 import { AgentRegistry, generateClaudePrompt, resolveLlmLabel } from '@gitfix/core';
 import type { AgentExecutionResult } from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
-import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
+import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult, localizeContentImages } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from './issueJobCallbacks.js';
 import { performPostProcessing, performFinalValidation } from './issueJobPostProcessing.js';
@@ -266,6 +266,19 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
         issueNumber: issueRef.number
     }, 'Executing task with agent');
 
+    // Localize remote images in issue body and comments
+    // This downloads images to the worktree so the agent can access them
+    const localizedBody = currentIssueData.data.body
+        ? await localizeContentImages(currentIssueData.data.body, worktreeInfo.worktreePath, correlatedLogger)
+        : undefined;
+
+    const localizedComments = await Promise.all(
+        issueComments.map(async (comment) => ({
+            ...comment,
+            body: comment.body ? await localizeContentImages(comment.body, worktreeInfo.worktreePath, correlatedLogger) : comment.body
+        }))
+    );
+
     // Build prompt for the agent
     const prompt = generateClaudePrompt(
         { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
@@ -273,8 +286,8 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
         modelName,
         {
             title: currentIssueData.data.title,
-            body: currentIssueData.data.body || undefined,
-            comments: issueComments,
+            body: localizedBody,
+            comments: localizedComments,
             labels: currentIssueData.data.labels,
             created_at: currentIssueData.data.created_at,
             user: currentIssueData.data.user

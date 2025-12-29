@@ -21,6 +21,7 @@ import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
     buildCommentHistory, createSessionIdCallbackForPR, createContainerIdCallbackForPR, updateTaskTitleForPR, buildCompletionComment
 } from './prCommentJobHelpers.js';
+import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
     handleJobError, cleanupJob, pickUpPendingComments
@@ -247,7 +248,14 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     job.data.subtitle = summaryTitle;
     await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber });
 
-    const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
+    // Localize remote images in comment bodies and original task spec
+    // This downloads images to the worktree so the agent can access them
+    const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger);
+    const localizedOriginalTaskSpec = originalTaskSpec
+        ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger)
+        : originalTaskSpec;
+
+    const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
 
     // Resolve agent and model using resolveLlmLabel
     const registry = AgentRegistry.getInstance();
