@@ -9,6 +9,7 @@ import PlansPage from './pages/PlansPage'
 import AiAgentsPage from './pages/AiAgentsPage'
 import SettingsPage from './pages/SettingsPage'
 import LoginPage from './pages/LoginPage'
+import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
 import './App.css'
 import { getSystemStatus } from './api/gitfixApi'
@@ -51,6 +52,7 @@ const App: React.FC = () => {
       <Router>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/revert" element={<RevertPage />} />
           <Route
             path="/"
             element={
