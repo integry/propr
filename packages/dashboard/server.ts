@@ -177,6 +177,9 @@ function setupRoutes(): void {
   app.post('/api/config/primary-processing-labels', ensureAuthenticated, configRoutes.postPrimaryProcessingLabels);
   app.get('/api/config/agents', ensureAuthenticated, configRoutes.getAgents);
   app.post('/api/config/agents', ensureAuthenticated, configRoutes.postAgents);
+  app.get('/api/config/summarization', ensureAuthenticated, configRoutes.getSummarizationSettings);
+  app.post('/api/config/summarization', ensureAuthenticated, configRoutes.postSummarizationSettings);
+  app.get('/api/config/repos/indexing-status', ensureAuthenticated, configRoutes.getRepositoriesIndexingStatus);
 
   app.get('/api/queue/stats', ensureAuthenticated, queueRoutes.getQueueStats);
   app.get('/api/activity', ensureAuthenticated, queueRoutes.getActivity);

@@ -242,3 +242,87 @@ export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
     logger.info({ agentCount: agents.length }, 'Successfully saved agents configuration');
     return true;
 }
+
+// --- Summarization Settings ---
+
+/**
+ * Settings for codebase summarization/indexing feature.
+ */
+export interface SummarizationSettings {
+    enabled: boolean;
+    agent_alias: string;
+}
+
+const DEFAULT_SUMMARIZATION_SETTINGS: SummarizationSettings = {
+    enabled: false,
+    agent_alias: ''
+};
+
+/**
+ * Loads summarization settings from the database.
+ */
+export async function loadSummarizationSettings(): Promise<SummarizationSettings> {
+    const settings = await getConfig<SummarizationSettings>('summarization', DEFAULT_SUMMARIZATION_SETTINGS);
+    logger.info({ summarization: settings }, 'Successfully loaded summarization settings');
+    return settings;
+}
+
+/**
+ * Saves summarization settings to the database.
+ */
+export async function saveSummarizationSettings(settings: SummarizationSettings): Promise<boolean> {
+    await saveConfig('summarization', settings);
+    logger.info({ summarization: settings }, 'Successfully saved summarization settings');
+    return true;
+}
+
+// --- Repository Indexing Status ---
+
+/**
+ * Repository indexing status from the repositories table.
+ */
+export interface RepositoryIndexingStatus {
+    full_name: string;
+    indexing_status: 'idle' | 'indexing' | 'completed' | 'failed';
+    last_indexed_at: string | null;
+}
+
+/**
+ * Gets the indexing status for all repositories.
+ */
+export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexingStatus[]> {
+    try {
+        const repos = await db('repositories')
+            .select('full_name', 'indexing_status', 'last_indexed_at');
+        return repos.map(r => ({
+            full_name: r.full_name,
+            indexing_status: r.indexing_status || 'idle',
+            last_indexed_at: r.last_indexed_at ? new Date(r.last_indexed_at).toISOString() : null
+        }));
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ error: err.message }, 'Failed to load repositories indexing status');
+        return [];
+    }
+}
+
+/**
+ * Gets the indexing status for a specific repository.
+ */
+export async function getRepositoryIndexingStatus(fullName: string): Promise<RepositoryIndexingStatus | null> {
+    try {
+        const repo = await db('repositories')
+            .where({ full_name: fullName })
+            .first();
+        if (!repo) return null;
+        return {
+            full_name: repo.full_name,
+            indexing_status: repo.indexing_status || 'idle',
+            last_indexed_at: repo.last_indexed_at ? new Date(repo.last_indexed_at).toISOString() : null
+        };
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ error: err.message, fullName }, 'Failed to load repository indexing status');
+        return null;
+    }
+}
