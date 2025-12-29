@@ -406,21 +406,22 @@ function buildMetricsSection(
 ): string {
     const defaultModel = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
     const model = claudeResult.model || llm || defaultModel;
-    const executionTime = claudeResult.executionTime ? `${Math.round(claudeResult.executionTime / 1000)}s` : 'N/A';
+    const executionTime = claudeResult.executionTime ? `${Math.round(claudeResult.executionTime / 1000)}s` : null;
+    const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
 
     const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as TokenClaudeResult['conversationLog'] });
 
     const cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
-    const costStr = cost != null ? `$${cost.toFixed(2)}` : 'N/A';
 
     let section = `\n---\n`;
     section += `### 🤖 ${isAnalysis ? 'Analysis' : 'Implementation'} Details\n\n`;
 
     section += `* **Model:** ${model}\n`;
     if (!isAnalysis) section += `* **Requested By:** ${authorsText}\n`;
-    section += `* **Time:** ${executionTime}\n`;
+    if (numTurns) section += `* **Turns:** ${numTurns}\n`;
+    if (executionTime) section += `* **Time:** ${executionTime}\n`;
     if (totalTokens > 0) section += `* **Tokens:** ${totalTokens.toLocaleString()} (${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out)\n`;
-    if (cost != null) section += `* **Cost:** ${costStr}\n`;
+    if (cost != null) section += `* **Cost:** $${cost.toFixed(2)}\n`;
 
     return section;
 }
