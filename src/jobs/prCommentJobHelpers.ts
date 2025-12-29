@@ -424,3 +424,4 @@ function buildMetricsSection(
 
     return section;
 }
+
