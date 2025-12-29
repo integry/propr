@@ -76,6 +76,7 @@ interface CurrentIssueData {
 interface IssueComment {
     id: number;
     body: string;
+    body_html?: string;  // HTML with signed image URLs
     user: { login: string; type?: string };
 }
 
@@ -198,9 +199,12 @@ function checkLabelConditions(currentLabels: string[], context: JobContext): Lab
 
 async function fetchIssueComments(octokit: ExecutionParams['octokit'], issueRef: IssueJobData, correlatedLogger: Logger): Promise<IssueComment[]> {
     try {
-        const allComments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, per_page: 100
-        }) as IssueComment[];
+        // Use request for mediaType support - paginate doesn't support it well
+        const commentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, per_page: 100,
+            mediaType: { format: 'full' }  // Get body_html with signed image URLs
+        });
+        const allComments = commentsResp.data as IssueComment[];
         return allComments.filter(comment => {
             const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type);
             return !filterResult.shouldFilter;
@@ -268,14 +272,16 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
 
     // Localize remote images in issue body and comments
     // This downloads images to the worktree so the agent can access them
+    // We pass body_html which contains signed URLs for GitHub user-attachments
+    const issueBodyHtml = (currentIssueData.data as { body_html?: string }).body_html;
     const localizedBody = currentIssueData.data.body
-        ? await localizeContentImages(currentIssueData.data.body, worktreeInfo.worktreePath, correlatedLogger, githubToken.token)
+        ? await localizeContentImages(currentIssueData.data.body, worktreeInfo.worktreePath, correlatedLogger, issueBodyHtml)
         : undefined;
 
     const localizedComments = await Promise.all(
         issueComments.map(async (comment) => ({
             ...comment,
-            body: comment.body ? await localizeContentImages(comment.body, worktreeInfo.worktreePath, correlatedLogger, githubToken.token) : comment.body
+            body: comment.body ? await localizeContentImages(comment.body, worktreeInfo.worktreePath, correlatedLogger, comment.body_html) : comment.body
         }))
     );
 
@@ -362,6 +368,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
         const currentIssueData: CurrentIssueData = issueRef.issuePayload ? { data: issueRef.issuePayload as CurrentIssueData['data'] } :
             await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
                 owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
+                mediaType: { format: 'full' }  // Get body_html with signed image URLs
             }), { ...retryConfigs.githubApi, correlationId }, `get_issue_${issueRef.number}`) as unknown as CurrentIssueData;
 
         const currentLabels = currentIssueData.data.labels.map(label => label.name);

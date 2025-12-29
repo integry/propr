@@ -26,8 +26,10 @@ interface PRData {
 }
 
 interface PRComment {
+    id: number;
     user: { login: string; type?: string };
     body: string | null;
+    body_html?: string;  // HTML with signed image URLs
     created_at: string;
     pull_request_review_id?: number;
 }
@@ -116,24 +118,34 @@ export function filterUnprocessedComments(
     options: FilterOptions
 ): UnprocessedComment[] {
     const { pullRequestNumber, correlatedLogger } = options;
-    return commentsToProcess.filter(comment => {
-        const alreadyProcessed = prCommentsForValidation.some(prComment => {
-            const isBotComment = prComment.user.login === botUsername;
-            if (!isBotComment) return false;
-            return prComment.body?.includes(`${String(comment.id)}✓`);
+    return commentsToProcess
+        .filter(comment => {
+            const alreadyProcessed = prCommentsForValidation.some(prComment => {
+                const isBotComment = prComment.user.login === botUsername;
+                if (!isBotComment) return false;
+                return prComment.body?.includes(`${String(comment.id)}✓`);
+            });
+
+            if (alreadyProcessed) {
+                correlatedLogger.debug({ pullRequestNumber, commentId: comment.id, commentAuthor: comment.author }, 'Comment already processed, filtering out');
+            }
+
+            return !alreadyProcessed;
+        })
+        .map(comment => {
+            // Enrich with body_html from API response (for signed image URLs)
+            const apiComment = prCommentsForValidation.find(c => c.id === comment.id);
+            if (apiComment && (apiComment as { body_html?: string }).body_html) {
+                return { ...comment, body_html: (apiComment as { body_html?: string }).body_html };
+            }
+            return comment;
         });
-
-        if (alreadyProcessed) {
-            correlatedLogger.debug({ pullRequestNumber, commentId: comment.id, commentAuthor: comment.author }, 'Comment already processed, filtering out');
-        }
-
-        return !alreadyProcessed;
-    });
 }
 
 export interface LinkedIssueResult {
     context: string;
     linkedIssueNumber: number | null;
+    bodyHtml?: string;  // HTML with signed image URLs
 }
 
 export async function fetchLinkedIssueContext(
@@ -145,6 +157,7 @@ export async function fetchLinkedIssueContext(
     const { repoOwner, repoName, pullRequestNumber } = repoContext;
     const { correlationId, correlatedLogger } = options;
     let originalTaskSpec = '';
+    let bodyHtml: string | undefined;
     const linkedIssueMatch = prData.data.body?.match(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/i);
 
     if (!linkedIssueMatch) return { context: originalTaskSpec, linkedIssueNumber: null };
@@ -153,13 +166,23 @@ export async function fetchLinkedIssueContext(
     correlatedLogger.info({ pullRequestNumber, linkedIssueNumber }, 'Found linked issue in PR body');
 
     try {
-        const linkedIssueData = await octokit.request<{ data: { title: string; body: string; user: { login: string } } }>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-            owner: repoOwner, repo: repoName, issue_number: linkedIssueNumber
+        const linkedIssueData = await octokit.request<{ data: { title: string; body: string; body_html?: string; user: { login: string } } }>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+            owner: repoOwner, repo: repoName, issue_number: linkedIssueNumber,
+            mediaType: { format: 'full' }  // Get body_html with signed image URLs
         });
+        bodyHtml = linkedIssueData.data.body_html;
 
-        const linkedIssueComments = await octokit.paginate<{ user: { login: string; type?: string }; body: string }>('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: repoOwner, repo: repoName, issue_number: linkedIssueNumber, per_page: 100
-        });
+        // Use request for mediaType support - paginate doesn't support it well
+        const linkedIssueCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: repoOwner, repo: repoName, issue_number: linkedIssueNumber, per_page: 100,
+            mediaType: { format: 'full' }  // Get body_html with signed image URLs
+        }) as { data: Array<{ user: { login: string; type?: string }; body: string; body_html?: string }> };
+        const linkedIssueComments = linkedIssueCommentsResp.data;
+        // Combine HTML from comments for signed image URLs
+        const commentHtmlParts = linkedIssueComments.filter(c => c.body_html).map(c => c.body_html);
+        if (commentHtmlParts.length > 0) {
+            bodyHtml = bodyHtml ? bodyHtml + '\n' + commentHtmlParts.join('\n') : commentHtmlParts.join('\n');
+        }
 
         const clarifyingComments = linkedIssueComments.filter(comment => {
             const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type, correlationId);
@@ -181,7 +204,7 @@ export async function fetchLinkedIssueContext(
         correlatedLogger.warn({ pullRequestNumber, linkedIssueNumber, error: (issueError as Error).message }, 'Failed to fetch linked issue data, continuing without it');
     }
 
-    return { context: originalTaskSpec, linkedIssueNumber };
+    return { context: originalTaskSpec, linkedIssueNumber, bodyHtml };
 }
 
 export function formatCommentForPrompt(body: string | null): string {

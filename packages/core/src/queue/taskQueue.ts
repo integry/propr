@@ -43,6 +43,7 @@ export interface CommentJobData {
 export interface UnprocessedComment {
     id: number;
     body: string;
+    body_html?: string;  // HTML with signed image URLs (from accept: application/vnd.github.full+json)
     author: string;
     type: 'review' | 'issue';
     hasCodeContext?: boolean;

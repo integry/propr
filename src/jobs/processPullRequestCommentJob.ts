@@ -74,7 +74,7 @@ const redisClient = new Redis({
 
 interface GitHubToken { token: string }
 interface PRData { data: { head: { ref: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
-interface PRComment { id: number; body: string; user: { login: string; type?: string }; created_at: string; pull_request_review_id?: number }
+interface PRComment { id: number; body: string; body_html?: string; user: { login: string; type?: string }; created_at: string; pull_request_review_id?: number }
 
 interface PRJobContext {
     pullRequestNumber: number;
@@ -149,10 +149,22 @@ async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
 
 async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, context: PRJobContext & { llm: string | null | undefined }): Promise<ValidationResult> {
     const { commentsToProcess, pullRequestNumber, repoOwner, repoName, PR_LABEL, correlatedLogger, llm: initialLlm } = context;
-    const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner: repoOwner, repo: repoName, pull_number: pullRequestNumber }) as PRData;
+    const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner: repoOwner, repo: repoName, pull_number: pullRequestNumber,
+        mediaType: { format: 'full' }  // Get body_html with signed image URLs
+    }) as PRData;
     const botUsername = process.env.GITHUB_BOT_USERNAME || 'gitfixio[bot]';
-    const prCommentsForValidation = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100 }) as PRComment[];
-    const reviewCommentsForValidation = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', { owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100 }) as PRComment[];
+    // Use request for mediaType support - paginate doesn't support it well
+    const prCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100,
+        mediaType: { format: 'full' }  // Get body_html with signed image URLs
+    });
+    const prCommentsForValidation = prCommentsResp.data as PRComment[];
+    const reviewCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
+        owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100,
+        mediaType: { format: 'full' }  // Get body_html with signed image URLs
+    });
+    const reviewCommentsForValidation = reviewCommentsResp.data as PRComment[];
     const allCommentsForValidation = [...prCommentsForValidation, ...reviewCommentsForValidation];
     const validatedComments = await validateAndFilterComments(commentsToProcess, allCommentsForValidation, pullRequestNumber, correlatedLogger);
     if (validatedComments.length === 0) return { skip: true, reason: 'all_comments_deleted' };
@@ -217,7 +229,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     state.unprocessedComments = validUnprocessed!;
     llm = resolvedLlm;
     const branchName = jobBranchName || prData!.data.head.ref;
-    const { combinedCommentBody, commentAuthors } = buildCombinedComment(state.unprocessedComments);
+    const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
 
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
@@ -250,9 +262,11 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     // Localize remote images in comment bodies and original task spec
     // This downloads images to the worktree so the agent can access them
-    const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger, githubToken.token);
+    // We pass body_html which contains signed URLs for GitHub user-attachments
+    const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger, combinedBodyHtml);
+    // For originalTaskSpec (linked issue), we'd need body_html from the issue - pass undefined for now
     const localizedOriginalTaskSpec = originalTaskSpec
-        ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger, githubToken.token)
+        ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger, linkedIssueResult.bodyHtml)
         : originalTaskSpec;
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });

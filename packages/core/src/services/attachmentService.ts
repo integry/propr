@@ -244,15 +244,26 @@ export class AttachmentService {
 
       // GitHub user-attachments require authentication
       const isGitHubUrl = url.includes('github.com') || url.includes('githubusercontent.com');
+      logger?.debug?.({ url, isGitHubUrl, hasAuthToken: !!authToken }, 'Attempting to download remote image');
       if (isGitHubUrl && authToken) {
         headers['Authorization'] = `Bearer ${authToken}`;
         headers['Accept'] = 'application/octet-stream';
+        logger?.debug?.({ url }, 'Using GitHub auth token for image download');
       }
 
       // Fetch the image from the remote URL
       const response = await fetch(url, { headers });
 
       if (!response.ok) {
+        logger?.warn?.({
+          url,
+          status: response.status,
+          statusText: response.statusText,
+          hasAuthToken: !!authToken,
+          tokenPrefix: authToken ? authToken.substring(0, 4) : 'none',
+          redirected: response.redirected,
+          finalUrl: response.url
+        }, 'Image fetch failed');
         throw new Error(`Failed to fetch image: HTTP ${response.status} ${response.statusText}`);
       }
 

@@ -10,11 +10,13 @@ export interface IssueComment {
     user?: IssueUser;
     created_at?: string;
     body?: string;
+    body_html?: string;  // HTML with signed image URLs (requires accept: application/vnd.github.full+json)
 }
 
 export interface IssueDetails {
     title?: string;
     body?: string;
+    body_html?: string;  // HTML with signed image URLs (requires accept: application/vnd.github.full+json)
     labels?: IssueLabel[];
     user?: IssueUser;
     created_at?: string;

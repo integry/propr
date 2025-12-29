@@ -4,6 +4,62 @@ import fs from 'fs-extra';
 import { AttachmentService } from '@gitfix/core';
 
 /**
+ * Extracts a map of original image URLs to their signed versions from HTML content.
+ * GitHub's body_html contains <img> tags with signed URLs that include JWT tokens.
+ *
+ * @param bodyHtml - The HTML content from GitHub API (body_html field)
+ * @returns A map from asset ID to signed URL
+ */
+function extractSignedImageUrls(bodyHtml: string): Map<string, string> {
+    const signedUrls = new Map<string, string>();
+    if (!bodyHtml) return signedUrls;
+
+    // Match <img> tags and extract src attribute
+    // GitHub user-attachments in HTML look like: <img src="https://private-user-images.githubusercontent.com/...?jwt=...">
+    const imgRegex = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
+    const matches = [...bodyHtml.matchAll(imgRegex)];
+
+    for (const match of matches) {
+        const signedUrl = match[1];
+        // Extract the asset ID from the URL path (the UUID part)
+        // URLs look like: https://private-user-images.githubusercontent.com/829273/530851717-da68c2cf-1ec4-4eca-a27f-1172e36c62ad.png?jwt=...
+        // We want to extract: da68c2cf-1ec4-4eca-a27f-1172e36c62ad
+        const assetIdMatch = signedUrl.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+        if (assetIdMatch) {
+            signedUrls.set(assetIdMatch[1].toLowerCase(), signedUrl);
+        }
+    }
+
+    return signedUrls;
+}
+
+/**
+ * Gets a signed URL for a GitHub user-attachment if available.
+ *
+ * @param url - The original image URL
+ * @param signedUrls - Map of asset IDs to signed URLs
+ * @param logger - Logger for debugging
+ * @returns The signed URL if found, otherwise the original URL
+ */
+function getSignedUrlIfAvailable(url: string, signedUrls: Map<string, string>, logger: Logger): string {
+    // For GitHub user-attachments, try to find a signed URL
+    if (url.includes('github.com/user-attachments/assets/') || url.includes('private-user-images.githubusercontent.com')) {
+        // Extract asset ID from the URL
+        const assetIdMatch = url.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+        if (assetIdMatch) {
+            const signedUrl = signedUrls.get(assetIdMatch[1].toLowerCase());
+            if (signedUrl) {
+                logger.debug({ originalUrl: url, signedUrl }, 'Using signed URL for GitHub user-attachment');
+                return signedUrl;
+            } else {
+                logger.warn({ url, assetId: assetIdMatch[1] }, 'No signed URL found for GitHub user-attachment');
+            }
+        }
+    }
+    return url;
+}
+
+/**
  * Parses markdown/HTML content for remote image URLs, downloads them to the local worktree,
  * and replaces the URLs with relative local paths.
  *
@@ -17,10 +73,10 @@ import { AttachmentService } from '@gitfix/core';
  * @param content - The markdown/HTML content containing image references
  * @param worktreeRoot - The root path of the worktree to save images to
  * @param logger - Logger instance for debugging/warnings
- * @param authToken - Optional authentication token for GitHub URLs
+ * @param bodyHtml - Optional HTML content from GitHub API with signed image URLs
  * @returns The content with remote image URLs replaced with local relative paths
  */
-export async function localizeContentImages(content: string, worktreeRoot: string, logger: Logger, authToken?: string): Promise<string> {
+export async function localizeContentImages(content: string, worktreeRoot: string, logger: Logger, bodyHtml?: string): Promise<string> {
     if (!content) return content;
 
     const assetsDir = path.join(worktreeRoot, '.gitfix', 'assets');
@@ -40,11 +96,18 @@ export async function localizeContentImages(content: string, worktreeRoot: strin
 
     await fs.ensureDir(assetsDir);
 
+    // Extract signed URLs from HTML for GitHub user-attachments
+    const signedUrls = extractSignedImageUrls(bodyHtml || '');
+    logger.debug({ signedUrlCount: signedUrls.size }, 'Extracted signed URLs from body_html');
+
     // Process markdown images
     for (const match of markdownMatches) {
         const [fullMatch, alt, url] = match;
         try {
-            const localPath = await AttachmentService.downloadRemoteImage(url, assetsDir, logger, authToken);
+            const downloadUrl = getSignedUrlIfAvailable(url, signedUrls, logger);
+
+            // Download using signed URL (no auth needed) or original URL
+            const localPath = await AttachmentService.downloadRemoteImage(downloadUrl, assetsDir, logger);
             const relativePath = path.relative(worktreeRoot, localPath);
             // Replace only this specific occurrence by reconstructing the image syntax
             const newImageSyntax = `![${alt}](${relativePath})`;
@@ -60,7 +123,9 @@ export async function localizeContentImages(content: string, worktreeRoot: strin
     for (const match of htmlMatches) {
         const [fullMatch, url] = match;
         try {
-            const localPath = await AttachmentService.downloadRemoteImage(url, assetsDir, logger, authToken);
+            const downloadUrl = getSignedUrlIfAvailable(url, signedUrls, logger);
+
+            const localPath = await AttachmentService.downloadRemoteImage(downloadUrl, assetsDir, logger);
             const relativePath = path.relative(worktreeRoot, localPath);
             // Replace the src URL in the img tag while preserving other attributes
             const newImgTag = fullMatch.replace(url, relativePath);
