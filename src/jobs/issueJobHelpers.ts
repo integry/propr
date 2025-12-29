@@ -10,7 +10,7 @@ import {
     db,
     getModelShortName
 } from '@gitfix/core';
-export { localizeContentImages } from './contentUtils';
+export { localizeContentImages } from './contentUtils.js';
 import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, CommitResult, RepoValidationResult } from '@gitfix/core';
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
