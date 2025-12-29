@@ -9,12 +9,16 @@ import {
   getPrimaryProcessingLabels,
   updatePrimaryProcessingLabels,
   getAgents,
-  AgentConfig
+  getSummarizationSettings,
+  updateSummarizationSettings,
+  AgentConfig,
+  SummarizationSettings
 } from '../../api/gitfixApi';
 import { Settings } from './types';
 import GeneralSettingsSection from './GeneralSettingsSection';
 import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
+import KnowledgeBaseSection from './KnowledgeBaseSection';
 
 const SettingsPage: React.FC = () => {
   // Global state
@@ -43,17 +47,23 @@ const SettingsPage: React.FC = () => {
 
   const [agents, setAgents] = useState<AgentConfig[]>([]);
 
+  const [summarizationSettings, setSummarizationSettings] = useState<SummarizationSettings>({
+    enabled: false,
+    agent_alias: ''
+  });
+
   // Load all data with Promise.all
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
       try {
-        const [sData, kData, pLabelData, pLabelsData, aData] = await Promise.all([
+        const [sData, kData, pLabelData, pLabelsData, aData, sumData] = await Promise.all([
           getSettings(),
           getFollowupKeywords(),
           getPrLabel(),
           getPrimaryProcessingLabels(),
-          getAgents()
+          getAgents(),
+          getSummarizationSettings()
         ]);
 
         // Type assertions for API responses
@@ -67,6 +77,7 @@ const SettingsPage: React.FC = () => {
         const prLabelDataTyped = pLabelData as { pr_label?: string };
         const primaryLabelsData = pLabelsData as { primary_processing_labels?: string[] };
         const agentsData = aData as { agents?: AgentConfig[] };
+        const summarizationData = sumData as SummarizationSettings;
 
         // Parse Settings
         setSettings({
@@ -83,6 +94,10 @@ const SettingsPage: React.FC = () => {
         setPrLabel(prLabelDataTyped.pr_label || 'gitfix');
         setPrimaryLabels(primaryLabelsData.primary_processing_labels || ['AI']);
         setAgents(agentsData.agents || []);
+        setSummarizationSettings({
+          enabled: summarizationData.enabled || false,
+          agent_alias: summarizationData.agent_alias || ''
+        });
       } catch (err) {
         setGlobalError((err as Error).message || 'Failed to load settings');
       } finally {
@@ -191,6 +206,28 @@ const SettingsPage: React.FC = () => {
     performAutoSave(settings, whitelist, prLabel, primaryLabels, newList);
   };
 
+  // Handle summarization settings changes (separate save endpoint)
+  const handleSummarizationChange = async (newSettings: SummarizationSettings) => {
+    setSummarizationSettings(newSettings);
+
+    // Clear any pending save timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    setSaveStatus('saving');
+    setGlobalError(null);
+
+    try {
+      await updateSummarizationSettings(newSettings);
+      setSaveStatus('saved');
+      saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
+    } catch (err) {
+      setSaveStatus('error');
+      setGlobalError((err as Error).message || 'Failed to save summarization settings');
+    }
+  };
+
   if (loading) {
     return (
       <div className="p-8 text-center text-gray-500">
@@ -243,6 +280,12 @@ const SettingsPage: React.FC = () => {
               setSettings(prev => ({ ...prev, [e.target.name]: e.target.value }))
             }
             onBlur={triggerAutoSave}
+          />
+
+          <KnowledgeBaseSection
+            settings={summarizationSettings}
+            agents={agents}
+            onSettingsChange={handleSummarizationChange}
           />
 
           <TagListSection

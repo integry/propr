@@ -362,4 +362,43 @@ export const revertCommit = async (params: RevertParams): Promise<void> => {
   await handleApiResponse(response);
 };
 
+// Summarization Settings
+export interface SummarizationSettings {
+  enabled: boolean;
+  agent_alias: string;
+}
+
+export const getSummarizationSettings = async (): Promise<SummarizationSettings> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/summarization`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const updateSummarizationSettings = async (settings: SummarizationSettings): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/summarization`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+};
+
+// Repository Indexing Status
+export interface RepositoryIndexingStatus {
+  full_name: string;
+  indexing_status: 'idle' | 'indexing' | 'completed' | 'failed';
+  last_indexed_at: string | null;
+}
+
+export const getRepositoriesIndexingStatus = async (): Promise<{ repositories: RepositoryIndexingStatus[] }> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/repos/indexing-status`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export * from './plannerApi';

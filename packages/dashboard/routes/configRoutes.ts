@@ -284,6 +284,62 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     res.status(result.status).json(result.body);
   }
 
+  async function getSummarizationSettings(_req: Request, res: Response): Promise<void> {
+    try {
+      const settings = await configManager.loadSummarizationSettings();
+      res.json(settings);
+    } catch (error) {
+      console.error('Error in /api/config/summarization GET:', error);
+      res.status(500).json({ error: 'Failed to load summarization settings' });
+    }
+  }
+
+  async function postSummarizationSettings(req: Request, res: Response): Promise<void> {
+    const result = await withConfigLock(redisClient, 'config:summarization:lock', async () => {
+      const { enabled, agent_alias } = req.body;
+
+      if (typeof enabled !== 'boolean') {
+        return { status: 400, body: { error: 'enabled must be a boolean' } };
+      }
+
+      if (agent_alias !== undefined && typeof agent_alias !== 'string') {
+        return { status: 400, body: { error: 'agent_alias must be a string' } };
+      }
+
+      const settings = {
+        enabled,
+        agent_alias: agent_alias || ''
+      };
+
+      await configManager.saveSummarizationSettings(settings);
+
+      const activity = {
+        id: `activity-${Date.now()}-summarization-update`,
+        type: 'summarization_updated',
+        timestamp: new Date().toISOString(),
+        user: req.user?.username,
+        description: `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'})`,
+        status: 'success'
+      };
+      await redisClient.lPush('system:activity:log', JSON.stringify(activity));
+      await redisClient.lTrim('system:activity:log', 0, 999);
+
+      return { status: 200, body: { success: true, ...settings } };
+    });
+
+    res.status(result.status).json(result.body);
+  }
+
+  async function getRepositoriesIndexingStatus(_req: Request, res: Response): Promise<void> {
+    try {
+      const statuses = await configManager.getRepositoriesIndexingStatus();
+      res.json({ repositories: statuses });
+    } catch (error) {
+      console.error('Error in /api/config/repos/indexing-status GET:', error);
+      res.status(500).json({ error: 'Failed to load repositories indexing status' });
+    }
+  }
+
   return {
     getFollowupKeywords,
     postFollowupKeywords,
@@ -298,7 +354,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     getPrimaryProcessingLabels,
     postPrimaryProcessingLabels,
     getAgents,
-    postAgents
+    postAgents,
+    getSummarizationSettings,
+    postSummarizationSettings,
+    getRepositoriesIndexingStatus
   };
 }
 
