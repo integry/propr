@@ -250,9 +250,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     // Localize remote images in comment bodies and original task spec
     // This downloads images to the worktree so the agent can access them
-    const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger);
+    const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger, githubToken.token);
     const localizedOriginalTaskSpec = originalTaskSpec
-        ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger)
+        ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger, githubToken.token)
         : originalTaskSpec;
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });

@@ -225,9 +225,10 @@ export class AttachmentService {
    * @param url - The URL of the image to download
    * @param targetDir - The directory to save the image to
    * @param logger - Optional logger for debugging/warnings
+   * @param authToken - Optional authentication token for GitHub URLs
    * @returns The absolute path to the saved file
    */
-  static async downloadRemoteImage(url: string, targetDir: string, logger?: Logger): Promise<string> {
+  static async downloadRemoteImage(url: string, targetDir: string, logger?: Logger, authToken?: string): Promise<string> {
     await fs.ensureDir(targetDir);
 
     // Generate a unique filename with UUID
@@ -236,12 +237,20 @@ export class AttachmentService {
     const finalPath = path.join(targetDir, finalFilename);
 
     try {
+      // Build headers - add auth for GitHub URLs
+      const headers: Record<string, string> = {
+        'User-Agent': 'GitFix-Bot/1.0 (https://github.com/integry/gitfix)'
+      };
+
+      // GitHub user-attachments require authentication
+      const isGitHubUrl = url.includes('github.com') || url.includes('githubusercontent.com');
+      if (isGitHubUrl && authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+        headers['Accept'] = 'application/octet-stream';
+      }
+
       // Fetch the image from the remote URL
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'GitFix-Bot/1.0 (https://github.com/integry/gitfix)'
-        }
-      });
+      const response = await fetch(url, { headers });
 
       if (!response.ok) {
         throw new Error(`Failed to fetch image: HTTP ${response.status} ${response.statusText}`);

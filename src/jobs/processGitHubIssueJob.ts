@@ -269,13 +269,13 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
     // Localize remote images in issue body and comments
     // This downloads images to the worktree so the agent can access them
     const localizedBody = currentIssueData.data.body
-        ? await localizeContentImages(currentIssueData.data.body, worktreeInfo.worktreePath, correlatedLogger)
+        ? await localizeContentImages(currentIssueData.data.body, worktreeInfo.worktreePath, correlatedLogger, githubToken.token)
         : undefined;
 
     const localizedComments = await Promise.all(
         issueComments.map(async (comment) => ({
             ...comment,
-            body: comment.body ? await localizeContentImages(comment.body, worktreeInfo.worktreePath, correlatedLogger) : comment.body
+            body: comment.body ? await localizeContentImages(comment.body, worktreeInfo.worktreePath, correlatedLogger, githubToken.token) : comment.body
         }))
     );
 

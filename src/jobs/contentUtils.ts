@@ -13,9 +13,10 @@ import { AttachmentService } from '@gitfix/core';
  * @param content - The markdown content containing image references
  * @param worktreeRoot - The root path of the worktree to save images to
  * @param logger - Logger instance for debugging/warnings
+ * @param authToken - Optional authentication token for GitHub URLs
  * @returns The content with remote image URLs replaced with local relative paths
  */
-export async function localizeContentImages(content: string, worktreeRoot: string, logger: Logger): Promise<string> {
+export async function localizeContentImages(content: string, worktreeRoot: string, logger: Logger, authToken?: string): Promise<string> {
     if (!content) return content;
 
     // Match markdown image syntax: ![alt text](url)
@@ -33,7 +34,7 @@ export async function localizeContentImages(content: string, worktreeRoot: strin
     for (const match of matches) {
         const [fullMatch, alt, url] = match;
         try {
-            const localPath = await AttachmentService.downloadRemoteImage(url, assetsDir, logger);
+            const localPath = await AttachmentService.downloadRemoteImage(url, assetsDir, logger, authToken);
             const relativePath = path.relative(worktreeRoot, localPath);
             // Replace only this specific occurrence by reconstructing the image syntax
             const newImageSyntax = `![${alt}](${relativePath})`;
