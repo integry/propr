@@ -317,6 +317,41 @@ export interface RevertParams {
   owner: string;
 }
 
+export interface CommitInfo {
+  sha: string;
+  shortSha: string;
+  message: string;
+  author: string;
+  date: string | null;
+}
+
+export interface RevertPreviewResponse {
+  branch: string;
+  baseBranch: string;
+  targetCommit: {
+    sha: string;
+    shortSha: string;
+  };
+  newHead: CommitInfo | null;
+  commitsToRemove: CommitInfo[];
+  remainingCommits: CommitInfo[];
+  willRevertToBase: boolean;
+}
+
+export const getRevertPreview = async (params: {
+  owner: string;
+  repo: string;
+  pr: string;
+  commit: string;
+}): Promise<RevertPreviewResponse> => {
+  const queryParams = new URLSearchParams(params);
+  const response = await fetch(`${API_BASE_URL}/api/tasks/revert-preview?${queryParams}`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export const revertCommit = async (params: RevertParams): Promise<void> => {
   const response = await fetch(`${API_BASE_URL}/api/tasks/revert`, {
     method: 'POST',

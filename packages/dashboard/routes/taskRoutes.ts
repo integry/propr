@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Queue } from 'bullmq';
-import { generateCorrelationId } from '@gitfix/core';
+import { generateCorrelationId, getAuthenticatedOctokit } from '@gitfix/core';
 import type { SystemTaskJobData } from '@gitfix/core';
 
 interface TaskRoutesDeps {
@@ -71,7 +71,95 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
     }
   }
 
-  return { getTasks, revertChanges };
+  async function getRevertPreview(req: Request, res: Response): Promise<void> {
+    try {
+      const { owner, repo, pr, commit } = req.query as Record<string, string>;
+
+      if (!owner || !repo || !pr || !commit) {
+        res.status(400).json({
+          error: 'Missing required parameters',
+          required: ['owner', 'repo', 'pr', 'commit']
+        });
+        return;
+      }
+
+      const octokit = await getAuthenticatedOctokit();
+      const prNumber = parseInt(pr, 10);
+
+      // Get PR details to find the branch
+      const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner,
+        repo,
+        pull_number: prNumber
+      });
+
+      const branch = prData.head.ref;
+      const baseBranch = prData.base.ref;
+
+      // Get commits on the PR
+      const { data: prCommits } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
+        owner,
+        repo,
+        pull_number: prNumber,
+        per_page: 100
+      });
+
+      // Find the target commit and determine which commits will be removed
+      const targetCommitIndex = prCommits.findIndex(c => c.sha === commit || c.sha.startsWith(commit));
+
+      if (targetCommitIndex === -1) {
+        res.status(404).json({
+          error: 'Target commit not found in PR commits'
+        });
+        return;
+      }
+
+      // Commits to be removed are those after the target commit (inclusive of target)
+      const commitsToRemove = prCommits.slice(targetCommitIndex).map(c => ({
+        sha: c.sha,
+        shortSha: c.sha.substring(0, 7),
+        message: c.commit.message.split('\n')[0], // First line only
+        author: c.commit.author?.name || c.author?.login || 'Unknown',
+        date: c.commit.author?.date || null
+      }));
+
+      // The new HEAD will be the commit before the target (if any)
+      const newHeadCommit = targetCommitIndex > 0 ? prCommits[targetCommitIndex - 1] : null;
+
+      // Commits that will remain (before target commit)
+      const remainingCommits = prCommits.slice(0, targetCommitIndex).map(c => ({
+        sha: c.sha,
+        shortSha: c.sha.substring(0, 7),
+        message: c.commit.message.split('\n')[0],
+        author: c.commit.author?.name || c.author?.login || 'Unknown',
+        date: c.commit.author?.date || null
+      }));
+
+      res.json({
+        branch,
+        baseBranch,
+        targetCommit: {
+          sha: commit,
+          shortSha: commit.substring(0, 7)
+        },
+        newHead: newHeadCommit ? {
+          sha: newHeadCommit.sha,
+          shortSha: newHeadCommit.sha.substring(0, 7),
+          message: newHeadCommit.commit.message.split('\n')[0],
+          author: newHeadCommit.commit.author?.name || newHeadCommit.author?.login || 'Unknown',
+          date: newHeadCommit.commit.author?.date || null
+        } : null,
+        commitsToRemove,
+        remainingCommits,
+        willRevertToBase: targetCommitIndex === 0
+      });
+    } catch (error) {
+      console.error('Error in /api/tasks/revert-preview:', error);
+      res.status(500).json({ error: 'Failed to fetch revert preview' });
+    }
+  }
+
+  return { getTasks, revertChanges, getRevertPreview };
 }
 
 interface TaskQuery {

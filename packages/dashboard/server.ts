@@ -158,6 +158,7 @@ function setupRoutes(): void {
 
   app.get('/api/status', ensureAuthenticated, statusRoutes.getStatus);
   app.get('/api/tasks', ensureAuthenticated, taskRoutes.getTasks);
+  app.get('/api/tasks/revert-preview', ensureAuthenticated, taskRoutes.getRevertPreview);
   app.post('/api/tasks/revert', ensureAuthenticated, taskRoutes.revertChanges);
   app.get('/api/task/:taskId/history', ensureAuthenticated, taskHistoryRoutes.getTaskHistory);
   app.get('/api/task/:taskId/live-details', ensureAuthenticated, liveDetailsRoutes.getLiveDetails);

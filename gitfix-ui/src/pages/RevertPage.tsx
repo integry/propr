@@ -1,14 +1,62 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { AlertTriangle, RotateCcw, CheckCircle, Loader2 } from 'lucide-react';
-import { revertCommit } from '../api/gitfixApi';
+import { AlertTriangle, RotateCcw, CheckCircle, Loader2, GitCommit, ArrowDown, Trash2, GitBranch } from 'lucide-react';
+import { revertCommit, getRevertPreview, type RevertPreviewResponse, type CommitInfo } from '../api/gitfixApi';
 
-type RevertState = 'idle' | 'processing' | 'success' | 'error';
+type RevertState = 'loading' | 'idle' | 'processing' | 'success' | 'error';
+
+const CommitItem: React.FC<{ commit: CommitInfo; isRemoved?: boolean; isNewHead?: boolean }> = ({
+  commit,
+  isRemoved = false,
+  isNewHead = false
+}) => (
+  <div className={`flex items-start gap-3 p-3 rounded-lg border ${
+    isRemoved
+      ? 'bg-red-50 border-red-200'
+      : isNewHead
+        ? 'bg-green-50 border-green-300 ring-2 ring-green-400'
+        : 'bg-gray-50 border-gray-200'
+  }`}>
+    <div className={`flex-shrink-0 mt-0.5 ${isRemoved ? 'text-red-500' : isNewHead ? 'text-green-600' : 'text-gray-400'}`}>
+      {isRemoved ? <Trash2 className="w-4 h-4" /> : <GitCommit className="w-4 h-4" />}
+    </div>
+    <div className="flex-1 min-w-0">
+      <div className="flex items-center gap-2">
+        <code className={`text-xs px-1.5 py-0.5 rounded font-mono ${
+          isRemoved
+            ? 'bg-red-100 text-red-700'
+            : isNewHead
+              ? 'bg-green-100 text-green-700'
+              : 'bg-gray-200 text-gray-700'
+        }`}>
+          {commit.shortSha}
+        </code>
+        {isNewHead && (
+          <span className="text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
+            NEW HEAD
+          </span>
+        )}
+        {isRemoved && (
+          <span className="text-xs font-medium text-red-700 bg-red-100 px-2 py-0.5 rounded-full">
+            WILL BE REMOVED
+          </span>
+        )}
+      </div>
+      <p className={`text-sm mt-1 truncate ${isRemoved ? 'text-red-700' : 'text-gray-700'}`}>
+        {commit.message}
+      </p>
+      <p className={`text-xs mt-0.5 ${isRemoved ? 'text-red-500' : 'text-gray-500'}`}>
+        by {commit.author}
+      </p>
+    </div>
+  </div>
+);
 
 const RevertPage: React.FC = () => {
   const [searchParams] = useSearchParams();
-  const [state, setState] = useState<RevertState>('idle');
+  const [state, setState] = useState<RevertState>('loading');
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [preview, setPreview] = useState<RevertPreviewResponse | null>(null);
 
   // Read query params
   const repo = searchParams.get('repo') || '';
@@ -16,6 +64,35 @@ const RevertPage: React.FC = () => {
   const commit = searchParams.get('commit') || '';
   const commentId = searchParams.get('commentId') || '';
   const owner = searchParams.get('owner') || '';
+
+  // Validate required params
+  const missingParams: string[] = [];
+  if (!repo) missingParams.push('repo');
+  if (!pr) missingParams.push('pr');
+  if (!commit) missingParams.push('commit');
+  if (!commentId) missingParams.push('commentId');
+  if (!owner) missingParams.push('owner');
+
+  useEffect(() => {
+    if (missingParams.length > 0) {
+      setState('idle');
+      return;
+    }
+
+    const fetchPreview = async () => {
+      try {
+        const data = await getRevertPreview({ owner, repo, pr, commit });
+        setPreview(data);
+        setState('idle');
+      } catch (error) {
+        console.error('Failed to fetch revert preview:', error);
+        // Still allow revert even if preview fails
+        setState('idle');
+      }
+    };
+
+    fetchPreview();
+  }, [owner, repo, pr, commit, missingParams.length]);
 
   const handleConfirmRevert = async () => {
     setState('processing');
@@ -36,14 +113,6 @@ const RevertPage: React.FC = () => {
     }
   };
 
-  // Validate required params
-  const missingParams = [];
-  if (!repo) missingParams.push('repo');
-  if (!pr) missingParams.push('pr');
-  if (!commit) missingParams.push('commit');
-  if (!commentId) missingParams.push('commentId');
-  if (!owner) missingParams.push('owner');
-
   if (missingParams.length > 0) {
     return (
       <div className="min-h-screen bg-light-100 flex items-center justify-center">
@@ -58,6 +127,17 @@ const RevertPage: React.FC = () => {
           <p className="text-red-600 font-mono">
             {missingParams.join(', ')}
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (state === 'loading') {
+    return (
+      <div className="min-h-screen bg-light-100 flex items-center justify-center">
+        <div className="bg-white p-8 rounded-lg shadow-md max-w-lg w-full text-center">
+          <Loader2 className="w-12 h-12 mx-auto animate-spin text-gray-400" />
+          <p className="mt-4 text-gray-600">Loading commit information...</p>
         </div>
       </div>
     );
@@ -80,8 +160,8 @@ const RevertPage: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-light-100 flex items-center justify-center">
-      <div className="bg-white p-8 rounded-lg shadow-md max-w-lg w-full">
+    <div className="min-h-screen bg-light-100 flex items-center justify-center p-4">
+      <div className="bg-white p-8 rounded-lg shadow-md max-w-2xl w-full">
         {/* Header */}
         <div className="text-center mb-6">
           <div className="text-red-600 mb-4">
@@ -110,19 +190,107 @@ const RevertPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Commit Info */}
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
-          <h2 className="text-sm font-medium text-gray-500 mb-2">Target Commit</h2>
-          <div className="font-mono text-sm text-gray-800 break-all">
-            {commit}
+        {/* Branch Info */}
+        {preview && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+            <div className="flex items-center gap-2 text-blue-800">
+              <GitBranch className="w-4 h-4" />
+              <span className="font-medium">Branch:</span>
+              <code className="bg-blue-100 px-2 py-0.5 rounded text-sm">{preview.branch}</code>
+              <span className="text-blue-600">on PR #{pr}</span>
+            </div>
           </div>
-          <div className="mt-2 text-sm text-gray-600">
-            <span className="font-medium">Repository:</span> {owner}/{repo}
+        )}
+
+        {/* Commit Visualization */}
+        {preview && (
+          <div className="mb-6">
+            <h2 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+              <GitCommit className="w-4 h-4" />
+              Commit History Visualization
+            </h2>
+
+            <div className="space-y-2">
+              {/* Remaining commits (will stay) */}
+              {preview.remainingCommits.length > 0 && (
+                <>
+                  <div className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                    Commits that will remain ({preview.remainingCommits.length})
+                  </div>
+                  {preview.remainingCommits.map((c, idx) => (
+                    <CommitItem
+                      key={c.sha}
+                      commit={c}
+                      isNewHead={idx === preview.remainingCommits.length - 1}
+                    />
+                  ))}
+                </>
+              )}
+
+              {/* Divider with arrow */}
+              <div className="flex items-center justify-center py-2">
+                <div className="flex-1 border-t border-dashed border-red-300" />
+                <div className="px-3 flex items-center gap-2 text-red-500">
+                  <ArrowDown className="w-5 h-5" />
+                  <span className="text-xs font-medium uppercase">Revert Point</span>
+                  <ArrowDown className="w-5 h-5" />
+                </div>
+                <div className="flex-1 border-t border-dashed border-red-300" />
+              </div>
+
+              {/* Commits to be removed */}
+              {preview.commitsToRemove.length > 0 && (
+                <>
+                  <div className="text-xs font-medium text-red-500 uppercase tracking-wide mb-2">
+                    Commits that will be removed ({preview.commitsToRemove.length})
+                  </div>
+                  {preview.commitsToRemove.map((c) => (
+                    <CommitItem key={c.sha} commit={c} isRemoved />
+                  ))}
+                </>
+              )}
+
+              {/* Revert to base warning */}
+              {preview.willRevertToBase && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-4">
+                  <p className="text-sm text-amber-800">
+                    <strong>Note:</strong> This will revert <strong>all commits</strong> on this PR branch.
+                    The branch will be reset to the base branch state ({preview.baseBranch}).
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
-          <div className="text-sm text-gray-600">
-            <span className="font-medium">Pull Request:</span> #{pr}
+        )}
+
+        {/* Fallback Commit Info (when preview fails) */}
+        {!preview && (
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
+            <h2 className="text-sm font-medium text-gray-500 mb-2">Target Commit</h2>
+            <div className="font-mono text-sm text-gray-800 break-all">
+              {commit}
+            </div>
+            <div className="mt-2 text-sm text-gray-600">
+              <span className="font-medium">Repository:</span> {owner}/{repo}
+            </div>
+            <div className="text-sm text-gray-600">
+              <span className="font-medium">Pull Request:</span> #{pr}
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* New HEAD summary */}
+        {preview && preview.newHead && (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
+            <h2 className="text-sm font-medium text-green-700 mb-2">After Revert: New HEAD Commit</h2>
+            <div className="flex items-center gap-2">
+              <code className="bg-green-100 text-green-800 px-2 py-1 rounded font-mono text-sm">
+                {preview.newHead.shortSha}
+              </code>
+              <span className="text-green-700 text-sm truncate">{preview.newHead.message}</span>
+            </div>
+          </div>
+        )}
 
         {/* Error Message */}
         {state === 'error' && (
@@ -164,4 +332,3 @@ const RevertPage: React.FC = () => {
 };
 
 export default RevertPage;
-
