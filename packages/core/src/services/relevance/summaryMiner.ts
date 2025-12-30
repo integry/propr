@@ -7,9 +7,7 @@ import { db } from '../../db/connection.js';
 import { loadSummarizationSettings } from '../../config/configManager.js';
 import {
   processBatches,
-  aggregateDirectories,
-  getSummarizationMetricsSummary,
-  getSummarizationCallHistory
+  aggregateDirectories
 } from './summaryMinerHelpers.js';
 
 // Re-export metrics functions and types for external access
