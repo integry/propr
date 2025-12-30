@@ -102,16 +102,29 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
-    const agent = settings.agent_alias
-      ? registry.getAgentByAlias(settings.agent_alias)
+    // Parse agent_alias which may be in format "agent_alias:model" or just "agent_alias"
+    let agentAlias = settings.agent_alias;
+    let modelOverride: string | undefined;
+
+    if (settings.agent_alias && settings.agent_alias.includes(':')) {
+      const parts = settings.agent_alias.split(':');
+      agentAlias = parts[0];
+      modelOverride = parts.slice(1).join(':'); // Handle model IDs that might contain colons
+    }
+
+    const agent = agentAlias
+      ? registry.getAgentByAlias(agentAlias)
       : registry.getDefaultAgent();
 
     if (!agent) {
-      throw new Error(`No agent found for summarization (alias: ${settings.agent_alias || 'default'})`);
+      throw new Error(`No agent found for summarization (alias: ${agentAlias || 'default'})`);
     }
 
+    // Determine which model to use for budgeting and logging
+    const effectiveModel = modelOverride || agent.config.defaultModel;
+
     correlatedLogger.info(
-      { agentAlias: agent.config.alias, model: agent.config.defaultModel },
+      { agentAlias: agent.config.alias, model: effectiveModel },
       'Using agent for summarization'
     );
 
@@ -149,7 +162,8 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       fullName,
       files: filesToProcess,
       agent,
-      log: correlatedLogger
+      log: correlatedLogger,
+      modelOverride
     });
 
     // Phase C: Directory Aggregation

@@ -35,15 +35,16 @@ export interface ProcessBatchesOptions {
   files: GitFileInfo[];
   agent: Agent;
   log: Logger;
+  modelOverride?: string; // Optional model override for token budgeting and logging
 }
 
 /**
  * Processes files in batches, respecting token limits
  */
 export async function processBatches(options: ProcessBatchesOptions): Promise<void> {
-  const { repoPath, fullName, files, agent, log } = options;
-  // Calculate budget based on model limits
-  const modelId = agent.config.defaultModel || 'default';
+  const { repoPath, fullName, files, agent, log, modelOverride } = options;
+  // Calculate budget based on model limits (use override if provided)
+  const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
   const maxBatchTokens = Math.floor(maxTokens * BATCH_TOKEN_RATIO);
 
@@ -77,7 +78,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<vo
       batchNumber++;
       log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing batch');
 
-      await processSingleBatch(fullName, currentBatch, agent, log);
+      await processSingleBatch(fullName, currentBatch, agent, log, modelId);
 
       currentBatch = [];
       currentTokens = 0;
@@ -96,7 +97,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<vo
   if (currentBatch.length > 0) {
     batchNumber++;
     log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing final batch');
-    await processSingleBatch(fullName, currentBatch, agent, log);
+    await processSingleBatch(fullName, currentBatch, agent, log, modelId);
   }
 
   log.info({ totalBatches: batchNumber }, 'Batch processing complete');
@@ -109,7 +110,8 @@ async function processSingleBatch(
   fullName: string,
   batch: BatchFile[],
   agent: Agent,
-  log: Logger
+  log: Logger,
+  modelUsed: string
 ): Promise<void> {
   const prompt = buildBatchPrompt(batch);
 
@@ -117,8 +119,8 @@ async function processSingleBatch(
     const response = await agent.analyze(prompt);
     const summaries = parseBatchResponse(response);
 
-    // Save summaries to DB
-    await saveBatchSummaries(fullName, batch, summaries, agent.config.alias);
+    // Save summaries to DB with the actual model used
+    await saveBatchSummaries(fullName, batch, summaries, modelUsed);
 
     log.debug({ savedCount: summaries.length }, 'Saved batch summaries');
   } catch (error) {

@@ -30,9 +30,9 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
     return info && RECOMMENDED_MODEL_ALIASES.includes(info.shortAlias);
   };
 
-  // Generate model options from agents
+  // Generate model options from agents - list all models from all enabled agents
   interface ModelOption {
-    value: string; // agent_alias
+    value: string; // agent_alias:model format (same as analysis model dropdowns)
     label: string;
     enabled: boolean;
     isRecommended: boolean;
@@ -40,20 +40,20 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
     modelId: string;
   }
 
-  // Get only enabled agents and their first model (the default/preferred one)
+  // Get only enabled agents
   const enabledAgents = agents.filter(a => a.enabled);
 
-  const modelOptions: ModelOption[] = enabledAgents.map(agent => {
-    const defaultModel = agent.defaultModel || agent.supportedModels[0];
-    return {
-      value: agent.alias,
-      label: getModelLabel(agent.alias, defaultModel),
+  // List ALL models from all enabled agents (matching the analysis model dropdowns behavior)
+  const modelOptions: ModelOption[] = enabledAgents.flatMap(agent =>
+    agent.supportedModels.map(model => ({
+      value: `${agent.alias}:${model}`,
+      label: getModelLabel(agent.alias, model),
       enabled: agent.enabled,
-      isRecommended: isRecommendedModel(defaultModel),
+      isRecommended: isRecommendedModel(model),
       agentType: agent.type,
-      modelId: defaultModel
-    };
-  });
+      modelId: model
+    }))
+  );
 
   // Sort so recommended models come first
   const sortedOptions = [...modelOptions].sort((a, b) => {
