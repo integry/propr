@@ -255,19 +255,20 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     state.worktreeInfo = await createWorktreeFromExistingBranch(state.localRepoPath, branchName, { worktreeDirName: `pr-${pullRequestNumber}-followup-${timestamp}`, owner: repoOwner, repoName });
     correlatedLogger.info({ worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName }, 'Created worktree from existing PR branch');
 
-    const summaryTitle = await generateSummaryTitle({ combinedCommentBody, worktreeInfo: state.worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger });
-    job.data.title = `Followup: ${prData!.data.title}`;
-    job.data.subtitle = summaryTitle;
-    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber });
-
-    // Localize remote images in comment bodies and original task spec
+    // Localize remote images FIRST so they're available for summary generation
     // This downloads images to the worktree so the agent can access them
     // We pass body_html which contains signed URLs for GitHub user-attachments
     const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger, combinedBodyHtml);
-    // For originalTaskSpec (linked issue), we'd need body_html from the issue - pass undefined for now
+    // For originalTaskSpec (linked issue), we'd need body_html from the issue
     const localizedOriginalTaskSpec = originalTaskSpec
         ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger, linkedIssueResult.bodyHtml)
         : originalTaskSpec;
+
+    // Generate summary using localized content so Haiku can see images
+    const summaryTitle = await generateSummaryTitle({ combinedCommentBody: localizedCombinedCommentBody, worktreeInfo: state.worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger });
+    job.data.title = `Followup: ${prData!.data.title}`;
+    job.data.subtitle = summaryTitle;
+    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber });
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
 
