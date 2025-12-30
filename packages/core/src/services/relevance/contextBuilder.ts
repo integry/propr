@@ -41,6 +41,152 @@ const CONTEXT_BUDGET_RATIO = 0.80;
 /** Chars per token estimate (conservative to avoid overflow) */
 const CHARS_PER_TOKEN = 3;
 
+// --- Internal Types for Context Building ---
+
+interface ContextState {
+  context: string;
+  currentChars: number;
+  includedFiles: number;
+  includedDirs: number;
+  truncated: boolean;
+  includedPaths: Set<string>;
+}
+
+interface ContextBuildData {
+  fileSummaries: FileSummaryRow[];
+  dirSummaries: DirectorySummaryRow[];
+  budgetChars: number;
+  priorityPaths: string[];
+}
+
+// --- Tier Processing Functions ---
+
+/**
+ * Tier 1: Add top-level directory summaries
+ */
+function processTier1RootDirs(state: ContextState, data: ContextBuildData): void {
+  const rootDirs = data.dirSummaries.filter(d => !d.path.includes('/'));
+  for (const dir of rootDirs) {
+    const entry = formatDirEntry(dir);
+    if (state.currentChars + entry.length <= data.budgetChars) {
+      state.context += entry;
+      state.currentChars += entry.length;
+      state.includedDirs++;
+      state.includedPaths.add(dir.path);
+    } else {
+      state.truncated = true;
+      break;
+    }
+  }
+}
+
+/**
+ * Tier 2: Add priority paths and their siblings
+ */
+function processTier2PriorityPaths(state: ContextState, data: ContextBuildData): void {
+  if (data.priorityPaths.length === 0 || state.currentChars >= data.budgetChars) {
+    return;
+  }
+
+  const prioritySet = new Set(data.priorityPaths);
+  const priorityDirs = getPriorityDirs(data.priorityPaths);
+
+  addPriorityFiles(state, data, prioritySet);
+  addSiblingFiles(state, data, priorityDirs);
+  addPriorityDirectories(state, data, priorityDirs);
+}
+
+function getPriorityDirs(priorityPaths: string[]): Set<string> {
+  const priorityDirs = new Set<string>();
+  for (const filePath of priorityPaths) {
+    const dir = getParentDir(filePath);
+    if (dir) {
+      priorityDirs.add(dir);
+    }
+  }
+  return priorityDirs;
+}
+
+function addPriorityFiles(state: ContextState, data: ContextBuildData, prioritySet: Set<string>): void {
+  for (const file of data.fileSummaries) {
+    if (prioritySet.has(file.path) && !state.includedPaths.has(file.path)) {
+      if (!tryAddFileEntry(state, data.budgetChars, file)) break;
+    }
+  }
+}
+
+function addSiblingFiles(state: ContextState, data: ContextBuildData, priorityDirs: Set<string>): void {
+  for (const file of data.fileSummaries) {
+    const fileDir = getParentDir(file.path);
+    if (fileDir && priorityDirs.has(fileDir) && !state.includedPaths.has(file.path)) {
+      if (!tryAddFileEntry(state, data.budgetChars, file)) break;
+    }
+  }
+}
+
+function addPriorityDirectories(state: ContextState, data: ContextBuildData, priorityDirs: Set<string>): void {
+  for (const dir of data.dirSummaries) {
+    if (priorityDirs.has(dir.path) && !state.includedPaths.has(dir.path)) {
+      if (!tryAddDirEntry(state, data.budgetChars, dir)) break;
+    }
+  }
+}
+
+/**
+ * Tier 3: Fill remaining budget with other summaries (breadth-first)
+ */
+function processTier3FillRemaining(state: ContextState, data: ContextBuildData): void {
+  if (state.currentChars >= data.budgetChars) {
+    return;
+  }
+
+  // Add remaining directories (shallowest first)
+  const sortedDirs = [...data.dirSummaries]
+    .filter(d => !state.includedPaths.has(d.path))
+    .sort((a, b) => getDepth(a.path) - getDepth(b.path));
+
+  for (const dir of sortedDirs) {
+    if (!tryAddDirEntry(state, data.budgetChars, dir)) break;
+  }
+
+  // Add remaining files (shallowest first)
+  const sortedFiles = [...data.fileSummaries]
+    .filter(f => !state.includedPaths.has(f.path))
+    .sort((a, b) => getDepth(a.path) - getDepth(b.path));
+
+  for (const file of sortedFiles) {
+    if (!tryAddFileEntry(state, data.budgetChars, file)) break;
+  }
+}
+
+// --- Entry Addition Helpers ---
+
+function tryAddFileEntry(state: ContextState, budgetChars: number, file: FileSummaryRow): boolean {
+  const entry = formatFileEntry(file);
+  if (state.currentChars + entry.length <= budgetChars) {
+    state.context += entry;
+    state.currentChars += entry.length;
+    state.includedFiles++;
+    state.includedPaths.add(file.path);
+    return true;
+  }
+  state.truncated = true;
+  return false;
+}
+
+function tryAddDirEntry(state: ContextState, budgetChars: number, dir: DirectorySummaryRow): boolean {
+  const entry = formatDirEntry(dir);
+  if (state.currentChars + entry.length <= budgetChars) {
+    state.context += entry;
+    state.currentChars += entry.length;
+    state.includedDirs++;
+    state.includedPaths.add(dir.path);
+    return true;
+  }
+  state.truncated = true;
+  return false;
+}
+
 // --- Main Export ---
 
 /**
@@ -79,148 +225,44 @@ export async function buildSummaryContext(options: ContextBuildOptions = {}): Pr
     };
   }
 
-  // Build context using tiered approach
-  let context = '';
-  let currentChars = 0;
-  let includedFiles = 0;
-  let includedDirs = 0;
-  let truncated = false;
+  // Initialize state and data for context building
+  const state: ContextState = {
+    context: '',
+    currentChars: 0,
+    includedFiles: 0,
+    includedDirs: 0,
+    truncated: false,
+    includedPaths: new Set<string>()
+  };
 
-  const includedPaths = new Set<string>();
+  const data: ContextBuildData = {
+    fileSummaries,
+    dirSummaries,
+    budgetChars,
+    priorityPaths
+  };
 
-  // --- Tier 1: Top-level directory summaries ---
-  const rootDirs = dirSummaries.filter(d => !d.path.includes('/'));
-  for (const dir of rootDirs) {
-    const entry = formatDirEntry(dir);
-    if (currentChars + entry.length <= budgetChars) {
-      context += entry;
-      currentChars += entry.length;
-      includedDirs++;
-      includedPaths.add(dir.path);
-    } else {
-      truncated = true;
-      break;
-    }
-  }
+  // Process tiers
+  processTier1RootDirs(state, data);
+  processTier2PriorityPaths(state, data);
+  processTier3FillRemaining(state, data);
 
-  // --- Tier 2: Priority paths and their siblings ---
-  if (priorityPaths.length > 0 && currentChars < budgetChars) {
-    const prioritySet = new Set(priorityPaths);
-
-    // Get directories containing priority files
-    const priorityDirs = new Set<string>();
-    for (const filePath of priorityPaths) {
-      const dir = getParentDir(filePath);
-      if (dir) {
-        priorityDirs.add(dir);
-      }
-    }
-
-    // Include priority files
-    for (const file of fileSummaries) {
-      if (prioritySet.has(file.path) && !includedPaths.has(file.path)) {
-        const entry = formatFileEntry(file);
-        if (currentChars + entry.length <= budgetChars) {
-          context += entry;
-          currentChars += entry.length;
-          includedFiles++;
-          includedPaths.add(file.path);
-        } else {
-          truncated = true;
-          break;
-        }
-      }
-    }
-
-    // Include sibling files (files in same directory as priority files)
-    for (const file of fileSummaries) {
-      const fileDir = getParentDir(file.path);
-      if (fileDir && priorityDirs.has(fileDir) && !includedPaths.has(file.path)) {
-        const entry = formatFileEntry(file);
-        if (currentChars + entry.length <= budgetChars) {
-          context += entry;
-          currentChars += entry.length;
-          includedFiles++;
-          includedPaths.add(file.path);
-        } else {
-          truncated = true;
-          break;
-        }
-      }
-    }
-
-    // Include priority directories
-    for (const dir of dirSummaries) {
-      if (priorityDirs.has(dir.path) && !includedPaths.has(dir.path)) {
-        const entry = formatDirEntry(dir);
-        if (currentChars + entry.length <= budgetChars) {
-          context += entry;
-          currentChars += entry.length;
-          includedDirs++;
-          includedPaths.add(dir.path);
-        } else {
-          truncated = true;
-          break;
-        }
-      }
-    }
-  }
-
-  // --- Tier 3: Fill remaining budget (breadth-first from root) ---
-  if (currentChars < budgetChars) {
-    // Sort directories by depth (shallowest first)
-    const sortedDirs = [...dirSummaries]
-      .filter(d => !includedPaths.has(d.path))
-      .sort((a, b) => getDepth(a.path) - getDepth(b.path));
-
-    for (const dir of sortedDirs) {
-      const entry = formatDirEntry(dir);
-      if (currentChars + entry.length <= budgetChars) {
-        context += entry;
-        currentChars += entry.length;
-        includedDirs++;
-        includedPaths.add(dir.path);
-      } else {
-        truncated = true;
-        break;
-      }
-    }
-
-    // Then add remaining files (sorted by path for breadth-first effect)
-    const sortedFiles = [...fileSummaries]
-      .filter(f => !includedPaths.has(f.path))
-      .sort((a, b) => getDepth(a.path) - getDepth(b.path));
-
-    for (const file of sortedFiles) {
-      const entry = formatFileEntry(file);
-      if (currentChars + entry.length <= budgetChars) {
-        context += entry;
-        currentChars += entry.length;
-        includedFiles++;
-        includedPaths.add(file.path);
-      } else {
-        truncated = true;
-        break;
-      }
-    }
-  }
-
-  const estimatedTokens = Math.ceil(currentChars / CHARS_PER_TOKEN);
+  const estimatedTokens = Math.ceil(state.currentChars / CHARS_PER_TOKEN);
 
   correlatedLogger.info({
-    fileSummaryCount: includedFiles,
-    dirSummaryCount: includedDirs,
+    fileSummaryCount: state.includedFiles,
+    dirSummaryCount: state.includedDirs,
     totalSummariesAvailable: fileSummaries.length + dirSummaries.length,
     estimatedTokens,
-    truncated
+    truncated: state.truncated
   }, 'Built smart context');
 
   return {
-    context: context.trim(),
-    fileSummaryCount: includedFiles,
-    dirSummaryCount: includedDirs,
+    context: state.context.trim(),
+    fileSummaryCount: state.includedFiles,
+    dirSummaryCount: state.includedDirs,
     estimatedTokens,
-    truncated
+    truncated: state.truncated
   };
 }
 
