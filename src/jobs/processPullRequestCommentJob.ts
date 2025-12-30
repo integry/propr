@@ -259,10 +259,10 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     // This downloads images to the worktree so the agent can access them
     // We pass body_html which contains signed URLs for GitHub user-attachments
     // Assets are stored in subdirectory identified by PR number for cleanup when PR is merged
-    const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger, combinedBodyHtml, pullRequestNumber);
+    const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: combinedBodyHtml, issueOrPrId: pullRequestNumber });
     // For originalTaskSpec (linked issue), we'd need body_html from the issue
     const localizedOriginalTaskSpec = originalTaskSpec
-        ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger, linkedIssueResult.bodyHtml, pullRequestNumber)
+        ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: linkedIssueResult.bodyHtml, issueOrPrId: pullRequestNumber })
         : originalTaskSpec;
 
     // Generate summary using localized content so Haiku can see images

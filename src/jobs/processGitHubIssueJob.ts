@@ -276,13 +276,13 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
     // Assets are stored in subdirectory identified by issue number for cleanup when issue is closed
     const issueBodyHtml = (currentIssueData.data as { body_html?: string }).body_html;
     const localizedBody = currentIssueData.data.body
-        ? await localizeContentImages(currentIssueData.data.body, worktreeInfo.worktreePath, correlatedLogger, issueBodyHtml, issueRef.number)
+        ? await localizeContentImages(currentIssueData.data.body, worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: issueBodyHtml, issueOrPrId: issueRef.number })
         : undefined;
 
     const localizedComments = await Promise.all(
         issueComments.map(async (comment) => ({
             ...comment,
-            body: comment.body ? await localizeContentImages(comment.body, worktreeInfo.worktreePath, correlatedLogger, comment.body_html, issueRef.number) : comment.body
+            body: comment.body ? await localizeContentImages(comment.body, worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: comment.body_html, issueOrPrId: issueRef.number }) : comment.body
         }))
     );
 

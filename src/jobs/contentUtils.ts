@@ -60,6 +60,16 @@ function getSignedUrlIfAvailable(url: string, signedUrls: Map<string, string>, l
 }
 
 /**
+ * Options for localizing content images
+ */
+export interface LocalizeContentImagesOptions {
+    /** Optional HTML content from GitHub API with signed image URLs */
+    bodyHtml?: string;
+    /** Optional issue or PR number for organizing assets in subdirectories (for cleanup when closed/merged) */
+    issueOrPrId?: number;
+}
+
+/**
  * Parses markdown/HTML content for remote image URLs, downloads them to the local worktree,
  * and replaces the URLs with relative local paths.
  *
@@ -73,11 +83,11 @@ function getSignedUrlIfAvailable(url: string, signedUrls: Map<string, string>, l
  * @param content - The markdown/HTML content containing image references
  * @param worktreeRoot - The root path of the worktree to save images to
  * @param logger - Logger instance for debugging/warnings
- * @param bodyHtml - Optional HTML content from GitHub API with signed image URLs
- * @param issueOrPrId - Optional issue or PR number for organizing assets in subdirectories (for cleanup when closed/merged)
+ * @param options - Optional settings including bodyHtml and issueOrPrId
  * @returns The content with remote image URLs replaced with local relative paths
  */
-export async function localizeContentImages(content: string, worktreeRoot: string, logger: Logger, bodyHtml?: string, issueOrPrId?: number): Promise<string> {
+export async function localizeContentImages(content: string, worktreeRoot: string, logger: Logger, options: LocalizeContentImagesOptions = {}): Promise<string> {
+    const { bodyHtml, issueOrPrId } = options;
     if (!content) return content;
 
     // Store assets in a subdirectory identified by issue/PR ID for easy cleanup when closed/merged
