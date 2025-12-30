@@ -37,6 +37,7 @@ const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 interface PRComment {
     id: number;
     body: string;
+    body_html?: string;  // HTML with signed image URLs
     user: { login: string; type?: string };
     created_at: string;
     pull_request_review_id?: number;
@@ -44,21 +45,27 @@ interface PRComment {
 
 export interface CombinedCommentResult {
     combinedCommentBody: string;
+    combinedBodyHtml?: string;  // Combined HTML with signed image URLs
     commentAuthors: string[];
 }
 
 export function buildCombinedComment(unprocessedComments: UnprocessedComment[]): CombinedCommentResult {
     let combinedCommentBody: string;
+    let combinedBodyHtml: string | undefined;
     let commentAuthors: string[] = [];
 
     if (unprocessedComments.length === 1) {
         combinedCommentBody = unprocessedComments[0].body;
+        combinedBodyHtml = unprocessedComments[0].body_html;
         commentAuthors = [unprocessedComments[0].author];
     } else {
         combinedCommentBody = unprocessedComments.map((comment, index) => `**Comment ${index + 1}** (by @${comment.author}):\n${comment.body}`).join('\n\n---\n\n');
+        // Combine HTML content too (for signed image URLs)
+        const htmlParts = unprocessedComments.filter(c => c.body_html).map(c => c.body_html);
+        combinedBodyHtml = htmlParts.length > 0 ? htmlParts.join('\n') : undefined;
         commentAuthors = [...new Set(unprocessedComments.map(c => c.author))];
     }
-    return { combinedCommentBody, commentAuthors };
+    return { combinedCommentBody, combinedBodyHtml, commentAuthors };
 }
 
 export function extractModelFromLabels(labels: Array<{ name: string }>, currentLlm: string | null | undefined, pullRequestNumber: number, correlatedLogger: Logger): string | null {
@@ -78,9 +85,16 @@ export function extractModelFromLabels(labels: Array<{ name: string }>, currentL
 }
 
 export async function fetchAllComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, repoOwner: string, repoName: string, pullRequestNumber: number): Promise<PRComment[]> {
-    const issueComments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100 }) as PRComment[];
-    const reviewComments = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', { owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100 }) as PRComment[];
-    return [...issueComments, ...reviewComments];
+    // Use request for mediaType support - paginate doesn't support it well
+    const issueCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100,
+        mediaType: { format: 'full' }  // Get body_html with signed image URLs
+    });
+    const reviewCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
+        owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100,
+        mediaType: { format: 'full' }  // Get body_html with signed image URLs
+    });
+    return [...(issueCommentsResp.data as PRComment[]), ...(reviewCommentsResp.data as PRComment[])];
 }
 
 export interface CommitMessageOptions {

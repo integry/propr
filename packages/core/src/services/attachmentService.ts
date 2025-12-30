@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db/connection.js';
+import type { Logger } from 'pino';
 
 const STORAGE_ROOT = path.join(process.cwd(), 'storage', 'drafts');
 const MAX_TEXT_CHARS = 100000;
@@ -215,5 +216,82 @@ export class AttachmentService {
   static async getAttachmentContent(storedPath: string): Promise<Buffer> {
     const filePath = path.join(process.cwd(), storedPath);
     return fs.readFile(filePath);
+  }
+
+  /**
+   * Downloads a remote image from a URL and saves it to the target directory.
+   * The image is optimized (resized and compressed) before saving.
+   *
+   * @param url - The URL of the image to download
+   * @param targetDir - The directory to save the image to
+   * @param logger - Optional logger for debugging/warnings
+   * @param authToken - Optional authentication token for GitHub URLs
+   * @returns The absolute path to the saved file
+   */
+  static async downloadRemoteImage(url: string, targetDir: string, logger?: Logger, authToken?: string): Promise<string> {
+    await fs.ensureDir(targetDir);
+
+    // Generate a unique filename with UUID
+    const fileId = uuidv4();
+    const finalFilename = `${fileId}.jpg`;
+    const finalPath = path.join(targetDir, finalFilename);
+
+    try {
+      // Build headers - add auth for GitHub URLs
+      const headers: Record<string, string> = {
+        'User-Agent': 'GitFix-Bot/1.0 (https://github.com/integry/gitfix)'
+      };
+
+      // GitHub user-attachments require authentication
+      const isGitHubUrl = url.includes('github.com') || url.includes('githubusercontent.com');
+      logger?.debug?.({ url, isGitHubUrl, hasAuthToken: !!authToken }, 'Attempting to download remote image');
+      if (isGitHubUrl && authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+        headers['Accept'] = 'application/octet-stream';
+        logger?.debug?.({ url }, 'Using GitHub auth token for image download');
+      }
+
+      // Fetch the image from the remote URL
+      const response = await fetch(url, { headers });
+
+      if (!response.ok) {
+        logger?.warn?.({
+          url,
+          status: response.status,
+          statusText: response.statusText,
+          hasAuthToken: !!authToken,
+          tokenPrefix: authToken ? authToken.substring(0, 4) : 'none',
+          redirected: response.redirected,
+          finalUrl: response.url
+        }, 'Image fetch failed');
+        throw new Error(`Failed to fetch image: HTTP ${response.status} ${response.statusText}`);
+      }
+
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.startsWith('image/')) {
+        throw new Error(`URL does not point to an image: content-type is ${contentType}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      // Process and optimize the image using sharp
+      await sharp(buffer)
+        .resize({
+          width: MAX_IMAGE_DIMENSION,
+          height: MAX_IMAGE_DIMENSION,
+          fit: 'inside',
+          withoutEnlargement: true
+        })
+        .jpeg({ quality: IMAGE_QUALITY, mozjpeg: true })
+        .toFile(finalPath);
+
+      logger?.debug?.({ url, savedTo: finalPath }, 'Successfully downloaded and optimized remote image');
+
+      return finalPath;
+    } catch (error) {
+      logger?.warn?.({ url, error: (error as Error).message }, 'Failed to download remote image');
+      throw error;
+    }
   }
 }

@@ -25,3 +25,6 @@ data/
 src/**/*.js
 src/**/*.d.ts
 !src/**/*.config.js
+
+# Local image cache for AI processing (issue/PR specific)
+.gitfix/assets/

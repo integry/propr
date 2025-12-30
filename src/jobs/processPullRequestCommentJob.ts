@@ -21,6 +21,7 @@ import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
     buildCommentHistory, createSessionIdCallbackForPR, createContainerIdCallbackForPR, updateTaskTitleForPR, buildCompletionComment
 } from './prCommentJobHelpers.js';
+import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
     handleJobError, cleanupJob, pickUpPendingComments
@@ -73,7 +74,7 @@ const redisClient = new Redis({
 
 interface GitHubToken { token: string }
 interface PRData { data: { head: { ref: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
-interface PRComment { id: number; body: string; user: { login: string; type?: string }; created_at: string; pull_request_review_id?: number }
+interface PRComment { id: number; body: string; body_html?: string; user: { login: string; type?: string }; created_at: string; pull_request_review_id?: number }
 
 interface PRJobContext {
     pullRequestNumber: number;
@@ -148,10 +149,22 @@ async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
 
 async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, context: PRJobContext & { llm: string | null | undefined }): Promise<ValidationResult> {
     const { commentsToProcess, pullRequestNumber, repoOwner, repoName, PR_LABEL, correlatedLogger, llm: initialLlm } = context;
-    const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner: repoOwner, repo: repoName, pull_number: pullRequestNumber }) as PRData;
+    const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner: repoOwner, repo: repoName, pull_number: pullRequestNumber,
+        mediaType: { format: 'full' }  // Get body_html with signed image URLs
+    }) as PRData;
     const botUsername = process.env.GITHUB_BOT_USERNAME || 'gitfixio[bot]';
-    const prCommentsForValidation = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100 }) as PRComment[];
-    const reviewCommentsForValidation = await octokit.paginate('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', { owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100 }) as PRComment[];
+    // Use request for mediaType support - paginate doesn't support it well
+    const prCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100,
+        mediaType: { format: 'full' }  // Get body_html with signed image URLs
+    });
+    const prCommentsForValidation = prCommentsResp.data as PRComment[];
+    const reviewCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/comments', {
+        owner: repoOwner, repo: repoName, pull_number: pullRequestNumber, per_page: 100,
+        mediaType: { format: 'full' }  // Get body_html with signed image URLs
+    });
+    const reviewCommentsForValidation = reviewCommentsResp.data as PRComment[];
     const allCommentsForValidation = [...prCommentsForValidation, ...reviewCommentsForValidation];
     const validatedComments = await validateAndFilterComments(commentsToProcess, allCommentsForValidation, pullRequestNumber, correlatedLogger);
     if (validatedComments.length === 0) return { skip: true, reason: 'all_comments_deleted' };
@@ -216,7 +229,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     state.unprocessedComments = validUnprocessed!;
     llm = resolvedLlm;
     const branchName = jobBranchName || prData!.data.head.ref;
-    const { combinedCommentBody, commentAuthors } = buildCombinedComment(state.unprocessedComments);
+    const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
 
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
@@ -242,12 +255,23 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     state.worktreeInfo = await createWorktreeFromExistingBranch(state.localRepoPath, branchName, { worktreeDirName: `pr-${pullRequestNumber}-followup-${timestamp}`, owner: repoOwner, repoName });
     correlatedLogger.info({ worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName }, 'Created worktree from existing PR branch');
 
-    const summaryTitle = await generateSummaryTitle({ combinedCommentBody, worktreeInfo: state.worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger });
+    // Localize remote images FIRST so they're available for summary generation
+    // This downloads images to the worktree so the agent can access them
+    // We pass body_html which contains signed URLs for GitHub user-attachments
+    // Assets are stored in subdirectory identified by PR number for cleanup when PR is merged
+    const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: combinedBodyHtml, issueOrPrId: pullRequestNumber });
+    // For originalTaskSpec (linked issue), we'd need body_html from the issue
+    const localizedOriginalTaskSpec = originalTaskSpec
+        ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: linkedIssueResult.bodyHtml, issueOrPrId: pullRequestNumber })
+        : originalTaskSpec;
+
+    // Generate summary using localized content so Haiku can see images
+    const summaryTitle = await generateSummaryTitle({ combinedCommentBody: localizedCombinedCommentBody, worktreeInfo: state.worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger });
     job.data.title = `Followup: ${prData!.data.title}`;
     job.data.subtitle = summaryTitle;
     await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber });
 
-    const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody, commentHistory, originalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
+    const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
 
     // Resolve agent and model using resolveLlmLabel
     const registry = AgentRegistry.getInstance();

@@ -25,7 +25,7 @@ import { filterCommentByAuthor } from '@gitfix/core';
 import { AgentRegistry, generateClaudePrompt, resolveLlmLabel } from '@gitfix/core';
 import type { AgentExecutionResult } from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
-import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
+import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult, localizeContentImages } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from './issueJobCallbacks.js';
 import { performPostProcessing, performFinalValidation } from './issueJobPostProcessing.js';
@@ -76,6 +76,7 @@ interface CurrentIssueData {
 interface IssueComment {
     id: number;
     body: string;
+    body_html?: string;  // HTML with signed image URLs
     user: { login: string; type?: string };
 }
 
@@ -198,9 +199,12 @@ function checkLabelConditions(currentLabels: string[], context: JobContext): Lab
 
 async function fetchIssueComments(octokit: ExecutionParams['octokit'], issueRef: IssueJobData, correlatedLogger: Logger): Promise<IssueComment[]> {
     try {
-        const allComments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, per_page: 100
-        }) as IssueComment[];
+        // Use request for mediaType support - paginate doesn't support it well
+        const commentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, per_page: 100,
+            mediaType: { format: 'full' }  // Get body_html with signed image URLs
+        });
+        const allComments = commentsResp.data as IssueComment[];
         return allComments.filter(comment => {
             const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type);
             return !filterResult.shouldFilter;
@@ -266,6 +270,22 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
         issueNumber: issueRef.number
     }, 'Executing task with agent');
 
+    // Localize remote images in issue body and comments
+    // This downloads images to the worktree so the agent can access them
+    // We pass body_html which contains signed URLs for GitHub user-attachments
+    // Assets are stored in subdirectory identified by issue number for cleanup when issue is closed
+    const issueBodyHtml = (currentIssueData.data as { body_html?: string }).body_html;
+    const localizedBody = currentIssueData.data.body
+        ? await localizeContentImages(currentIssueData.data.body, worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: issueBodyHtml, issueOrPrId: issueRef.number })
+        : undefined;
+
+    const localizedComments = await Promise.all(
+        issueComments.map(async (comment) => ({
+            ...comment,
+            body: comment.body ? await localizeContentImages(comment.body, worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: comment.body_html, issueOrPrId: issueRef.number }) : comment.body
+        }))
+    );
+
     // Build prompt for the agent
     const prompt = generateClaudePrompt(
         { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
@@ -273,8 +293,8 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
         modelName,
         {
             title: currentIssueData.data.title,
-            body: currentIssueData.data.body || undefined,
-            comments: issueComments,
+            body: localizedBody,
+            comments: localizedComments,
             labels: currentIssueData.data.labels,
             created_at: currentIssueData.data.created_at,
             user: currentIssueData.data.user
@@ -349,6 +369,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
         const currentIssueData: CurrentIssueData = issueRef.issuePayload ? { data: issueRef.issuePayload as CurrentIssueData['data'] } :
             await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
                 owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
+                mediaType: { format: 'full' }  // Get body_html with signed image URLs
             }), { ...retryConfigs.githubApi, correlationId }, `get_issue_${issueRef.number}`) as unknown as CurrentIssueData;
 
         const currentLabels = currentIssueData.data.labels.map(label => label.name);
