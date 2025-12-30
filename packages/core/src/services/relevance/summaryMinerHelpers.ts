@@ -265,7 +265,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<vo
       batchNumber++;
       log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing batch');
 
-      await processSingleBatch(fullName, currentBatch, agent, log, modelId);
+      await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId });
 
       currentBatch = [];
       currentTokens = 0;
@@ -284,22 +284,25 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<vo
   if (currentBatch.length > 0) {
     batchNumber++;
     log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing final batch');
-    await processSingleBatch(fullName, currentBatch, agent, log, modelId);
+    await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId });
   }
 
   log.info({ totalBatches: batchNumber }, 'Batch processing complete');
 }
 
+interface ProcessSingleBatchOptions {
+  fullName: string;
+  batch: BatchFile[];
+  agent: Agent;
+  log: Logger;
+  modelUsed: string;
+}
+
 /**
  * Processes a single batch of files through the LLM
  */
-async function processSingleBatch(
-  fullName: string,
-  batch: BatchFile[],
-  agent: Agent,
-  log: Logger,
-  modelUsed: string
-): Promise<void> {
+async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<void> {
+  const { fullName, batch, agent, log, modelUsed } = options;
   const prompt = buildBatchPrompt(batch);
   const startTime = Date.now();
 
