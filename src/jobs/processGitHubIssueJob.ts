@@ -273,15 +273,16 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
     // Localize remote images in issue body and comments
     // This downloads images to the worktree so the agent can access them
     // We pass body_html which contains signed URLs for GitHub user-attachments
+    // Assets are stored in subdirectory identified by issue number for cleanup when issue is closed
     const issueBodyHtml = (currentIssueData.data as { body_html?: string }).body_html;
     const localizedBody = currentIssueData.data.body
-        ? await localizeContentImages(currentIssueData.data.body, worktreeInfo.worktreePath, correlatedLogger, issueBodyHtml)
+        ? await localizeContentImages(currentIssueData.data.body, worktreeInfo.worktreePath, correlatedLogger, issueBodyHtml, issueRef.number)
         : undefined;
 
     const localizedComments = await Promise.all(
         issueComments.map(async (comment) => ({
             ...comment,
-            body: comment.body ? await localizeContentImages(comment.body, worktreeInfo.worktreePath, correlatedLogger, comment.body_html) : comment.body
+            body: comment.body ? await localizeContentImages(comment.body, worktreeInfo.worktreePath, correlatedLogger, comment.body_html, issueRef.number) : comment.body
         }))
     );
 

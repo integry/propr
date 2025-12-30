@@ -74,12 +74,16 @@ function getSignedUrlIfAvailable(url: string, signedUrls: Map<string, string>, l
  * @param worktreeRoot - The root path of the worktree to save images to
  * @param logger - Logger instance for debugging/warnings
  * @param bodyHtml - Optional HTML content from GitHub API with signed image URLs
+ * @param issueOrPrId - Optional issue or PR number for organizing assets in subdirectories (for cleanup when closed/merged)
  * @returns The content with remote image URLs replaced with local relative paths
  */
-export async function localizeContentImages(content: string, worktreeRoot: string, logger: Logger, bodyHtml?: string): Promise<string> {
+export async function localizeContentImages(content: string, worktreeRoot: string, logger: Logger, bodyHtml?: string, issueOrPrId?: number): Promise<string> {
     if (!content) return content;
 
-    const assetsDir = path.join(worktreeRoot, '.gitfix', 'assets');
+    // Store assets in a subdirectory identified by issue/PR ID for easy cleanup when closed/merged
+    const assetsDir = issueOrPrId
+        ? path.join(worktreeRoot, '.gitfix', 'assets', String(issueOrPrId))
+        : path.join(worktreeRoot, '.gitfix', 'assets');
     let newContent = content;
 
     // Match markdown image syntax: ![alt text](url)
