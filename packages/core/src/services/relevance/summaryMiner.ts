@@ -5,7 +5,22 @@ import logger, { generateCorrelationId } from '../../utils/logger.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import { db } from '../../db/connection.js';
 import { loadSummarizationSettings } from '../../config/configManager.js';
-import { processBatches, aggregateDirectories } from './summaryMinerHelpers.js';
+import {
+  processBatches,
+  aggregateDirectories,
+  getSummarizationMetricsSummary,
+  getSummarizationCallHistory
+} from './summaryMinerHelpers.js';
+
+// Re-export metrics functions and types for external access
+export {
+  getSummarizationMetricsSummary,
+  getSummarizationCallHistory
+} from './summaryMinerHelpers.js';
+export type {
+  SummarizationCallMetrics,
+  SummarizationMetricsSummary
+} from './summaryMinerHelpers.js';
 
 // --- Types ---
 
