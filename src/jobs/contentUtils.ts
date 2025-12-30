@@ -143,3 +143,27 @@ export async function localizeContentImages(content: string, worktreeRoot: strin
 
     return newContent;
 }
+
+/**
+ * Cleans up cached assets for a specific issue or PR.
+ * Should be called when a PR is merged/closed or an issue is closed.
+ *
+ * @param worktreeRoot - The root path of the worktree containing assets
+ * @param issueOrPrId - The issue or PR number whose assets should be removed
+ * @param logger - Logger instance for debugging/warnings
+ */
+export async function cleanupIssueAssets(worktreeRoot: string, issueOrPrId: number, logger: Logger): Promise<void> {
+    const assetsDir = path.join(worktreeRoot, '.gitfix', 'assets', String(issueOrPrId));
+
+    try {
+        const exists = await fs.pathExists(assetsDir);
+        if (exists) {
+            await fs.remove(assetsDir);
+            logger.info({ issueOrPrId, assetsDir }, 'Successfully cleaned up cached assets for issue/PR');
+        } else {
+            logger.debug({ issueOrPrId, assetsDir }, 'No cached assets found for issue/PR');
+        }
+    } catch (e) {
+        logger.warn({ issueOrPrId, assetsDir, error: (e as Error).message }, 'Failed to clean up cached assets');
+    }
+}
