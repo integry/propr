@@ -1,14 +1,22 @@
-import type { Logger } from 'pino';
 import { Redis } from 'ioredis';
 
 // --- Types ---
+
+/**
+ * Minimal logger interface that both pino Logger and EnhancedLogger satisfy
+ */
+interface MinimalLogger {
+  info: (obj: unknown, msg?: string) => void;
+  debug: (obj: unknown, msg?: string) => void;
+  warn: (obj: unknown, msg?: string) => void;
+}
 
 /**
  * Metrics for a single summarization LLM call
  */
 export interface SummarizationCallMetrics {
   timestamp: string;
-  callType: 'batch_summarization' | 'directory_aggregation';
+  callType: 'batch_summarization' | 'directory_aggregation' | 'semantic_scoring';
   model: string;
   agentAlias: string;
   repository?: string;
@@ -49,7 +57,7 @@ const REDIS_PORT: number = parseInt(process.env.REDIS_PORT ?? '6379', 10);
 /**
  * Logs a summarization LLM call to both the logger and Redis for tracking
  */
-export async function logSummarizationCall(metrics: SummarizationCallMetrics, log: Logger): Promise<void> {
+export async function logSummarizationCall(metrics: SummarizationCallMetrics, log: MinimalLogger): Promise<void> {
   // Log to pino logger
   log.info({
     summarizationCall: true,
