@@ -91,6 +91,8 @@ export { extractKeywords } from './services/relevance/keywordExtractor.js';
 export { mineGitHistory, mineGitHistoryWithLLM, getCommitHistory, formatCommitLog } from './services/relevance/gitMiner.js';
 export type { FileScore as GitFileScore, CommitInfo, SemanticMinerFile, SemanticMinerResponse, SemanticMiningOptions } from './services/relevance/gitMiner.js';
 export { scorePaths } from './services/relevance/pathScorer.js';
+export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries } from './services/relevance/summaryMiner.js';
+export type { FileSummary, DirectorySummary, GitFileInfo, IndexingOptions } from './services/relevance/summaryMiner.js';
 
 export {
     executeClaudeCode,
