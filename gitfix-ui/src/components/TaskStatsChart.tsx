@@ -10,19 +10,23 @@ import {
   PieChart,
   Pie,
   Cell,
+  AreaChart,
+  Area,
   Legend,
 } from 'recharts';
 import { getTaskStats, TaskStatsResponse } from '../api/gitfixApi';
 
+// Color palette matching the dashboard's indigo/purple theme
 const STATUS_COLORS: Record<string, string> = {
-  completed: '#16A34A', // green-600
-  failed: '#ef4444', // red-500
-  processing: '#3b82f6', // blue-500
-  claude_execution: '#8b5cf6', // violet-500
-  pending: '#f59e0b', // amber-500
-  queued: '#6366f1', // indigo-500
-  planning: '#ec4899', // pink-500
-  default: '#6B7280', // gray-500
+  completed: '#10B981', // green
+  failed: '#EF4444', // red
+  processing: '#F59E0B', // amber
+  pending: '#6366F1', // indigo
+  claude_execution: '#8B5CF6', // purple
+  post_processing: '#EC4899', // pink
+  queued: '#6366f1', // indigo
+  planning: '#ec4899', // pink
+  default: '#94A3B8', // slate
 };
 
 const getStatusColor = (status: string): string => {
@@ -32,6 +36,20 @@ const getStatusColor = (status: string): string => {
 const formatDate = (dateStr: string): string => {
   const date = new Date(dateStr);
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+const formatStatus = (status: string): string => {
+  const statusMap: Record<string, string> = {
+    completed: 'Completed',
+    failed: 'Failed',
+    processing: 'Processing',
+    pending: 'Pending',
+    claude_execution: 'AI Execution',
+    post_processing: 'Post Processing',
+    queued: 'Queued',
+    planning: 'Planning',
+  };
+  return statusMap[status] || status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, ' ');
 };
 
 const TaskStatsChart: React.FC = () => {
@@ -47,7 +65,7 @@ const TaskStatsChart: React.FC = () => {
         setStats(data);
         setError(null);
       } catch (err) {
-        setError('Failed to fetch task statistics');
+        setError(err instanceof Error ? err.message : 'Failed to load statistics');
         console.error('Error fetching task stats:', err);
       } finally {
         setLoading(false);
@@ -55,23 +73,28 @@ const TaskStatsChart: React.FC = () => {
     };
 
     fetchStats();
-    // Refresh every 30 seconds
-    const interval = setInterval(fetchStats, 30000);
+    // Refresh every 5 minutes
+    const interval = setInterval(fetchStats, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
 
   if (loading && !stats) {
     return (
-      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
-        <div className="text-gray-500 text-center py-8">Loading statistics...</div>
+      <div className="bg-gray-800/50 rounded-lg p-6">
+        <div className="flex items-center justify-center h-64">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
+          <span className="ml-3 text-gray-400">Loading statistics...</span>
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
-        <div className="text-red-600 text-center py-8">{error}</div>
+      <div className="bg-gray-800/50 rounded-lg p-6">
+        <div className="flex items-center justify-center h-64 text-red-400">
+          <span>Failed to load statistics: {error}</span>
+        </div>
       </div>
     );
   }
@@ -80,123 +103,120 @@ const TaskStatsChart: React.FC = () => {
     return null;
   }
 
-  // Format daily counts for chart - show last 14 days for better readability
-  const dailyData = stats.dailyCounts.slice(-14).map(item => ({
-    date: formatDate(item.date),
-    tasks: item.count,
+  // Format daily counts for chart
+  const dailyData = stats.dailyCounts.map(item => ({
+    date: item.date,
+    displayDate: formatDate(item.date),
+    count: item.count,
   }));
 
   // Format status distribution for pie chart
   const pieData = stats.statusDistribution.map(item => ({
-    name: item.status.charAt(0).toUpperCase() + item.status.slice(1).replace('_', ' '),
+    name: formatStatus(item.status),
     value: item.count,
     color: getStatusColor(item.status),
   }));
 
   // Format processing time data
-  const processingTimeData = stats.avgProcessingTime.slice(-14).map(item => ({
-    date: formatDate(item.date),
-    minutes: item.avgMinutes,
+  const processingTimeData = stats.avgProcessingTime.map(item => ({
+    date: item.date,
+    displayDate: formatDate(item.date),
+    avgMinutes: item.avgMinutes,
   }));
 
   const hasData = dailyData.length > 0 || pieData.length > 0;
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
-      <h3 className="text-lg font-semibold text-gray-900 mb-6">Task Statistics</h3>
-
+    <div>
       {!hasData ? (
-        <div className="text-gray-500 text-center py-8">
-          No task data available yet. Statistics will appear once tasks are processed.
+        <div className="bg-gray-800/50 rounded-lg p-6">
+          <div className="text-gray-400 text-center py-8">
+            No task data available yet. Statistics will appear once tasks are processed.
+          </div>
         </div>
       ) : (
-        <div className="space-y-8">
-          {/* Summary Stats */}
-          <div className="grid grid-cols-3 gap-4">
-            <div className="bg-gray-50 rounded-lg p-4 text-center border border-gray-200">
-              <div className="text-sm text-gray-500 mb-1">Total Tasks</div>
-              <div className="text-2xl font-bold text-gray-900">
-                {stats.summary.total}
-              </div>
+        <>
+          {/* Summary Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div className="bg-gray-800/50 rounded-lg p-4">
+              <div className="text-3xl font-bold text-white">{stats.summary.total}</div>
+              <div className="text-gray-400 text-sm">Total Tasks</div>
             </div>
-            <div className="bg-gray-50 rounded-lg p-4 text-center border border-gray-200">
-              <div className="text-sm text-gray-500 mb-1">Completed</div>
-              <div className="text-2xl font-bold" style={{ color: STATUS_COLORS.completed }}>
-                {stats.summary.completed}
-              </div>
+            <div className="bg-gray-800/50 rounded-lg p-4">
+              <div className="text-3xl font-bold text-green-400">{stats.summary.completed}</div>
+              <div className="text-gray-400 text-sm">Completed</div>
             </div>
-            <div className="bg-gray-50 rounded-lg p-4 text-center border border-gray-200">
-              <div className="text-sm text-gray-500 mb-1">Failed</div>
-              <div className="text-2xl font-bold" style={{ color: STATUS_COLORS.failed }}>
-                {stats.summary.failed}
-              </div>
+            <div className="bg-gray-800/50 rounded-lg p-4">
+              <div className="text-3xl font-bold text-red-400">{stats.summary.failed}</div>
+              <div className="text-gray-400 text-sm">Failed</div>
             </div>
           </div>
 
-          {/* Charts Grid */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Task Completion Trends */}
+            {/* Daily Task Trend - Area Chart */}
             {dailyData.length > 0 && (
-              <div>
-                <h4 className="text-sm font-medium text-gray-700 mb-3">
-                  Tasks Created (Last 14 Days)
-                </h4>
-                <div className="h-48">
+              <div className="bg-gray-800/50 rounded-lg p-4">
+                <h4 className="text-lg font-medium text-white mb-4">Daily Task Volume (Last 30 Days)</h4>
+                <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={dailyData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <AreaChart data={dailyData}>
+                      <defs>
+                        <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#6366F1" stopOpacity={0.8}/>
+                          <stop offset="95%" stopColor="#6366F1" stopOpacity={0.1}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                       <XAxis
-                        dataKey="date"
-                        tick={{ fontSize: 11, fill: '#6b7280' }}
-                        tickLine={{ stroke: '#e5e7eb' }}
-                        axisLine={{ stroke: '#e5e7eb' }}
+                        dataKey="displayDate"
+                        stroke="#9CA3AF"
+                        tick={{ fill: '#9CA3AF', fontSize: 12 }}
+                        interval="preserveStartEnd"
                       />
                       <YAxis
-                        tick={{ fontSize: 11, fill: '#6b7280' }}
-                        tickLine={{ stroke: '#e5e7eb' }}
-                        axisLine={{ stroke: '#e5e7eb' }}
+                        stroke="#9CA3AF"
+                        tick={{ fill: '#9CA3AF', fontSize: 12 }}
                         allowDecimals={false}
                       />
                       <Tooltip
                         contentStyle={{
-                          backgroundColor: '#1f2937',
-                          border: 'none',
+                          backgroundColor: '#1F2937',
+                          border: '1px solid #374151',
                           borderRadius: '8px',
-                          color: '#fff',
+                          color: '#F9FAFB',
                         }}
-                        labelStyle={{ color: '#9ca3af' }}
                       />
-                      <Line
+                      <Area
                         type="monotone"
-                        dataKey="tasks"
-                        stroke="#6366f1"
+                        dataKey="count"
+                        stroke="#6366F1"
                         strokeWidth={2}
-                        dot={{ fill: '#6366f1', strokeWidth: 0, r: 3 }}
-                        activeDot={{ fill: '#6366f1', strokeWidth: 0, r: 5 }}
+                        fill="url(#colorCount)"
+                        name="Tasks"
                       />
-                    </LineChart>
+                    </AreaChart>
                   </ResponsiveContainer>
                 </div>
               </div>
             )}
 
-            {/* Status Distribution */}
+            {/* Status Distribution - Donut Chart */}
             {pieData.length > 0 && (
-              <div>
-                <h4 className="text-sm font-medium text-gray-700 mb-3">
-                  Status Distribution
-                </h4>
-                <div className="h-48">
+              <div className="bg-gray-800/50 rounded-lg p-4">
+                <h4 className="text-lg font-medium text-white mb-4">Task Status Distribution</h4>
+                <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
                         data={pieData}
                         cx="50%"
                         cy="50%"
-                        innerRadius={40}
-                        outerRadius={70}
+                        innerRadius={60}
+                        outerRadius={90}
                         paddingAngle={2}
                         dataKey="value"
+                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                        labelLine={{ stroke: '#6B7280' }}
                       >
                         {pieData.map((entry, index) => (
                           <Cell key={`cell-${index}`} fill={entry.color} />
@@ -204,69 +224,64 @@ const TaskStatsChart: React.FC = () => {
                       </Pie>
                       <Tooltip
                         contentStyle={{
-                          backgroundColor: '#1f2937',
-                          border: 'none',
+                          backgroundColor: '#1F2937',
+                          border: '1px solid #374151',
                           borderRadius: '8px',
-                          color: '#fff',
+                          color: '#F9FAFB',
                         }}
-                      />
-                      <Legend
-                        wrapperStyle={{ fontSize: '11px' }}
-                        formatter={(value: string) => (
-                          <span style={{ color: '#6b7280' }}>{value}</span>
-                        )}
                       />
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
               </div>
             )}
-          </div>
 
-          {/* Average Processing Time */}
-          {processingTimeData.length > 0 && processingTimeData.some(d => d.minutes > 0) && (
-            <div>
-              <h4 className="text-sm font-medium text-gray-700 mb-3">
-                Average Processing Time (Minutes)
-              </h4>
-              <div className="h-48">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={processingTimeData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis
-                      dataKey="date"
-                      tick={{ fontSize: 11, fill: '#6b7280' }}
-                      tickLine={{ stroke: '#e5e7eb' }}
-                      axisLine={{ stroke: '#e5e7eb' }}
-                    />
-                    <YAxis
-                      tick={{ fontSize: 11, fill: '#6b7280' }}
-                      tickLine={{ stroke: '#e5e7eb' }}
-                      axisLine={{ stroke: '#e5e7eb' }}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: '#1f2937',
-                        border: 'none',
-                        borderRadius: '8px',
-                        color: '#fff',
-                      }}
-                      labelStyle={{ color: '#9ca3af' }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="minutes"
-                      stroke="#10b981"
-                      strokeWidth={2}
-                      dot={{ fill: '#10b981', strokeWidth: 0, r: 3 }}
-                      activeDot={{ fill: '#10b981', strokeWidth: 0, r: 5 }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
+            {/* Processing Time Trend - Line Chart */}
+            {processingTimeData.length > 0 && processingTimeData.some(d => d.avgMinutes > 0) && (
+              <div className="bg-gray-800/50 rounded-lg p-4 lg:col-span-2">
+                <h4 className="text-lg font-medium text-white mb-4">Average Processing Time (Minutes)</h4>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={processingTimeData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                      <XAxis
+                        dataKey="displayDate"
+                        stroke="#9CA3AF"
+                        tick={{ fill: '#9CA3AF', fontSize: 12 }}
+                        interval="preserveStartEnd"
+                      />
+                      <YAxis
+                        stroke="#9CA3AF"
+                        tick={{ fill: '#9CA3AF', fontSize: 12 }}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: '#1F2937',
+                          border: '1px solid #374151',
+                          borderRadius: '8px',
+                          color: '#F9FAFB',
+                        }}
+                        formatter={(value: number) => [`${value.toFixed(1)} min`, 'Avg Time']}
+                      />
+                      <Legend
+                        wrapperStyle={{ color: '#9CA3AF' }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="avgMinutes"
+                        stroke="#A855F7"
+                        strokeWidth={2}
+                        dot={{ fill: '#A855F7', strokeWidth: 2 }}
+                        activeDot={{ r: 6, fill: '#A855F7' }}
+                        name="Processing Time"
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
