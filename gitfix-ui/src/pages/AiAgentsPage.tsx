@@ -5,6 +5,7 @@ import {
   AgentConfig
 } from '../api/gitfixApi';
 import AgentsListSection from './SettingsPage/AgentsListSection';
+import ChatPanel from '../components/AgentChat/ChatPanel';
 
 const AiAgentsPage: React.FC = () => {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
@@ -45,16 +46,27 @@ const AiAgentsPage: React.FC = () => {
   };
 
   return (
-    <div className="max-w-4xl">
+    <div className="max-w-[1600px] mx-auto p-6">
       <h2 className="text-gray-900 text-2xl font-semibold mb-8">AI Agents</h2>
-      <AgentsListSection
-        agents={agents}
-        loading={agentsLoading}
-        saving={agentsSaving}
-        error={agentsError}
-        success={agentsSuccess}
-        onSaveAgents={handleSaveAgents}
-      />
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Left Column: Configuration */}
+        <div className="lg:col-span-1">
+          <AgentsListSection
+            agents={agents}
+            loading={agentsLoading}
+            saving={agentsSaving}
+            error={agentsError}
+            success={agentsSuccess}
+            onSaveAgents={handleSaveAgents}
+          />
+        </div>
+
+        {/* Right Column: Chatbot */}
+        <div className="lg:col-span-2">
+          {!agentsLoading && <ChatPanel agents={agents} />}
+        </div>
+      </div>
     </div>
   );
 };
