@@ -20,6 +20,7 @@ import {
   createPlannerRoutes,
   createRelevanceRoutes,
   createAgentRoutes,
+  createStatsRoutes,
   attachmentUpload
 } from './routes/index.js';
 import {
@@ -157,6 +158,7 @@ function setupRoutes(): void {
   const plannerRoutes = createPlannerRoutes({ db });
   const relevanceRoutes = createRelevanceRoutes();
   const agentRoutes = createAgentRoutes();
+  const statsRoutes = createStatsRoutes({ db });
 
   app.get('/api/status', ensureAuthenticated, statusRoutes.getStatus);
   app.get('/api/tasks', ensureAuthenticated, taskRoutes.getTasks);
@@ -223,6 +225,9 @@ function setupRoutes(): void {
 
   // Agent chat API routes
   app.use('/api/agents', ensureAuthenticated, agentRoutes.router);
+
+  // Stats routes
+  app.get('/api/stats/tasks', ensureAuthenticated, statsRoutes.getTaskStats);
 
   setupWebhookRoute();
 }

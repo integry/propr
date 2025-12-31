@@ -411,4 +411,41 @@ export const getRepositoriesIndexingStatus = async (): Promise<{ repositories: R
   return response.json();
 };
 
+// Task Statistics Types and API
+export interface DailyCount {
+  date: string;
+  count: number;
+}
+
+export interface StatusDistribution {
+  status: string;
+  count: number;
+}
+
+export interface AvgProcessingTime {
+  date: string;
+  avgMinutes: number;
+}
+
+export interface TaskStatsSummary {
+  total: number;
+  completed: number;
+  failed: number;
+}
+
+export interface TaskStatsResponse {
+  dailyCounts: DailyCount[];
+  statusDistribution: StatusDistribution[];
+  avgProcessingTime: AvgProcessingTime[];
+  summary: TaskStatsSummary;
+}
+
+export const getTaskStats = async (): Promise<TaskStatsResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/stats/tasks`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export * from './plannerApi';

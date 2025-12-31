@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import SystemStatus from './SystemStatus';
 import TaskQueueStats from './TaskQueueStats';
+import TaskStatsChart from './TaskStatsChart';
 import TaskList from './TaskList';
 import { getRepoConfig, createDraft } from '../api/gitfixApi';
 
@@ -117,7 +118,12 @@ const Dashboard: React.FC = () => {
         <SystemStatus />
         <TaskQueueStats />
       </div>
-      
+
+      <h2 className="text-2xl font-semibold text-white mb-6">Task Statistics</h2>
+      <div className="mb-8">
+        <TaskStatsChart />
+      </div>
+
       <div>
         <h3 className="text-xl font-semibold text-white mb-4">Recent Tasks</h3>
         <TaskList
