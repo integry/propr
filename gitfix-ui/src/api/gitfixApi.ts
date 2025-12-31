@@ -68,8 +68,18 @@ export const getQueueStats = async (): Promise<unknown> => {
   return response.json();
 };
 
-export const getTasks = async (status = 'all', limit = 50, offset = 0, repository = 'all'): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/tasks?status=${status}&limit=${limit}&offset=${offset}&repository=${repository}`, {
+export const getTasks = async (status = 'all', limit = 50, offset = 0, repository = 'all', search = ''): Promise<unknown> => {
+  // Use URLSearchParams for cleaner query construction
+  const params = new URLSearchParams({
+    status,
+    limit: limit.toString(),
+    offset: offset.toString(),
+    repository,
+  });
+
+  if (search) params.append('search', search);
+
+  const response = await fetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, {
     credentials: 'include'
   });
   await handleApiResponse(response);

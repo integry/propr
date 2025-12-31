@@ -11,6 +11,8 @@ interface FiltersProps {
   availableRepos: string[];
   reposLoading: boolean;
   setCurrentPage: (page: number) => void;
+  searchQuery: string;
+  setSearchQuery: (query: string) => void;
 }
 
 export const Filters: React.FC<FiltersProps> = ({
@@ -22,13 +24,23 @@ export const Filters: React.FC<FiltersProps> = ({
   setRepoFilter,
   availableRepos,
   reposLoading,
-  setCurrentPage
+  setCurrentPage,
+  searchQuery,
+  setSearchQuery
 }) => (
   <div className="flex justify-between items-center mb-4 flex-wrap gap-4">
     <h3 className="text-lg font-semibold text-gray-900">Tasks</h3>
     <div className="flex items-center gap-4">
       {!hideFilters && (
         <>
+          <input
+            type="text"
+            placeholder="Search tasks..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="px-3 py-2 bg-gray-50 border border-gray-300 text-gray-800 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm w-48"
+          />
+
           <select
             value={repoFilter}
             onChange={(e) => { setRepoFilter(e.target.value); setCurrentPage(0); }}
