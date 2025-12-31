@@ -46,12 +46,12 @@ const AiAgentsPage: React.FC = () => {
   };
 
   return (
-    <div className="max-w-[1600px] mx-auto p-6">
+    <div className="h-full flex flex-col p-6">
       <h2 className="text-gray-900 text-2xl font-semibold mb-8">AI Agents</h2>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <div className="flex-1 flex flex-col lg:flex-row gap-8 min-h-0">
         {/* Left Column: Configuration */}
-        <div className="lg:col-span-1">
+        <div className="lg:w-[480px] lg:flex-shrink-0 overflow-y-auto">
           <AgentsListSection
             agents={agents}
             loading={agentsLoading}
@@ -62,8 +62,8 @@ const AiAgentsPage: React.FC = () => {
           />
         </div>
 
-        {/* Right Column: Chatbot */}
-        <div className="lg:col-span-2">
+        {/* Right Column: Chatbot - expands to fill remaining space */}
+        <div className="flex-1 min-w-0 min-h-0">
           {!agentsLoading && <ChatPanel agents={agents} />}
         </div>
       </div>

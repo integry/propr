@@ -1,5 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { AgentConfig, chatWithAgents, ChatResult } from '../../api/gitfixApi';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { AgentConfig, chatWithAgents, ChatResult, ChatQuery } from '../../api/gitfixApi';
+import { MODEL_INFO_MAP, typeBadgeColors, AgentType } from '../../config/modelDefinitions';
 
 interface ChatPanelProps {
   agents: AgentConfig[];
@@ -12,19 +13,48 @@ interface Message {
   timestamp: number;
 }
 
+// Represents an agent+model combination for selection
+interface AgentModelOption {
+  agentId: string;
+  agentAlias: string;
+  agentType: AgentType;
+  modelId: string;
+  modelName: string;
+  key: string; // unique key: agentId:modelId
+}
+
 const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
-  const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-select first agent if none selected
+  // Build list of all enabled agent+model combinations
+  const agentModelOptions = useMemo(() => {
+    const options: AgentModelOption[] = [];
+    agents.filter(a => a.enabled).forEach(agent => {
+      agent.supportedModels.forEach(modelId => {
+        const modelInfo = MODEL_INFO_MAP[modelId];
+        options.push({
+          agentId: agent.id,
+          agentAlias: agent.alias,
+          agentType: agent.type as AgentType,
+          modelId: modelId,
+          modelName: modelInfo?.name || modelId,
+          key: `${agent.id}:${modelId}`
+        });
+      });
+    });
+    return options;
+  }, [agents]);
+
+  // Auto-select first option if none selected
   useEffect(() => {
-    if (agents.length > 0 && selectedAgentIds.length === 0) {
-      setSelectedAgentIds([agents[0].id]);
+    if (agentModelOptions.length > 0 && selectedKeys.length === 0) {
+      setSelectedKeys([agentModelOptions[0].key]);
     }
-  }, [agents, selectedAgentIds.length]);
+  }, [agentModelOptions, selectedKeys.length]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -33,7 +63,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!input.trim() || selectedAgentIds.length === 0) return;
+    if (!input.trim() || selectedKeys.length === 0) return;
 
     const userMsg: Message = { role: 'user', content: input, timestamp: Date.now() };
     setMessages(prev => [...prev, userMsg]);
@@ -46,7 +76,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
         m.role === 'user' ? `User: ${m.content}` : `Assistant: (Previous response hidden)`
       ).join('\n');
 
-      const queries = selectedAgentIds.map(id => ({ agentId: id }));
+      // Build queries with agent+model combinations
+      const queries: ChatQuery[] = selectedKeys.map(key => {
+        const [agentId, modelId] = key.split(':');
+        return { agentId, model: modelId };
+      });
 
       const { results } = await chatWithAgents(queries, userMsg.content!, context);
 
@@ -82,12 +116,16 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
     }
   };
 
-  const enabledAgents = agents.filter(a => a.enabled);
+  const toggleSelection = (key: string) => {
+    setSelectedKeys(prev =>
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+    );
+  };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-120px)] bg-white rounded-lg shadow border border-gray-200">
+    <div className="flex flex-col h-full bg-white rounded-lg shadow border border-gray-200">
       {/* Header & Controls */}
-      <div className="p-4 border-b border-gray-200 bg-gray-50 rounded-t-lg">
+      <div className="p-4 border-b border-gray-200 bg-gray-50 rounded-t-lg flex-shrink-0">
         <div className="flex justify-between items-center mb-2">
           <h3 className="font-semibold text-gray-700">Test Agents</h3>
           <button
@@ -99,28 +137,26 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
           </button>
         </div>
         <div className="flex gap-2 flex-wrap">
-          {enabledAgents.length === 0 ? (
-            <p className="text-sm text-gray-500">No enabled agents available. Enable agents in the configuration.</p>
+          {agentModelOptions.length === 0 ? (
+            <p className="text-sm text-gray-500">No enabled models available. Enable agents and models in the configuration.</p>
           ) : (
-            enabledAgents.map(agent => (
+            agentModelOptions.map(option => (
               <button
-                key={agent.id}
-                onClick={() => setSelectedAgentIds(prev =>
-                  prev.includes(agent.id) ? prev.filter(id => id !== agent.id) : [...prev, agent.id]
-                )}
+                key={option.key}
+                onClick={() => toggleSelection(option.key)}
                 className={`px-3 py-1 text-xs rounded-full border transition-colors ${
-                  selectedAgentIds.includes(agent.id)
-                    ? 'bg-blue-100 border-blue-300 text-blue-800'
+                  selectedKeys.includes(option.key)
+                    ? typeBadgeColors[option.agentType]
                     : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400'
                 }`}
               >
-                {agent.alias} ({agent.type})
+                {option.agentAlias} ({option.modelName})
               </button>
             ))
           )}
         </div>
-        {selectedAgentIds.length === 0 && enabledAgents.length > 0 && (
-          <p className="text-xs text-amber-600 mt-2">Select at least one agent to start chatting</p>
+        {selectedKeys.length === 0 && agentModelOptions.length > 0 && (
+          <p className="text-xs text-amber-600 mt-2">Select at least one model to start chatting</p>
         )}
       </div>
 
@@ -167,7 +203,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
       </div>
 
       {/* Input Area */}
-      <div className="p-4 border-t border-gray-200">
+      <div className="p-4 border-t border-gray-200 flex-shrink-0">
         <div className="flex gap-2">
           <input
             type="text"
@@ -176,11 +212,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={isLoading || selectedAgentIds.length === 0}
+            disabled={isLoading || selectedKeys.length === 0}
           />
           <button
             onClick={handleSend}
-            disabled={isLoading || !input.trim() || selectedAgentIds.length === 0}
+            disabled={isLoading || !input.trim() || selectedKeys.length === 0}
             className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             Send
