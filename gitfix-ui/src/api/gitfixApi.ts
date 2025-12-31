@@ -1,5 +1,4 @@
-// API for fetching system data from backend 
-
+// API for fetching system data from backend
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 interface SystemStatus {
@@ -395,50 +394,7 @@ export const updateSummarizationSettings = async (settings: SummarizationSetting
   });
   await handleApiResponse(response);
 };
-
-// Repository Indexing Status
-export interface RepositoryIndexingStatus {
-  full_name: string;
-  indexing_status: 'idle' | 'indexing' | 'completed' | 'failed';
-  last_indexed_at: string | null;
-}
-
-export const getRepositoriesIndexingStatus = async (): Promise<{ repositories: RepositoryIndexingStatus[] }> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/repos/indexing-status`, {
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-// Agent Chat Types and API
-export interface ChatQuery {
-  agentId: string;
-  model?: string;
-}
-
-export interface ChatResult {
-  agentId: string;
-  agentAlias: string;
-  model: string;
-  response?: string;
-  error?: string;
-  durationMs: number;
-}
-
-export const chatWithAgents = async (
-  queries: ChatQuery[],
-  prompt: string,
-  context: string
-): Promise<{ results: ChatResult[] }> => {
-  const response = await fetch(`${API_BASE_URL}/api/agents/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ queries, prompt, context }),
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
 export * from './plannerApi';
+export * from './taskStatsApi';
+export * from './agentChatApi';
+export * from './repoIndexingApi';
