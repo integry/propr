@@ -442,6 +442,14 @@ export interface TaskStatsResponse {
 
 export const getTaskStats = async (): Promise<TaskStatsResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/stats/tasks`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 // Agent Chat Types and API
 export interface ChatQuery {
   agentId: string;
