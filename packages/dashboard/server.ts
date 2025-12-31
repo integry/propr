@@ -21,6 +21,7 @@ import {
   createRelevanceRoutes,
   createAgentRoutes,
   createStatsRoutes,
+  createSummaryBrowserRoutes,
   attachmentUpload
 } from './routes/index.js';
 import {
@@ -159,6 +160,7 @@ function setupRoutes(): void {
   const relevanceRoutes = createRelevanceRoutes();
   const agentRoutes = createAgentRoutes();
   const statsRoutes = createStatsRoutes({ db });
+  const summaryBrowserRoutes = createSummaryBrowserRoutes();
 
   app.get('/api/status', ensureAuthenticated, statusRoutes.getStatus);
   app.get('/api/tasks', ensureAuthenticated, taskRoutes.getTasks);
@@ -228,6 +230,11 @@ function setupRoutes(): void {
 
   // Stats routes
   app.get('/api/stats/tasks', ensureAuthenticated, statsRoutes.getTaskStats);
+  // Summary browser routes for exploring repository file summaries
+  app.get('/api/summaries/:owner/:repo/status', ensureAuthenticated, summaryBrowserRoutes.getIndexingStatus);
+  app.get('/api/summaries/:owner/:repo/tree', ensureAuthenticated, summaryBrowserRoutes.getDirectoryTree);
+  app.get('/api/summaries/:owner/:repo/tree/*', ensureAuthenticated, summaryBrowserRoutes.getDirectoryTree);
+  app.get('/api/summaries/:owner/:repo/summary/*', ensureAuthenticated, summaryBrowserRoutes.getPathSummary);
 
   setupWebhookRoute();
 }
