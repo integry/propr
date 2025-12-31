@@ -81,8 +81,9 @@ export interface Agent {
     /**
      * Runs a lightweight, read-only analysis.
      * Used for planning, summarization, and PR reviews.
+     * Updated to support model override.
      */
-    analyze(prompt: string, context?: string): Promise<string>;
+    analyze(prompt: string, context?: string, model?: string): Promise<string>;
 
     /**
      * Verifies the agent is ready (e.g. docker image exists).
