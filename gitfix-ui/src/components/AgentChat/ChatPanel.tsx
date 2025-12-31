@@ -191,15 +191,15 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
             ) : (
               <div className="flex gap-4 w-full overflow-x-auto pb-2">
                 {msg.results?.map((res, rIdx) => (
-                  <div key={rIdx} className="flex-1 min-w-[250px] bg-gray-100 rounded-lg p-3 border border-gray-200">
+                  <div key={rIdx} className="flex-1 min-w-[250px] bg-gray-100 rounded-lg p-3 border border-gray-200 relative flex flex-col">
                     <div className="text-xs font-bold text-gray-500 mb-1 border-b border-gray-200 pb-1 flex justify-between">
                       <span>{res.agentAlias}</span>
                       <span className="text-gray-400">{res.model}</span>
                     </div>
-                    <div className="text-sm text-gray-800 whitespace-pre-wrap mb-2">
+                    <div className="text-sm text-gray-800 whitespace-pre-wrap flex-1 pb-6">
                       {res.error ? <span className="text-red-500">{res.error}</span> : res.response}
                     </div>
-                    <div className="text-xs text-right text-gray-400">
+                    <div className="absolute bottom-2 right-3 text-xs text-gray-400 bg-gray-100 px-1">
                       {res.durationMs}ms
                     </div>
                   </div>
