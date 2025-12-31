@@ -36,7 +36,7 @@ const AiAgentsPage: React.FC = () => {
       setAgentsSuccess(null);
       await saveAgents(updatedAgents);
       setAgents(updatedAgents);
-      setAgentsSuccess('Agents updated successfully! The daemon will pick up changes within 5 minutes.');
+      setAgentsSuccess('Agents updated successfully! Changes are applied immediately.');
     } catch (err) {
       setAgentsError((err as Error).message || 'Failed to update agents');
     } finally {

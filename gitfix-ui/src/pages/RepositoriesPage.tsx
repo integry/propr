@@ -156,7 +156,7 @@ const RepositoriesPage: React.FC = () => {
         }
       }
       await updateRepoConfig(repos);
-      setSuccess('Repository list updated successfully! The daemon will pick up changes within 5 minutes.');
+      setSuccess('Repository list updated successfully! Changes are applied immediately.');
     } catch (err) {
       setError((err as Error).message || 'Failed to update repository list');
     } finally {
@@ -177,7 +177,7 @@ const RepositoriesPage: React.FC = () => {
     <div>
       <h2 className="text-gray-900 text-2xl font-semibold mb-4">Manage Monitored Repositories</h2>
       <p className="text-gray-600 mb-4">
-        Add repositories to monitor, enable/disable them, or remove them from the list. Changes will be automatically picked up by the daemon within 5 minutes.
+        Add repositories to monitor, enable/disable them, or remove them from the list. Changes are applied immediately.
       </p>
       
       <div className="flex gap-4 mb-6">

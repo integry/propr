@@ -7,8 +7,24 @@ interface ConfigRoutesDeps {
   redisClient: RedisClientType;
 }
 
+// Define the channel name constant for config update events
+const CONFIG_EVENT_CHANNEL = 'system:config:events';
+
 export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const { redisClient } = deps;
+
+  // Helper function to publish config updates via Redis Pub/Sub
+  const publishConfigUpdate = async (subtype: string): Promise<void> => {
+    try {
+      await redisClient.publish(CONFIG_EVENT_CHANNEL, JSON.stringify({
+        type: 'config_update',
+        subtype,
+        timestamp: Date.now()
+      }));
+    } catch (error) {
+      console.error(`Failed to publish config update event for ${subtype}:`, error);
+    }
+  };
 
   async function getFollowupKeywords(_req: Request, res: Response): Promise<void> {
     try {
@@ -29,6 +45,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       await configManager.saveFollowupKeywords(followup_keywords);
+
+      // Publish config update event
+      await publishConfigUpdate('followup_keywords_update');
+
       return { status: 200, body: { success: true, followup_keywords } };
     });
 
@@ -54,7 +74,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       for (const repo of repos_to_monitor) {
-        const isValid = typeof repo.name === 'string' && 
+        const isValid = typeof repo.name === 'string' &&
           repo.name.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_]+$/) &&
           typeof repo.enabled === 'boolean';
         if (!isValid) {
@@ -63,6 +83,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       await configManager.saveMonitoredRepos(repos_to_monitor);
+
+      // Publish config update event for repos
+      await publishConfigUpdate('repos_update');
 
       const activity = {
         id: `activity-${Date.now()}-config-update`,
@@ -112,6 +135,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       await configManager.saveSettings(settings);
+
+      // Publish config update event
+      await publishConfigUpdate('settings_update');
+
       return { status: 200, body: { success: true, settings } };
     });
 
@@ -137,6 +164,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       await configManager.savePrLabel(pr_label.trim());
+
+      // Publish config update event
+      await publishConfigUpdate('pr_label_update');
+
       return { status: 200, body: { success: true, pr_label: pr_label.trim() } };
     });
 
@@ -162,6 +193,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       await configManager.saveAiPrimaryTag(ai_primary_tag.trim());
+
+      // Publish config update event
+      await publishConfigUpdate('ai_primary_tag_update');
+
       return { status: 200, body: { success: true, ai_primary_tag: ai_primary_tag.trim() } };
     });
 
@@ -192,6 +227,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       await configManager.savePrimaryProcessingLabels(labels);
+
+      // Publish config update event
+      await publishConfigUpdate('primary_processing_labels_update');
+
       return { status: 200, body: { success: true, primary_processing_labels: labels } };
     });
 
@@ -267,6 +306,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         // Don't fail the request, the config was saved successfully
       }
 
+      // Publish config update event so daemon also refreshes
+      await publishConfigUpdate('agents_update');
+
       const activity = {
         id: `activity-${Date.now()}-agents-update`,
         type: 'agents_updated',
@@ -312,6 +354,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       };
 
       await configManager.saveSummarizationSettings(settings);
+
+      // Publish config update event
+      await publishConfigUpdate('summarization_settings_update');
 
       const activity = {
         id: `activity-${Date.now()}-summarization-update`,
