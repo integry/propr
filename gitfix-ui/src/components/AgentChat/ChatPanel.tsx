@@ -1,6 +1,13 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { AgentConfig, chatWithAgents, ChatResult, ChatQuery } from '../../api/gitfixApi';
-import { MODEL_INFO_MAP, typeBadgeColors, AgentType } from '../../config/modelDefinitions';
+import { MODEL_INFO_MAP, AgentType } from '../../config/modelDefinitions';
+
+// Enhanced badge colors for selected state - more visually prominent
+const selectedBadgeColors: Record<AgentType, string> = {
+  claude: 'bg-orange-500 text-white border-orange-600 shadow-md ring-2 ring-orange-300',
+  codex: 'bg-green-500 text-white border-green-600 shadow-md ring-2 ring-green-300',
+  gemini: 'bg-blue-500 text-white border-blue-600 shadow-md ring-2 ring-blue-300'
+};
 
 interface ChatPanelProps {
   agents: AgentConfig[];
@@ -140,19 +147,27 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
           {agentModelOptions.length === 0 ? (
             <p className="text-sm text-gray-500">No enabled models available. Enable agents and models in the configuration.</p>
           ) : (
-            agentModelOptions.map(option => (
-              <button
-                key={option.key}
-                onClick={() => toggleSelection(option.key)}
-                className={`px-3 py-1 text-xs rounded-full border transition-colors ${
-                  selectedKeys.includes(option.key)
-                    ? typeBadgeColors[option.agentType]
-                    : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400'
-                }`}
-              >
-                {option.agentAlias} ({option.modelName})
-              </button>
-            ))
+            agentModelOptions.map(option => {
+              const isSelected = selectedKeys.includes(option.key);
+              return (
+                <button
+                  key={option.key}
+                  onClick={() => toggleSelection(option.key)}
+                  className={`px-3 py-1.5 text-xs rounded-full border transition-all duration-200 flex items-center gap-1.5 ${
+                    isSelected
+                      ? selectedBadgeColors[option.agentType]
+                      : 'bg-gray-50 border-gray-200 text-gray-400 hover:bg-gray-100 hover:border-gray-300 hover:text-gray-600'
+                  }`}
+                >
+                  {isSelected && (
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                  )}
+                  {option.agentAlias} ({option.modelName})
+                </button>
+              );
+            })
           )}
         </div>
         {selectedKeys.length === 0 && agentModelOptions.length > 0 && (
