@@ -195,14 +195,16 @@ export class CodexAgent implements Agent {
         }
     }
 
-    async analyze(prompt: string, context?: string): Promise<string> {
+    async analyze(prompt: string, context?: string, model?: string): Promise<string> {
         logger.info({
             agentAlias: this.config.alias,
             promptLength: prompt.length,
-            hasContext: !!context
+            hasContext: !!context,
+            requestedModel: model
         }, 'Running lightweight analysis via Codex agent...');
 
-        const model = resolveModelAlias('haiku'); // Or appropriate Codex analysis model
+        // Use provided model or fallback to haiku for lightweight analysis
+        const effectiveModel = model || resolveModelAlias('haiku');
 
         const analysisPrompt = context
             ? `${prompt}\n\nContext:\n${context}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`
@@ -212,7 +214,7 @@ export class CodexAgent implements Agent {
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: '/tmp/codex-analysis',
                 githubToken: process.env.GITHUB_TOKEN || '',
-                modelName: model,
+                modelName: effectiveModel,
                 issueNumber: 0
             });
 
@@ -228,7 +230,7 @@ export class CodexAgent implements Agent {
                 logger.info({
                     agentAlias: this.config.alias,
                     responseLength: analysisText.length,
-                    model
+                    model: effectiveModel
                 }, 'Lightweight analysis completed');
                 return analysisText;
             }

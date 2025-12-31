@@ -19,6 +19,7 @@ import {
   createLLMMetricsRoutes,
   createPlannerRoutes,
   createRelevanceRoutes,
+  createAgentRoutes,
   attachmentUpload
 } from './routes/index.js';
 import {
@@ -155,6 +156,7 @@ function setupRoutes(): void {
   const llmMetricsRoutes = createLLMMetricsRoutes();
   const plannerRoutes = createPlannerRoutes({ db });
   const relevanceRoutes = createRelevanceRoutes();
+  const agentRoutes = createAgentRoutes();
 
   app.get('/api/status', ensureAuthenticated, statusRoutes.getStatus);
   app.get('/api/tasks', ensureAuthenticated, taskRoutes.getTasks);
@@ -218,6 +220,9 @@ function setupRoutes(): void {
   app.post('/api/planner/finalize', ensureAuthenticated, plannerRoutes.finalize);
 
   app.post('/api/planner/relevance', ensureAuthenticated, relevanceRoutes.analyzeRelevance);
+
+  // Agent chat API routes
+  app.use('/api/agents', ensureAuthenticated, agentRoutes.router);
 
   setupWebhookRoute();
 }
