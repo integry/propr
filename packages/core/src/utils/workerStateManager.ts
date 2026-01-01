@@ -55,9 +55,13 @@ export class WorkerStateManager {
         }, 'Task state created');
 
         try {
+            // Validate repository name components before storing
+            const repoOwner = issueRef.repoOwner ?? 'unknown';
+            const repoName = issueRef.repoName ?? 'unknown';
+            const repository = `${repoOwner}/${repoName}`;
             const taskData = {
                 task_id: taskId, job_id: null, correlation_id: state.correlationId,
-                repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
+                repository,
                 issue_number: issueRef.number, task_type: issueRef.type ?? 'issue',
                 model_name: issueRef.modelName ?? null, created_at: state.createdAt,
                 initial_job_data: JSON.stringify(issueRef)

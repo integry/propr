@@ -39,7 +39,18 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
       const distinctRepos = await db('tasks').distinct('repository').whereNotNull('repository').orderBy('repository', 'asc');
-      const repos = distinctRepos.map((row: { repository: string }) => row.repository).filter(r => r && r !== 'Unknown');
+      // Filter out invalid repository names: null, empty, 'Unknown', and malformed names like 'undefined/undefined'
+      const isValidRepoName = (r: string): boolean => {
+        if (!r || r === 'Unknown') return false;
+        // Must match owner/repo format with valid characters
+        const parts = r.split('/');
+        if (parts.length !== 2) return false;
+        const [owner, name] = parts;
+        // Both owner and name must be non-empty and not 'undefined'
+        if (!owner || !name || owner === 'undefined' || name === 'undefined') return false;
+        return true;
+      };
+      const repos = distinctRepos.map((row: { repository: string }) => row.repository).filter(isValidRepoName);
       res.json({ repos });
     } catch (error) {
       console.error('Error in /api/github/repos:', error);
