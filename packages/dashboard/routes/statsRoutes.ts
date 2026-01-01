@@ -25,6 +25,14 @@ interface CountRow {
   count?: number;
 }
 
+interface RepositoryStatsRow {
+  repository: string;
+  total: number;
+  completed: number;
+  failed: number;
+  in_progress: number;
+}
+
 export function createStatsRoutes(deps: StatsRoutesDeps) {
   const { db } = deps;
 
@@ -118,5 +126,55 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
     }
   }
 
-  return { getTaskStats };
+  async function getRepositoryStats(_req: Request, res: Response): Promise<void> {
+    try {
+      // Get task counts and success rates per repository
+      const repoStats = await db('tasks as t')
+        .leftJoin(
+          db('task_history')
+            .select('task_id')
+            .max('timestamp as max_ts')
+            .groupBy('task_id')
+            .as('latest'),
+          't.task_id', 'latest.task_id'
+        )
+        .leftJoin('task_history as h', function(this: Knex.JoinClause) {
+          this.on('t.task_id', '=', 'h.task_id')
+              .andOn('h.timestamp', '=', 'latest.max_ts');
+        })
+        .select('t.repository')
+        .count('* as total')
+        .sum(db.raw("CASE WHEN h.state = 'completed' THEN 1 ELSE 0 END as completed"))
+        .sum(db.raw("CASE WHEN h.state = 'failed' THEN 1 ELSE 0 END as failed"))
+        .sum(db.raw("CASE WHEN h.state NOT IN ('completed', 'failed') THEN 1 ELSE 0 END as in_progress"))
+        .groupBy('t.repository')
+        .orderBy('total', 'desc')
+        .limit(20) as unknown as RepositoryStatsRow[];
+
+      // Calculate success rates and format response
+      const repositories = repoStats.map((row) => {
+        const total = Number(row.total);
+        const completed = Number(row.completed || 0);
+        const failed = Number(row.failed || 0);
+        const inProgress = Number(row.in_progress || 0);
+        const successRate = total > 0 ? ((completed / total) * 100).toFixed(1) : '0.0';
+
+        return {
+          repository: row.repository,
+          total,
+          completed,
+          failed,
+          inProgress,
+          successRate: parseFloat(successRate)
+        };
+      });
+
+      res.json({ repositories });
+    } catch (error) {
+      console.error('Error in /api/stats/repositories:', error);
+      res.status(500).json({ error: 'Failed to fetch repository statistics' });
+    }
+  }
+
+  return { getTaskStats, getRepositoryStats };
 }

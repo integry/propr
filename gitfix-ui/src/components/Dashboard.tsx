@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import SystemStatus from './SystemStatus';
 import TaskQueueStats from './TaskQueueStats';
 import TaskStatsChart from './TaskStatsChart';
+import RepositoryReport from './RepositoryReport';
 import TaskList from './TaskList';
 import { getRepoConfig, createDraft } from '../api/gitfixApi';
 
@@ -122,6 +123,11 @@ const Dashboard: React.FC = () => {
       <h2 className="text-2xl font-semibold text-white mb-6">Task Statistics</h2>
       <div className="mb-8">
         <TaskStatsChart />
+      </div>
+
+      <h2 className="text-2xl font-semibold text-white mb-6">Repository Metrics</h2>
+      <div className="mb-8">
+        <RepositoryReport />
       </div>
 
       <div>
