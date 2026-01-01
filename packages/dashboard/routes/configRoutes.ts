@@ -354,10 +354,16 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'custom_prompt must be a string' } };
       }
 
+      // Load current settings to detect if custom_prompt changed
+      const currentSettings = await configManager.loadSummarizationSettings();
+      const newCustomPrompt = custom_prompt || '';
+      const oldCustomPrompt = currentSettings.custom_prompt || '';
+      const promptChanged = newCustomPrompt !== oldCustomPrompt;
+
       const settings = {
         enabled,
         agent_alias: agent_alias || '',
-        custom_prompt: custom_prompt || ''
+        custom_prompt: newCustomPrompt
       };
 
       await configManager.saveSummarizationSettings(settings);
@@ -365,18 +371,79 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       // Publish config update event
       await publishConfigUpdate('summarization_settings_update');
 
+      // If custom prompt changed and summarization is enabled with an agent, trigger resummarization for all repositories
+      let repositoriesQueued = 0;
+      if (promptChanged && enabled && agent_alias) {
+        try {
+          const monitoredRepos = await configManager.loadMonitoredRepos();
+          const octokit = await getAuthenticatedOctokit();
+          const { token } = await octokit.auth({ type: "installation" }) as { token: string };
+
+          for (const repoFullName of monitoredRepos) {
+            const [owner, name] = repoFullName.split('/');
+
+            // Check if job already queued
+            const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed']);
+            const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repoFullName);
+            if (alreadyQueued) {
+              continue;
+            }
+
+            // Ensure repo is cloned
+            const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
+            let repoPath: string;
+            try {
+              repoPath = await ensureRepoCloned(repoUrl, owner, name, token);
+            } catch {
+              console.error(`Failed to clone repository ${repoFullName} for resummarization`);
+              continue;
+            }
+
+            // Queue the indexing job with fullReindex to apply new prompt
+            const correlationId = generateCorrelationId();
+            await indexingQueue.add(
+              'indexRepository',
+              {
+                repository: repoFullName,
+                repoPath,
+                correlationId,
+                priority: 'normal',
+                fullReindex: true
+              },
+              {
+                jobId: `index-${repoFullName.replace('/', '-')}-prompt-change-${Date.now()}`,
+                priority: 2 // Lower priority than manual triggers
+              }
+            );
+            repositoriesQueued++;
+          }
+        } catch (error) {
+          console.error('Error triggering resummarization for repositories:', error);
+        }
+      }
+
       const activity = {
         id: `activity-${Date.now()}-summarization-update`,
         type: 'summarization_updated',
         timestamp: new Date().toISOString(),
         user: req.user?.username,
-        description: `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'})`,
+        description: promptChanged && repositoriesQueued > 0
+          ? `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'}). Triggered resummarization for ${repositoriesQueued} repositories.`
+          : `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'})`,
         status: 'success'
       };
       await redisClient.lPush('system:activity:log', JSON.stringify(activity));
       await redisClient.lTrim('system:activity:log', 0, 999);
 
-      return { status: 200, body: { success: true, ...settings } };
+      return {
+        status: 200,
+        body: {
+          success: true,
+          ...settings,
+          promptChanged,
+          repositoriesQueued
+        }
+      };
     });
 
     res.status(result.status).json(result.body);
