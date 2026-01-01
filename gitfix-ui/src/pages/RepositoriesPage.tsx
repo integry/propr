@@ -278,7 +278,6 @@ const RepositoriesPage: React.FC = () => {
             />
             <datalist id="available-repos">
               {availableRepos
-                .filter(repo => !repos.some(r => r.name === repo && !r.baseBranch))
                 .map(repo => <option key={repo} value={repo} />)}
             </datalist>
           </div>
