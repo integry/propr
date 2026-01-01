@@ -4,6 +4,7 @@ import SystemStatus from './SystemStatus';
 import TaskQueueStats from './TaskQueueStats';
 import TaskStatsChart from './TaskStatsChart';
 import RepositoryReport from './RepositoryReport';
+import RepositoryBreakdown from './RepositoryBreakdown';
 import TaskList from './TaskList';
 import { getRepoConfig, createDraft } from '../api/gitfixApi';
 
@@ -147,6 +148,10 @@ const Dashboard: React.FC = () => {
       <h2 className="text-2xl font-semibold text-white mb-6">Repository Metrics</h2>
       <div className="mb-8">
         <RepositoryReport />
+      </div>
+
+      <div className="mb-8">
+        <RepositoryBreakdown />
       </div>
 
       <div>
