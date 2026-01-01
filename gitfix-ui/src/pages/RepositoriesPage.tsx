@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/gitfixApi';
 
 interface Repo {
@@ -219,6 +220,12 @@ const RepositoriesPage: React.FC = () => {
               <IndexingStatusIndicator status={indexingStatuses[repo.name]} />
             </div>
             <div className="flex items-center gap-4">
+              <Link
+                to={`/summaries/${repo.name}`}
+                className="text-xs px-3 py-1 text-primary-600 hover:text-primary-700 border border-primary-300 hover:border-primary-400 rounded-md font-medium transition-colors"
+              >
+                Browse Summaries
+              </Link>
               <label className="flex items-center cursor-pointer text-gray-700">
                 <input
                   type="checkbox"

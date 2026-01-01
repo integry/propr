@@ -119,14 +119,6 @@ const App: React.FC = () => {
             }
           />
           <Route
-            path="/summaries"
-            element={
-              <Layout>
-                <SummaryBrowserPage />
-              </Layout>
-            }
-          />
-          <Route
             path="/summaries/:owner/:repo"
             element={
               <Layout>
