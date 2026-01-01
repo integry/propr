@@ -175,7 +175,7 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
 
       <div className="flex flex-col md:flex-row">
         {/* Tree Panel */}
-        <div className="md:w-1/2 border-b md:border-b-0 md:border-r border-gray-200 max-h-[500px] overflow-auto">
+        <div className="md:w-1/2 border-b md:border-b-0 md:border-r border-gray-200 md:max-h-[calc(100vh-200px)] overflow-auto">
           <div className="p-2">
             {rootEntries.length === 0 ? (
               <p className="text-sm text-gray-500 p-4 text-center">No entries found</p>

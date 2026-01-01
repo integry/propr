@@ -59,22 +59,17 @@ const SummaryPanel: React.FC<SummaryPanelProps> = ({ selectedEntry }) => {
             exit={{ opacity: 0, x: -10 }}
             transition={{ duration: 0.15 }}
           >
-            {/* Header with icon and name */}
+            {/* Header with icon and path */}
             <div className="flex items-center gap-2 mb-3">
               {selectedEntry.entryType === 'directory' ? (
                 <Folder className="w-5 h-5 text-yellow-500 flex-shrink-0" />
               ) : (
                 getFileIcon(selectedEntry.name)
               )}
-              <h4 className="font-medium text-gray-800 truncate" title={selectedEntry.name}>
-                {selectedEntry.name}
+              <h4 className="font-medium text-gray-800 truncate font-mono text-sm" title={selectedEntry.path}>
+                {selectedEntry.path || '/'}
               </h4>
             </div>
-
-            {/* Path */}
-            <p className="text-xs text-gray-400 mb-3 font-mono break-all bg-gray-100 px-2 py-1 rounded">
-              {selectedEntry.path || '/'}
-            </p>
 
             {/* Entry type badge */}
             <div className="mb-3">

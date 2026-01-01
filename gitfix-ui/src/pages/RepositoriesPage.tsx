@@ -277,14 +277,14 @@ const RepositoriesPage: React.FC = () => {
                 {repo.name}
               </span>
               <IndexingStatusIndicator status={indexingStatuses[repo.name]} />
-            </div>
-            <div className="flex items-center gap-4">
               <Link
                 to={`/summaries/${repo.name}`}
-                className="text-xs px-3 py-1 text-primary-600 hover:text-primary-700 border border-primary-300 hover:border-primary-400 rounded-md font-medium transition-colors"
+                className="text-xs px-2 py-0.5 text-primary-600 hover:text-primary-700 hover:underline font-medium transition-colors"
               >
-                Browse Summaries
+                Browse
               </Link>
+            </div>
+            <div className="flex items-center gap-4">
               <label className="flex items-center cursor-pointer text-gray-700">
                 <input
                   type="checkbox"
