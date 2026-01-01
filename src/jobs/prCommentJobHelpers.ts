@@ -350,7 +350,8 @@ export function buildCompletionComment(
     commitResult: CommitResult | null,
     unprocessedComments: UnprocessedComment[],
     commentContext: CommentContext,
-    claudeResult: ClaudeCodeResponse
+    claudeResult: ClaudeCodeResponse,
+    taskUrl?: string
 ): string {
     const { changesSummary, commitMessage, llm, authorsText, undoContext } = commentContext;
 
@@ -385,6 +386,11 @@ export function buildCompletionComment(
         if (undoContext) {
             const undoLink = buildUndoLink(undoContext, commitResult.commitHash);
             prCommentBody += `\n\n[Undo Changes](${undoLink})`;
+            if (taskUrl) {
+                prCommentBody += ` • [View Task Execution](${taskUrl})`;
+            }
+        } else if (taskUrl) {
+            prCommentBody += `\n\n[View Task Execution](${taskUrl})`;
         }
 
         prCommentBody += `\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
@@ -399,6 +405,12 @@ export function buildCompletionComment(
 
         noChangesBody += `No code changes were necessary based on the current state of the branch.\n\n`;
         noChangesBody += buildMetricsSection(claudeResult, llm, authorsText, true);
+
+        // Add task execution link
+        if (taskUrl) {
+            noChangesBody += `\n\n[View Task Execution](${taskUrl})`;
+        }
+
         noChangesBody += `\n\n---\n_Processing comment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`;
 
         return noChangesBody;

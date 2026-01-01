@@ -232,6 +232,10 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
 
+    // Construct Task URL for linking to the Web UI
+    const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
+    const taskUrl = `${webUiUrl}/tasks/${taskId}`;
+
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
     const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
@@ -241,7 +245,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-        body: `🔄 **Starting work on follow-up changes** requested by ${state.authorsText}\n\nI'll analyze the ${state.unprocessedComments.length} request${state.unprocessedComments.length > 1 ? 's' : ''} and implement the necessary changes.\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${state.unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`,
+        body: `🔄 **Starting work on follow-up changes** requested by ${state.authorsText}\n\nI'll analyze the ${state.unprocessedComments.length} request${state.unprocessedComments.length > 1 ? 's' : ''} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})\n\n---\n_Processing comment ID${state.unprocessedComments.length > 1 ? 's' : ''}: ${state.unprocessedComments.map(c => String(c.id) + '✓').join(', ')}_`,
     });
 
     const githubToken = await state.octokit.auth({ type: "installation" }) as GitHubToken;
@@ -335,7 +339,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         instructionCommentId
     } : undefined;
 
-    const prCommentBody = buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext }, state.claudeResult);
+    const prCommentBody = buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext }, state.claudeResult, taskUrl);
     const completionComment = await state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
 
