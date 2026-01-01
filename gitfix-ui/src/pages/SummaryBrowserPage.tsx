@@ -39,7 +39,7 @@ const SummaryBrowserPage: React.FC = () => {
     return (
       <div>
         <button
-          onClick={() => navigate('/summaries')}
+          onClick={() => navigate('/repositories')}
           className="flex items-center gap-2 text-gray-600 hover:text-gray-800 mb-4 transition-colors"
         >
           <ChevronLeft className="w-4 h-4" />
