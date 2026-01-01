@@ -25,6 +25,27 @@ interface CountRow {
   count?: number;
 }
 
+interface OverviewTaskStats {
+  completed: number | string;
+  planned: number | string;
+}
+
+interface UsageAggregation {
+  inputTokens: number | string | null;
+  outputTokens: number | string | null;
+  cost: number | string | null;
+}
+
+interface ModelCountRow {
+  model_name: string | null;
+  count: number | string;
+}
+
+interface PrIterationRow {
+  issue_number: number;
+  task_count: number | string;
+}
+
 interface RepositoryStatsRow {
   repository: string;
   total: number;
@@ -178,5 +199,105 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
     }
   }
 
-  return { getTaskStats, getRepositoryStats };
+  async function getOverview(_req: Request, res: Response): Promise<void> {
+    try {
+      // 1. Task Stats - count completed tasks (latest state = completed)
+      // Using subquery to get the latest state for each task
+      const taskStats = await db('task_history as h')
+        .join(
+          db('task_history')
+            .select('task_id')
+            .max('timestamp as max_ts')
+            .groupBy('task_id')
+            .as('latest'),
+          function(this: Knex.JoinClause) {
+            this.on('h.task_id', '=', 'latest.task_id')
+                .andOn('h.timestamp', '=', 'latest.max_ts');
+          }
+        )
+        .select(
+          db.raw("SUM(CASE WHEN h.state = 'completed' THEN 1 ELSE 0 END) as completed"),
+          db.raw("SUM(CASE WHEN h.state = 'pending' THEN 1 ELSE 0 END) as planned")
+        )
+        .first() as unknown as OverviewTaskStats | undefined;
+
+      // 2. Token & Cost Usage from llm_execution_details and llm_executions
+      const usageStats = await db('llm_execution_details')
+        .sum({
+          inputTokens: 'token_count_input',
+          outputTokens: 'token_count_output'
+        })
+        .first() as unknown as UsageAggregation | undefined;
+
+      const costStats = await db('llm_executions')
+        .sum({
+          cost: 'cost_usd'
+        })
+        .first() as unknown as { cost: number | string | null } | undefined;
+
+      // 3. Model Distribution - count tasks per model
+      const modelStats = await db('tasks')
+        .select('model_name')
+        .count('* as count')
+        .whereNotNull('model_name')
+        .groupBy('model_name') as unknown as ModelCountRow[];
+
+      // Format model stats as object
+      const modelDistribution: Record<string, number> = {};
+      for (const row of modelStats) {
+        if (row.model_name) {
+          modelDistribution[row.model_name] = Number(row.count);
+        }
+      }
+
+      // 4. PR Iterations Average - for PR-related tasks, count how many tasks share the same issue
+      // This gives an indication of follow-up iterations
+      const prIterations = await db('tasks')
+        .select('repository', 'issue_number')
+        .count('* as task_count')
+        .whereNotNull('issue_number')
+        .groupBy('repository', 'issue_number')
+        .having(db.raw('count(*) > 1')) as unknown as PrIterationRow[];
+
+      // Calculate average iterations (tasks per issue for issues with multiple tasks)
+      let prIterationsAvg = 0;
+      if (prIterations.length > 0) {
+        const totalIterations = prIterations.reduce((sum, row) => sum + Number(row.task_count), 0);
+        prIterationsAvg = Number((totalIterations / prIterations.length).toFixed(1));
+      }
+
+      // 5. Repos Indexed - count repositories with last_indexed_at not null
+      const repoStats = await db('repositories')
+        .count('* as count')
+        .whereNotNull('last_indexed_at')
+        .first() as unknown as CountRow | undefined;
+
+      // Calculate totals
+      const inputTokens = Number(usageStats?.inputTokens || 0);
+      const outputTokens = Number(usageStats?.outputTokens || 0);
+      const totalTokens = inputTokens + outputTokens;
+      const totalCost = Number(costStats?.cost || 0);
+
+      res.json({
+        tasks: {
+          completed: Number(taskStats?.completed || 0),
+          planned: Number(taskStats?.planned || 0),
+          pr_iterations_avg: prIterationsAvg
+        },
+        usage: {
+          total_tokens: totalTokens,
+          total_cost_usd: Number(totalCost.toFixed(2)),
+          models: modelDistribution
+        },
+        system: {
+          repos_indexed: Number(repoStats?.count || 0)
+        }
+      });
+    } catch (error) {
+      console.error('Error in /api/stats/overview:', error);
+      res.status(500).json({ error: 'Failed to fetch overview statistics' });
+    }
+  }
+
+  return { getTaskStats, getRepositoryStats, getOverview };
 }
