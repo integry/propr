@@ -5,9 +5,8 @@ import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositori
 // Helper function to generate UUID
 const generateId = (): string => crypto.randomUUID();
 
-interface Repo extends MonitoredRepo {
-  // Extends MonitoredRepo which now includes id, name, enabled, alias?, baseBranch?
-}
+// Type alias for MonitoredRepo which includes id, name, enabled, alias?, baseBranch?
+type Repo = MonitoredRepo;
 
 // Indexing status indicator component
 const IndexingStatusIndicator: React.FC<{ status: RepositoryIndexingStatus | undefined }> = ({ status }) => {
