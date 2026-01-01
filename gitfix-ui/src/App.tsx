@@ -8,6 +8,7 @@ import TaskPlannerPage from './pages/TaskPlannerPage'
 import PlansPage from './pages/PlansPage'
 import AiAgentsPage from './pages/AiAgentsPage'
 import SettingsPage from './pages/SettingsPage'
+import SummaryBrowserPage from './pages/SummaryBrowserPage'
 import LoginPage from './pages/LoginPage'
 import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
@@ -114,6 +115,14 @@ const App: React.FC = () => {
             element={
               <Layout>
                 <SettingsPage />
+              </Layout>
+            }
+          />
+          <Route
+            path="/summaries/:owner/:repo"
+            element={
+              <Layout>
+                <SummaryBrowserPage />
               </Layout>
             }
           />
