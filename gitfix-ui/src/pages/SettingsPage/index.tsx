@@ -96,7 +96,9 @@ const SettingsPage: React.FC = () => {
         setAgents(agentsData.agents || []);
         setSummarizationSettings({
           enabled: summarizationData.enabled || false,
-          agent_alias: summarizationData.agent_alias || ''
+          agent_alias: summarizationData.agent_alias || '',
+          custom_prompt: summarizationData.custom_prompt,
+          default_prompt: summarizationData.default_prompt
         });
       } catch (err) {
         setGlobalError((err as Error).message || 'Failed to load settings');
