@@ -23,8 +23,27 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     const loadRepos = async () => {
       try {
-        const data = await getRepoConfig() as { repos_to_monitor?: Repo[] };
-        const enabledRepos = (data.repos_to_monitor || []).filter((r: Repo) => r.enabled);
+        const data = await getRepoConfig() as { repos_to_monitor?: unknown[] };
+        const rawRepos = data.repos_to_monitor || [];
+
+        // Transform and validate the data to ensure correct format
+        const validRepos: Repo[] = rawRepos
+          .map((repo: unknown) => {
+            if (typeof repo === 'string') {
+              return { name: repo, enabled: true };
+            } else if (repo && typeof repo === 'object') {
+              const repoObj = repo as Record<string, unknown>;
+              const name = (repoObj.name as string) || (repoObj.full_name as string);
+              const enabled = typeof repoObj.enabled === 'boolean' ? repoObj.enabled : true;
+              if (name) {
+                return { name, enabled };
+              }
+            }
+            return null;
+          })
+          .filter((repo): repo is Repo => repo !== null && repo.name !== undefined);
+
+        const enabledRepos = validRepos.filter((r: Repo) => r.enabled);
         setRepos(enabledRepos);
         if (enabledRepos.length > 0) {
           setSelectedRepo(enabledRepos[0].name);

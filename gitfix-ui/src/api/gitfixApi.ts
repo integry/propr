@@ -110,7 +110,16 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
   return response.json();
 };
 
-export const getRepoConfig = async (): Promise<unknown> => {
+export interface MonitoredRepo {
+  name: string;
+  enabled: boolean;
+}
+
+export interface RepoConfigResponse {
+  repos_to_monitor: MonitoredRepo[];
+}
+
+export const getRepoConfig = async (): Promise<RepoConfigResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/config/repos`, {
     credentials: 'include'
   });
@@ -118,7 +127,7 @@ export const getRepoConfig = async (): Promise<unknown> => {
   return response.json();
 };
 
-export const updateRepoConfig = async (repos: string[]): Promise<unknown> => {
+export const updateRepoConfig = async (repos: MonitoredRepo[]): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/repos`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
