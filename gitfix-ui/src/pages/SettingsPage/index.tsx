@@ -26,6 +26,7 @@ const SettingsPage: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [globalError, setGlobalError] = useState<string | null>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const summarizationSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Data state
   const [settings, setSettings] = useState<Settings>({
@@ -107,6 +108,18 @@ const SettingsPage: React.FC = () => {
       }
     };
     loadData();
+  }, []);
+
+  // Cleanup debounce timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (summarizationSaveTimeoutRef.current) {
+        clearTimeout(summarizationSaveTimeoutRef.current);
+      }
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
   }, []);
 
   // Auto-save function
@@ -208,27 +221,45 @@ const SettingsPage: React.FC = () => {
     performAutoSave(settings, whitelist, prLabel, primaryLabels, newList);
   };
 
+  // Debounce delay for prompt changes (in milliseconds)
+  const PROMPT_DEBOUNCE_DELAY = 800;
+
   // Handle summarization settings changes (separate save endpoint)
-  const handleSummarizationChange = async (newSettings: SummarizationSettings) => {
+  const handleSummarizationChange = useCallback((newSettings: SummarizationSettings, isPromptChange = false) => {
     setSummarizationSettings(newSettings);
 
-    // Clear any pending save timeout
+    // Clear any pending debounced save
+    if (summarizationSaveTimeoutRef.current) {
+      clearTimeout(summarizationSaveTimeoutRef.current);
+    }
+
+    // Clear any pending status timeout
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
     }
 
-    setSaveStatus('saving');
-    setGlobalError(null);
+    const performSave = async () => {
+      setSaveStatus('saving');
+      setGlobalError(null);
 
-    try {
-      await updateSummarizationSettings(newSettings);
-      setSaveStatus('saved');
-      saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
-    } catch (err) {
-      setSaveStatus('error');
-      setGlobalError((err as Error).message || 'Failed to save summarization settings');
+      try {
+        await updateSummarizationSettings(newSettings);
+        setSaveStatus('saved');
+        saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
+      } catch (err) {
+        setSaveStatus('error');
+        setGlobalError((err as Error).message || 'Failed to save summarization settings');
+      }
+    };
+
+    if (isPromptChange) {
+      // Debounce prompt changes to avoid too many requests while typing
+      summarizationSaveTimeoutRef.current = setTimeout(performSave, PROMPT_DEBOUNCE_DELAY);
+    } else {
+      // Immediate save for toggle and dropdown changes
+      performSave();
     }
-  };
+  }, []);
 
   if (loading) {
     return (

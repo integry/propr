@@ -5,7 +5,7 @@ import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 interface KnowledgeBaseSectionProps {
   settings: SummarizationSettings;
   agents: AgentConfig[];
-  onSettingsChange: (settings: SummarizationSettings) => void;
+  onSettingsChange: (settings: SummarizationSettings, isPromptChange?: boolean) => void;
   className?: string;
 }
 
@@ -82,7 +82,7 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
     onSettingsChange({
       ...settings,
       custom_prompt: e.target.value
-    });
+    }, true); // Mark as prompt change for debouncing
   };
 
   return (
