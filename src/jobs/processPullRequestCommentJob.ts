@@ -204,6 +204,55 @@ async function generateSummaryTitle(options: SummaryTitleOptions): Promise<strin
     }
 }
 
+interface AgentExecutionParams {
+    llm: string | null | undefined;
+    worktreePath: string;
+    branchName: string;
+    prompt: string;
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+    taskId: string;
+    stateManager: WorkerStateManager;
+    correlatedLogger: Logger;
+    githubToken: string;
+}
+
+async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ claudeResult: ClaudeCodeResponse; agentType: string }> {
+    const { llm, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken } = params;
+
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+
+    const modelToUse = llm || DEFAULT_MODEL_NAME;
+    const resolution = await resolveLlmLabel(modelToUse);
+    const agent = registry.getAgentByAlias(resolution.agentAlias);
+
+    if (!agent) {
+        throw new Error(`Agent not found for alias: ${resolution.agentAlias}`);
+    }
+
+    correlatedLogger.info({
+        agentAlias: resolution.agentAlias,
+        agentType: agent.config.type,
+        model: resolution.model,
+        pullRequestNumber
+    }, 'Executing PR comment task with agent');
+
+    const agentResult = await agent.executeTask({
+        worktreePath,
+        issueRef: { number: pullRequestNumber, repoOwner, repoName },
+        prompt,
+        model: resolution.model,
+        githubToken,
+        branchName,
+        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolution.model, stateManager, correlatedLogger, redisClient }),
+        onContainerId: createContainerIdCallbackForPR(taskId, stateManager)
+    });
+
+    return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };
+}
+
 interface ExecuteProcessingParams {
     job: Job<CommentJobData>;
     context: PRJobContext;
@@ -277,44 +326,26 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
 
-    // Resolve agent and model using resolveLlmLabel
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    const modelToUse = llm || DEFAULT_MODEL_NAME;
-    const resolution = await resolveLlmLabel(modelToUse);
-    const agent = registry.getAgentByAlias(resolution.agentAlias);
-
-    if (!agent) {
-        throw new Error(`Agent not found for alias: ${resolution.agentAlias}`);
-    }
-
-    correlatedLogger.info({
-        agentAlias: resolution.agentAlias,
-        agentType: agent.config.type,
-        model: resolution.model,
-        pullRequestNumber
-    }, 'Executing PR comment task with agent');
-
-    // Execute task via agent abstraction
-    const agentResult = await agent.executeTask({
+    // Execute agent task
+    const { claudeResult, agentType } = await resolveAndExecuteAgent({
+        llm,
         worktreePath: state.worktreeInfo.worktreePath,
-        issueRef: { number: pullRequestNumber, repoOwner, repoName },
-        prompt,
-        model: resolution.model,
-        githubToken: githubToken.token,
         branchName: state.worktreeInfo.branchName,
-        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolution.model, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallbackForPR(taskId, stateManager)
+        prompt,
+        pullRequestNumber,
+        repoOwner,
+        repoName,
+        taskId,
+        stateManager,
+        correlatedLogger,
+        githubToken: githubToken.token
     });
-
-    // Convert to ClaudeCodeResponse for backwards compatibility
-    state.claudeResult = agentResultToClaudeResponse(agentResult);
+    state.claudeResult = claudeResult;
 
     await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
     await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
     await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
-        reason: `${agent.config.type} agent execution completed`,
+        reason: `${agentType} agent execution completed`,
         claudeResult: { success: state.claudeResult.success, sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, executionTime: state.claudeResult.executionTime },
         historyMetadata: { sessionId: state.claudeResult.sessionId, conversationId: state.claudeResult.conversationId, model: state.claudeResult.model }
     });
@@ -339,7 +370,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         instructionCommentId
     } : undefined;
 
-    const prCommentBody = buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext }, state.claudeResult, taskUrl);
+    const prCommentBody = buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl }, state.claudeResult);
     const completionComment = await state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
 

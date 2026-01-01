@@ -64,6 +64,7 @@ interface CommentContext {
     llm: string | null | undefined;
     authorsText: string;
     undoContext?: UndoLinkContext;
+    taskUrl?: string;
 }
 
 interface UndoLinkContext {
@@ -350,10 +351,9 @@ export function buildCompletionComment(
     commitResult: CommitResult | null,
     unprocessedComments: UnprocessedComment[],
     commentContext: CommentContext,
-    claudeResult: ClaudeCodeResponse,
-    taskUrl?: string
+    claudeResult: ClaudeCodeResponse
 ): string {
-    const { changesSummary, commitMessage, llm, authorsText, undoContext } = commentContext;
+    const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl } = commentContext;
 
     // Helper to clean up LLM output that might contain metadata
     const cleanBody = (text: string) => {
