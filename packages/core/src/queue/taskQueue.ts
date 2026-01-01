@@ -80,6 +80,7 @@ export interface IndexingJobData {
     correlationId: string;
     priority?: 'high' | 'normal' | 'low';
     fullReindex?: boolean;   // Force full re-index even if summaries exist
+    baseBranch?: string;     // Optional specific branch to index (defaults to repo default branch)
 }
 
 export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData;

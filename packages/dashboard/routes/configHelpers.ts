@@ -251,7 +251,7 @@ export async function checkAndExecuteDelayedReindex(redisClient: RedisClientType
  * Queue an indexing job for a single repository.
  * Validates settings, checks for existing jobs, and clones if needed.
  */
-export async function queueIndexingJob(repository: string, fullReindex: boolean): Promise<QueueIndexingResult> {
+export async function queueIndexingJob(repository: string, fullReindex: boolean, baseBranch?: string): Promise<QueueIndexingResult> {
   // Check if summarization is enabled
   const settings = await configManager.loadSummarizationSettings();
   if (!settings.enabled) {
@@ -276,7 +276,7 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean)
 
   let repoPath: string;
   try {
-    repoPath = await ensureRepoCloned(repoUrl, owner, name, token);
+    repoPath = await ensureRepoCloned(repoUrl, owner, name, token, baseBranch);
   } catch (cloneError) {
     return { success: false, error: `Failed to clone repository: ${(cloneError as Error).message}` };
   }
@@ -284,7 +284,7 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean)
   const correlationId = generateCorrelationId();
   const job = await indexingQueue.add(
     'indexRepository',
-    { repository, repoPath, correlationId, priority: 'high', fullReindex },
+    { repository, repoPath, correlationId, priority: 'high', fullReindex, baseBranch },
     { jobId: `index-${repository.replace('/', '-')}-${Date.now()}`, priority: 1 }
   );
 

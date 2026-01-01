@@ -111,8 +111,11 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
 };
 
 export interface MonitoredRepo {
-  name: string;
+  id: string;           // UUID for unique identification
+  name: string;         // owner/repo
   enabled: boolean;
+  alias?: string;       // Optional display name
+  baseBranch?: string;  // Optional specific branch to monitor
 }
 
 export interface RepoConfigResponse {
