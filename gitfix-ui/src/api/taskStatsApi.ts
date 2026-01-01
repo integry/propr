@@ -62,3 +62,36 @@ export const getRepositoryStats = async (): Promise<RepositoryStatsResponse> => 
   await handleApiResponse(response);
   return response.json();
 };
+
+// Stats Overview Types and API
+export interface StatsOverviewTasks {
+  completed: number;
+  planned: number;
+  pr_iterations_avg: number;
+}
+
+export interface StatsOverviewUsage {
+  total_tokens: number;
+  total_cost_usd: number;
+  models: Record<string, number>;
+}
+
+export interface StatsOverviewSystem {
+  repos_indexed: number;
+}
+
+export interface StatsOverviewResponse {
+  tasks: StatsOverviewTasks;
+  usage: StatsOverviewUsage;
+  system: StatsOverviewSystem;
+}
+
+export const getStatsOverview = async (): Promise<StatsOverviewResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/stats/overview`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
