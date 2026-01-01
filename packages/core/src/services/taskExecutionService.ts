@@ -85,17 +85,13 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     const task = planJson[i];
 
     let issueBody = task.body || '';
-    
-    if (task.implementation) {
-      issueBody += '\n\n---\n\n**Implementation:**\n```\n' + task.implementation + '\n```';
-    }
 
     issueBody += '\n\n---\n*Created by GitFix AI Planner*';
 
-    correlatedLogger.info({ 
-      draftId, 
-      taskIndex: i + 1, 
-      taskTitle: task.title 
+    correlatedLogger.info({
+      draftId,
+      taskIndex: i + 1,
+      taskTitle: task.title
     }, 'Creating issue');
 
     const response = await octokit.request('POST /repos/{owner}/{repo}/issues', {
@@ -112,11 +108,28 @@ export async function executeDraft(draftId: string, userId: string, correlationI
       title: response.data.title
     });
 
-    correlatedLogger.info({ 
-      draftId, 
+    correlatedLogger.info({
+      draftId,
       issueNumber: response.data.number,
-      issueUrl: response.data.html_url 
+      issueUrl: response.data.html_url
     }, 'Issue created');
+
+    // Post implementation as a separate comment if it exists
+    if (task.implementation) {
+      const commentBody = '**Suggested Implementation:**\n```\n' + task.implementation + '\n```';
+
+      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner,
+        repo: repoName,
+        issue_number: response.data.number,
+        body: commentBody
+      });
+
+      correlatedLogger.info({
+        draftId,
+        issueNumber: response.data.number
+      }, 'Implementation comment created');
+    }
 
     if (i < planJson.length - 1) {
       await sleep(1000);
