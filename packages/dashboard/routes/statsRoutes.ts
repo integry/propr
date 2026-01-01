@@ -269,7 +269,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
         totalFollowups = totalIterations - prIterations.length;
       }
 
-      // Count merged PRs (tasks that have pr_number and completed state)
+      // Count merged PRs (PR comment tasks that completed successfully)
       const mergedPrs = await db('tasks as t')
         .join(
           db('task_history')
@@ -283,8 +283,8 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
           this.on('t.task_id', '=', 'h.task_id')
               .andOn('h.timestamp', '=', 'latest.max_ts');
         })
-        .countDistinct('t.pr_number as count')
-        .whereNotNull('t.pr_number')
+        .countDistinct('t.issue_number as count')
+        .where('t.task_type', 'like', '%pr%')
         .andWhere('h.state', 'completed')
         .first() as unknown as CountRow | undefined;
 
