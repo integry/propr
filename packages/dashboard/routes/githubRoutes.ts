@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import { Knex } from 'knex';
+import { Octokit } from '@octokit/core';
+import { paginateRest } from '@octokit/plugin-paginate-rest';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
@@ -10,7 +12,7 @@ interface GitHubRoutesDeps {
 }
 
 export function createGitHubRoutes(deps: GitHubRoutesDeps) {
-  const { redisClient, taskQueue, db } = deps;
+  const { redisClient, taskQueue } = deps;
 
   async function importTasks(req: Request, res: Response): Promise<void> {
     try {
@@ -36,14 +38,43 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     }
   }
 
-  async function getRepos(_req: Request, res: Response): Promise<void> {
+  async function getRepos(req: Request, res: Response): Promise<void> {
     try {
-      const distinctRepos = await db('tasks').distinct('repository').whereNotNull('repository').orderBy('repository', 'asc');
-      const repos = distinctRepos.map((row: { repository: string }) => row.repository).filter(r => r && r !== 'Unknown');
+      // Get user's access token from session
+      const accessToken = req.user?.accessToken;
+      if (!accessToken) {
+        res.status(401).json({ error: 'No GitHub access token available' });
+        return;
+      }
+
+      // Create Octokit instance with user's token and pagination support
+      const PaginatedOctokit = Octokit.plugin(paginateRest);
+      const octokit = new PaginatedOctokit({ auth: accessToken });
+
+      // Fetch all repositories the user has access to with pagination
+      const repos: string[] = [];
+
+      // Use paginate.iterator to fetch all pages of repos
+      for await (const response of octokit.paginate.iterator('GET /user/repos', {
+        per_page: 100,
+        sort: 'full_name',
+        direction: 'asc',
+        affiliation: 'owner,collaborator,organization_member'
+      })) {
+        for (const repo of response.data) {
+          if (repo.full_name) {
+            repos.push(repo.full_name);
+          }
+        }
+      }
+
+      // Sort alphabetically
+      repos.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
       res.json({ repos });
     } catch (error) {
       console.error('Error in /api/github/repos:', error);
-      res.status(500).json({ error: 'Failed to fetch repositories with tasks' });
+      res.status(500).json({ error: 'Failed to fetch repositories from GitHub' });
     }
   }
 
