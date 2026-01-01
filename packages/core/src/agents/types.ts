@@ -46,6 +46,9 @@ export interface AgentTaskOptions {
 
     // Additional options
     tools?: string;
+
+    // Task ID for abort signal checking
+    taskId?: string;
 }
 
 export interface AgentExecutionResult {
