@@ -28,6 +28,10 @@ const SettingsPage: React.FC = () => {
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const summarizationSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Track in-flight save operation to prevent 409 errors
+  const summarizationSaveInProgressRef = useRef<Promise<void> | null>(null);
+  const pendingSummarizationSettingsRef = useRef<SummarizationSettings | null>(null);
+
   // Data state
   const [settings, setSettings] = useState<Settings>({
     worker_concurrency: '',
@@ -223,6 +227,8 @@ const SettingsPage: React.FC = () => {
 
   // Debounce delay for prompt changes (in milliseconds)
   const PROMPT_DEBOUNCE_DELAY = 800;
+  // Timeout for waiting on in-flight save operations (in milliseconds)
+  const SAVE_WAIT_TIMEOUT = 5000;
 
   // Handle summarization settings changes (separate save endpoint)
   const handleSummarizationChange = useCallback((newSettings: SummarizationSettings, isPromptChange = false) => {
@@ -238,26 +244,57 @@ const SettingsPage: React.FC = () => {
       clearTimeout(saveTimeoutRef.current);
     }
 
-    const performSave = async () => {
+    const performSave = async (settingsToSave: SummarizationSettings) => {
+      // Wait for any in-flight save operation to complete (with timeout)
+      if (summarizationSaveInProgressRef.current) {
+        try {
+          await Promise.race([
+            summarizationSaveInProgressRef.current,
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('Save operation timed out')), SAVE_WAIT_TIMEOUT)
+            )
+          ]);
+        } catch {
+          // Continue with save even if previous operation timed out
+        }
+      }
+
+      // Check if there's a newer pending save - if so, skip this one
+      if (pendingSummarizationSettingsRef.current &&
+          pendingSummarizationSettingsRef.current !== settingsToSave) {
+        return;
+      }
+
       setSaveStatus('saving');
       setGlobalError(null);
 
-      try {
-        await updateSummarizationSettings(newSettings);
-        setSaveStatus('saved');
-        saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
-      } catch (err) {
-        setSaveStatus('error');
-        setGlobalError((err as Error).message || 'Failed to save summarization settings');
-      }
+      const savePromise = (async () => {
+        try {
+          await updateSummarizationSettings(settingsToSave);
+          setSaveStatus('saved');
+          saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
+        } catch (err) {
+          setSaveStatus('error');
+          setGlobalError((err as Error).message || 'Failed to save summarization settings');
+        } finally {
+          summarizationSaveInProgressRef.current = null;
+          pendingSummarizationSettingsRef.current = null;
+        }
+      })();
+
+      summarizationSaveInProgressRef.current = savePromise;
+      await savePromise;
     };
+
+    // Store the pending settings so we can skip outdated saves
+    pendingSummarizationSettingsRef.current = newSettings;
 
     if (isPromptChange) {
       // Debounce prompt changes to avoid too many requests while typing
-      summarizationSaveTimeoutRef.current = setTimeout(performSave, PROMPT_DEBOUNCE_DELAY);
+      summarizationSaveTimeoutRef.current = setTimeout(() => performSave(newSettings), PROMPT_DEBOUNCE_DELAY);
     } else {
       // Immediate save for toggle and dropdown changes
-      performSave();
+      performSave(newSettings);
     }
   }, []);
 
