@@ -12,7 +12,7 @@ interface GitHubRoutesDeps {
 }
 
 export function createGitHubRoutes(deps: GitHubRoutesDeps) {
-  const { redisClient, taskQueue, db } = deps;
+  const { redisClient, taskQueue } = deps;
 
   async function importTasks(req: Request, res: Response): Promise<void> {
     try {
