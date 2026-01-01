@@ -384,6 +384,8 @@ export const revertCommit = async (params: RevertParams): Promise<void> => {
 export interface SummarizationSettings {
   enabled: boolean;
   agent_alias: string;
+  custom_prompt?: string;
+  default_prompt?: string;
 }
 
 export const getSummarizationSettings = async (): Promise<SummarizationSettings> => {
@@ -402,6 +404,21 @@ export const updateSummarizationSettings = async (settings: SummarizationSetting
     credentials: 'include'
   });
   await handleApiResponse(response);
+};
+
+export interface TriggerReindexAllResponse {
+  success: boolean;
+  repositoriesQueued: number;
+}
+
+export const triggerReindexAll = async (): Promise<TriggerReindexAllResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/summarization/reindex-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
 };
 export * from './plannerApi';
 export * from './taskStatsApi';

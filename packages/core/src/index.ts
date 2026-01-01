@@ -96,6 +96,7 @@ export type { FileScore as GitFileScore, CommitInfo, SemanticMinerFile, Semantic
 export { scorePaths } from './services/relevance/pathScorer.js';
 export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries, updateRepositoryStatus } from './services/relevance/summaryMiner.js';
 export type { FileSummary, DirectorySummary, GitFileInfo, IndexingOptions } from './services/relevance/summaryMiner.js';
+export { DEFAULT_INSTRUCTIONS } from './services/relevance/summaryMinerHelpers.js';
 
 export {
     executeClaudeCode,

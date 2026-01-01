@@ -11,6 +11,7 @@ import {
   getAgents,
   getSummarizationSettings,
   updateSummarizationSettings,
+  triggerReindexAll,
   AgentConfig,
   SummarizationSettings
 } from '../../api/gitfixApi';
@@ -26,6 +27,11 @@ const SettingsPage: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [globalError, setGlobalError] = useState<string | null>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const summarizationSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Track in-flight save operation to prevent 409 errors
+  const summarizationSaveInProgressRef = useRef<Promise<void> | null>(null);
+  const pendingSummarizationSettingsRef = useRef<SummarizationSettings | null>(null);
 
   // Data state
   const [settings, setSettings] = useState<Settings>({
@@ -51,6 +57,8 @@ const SettingsPage: React.FC = () => {
     enabled: false,
     agent_alias: ''
   });
+
+  const [isReindexing, setIsReindexing] = useState(false);
 
   // Load all data with Promise.all
   useEffect(() => {
@@ -96,7 +104,9 @@ const SettingsPage: React.FC = () => {
         setAgents(agentsData.agents || []);
         setSummarizationSettings({
           enabled: summarizationData.enabled || false,
-          agent_alias: summarizationData.agent_alias || ''
+          agent_alias: summarizationData.agent_alias || '',
+          custom_prompt: summarizationData.custom_prompt,
+          default_prompt: summarizationData.default_prompt
         });
       } catch (err) {
         setGlobalError((err as Error).message || 'Failed to load settings');
@@ -105,6 +115,18 @@ const SettingsPage: React.FC = () => {
       }
     };
     loadData();
+  }, []);
+
+  // Cleanup debounce timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (summarizationSaveTimeoutRef.current) {
+        clearTimeout(summarizationSaveTimeoutRef.current);
+      }
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
   }, []);
 
   // Auto-save function
@@ -206,27 +228,99 @@ const SettingsPage: React.FC = () => {
     performAutoSave(settings, whitelist, prLabel, primaryLabels, newList);
   };
 
+  // Debounce delay for prompt changes (in milliseconds)
+  const PROMPT_DEBOUNCE_DELAY = 800;
+  // Timeout for waiting on in-flight save operations (in milliseconds)
+  const SAVE_WAIT_TIMEOUT = 5000;
+
   // Handle summarization settings changes (separate save endpoint)
-  const handleSummarizationChange = async (newSettings: SummarizationSettings) => {
+  const handleSummarizationChange = useCallback((newSettings: SummarizationSettings, isPromptChange = false) => {
     setSummarizationSettings(newSettings);
 
-    // Clear any pending save timeout
+    // Clear any pending debounced save
+    if (summarizationSaveTimeoutRef.current) {
+      clearTimeout(summarizationSaveTimeoutRef.current);
+    }
+
+    // Clear any pending status timeout
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
     }
 
-    setSaveStatus('saving');
-    setGlobalError(null);
+    const performSave = async (settingsToSave: SummarizationSettings) => {
+      // Wait for any in-flight save operation to complete (with timeout)
+      if (summarizationSaveInProgressRef.current) {
+        try {
+          await Promise.race([
+            summarizationSaveInProgressRef.current,
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('Save operation timed out')), SAVE_WAIT_TIMEOUT)
+            )
+          ]);
+        } catch {
+          // Continue with save even if previous operation timed out
+        }
+      }
 
-    try {
-      await updateSummarizationSettings(newSettings);
-      setSaveStatus('saved');
-      saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
-    } catch (err) {
-      setSaveStatus('error');
-      setGlobalError((err as Error).message || 'Failed to save summarization settings');
+      // Check if there's a newer pending save - if so, skip this one
+      if (pendingSummarizationSettingsRef.current &&
+          pendingSummarizationSettingsRef.current !== settingsToSave) {
+        return;
+      }
+
+      setSaveStatus('saving');
+      setGlobalError(null);
+
+      const savePromise = (async () => {
+        try {
+          await updateSummarizationSettings(settingsToSave);
+          setSaveStatus('saved');
+          saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
+        } catch (err) {
+          setSaveStatus('error');
+          setGlobalError((err as Error).message || 'Failed to save summarization settings');
+        } finally {
+          summarizationSaveInProgressRef.current = null;
+          pendingSummarizationSettingsRef.current = null;
+        }
+      })();
+
+      summarizationSaveInProgressRef.current = savePromise;
+      await savePromise;
+    };
+
+    // Store the pending settings so we can skip outdated saves
+    pendingSummarizationSettingsRef.current = newSettings;
+
+    if (isPromptChange) {
+      // Debounce prompt changes to avoid too many requests while typing
+      summarizationSaveTimeoutRef.current = setTimeout(() => performSave(newSettings), PROMPT_DEBOUNCE_DELAY);
+    } else {
+      // Immediate save for toggle and dropdown changes
+      performSave(newSettings);
     }
-  };
+  }, []);
+
+  // Handle manual reindex trigger
+  const handleReindexAll = useCallback(async () => {
+    setIsReindexing(true);
+    setGlobalError(null);
+    try {
+      const result = await triggerReindexAll();
+      if (result.success) {
+        setSaveStatus('saved');
+        if (saveTimeoutRef.current) {
+          clearTimeout(saveTimeoutRef.current);
+        }
+        saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
+      }
+    } catch (err) {
+      setGlobalError((err as Error).message || 'Failed to trigger reindexing');
+      setSaveStatus('error');
+    } finally {
+      setIsReindexing(false);
+    }
+  }, []);
 
   if (loading) {
     return (
@@ -286,6 +380,8 @@ const SettingsPage: React.FC = () => {
             settings={summarizationSettings}
             agents={agents}
             onSettingsChange={handleSummarizationChange}
+            onReindexAll={handleReindexAll}
+            isReindexing={isReindexing}
           />
 
           <TagListSection

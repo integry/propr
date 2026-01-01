@@ -24,6 +24,7 @@ import {
   createSummaryBrowserRoutes,
   attachmentUpload
 } from './routes/index.js';
+import { checkAndExecuteDelayedReindex } from './routes/configHelpers.js';
 import {
   generateCorrelationId,
   processWebhookEvent,
@@ -187,6 +188,7 @@ function setupRoutes(): void {
   app.post('/api/config/summarization', ensureAuthenticated, configRoutes.postSummarizationSettings);
   app.get('/api/config/repos/indexing-status', ensureAuthenticated, configRoutes.getRepositoriesIndexingStatus);
   app.post('/api/config/repos/trigger-indexing', ensureAuthenticated, configRoutes.triggerIndexing);
+  app.post('/api/config/summarization/reindex-all', ensureAuthenticated, configRoutes.triggerReindexAll);
 
   app.get('/api/queue/stats', ensureAuthenticated, queueRoutes.getQueueStats);
   app.get('/api/activity', ensureAuthenticated, queueRoutes.getActivity);
@@ -294,6 +296,15 @@ async function start(): Promise<void> {
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
     try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
     app.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT}`); });
+
+    // Start background job to check for scheduled delayed reindex (every 30 seconds)
+    setInterval(async () => {
+      try {
+        await checkAndExecuteDelayedReindex(redisClient as RedisClientType);
+      } catch (error) {
+        console.error('Error checking for delayed reindex:', error);
+      }
+    }, 30 * 1000);
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);

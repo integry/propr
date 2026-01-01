@@ -40,6 +40,28 @@ const BATCH_TOKEN_RATIO = 0.8; // Use 80% of max tokens for batch
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
 const MAX_FILE_SIZE_BYTES = 100 * 1024; // 100KB max file size
 
+// Default instructions for the summarization prompt (exported for UI display)
+export const DEFAULT_INSTRUCTIONS = `You are a code expert. Analyze the following source code files.
+For each file, provide a summary (3-4 sentences) covering:
+1. Primary purpose of the file
+2. Key functions, classes, or exports it provides
+3. What other parts of the system it interacts with or depends on`;
+
+// Strict JSON format rules that must always be appended to preserve parsing
+const JSON_FORMAT_RULES = `Return ONLY valid JSON in this exact format:
+{
+  "summaries": [
+    { "path": "relative/path/to/file", "summary": "This file handles... It provides... It interacts with..." }
+  ]
+}
+
+Important:
+- Include ALL files listed below in your response
+- Each summary should be 3-4 sentences with specific details
+- Mention key function/class names when relevant
+- Focus on what the file does and how it connects to the system
+- Return valid JSON only, no markdown or other formatting`;
+
 // --- Phase B: Batch Summarization ---
 
 export interface ProcessBatchesOptions {
@@ -49,13 +71,14 @@ export interface ProcessBatchesOptions {
   agent: Agent;
   log: Logger;
   modelOverride?: string; // Optional model override for token budgeting and logging
+  customPrompt?: string; // Optional custom prompt to override default instructions
 }
 
 /**
  * Processes files in batches, respecting token limits
  */
 export async function processBatches(options: ProcessBatchesOptions): Promise<void> {
-  const { repoPath, fullName, files, agent, log, modelOverride } = options;
+  const { repoPath, fullName, files, agent, log, modelOverride, customPrompt } = options;
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
@@ -91,7 +114,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<vo
       batchNumber++;
       log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing batch');
 
-      await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId });
+      await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt });
 
       currentBatch = [];
       currentTokens = 0;
@@ -110,7 +133,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<vo
   if (currentBatch.length > 0) {
     batchNumber++;
     log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing final batch');
-    await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId });
+    await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt });
   }
 
   log.info({ totalBatches: batchNumber }, 'Batch processing complete');
@@ -122,14 +145,15 @@ interface ProcessSingleBatchOptions {
   agent: Agent;
   log: Logger;
   modelUsed: string;
+  customPrompt?: string;
 }
 
 /**
  * Processes a single batch of files through the LLM
  */
 async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<void> {
-  const { fullName, batch, agent, log, modelUsed } = options;
-  const prompt = buildBatchPrompt(batch);
+  const { fullName, batch, agent, log, modelUsed, customPrompt } = options;
+  const prompt = buildBatchPrompt(batch, customPrompt);
   const startTime = Date.now();
 
   // Estimate input tokens (prompt + file contents)
@@ -180,30 +204,19 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<v
 /**
  * Builds the prompt for batch summarization
  */
-function buildBatchPrompt(batch: BatchFile[]): string {
+function buildBatchPrompt(batch: BatchFile[], customPrompt?: string): string {
   const filesContent = batch.map(f =>
     `--- START ${f.path} ---\n${f.content}\n--- END ${f.path} ---`
   ).join('\n\n');
 
-  return `You are a code expert. Analyze the following source code files.
-For each file, provide a summary (3-4 sentences) covering:
-1. Primary purpose of the file
-2. Key functions, classes, or exports it provides
-3. What other parts of the system it interacts with or depends on
+  // Use custom prompt if provided and non-empty, otherwise use default instructions
+  const instructions = customPrompt && customPrompt.trim().length > 0
+    ? customPrompt
+    : DEFAULT_INSTRUCTIONS;
 
-Return ONLY valid JSON in this exact format:
-{
-  "summaries": [
-    { "path": "relative/path/to/file", "summary": "This file handles... It provides... It interacts with..." }
-  ]
-}
+  return `${instructions}
 
-Important:
-- Include ALL files listed below in your response
-- Each summary should be 3-4 sentences with specific details
-- Mention key function/class names when relevant
-- Focus on what the file does and how it connects to the system
-- Return valid JSON only, no markdown or other formatting
+${JSON_FORMAT_RULES}
 
 FILES:
 ${filesContent}`;
