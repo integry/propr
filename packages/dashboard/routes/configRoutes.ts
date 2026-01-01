@@ -1,9 +1,8 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@gitfix/core';
-import { AgentRegistry, indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, DEFAULT_INSTRUCTIONS } from '@gitfix/core';
-import type { IndexingJobData } from '@gitfix/core';
-import { withConfigLock } from './configHelpers.js';
+import { AgentRegistry, DEFAULT_INSTRUCTIONS } from '@gitfix/core';
+import { withConfigLock, queueResummarizationForAllRepos, validateAgentsConfig, queueIndexingJob } from './configHelpers.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -26,6 +25,20 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     } catch (error) {
       console.error(`Failed to publish config update event for ${subtype}:`, error);
     }
+  };
+
+  // Helper function to log activity
+  const logActivityHelper = async (description: string, idSuffix: string, type: string, username?: string): Promise<void> => {
+    const activity = {
+      id: `activity-${Date.now()}-${idSuffix}`,
+      type,
+      timestamp: new Date().toISOString(),
+      user: username,
+      description,
+      status: 'success'
+    };
+    await redisClient.lPush('system:activity:log', JSON.stringify(activity));
+    await redisClient.lTrim('system:activity:log', 0, 999);
   };
 
   async function getFollowupKeywords(_req: Request, res: Response): Promise<void> {
@@ -85,20 +98,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       await configManager.saveMonitoredRepos(repos_to_monitor);
-
-      // Publish config update event for repos
       await publishConfigUpdate('repos_update');
-
-      const activity = {
-        id: `activity-${Date.now()}-config-update`,
-        type: 'config_updated',
-        timestamp: new Date().toISOString(),
-        user: req.user?.username,
-        description: `Updated monitored repositories list (${repos_to_monitor.length} repos)`,
-        status: 'success'
-      };
-      await redisClient.lPush('system:activity:log', JSON.stringify(activity));
-      await redisClient.lTrim('system:activity:log', 0, 999);
+      await logActivityHelper(`Updated monitored repositories list (${repos_to_monitor.length} repos)`, 'config-update', 'config_updated', req.user?.username);
 
       return { status: 200, body: { success: true, repos_to_monitor } };
     });
@@ -160,26 +161,19 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   async function postPrLabel(req: Request, res: Response): Promise<void> {
     const result = await withConfigLock(redisClient, 'config:pr-label:lock', async () => {
       const { pr_label } = req.body;
-
       if (!pr_label || typeof pr_label !== 'string' || pr_label.trim() === '') {
         return { status: 400, body: { error: 'pr_label must be a non-empty string' } };
       }
-
       await configManager.savePrLabel(pr_label.trim());
-
-      // Publish config update event
       await publishConfigUpdate('pr_label_update');
-
       return { status: 200, body: { success: true, pr_label: pr_label.trim() } };
     });
-
     res.status(result.status).json(result.body);
   }
 
   async function getAiPrimaryTag(_req: Request, res: Response): Promise<void> {
     try {
-      const aiPrimaryTag = await configManager.loadAiPrimaryTag();
-      res.json({ ai_primary_tag: aiPrimaryTag });
+      res.json({ ai_primary_tag: await configManager.loadAiPrimaryTag() });
     } catch (error) {
       console.error('Error in /api/config/ai-primary-tag GET:', error);
       res.status(500).json({ error: 'Failed to load AI primary tag' });
@@ -189,26 +183,19 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   async function postAiPrimaryTag(req: Request, res: Response): Promise<void> {
     const result = await withConfigLock(redisClient, 'config:ai-primary-tag:lock', async () => {
       const { ai_primary_tag } = req.body;
-
       if (!ai_primary_tag || typeof ai_primary_tag !== 'string' || ai_primary_tag.trim() === '') {
         return { status: 400, body: { error: 'ai_primary_tag must be a non-empty string' } };
       }
-
       await configManager.saveAiPrimaryTag(ai_primary_tag.trim());
-
-      // Publish config update event
       await publishConfigUpdate('ai_primary_tag_update');
-
       return { status: 200, body: { success: true, ai_primary_tag: ai_primary_tag.trim() } };
     });
-
     res.status(result.status).json(result.body);
   }
 
   async function getPrimaryProcessingLabels(_req: Request, res: Response): Promise<void> {
     try {
-      const primaryLabels = await configManager.loadPrimaryProcessingLabels();
-      res.json({ primary_processing_labels: primaryLabels });
+      res.json({ primary_processing_labels: await configManager.loadPrimaryProcessingLabels() });
     } catch (error) {
       console.error('Error in /api/config/primary-processing-labels GET:', error);
       res.status(500).json({ error: 'Failed to load primary processing labels' });
@@ -218,31 +205,23 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   async function postPrimaryProcessingLabels(req: Request, res: Response): Promise<void> {
     const result = await withConfigLock(redisClient, 'config:primary-processing-labels:lock', async () => {
       const { primary_processing_labels } = req.body;
-
       if (!Array.isArray(primary_processing_labels) || primary_processing_labels.length === 0) {
         return { status: 400, body: { error: 'primary_processing_labels must be a non-empty array' } };
       }
-
       const labels = primary_processing_labels.map(l => String(l).trim()).filter(l => l.length > 0);
       if (labels.length === 0) {
         return { status: 400, body: { error: 'At least one valid label is required' } };
       }
-
       await configManager.savePrimaryProcessingLabels(labels);
-
-      // Publish config update event
       await publishConfigUpdate('primary_processing_labels_update');
-
       return { status: 200, body: { success: true, primary_processing_labels: labels } };
     });
-
     res.status(result.status).json(result.body);
   }
 
   async function getAgents(_req: Request, res: Response): Promise<void> {
     try {
-      const agents = await configManager.loadAgents();
-      res.json({ agents });
+      res.json({ agents: await configManager.loadAgents() });
     } catch (error) {
       console.error('Error in /api/config/agents GET:', error);
       res.status(500).json({ error: 'Failed to load agents configuration' });
@@ -253,50 +232,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     const result = await withConfigLock(redisClient, 'config:agents:lock', async () => {
       const { agents } = req.body;
 
-      if (!Array.isArray(agents)) {
-        return { status: 400, body: { error: 'agents must be an array' } };
+      const validationError = validateAgentsConfig(agents);
+      if (validationError) {
+        return { status: 400, body: { error: validationError } };
       }
 
-      // Validate each agent configuration
-      const aliasRegex = /^[a-z0-9-]+$/;
-      const seenAliases = new Set<string>();
-      const validTypes = ['claude', 'codex', 'gemini'];
-
-      for (const agent of agents) {
-        // Validate required fields
-        if (!agent.id || typeof agent.id !== 'string') {
-          return { status: 400, body: { error: `Agent missing required 'id' field` } };
-        }
-        if (!agent.type || !validTypes.includes(agent.type)) {
-          return { status: 400, body: { error: `Agent '${agent.id}' has invalid type. Must be one of: ${validTypes.join(', ')}` } };
-        }
-        if (!agent.alias || typeof agent.alias !== 'string') {
-          return { status: 400, body: { error: `Agent '${agent.id}' missing required 'alias' field` } };
-        }
-        if (!aliasRegex.test(agent.alias)) {
-          return { status: 400, body: { error: `Agent '${agent.id}' has invalid alias '${agent.alias}'. Must match pattern ^[a-z0-9-]+$` } };
-        }
-        if (typeof agent.enabled !== 'boolean') {
-          return { status: 400, body: { error: `Agent '${agent.id}' missing required 'enabled' field` } };
-        }
-        if (!agent.dockerImage || typeof agent.dockerImage !== 'string') {
-          return { status: 400, body: { error: `Agent '${agent.id}' missing required 'dockerImage' field` } };
-        }
-        if (!agent.configPath || typeof agent.configPath !== 'string') {
-          return { status: 400, body: { error: `Agent '${agent.id}' missing required 'configPath' field` } };
-        }
-        if (!Array.isArray(agent.supportedModels)) {
-          return { status: 400, body: { error: `Agent '${agent.id}' missing required 'supportedModels' field` } };
-        }
-
-        // Check for duplicate aliases
-        if (seenAliases.has(agent.alias)) {
-          return { status: 400, body: { error: `Duplicate agent alias '${agent.alias}' found` } };
-        }
-        seenAliases.add(agent.alias);
-      }
-
-      // Save the agents configuration
       await configManager.saveAgents(agents);
 
       // Refresh the AgentRegistry to apply changes immediately
@@ -305,22 +245,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         await registry.refresh();
       } catch (refreshError) {
         console.error('Warning: Failed to refresh agent registry:', refreshError);
-        // Don't fail the request, the config was saved successfully
       }
 
-      // Publish config update event so daemon also refreshes
       await publishConfigUpdate('agents_update');
-
-      const activity = {
-        id: `activity-${Date.now()}-agents-update`,
-        type: 'agents_updated',
-        timestamp: new Date().toISOString(),
-        user: req.user?.username,
-        description: `Updated agents configuration (${agents.length} agents)`,
-        status: 'success'
-      };
-      await redisClient.lPush('system:activity:log', JSON.stringify(activity));
-      await redisClient.lTrim('system:activity:log', 0, 999);
+      await logActivityHelper(`Updated agents configuration (${agents.length} agents)`, 'agents-update', 'agents_updated', req.user?.username);
 
       return { status: 200, body: { success: true, agents } };
     });
@@ -343,25 +271,15 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function postSummarizationSettings(req: Request, res: Response): Promise<void> {
     const result = await withConfigLock(redisClient, 'config:summarization:lock', async () => {
+      const validationError = validateSummarizationInput(req.body);
+      if (validationError) {
+        return { status: 400, body: { error: validationError } };
+      }
+
       const { enabled, agent_alias, custom_prompt } = req.body;
-
-      if (typeof enabled !== 'boolean') {
-        return { status: 400, body: { error: 'enabled must be a boolean' } };
-      }
-
-      if (agent_alias !== undefined && typeof agent_alias !== 'string') {
-        return { status: 400, body: { error: 'agent_alias must be a string' } };
-      }
-
-      if (custom_prompt !== undefined && typeof custom_prompt !== 'string') {
-        return { status: 400, body: { error: 'custom_prompt must be a string' } };
-      }
-
-      // Load current settings to detect if custom_prompt changed
       const currentSettings = await configManager.loadSummarizationSettings();
       const newCustomPrompt = custom_prompt || '';
-      const oldCustomPrompt = currentSettings.custom_prompt || '';
-      const promptChanged = newCustomPrompt !== oldCustomPrompt;
+      const promptChanged = newCustomPrompt !== (currentSettings.custom_prompt || '');
 
       const settings = {
         enabled,
@@ -370,86 +288,46 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       };
 
       await configManager.saveSummarizationSettings(settings);
-
-      // Publish config update event
       await publishConfigUpdate('summarization_settings_update');
 
-      // If custom prompt changed and summarization is enabled with an agent, trigger resummarization for all repositories
+      // Trigger resummarization if prompt changed and summarization is enabled
       let repositoriesQueued = 0;
       if (promptChanged && enabled && agent_alias) {
-        try {
-          const monitoredRepos = await configManager.loadMonitoredRepos();
-          const octokit = await getAuthenticatedOctokit();
-          const { token } = await octokit.auth({ type: "installation" }) as { token: string };
-
-          for (const repoFullName of monitoredRepos) {
-            const [owner, name] = repoFullName.split('/');
-
-            // Check if job already queued
-            const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed']);
-            const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repoFullName);
-            if (alreadyQueued) {
-              continue;
-            }
-
-            // Ensure repo is cloned
-            const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
-            let repoPath: string;
-            try {
-              repoPath = await ensureRepoCloned(repoUrl, owner, name, token);
-            } catch {
-              console.error(`Failed to clone repository ${repoFullName} for resummarization`);
-              continue;
-            }
-
-            // Queue the indexing job with fullReindex to apply new prompt
-            const correlationId = generateCorrelationId();
-            await indexingQueue.add(
-              'indexRepository',
-              {
-                repository: repoFullName,
-                repoPath,
-                correlationId,
-                priority: 'normal',
-                fullReindex: true
-              },
-              {
-                jobId: `index-${repoFullName.replace('/', '-')}-prompt-change-${Date.now()}`,
-                priority: 2 // Lower priority than manual triggers
-              }
-            );
-            repositoriesQueued++;
-          }
-        } catch (error) {
-          console.error('Error triggering resummarization for repositories:', error);
-        }
+        repositoriesQueued = await triggerResummarizationSafe();
       }
 
-      const activity = {
-        id: `activity-${Date.now()}-summarization-update`,
-        type: 'summarization_updated',
-        timestamp: new Date().toISOString(),
-        user: req.user?.username,
-        description: promptChanged && repositoriesQueued > 0
-          ? `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'}). Triggered resummarization for ${repositoriesQueued} repositories.`
-          : `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'})`,
-        status: 'success'
-      };
-      await redisClient.lPush('system:activity:log', JSON.stringify(activity));
-      await redisClient.lTrim('system:activity:log', 0, 999);
+      const description = buildSummarizationDescription(enabled, agent_alias, promptChanged, repositoriesQueued);
+      await logActivityHelper(description, 'summarization-update', 'summarization_updated', req.user?.username);
 
       return {
         status: 200,
-        body: {
-          success: true,
-          ...settings,
-          promptChanged,
-          repositoriesQueued
-        }
+        body: { success: true, ...settings, promptChanged, repositoriesQueued }
       };
     });
 
     res.status(result.status).json(result.body);
+  }
+
+  function validateSummarizationInput(body: Record<string, unknown>): string | null {
+    const { enabled, agent_alias, custom_prompt } = body;
+    if (typeof enabled !== 'boolean') return 'enabled must be a boolean';
+    if (agent_alias !== undefined && typeof agent_alias !== 'string') return 'agent_alias must be a string';
+    if (custom_prompt !== undefined && typeof custom_prompt !== 'string') return 'custom_prompt must be a string';
+    return null;
+  }
+
+  async function triggerResummarizationSafe(): Promise<number> {
+    try {
+      return await queueResummarizationForAllRepos();
+    } catch (error) {
+      console.error('Error triggering resummarization for repositories:', error);
+      return 0;
+    }
+  }
+
+  function buildSummarizationDescription(enabled: boolean, agent_alias: string, promptChanged: boolean, repositoriesQueued: number): string {
+    const base = `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'})`;
+    return promptChanged && repositoriesQueued > 0 ? `${base}. Triggered resummarization for ${repositoriesQueued} repositories.` : base;
   }
 
   async function getRepositoriesIndexingStatus(_req: Request, res: Response): Promise<void> {
@@ -471,85 +349,24 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return;
       }
 
-      // Validate repository format
       if (!repository.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/)) {
         res.status(400).json({ error: 'Invalid repository format. Expected "owner/repo"' });
         return;
       }
 
-      // Check if summarization is enabled
-      const settings = await configManager.loadSummarizationSettings();
-      if (!settings.enabled) {
-        res.status(400).json({ error: 'Summarization is not enabled. Enable it in settings first.' });
+      const result = await queueIndexingJob(repository, !!fullReindex);
+      if (!result.success) {
+        const statusCode = result.error?.includes('already queued') ? 409 : 400;
+        res.status(statusCode).json({ error: result.error });
         return;
       }
 
-      if (!settings.agent_alias) {
-        res.status(400).json({ error: 'No agent configured for summarization. Configure one in settings first.' });
-        return;
-      }
-
-      // Check if job already queued
-      const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed']);
-      const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repository);
-
-      if (alreadyQueued) {
-        res.status(409).json({ error: 'Indexing job already queued for this repository' });
-        return;
-      }
-
-      // Ensure repo is cloned
-      const [owner, name] = repository.split('/');
-
-      // Get auth token for cloning
-      const octokit = await getAuthenticatedOctokit();
-      const { token } = await octokit.auth({ type: "installation" }) as { token: string };
-      const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
-
-      let repoPath: string;
-      try {
-        repoPath = await ensureRepoCloned(repoUrl, owner, name, token);
-      } catch (cloneError) {
-        res.status(500).json({ error: `Failed to clone repository: ${(cloneError as Error).message}` });
-        return;
-      }
-
-      // Queue the indexing job
-      const correlationId = generateCorrelationId();
-      const job = await indexingQueue.add(
-        'indexRepository',
-        {
-          repository,
-          repoPath,
-          correlationId,
-          priority: 'high',
-          fullReindex: !!fullReindex
-        },
-        {
-          jobId: `index-${repository.replace('/', '-')}-${Date.now()}`,
-          priority: 1 // High priority for manual triggers
-        }
+      await logActivityHelper(
+        `Triggered ${fullReindex ? 'full re-' : ''}indexing for ${repository}`,
+        'indexing-trigger', 'indexing_triggered', req.user?.username
       );
 
-      // Log activity
-      const activity = {
-        id: `activity-${Date.now()}-indexing-trigger`,
-        type: 'indexing_triggered',
-        timestamp: new Date().toISOString(),
-        user: req.user?.username,
-        description: `Triggered ${fullReindex ? 'full re-' : ''}indexing for ${repository}`,
-        status: 'success'
-      };
-      await redisClient.lPush('system:activity:log', JSON.stringify(activity));
-      await redisClient.lTrim('system:activity:log', 0, 999);
-
-      res.json({
-        success: true,
-        jobId: job.id,
-        correlationId,
-        repository,
-        fullReindex: !!fullReindex
-      });
+      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: !!fullReindex });
     } catch (error) {
       console.error('Error in /api/config/repos/trigger-indexing POST:', error);
       res.status(500).json({ error: 'Failed to trigger indexing' });
