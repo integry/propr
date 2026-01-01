@@ -142,11 +142,13 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
           this.on('t.task_id', '=', 'h.task_id')
               .andOn('h.timestamp', '=', 'latest.max_ts');
         })
-        .select('t.repository')
-        .count('* as total')
-        .sum(db.raw("CASE WHEN h.state = 'completed' THEN 1 ELSE 0 END as completed"))
-        .sum(db.raw("CASE WHEN h.state = 'failed' THEN 1 ELSE 0 END as failed"))
-        .sum(db.raw("CASE WHEN h.state NOT IN ('completed', 'failed') THEN 1 ELSE 0 END as in_progress"))
+        .select(
+          't.repository',
+          db.raw('count(*) as total'),
+          db.raw("sum(CASE WHEN h.state = 'completed' THEN 1 ELSE 0 END) as completed"),
+          db.raw("sum(CASE WHEN h.state = 'failed' THEN 1 ELSE 0 END) as failed"),
+          db.raw("sum(CASE WHEN h.state NOT IN ('completed', 'failed') THEN 1 ELSE 0 END) as in_progress")
+        )
         .groupBy('t.repository')
         .orderBy('total', 'desc')
         .limit(20) as unknown as RepositoryStatsRow[];
