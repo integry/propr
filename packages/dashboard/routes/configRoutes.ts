@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@gitfix/core';
 import { AgentRegistry, DEFAULT_INSTRUCTIONS } from '@gitfix/core';
-import { withConfigLock, queueResummarizationForAllRepos, validateAgentsConfig, queueIndexingJob } from './configHelpers.js';
+import { withConfigLock, queueResummarizationForAllRepos, validateAgentsConfig, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex } from './configHelpers.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -290,18 +290,19 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       await configManager.saveSummarizationSettings(settings);
       await publishConfigUpdate('summarization_settings_update');
 
-      // Trigger resummarization if prompt changed and summarization is enabled
-      let repositoriesQueued = 0;
+      // Schedule delayed resummarization if prompt changed and summarization is enabled
+      // The reindex will occur after 10 minutes unless cancelled by another prompt change or manual trigger
+      let reindexScheduled = false;
       if (promptChanged && enabled && agent_alias) {
-        repositoriesQueued = await triggerResummarizationSafe();
+        reindexScheduled = await scheduleDelayedReindex(redisClient);
       }
 
-      const description = buildSummarizationDescription(enabled, agent_alias, promptChanged, repositoriesQueued);
+      const description = buildSummarizationDescription(enabled, agent_alias, promptChanged, reindexScheduled);
       await logActivityHelper(description, 'summarization-update', 'summarization_updated', req.user?.username);
 
       return {
         status: 200,
-        body: { success: true, ...settings, promptChanged, repositoriesQueued }
+        body: { success: true, ...settings, promptChanged, reindexScheduled }
       };
     });
 
@@ -325,9 +326,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
   }
 
-  function buildSummarizationDescription(enabled: boolean, agent_alias: string, promptChanged: boolean, repositoriesQueued: number): string {
+  function buildSummarizationDescription(enabled: boolean, agent_alias: string, promptChanged: boolean, reindexScheduled: boolean): string {
     const base = `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'})`;
-    return promptChanged && repositoriesQueued > 0 ? `${base}. Triggered resummarization for ${repositoriesQueued} repositories.` : base;
+    return promptChanged && reindexScheduled ? `${base}. Scheduled reindexing in 10 minutes.` : base;
   }
 
   async function getRepositoriesIndexingStatus(_req: Request, res: Response): Promise<void> {
@@ -373,6 +374,37 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
   }
 
+  async function triggerReindexAll(req: Request, res: Response): Promise<void> {
+    try {
+      // Check if summarization is enabled
+      const settings = await configManager.loadSummarizationSettings();
+      if (!settings.enabled) {
+        res.status(400).json({ error: 'Summarization is not enabled. Enable it in settings first.' });
+        return;
+      }
+      if (!settings.agent_alias) {
+        res.status(400).json({ error: 'No agent configured for summarization. Configure one in settings first.' });
+        return;
+      }
+
+      // Cancel any scheduled delayed reindex
+      await cancelDelayedReindex(redisClient);
+
+      // Trigger immediate reindex for all repos
+      const repositoriesQueued = await triggerResummarizationSafe();
+
+      await logActivityHelper(
+        `Manually triggered reindexing for ${repositoriesQueued} repositories`,
+        'reindex-all-trigger', 'reindex_all_triggered', req.user?.username
+      );
+
+      res.json({ success: true, repositoriesQueued });
+    } catch (error) {
+      console.error('Error in /api/config/summarization/reindex-all POST:', error);
+      res.status(500).json({ error: 'Failed to trigger reindexing' });
+    }
+  }
+
   return {
     getFollowupKeywords,
     postFollowupKeywords,
@@ -391,6 +423,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     getSummarizationSettings,
     postSummarizationSettings,
     getRepositoriesIndexingStatus,
-    triggerIndexing
+    triggerIndexing,
+    triggerReindexAll
   };
 }

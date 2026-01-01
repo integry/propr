@@ -183,6 +183,70 @@ export interface QueueIndexingResult {
   correlationId?: string;
 }
 
+// Redis key for storing the scheduled reindex timestamp
+const DELAYED_REINDEX_KEY = 'config:summarization:delayed-reindex';
+// Delay before automatic reindex after prompt change (10 minutes in milliseconds)
+const REINDEX_DELAY_MS = 10 * 60 * 1000;
+
+/**
+ * Schedule a delayed reindex for all repositories.
+ * If a reindex is already scheduled, it will be replaced with a new one.
+ * Returns true if scheduled successfully.
+ */
+export async function scheduleDelayedReindex(redisClient: RedisClientType): Promise<boolean> {
+  try {
+    const scheduledTime = Date.now() + REINDEX_DELAY_MS;
+    // Store the scheduled time in Redis with TTL slightly longer than delay
+    await redisClient.set(DELAYED_REINDEX_KEY, scheduledTime.toString(), {
+      EX: Math.ceil(REINDEX_DELAY_MS / 1000) + 60 // TTL = delay + 1 minute buffer
+    });
+    console.log(`Scheduled delayed reindex for ${new Date(scheduledTime).toISOString()}`);
+    return true;
+  } catch (error) {
+    console.error('Error scheduling delayed reindex:', error);
+    return false;
+  }
+}
+
+/**
+ * Cancel any scheduled delayed reindex.
+ */
+export async function cancelDelayedReindex(redisClient: RedisClientType): Promise<void> {
+  try {
+    await redisClient.del(DELAYED_REINDEX_KEY);
+    console.log('Cancelled scheduled delayed reindex');
+  } catch (error) {
+    console.error('Error cancelling delayed reindex:', error);
+  }
+}
+
+/**
+ * Check if there's a scheduled delayed reindex and execute it if the time has passed.
+ * This should be called periodically by a background job.
+ */
+export async function checkAndExecuteDelayedReindex(redisClient: RedisClientType): Promise<boolean> {
+  try {
+    const scheduledTimeStr = await redisClient.get(DELAYED_REINDEX_KEY);
+    if (!scheduledTimeStr) {
+      return false;
+    }
+
+    const scheduledTime = parseInt(scheduledTimeStr, 10);
+    if (Date.now() >= scheduledTime) {
+      // Time to execute the reindex
+      await redisClient.del(DELAYED_REINDEX_KEY);
+      const count = await queueResummarizationForAllRepos();
+      console.log(`Executed delayed reindex for ${count} repositories`);
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    console.error('Error checking/executing delayed reindex:', error);
+    return false;
+  }
+}
+
 /**
  * Queue an indexing job for a single repository.
  * Validates settings, checks for existing jobs, and clones if needed.

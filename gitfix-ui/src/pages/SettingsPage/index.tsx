@@ -11,6 +11,7 @@ import {
   getAgents,
   getSummarizationSettings,
   updateSummarizationSettings,
+  triggerReindexAll,
   AgentConfig,
   SummarizationSettings
 } from '../../api/gitfixApi';
@@ -56,6 +57,8 @@ const SettingsPage: React.FC = () => {
     enabled: false,
     agent_alias: ''
   });
+
+  const [isReindexing, setIsReindexing] = useState(false);
 
   // Load all data with Promise.all
   useEffect(() => {
@@ -298,6 +301,27 @@ const SettingsPage: React.FC = () => {
     }
   }, []);
 
+  // Handle manual reindex trigger
+  const handleReindexAll = useCallback(async () => {
+    setIsReindexing(true);
+    setGlobalError(null);
+    try {
+      const result = await triggerReindexAll();
+      if (result.success) {
+        setSaveStatus('saved');
+        if (saveTimeoutRef.current) {
+          clearTimeout(saveTimeoutRef.current);
+        }
+        saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
+      }
+    } catch (err) {
+      setGlobalError((err as Error).message || 'Failed to trigger reindexing');
+      setSaveStatus('error');
+    } finally {
+      setIsReindexing(false);
+    }
+  }, []);
+
   if (loading) {
     return (
       <div className="p-8 text-center text-gray-500">
@@ -356,6 +380,8 @@ const SettingsPage: React.FC = () => {
             settings={summarizationSettings}
             agents={agents}
             onSettingsChange={handleSummarizationChange}
+            onReindexAll={handleReindexAll}
+            isReindexing={isReindexing}
           />
 
           <TagListSection

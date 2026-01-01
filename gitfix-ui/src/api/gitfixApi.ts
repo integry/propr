@@ -405,6 +405,21 @@ export const updateSummarizationSettings = async (settings: SummarizationSetting
   });
   await handleApiResponse(response);
 };
+
+export interface TriggerReindexAllResponse {
+  success: boolean;
+  repositoriesQueued: number;
+}
+
+export const triggerReindexAll = async (): Promise<TriggerReindexAllResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/summarization/reindex-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
 export * from './plannerApi';
 export * from './taskStatsApi';
 export * from './agentChatApi';
