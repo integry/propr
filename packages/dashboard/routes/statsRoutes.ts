@@ -261,10 +261,32 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
 
       // Calculate average iterations (tasks per issue for issues with multiple tasks)
       let prIterationsAvg = 0;
+      let totalFollowups = 0;
       if (prIterations.length > 0) {
         const totalIterations = prIterations.reduce((sum, row) => sum + Number(row.task_count), 0);
         prIterationsAvg = Number((totalIterations / prIterations.length).toFixed(1));
+        // Total follow-ups = total iterations minus the initial task for each issue
+        totalFollowups = totalIterations - prIterations.length;
       }
+
+      // Count merged PRs (tasks that have pr_number and completed state)
+      const mergedPrs = await db('tasks as t')
+        .join(
+          db('task_history')
+            .select('task_id')
+            .max('timestamp as max_ts')
+            .groupBy('task_id')
+            .as('latest'),
+          't.task_id', 'latest.task_id'
+        )
+        .join('task_history as h', function(this: Knex.JoinClause) {
+          this.on('t.task_id', '=', 'h.task_id')
+              .andOn('h.timestamp', '=', 'latest.max_ts');
+        })
+        .countDistinct('t.pr_number as count')
+        .whereNotNull('t.pr_number')
+        .andWhere('h.state', 'completed')
+        .first() as unknown as CountRow | undefined;
 
       // 5. Repos Indexed - count repositories with last_indexed_at not null
       const repoStats = await db('repositories')
@@ -282,7 +304,9 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
         tasks: {
           completed: Number(taskStats?.completed || 0),
           planned: Number(taskStats?.planned || 0),
-          pr_iterations_avg: prIterationsAvg
+          pr_iterations_avg: prIterationsAvg,
+          merged_prs: Number(mergedPrs?.count || 0),
+          total_followups: totalFollowups
         },
         usage: {
           total_tokens: totalTokens,
