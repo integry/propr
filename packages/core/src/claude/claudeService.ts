@@ -261,7 +261,7 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
     try {
         const analysisPrompt = `${prompt}
 
-CRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`;
+CRITICAL: Do not modify any files. Do not run any commands. Only provide direct output.`;
 
         const claudeResult = await executeClaudeCode({
             worktreePath: worktreePath,
