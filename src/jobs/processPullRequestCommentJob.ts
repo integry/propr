@@ -337,7 +337,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         repoName,
         stateManager,
         correlatedLogger,
-        githubToken: githubToken.token
+        githubToken: githubToken.token,
         onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolution.model, stateManager, correlatedLogger, redisClient }),
         onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
         taskId
