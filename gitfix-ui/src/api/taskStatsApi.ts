@@ -68,6 +68,8 @@ export interface StatsOverviewTasks {
   completed: number;
   planned: number;
   pr_iterations_avg: number;
+  merged_prs: number;
+  total_followups: number;
 }
 
 export interface StatsOverviewUsage {

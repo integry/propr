@@ -104,9 +104,10 @@ const RepositoryReport: React.FC = () => {
           <p className="text-3xl font-bold text-orange-400">
             {metrics.tasks.pr_iterations_avg}
           </p>
-          <p className="text-xs text-gray-500">
-            Follow-up comments
-          </p>
+          <div className="flex justify-between text-xs text-gray-500 mt-1">
+            <span>{metrics.tasks.merged_prs} Merged PRs</span>
+            <span>{metrics.tasks.total_followups} Follow-ups</span>
+          </div>
         </div>
 
         {/* Indexed Repos */}
