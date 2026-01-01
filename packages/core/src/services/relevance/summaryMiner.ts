@@ -176,7 +176,8 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       files: filesToProcess,
       agent,
       log: correlatedLogger,
-      modelOverride
+      modelOverride,
+      customPrompt: settings.custom_prompt
     });
 
     // Phase C: Directory Aggregation

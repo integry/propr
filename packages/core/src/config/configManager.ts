@@ -251,11 +251,13 @@ export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
 export interface SummarizationSettings {
     enabled: boolean;
     agent_alias: string;
+    custom_prompt?: string;
 }
 
 const DEFAULT_SUMMARIZATION_SETTINGS: SummarizationSettings = {
     enabled: false,
-    agent_alias: ''
+    agent_alias: '',
+    custom_prompt: ''
 };
 
 /**

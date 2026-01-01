@@ -78,6 +78,13 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
     });
   };
 
+  const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    onSettingsChange({
+      ...settings,
+      custom_prompt: e.target.value
+    });
+  };
+
   return (
     <div className={`bg-white shadow rounded-lg p-6 ${className || ''}`}>
       <h3 className="text-gray-900 text-lg font-medium mb-4">Knowledge Base</h3>
@@ -150,6 +157,25 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
                 {' '}models are optimized for speed and cost-effectiveness.
               </span>
             )}
+          </p>
+        </div>
+
+        {/* Custom Prompt */}
+        <div className={settings.enabled ? '' : 'opacity-50 pointer-events-none'}>
+          <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="custom_prompt">
+            Custom Summary Prompt (Optional)
+          </label>
+          <textarea
+            id="custom_prompt"
+            value={settings.custom_prompt || ''}
+            onChange={handlePromptChange}
+            rows={3}
+            className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border disabled:bg-gray-100 disabled:cursor-not-allowed"
+            placeholder="Override the default summarization instructions. E.g., 'Focus on security vulnerabilities and data flow...'"
+            disabled={!settings.enabled}
+          />
+          <p className="mt-1 text-sm text-gray-500">
+            Define specific goals for the AI when summarizing files. The output format is automatically enforced.
           </p>
         </div>
 

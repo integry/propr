@@ -340,7 +340,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function postSummarizationSettings(req: Request, res: Response): Promise<void> {
     const result = await withConfigLock(redisClient, 'config:summarization:lock', async () => {
-      const { enabled, agent_alias } = req.body;
+      const { enabled, agent_alias, custom_prompt } = req.body;
 
       if (typeof enabled !== 'boolean') {
         return { status: 400, body: { error: 'enabled must be a boolean' } };
@@ -350,9 +350,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'agent_alias must be a string' } };
       }
 
+      if (custom_prompt !== undefined && typeof custom_prompt !== 'string') {
+        return { status: 400, body: { error: 'custom_prompt must be a string' } };
+      }
+
       const settings = {
         enabled,
-        agent_alias: agent_alias || ''
+        agent_alias: agent_alias || '',
+        custom_prompt: custom_prompt || ''
       };
 
       await configManager.saveSummarizationSettings(settings);

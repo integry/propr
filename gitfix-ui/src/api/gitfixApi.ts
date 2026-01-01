@@ -384,6 +384,7 @@ export const revertCommit = async (params: RevertParams): Promise<void> => {
 export interface SummarizationSettings {
   enabled: boolean;
   agent_alias: string;
+  custom_prompt?: string;
 }
 
 export const getSummarizationSettings = async (): Promise<SummarizationSettings> => {
