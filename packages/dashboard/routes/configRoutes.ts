@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@gitfix/core';
-import { AgentRegistry, indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit } from '@gitfix/core';
+import { AgentRegistry, indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, DEFAULT_INSTRUCTIONS } from '@gitfix/core';
 import type { IndexingJobData } from '@gitfix/core';
 import { withConfigLock } from './configHelpers.js';
 
@@ -331,7 +331,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   async function getSummarizationSettings(_req: Request, res: Response): Promise<void> {
     try {
       const settings = await configManager.loadSummarizationSettings();
-      res.json(settings);
+      res.json({
+        ...settings,
+        default_prompt: DEFAULT_INSTRUCTIONS
+      });
     } catch (error) {
       console.error('Error in /api/config/summarization GET:', error);
       res.status(500).json({ error: 'Failed to load summarization settings' });

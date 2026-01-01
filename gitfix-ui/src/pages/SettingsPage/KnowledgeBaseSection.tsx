@@ -167,11 +167,11 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
           </label>
           <textarea
             id="custom_prompt"
-            value={settings.custom_prompt || ''}
+            value={settings.custom_prompt || settings.default_prompt || ''}
             onChange={handlePromptChange}
-            rows={3}
+            rows={5}
             className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border disabled:bg-gray-100 disabled:cursor-not-allowed"
-            placeholder="Override the default summarization instructions. E.g., 'Focus on security vulnerabilities and data flow...'"
+            placeholder="Enter custom summarization instructions..."
             disabled={!settings.enabled}
           />
           <p className="mt-1 text-sm text-gray-500">

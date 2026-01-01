@@ -40,8 +40,8 @@ const BATCH_TOKEN_RATIO = 0.8; // Use 80% of max tokens for batch
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
 const MAX_FILE_SIZE_BYTES = 100 * 1024; // 100KB max file size
 
-// Default instructions for the summarization prompt
-const DEFAULT_INSTRUCTIONS = `You are a code expert. Analyze the following source code files.
+// Default instructions for the summarization prompt (exported for UI display)
+export const DEFAULT_INSTRUCTIONS = `You are a code expert. Analyze the following source code files.
 For each file, provide a summary (3-4 sentences) covering:
 1. Primary purpose of the file
 2. Key functions, classes, or exports it provides
