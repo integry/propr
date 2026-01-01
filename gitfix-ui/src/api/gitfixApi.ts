@@ -398,3 +398,4 @@ export * from './plannerApi';
 export * from './taskStatsApi';
 export * from './agentChatApi';
 export * from './repoIndexingApi';
+export * from './summaryApi';
