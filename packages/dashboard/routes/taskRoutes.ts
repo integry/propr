@@ -14,9 +14,9 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
   async function getTasks(req: Request, res: Response): Promise<void> {
     try {
-      const { status = 'all', limit = '50', offset = '0', repository = 'all' } = req.query as Record<string, string>;
+      const { status = 'all', limit = '50', offset = '0', repository = 'all', search = '' } = req.query as Record<string, string>;
 
-      const result = await getTasksFromDb({ db, status, repository, limit: parseInt(limit), offset: parseInt(offset) });
+      const result = await getTasksFromDb({ db, status, repository, limit: parseInt(limit), offset: parseInt(offset), search });
       res.json(result);
     } catch (error) {
       console.error('Error in /api/tasks:', error);
@@ -168,12 +168,13 @@ interface TaskQuery {
   repository: string;
   limit: number;
   offset: number;
+  search?: string;
 }
 
 async function getTasksFromDb(
   query: TaskQuery
 ): Promise<{ tasks: unknown[]; total: number; offset: number; limit: number }> {
-  const { db, status, repository, limit, offset } = query;
+  const { db, status, repository, limit, offset, search } = query;
   const latestHistorySubquery = db('task_history')
     .select(
       'task_id',
@@ -215,6 +216,16 @@ async function getTasksFromDb(
 
   if (repository && repository !== 'all') {
     baseQuery.where('t.repository', repository);
+  }
+
+  // Search filter: matches repository, issue_number (cast to text), or initial_job_data JSON
+  if (search && search.trim() !== '') {
+    const searchTerm = `%${search.trim()}%`;
+    baseQuery.where(function() {
+      this.where('t.repository', 'like', searchTerm)
+        .orWhere(db.raw('CAST(t.issue_number AS TEXT)'), 'like', searchTerm)
+        .orWhere('t.initial_job_data', 'like', searchTerm);
+    });
   }
 
   const totalResult = await baseQuery.clone().count('* as total').first();

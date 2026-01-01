@@ -10,3 +10,6 @@ export { createGitHubRoutes } from './githubRoutes.js';
 export { createLLMMetricsRoutes } from './llmMetricsRoutes.js';
 export { createPlannerRoutes, attachmentUpload } from './plannerRoutes.js';
 export { createRelevanceRoutes } from './relevanceRoutes.js';
+export { createAgentRoutes } from './agentRoutes.js';
+export { createStatsRoutes } from './statsRoutes.js';
+export { createSummaryBrowserRoutes } from './summaryBrowserRoutes.js';

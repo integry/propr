@@ -14,7 +14,8 @@ import {
     initializeWebhookHandler,
     handleCommentDeleted,
     handleCommentEdited,
-    processCommentEvent
+    processCommentEvent,
+    AgentRegistry
 } from '@gitfix/core';
 import type { CommentPayload, CommentEventConfig, CommentEventType } from '@gitfix/core';
 import { logger } from '@gitfix/core';
@@ -55,6 +56,9 @@ const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel()
 const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
 const ENABLE_WEBHOOKS = process.env.ENABLE_GITHUB_WEBHOOKS === 'true';
+
+// Redis channel for real-time config update notifications
+const CONFIG_EVENT_CHANNEL = 'system:config:events';
 
 function getCommentConfig(): CommentEventConfig {
     return {
@@ -184,6 +188,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const GITHUB_BOT_USERNAME = getBotUsername();
     const GITHUB_USER_WHITELIST = getUserWhitelist();
 
+    // Define safePoll function for polling mode (used for both regular polling and on-demand config updates)
+    const safePoll = withErrorHandling(pollForIssues, 'daemon polling');
+
     if (ENABLE_WEBHOOKS) {
         logger.info({
             repositories: repos,
@@ -224,7 +231,6 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             resetPerformed: !!options.reset
         }, 'GitHub Issue Detection Daemon starting in polling mode...');
 
-        const safePoll = withErrorHandling(pollForIssues, 'daemon polling');
         safePoll();
 
         intervalId = setInterval(safePoll, POLLING_INTERVAL_MS);
@@ -232,11 +238,70 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
 
     const configReloadInterval = setInterval(reloadConfigs, 5 * 60 * 1000);
 
+    // --- Real-time Config Subscription Setup ---
+    // Create a dedicated Redis client for subscription (subscriber clients cannot run other commands)
+    const subscriberRedis = new Redis({
+        host: process.env.REDIS_HOST || '127.0.0.1',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        retryStrategy: (times: number) => Math.min(times * 50, 2000)
+    });
+
+    // Subscribe to config update events
+    subscriberRedis.subscribe(CONFIG_EVENT_CHANNEL, (err) => {
+        if (err) {
+            logger.error({ error: err.message }, 'Failed to subscribe to config events channel');
+        } else {
+            logger.info({ channel: CONFIG_EVENT_CHANNEL }, 'Subscribed to config update events');
+        }
+    });
+
+    // Handle incoming config update messages
+    subscriberRedis.on('message', async (channel, message) => {
+        if (channel === CONFIG_EVENT_CHANNEL) {
+            try {
+                const event = JSON.parse(message);
+                logger.info({ event }, 'Received config update event, reloading configs...');
+
+                // 1. Reload base configs (repos, settings, tags, etc.)
+                await reloadConfigs();
+
+                // 2. Handle specific update types
+                if (event.subtype === 'agents_update') {
+                    logger.info('Refreshing AgentRegistry...');
+                    try {
+                        await AgentRegistry.getInstance().refresh();
+                    } catch (agentError) {
+                        const err = agentError as Error;
+                        logger.error({ error: err.message }, 'Failed to refresh AgentRegistry');
+                    }
+                }
+
+                // 3. If repos changed and we are in polling mode, trigger immediate poll
+                // This ensures new repos are picked up right away
+                if (event.subtype === 'repos_update' && !ENABLE_WEBHOOKS && intervalId) {
+                    logger.info('Repository configuration changed, triggering immediate poll...');
+
+                    // Reset the interval to avoid double-polling immediately
+                    clearInterval(intervalId);
+
+                    // Run poll immediately, then restore the interval
+                    safePoll().finally(() => {
+                        intervalId = setInterval(safePoll, POLLING_INTERVAL_MS);
+                    });
+                }
+            } catch (error) {
+                const err = error as Error;
+                logger.error({ error: err.message }, 'Error handling config update event');
+            }
+        }
+    });
+
     process.on('SIGINT', async () => {
         logger.info('Received SIGINT, shutting down gracefully...');
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
+        await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await redisClient.quit();
         await shutdownQueue();
@@ -248,6 +313,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
+        await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await redisClient.quit();
         await shutdownQueue();

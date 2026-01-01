@@ -1,5 +1,4 @@
-// API for fetching system data from backend 
-
+// API for fetching system data from backend
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 interface SystemStatus {
@@ -68,8 +67,18 @@ export const getQueueStats = async (): Promise<unknown> => {
   return response.json();
 };
 
-export const getTasks = async (status = 'all', limit = 50, offset = 0, repository = 'all'): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/tasks?status=${status}&limit=${limit}&offset=${offset}&repository=${repository}`, {
+export const getTasks = async (status = 'all', limit = 50, offset = 0, repository = 'all', search = ''): Promise<unknown> => {
+  // Use URLSearchParams for cleaner query construction
+  const params = new URLSearchParams({
+    status,
+    limit: limit.toString(),
+    offset: offset.toString(),
+    repository,
+  });
+
+  if (search) params.append('search', search);
+
+  const response = await fetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, {
     credentials: 'include'
   });
   await handleApiResponse(response);
@@ -385,20 +394,7 @@ export const updateSummarizationSettings = async (settings: SummarizationSetting
   });
   await handleApiResponse(response);
 };
-
-// Repository Indexing Status
-export interface RepositoryIndexingStatus {
-  full_name: string;
-  indexing_status: 'idle' | 'indexing' | 'completed' | 'failed';
-  last_indexed_at: string | null;
-}
-
-export const getRepositoriesIndexingStatus = async (): Promise<{ repositories: RepositoryIndexingStatus[] }> => {
-  const response = await fetch(`${API_BASE_URL}/api/config/repos/indexing-status`, {
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
 export * from './plannerApi';
+export * from './taskStatsApi';
+export * from './agentChatApi';
+export * from './repoIndexingApi';

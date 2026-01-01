@@ -14,6 +14,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
   const [filter, setFilter] = useState<string>('all');
   const [repoFilter, setRepoFilter] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [debouncedSearch, setDebouncedSearch] = useState<string>('');
 
   const [availableRepos, setAvailableRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState<boolean>(true);
@@ -41,6 +43,16 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     fetchRepos();
   }, []);
 
+  // Debounce search query
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setCurrentPage(0); // Reset page when search changes
+    }, 400); // 400ms debounce
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   useEffect(() => {
     const fetchTasks = async (loadConfig?: LoadConfig) => {
       try {
@@ -49,7 +61,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         // Fetch more tasks if we are doing grouping, as grouping reduces visible items
         // But for now respecting the limit passed to component to avoid breaking pagination logic entirely
         // Ideally pagination should be group-aware or fetch more to fill the page
-        const data = await getTasks(filter, tasksPerPage * 2, offset, repoFilter);
+        const data = await getTasks(filter, tasksPerPage * 2, offset, repoFilter, debouncedSearch);
         setTasks(data.tasks || []);
         setTotalTasks(data.total || 0);
       } catch (err) {
@@ -63,7 +75,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     fetchTasks({ setLoadingState: true });
     const interval = setInterval(() => fetchTasks({ setLoadingState: false }), 5000);
     return () => clearInterval(interval);
-  }, [filter, tasksPerPage, currentPage, repoFilter]);
+  }, [filter, tasksPerPage, currentPage, repoFilter, debouncedSearch]);
 
   const groupedTasks = useMemo(() => {
     const groups: Record<string, TaskGroup> = {};
@@ -147,6 +159,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         availableRepos={availableRepos}
         reposLoading={reposLoading}
         setCurrentPage={setCurrentPage}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
       />
 
       {tasks.length === 0 ? (
