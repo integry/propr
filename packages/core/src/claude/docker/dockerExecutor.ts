@@ -18,6 +18,7 @@ export interface DockerCommandOptions {
     stdinData?: string; // Data to pipe to stdin
     extraMounts?: string[]; // Additional volume mounts (e.g., ['/host/path:/container/path:rw'])
     extraEnvVars?: Record<string, string>; // Additional environment variables
+    taskId?: string; // Task ID for abort signal checking
 }
 
 interface JsonLineMessage {
@@ -32,13 +33,28 @@ interface JsonLineMessage {
 
 const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
 
+async function checkAbortSignal(taskId: string): Promise<boolean> {
+    try {
+        const Redis = await import('ioredis');
+        const redis = new Redis.default({
+            host: process.env.REDIS_HOST || 'redis',
+            port: parseInt(process.env.REDIS_PORT || '6379', 10)
+        });
+        const abortSignal = await redis.get(`worker:abort:${taskId}`);
+        await redis.quit();
+        return abortSignal !== null;
+    } catch {
+        return false;
+    }
+}
+
 export function executeDockerCommand(
     command: string,
     args: string[],
     options: DockerCommandOptions = {}
 ): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData } = options;
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId } = options;
 
         let executablePath: string = command;
         if (command === 'docker') {
@@ -92,6 +108,7 @@ export function executeDockerCommand(
         let stdout = '';
         let stderr = '';
         let timedOut = false;
+        let aborted = false;
         let sessionIdDetected = false;
         let containerIdDetected = false;
         const messageTimestamps = new Map<string, string>();
@@ -106,6 +123,24 @@ export function executeDockerCommand(
                 }
             }, 5000);
         }, timeout);
+
+        // Poll for abort signal if taskId is provided
+        let abortCheckInterval: ReturnType<typeof setInterval> | null = null;
+        if (taskId) {
+            abortCheckInterval = setInterval(async () => {
+                const shouldAbort = await checkAbortSignal(taskId);
+                if (shouldAbort && !aborted && !child.killed) {
+                    aborted = true;
+                    logger.info({ taskId }, 'Abort signal detected, terminating execution');
+                    child.kill('SIGTERM');
+                    setTimeout(() => {
+                        if (!child.killed) {
+                            child.kill('SIGKILL');
+                        }
+                    }, 5000);
+                }
+            }, 2000); // Check every 2 seconds
+        }
 
         if (command === 'docker' && args[0] === 'run' && onContainerId && worktreePath) {
             setTimeout(async () => {
@@ -168,9 +203,17 @@ export function executeDockerCommand(
 
         child.on('close', (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
+            if (abortCheckInterval) {
+                clearInterval(abortCheckInterval);
+            }
 
             if (timedOut) {
                 reject(new Error(`Command timed out after ${timeout}ms`));
+                return;
+            }
+
+            if (aborted) {
+                reject(new Error(`Execution aborted by user request`));
                 return;
             }
 
@@ -184,6 +227,9 @@ export function executeDockerCommand(
 
         child.on('error', (error: Error) => {
             clearTimeout(timeoutHandle);
+            if (abortCheckInterval) {
+                clearInterval(abortCheckInterval);
+            }
             reject(error);
         });
     });

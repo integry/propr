@@ -301,7 +301,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         githubToken: githubToken.token,
         branchName: state.worktreeInfo.branchName,
         onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolution.model, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallbackForPR(taskId, stateManager)
+        onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
+        taskId
     });
 
     // Convert to ClaudeCodeResponse for backwards compatibility

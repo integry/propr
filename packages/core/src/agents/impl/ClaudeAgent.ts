@@ -47,7 +47,8 @@ export class ClaudeAgent implements Agent {
             onSessionId,
             onContainerId,
             githubToken,
-            tools
+            tools,
+            taskId
         } = options;
 
         const startTime = Date.now();
@@ -98,7 +99,8 @@ export class ClaudeAgent implements Agent {
                 onSessionId,
                 onContainerId,
                 worktreePath,
-                stdinData: prompt // Pass prompt via stdin to avoid E2BIG
+                stdinData: prompt, // Pass prompt via stdin to avoid E2BIG
+                taskId
             });
 
             const executionTime = Date.now() - startTime;
