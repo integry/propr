@@ -175,7 +175,7 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
             disabled={!settings.enabled}
           />
           <p className="mt-1 text-sm text-gray-500">
-            Define specific goals for the AI when summarizing files. The output format is automatically enforced.
+            Define specific goals for the AI when summarizing files.
           </p>
         </div>
 
