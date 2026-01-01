@@ -250,27 +250,26 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
         }
       }
 
-      // 4. PR Iterations Average - for PR-related tasks, count how many tasks share the same issue
-      // This gives an indication of follow-up iterations
-      const prIterations = await db('tasks')
+      // 4. PR Iterations Average - count tasks per unique issue
+      const allIssueIterations = await db('tasks')
         .select('repository', 'issue_number')
         .count('* as task_count')
         .whereNotNull('issue_number')
-        .groupBy('repository', 'issue_number')
-        .having(db.raw('count(*) > 1')) as unknown as PrIterationRow[];
+        .groupBy('repository', 'issue_number') as unknown as PrIterationRow[];
 
-      // Calculate average iterations (tasks per issue for issues with multiple tasks)
+      // Calculate average iterations across ALL issues
       let prIterationsAvg = 0;
       let totalFollowups = 0;
-      if (prIterations.length > 0) {
-        const totalIterations = prIterations.reduce((sum, row) => sum + Number(row.task_count), 0);
-        prIterationsAvg = Number((totalIterations / prIterations.length).toFixed(1));
-        // Total follow-ups = total iterations minus the initial task for each issue
-        totalFollowups = totalIterations - prIterations.length;
+      if (allIssueIterations.length > 0) {
+        const totalTasks = allIssueIterations.reduce((sum, row) => sum + Number(row.task_count), 0);
+        const uniqueIssues = allIssueIterations.length;
+        prIterationsAvg = Number((totalTasks / uniqueIssues).toFixed(1));
+        // Total follow-ups = total tasks minus one initial task per issue
+        totalFollowups = totalTasks - uniqueIssues;
       }
 
-      // Count merged PRs (PR comment tasks that completed successfully)
-      const mergedPrs = await db('tasks as t')
+      // Count PRs created (completed tasks result in PRs being created)
+      const prsCreated = await db('tasks as t')
         .join(
           db('task_history')
             .select('task_id')
@@ -284,8 +283,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
               .andOn('h.timestamp', '=', 'latest.max_ts');
         })
         .countDistinct('t.issue_number as count')
-        .where('t.task_type', 'like', '%pr%')
-        .andWhere('h.state', 'completed')
+        .where('h.state', 'completed')
         .first() as unknown as CountRow | undefined;
 
       // 5. Repos Indexed - count repositories with last_indexed_at not null
@@ -305,7 +303,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
           completed: Number(taskStats?.completed || 0),
           planned: Number(taskStats?.planned || 0),
           pr_iterations_avg: prIterationsAvg,
-          merged_prs: Number(mergedPrs?.count || 0),
+          merged_prs: Number(prsCreated?.count || 0),
           total_followups: totalFollowups
         },
         usage: {

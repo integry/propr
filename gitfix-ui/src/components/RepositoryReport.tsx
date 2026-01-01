@@ -105,7 +105,7 @@ const RepositoryReport: React.FC = () => {
             {metrics.tasks.pr_iterations_avg}
           </p>
           <div className="flex justify-between text-xs text-gray-500 mt-1">
-            <span>{metrics.tasks.merged_prs} Merged PRs</span>
+            <span>{metrics.tasks.merged_prs} PRs Created</span>
             <span>{metrics.tasks.total_followups} Follow-ups</span>
           </div>
         </div>
