@@ -96,7 +96,7 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
   const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
   let repoPath: string;
   try {
-    repoPath = await ensureRepoCloned(repoUrl, owner, name, token);
+    repoPath = await ensureRepoCloned({ repoUrl, owner, repoName: name, authToken: token });
   } catch {
     console.error(`Failed to clone repository ${repoFullName} for resummarization`);
     return false;
@@ -276,7 +276,7 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
 
   let repoPath: string;
   try {
-    repoPath = await ensureRepoCloned(repoUrl, owner, name, token, baseBranch);
+    repoPath = await ensureRepoCloned({ repoUrl, owner, repoName: name, authToken: token, baseBranch });
   } catch (cloneError) {
     return { success: false, error: `Failed to clone repository: ${(cloneError as Error).message}` };
   }

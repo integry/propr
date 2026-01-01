@@ -302,7 +302,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting PR comment processing' });
     await ensureGitRepository(correlatedLogger);
-    state.localRepoPath = await ensureRepoCloned(repoUrl, repoOwner, repoName, githubToken.token);
+    state.localRepoPath = await ensureRepoCloned({ repoUrl, owner: repoOwner, repoName, authToken: githubToken.token });
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
     state.worktreeInfo = await createWorktreeFromExistingBranch(state.localRepoPath, branchName, { worktreeDirName: `pr-${pullRequestNumber}-followup-${timestamp}`, owner: repoOwner, repoName });

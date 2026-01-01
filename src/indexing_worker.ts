@@ -130,7 +130,7 @@ async function cloneRepositoryForIndexing(repoName: string): Promise<string> {
     const octokit = await getAuthenticatedOctokit();
     const { token } = await octokit.auth({ type: "installation" }) as { token: string };
     const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
-    return ensureRepoCloned(repoUrl, owner, name, token);
+    return ensureRepoCloned({ repoUrl, owner, repoName: name, authToken: token });
 }
 
 /**

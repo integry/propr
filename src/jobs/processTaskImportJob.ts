@@ -79,7 +79,7 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
         await ensureGitRepository(correlatedLogger);
 
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Cloning repository if needed' });
-        localRepoPath = await ensureRepoCloned(repoUrl, repoOwner, repoName, githubToken.token);
+        localRepoPath = await ensureRepoCloned({ repoUrl, owner: repoOwner, repoName, authToken: githubToken.token });
 
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Creating worktree for analysis' });
 

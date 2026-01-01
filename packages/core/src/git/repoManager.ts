@@ -23,7 +23,7 @@ async function getRepoPath(owner: string, repoName: string): Promise<string> {
     return path.join(CLONES_BASE_PATH, owner, repoName);
 }
 
-interface EnsureRepoClonedOptions {
+export interface EnsureRepoClonedOptions {
     repoUrl: string;
     owner: string;
     repoName: string;
@@ -31,30 +31,8 @@ interface EnsureRepoClonedOptions {
     baseBranch?: string;
 }
 
-export async function ensureRepoCloned(repoUrl: string, owner: string, repoName: string, authToken: string, baseBranch?: string): Promise<string>;
-export async function ensureRepoCloned(options: EnsureRepoClonedOptions): Promise<string>;
-export async function ensureRepoCloned(
-    repoUrlOrOptions: string | EnsureRepoClonedOptions,
-    owner?: string,
-    repoName?: string,
-    authToken?: string,
-    baseBranch?: string
-): Promise<string> {
-    // Support both old signature and new options object signature
-    let opts: EnsureRepoClonedOptions;
-    if (typeof repoUrlOrOptions === 'object') {
-        opts = repoUrlOrOptions;
-    } else {
-        opts = {
-            repoUrl: repoUrlOrOptions,
-            owner: owner!,
-            repoName: repoName!,
-            authToken: authToken!,
-            baseBranch
-        };
-    }
-
-    return ensureRepoClonedInternal(opts);
+export async function ensureRepoCloned(options: EnsureRepoClonedOptions): Promise<string> {
+    return ensureRepoClonedInternal(options);
 }
 
 async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<string> {

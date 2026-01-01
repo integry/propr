@@ -284,7 +284,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       try { authToken = await getGitHubInstallationToken(); } catch { authToken = accessToken; }
 
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-      const worktreePath = await ensureRepoCloned(repoUrl, owner, repoName, authToken);
+      const worktreePath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken });
 
       await updateDraftContextConfig(draftId, draft, { baseBranch, granularity, contextLevel, compress });
 
