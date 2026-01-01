@@ -282,24 +282,26 @@ async function identifyStaleFiles(
   filesToProcess: GitFileInfo[];
   filesToDelete: string[];
 }> {
-  // Fetch existing summaries from DB
+  // Fetch existing summaries from DB (paths are stored as fullName/relativePath)
   const existingSummaries = await db('file_summaries')
     .where('path', 'like', `${fullName}/%`)
-    .orWhere('path', 'not like', '%/%') // Root-level files
     .select('path', 'commit_hash');
 
+  // Map from full stored path to hash
   const dbHashMap = new Map<string, string>();
   for (const summary of existingSummaries) {
     dbHashMap.set(summary.path, summary.commit_hash);
   }
 
-  const gitFileSet = new Set(gitFiles.map(f => f.path));
+  // Create set of full paths from git files for deletion check
+  const gitFileFullPathSet = new Set(gitFiles.map(f => `${fullName}/${f.path}`));
   const filesToProcess: GitFileInfo[] = [];
   const filesToDelete: string[] = [];
 
   // Find new and changed files
   for (const file of gitFiles) {
-    const dbHash = dbHashMap.get(file.path);
+    const fullPath = `${fullName}/${file.path}`;
+    const dbHash = dbHashMap.get(fullPath);
 
     if (!dbHash) {
       // New file
@@ -313,15 +315,17 @@ async function identifyStaleFiles(
 
   // Find deleted files (in DB but not in git)
   for (const dbPath of dbHashMap.keys()) {
-    if (!gitFileSet.has(dbPath)) {
+    if (!gitFileFullPathSet.has(dbPath)) {
       filesToDelete.push(dbPath);
     }
   }
 
   log.debug({
-    newFiles: filesToProcess.filter(f => !dbHashMap.has(f.path)).length,
-    changedFiles: filesToProcess.filter(f => dbHashMap.has(f.path)).length,
-    deletedFiles: filesToDelete.length
+    existingInDb: dbHashMap.size,
+    newFiles: filesToProcess.filter(f => !dbHashMap.has(`${fullName}/${f.path}`)).length,
+    changedFiles: filesToProcess.filter(f => dbHashMap.has(`${fullName}/${f.path}`)).length,
+    deletedFiles: filesToDelete.length,
+    unchangedFiles: gitFiles.length - filesToProcess.length
   }, 'Staleness check complete');
 
   return { filesToProcess, filesToDelete };
@@ -343,7 +347,7 @@ async function deleteFileSummaries(paths: string[]): Promise<void> {
 /**
  * Updates the repository indexing status
  */
-async function updateRepositoryStatus(
+export async function updateRepositoryStatus(
   fullName: string,
   status: 'idle' | 'indexing' | 'completed' | 'failed'
 ): Promise<void> {

@@ -28,6 +28,8 @@ export interface RelevanceOptions {
   agent?: Agent;
   /** Model ID for token budget calculation in summary scoring */
   modelId?: string;
+  /** Repository full name (e.g., "owner/repo") for filtering summaries */
+  repoName?: string;
 }
 
 // --- Score Aggregation Weights ---
@@ -167,7 +169,8 @@ export async function findRelevantFiles(
     semanticMiningOptions,
     useSummaryScoring = false,
     agent,
-    modelId
+    modelId,
+    repoName
   } = options;
 
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -269,7 +272,8 @@ export async function findRelevantFiles(
         agent,
         priorityPaths,
         correlationId,
-        modelId
+        modelId,
+        repoName
       };
 
       const summaryPromise = scoreSemanticRelevance(prompt, summaryOptions);

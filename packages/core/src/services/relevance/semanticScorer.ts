@@ -20,6 +20,8 @@ export interface SemanticScoringOptions {
   correlationId?: string;
   /** Model ID for token budget calculation */
   modelId?: string;
+  /** Repository full name (e.g., "owner/repo") to filter summaries */
+  repoName?: string;
 }
 
 export interface SemanticLLMFile {
@@ -50,7 +52,7 @@ export async function scoreSemanticRelevance(
   userPrompt: string,
   options: SemanticScoringOptions
 ): Promise<SemanticFileScore[]> {
-  const { agent, priorityPaths = [], correlationId, modelId } = options;
+  const { agent, priorityPaths = [], correlationId, modelId, repoName } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   try {
@@ -58,7 +60,8 @@ export async function scoreSemanticRelevance(
     const contextOptions: ContextBuildOptions = {
       modelId,
       priorityPaths,
-      correlationId
+      correlationId,
+      repoName
     };
 
     const contextResult = await buildSummaryContext(contextOptions);

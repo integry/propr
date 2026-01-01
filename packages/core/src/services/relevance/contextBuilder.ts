@@ -23,6 +23,8 @@ export interface ContextBuildOptions {
   priorityPaths?: string[];
   /** Custom correlation ID for logging */
   correlationId?: string;
+  /** Repository full name (e.g., "owner/repo") to filter and strip from paths */
+  repoName?: string;
 }
 
 export interface SmartContextResult {
@@ -200,7 +202,7 @@ function tryAddDirEntry(state: ContextState, budgetChars: number, dir: Directory
  * 4. If budget exceeded, fallback to directory summaries only
  */
 export async function buildSummaryContext(options: ContextBuildOptions = {}): Promise<SmartContextResult> {
-  const { modelId = 'default', priorityPaths = [], correlationId } = options;
+  const { modelId = 'default', priorityPaths = [], correlationId, repoName } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   // Calculate token budget
@@ -208,11 +210,35 @@ export async function buildSummaryContext(options: ContextBuildOptions = {}): Pr
   const budgetTokens = Math.floor(maxModelTokens * CONTEXT_BUDGET_RATIO / TIKTOKEN_TO_CLAUDE_RATIO);
   const budgetChars = budgetTokens * CHARS_PER_TOKEN;
 
-  correlatedLogger.debug({ modelId, budgetTokens, budgetChars }, 'Calculated context budget');
+  correlatedLogger.debug({ modelId, budgetTokens, budgetChars, repoName }, 'Calculated context budget');
 
-  // Load all summaries from database
-  const fileSummaries = await db('file_summaries').select('path', 'summary', 'commit_hash') as FileSummaryRow[];
-  const dirSummaries = await db('directory_summaries').select('path', 'summary', 'hash') as DirectorySummaryRow[];
+  // Load summaries from database - filter by repo if specified
+  let fileSummaries: FileSummaryRow[];
+  let dirSummaries: DirectorySummaryRow[];
+
+  if (repoName) {
+    const repoPrefix = `${repoName}/`;
+    // Filter to only this repo and strip the prefix from paths
+    const rawFiles = await db('file_summaries')
+      .where('path', 'like', `${repoName}/%`)
+      .select('path', 'summary', 'commit_hash') as FileSummaryRow[];
+    fileSummaries = rawFiles.map(f => ({
+      ...f,
+      path: f.path.startsWith(repoPrefix) ? f.path.slice(repoPrefix.length) : f.path
+    }));
+
+    const rawDirs = await db('directory_summaries')
+      .where('path', 'like', `${repoName}/%`)
+      .select('path', 'summary', 'hash') as DirectorySummaryRow[];
+    dirSummaries = rawDirs.map(d => ({
+      ...d,
+      path: d.path.startsWith(repoPrefix) ? d.path.slice(repoPrefix.length) : d.path
+    }));
+  } else {
+    // Load all summaries (legacy behavior)
+    fileSummaries = await db('file_summaries').select('path', 'summary', 'commit_hash') as FileSummaryRow[];
+    dirSummaries = await db('directory_summaries').select('path', 'summary', 'hash') as DirectorySummaryRow[];
+  }
 
   if (fileSummaries.length === 0 && dirSummaries.length === 0) {
     correlatedLogger.debug('No summaries found in database');

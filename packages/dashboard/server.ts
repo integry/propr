@@ -180,6 +180,7 @@ function setupRoutes(): void {
   app.get('/api/config/summarization', ensureAuthenticated, configRoutes.getSummarizationSettings);
   app.post('/api/config/summarization', ensureAuthenticated, configRoutes.postSummarizationSettings);
   app.get('/api/config/repos/indexing-status', ensureAuthenticated, configRoutes.getRepositoriesIndexingStatus);
+  app.post('/api/config/repos/trigger-indexing', ensureAuthenticated, configRoutes.triggerIndexing);
 
   app.get('/api/queue/stats', ensureAuthenticated, queueRoutes.getQueueStats);
   app.get('/api/activity', ensureAuthenticated, queueRoutes.getActivity);

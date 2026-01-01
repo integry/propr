@@ -134,8 +134,8 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<v
 
   // Estimate input tokens (prompt + file contents)
   const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
-  // Estimate output tokens (roughly 50 tokens per file for summary JSON)
-  const estimatedOutputTokens = batch.length * 50;
+  // Estimate output tokens (roughly 120 tokens per file for 3-4 sentence summary JSON)
+  const estimatedOutputTokens = batch.length * 120;
 
   let success = false;
   let errorMessage: string | undefined;
@@ -186,19 +186,23 @@ function buildBatchPrompt(batch: BatchFile[]): string {
   ).join('\n\n');
 
   return `You are a code expert. Analyze the following source code files.
-For each file, provide a concise (1-3 sentences) summary of its purpose and main functionality.
+For each file, provide a summary (3-4 sentences) covering:
+1. Primary purpose of the file
+2. Key functions, classes, or exports it provides
+3. What other parts of the system it interacts with or depends on
 
 Return ONLY valid JSON in this exact format:
 {
   "summaries": [
-    { "path": "relative/path/to/file", "summary": "This file handles..." }
+    { "path": "relative/path/to/file", "summary": "This file handles... It provides... It interacts with..." }
   ]
 }
 
 Important:
 - Include ALL files listed below in your response
-- Each summary should be brief but informative
-- Focus on what the file does, not implementation details
+- Each summary should be 3-4 sentences with specific details
+- Mention key function/class names when relevant
+- Focus on what the file does and how it connects to the system
 - Return valid JSON only, no markdown or other formatting
 
 FILES:
@@ -260,9 +264,12 @@ async function saveBatchSummaries(
       continue;
     }
 
+    // Store path with repo prefix for proper staleness detection
+    const storedPath = `${fullName}/${file.path}`;
+
     await db('file_summaries')
       .insert({
-        path: file.path,
+        path: storedPath,
         summary,
         commit_hash: file.blobHash,
         model_used: modelUsed,

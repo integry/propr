@@ -74,7 +74,15 @@ export interface SystemTaskJobData {
     correlationId: string;
 }
 
-export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData | SystemTaskJobData;
+export interface IndexingJobData {
+    repository: string;      // Full repo name (e.g., 'owner/repo')
+    repoPath: string;        // Path to the cloned repository
+    correlationId: string;
+    priority?: 'high' | 'normal' | 'low';
+    fullReindex?: boolean;   // Force full re-index even if summaries exist
+}
+
+export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData;
 
 export interface ClaudeOutputResult {
     type?: string;
@@ -199,6 +207,34 @@ export const analysisQueue = new Queue<AnalysisJobData>(ANALYSIS_QUEUE_NAME, ana
 
 analysisQueue.on('error', (err: Error) => {
     logger.error({ queue: ANALYSIS_QUEUE_NAME, err }, 'Analysis Queue error');
+});
+
+// --- Indexing Queue ---
+
+export const INDEXING_QUEUE_NAME = process.env.INDEXING_QUEUE_NAME || 'indexing-processor';
+
+const indexingQueueOptions: QueueOptions = {
+    connection: redisConnection,
+    defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+            type: 'exponential',
+            delay: 30000,
+        },
+        removeOnComplete: {
+            age: 7 * 24 * 3600, // Keep for 7 days
+            count: 500,
+        },
+        removeOnFail: {
+            age: 14 * 24 * 3600, // Keep failed for 14 days for debugging
+        },
+    },
+};
+
+export const indexingQueue = new Queue<IndexingJobData>(INDEXING_QUEUE_NAME, indexingQueueOptions);
+
+indexingQueue.on('error', (err: Error) => {
+    logger.error({ queue: INDEXING_QUEUE_NAME, err }, 'Indexing Queue error');
 });
 
 function getRepoFullName(job: Job<JobData> | undefined | null): string | null {
@@ -408,6 +444,7 @@ export async function shutdownQueue(): Promise<void> {
     try {
         await issueQueue.close();
         await analysisQueue.close();
+        await indexingQueue.close();
         await redisConnection.quit();
         logger.info('Queue shutdown complete');
     } catch (err) {

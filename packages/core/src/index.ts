@@ -44,8 +44,10 @@ export { cleanupWorktree, cleanupExpiredWorktrees, setupWorktreePermissions, add
 export {
     issueQueue,
     analysisQueue,
+    indexingQueue,
     GITHUB_ISSUE_QUEUE_NAME,
     ANALYSIS_QUEUE_NAME,
+    INDEXING_QUEUE_NAME,
     COMMENT_BATCH_DELAY_MS,
     createWorker,
     shutdownQueue
@@ -56,6 +58,7 @@ export type {
     TaskImportJobData,
     AnalysisJobData,
     SystemTaskJobData,
+    IndexingJobData,
     JobData,
     JobResult,
     ClaudeResult,
@@ -91,7 +94,7 @@ export { extractKeywords } from './services/relevance/keywordExtractor.js';
 export { mineGitHistory, mineGitHistoryWithLLM, getCommitHistory, formatCommitLog } from './services/relevance/gitMiner.js';
 export type { FileScore as GitFileScore, CommitInfo, SemanticMinerFile, SemanticMinerResponse, SemanticMiningOptions } from './services/relevance/gitMiner.js';
 export { scorePaths } from './services/relevance/pathScorer.js';
-export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries } from './services/relevance/summaryMiner.js';
+export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries, updateRepositoryStatus } from './services/relevance/summaryMiner.js';
 export type { FileSummary, DirectorySummary, GitFileInfo, IndexingOptions } from './services/relevance/summaryMiner.js';
 
 export {

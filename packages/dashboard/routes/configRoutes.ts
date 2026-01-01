@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@gitfix/core';
-import { AgentRegistry } from '@gitfix/core';
+import { AgentRegistry, indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit } from '@gitfix/core';
+import type { IndexingJobData } from '@gitfix/core';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -340,6 +341,100 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
   }
 
+  async function triggerIndexing(req: Request, res: Response): Promise<void> {
+    try {
+      const { repository, fullReindex } = req.body;
+
+      if (!repository || typeof repository !== 'string') {
+        res.status(400).json({ error: 'repository is required and must be a string (e.g., "owner/repo")' });
+        return;
+      }
+
+      // Validate repository format
+      if (!repository.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/)) {
+        res.status(400).json({ error: 'Invalid repository format. Expected "owner/repo"' });
+        return;
+      }
+
+      // Check if summarization is enabled
+      const settings = await configManager.loadSummarizationSettings();
+      if (!settings.enabled) {
+        res.status(400).json({ error: 'Summarization is not enabled. Enable it in settings first.' });
+        return;
+      }
+
+      if (!settings.agent_alias) {
+        res.status(400).json({ error: 'No agent configured for summarization. Configure one in settings first.' });
+        return;
+      }
+
+      // Check if job already queued
+      const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed']);
+      const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repository);
+
+      if (alreadyQueued) {
+        res.status(409).json({ error: 'Indexing job already queued for this repository' });
+        return;
+      }
+
+      // Ensure repo is cloned
+      const [owner, name] = repository.split('/');
+
+      // Get auth token for cloning
+      const octokit = await getAuthenticatedOctokit();
+      const { token } = await octokit.auth({ type: "installation" }) as { token: string };
+      const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
+
+      let repoPath: string;
+      try {
+        repoPath = await ensureRepoCloned(repoUrl, owner, name, token);
+      } catch (cloneError) {
+        res.status(500).json({ error: `Failed to clone repository: ${(cloneError as Error).message}` });
+        return;
+      }
+
+      // Queue the indexing job
+      const correlationId = generateCorrelationId();
+      const job = await indexingQueue.add(
+        'indexRepository',
+        {
+          repository,
+          repoPath,
+          correlationId,
+          priority: 'high',
+          fullReindex: !!fullReindex
+        },
+        {
+          jobId: `index-${repository.replace('/', '-')}-${Date.now()}`,
+          priority: 1 // High priority for manual triggers
+        }
+      );
+
+      // Log activity
+      const activity = {
+        id: `activity-${Date.now()}-indexing-trigger`,
+        type: 'indexing_triggered',
+        timestamp: new Date().toISOString(),
+        user: req.user?.username,
+        description: `Triggered ${fullReindex ? 'full re-' : ''}indexing for ${repository}`,
+        status: 'success'
+      };
+      await redisClient.lPush('system:activity:log', JSON.stringify(activity));
+      await redisClient.lTrim('system:activity:log', 0, 999);
+
+      res.json({
+        success: true,
+        jobId: job.id,
+        correlationId,
+        repository,
+        fullReindex: !!fullReindex
+      });
+    } catch (error) {
+      console.error('Error in /api/config/repos/trigger-indexing POST:', error);
+      res.status(500).json({ error: 'Failed to trigger indexing' });
+    }
+  }
+
   return {
     getFollowupKeywords,
     postFollowupKeywords,
@@ -357,7 +452,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     postAgents,
     getSummarizationSettings,
     postSummarizationSettings,
-    getRepositoriesIndexingStatus
+    getRepositoriesIndexingStatus,
+    triggerIndexing
   };
 }
 

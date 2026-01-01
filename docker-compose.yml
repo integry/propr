@@ -79,6 +79,33 @@ services:
     networks:
       - gitfix-net
 
+  indexing-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    command: npm run indexing-worker
+    volumes:
+      - ./logs:/usr/src/app/logs
+      - ./data:/usr/src/app/data
+      - /tmp/git-processor:/tmp/git-processor
+      - ~/.claude:/root/.claude:ro
+      - ~/.gemini:/root/.gemini:ro
+      - ~/.codex:/root/.codex:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/claude-logs:/tmp/claude-logs
+    env_file:
+      - .env
+    environment:
+      # How often to scan for repos needing indexing (default: 5 minutes)
+      - INDEXING_SCAN_INTERVAL_MS=${INDEXING_SCAN_INTERVAL_MS:-300000}
+      # How often to re-index repos (default: 24 hours)
+      - INDEXING_REINDEX_INTERVAL_MS=${INDEXING_REINDEX_INTERVAL_MS:-86400000}
+    depends_on:
+      redis:
+        condition: service_started
+    networks:
+      - gitfix-net
+
   web-ui:
     build:
       context: .
