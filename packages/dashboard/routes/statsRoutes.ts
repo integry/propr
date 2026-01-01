@@ -70,10 +70,10 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
           this.on('t.task_id', '=', 'h_end.task_id')
               .andOnIn('h_end.state', ['completed', 'failed']);
         })
-        .select(db.raw("date(t.created_at) as date"))
-        .avg(db.raw(
-          "(julianday(h_end.timestamp) - julianday(h_start.timestamp)) * 24 * 60 as avg_minutes"
-        ))
+        .select(
+          db.raw("date(t.created_at) as date"),
+          db.raw("avg((julianday(h_end.timestamp) - julianday(h_start.timestamp)) * 24 * 60) as avg_minutes")
+        )
         .where('t.created_at', '>=', thirtyDaysAgoStr)
         .groupByRaw('date(t.created_at)')
         .orderBy('date', 'asc') as unknown as AvgProcessingTimeRow[];
