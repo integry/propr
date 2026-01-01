@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import { Knex } from 'knex';
+import { Octokit } from '@octokit/core';
+import { paginateRest } from '@octokit/plugin-paginate-rest';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
@@ -36,25 +38,43 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     }
   }
 
-  async function getRepos(_req: Request, res: Response): Promise<void> {
+  async function getRepos(req: Request, res: Response): Promise<void> {
     try {
-      const distinctRepos = await db('tasks').distinct('repository').whereNotNull('repository').orderBy('repository', 'asc');
-      // Filter out invalid repository names: null, empty, 'Unknown', and malformed names like 'undefined/undefined'
-      const isValidRepoName = (r: string): boolean => {
-        if (!r || r === 'Unknown') return false;
-        // Must match owner/repo format with valid characters
-        const parts = r.split('/');
-        if (parts.length !== 2) return false;
-        const [owner, name] = parts;
-        // Both owner and name must be non-empty and not 'undefined'
-        if (!owner || !name || owner === 'undefined' || name === 'undefined') return false;
-        return true;
-      };
-      const repos = distinctRepos.map((row: { repository: string }) => row.repository).filter(isValidRepoName);
+      // Get user's access token from session
+      const accessToken = req.user?.accessToken;
+      if (!accessToken) {
+        res.status(401).json({ error: 'No GitHub access token available' });
+        return;
+      }
+
+      // Create Octokit instance with user's token and pagination support
+      const PaginatedOctokit = Octokit.plugin(paginateRest);
+      const octokit = new PaginatedOctokit({ auth: accessToken });
+
+      // Fetch all repositories the user has access to with pagination
+      const repos: string[] = [];
+
+      // Use paginate.iterator to fetch all pages of repos
+      for await (const response of octokit.paginate.iterator('GET /user/repos', {
+        per_page: 100,
+        sort: 'full_name',
+        direction: 'asc',
+        affiliation: 'owner,collaborator,organization_member'
+      })) {
+        for (const repo of response.data) {
+          if (repo.full_name) {
+            repos.push(repo.full_name);
+          }
+        }
+      }
+
+      // Sort alphabetically
+      repos.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
       res.json({ repos });
     } catch (error) {
       console.error('Error in /api/github/repos:', error);
-      res.status(500).json({ error: 'Failed to fetch repositories with tasks' });
+      res.status(500).json({ error: 'Failed to fetch repositories from GitHub' });
     }
   }
 
