@@ -338,8 +338,6 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         stateManager,
         correlatedLogger,
         githubToken: githubToken.token,
-        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolution.model, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
         taskId
     });
     state.claudeResult = claudeResult;
