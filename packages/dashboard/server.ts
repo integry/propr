@@ -209,6 +209,7 @@ function setupRoutes(): void {
 
   app.post('/api/import-tasks', ensureAuthenticated, githubRoutes.importTasks);
   app.get('/api/github/repos', ensureAuthenticated, githubRoutes.getRepos);
+  app.get('/api/github/repos/:owner/:repo/branches', ensureAuthenticated, githubRoutes.getBranches);
 
   app.get('/api/planner/drafts', ensureAuthenticated, plannerRoutes.listDrafts);
   app.post('/api/planner/drafts', ensureAuthenticated, plannerRoutes.createDraft);

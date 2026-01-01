@@ -149,6 +149,19 @@ export const getAvailableGithubRepos = async (): Promise<unknown> => {
   return response.json();
 };
 
+export interface RepoBranchesResponse {
+  branches: string[];
+  defaultBranch: string;
+}
+
+export const getRepoBranches = async (owner: string, repo: string): Promise<RepoBranchesResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export const getSettings = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/config/settings`, {
     credentials: 'include'

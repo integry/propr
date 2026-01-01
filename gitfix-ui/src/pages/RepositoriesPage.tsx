@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import React, { useState, useEffect, useCallback } from 'react';
 import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, RepositoryIndexingStatus, MonitoredRepo } from '../api/gitfixApi';
+import { BaseBranchSelector } from '../components/BaseBranchSelector';
 
 // Helper function to generate UUID
 const generateId = (): string => crypto.randomUUID();
@@ -292,11 +293,11 @@ const RepositoriesPage: React.FC = () => {
           </div>
           <div className="lg:col-span-1">
             <label className="block text-xs font-medium text-gray-600 mb-1">Base Branch (optional)</label>
-            <input
+            <BaseBranchSelector
+              repoName={newRepo}
               value={newBaseBranch}
-              onChange={(e) => setNewBaseBranch(e.target.value)}
-              placeholder="e.g., develop"
-              className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md font-mono text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              onChange={setNewBaseBranch}
+              placeholder="Select branch..."
             />
           </div>
           <div className="lg:col-span-1 flex items-end">
