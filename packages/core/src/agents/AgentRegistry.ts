@@ -6,6 +6,7 @@ import { ClaudeAgent } from './impl/ClaudeAgent.js';
 import { CodexAgent } from './impl/CodexAgent.js';
 import { GeminiAgent } from './impl/GeminiAgent.js';
 import * as configManager from '../config/configManager.js';
+import { ensureAgentDockerImage } from '../claude/docker/dockerExecutor.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -49,7 +50,7 @@ export class AgentRegistry {
             if (configs.length === 0) {
                 // Fallback: Create default Claude agent from ENV vars if no config exists
                 logger.info('No agents configured, creating default Claude agent from environment');
-                this.registerDefaultAgent();
+                await this.registerDefaultAgent();
                 this.initialized = true;
                 return;
             }
@@ -68,6 +69,17 @@ export class AgentRegistry {
                             existingId: this.agentsByAlias.get(config.alias)?.config.id,
                             newId: config.id
                         }, 'Duplicate agent alias detected, skipping');
+                        continue;
+                    }
+
+                    // Ensure Docker image exists before registering agent
+                    const imageReady = await ensureAgentDockerImage(config.type, config.dockerImage);
+                    if (!imageReady) {
+                        logger.error({
+                            agentAlias: config.alias,
+                            agentType: config.type,
+                            dockerImage: config.dockerImage
+                        }, 'Failed to ensure Docker image, skipping agent registration');
                         continue;
                     }
 
@@ -103,7 +115,7 @@ export class AgentRegistry {
             // Fallback to default agent on error
             this.agents.clear();
             this.agentsByAlias.clear();
-            this.registerDefaultAgent();
+            await this.registerDefaultAgent();
             this.initialized = true;
         }
     }
@@ -193,7 +205,7 @@ export class AgentRegistry {
      * Registers a default Claude agent using environment variables.
      * This is the fallback when no agents are configured.
      */
-    private registerDefaultAgent(): void {
+    private async registerDefaultAgent(): Promise<void> {
         const defaultConfig: AgentConfig = {
             id: 'default-claude-agent',
             type: 'claude',
@@ -210,6 +222,15 @@ export class AgentRegistry {
             ],
             defaultModel: process.env.CLAUDE_MODEL || undefined
         };
+
+        // Ensure Docker image exists before registering
+        const imageReady = await ensureAgentDockerImage(defaultConfig.type, defaultConfig.dockerImage);
+        if (!imageReady) {
+            logger.error({
+                agentType: defaultConfig.type,
+                dockerImage: defaultConfig.dockerImage
+            }, 'Failed to ensure Docker image for default agent');
+        }
 
         const agent = new ClaudeAgent(defaultConfig);
         this.agents.set(defaultConfig.id, agent);

@@ -6,7 +6,7 @@ import type { IssueJobData, CommentJobData, TaskImportJobData, SystemTaskJobData
 import { logger } from '@gitfix/core';
 import { generateCorrelationId } from '@gitfix/core';
 import { db } from '@gitfix/core';
-import { buildClaudeDockerImage } from '@gitfix/core';
+import { AgentRegistry } from '@gitfix/core';
 import { loadAiPrimaryTag, loadSettings } from '@gitfix/core';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
 import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJob.js';
@@ -194,13 +194,19 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
 
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
 
-    logger.info('Checking Claude Code Docker image...');
-    const imageReady = await buildClaudeDockerImage();
-
-    if (!imageReady) {
-        logger.error('Failed to build Claude Code Docker image. Worker may not function properly.');
-    } else {
-        logger.info('Claude Code Docker image is ready');
+    // Initialize the AgentRegistry which will ensure all configured agent Docker images exist
+    logger.info('Initializing agent registry and ensuring Docker images...');
+    try {
+        const registry = AgentRegistry.getInstance();
+        await registry.refresh();
+        const agents = registry.getAllAgents();
+        logger.info({
+            agentCount: agents.length,
+            agents: agents.map(a => ({ alias: a.config.alias, type: a.config.type, dockerImage: a.config.dockerImage }))
+        }, 'Agent registry initialized successfully');
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ error: err.message }, 'Failed to initialize agent registry. Worker may not function properly.');
     }
 
     const worker = createWorker(GITHUB_ISSUE_QUEUE_NAME, async (job: Job<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData>): Promise<JobResult> => {

@@ -33,6 +33,13 @@ interface JsonLineMessage {
 
 const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
 
+// Mapping from agent types to their Dockerfiles
+const AGENT_DOCKERFILES: Record<string, string> = {
+    'claude': 'Dockerfile.claude',
+    'codex': 'Dockerfile.codex',
+    'gemini': 'Dockerfile.gemini'
+};
+
 async function checkAbortSignal(taskId: string): Promise<boolean> {
     try {
         const Redis = await import('ioredis');
@@ -275,6 +282,73 @@ export async function buildClaudeDockerImage(): Promise<boolean> {
             image: CLAUDE_DOCKER_IMAGE,
             error: err.message
         }, 'Error building Docker image');
+        return false;
+    }
+}
+
+/**
+ * Ensures an agent's Docker image exists, building it if necessary.
+ * This is called when agents are registered to ensure their images are ready.
+ *
+ * @param agentType - The type of agent ('claude', 'codex', 'gemini')
+ * @param dockerImage - The expected Docker image name (e.g., 'codex-cli:latest')
+ * @returns true if image exists or was built successfully, false otherwise
+ */
+export async function ensureAgentDockerImage(agentType: string, dockerImage: string): Promise<boolean> {
+    const dockerfile = AGENT_DOCKERFILES[agentType];
+
+    if (!dockerfile) {
+        logger.error({ agentType, dockerImage }, 'Unknown agent type, cannot determine Dockerfile');
+        return false;
+    }
+
+    logger.info({ agentType, dockerImage, dockerfile }, 'Ensuring agent Docker image exists...');
+
+    try {
+        // Check if image already exists
+        const checkResult = await executeDockerCommand('docker', [
+            'images', '-q', dockerImage
+        ]);
+
+        if (checkResult.stdout.trim()) {
+            logger.info({ agentType, dockerImage }, 'Agent Docker image already exists');
+            return true;
+        }
+
+        // Image doesn't exist, build it
+        logger.info({ agentType, dockerImage, dockerfile }, 'Building agent Docker image...');
+
+        const buildResult = await executeDockerCommand('docker', [
+            'build',
+            '-f', dockerfile,
+            '-t', dockerImage,
+            '.'
+        ], {
+            timeout: 600000 // 10 minute timeout for build
+        });
+
+        if (buildResult.exitCode === 0) {
+            logger.info({ agentType, dockerImage }, 'Agent Docker image built successfully');
+            return true;
+        } else {
+            logger.error({
+                agentType,
+                dockerImage,
+                dockerfile,
+                exitCode: buildResult.exitCode,
+                stderr: buildResult.stderr
+            }, 'Failed to build agent Docker image');
+            return false;
+        }
+
+    } catch (error) {
+        const err = error as Error;
+        logger.error({
+            agentType,
+            dockerImage,
+            dockerfile,
+            error: err.message
+        }, 'Error ensuring agent Docker image');
         return false;
     }
 }
