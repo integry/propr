@@ -300,7 +300,8 @@ const RepositoriesPage: React.FC = () => {
               placeholder="Select branch..."
             />
           </div>
-          <div className="lg:col-span-1 flex flex-col justify-end">
+          <div className="lg:col-span-1">
+            <label className="block text-xs font-medium text-gray-600 mb-1">&nbsp;</label>
             <button
               onClick={handleAddRepo}
               disabled={!newRepo}
