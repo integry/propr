@@ -170,7 +170,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     correlatedLogger.info({ count: filesToProcess.length }, 'Files need processing');
 
     // Phase B: Batch Summarization
-    await processBatches({
+    const batchResult = await processBatches({
       repoPath,
       fullName,
       files: filesToProcess,
@@ -180,12 +180,23 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       customPrompt: settings.custom_prompt
     });
 
-    // Phase C: Directory Aggregation
-    await aggregateDirectories(fullName, agent, correlatedLogger);
+    // Phase C: Directory Aggregation (only if some files were processed)
+    if (batchResult.filesProcessed > 0) {
+      await aggregateDirectories(fullName, agent, correlatedLogger);
+    }
 
-    // Phase D: Cleanup - Mark as completed
-    await updateRepositoryStatus(fullName, 'completed');
-    correlatedLogger.info({ repoPath, fullName }, 'Repository indexing completed successfully');
+    // Phase D: Cleanup - Mark status based on results
+    if (batchResult.failedBatches > 0) {
+      // Some batches failed - mark as failed so it will be retried
+      await updateRepositoryStatus(fullName, 'failed');
+      correlatedLogger.warn(
+        { repoPath, fullName, ...batchResult },
+        'Repository indexing completed with failures - will retry on next scan'
+      );
+    } else {
+      await updateRepositoryStatus(fullName, 'completed');
+      correlatedLogger.info({ repoPath, fullName, ...batchResult }, 'Repository indexing completed successfully');
+    }
 
   } catch (error) {
     const err = error as Error;

@@ -219,7 +219,7 @@ export class CodexAgent implements Agent {
             });
 
             const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: 60000, // 1 minute timeout for analysis
+                timeout: 300000, // 5 minute timeout for analysis (batch summarization needs more time)
                 stdinData: analysisPrompt
             });
 

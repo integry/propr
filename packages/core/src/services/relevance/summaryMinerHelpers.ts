@@ -74,10 +74,19 @@ export interface ProcessBatchesOptions {
   customPrompt?: string; // Optional custom prompt to override default instructions
 }
 
+export interface ProcessBatchesResult {
+  totalBatches: number;
+  successfulBatches: number;
+  failedBatches: number;
+  filesProcessed: number;
+  filesFailed: number;
+}
+
 /**
  * Processes files in batches, respecting token limits
+ * Returns stats about success/failure for proper status tracking
  */
-export async function processBatches(options: ProcessBatchesOptions): Promise<void> {
+export async function processBatches(options: ProcessBatchesOptions): Promise<ProcessBatchesResult> {
   const { repoPath, fullName, files, agent, log, modelOverride, customPrompt } = options;
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
@@ -89,6 +98,10 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<vo
   let currentBatch: BatchFile[] = [];
   let currentTokens = 0;
   let batchNumber = 0;
+  let successfulBatches = 0;
+  let failedBatches = 0;
+  let filesProcessed = 0;
+  let filesFailed = 0;
 
   for (const file of files) {
     const filePath = path.join(repoPath, file.path);
@@ -114,7 +127,14 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<vo
       batchNumber++;
       log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing batch');
 
-      await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt });
+      const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt });
+      if (success) {
+        successfulBatches++;
+        filesProcessed += currentBatch.length;
+      } else {
+        failedBatches++;
+        filesFailed += currentBatch.length;
+      }
 
       currentBatch = [];
       currentTokens = 0;
@@ -133,10 +153,25 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<vo
   if (currentBatch.length > 0) {
     batchNumber++;
     log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing final batch');
-    await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt });
+    const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt });
+    if (success) {
+      successfulBatches++;
+      filesProcessed += currentBatch.length;
+    } else {
+      failedBatches++;
+      filesFailed += currentBatch.length;
+    }
   }
 
-  log.info({ totalBatches: batchNumber }, 'Batch processing complete');
+  log.info({ totalBatches: batchNumber, successfulBatches, failedBatches, filesProcessed, filesFailed }, 'Batch processing complete');
+
+  return {
+    totalBatches: batchNumber,
+    successfulBatches,
+    failedBatches,
+    filesProcessed,
+    filesFailed
+  };
 }
 
 interface ProcessSingleBatchOptions {
@@ -150,8 +185,9 @@ interface ProcessSingleBatchOptions {
 
 /**
  * Processes a single batch of files through the LLM
+ * Returns true if successful, false if failed
  */
-async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<void> {
+async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<boolean> {
   const { fullName, batch, agent, log, modelUsed, customPrompt } = options;
   const prompt = buildBatchPrompt(batch, customPrompt);
   const startTime = Date.now();
@@ -199,6 +235,8 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<v
     durationMs,
     error: errorMessage
   }, log);
+
+  return success;
 }
 
 /**
