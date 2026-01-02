@@ -12,6 +12,16 @@ export interface BuildCodexPromptOptions {
     systemPrompt?: string;
 }
 
+export interface CodexEventItem {
+    id?: string;
+    type?: string;
+    text?: string;
+    command?: string;
+    aggregated_output?: string;
+    exit_code?: number;
+    status?: string;
+}
+
 export interface CodexEvent {
     type?: string;
     role?: string;
@@ -23,7 +33,10 @@ export interface CodexEvent {
     result?: string;
     session_id?: string;
     conversation_id?: string;
+    thread_id?: string;
     model?: string;
+    item?: CodexEventItem;
+    usage?: Record<string, number>;
 }
 
 export interface CodexOutput {
@@ -115,12 +128,29 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
             const event: CodexEvent = JSON.parse(line);
             conversationLog.push(event);
 
-            // Capture metadata
+            // Capture metadata from various event types
             if (event.session_id) sessionId = event.session_id;
             if (event.conversation_id) conversationId = event.conversation_id;
+            if (event.thread_id && !sessionId) sessionId = event.thread_id;
             if (event.model) model = event.model;
 
-            if (event.type === 'message') {
+            // Handle Codex CLI output format (item.completed events)
+            if (event.type === 'item.completed' && event.item) {
+                if (event.item.type === 'agent_message') {
+                    // This is the actual response text
+                    result = event.item.text;
+                    logs += `[Assistant] ${event.item.text || ''}\n`;
+                } else if (event.item.type === 'reasoning') {
+                    logs += `[Reasoning] ${event.item.text || ''}\n`;
+                } else if (event.item.type === 'command_execution') {
+                    logs += `[Command] ${event.item.command || ''}\n`;
+                    if (event.item.aggregated_output) {
+                        logs += `[Output] ${event.item.aggregated_output}\n`;
+                    }
+                }
+            } else if (event.type === 'thread.started') {
+                if (event.thread_id) sessionId = event.thread_id;
+            } else if (event.type === 'message') {
                 logs += `[${event.role || 'unknown'}] ${event.content || ''}\n`;
             } else if (event.type === 'tool_use') {
                 logs += `[Tool] ${event.tool} params: ${JSON.stringify(event.params)}\n`;
@@ -134,7 +164,11 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
                     isError = true;
                     errorMessage = event.message || 'Unknown error';
                 }
-            } else {
+            } else if (event.type === 'turn.started' || event.type === 'turn.completed') {
+                // Metadata events, just log them
+                logs += `[${event.type}]\n`;
+            } else if (event.type !== 'item.started') {
+                // Log other unknown event types (skip item.started as it's just a progress indicator)
                 logs += `[${event.type || 'unknown'}] ${JSON.stringify(event)}\n`;
             }
         } catch {

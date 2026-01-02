@@ -94,8 +94,9 @@ if [ $# -gt 0 ]; then
     if [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..."
         # Switch to node user and execute the command
+        # Use su instead of sudo to properly preserve stdin
         cd /home/node/workspace
-        exec sudo -u node -H "$@"
+        exec su -s /bin/bash node -c "cd /home/node/workspace && $*"
     else
         exec "$@"
     fi

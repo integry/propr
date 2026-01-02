@@ -1,3 +1,5 @@
+import fs from 'fs';
+import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
@@ -203,16 +205,34 @@ export class CodexAgent implements Agent {
             requestedModel: model
         }, 'Running lightweight analysis via Codex agent...');
 
-        // Use provided model or fallback to haiku for lightweight analysis
-        const effectiveModel = model || resolveModelAlias('haiku');
+        // Use provided model or Codex's default model (null = use Codex's config default)
+        const effectiveModel = model || this.config.defaultModel || undefined;
 
         const analysisPrompt = context
             ? `${prompt}\n\nContext:\n${context}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`
             : `${prompt}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`;
 
+        // Ensure analysis workspace exists as a git repo (Codex requires this)
+        // Must be writable by node user (UID 1000) inside the container
+        const analysisWorkspace = '/tmp/codex-analysis';
+        try {
+            if (!fs.existsSync(analysisWorkspace)) {
+                fs.mkdirSync(analysisWorkspace, { recursive: true });
+            }
+            if (!fs.existsSync(`${analysisWorkspace}/.git`)) {
+                execSync('git init', { cwd: analysisWorkspace, stdio: 'pipe' });
+                execSync('git config user.email "codex@gitfix.dev"', { cwd: analysisWorkspace, stdio: 'pipe' });
+                execSync('git config user.name "Codex Analysis"', { cwd: analysisWorkspace, stdio: 'pipe' });
+            }
+            // Ensure node user (1000) can write to the directory
+            execSync(`chown -R 1000:1000 ${analysisWorkspace}`, { stdio: 'pipe' });
+        } catch (initError) {
+            logger.warn({ error: (initError as Error).message }, 'Failed to initialize analysis workspace git repo');
+        }
+
         try {
             const dockerArgs = this.buildDockerArgs({
-                worktreePath: '/tmp/codex-analysis',
+                worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel,
                 issueNumber: 0
@@ -304,13 +324,13 @@ export class CodexAgent implements Agent {
         }
 
         // Build Docker run arguments
+        // Note: Use node user (1000:1000) directly to preserve stdin piping
         const dockerArgs: string[] = [
             'run', '--rm',
             '-i', // Allow stdin for piping prompt
             '--security-opt', 'no-new-privileges',
-            '--cap-add', 'CHOWN',
             '--network', 'bridge',
-            '--user', '0:0',
+            '--user', '1000:1000', // Run as node user to preserve stdin
             '-v', `${worktreePath}:/home/node/workspace:rw`,
             '-v', '/tmp/git-processor:/tmp/git-processor:rw',
             '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
@@ -323,6 +343,7 @@ export class CodexAgent implements Agent {
             'codex', 'exec',
             '--json',                    // Output newline-delimited JSON events
             '--full-auto',               // Skip manual approvals
+            '--skip-git-repo-check',     // Allow running outside git repos (for analysis workspace)
             '--sandbox', 'workspace-write', // Allow file edits in workspace
             '--cd', '/home/node/workspace', // Set working directory
             '-'                          // Read prompt from stdin
