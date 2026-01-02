@@ -20,13 +20,14 @@ export const CLAUDE_MODELS: ModelInfo[] = [
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', shortName: 'Claude Haiku', shortAlias: 'haiku', githubLabel: 'llm-claude-haiku', contextWindow: '200K' },
 ];
 
-// Codex (OpenAI) models
+// Codex (OpenAI) models - ChatGPT Plus/Pro available models
+// Note: Available models depend on account type (ChatGPT login vs API key)
+// These are the models shown for ChatGPT Plus accounts as of Jan 2026
 export const CODEX_MODELS: ModelInfo[] = [
-  { id: 'gpt-5', name: 'GPT-5', shortName: 'GPT-5', shortAlias: 'gpt5', githubLabel: 'llm-codex-gpt5', contextWindow: '400K' },
-  { id: 'gpt-5-mini', name: 'GPT-5 Mini', shortName: 'GPT-5 Mini', shortAlias: 'gpt5-mini', githubLabel: 'llm-codex-gpt5-mini', contextWindow: '400K' },
-  { id: 'gpt-5-codex', name: 'GPT-5 Codex', shortName: 'Codex', shortAlias: 'codex', githubLabel: 'llm-codex-codex', contextWindow: '400K' },
-  { id: 'o3', name: 'OpenAI o3', shortName: 'o3', shortAlias: 'o3', githubLabel: 'llm-codex-o3', contextWindow: '128K' },
-  { id: 'o4-mini', name: 'OpenAI o4-mini', shortName: 'o4-mini', shortAlias: 'o4-mini', contextWindow: '128K', githubLabel: 'llm-codex-o4-mini' },
+  { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', shortName: 'GPT-5.2 Codex', shortAlias: 'gpt52-codex', githubLabel: 'llm-codex-gpt52-codex', contextWindow: '400K' },
+  { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max', shortName: 'Codex Max', shortAlias: 'codex-max', githubLabel: 'llm-codex-max', contextWindow: '400K' },
+  { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini', shortName: 'Codex Mini', shortAlias: 'codex-mini', githubLabel: 'llm-codex-mini', contextWindow: '400K' },
+  { id: 'gpt-5.2', name: 'GPT-5.2', shortName: 'GPT-5.2', shortAlias: 'gpt52', githubLabel: 'llm-codex-gpt52', contextWindow: '400K' },
 ];
 
 // Gemini models
