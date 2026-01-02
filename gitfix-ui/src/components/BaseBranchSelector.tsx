@@ -128,9 +128,6 @@ export const BaseBranchSelector: React.FC<BaseBranchSelectorProps> = ({
             </svg>
           </div>
         </button>
-        {!repoName && (
-          <p className="text-xs text-gray-500 mt-1">Select a repository first</p>
-        )}
       </div>
     );
   }

@@ -300,7 +300,7 @@ const RepositoriesPage: React.FC = () => {
               placeholder="Select branch..."
             />
           </div>
-          <div className="lg:col-span-1 flex items-end">
+          <div className="lg:col-span-1 flex flex-col justify-end">
             <button
               onClick={handleAddRepo}
               disabled={!newRepo}
@@ -312,6 +312,9 @@ const RepositoriesPage: React.FC = () => {
             >
               Add Repository
             </button>
+            {!newRepo && (
+              <p className="text-xs text-gray-500 mt-1">Select a repository first</p>
+            )}
           </div>
         </div>
         <p className="text-xs text-gray-500 mt-2">
