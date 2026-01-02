@@ -41,7 +41,7 @@ export async function processSystemTaskJob(job: Job<SystemTaskJobData>): Promise
         const { token } = await octokit.auth({ type: "installation" }) as { token: string };
         const repoUrl = getRepoUrl({ repoOwner: owner, repoName });
 
-        localRepoPath = await ensureRepoCloned(repoUrl, owner, repoName, token);
+        localRepoPath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken: token });
 
         // Create a worktree from the existing PR branch
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);

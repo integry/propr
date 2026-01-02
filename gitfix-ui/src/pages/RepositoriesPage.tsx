@@ -1,11 +1,13 @@
 import { Link } from 'react-router-dom';
 import React, { useState, useEffect, useCallback } from 'react';
-import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/gitfixApi';
+import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, RepositoryIndexingStatus, MonitoredRepo } from '../api/gitfixApi';
+import { BaseBranchSelector } from '../components/BaseBranchSelector';
 
-interface Repo {
-  name: string;
-  enabled: boolean;
-}
+// Helper function to generate UUID
+const generateId = (): string => crypto.randomUUID();
+
+// Type alias for MonitoredRepo which includes id, name, enabled, alias?, baseBranch?
+type Repo = MonitoredRepo;
 
 // Indexing status indicator component
 const IndexingStatusIndicator: React.FC<{ status: RepositoryIndexingStatus | undefined }> = ({ status }) => {
@@ -75,6 +77,8 @@ const RepositoriesPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [newRepo, setNewRepo] = useState<string>('');
+  const [newAlias, setNewAlias] = useState<string>('');
+  const [newBaseBranch, setNewBaseBranch] = useState<string>('');
   const [availableRepos, setAvailableRepos] = useState<string[]>([]);
   const [indexingStatuses, setIndexingStatuses] = useState<Record<string, RepositoryIndexingStatus>>({});
 
@@ -86,19 +90,22 @@ const RepositoriesPage: React.FC = () => {
       const rawRepos = data.repos_to_monitor || [];
 
       // Transform and validate the data to ensure correct format
-      // Handle both object format {name, enabled} and legacy string format
+      // Handle both object format {id, name, enabled, alias?, baseBranch?} and legacy formats
       const validRepos: Repo[] = rawRepos
         .map((repo: unknown) => {
           if (typeof repo === 'string') {
             // Legacy format: just a string like "owner/repo"
-            return { name: repo, enabled: true };
+            return { id: generateId(), name: repo, enabled: true };
           } else if (repo && typeof repo === 'object') {
             const repoObj = repo as Record<string, unknown>;
-            // Object format: {name, enabled} or possibly {full_name, ...}
+            // Object format: {id?, name, enabled, alias?, baseBranch?} or possibly {full_name, ...}
             const name = (repoObj.name as string) || (repoObj.full_name as string);
             const enabled = typeof repoObj.enabled === 'boolean' ? repoObj.enabled : true;
+            const id = (repoObj.id as string) || generateId();
+            const alias = repoObj.alias as string | undefined;
+            const baseBranch = repoObj.baseBranch as string | undefined;
             if (name) {
-              return { name, enabled };
+              return { id, name, enabled, alias, baseBranch };
             }
           }
           return null;
@@ -144,22 +151,40 @@ const RepositoriesPage: React.FC = () => {
   const handleAddRepo = () => {
     if (!newRepo) return;
 
-    if (repos.some(r => r.name === newRepo)) {
-      alert(`Repository "${newRepo}" has already been added to the list.`);
+    // For duplicate detection, consider both name and baseBranch
+    // Same repo can be added with different base branches
+    const isDuplicate = repos.some(r =>
+      r.name === newRepo &&
+      (r.baseBranch || '') === (newBaseBranch || '')
+    );
+
+    if (isDuplicate) {
+      const branchInfo = newBaseBranch ? ` with branch "${newBaseBranch}"` : ' with default branch';
+      alert(`Repository "${newRepo}"${branchInfo} has already been added to the list.`);
       return;
     }
 
-    setRepos([...repos, { name: newRepo, enabled: true }]);
+    const newEntry: Repo = {
+      id: generateId(),
+      name: newRepo,
+      enabled: true,
+      alias: newAlias.trim() || undefined,
+      baseBranch: newBaseBranch.trim() || undefined
+    };
+
+    setRepos([...repos, newEntry]);
     setNewRepo('');
+    setNewAlias('');
+    setNewBaseBranch('');
   };
 
-  const handleRemoveRepo = (repoName: string) => {
-    setRepos(repos.filter(r => r.name !== repoName));
+  const handleRemoveRepo = (repoId: string) => {
+    setRepos(repos.filter(r => r.id !== repoId));
   };
 
-  const handleToggleRepo = (repoName: string) => {
-    setRepos(repos.map(repo => 
-      repo.name === repoName 
+  const handleToggleRepo = (repoId: string) => {
+    setRepos(repos.map(repo =>
+      repo.id === repoId
         ? { ...repo, enabled: !repo.enabled }
         : repo
     ));
@@ -240,42 +265,86 @@ const RepositoriesPage: React.FC = () => {
         Add repositories to monitor, enable/disable them, or remove them from the list. Changes are applied immediately.
       </p>
       
-      <div className="flex gap-4 mb-6">
-        <input
-          list="available-repos"
-          value={newRepo}
-          onChange={(e) => setNewRepo(e.target.value)}
-          placeholder="owner/repo or select from list"
-          className="flex-1 px-3 py-2 bg-gray-50 text-gray-900 border border-gray-300 rounded-md font-mono focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-        />
-        <datalist id="available-repos">
-          {availableRepos
-            .filter(repo => !repos.some(r => r.name === repo))
-            .map(repo => <option key={repo} value={repo} />)}
-        </datalist>
-        <button
-          onClick={handleAddRepo}
-          disabled={!newRepo || repos.some(r => r.name === newRepo)}
-          className={`px-4 py-2 font-medium rounded-md transition-colors ${
-            !newRepo || repos.some(r => r.name === newRepo)
-              ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
-              : 'bg-green-600 text-white hover:bg-green-700 cursor-pointer'
-          }`}
-        >
-          Add Repository
-        </button>
+      <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
+        <h3 className="text-sm font-medium text-gray-700 mb-3">Add New Repository</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="lg:col-span-1">
+            <label className="block text-xs font-medium text-gray-600 mb-1">Repository *</label>
+            <input
+              list="available-repos"
+              value={newRepo}
+              onChange={(e) => setNewRepo(e.target.value)}
+              placeholder="owner/repo"
+              className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md font-mono text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+            <datalist id="available-repos">
+              {availableRepos
+                .map(repo => <option key={repo} value={repo} />)}
+            </datalist>
+          </div>
+          <div className="lg:col-span-1">
+            <label className="block text-xs font-medium text-gray-600 mb-1">Alias (optional)</label>
+            <input
+              value={newAlias}
+              onChange={(e) => setNewAlias(e.target.value)}
+              placeholder="e.g., Production"
+              className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            />
+          </div>
+          <div className="lg:col-span-1">
+            <label className="block text-xs font-medium text-gray-600 mb-1">Base Branch (optional)</label>
+            <BaseBranchSelector
+              repoName={newRepo}
+              value={newBaseBranch}
+              onChange={setNewBaseBranch}
+              placeholder="Select branch..."
+            />
+          </div>
+          <div className="lg:col-span-1">
+            <label className="block text-xs font-medium text-gray-600 mb-1">&nbsp;</label>
+            <button
+              onClick={handleAddRepo}
+              disabled={!newRepo}
+              className={`w-full px-4 py-2 font-medium rounded-md transition-colors ${
+                !newRepo
+                  ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                  : 'bg-green-600 text-white hover:bg-green-700 cursor-pointer'
+              }`}
+            >
+              Add Repository
+            </button>
+            {!newRepo && (
+              <p className="text-xs text-gray-500 mt-1">Select a repository first</p>
+            )}
+          </div>
+        </div>
+        <p className="text-xs text-gray-500 mt-2">
+          You can add the same repository multiple times with different base branches to monitor multiple branches.
+        </p>
       </div>
 
       <div className="flex flex-col gap-2 mb-6">
         {repos.map(repo => (
           <div
-            key={repo.name}
+            key={repo.id}
             className="flex items-center justify-between px-4 py-3 bg-gray-50 border border-gray-200 rounded-md"
           >
             <div className="flex items-center gap-3">
-              <span className={`font-mono text-gray-900 ${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
-                {repo.name}
-              </span>
+              <div className={`${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
+                {repo.alias ? (
+                  <span className="text-gray-900 font-medium">
+                    {repo.alias}
+                    <span className="font-mono text-gray-500 text-sm ml-2">({repo.name})</span>
+                  </span>
+                ) : (
+                  <span className="font-mono text-gray-900">{repo.name}</span>
+                )}
+                {repo.baseBranch && (
+                  <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                    Branch: {repo.baseBranch}
+                  </span>
+                )}
+              </div>
               <IndexingStatusIndicator status={indexingStatuses[repo.name]} />
               <Link
                 to={`/summaries/${repo.name}`}
@@ -289,13 +358,13 @@ const RepositoriesPage: React.FC = () => {
                 <input
                   type="checkbox"
                   checked={repo.enabled}
-                  onChange={() => handleToggleRepo(repo.name)}
+                  onChange={() => handleToggleRepo(repo.id)}
                   className="mr-2 h-4 w-4 cursor-pointer rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                 />
                 Enabled
               </label>
               <button
-                onClick={() => handleRemoveRepo(repo.name)}
+                onClick={() => handleRemoveRepo(repo.id)}
                 className="bg-red-600 hover:bg-red-700 text-xs px-3 py-1 text-white rounded-md font-medium transition-colors"
               >
                 Remove

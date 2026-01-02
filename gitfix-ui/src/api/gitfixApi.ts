@@ -111,8 +111,11 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
 };
 
 export interface MonitoredRepo {
-  name: string;
+  id: string;           // UUID for unique identification
+  name: string;         // owner/repo
   enabled: boolean;
+  alias?: string;       // Optional display name
+  baseBranch?: string;  // Optional specific branch to monitor
 }
 
 export interface RepoConfigResponse {
@@ -140,6 +143,19 @@ export const updateRepoConfig = async (repos: MonitoredRepo[]): Promise<unknown>
 
 export const getAvailableGithubRepos = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/github/repos`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export interface RepoBranchesResponse {
+  branches: string[];
+  defaultBranch: string;
+}
+
+export const getRepoBranches = async (owner: string, repo: string): Promise<RepoBranchesResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`, {
     credentials: 'include'
   });
   await handleApiResponse(response);

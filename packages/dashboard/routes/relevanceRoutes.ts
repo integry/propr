@@ -51,7 +51,7 @@ export function createRelevanceRoutes() {
       }
 
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-      const repoPath = await ensureRepoCloned(repoUrl, owner, repoName, authToken);
+      const repoPath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken });
 
       const result = await findRelevantFiles(repoPath, prompt, {
         correlationId,

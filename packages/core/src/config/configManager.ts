@@ -4,9 +4,12 @@ import logger from '../utils/logger.js';
 
 // --- Interfaces ---
 
-interface RepoToMonitor {
-    name: string;
+export interface RepoToMonitor {
+    id: string;              // UUID, required for uniqueness
+    name: string;            // owner/repo
     enabled: boolean;
+    alias?: string;          // Optional display name
+    baseBranch?: string;     // Optional specific branch to monitor
 }
 
 interface ConfigSettings {

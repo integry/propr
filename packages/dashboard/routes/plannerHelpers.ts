@@ -97,7 +97,7 @@ export async function setupRepoContext(
   }
 
   const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-  const worktreePath = await ensureRepoCloned(repoUrl, owner, repoName, authToken);
+  const worktreePath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken });
 
   return { worktreePath, authToken, repository: draft.repository };
 }
@@ -149,7 +149,7 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
       if (!accessToken) { res.status(401).json({ error: 'GitHub access token not available' }); return; }
 
       const authToken = await getRepoAuthToken(accessToken);
-      const worktreePath = await ensureRepoCloned(`https://github.com/${owner}/${repoName}.git`, owner, repoName, authToken);
+      const worktreePath = await ensureRepoCloned({ repoUrl: `https://github.com/${owner}/${repoName}.git`, owner, repoName, authToken });
 
       const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId });
       res.json(result);

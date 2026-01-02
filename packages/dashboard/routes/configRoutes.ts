@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
+import { randomUUID } from 'crypto';
 import * as configManager from '@gitfix/core';
-import { AgentRegistry, DEFAULT_INSTRUCTIONS } from '@gitfix/core';
+import { AgentRegistry, DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@gitfix/core';
 import { withConfigLock, queueResummarizationForAllRepos, validateAgentsConfig, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex } from './configHelpers.js';
 
 interface ConfigRoutesDeps {
@@ -88,20 +89,40 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'repos_to_monitor must be an array' } };
       }
 
+      // Validate and process repos
+      const processedRepos: RepoToMonitor[] = [];
       for (const repo of repos_to_monitor) {
+        // Validate required fields
         const isValid = typeof repo.name === 'string' &&
-          repo.name.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_]+$/) &&
+          repo.name.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/) &&
           typeof repo.enabled === 'boolean';
         if (!isValid) {
           return { status: 400, body: { error: `Invalid repository format: ${JSON.stringify(repo)}` } };
         }
+
+        // Validate optional fields if present
+        if (repo.alias !== undefined && typeof repo.alias !== 'string') {
+          return { status: 400, body: { error: `Invalid alias format for ${repo.name}: must be a string` } };
+        }
+        if (repo.baseBranch !== undefined && typeof repo.baseBranch !== 'string') {
+          return { status: 400, body: { error: `Invalid baseBranch format for ${repo.name}: must be a string` } };
+        }
+
+        // Process the repo with ID generation and field sanitization
+        processedRepos.push({
+          id: repo.id || randomUUID(),
+          name: repo.name,
+          enabled: repo.enabled,
+          alias: repo.alias?.trim() || undefined,
+          baseBranch: repo.baseBranch?.trim() || undefined
+        });
       }
 
-      await configManager.saveMonitoredRepos(repos_to_monitor);
+      await configManager.saveMonitoredRepos(processedRepos);
       await publishConfigUpdate('repos_update');
-      await logActivityHelper(`Updated monitored repositories list (${repos_to_monitor.length} repos)`, 'config-update', 'config_updated', req.user?.username);
+      await logActivityHelper(`Updated monitored repositories list (${processedRepos.length} repos)`, 'config-update', 'config_updated', req.user?.username);
 
-      return { status: 200, body: { success: true, repos_to_monitor } };
+      return { status: 200, body: { success: true, repos_to_monitor: processedRepos } };
     });
 
     res.status(result.status).json(result.body);
@@ -343,7 +364,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function triggerIndexing(req: Request, res: Response): Promise<void> {
     try {
-      const { repository, fullReindex } = req.body;
+      const { repository, fullReindex, baseBranch } = req.body;
 
       if (!repository || typeof repository !== 'string') {
         res.status(400).json({ error: 'repository is required and must be a string (e.g., "owner/repo")' });
@@ -355,7 +376,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return;
       }
 
-      const result = await queueIndexingJob(repository, !!fullReindex);
+      if (baseBranch !== undefined && typeof baseBranch !== 'string') {
+        res.status(400).json({ error: 'baseBranch must be a string' });
+        return;
+      }
+
+      const result = await queueIndexingJob(repository, !!fullReindex, baseBranch);
       if (!result.success) {
         const statusCode = result.error?.includes('already queued') ? 409 : 400;
         res.status(statusCode).json({ error: result.error });
@@ -363,11 +389,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       await logActivityHelper(
-        `Triggered ${fullReindex ? 'full re-' : ''}indexing for ${repository}`,
+        `Triggered ${fullReindex ? 'full re-' : ''}indexing for ${repository}${baseBranch ? ` (branch: ${baseBranch})` : ''}`,
         'indexing-trigger', 'indexing_triggered', req.user?.username
       );
 
-      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: !!fullReindex });
+      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: !!fullReindex, baseBranch });
     } catch (error) {
       console.error('Error in /api/config/repos/trigger-indexing POST:', error);
       res.status(500).json({ error: 'Failed to trigger indexing' });

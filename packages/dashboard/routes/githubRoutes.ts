@@ -78,5 +78,68 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     }
   }
 
-  return { importTasks, getRepos };
+  async function getBranches(req: Request, res: Response): Promise<void> {
+    try {
+      const { owner, repo } = req.params;
+
+      if (!owner || !repo) {
+        res.status(400).json({ error: 'Owner and repo are required' });
+        return;
+      }
+
+      // Get user's access token from session
+      const accessToken = req.user?.accessToken;
+      if (!accessToken) {
+        res.status(401).json({ error: 'No GitHub access token available' });
+        return;
+      }
+
+      // Create Octokit instance with user's token and pagination support
+      const PaginatedOctokit = Octokit.plugin(paginateRest);
+      const octokit = new PaginatedOctokit({ auth: accessToken });
+
+      // Fetch branches with pagination
+      const branches: string[] = [];
+      let defaultBranch = 'main';
+
+      // First get the repository info to find the default branch
+      try {
+        const repoInfo = await octokit.request('GET /repos/{owner}/{repo}', {
+          owner,
+          repo
+        });
+        defaultBranch = repoInfo.data.default_branch;
+      } catch (error) {
+        console.error('Error fetching repo info for default branch:', error);
+        // Continue without default branch info
+      }
+
+      // Fetch all branches using pagination
+      for await (const response of octokit.paginate.iterator('GET /repos/{owner}/{repo}/branches', {
+        owner,
+        repo,
+        per_page: 100
+      })) {
+        for (const branch of response.data) {
+          if (branch.name) {
+            branches.push(branch.name);
+          }
+        }
+      }
+
+      // Sort alphabetically but put default branch first
+      branches.sort((a, b) => {
+        if (a === defaultBranch) return -1;
+        if (b === defaultBranch) return 1;
+        return a.toLowerCase().localeCompare(b.toLowerCase());
+      });
+
+      res.json({ branches, defaultBranch });
+    } catch (error) {
+      console.error('Error in /api/github/repos/:owner/:repo/branches:', error);
+      res.status(500).json({ error: 'Failed to fetch branches from GitHub' });
+    }
+  }
+
+  return { importTasks, getRepos, getBranches };
 }
