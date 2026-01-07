@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './components/Dashboard'
@@ -13,9 +13,38 @@ import LoginPage from './pages/LoginPage'
 import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
 import './App.css'
-import { getSystemStatus } from './api/gitfixApi'
+import { getSystemStatus, getCurrentUser } from './api/gitfixApi'
 
 const App: React.FC = () => {
+  // Auth check state - start loading unless already on login page
+  const [isLoading, setIsLoading] = useState(window.location.pathname !== '/login');
+
+  // Perform initial auth check
+  useEffect(() => {
+    const checkSession = async () => {
+      // Don't check if we are already on login page
+      if (window.location.pathname === '/login') {
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        await getCurrentUser();
+        // Session is valid
+        setIsLoading(false);
+      } catch (error) {
+        // If error is NOT 'Authentication required', we let the app render (to show errors).
+        // If it IS 'Authentication required', handleApiResponse handles the redirect,
+        // so we keep isLoading=true to prevent UI flash.
+        if (error instanceof Error && error.message !== 'Authentication required') {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    checkSession();
+  }, []);
+
   useEffect(() => {
     const favicon = document.getElementById('favicon') as HTMLLinkElement | null;
     const defaultFavicon = '/logo.png';
@@ -47,6 +76,15 @@ const App: React.FC = () => {
 
     return () => clearInterval(interval);
   }, []);
+
+  // Render spinner while checking auth
+  if (isLoading) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-gray-50">
+        <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
+      </div>
+    );
+  }
 
   return (
     <ToastProvider>
