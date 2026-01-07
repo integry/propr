@@ -26,6 +26,9 @@ process.on('unhandledRejection', (reason: unknown) => {
 const AI_PROCESSING_TAG = process.env.AI_PROCESSING_TAG || 'AI-processing';
 const AI_DONE_TAG = process.env.AI_DONE_TAG || 'AI-done';
 
+// Redis channel for real-time config update notifications
+const CONFIG_EVENT_CHANNEL = 'system:config:events';
+
 async function getAiPrimaryTag(): Promise<string> {
     try {
         if (process.env.CONFIG_REPO) {
@@ -209,6 +212,53 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         logger.error({ error: err.message }, 'Failed to initialize agent registry. Worker may not function properly.');
     }
 
+    // --- Real-time Config Subscription Setup ---
+    // Create a dedicated Redis client for subscription (subscriber clients cannot run other commands)
+    const subscriberRedis = new Redis({
+        host: process.env.REDIS_HOST || 'localhost',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        retryStrategy: (times: number) => Math.min(times * 50, 2000)
+    });
+
+    // Subscribe to config update events
+    subscriberRedis.subscribe(CONFIG_EVENT_CHANNEL, (err) => {
+        if (err) {
+            logger.error({ error: err.message }, 'Failed to subscribe to config events channel');
+        } else {
+            logger.info({ channel: CONFIG_EVENT_CHANNEL }, 'Subscribed to config update events');
+        }
+    });
+
+    // Handle incoming config update messages
+    subscriberRedis.on('message', async (channel, message) => {
+        if (channel === CONFIG_EVENT_CHANNEL) {
+            try {
+                const event = JSON.parse(message);
+                logger.info({ event }, 'Received config update event');
+
+                // Handle agent config updates by refreshing the registry
+                if (event.subtype === 'agents_update') {
+                    logger.info('Refreshing AgentRegistry due to agents_update event...');
+                    try {
+                        const registry = AgentRegistry.getInstance();
+                        await registry.refresh();
+                        const agents = registry.getAllAgents();
+                        logger.info({
+                            agentCount: agents.length,
+                            agents: agents.map(a => ({ alias: a.config.alias, type: a.config.type, enabled: a.config.enabled }))
+                        }, 'AgentRegistry refreshed successfully');
+                    } catch (agentError) {
+                        const err = agentError as Error;
+                        logger.error({ error: err.message }, 'Failed to refresh AgentRegistry');
+                    }
+                }
+            } catch (parseError) {
+                const err = parseError as Error;
+                logger.error({ error: err.message, message }, 'Failed to parse config update event');
+            }
+        }
+    });
+
     const worker = createWorker(GITHUB_ISSUE_QUEUE_NAME, async (job: Job<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData>): Promise<JobResult> => {
         if (job.name === 'processGitHubIssue') {
             return processGitHubIssueJob(job as Job<IssueJobData>);
@@ -227,6 +277,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         logger.info('Worker received SIGINT, shutting down gracefully...');
         await heartbeatRedis.srem('system:status:workers', workerId);
         clearInterval(heartbeatInterval);
+        await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await worker.close();
         process.exit(0);
@@ -236,6 +287,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         logger.info('Worker received SIGTERM, shutting down gracefully...');
         await heartbeatRedis.srem('system:status:workers', workerId);
         clearInterval(heartbeatInterval);
+        await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await worker.close();
         process.exit(0);
