@@ -19,7 +19,6 @@ export class WorkerStateManager {
     private isShuttingDown = false;
 
     constructor(options: WorkerStateManagerOptions = {}) {
-        const self = this;
         this.redis = new Redis({
             host: process.env.REDIS_HOST ?? '127.0.0.1',
             port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
@@ -27,7 +26,7 @@ export class WorkerStateManager {
             enableReadyCheck: false,
             // Disable auto-reconnect during shutdown
             retryStrategy: () => {
-                if (self.isShuttingDown) {
+                if (this.isShuttingDown) {
                     return null; // Stop retrying if we're shutting down
                 }
                 return 1000; // Retry after 1 second
