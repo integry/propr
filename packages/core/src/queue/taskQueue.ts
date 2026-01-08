@@ -2,160 +2,54 @@
 import { Queue, Worker, Job, QueueOptions, WorkerOptions } from 'bullmq';
 import { Redis, RedisOptions } from 'ioredis';
 import logger from '../utils/logger.js';
-import type { ConversationStep } from '../utils/llmMetrics.types.js';
 import 'dotenv/config';
+import {
+    ActivityLog,
+    getRepoFullName,
+    updateCompletedMetrics,
+    updateFailedMetrics,
+    logActivity
+} from './workerMetrics.js';
 
-export interface IssueJobData {
-    repoOwner: string;
-    repoName: string;
-    number: number;
-    repository?: string;
-    agentAlias?: string;       // Agent to use (e.g., 'claude', 'gemini', 'codex')
-    modelName?: string;
-    correlationId?: string;
-    triggeringLabel?: string;
-    baseBranch?: string;
-    baseLabel?: string | null;
-    modelLabel?: string | null;
-    isChildJob?: boolean;
-    issuePayload?: Record<string, unknown>;
-    repoPayload?: Record<string, unknown>;
-    title?: string;
-    subtitle?: string;
-    issueNumber?: number;
-}
+// Re-export all types from the types module
+export type {
+    IssueJobData,
+    CommentJobData,
+    UnprocessedComment,
+    TaskImportJobData,
+    AnalysisJobData,
+    SystemTaskJobData,
+    IndexingJobData,
+    JobData,
+    ClaudeOutputResult,
+    ClaudeResult,
+    JobResult,
+    AiMetrics,
+    WorkerCreateOptions
+} from './taskQueue.types.js';
 
-export interface CommentJobData {
-    pullRequestNumber: number;
-    commentId?: number;
-    commentBody?: string;
-    commentAuthor?: string;
-    comments?: UnprocessedComment[];
-    branchName?: string;
-    repoOwner: string;
-    repoName: string;
-    llm?: string | null;
-    correlationId: string;
-    title?: string;
-    subtitle?: string;
-}
-
-export interface UnprocessedComment {
-    id: number;
-    body: string;
-    body_html?: string;  // HTML with signed image URLs (from accept: application/vnd.github.full+json)
-    author: string;
-    type: 'review' | 'issue';
-    hasCodeContext?: boolean;
-}
-
-export interface TaskImportJobData {
-    taskDescription: string;
-    repository: string;
-    correlationId: string;
-    user?: string;
-}
-
-export interface AnalysisJobData {
-    taskId: string;
-    executionId: string;
-    sessionId: string;
-    correlationId: string;
-}
-
-export interface SystemTaskJobData {
-    type: 'revert';
-    repoName: string;
-    prNumber: number;
-    commitHash: string;
-    targetCommentId: number;
-    prBranch: string;
-    owner: string;
-    correlationId: string;
-}
-
-export interface IndexingJobData {
-    repository: string;      // Full repo name (e.g., 'owner/repo')
-    repoPath: string;        // Path to the cloned repository
-    correlationId: string;
-    priority?: 'high' | 'normal' | 'low';
-    fullReindex?: boolean;   // Force full re-index even if summaries exist
-    baseBranch?: string;     // Optional specific branch to index (defaults to repo default branch)
-}
-
-export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData;
-
-export interface ClaudeOutputResult {
-    type?: string;
-    is_error?: boolean;
-    result?: string;
-    total_cost_usd?: number;
-    cost_usd?: number;
-    num_turns?: number;
-    model?: string;
-    conversation_id?: string;
-}
-
-export interface ClaudeResult {
-    success: boolean;
-    sessionId?: string | null;
-    conversationId?: string;
-    executionTime?: number;
-    model?: string;
-    finalResult?: ClaudeOutputResult | null;
-    conversationLog?: ConversationStep[];
-    claudeCostUsd?: number;
-    costUsd?: number;
-    claudeNumTurns?: number;
-    output?: {
-        rawOutput?: string;
-    };
-    rawOutput?: string;
-    error?: string;
-}
-
-export interface JobResult {
-    status: string;
-    claudeResult?: ClaudeResult;
-    correlationId?: string;
-    [key: string]: unknown;
-}
-
-export interface AiMetrics {
-    timestamp: number;
-    cost: number;
-    model: string;
-    turns: number;
-    executionTimeMs: number;
-    issueNumber?: number;
-    repo: string | null;
-    status: 'success' | 'failed';
-    correlationId?: string;
-    error?: string;
-}
-
-export interface WorkerCreateOptions {
-    concurrency?: number;
-}
+import type {
+    IssueJobData,
+    CommentJobData,
+    AnalysisJobData,
+    IndexingJobData,
+    JobData,
+    JobResult,
+    WorkerCreateOptions
+} from './taskQueue.types.js';
 
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 
 const connectionOptions: RedisOptions = {
-    host: REDIS_HOST,
-    port: REDIS_PORT,
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
+    host: REDIS_HOST, port: REDIS_PORT, maxRetriesPerRequest: null, enableReadyCheck: false
 };
 
 // Lazy-loaded Redis connection - only created when actually needed
 let redisConnection: Redis | null = null;
 let redisConnectionInitialized = false;
 
-/**
- * Get the shared Redis connection, creating it lazily if needed.
- * This prevents connections from being created at module load time.
- */
+/** Get the shared Redis connection, creating it lazily if needed. */
 function getRedisConnection(): Redis {
     if (!redisConnection) {
         redisConnection = new Redis(connectionOptions);
@@ -201,9 +95,7 @@ function getIssueQueueOptions(): QueueOptions {
     };
 }
 
-/**
- * Get the issue queue, creating it lazily if needed.
- */
+/** Get the issue queue, creating it lazily if needed. */
 export function getIssueQueue(): Queue<IssueJobData | CommentJobData> {
     if (!_issueQueue) {
         _issueQueue = new Queue<IssueJobData | CommentJobData>(GITHUB_ISSUE_QUEUE_NAME, getIssueQueueOptions());
@@ -254,9 +146,7 @@ function getAnalysisQueueOptions(): QueueOptions {
     };
 }
 
-/**
- * Get the analysis queue, creating it lazily if needed.
- */
+/** Get the analysis queue, creating it lazily if needed. */
 export function getAnalysisQueue(): Queue<AnalysisJobData> {
     if (!_analysisQueue) {
         _analysisQueue = new Queue<AnalysisJobData>(ANALYSIS_QUEUE_NAME, getAnalysisQueueOptions());
@@ -308,9 +198,7 @@ function getIndexingQueueOptions(): QueueOptions {
     };
 }
 
-/**
- * Get the indexing queue, creating it lazily if needed.
- */
+/** Get the indexing queue, creating it lazily if needed. */
 export function getIndexingQueue(): Queue<IndexingJobData> {
     if (!_indexingQueue) {
         _indexingQueue = new Queue<IndexingJobData>(INDEXING_QUEUE_NAME, getIndexingQueueOptions());
@@ -337,117 +225,6 @@ export const indexingQueue = {
     get removeRepeatableByKey() { return getIndexingQueue().removeRepeatableByKey.bind(getIndexingQueue()); },
     get name() { return INDEXING_QUEUE_NAME; },
 };
-
-function getRepoFullName(job: Job<JobData> | undefined | null): string | null {
-    if (!job?.data) return null;
-    const data = job.data as IssueJobData;
-    if (data.repository) return data.repository;
-    if (data.repoOwner && data.repoName) return `${data.repoOwner}/${data.repoName}`;
-    return null;
-}
-
-function extractCostFromResult(result: JobResult | undefined): number {
-    const claudeResult = result?.claudeResult;
-    if (!claudeResult) return 0;
-    return claudeResult.claudeCostUsd || claudeResult.costUsd || claudeResult.finalResult?.cost_usd || 0;
-}
-
-function extractModel(result: JobResult | undefined, job: Job<JobData>): string {
-    const data = job.data as IssueJobData;
-    return result?.claudeResult?.model || data?.modelName || 'unknown';
-}
-
-function extractTurns(result: JobResult | undefined): number {
-    const claudeResult = result?.claudeResult;
-    if (!claudeResult) return 0;
-    return claudeResult.claudeNumTurns || claudeResult.finalResult?.num_turns || 0;
-}
-
-function buildAiMetrics(job: Job<JobData>, result: JobResult | undefined, repoFullName: string | null, status: 'success' | 'failed'): AiMetrics {
-    const cost = extractCostFromResult(result);
-    const parsedCost = typeof cost === 'string' ? parseFloat(cost) : cost;
-    const data = job.data as IssueJobData;
-
-    return {
-        timestamp: job.timestamp,
-        cost: parsedCost,
-        model: extractModel(result, job),
-        turns: extractTurns(result),
-        executionTimeMs: result?.claudeResult?.executionTime || 0,
-        issueNumber: data?.number || data?.issueNumber,
-        repo: repoFullName,
-        status,
-        correlationId: data?.correlationId || result?.correlationId,
-    };
-}
-
-interface MetricsUpdateOptions {
-    duration: number;
-    repoFullName: string | null;
-}
-
-async function updateCompletedMetrics(
-    metricsRedis: Redis,
-    job: Job<JobData>,
-    result: JobResult | undefined,
-    options: MetricsUpdateOptions
-): Promise<void> {
-    const { duration, repoFullName } = options;
-    const dateKey = new Date().toISOString().split('T')[0];
-    await metricsRedis.incr('metrics:jobs:processed');
-    await metricsRedis.incr(`metrics:daily:${dateKey}:processed`);
-    const totalProcessed = await metricsRedis.get('metrics:jobs:processed') || '1';
-    const currentAvg = parseFloat(await metricsRedis.get('metrics:jobs:avgTime') || '0');
-    const newAvg = ((currentAvg * (parseInt(totalProcessed) - 1)) + (duration / 1000)) / parseInt(totalProcessed);
-    await metricsRedis.set('metrics:jobs:avgTime', newAvg.toFixed(2));
-    if (repoFullName) await metricsRedis.sadd('active:repositories', repoFullName);
-    if (result?.claudeResult) {
-        const aiMetrics = buildAiMetrics(job, result, repoFullName, 'success');
-        await metricsRedis.zadd('metrics:ai:log:v1', job.timestamp, JSON.stringify(aiMetrics));
-    }
-}
-
-interface ActivityLog {
-    id: string;
-    type: string;
-    timestamp: string;
-    repository: string | null;
-    issueNumber?: number;
-    description: string;
-    status: 'success' | 'error' | 'info';
-}
-
-async function logActivity(metricsRedis: Redis, activity: ActivityLog): Promise<void> {
-    await metricsRedis.lpush('system:activity:log', JSON.stringify(activity));
-    await metricsRedis.ltrim('system:activity:log', 0, 999);
-}
-
-async function updateFailedMetrics(
-    metricsRedis: Redis,
-    job: Job<JobData> | undefined | null,
-    err: Error,
-    repoFullName: string | null
-): Promise<void> {
-    const dateKey = new Date().toISOString().split('T')[0];
-    await metricsRedis.incr('metrics:jobs:failed');
-    await metricsRedis.incr(`metrics:daily:${dateKey}:failed`);
-    if (job?.timestamp) {
-        const data = job.data as IssueJobData;
-        const aiMetrics: AiMetrics = {
-            timestamp: job.timestamp,
-            cost: 0,
-            model: data?.modelName || 'unknown',
-            turns: 0,
-            executionTimeMs: (job.finishedOn || Date.now()) - (job.timestamp || Date.now()),
-            issueNumber: data?.number,
-            repo: repoFullName,
-            status: 'failed',
-            correlationId: data?.correlationId,
-            error: err.message.substring(0, 100),
-        };
-        await metricsRedis.zadd('metrics:ai:log:v1', job.timestamp, JSON.stringify(aiMetrics));
-    }
-}
 
 export type ProcessorFunction<T = JobData, R = JobResult> = (job: Job<T>) => Promise<R>;
 
@@ -545,10 +322,7 @@ export function createWorker<T extends JobData = JobData, R extends JobResult = 
     return worker;
 }
 
-/**
- * Shutdown all queues, workers, and Redis connections.
- * This ensures clean exit without hanging connections.
- */
+/** Shutdown all queues, workers, and Redis connections for clean exit. */
 export async function shutdownQueue(): Promise<void> {
     logger.info('Shutting down queue...');
 
@@ -615,12 +389,7 @@ export async function shutdownQueue(): Promise<void> {
     }
 }
 
-/**
- * Check if any queue resources have been initialized.
- * Useful for tests to determine if cleanup is needed.
- */
+/** Check if any queue resources have been initialized. Useful for tests. */
 export function hasQueueResources(): boolean {
     return redisConnectionInitialized || _issueQueue !== null || _analysisQueue !== null || _indexingQueue !== null;
 }
-
-
