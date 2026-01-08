@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import React, { useState, useEffect, useCallback } from 'react';
-import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, RepositoryIndexingStatus, MonitoredRepo } from '../api/gitfixApi';
+import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/gitfixApi';
 import { BaseBranchSelector } from '../components/BaseBranchSelector';
 
 // Helper function to generate UUID
@@ -10,7 +10,10 @@ const generateId = (): string => crypto.randomUUID();
 type Repo = MonitoredRepo;
 
 // Indexing status indicator component
-const IndexingStatusIndicator: React.FC<{ status: RepositoryIndexingStatus | undefined }> = ({ status }) => {
+const IndexingStatusIndicator: React.FC<{
+  status: RepositoryIndexingStatus | undefined;
+  onStop?: () => void;
+}> = ({ status, onStop }) => {
   if (!status) {
     // No indexing info available - show idle/default state
     return (
@@ -29,12 +32,28 @@ const IndexingStatusIndicator: React.FC<{ status: RepositoryIndexingStatus | und
   switch (status.indexing_status) {
     case 'indexing':
       return (
-        <div className="flex items-center gap-1.5" title="Indexing codebase...">
-          <svg className="animate-spin h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-          </svg>
-          <span className="text-xs text-blue-600">Indexing...</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5" title="Indexing codebase...">
+            <svg className="animate-spin h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+            </svg>
+            <span className="text-xs text-blue-600">Indexing...</span>
+          </div>
+          {onStop && (
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                onStop();
+              }}
+              className="p-1 hover:bg-red-100 rounded text-red-600 transition-colors"
+              title="Stop Indexing"
+            >
+              <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" />
+              </svg>
+            </button>
+          )}
         </div>
       );
     case 'completed':
@@ -145,6 +164,17 @@ const RepositoriesPage: React.FC = () => {
       setIndexingStatuses(statusMap);
     } catch (err) {
       console.error('Failed to load indexing statuses:', err);
+    }
+  };
+
+  const handleStopIndexing = async (repoName: string) => {
+    try {
+      if (!confirm(`Are you sure you want to stop indexing for ${repoName}?`)) return;
+      await stopRepositoryIndexing(repoName);
+      // Short delay to allow backend to process
+      setTimeout(loadIndexingStatuses, 500);
+    } catch (err) {
+      alert('Failed to stop indexing: ' + (err as Error).message);
     }
   };
 
@@ -345,7 +375,10 @@ const RepositoriesPage: React.FC = () => {
                   </span>
                 )}
               </div>
-              <IndexingStatusIndicator status={indexingStatuses[repo.name]} />
+              <IndexingStatusIndicator
+                status={indexingStatuses[repo.name]}
+                onStop={() => handleStopIndexing(repo.name)}
+              />
               <Link
                 to={`/summaries/${repo.name}`}
                 className="text-xs px-2 py-0.5 text-primary-600 hover:text-primary-700 hover:underline font-medium transition-colors"

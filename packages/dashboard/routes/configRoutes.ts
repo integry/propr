@@ -3,7 +3,7 @@ import { RedisClientType } from 'redis';
 import { randomUUID } from 'crypto';
 import * as configManager from '@gitfix/core';
 import { AgentRegistry, DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@gitfix/core';
-import { withConfigLock, queueResummarizationForAllRepos, validateAgentsConfig, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex } from './configHelpers.js';
+import { withConfigLock, queueResummarizationForAllRepos, validateAgentsConfig, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex, stopIndexingJob } from './configHelpers.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -431,6 +431,37 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
   }
 
+  async function stopIndexing(req: Request, res: Response): Promise<void> {
+    try {
+      const { repository } = req.body;
+
+      if (!repository || typeof repository !== 'string') {
+        res.status(400).json({ error: 'Repository is required' });
+        return;
+      }
+
+      const result = await stopIndexingJob(repository);
+
+      if (!result.success) {
+        res.status(500).json({ error: result.message || 'Failed to stop indexing' });
+        return;
+      }
+
+      // Log activity
+      await logActivityHelper(
+        `Stopped indexing for ${repository}`,
+        'indexing-stop',
+        'indexing_stopped',
+        req.user?.username
+      );
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error in /api/config/repos/stop-indexing POST:', error);
+      res.status(500).json({ error: 'Failed to stop indexing' });
+    }
+  }
+
   return {
     getFollowupKeywords,
     postFollowupKeywords,
@@ -450,6 +481,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     postSummarizationSettings,
     getRepositoriesIndexingStatus,
     triggerIndexing,
-    triggerReindexAll
+    triggerReindexAll,
+    stopIndexing
   };
 }
