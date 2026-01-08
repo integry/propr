@@ -215,20 +215,19 @@ after(async () => {
 
         // Also close any remaining connections
         try {
-            const { closeConnection, shutdownQueue } = await import('@gitfix/core');
+            const { closeConnection, shutdownQueue, hasQueueResources } = await import('@gitfix/core');
             await closeConnection();
-            await shutdownQueue();
+            // Only shutdown queue if resources were created
+            if (hasQueueResources()) {
+                await shutdownQueue();
+            }
         } catch {
             // Connections may already be closed
         }
 
-        // Give a moment for cleanup to complete
-        await new Promise(resolve => setTimeout(resolve, 200));
-
-        // Force exit if still hanging - this ensures tests don't hang
-        setTimeout(() => process.exit(0), 500);
+        // Brief delay for cleanup to complete
+        await new Promise(resolve => setTimeout(resolve, 100));
     } catch (error) {
         console.error('Error during test cleanup:', error);
-        process.exit(1);
     }
 });

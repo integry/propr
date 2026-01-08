@@ -118,6 +118,6 @@ after(async () => {
     } catch {
         // Ignore cleanup errors
     }
-    await new Promise(resolve => setTimeout(resolve, 100));
-    setTimeout(() => process.exit(0), 300);
+    // Brief delay for cleanup
+    await new Promise(resolve => setTimeout(resolve, 50));
 });

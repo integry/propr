@@ -254,12 +254,13 @@ test('daemon exports required functions', () => {
 // Cleanup after tests
 after(async () => {
     try {
-        const { closeConnection, shutdownQueue } = await import('@gitfix/core');
+        const { closeConnection, shutdownQueue, hasQueueResources } = await import('@gitfix/core');
         await closeConnection();
-        await shutdownQueue();
+        if (hasQueueResources()) {
+            await shutdownQueue();
+        }
     } catch {
         // Ignore cleanup errors
     }
-    await new Promise(resolve => setTimeout(resolve, 100));
-    setTimeout(() => process.exit(0), 300);
+    await new Promise(resolve => setTimeout(resolve, 50));
 });

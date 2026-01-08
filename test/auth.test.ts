@@ -36,12 +36,15 @@ test('GitHub authentication fails without credentials', async (t) => {
 // Cleanup after tests
 after(async () => {
     try {
-        const { closeConnection, shutdownQueue } = await import('@gitfix/core');
+        const { closeConnection, shutdownQueue, hasQueueResources } = await import('@gitfix/core');
         await closeConnection();
-        await shutdownQueue();
+        // Only shutdown queue if resources were created
+        if (hasQueueResources()) {
+            await shutdownQueue();
+        }
     } catch {
         // Ignore cleanup errors
     }
-    await new Promise(resolve => setTimeout(resolve, 100));
-    setTimeout(() => process.exit(0), 300);
+    // Brief delay for cleanup
+    await new Promise(resolve => setTimeout(resolve, 50));
 });

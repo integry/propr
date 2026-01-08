@@ -45,12 +45,16 @@ export {
     issueQueue,
     analysisQueue,
     indexingQueue,
+    getIssueQueue,
+    getAnalysisQueue,
+    getIndexingQueue,
     GITHUB_ISSUE_QUEUE_NAME,
     ANALYSIS_QUEUE_NAME,
     INDEXING_QUEUE_NAME,
     COMMENT_BATCH_DELAY_MS,
     createWorker,
-    shutdownQueue
+    shutdownQueue,
+    hasQueueResources
 } from './queue/taskQueue.js';
 export type {
     IssueJobData,

@@ -187,6 +187,6 @@ describe('Semantic Git Mining', () => {
 
 // Cleanup after tests - ensure clean termination
 after(async () => {
-    await new Promise(resolve => setTimeout(resolve, 100));
-    setTimeout(() => process.exit(0), 300);
+    // Brief delay for any pending cleanup
+    await new Promise(resolve => setTimeout(resolve, 50));
 });
