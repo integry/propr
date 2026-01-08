@@ -14,7 +14,6 @@ import {
     parseCodexStreamOutput,
     storeCodexPromptInRedis
 } from '../../codex/codexHelpers.js';
-import { resolveModelAlias } from '../../config/modelAliases.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 
 // Re-export UsageLimitError for convenience
