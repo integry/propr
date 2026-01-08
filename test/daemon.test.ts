@@ -1,6 +1,7 @@
-import { test, mock } from 'node:test';
+import { test, mock, after } from 'node:test';
 import assert from 'node:assert';
-import { fetchIssuesForRepo, pollForIssues } from '@gitfix/core';
+import { fetchIssuesForRepo } from '@gitfix/core';
+import { pollForIssues } from '../src/polling/issuePolling.js';
 
 // Mock environment variables for testing
 process.env.GITHUB_REPOS_TO_MONITOR = 'test-owner/test-repo';
@@ -121,7 +122,7 @@ test('pollForIssues returns detected issues', async () => {
 
     // This test validates that pollForIssues can run without authentication
     // In a real scenario, it would use the authenticated client
-    const { pollForIssues: testPollForIssues } = await import('@gitfix/core');
+    const { pollForIssues: testPollForIssues } = await import('../src/polling/issuePolling.js');
     
     // Since we don't have real GitHub credentials in test, this will fail auth
     // but that's expected and handled gracefully
@@ -240,4 +241,9 @@ test('fetchIssuesForRepo ignores non-matching model labels', async () => {
 test('daemon exports required functions', () => {
     assert.strictEqual(typeof fetchIssuesForRepo, 'function');
     assert.strictEqual(typeof pollForIssues, 'function');
+});
+
+// Force exit due to module-level initialization in @gitfix/core
+after(() => {
+    process.exit(0);
 });

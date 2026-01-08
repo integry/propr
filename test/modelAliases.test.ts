@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert';
 import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS } from '@gitfix/core';
 
@@ -47,4 +47,9 @@ test('Model Aliases Configuration', async (t) => {
         assert.strictEqual(resolveModelAlias('claude-3-5-sonnet-latest'), 'claude-3-5-sonnet-20241022');
         assert.strictEqual(resolveModelAlias('claude-3-5-haiku-latest'), 'claude-3-5-haiku-20241022');
     });
+});
+
+// Force exit due to module-level initialization in @gitfix/core
+after(() => {
+    process.exit(0);
 });

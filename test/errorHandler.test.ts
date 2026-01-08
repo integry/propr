@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert';
 import { handleError, withErrorHandling, safeAsync } from '@gitfix/core';
 
@@ -42,7 +42,12 @@ test('safeAsync returns default value on error', async () => {
 test('safeAsync returns result on success', async () => {
     const successFn = async (value: number): Promise<number> => value * 2;
     const safe = safeAsync(successFn, 0);
-    
+
     const result = await safe(5);
     assert.strictEqual(result, 10);
+});
+
+// Force exit due to module-level initialization in @gitfix/core
+after(() => {
+    process.exit(0);
 });

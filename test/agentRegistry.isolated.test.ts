@@ -11,7 +11,7 @@ test('AgentRegistry - singleton test only', async () => {
     console.log('Singleton test passed');
 });
 
-// Cleanup after test
+// Force exit due to module-level initialization in @gitfix/core
 after(async () => {
     console.log('Starting cleanup...');
     try {
@@ -19,5 +19,8 @@ after(async () => {
         console.log('Cleanup completed');
     } catch (error) {
         console.error('Cleanup error:', error);
+    } finally {
+        // Force exit to avoid hanging
+        process.exit(0);
     }
 });

@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert';
 import { getGitHubInstallationToken, getAuthenticatedOctokit } from '@gitfix/core';
 
@@ -21,4 +21,9 @@ test('GitHub authentication fails without credentials', async (t) => {
         const err = error as Error;
         assert.fail(`Authentication should not fail with valid credentials: ${err.message}`);
     }
+});
+
+// Force exit due to module-level initialization in @gitfix/core
+after(() => {
+    process.exit(0);
 });

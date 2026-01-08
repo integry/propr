@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert';
 import { logger } from '@gitfix/core';
 
@@ -24,4 +24,9 @@ test('Logger can log objects', () => {
         logger.info({ data: 'test' }, 'Test message with object');
         logger.error({ error: new Error('Test error') }, 'Error with context');
     });
+});
+
+// Force exit due to module-level initialization in @gitfix/core
+after(() => {
+    process.exit(0);
 });

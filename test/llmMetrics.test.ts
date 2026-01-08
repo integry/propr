@@ -200,3 +200,8 @@ describe('LLM Metrics Tests', () => {
         assert.equal(metrics.model, 'unknown');
     });
 });
+
+// Force exit due to module-level initialization in @gitfix/core
+after(() => {
+    process.exit(0);
+});
