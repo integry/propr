@@ -30,11 +30,43 @@ interface IssueRefLike {
     repoName: string;
 }
 
+// Helper to check if Redis is available
+async function isRedisAvailable(): Promise<boolean> {
+    const testClient = new Redis({
+        host: process.env.REDIS_HOST || '127.0.0.1',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        maxRetriesPerRequest: 1,
+        retryStrategy: () => null, // Don't retry
+        connectTimeout: 2000,
+        lazyConnect: true,
+    });
+
+    try {
+        await testClient.connect();
+        await testClient.ping();
+        testClient.disconnect();
+        return true;
+    } catch {
+        testClient.disconnect();
+        return false;
+    }
+}
+
+// Track whether tests should run
+let redisAvailable = false;
+
 describe('LLM Metrics Tests', () => {
-    let redisClient: Redis;
+    let redisClient: Redis | null = null;
     const testCorrelationId = 'test-correlation-' + Date.now();
 
     before(async () => {
+        // Check Redis availability first
+        redisAvailable = await isRedisAvailable();
+        if (!redisAvailable) {
+            console.log('# Skipping LLM Metrics tests: Redis not available');
+            return;
+        }
+
         // Load core module dynamically
         const coreModule = await import('@gitfix/core');
         recordLLMMetrics = coreModule.recordLLMMetrics;
@@ -58,51 +90,56 @@ describe('LLM Metrics Tests', () => {
     after(async () => {
         try {
             // Clean up test data
-            const keys = await redisClient.keys('llm:metrics:*');
-            if (keys.length > 0) {
-                await redisClient.del(...keys);
+            if (redisClient) {
+                const keys = await redisClient.keys('llm:metrics:*');
+                if (keys.length > 0) {
+                    await redisClient.del(...keys);
+                }
+                redisClient.disconnect();
             }
-            await redisClient.quit();
         } catch {
             // Ignore errors
         }
 
-        // Close core connections
-        try {
-            const {
-                closeConnection,
-                hasDbResources,
-                shutdownQueue,
-                hasQueueResources,
-                closeAnalysisRedis,
-                hasAnalysisRedisResources,
-                closeStateManager,
-                hasStateManagerResources
-            } = await import('@gitfix/core');
+        // Close core connections only if they were potentially created
+        if (redisAvailable) {
+            try {
+                const {
+                    closeConnection,
+                    hasDbResources,
+                    shutdownQueue,
+                    hasQueueResources,
+                    closeAnalysisRedis,
+                    hasAnalysisRedisResources,
+                    closeStateManager,
+                    hasStateManagerResources
+                } = await import('@gitfix/core');
 
-            if (hasDbResources()) {
-                await closeConnection();
-            }
+                if (hasDbResources()) {
+                    await closeConnection();
+                }
 
-            if (hasQueueResources()) {
-                await shutdownQueue();
-            }
+                if (hasQueueResources()) {
+                    await shutdownQueue();
+                }
 
-            if (hasAnalysisRedisResources()) {
-                await closeAnalysisRedis();
-            }
+                if (hasAnalysisRedisResources()) {
+                    await closeAnalysisRedis();
+                }
 
-            if (hasStateManagerResources()) {
-                await closeStateManager();
+                if (hasStateManagerResources()) {
+                    await closeStateManager();
+                }
+            } catch {
+                // Ignore cleanup errors
             }
-        } catch {
-            // Ignore cleanup errors
         }
         // Brief delay for cleanup
         await new Promise(resolve => setTimeout(resolve, 50));
     });
 
-    it('should record LLM metrics successfully', async () => {
+    it('should record LLM metrics successfully', async (t) => {
+        if (!redisAvailable) { t.skip('Redis not available'); return; }
         const mockClaudeResult: ClaudeResultLike = {
             success: true,
             executionTime: 45000, // 45 seconds
@@ -135,7 +172,8 @@ describe('LLM Metrics Tests', () => {
         assert.equal(parsedMetrics.model, 'claude-3-opus-20240229');
     });
 
-    it('should aggregate metrics correctly', async () => {
+    it('should aggregate metrics correctly', async (t) => {
+        if (!redisAvailable) { t.skip('Redis not available'); return; }
         // Add another successful request
         const mockClaudeResult2: ClaudeResultLike = {
             success: true,
@@ -189,7 +227,8 @@ describe('LLM Metrics Tests', () => {
         assert.equal(summary.modelBreakdown['claude-3-sonnet-20240229'].totalRequests, 1);
     });
 
-    it('should retrieve metrics by correlation ID', async () => {
+    it('should retrieve metrics by correlation ID', async (t) => {
+        if (!redisAvailable) { t.skip('Redis not available'); return; }
         const metrics = await getLLMMetricsByCorrelationId(testCorrelationId);
 
         assert.ok(metrics, 'Should retrieve metrics');
@@ -198,7 +237,8 @@ describe('LLM Metrics Tests', () => {
         assert.equal(metrics.repository, 'testowner/testrepo');
     });
 
-    it('should handle high cost alerts', async () => {
+    it('should handle high cost alerts', async (t) => {
+        if (!redisAvailable) { t.skip('Redis not available'); return; }
         // Set a low threshold for testing
         process.env.LLM_COST_THRESHOLD_USD = '5.00';
 
@@ -231,7 +271,8 @@ describe('LLM Metrics Tests', () => {
         delete process.env.LLM_COST_THRESHOLD_USD;
     });
 
-    it('should handle missing or null values gracefully', async () => {
+    it('should handle missing or null values gracefully', async (t) => {
+        if (!redisAvailable) { t.skip('Redis not available'); return; }
         const incompleteResult: ClaudeResultLike = {
             success: false,
             // Missing most fields

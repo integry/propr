@@ -13,12 +13,22 @@ const AI_DONE_TAG = process.env.AI_DONE_TAG || 'AI-done';
 const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
-const redisClient = new Redis({
-    host: process.env.REDIS_HOST || '127.0.0.1',
-    port: parseInt(process.env.REDIS_PORT || '6379', 10),
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-});
+// Lazy-loaded Redis connection - only created when actually needed
+let redisClient: Redis | null = null;
+let redisInitialized = false;
+
+function getRedisClient(): Redis {
+    if (!redisClient) {
+        redisClient = new Redis({
+            host: process.env.REDIS_HOST || '127.0.0.1',
+            port: parseInt(process.env.REDIS_PORT || '6379', 10),
+            maxRetriesPerRequest: null,
+            enableReadyCheck: false,
+        });
+        redisInitialized = true;
+    }
+    return redisClient;
+}
 
 interface GitHubLabel {
     name: string;
@@ -220,8 +230,8 @@ async function enqueueIssueForModel(
             description: `New issue #${issue.number} detected for processing with ${modelName}`,
             status: 'info'
         };
-        await redisClient.lpush('system:activity:log', JSON.stringify(activity));
-        await redisClient.ltrim('system:activity:log', 0, 999);
+        await getRedisClient().lpush('system:activity:log', JSON.stringify(activity));
+        await getRedisClient().ltrim('system:activity:log', 0, 999);
     } catch (activityError) {
         correlatedLogger.warn({ error: (activityError as Error).message }, 'Failed to log activity');
     }
@@ -291,9 +301,13 @@ export async function pollForIssues(
 }
 
 export async function shutdownPolling(): Promise<void> {
-    try {
-        await redisClient.quit();
-    } catch (error) {
-        logger.error({ error: (error as Error).message }, 'Failed to shutdown polling Redis client');
+    if (redisClient && redisInitialized) {
+        try {
+            redisClient.disconnect();
+        } catch (error) {
+            logger.error({ error: (error as Error).message }, 'Failed to shutdown polling Redis client');
+        }
+        redisClient = null;
+        redisInitialized = false;
     }
 }
