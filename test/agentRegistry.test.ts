@@ -209,32 +209,20 @@ test('Agent Interface Contract', async (t) => {
 after(async () => {
     try {
         // Reset and cleanup the AgentRegistry instance
+        // This handles DB and queue cleanup internally
         if (AgentRegistry) {
             await AgentRegistry.resetInstance();
         }
 
-        // Also close any remaining connections
+        // Close any additional Redis connections that might have been created
+        // (analysis service, state manager, etc.)
         try {
             const {
-                closeConnection,
-                hasDbResources,
-                shutdownQueue,
-                hasQueueResources,
                 closeAnalysisRedis,
                 hasAnalysisRedisResources,
                 closeStateManager,
                 hasStateManagerResources
             } = await import('@gitfix/core');
-
-            // Only close database if resources were created
-            if (hasDbResources()) {
-                await closeConnection();
-            }
-
-            // Only shutdown queue if resources were created
-            if (hasQueueResources()) {
-                await shutdownQueue();
-            }
 
             // Close analysis service Redis if it was created
             if (hasAnalysisRedisResources()) {

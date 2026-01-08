@@ -308,9 +308,18 @@ export class WorkerStateManager {
         try {
             // Remove all event listeners before closing
             this.redis.removeAllListeners();
-            // Use disconnect() instead of quit() for more aggressive cleanup
-            // disconnect() immediately closes the socket without waiting
+            // Use disconnect() for immediate cleanup
             this.redis.disconnect();
+
+            // Also try quit() with a timeout
+            try {
+                await Promise.race([
+                    this.redis.quit(),
+                    new Promise(resolve => setTimeout(resolve, 500))
+                ]);
+            } catch {
+                // Ignore quit errors
+            }
         } catch {
             // Ignore disconnect errors
         }

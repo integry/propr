@@ -29,17 +29,29 @@ export function hasAnalysisRedisResources(): boolean {
 /** Close the Redis connection used by analysisService. */
 export async function closeAnalysisRedis(): Promise<void> {
   if (redis && redisInitialized) {
+    const conn = redis;
+    // Set to null first to prevent reconnection attempts
+    redis = null;
+    redisInitialized = false;
+
     try {
       // Remove all event listeners before closing
-      redis.removeAllListeners();
-      // Use disconnect() instead of quit() for more aggressive cleanup
-      // disconnect() immediately closes the socket without waiting
-      redis.disconnect();
+      conn.removeAllListeners();
+      // Use disconnect() for immediate cleanup
+      conn.disconnect();
+
+      // Also try quit() with a timeout
+      try {
+        await Promise.race([
+          conn.quit(),
+          new Promise(resolve => setTimeout(resolve, 500))
+        ]);
+      } catch {
+        // Ignore quit errors
+      }
     } catch {
       // Ignore disconnect errors
     }
-    redis = null;
-    redisInitialized = false;
   }
 }
 

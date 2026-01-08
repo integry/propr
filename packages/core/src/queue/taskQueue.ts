@@ -42,7 +42,19 @@ const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 
 const connectionOptions: RedisOptions = {
-    host: REDIS_HOST, port: REDIS_PORT, maxRetriesPerRequest: null, enableReadyCheck: false
+    host: REDIS_HOST,
+    port: REDIS_PORT,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+    // Disable auto-reconnect to allow clean shutdown in tests
+    retryStrategy: (times: number) => {
+        // Only retry during normal operation, not during shutdown
+        if (redisConnection === null) {
+            return null; // Stop retrying if we're shutting down
+        }
+        // Exponential backoff: 50ms, 100ms, 200ms, ... up to 2s
+        return Math.min(times * 50, 2000);
+    }
 };
 
 // Lazy-loaded Redis connection - only created when actually needed
@@ -393,25 +405,42 @@ export async function shutdownQueue(): Promise<void> {
     if (queueClosePromises.length > 0) {
         await Promise.allSettled(queueClosePromises);
         // Small delay to allow queue close operations to fully complete
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     // Close Redis connection if it was created
     if (redisConnection && redisConnectionInitialized) {
         try {
+            const conn = redisConnection;
+            // Set to null first to signal shutdown to retry strategy
+            redisConnection = null;
+            redisConnectionInitialized = false;
+
             // Remove all event listeners before closing to prevent keeping the connection alive
-            redisConnection.removeAllListeners();
-            // Use disconnect() instead of quit() for more aggressive cleanup
-            // quit() sends QUIT command and waits for response, which may hang
-            // disconnect() immediately closes the socket
-            redisConnection.disconnect();
+            conn.removeAllListeners();
+
+            // Use disconnect() for immediate cleanup
+            // disconnect() closes the socket without waiting for pending commands
+            conn.disconnect();
+
+            // Also call quit() to ensure proper cleanup if connection is still alive
+            // We use a short timeout since disconnect() should have already closed it
+            try {
+                await Promise.race([
+                    conn.quit(),
+                    new Promise(resolve => setTimeout(resolve, 500))
+                ]);
+            } catch {
+                // Ignore quit errors since disconnect already closed the connection
+            }
         } catch (err) {
             errors.push(err as Error);
             logger.error({ err }, 'Error closing Redis connection');
         }
-        redisConnection = null;
-        redisConnectionInitialized = false;
     }
+
+    // Give a moment for any async cleanup to settle
+    await new Promise(resolve => setTimeout(resolve, 100));
 
     if (errors.length > 0) {
         logger.warn({ errorCount: errors.length }, 'Queue shutdown completed with errors');
