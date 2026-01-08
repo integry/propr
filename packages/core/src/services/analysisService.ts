@@ -30,9 +30,16 @@ export function hasAnalysisRedisResources(): boolean {
 export async function closeAnalysisRedis(): Promise<void> {
   if (redis && redisInitialized) {
     try {
+      // Remove all event listeners before closing
+      redis.removeAllListeners();
       await redis.quit();
     } catch {
-      // Ignore errors during close
+      // Force disconnect if quit fails
+      try {
+        redis.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
     }
     redis = null;
     redisInitialized = false;

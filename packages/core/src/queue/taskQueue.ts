@@ -249,8 +249,9 @@ export function createWorker<T extends JobData = JobData, R extends JobResult = 
     worker.on('completed', async (job: Job<T>, result: R) => {
         const duration = Date.now() - job.timestamp;
         logger.info({ jobId: job.id, jobName: job.name, result, duration }, 'Job completed successfully');
+        let metricsRedis: Redis | null = null;
         try {
-            const metricsRedis = new Redis(connectionOptions);
+            metricsRedis = new Redis(connectionOptions);
             const repoFullName = getRepoFullName(job as unknown as Job<JobData>);
             await updateCompletedMetrics(metricsRedis, job as unknown as Job<JobData>, result as unknown as JobResult, { duration, repoFullName });
             const issueData = job.data as unknown as IssueJobData;
@@ -264,9 +265,16 @@ export function createWorker<T extends JobData = JobData, R extends JobResult = 
                 status: 'success'
             };
             await logActivity(metricsRedis, activity);
-            await metricsRedis.quit();
         } catch (error) {
             logger.error({ error: (error as Error).message }, 'Failed to update metrics');
+        } finally {
+            if (metricsRedis) {
+                try {
+                    await metricsRedis.quit();
+                } catch {
+                    // Ignore quit errors
+                }
+            }
         }
     });
 
@@ -280,8 +288,9 @@ export function createWorker<T extends JobData = JobData, R extends JobResult = 
             stack: err.stack,
             attemptsMade: job?.attemptsMade
         }, 'Job failed');
+        let metricsRedis: Redis | null = null;
         try {
-            const metricsRedis = new Redis(connectionOptions);
+            metricsRedis = new Redis(connectionOptions);
             const repoFullName = getRepoFullName(job as unknown as Job<JobData> | undefined);
             await updateFailedMetrics(metricsRedis, job as unknown as Job<JobData> | undefined, err, repoFullName);
             const activity: ActivityLog = {
@@ -294,9 +303,16 @@ export function createWorker<T extends JobData = JobData, R extends JobResult = 
                 status: 'error'
             };
             await logActivity(metricsRedis, activity);
-            await metricsRedis.quit();
         } catch (error) {
             logger.error({ error: (error as Error).message }, 'Failed to update failure metrics');
+        } finally {
+            if (metricsRedis) {
+                try {
+                    await metricsRedis.quit();
+                } catch {
+                    // Ignore quit errors
+                }
+            }
         }
     });
 
@@ -373,10 +389,18 @@ export async function shutdownQueue(): Promise<void> {
     // Close Redis connection if it was created
     if (redisConnection && redisConnectionInitialized) {
         try {
+            // Remove all event listeners before closing to prevent keeping the connection alive
+            redisConnection.removeAllListeners();
             await redisConnection.quit();
         } catch (err) {
             errors.push(err as Error);
             logger.error({ err }, 'Error closing Redis connection');
+            // Force disconnect if quit fails
+            try {
+                redisConnection.disconnect();
+            } catch {
+                // Ignore disconnect errors
+            }
         }
         redisConnection = null;
         redisConnectionInitialized = false;

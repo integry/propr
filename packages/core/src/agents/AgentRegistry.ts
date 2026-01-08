@@ -7,8 +7,8 @@ import { CodexAgent } from './impl/CodexAgent.js';
 import { GeminiAgent } from './impl/GeminiAgent.js';
 import * as configManager from '../config/configManager.js';
 import { ensureAgentDockerImage } from '../claude/docker/dockerExecutor.js';
-import { closeConnection } from '../db/connection.js';
-import { shutdownQueue } from '../queue/taskQueue.js';
+import { closeConnection, hasDbResources } from '../db/connection.js';
+import { shutdownQueue, hasQueueResources } from '../queue/taskQueue.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -256,11 +256,15 @@ export class AgentRegistry {
             this.agentsByAlias.clear();
             this.initialized = false;
 
-            // Close database connection
-            await closeConnection();
+            // Close database connection only if it was created
+            if (hasDbResources()) {
+                await closeConnection();
+            }
 
-            // Shutdown queues and Redis connections
-            await shutdownQueue();
+            // Shutdown queues and Redis connections only if they were created
+            if (hasQueueResources()) {
+                await shutdownQueue();
+            }
 
             logger.debug('AgentRegistry destroyed and cleaned up');
         } catch (error) {

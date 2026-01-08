@@ -305,7 +305,18 @@ export class WorkerStateManager {
      * Closes Redis connection
      */
     async close(): Promise<void> {
-        await this.redis.quit();
+        try {
+            // Remove all event listeners before closing
+            this.redis.removeAllListeners();
+            await this.redis.quit();
+        } catch {
+            // Force disconnect if quit fails
+            try {
+                this.redis.disconnect();
+            } catch {
+                // Ignore disconnect errors
+            }
+        }
     }
 }
 
