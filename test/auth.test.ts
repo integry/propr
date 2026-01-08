@@ -1,8 +1,18 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert';
-import { getGitHubInstallationToken, getAuthenticatedOctokit } from '@gitfix/core';
 
-test('GitHub authentication module exports required functions', () => {
+// Set test environment before imports
+process.env.NODE_ENV = 'test';
+
+// Use dynamic import to avoid module initialization issues
+let getGitHubInstallationToken: typeof import('@gitfix/core').getGitHubInstallationToken;
+let getAuthenticatedOctokit: typeof import('@gitfix/core').getAuthenticatedOctokit;
+
+test('GitHub authentication module exports required functions', async () => {
+    const coreModule = await import('@gitfix/core');
+    getGitHubInstallationToken = coreModule.getGitHubInstallationToken;
+    getAuthenticatedOctokit = coreModule.getAuthenticatedOctokit;
+
     assert.strictEqual(typeof getGitHubInstallationToken, 'function');
     assert.strictEqual(typeof getAuthenticatedOctokit, 'function');
 });
@@ -21,4 +31,17 @@ test('GitHub authentication fails without credentials', async (t) => {
         const err = error as Error;
         assert.fail(`Authentication should not fail with valid credentials: ${err.message}`);
     }
+});
+
+// Cleanup after tests
+after(async () => {
+    try {
+        const { closeConnection, shutdownQueue } = await import('@gitfix/core');
+        await closeConnection();
+        await shutdownQueue();
+    } catch {
+        // Ignore cleanup errors
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+    setTimeout(() => process.exit(0), 300);
 });

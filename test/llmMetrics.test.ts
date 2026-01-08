@@ -1,7 +1,14 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'assert';
 import Redis from 'ioredis';
-import { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } from '@gitfix/core';
+
+// Set test environment before imports
+process.env.NODE_ENV = 'test';
+
+// Dynamic imports to control module initialization
+let recordLLMMetrics: typeof import('@gitfix/core').recordLLMMetrics;
+let getLLMMetricsSummary: typeof import('@gitfix/core').getLLMMetricsSummary;
+let getLLMMetricsByCorrelationId: typeof import('@gitfix/core').getLLMMetricsByCorrelationId;
 
 interface ClaudeResultLike {
     success: boolean;
@@ -28,13 +35,19 @@ describe('LLM Metrics Tests', () => {
     const testCorrelationId = 'test-correlation-' + Date.now();
 
     before(async () => {
+        // Load core module dynamically
+        const coreModule = await import('@gitfix/core');
+        recordLLMMetrics = coreModule.recordLLMMetrics;
+        getLLMMetricsSummary = coreModule.getLLMMetricsSummary;
+        getLLMMetricsByCorrelationId = coreModule.getLLMMetricsByCorrelationId;
+
         redisClient = new Redis({
             host: process.env.REDIS_HOST || '127.0.0.1',
             port: parseInt(process.env.REDIS_PORT || '6379', 10),
             maxRetriesPerRequest: null,
             enableReadyCheck: false,
         });
-        
+
         // Clean up any existing test data
         const keys = await redisClient.keys('llm:metrics:*');
         if (keys.length > 0) {
@@ -43,12 +56,27 @@ describe('LLM Metrics Tests', () => {
     });
 
     after(async () => {
-        // Clean up test data
-        const keys = await redisClient.keys('llm:metrics:*');
-        if (keys.length > 0) {
-            await redisClient.del(...keys);
+        try {
+            // Clean up test data
+            const keys = await redisClient.keys('llm:metrics:*');
+            if (keys.length > 0) {
+                await redisClient.del(...keys);
+            }
+            await redisClient.quit();
+        } catch {
+            // Ignore errors
         }
-        await redisClient.quit();
+
+        // Close core connections
+        try {
+            const { closeConnection, shutdownQueue } = await import('@gitfix/core');
+            await closeConnection();
+            await shutdownQueue();
+        } catch {
+            // Ignore cleanup errors
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+        setTimeout(() => process.exit(0), 300);
     });
 
     it('should record LLM metrics successfully', async () => {
@@ -140,7 +168,7 @@ describe('LLM Metrics Tests', () => {
 
     it('should retrieve metrics by correlation ID', async () => {
         const metrics = await getLLMMetricsByCorrelationId(testCorrelationId);
-        
+
         assert.ok(metrics, 'Should retrieve metrics');
         assert.equal(metrics.correlationId, testCorrelationId);
         assert.equal(metrics.issueNumber, 123);
@@ -170,7 +198,7 @@ describe('LLM Metrics Tests', () => {
 
         const summary = await getLLMMetricsSummary();
         assert.ok(summary.recentHighCostAlerts.length > 0, 'Should have high cost alerts');
-        
+
         const alert = summary.recentHighCostAlerts[0];
         assert.equal(alert.costUsd, 15.00);
         assert.equal(alert.threshold, 5.00);

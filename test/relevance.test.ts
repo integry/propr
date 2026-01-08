@@ -1,7 +1,10 @@
-import { test, describe, beforeEach, mock } from 'node:test';
+import { test, describe, beforeEach, mock, after } from 'node:test';
 import assert from 'node:assert';
 
+// Set test environment before imports
 process.env.NODE_ENV = 'test';
+
+// These imports don't trigger Redis/DB connections directly
 import { extractKeywords } from '../packages/core/src/services/relevance/keywordExtractor.js';
 import { formatCommitLog } from '../packages/core/src/services/relevance/gitMiner.js';
 import type { CommitInfo } from '../packages/core/src/services/relevance/gitMiner.js';
@@ -156,8 +159,8 @@ describe('Semantic Git Mining', () => {
         test('filters invalid file entries', () => {
             const response = '{"files": [{"path": "valid.ts", "score": 80, "reason": "test"}, {"path": "", "score": 50}, {"score": 30}]}';
             const parsed = JSON.parse(response);
-            const validFiles = parsed.files.filter((f: { path?: string; score?: number }) => 
-                typeof f.path === 'string' && 
+            const validFiles = parsed.files.filter((f: { path?: string; score?: number }) =>
+                typeof f.path === 'string' &&
                 typeof f.score === 'number' &&
                 f.path.trim().length > 0
             );
@@ -180,4 +183,10 @@ describe('Semantic Git Mining', () => {
             assert.strictEqual(clamped[2].score, 75);
         });
     });
+});
+
+// Cleanup after tests - ensure clean termination
+after(async () => {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    setTimeout(() => process.exit(0), 300);
 });

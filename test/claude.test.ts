@@ -1,6 +1,8 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert';
 
+// Set test environment before imports
+process.env.NODE_ENV = 'test';
 process.env.CLAUDE_DOCKER_IMAGE = 'claude-code-processor:test';
 process.env.CLAUDE_CONFIG_PATH = '/tmp/test-claude-config';
 process.env.CLAUDE_MAX_TURNS = '5';
@@ -29,10 +31,10 @@ interface ParsedClaudeOutput {
 }
 
 test('Claude service module exports required functions', async () => {
-    const claudeService = await import('../src/claude/claudeService.ts');
-    
-    assert.strictEqual(typeof claudeService.executeClaudeCode, 'function');
-    assert.strictEqual(typeof claudeService.buildClaudeDockerImage, 'function');
+    const coreModule = await import('@gitfix/core');
+
+    assert.strictEqual(typeof coreModule.executeClaudeCode, 'function');
+    assert.strictEqual(typeof coreModule.buildClaudeDockerImage, 'function');
 });
 
 test('Claude prompt generation includes issue details', () => {
@@ -157,33 +159,46 @@ test('Environment configuration has valid defaults', () => {
 });
 
 test('ExecutionResult interface types are correct', async () => {
-    const { executeDockerCommand } = await import('../src/claude/docker/dockerExecutor.ts');
+    const { executeDockerCommand } = await import('@gitfix/core');
     assert.strictEqual(typeof executeDockerCommand, 'function');
 });
 
 test('IssueRef and IssueDetails types are exported', async () => {
-    const { generateClaudePrompt } = await import('../src/claude/prompts/promptGenerator.ts');
+    const { generateClaudePrompt } = await import('@gitfix/core');
     assert.strictEqual(typeof generateClaudePrompt, 'function');
-    
+
     const testRef = {
         number: 1,
         repoOwner: 'test',
         repoName: 'repo'
     };
-    
+
     const prompt = generateClaudePrompt(testRef, null, null, null);
     assert.ok(prompt.includes('test/repo'));
     assert.ok(prompt.includes('#1'));
 });
 
 test('UsageLimitError has correct properties', async () => {
-    const { UsageLimitError } = await import('../src/claude/claudeHelpers.ts');
-    
+    const { UsageLimitError } = await import('@gitfix/core');
+
     const error = new UsageLimitError('Test limit error', 1234567890);
-    
+
     assert.strictEqual(error.name, 'UsageLimitError');
     assert.strictEqual(error.message, 'Test limit error');
     assert.strictEqual(error.resetTimestamp, 1234567890);
     assert.strictEqual(error.retryable, true);
     assert.ok(error instanceof Error);
+});
+
+// Cleanup after tests
+after(async () => {
+    try {
+        const { closeConnection, shutdownQueue } = await import('@gitfix/core');
+        await closeConnection();
+        await shutdownQueue();
+    } catch {
+        // Ignore cleanup errors
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+    setTimeout(() => process.exit(0), 300);
 });

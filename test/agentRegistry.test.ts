@@ -1,15 +1,23 @@
 import { test, mock, beforeEach, afterEach, after } from 'node:test';
 import assert from 'node:assert';
-import { AgentRegistry, ClaudeAgent } from '@gitfix/core';
-import type { AgentConfig } from '@gitfix/core';
 
-// Mock configManager
-const mockLoadAgents = mock.fn<() => Promise<AgentConfig[]>>();
+// Set test environment before any imports
+process.env.NODE_ENV = 'test';
 
-// Store original module for restoration
-let originalConfigManager: typeof import('@gitfix/core');
+// Import types only first
+import type { AgentConfig, Agent } from '@gitfix/core';
 
+// Lazy import to control when module initialization happens
+let AgentRegistry: typeof import('@gitfix/core').AgentRegistry;
+let ClaudeAgent: typeof import('@gitfix/core').ClaudeAgent;
+
+// Initialize modules before tests
 test('AgentRegistry', async (t) => {
+    // Dynamic import to control initialization timing
+    const coreModule = await import('@gitfix/core');
+    AgentRegistry = coreModule.AgentRegistry;
+    ClaudeAgent = coreModule.ClaudeAgent;
+
     beforeEach(() => {
         // Reset the singleton for each test by accessing the private instance
         // @ts-expect-error - accessing private static for testing
@@ -201,11 +209,26 @@ test('Agent Interface Contract', async (t) => {
 after(async () => {
     try {
         // Reset and cleanup the AgentRegistry instance
-        await AgentRegistry.resetInstance();
+        if (AgentRegistry) {
+            await AgentRegistry.resetInstance();
+        }
+
+        // Also close any remaining connections
+        try {
+            const { closeConnection, shutdownQueue } = await import('@gitfix/core');
+            await closeConnection();
+            await shutdownQueue();
+        } catch {
+            // Connections may already be closed
+        }
 
         // Give a moment for cleanup to complete
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 200));
+
+        // Force exit if still hanging - this ensures tests don't hang
+        setTimeout(() => process.exit(0), 500);
     } catch (error) {
         console.error('Error during test cleanup:', error);
+        process.exit(1);
     }
 });

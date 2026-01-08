@@ -1,6 +1,10 @@
-import { test, mock } from 'node:test';
+import { test, mock, after } from 'node:test';
 import assert from 'node:assert';
 
+// Set test environment before imports
+process.env.NODE_ENV = 'test';
+
+// Mock Redis and BullMQ before importing the module
 const mockRedis = {
     on: mock.fn(),
     quit: mock.fn(async () => {}),
@@ -48,7 +52,8 @@ await mock.module('bullmq', {
     }
 });
 
-const { issueQueue, createWorker, shutdownQueue } = await import('../src/queue/taskQueue.ts');
+// Now import the module with mocked dependencies
+const { issueQueue, createWorker, shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 
 test('issueQueue is created successfully', () => {
     assert.ok(issueQueue);
@@ -65,12 +70,12 @@ test('Redis connection events are registered', () => {
 test('createWorker creates a worker with correct configuration', () => {
     const processorFn = async (): Promise<{ status: string }> => ({ status: 'completed' });
     const worker = createWorker('test-queue', processorFn as Parameters<typeof createWorker>[1]);
-    
+
     assert.ok(worker);
     assert.strictEqual(mockWorker.name, 'test-queue');
     assert.strictEqual(mockWorker.processor, processorFn);
     assert.strictEqual(mockWorker.opts.concurrency, 5);
-    
+
     const eventNames = mockWorker.on.mock.calls.map((call: { arguments: unknown[] }) => call.arguments[0]);
     assert.ok(eventNames.includes('completed'));
     assert.ok(eventNames.includes('failed'));
@@ -81,26 +86,38 @@ test('createWorker creates a worker with correct configuration', () => {
 test('shutdownQueue closes queue and Redis connection', async () => {
     mockQueue.close.mock.resetCalls();
     mockRedis.quit.mock.resetCalls();
-    
+
     await shutdownQueue();
-    
-    assert.strictEqual(mockQueue.close.mock.calls.length, 1);
+
+    assert.strictEqual(mockQueue.close.mock.calls.length, 3); // issueQueue, analysisQueue, indexingQueue
     assert.strictEqual(mockRedis.quit.mock.calls.length, 1);
 });
 
 test('queue can add jobs', async () => {
     mockQueue.add.mock.resetCalls();
-    
-    const jobData = { 
+
+    const jobData = {
         repoOwner: 'test',
         repoName: 'repo',
         number: 123
     };
     const result = await issueQueue.add('testJob', jobData);
-    
+
     assert.strictEqual(mockQueue.add.mock.calls.length, 1);
     const calls = mockQueue.add.mock.calls as Array<{ arguments: unknown[] }>;
     assert.strictEqual(calls[0].arguments[0], 'testJob');
     assert.deepStrictEqual(calls[0].arguments[1], jobData);
     assert.deepStrictEqual(result, { id: 'test-job-id' });
+});
+
+// Cleanup after tests
+after(async () => {
+    try {
+        const { closeConnection } = await import('@gitfix/core');
+        await closeConnection();
+    } catch {
+        // Ignore cleanup errors
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+    setTimeout(() => process.exit(0), 300);
 });

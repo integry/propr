@@ -1,13 +1,23 @@
-import { test, describe, mock } from 'node:test';
+import { test, describe, mock, after } from 'node:test';
 import assert from 'node:assert';
-import { 
-    validatePRCreation, 
-    generateEnhancedClaudePrompt, 
-    validateRepositoryInfo 
-} from '@gitfix/core';
+
+// Set test environment before imports
+process.env.NODE_ENV = 'test';
+
+// Dynamic imports
+let validatePRCreation: typeof import('@gitfix/core').validatePRCreation;
+let generateEnhancedClaudePrompt: typeof import('@gitfix/core').generateEnhancedClaudePrompt;
+let validateRepositoryInfo: typeof import('@gitfix/core').validateRepositoryInfo;
 
 describe('PR Validation Utils', () => {
-    test('generateEnhancedClaudePrompt should include all required repository information', () => {
+    // Load modules before tests
+    test('generateEnhancedClaudePrompt should include all required repository information', async () => {
+        // Load core module dynamically
+        const coreModule = await import('@gitfix/core');
+        validatePRCreation = coreModule.validatePRCreation;
+        generateEnhancedClaudePrompt = coreModule.generateEnhancedClaudePrompt;
+        validateRepositoryInfo = coreModule.validateRepositoryInfo;
+
         const testOptions = {
             issueRef: {
                 repoOwner: 'testowner',
@@ -36,10 +46,10 @@ describe('PR Validation Utils', () => {
         assert.ok(prompt.includes('Issue Title: Test Issue'));
         assert.ok(prompt.includes('This is a test issue description'));
         assert.ok(prompt.includes('DO NOT hallucinate or guess repository names'));
-        
+
         assert.ok(prompt.includes('CRITICAL - USE EXACTLY AS PROVIDED'));
         assert.ok(prompt.includes('IMPORTANT INSTRUCTIONS:'));
-        
+
         assert.ok(prompt.includes('gh issue view 123'));
         assert.ok(prompt.includes('gh issue view 123 --comments'));
         assert.ok(prompt.includes('read all issue comments for additional context'));
@@ -97,4 +107,17 @@ describe('PR Validation Utils', () => {
         assert.ok(typeof generateEnhancedClaudePrompt === 'function');
         assert.ok(typeof validateRepositoryInfo === 'function');
     });
+});
+
+// Cleanup after tests
+after(async () => {
+    try {
+        const { closeConnection, shutdownQueue } = await import('@gitfix/core');
+        await closeConnection();
+        await shutdownQueue();
+    } catch {
+        // Ignore cleanup errors
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+    setTimeout(() => process.exit(0), 300);
 });

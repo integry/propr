@@ -1,8 +1,17 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert';
-import { logger } from '@gitfix/core';
 
-test('Logger exports a pino instance', () => {
+// Set test environment before imports
+process.env.NODE_ENV = 'test';
+
+// Dynamic import
+let logger: typeof import('@gitfix/core').logger;
+
+test('Logger exports a pino instance', async () => {
+    // Load logger dynamically
+    const coreModule = await import('@gitfix/core');
+    logger = coreModule.logger;
+
     assert.ok(logger);
     assert.strictEqual(typeof logger.info, 'function');
     assert.strictEqual(typeof logger.error, 'function');
@@ -24,4 +33,17 @@ test('Logger can log objects', () => {
         logger.info({ data: 'test' }, 'Test message with object');
         logger.error({ error: new Error('Test error') }, 'Error with context');
     });
+});
+
+// Cleanup after tests
+after(async () => {
+    try {
+        const { closeConnection, shutdownQueue } = await import('@gitfix/core');
+        await closeConnection();
+        await shutdownQueue();
+    } catch {
+        // Ignore cleanup errors
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+    setTimeout(() => process.exit(0), 300);
 });

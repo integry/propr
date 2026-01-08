@@ -1,7 +1,8 @@
-import { test, mock } from 'node:test';
+import { test, mock, after } from 'node:test';
 import assert from 'node:assert';
- 
+
 // Set up environment variables for testing
+process.env.NODE_ENV = 'test';
 process.env.AI_PROCESSING_TAG = 'AI-processing';
 process.env.AI_PRIMARY_TAG = 'AI';
 process.env.AI_DONE_TAG = 'AI-done';
@@ -97,25 +98,25 @@ test('processGitHubIssueJob adds processing tag to issue', async () => {
 
     assert.strictEqual(result.status, 'simulated_processing_complete');
     assert.strictEqual(result.issueNumber, 42);
-    
+
     // Verify GitHub API calls
     const apiCalls = mockOctokit.request.mock.calls;
-    
+
     // Should get issue data
-    assert.ok(apiCalls.some((call: { arguments: [string, { issue_number?: number }] }) => 
+    assert.ok(apiCalls.some((call: { arguments: [string, { issue_number?: number }] }) =>
         call.arguments[0].includes('GET /repos') &&
         call.arguments[1].issue_number === 42
     ));
-    
+
     // Should add processing tag
-    assert.ok(apiCalls.some((call: { arguments: [string, { labels?: string[] }] }) => 
+    assert.ok(apiCalls.some((call: { arguments: [string, { labels?: string[] }] }) =>
         call.arguments[0].includes('POST') &&
         call.arguments[0].includes('labels') &&
         call.arguments[1].labels?.includes('AI-processing')
     ));
-    
+
     // Should add comment
-    assert.ok(apiCalls.some((call: { arguments: [string, unknown] }) => 
+    assert.ok(apiCalls.some((call: { arguments: [string, unknown] }) =>
         call.arguments[0].includes('POST') &&
         call.arguments[0].includes('comments')
     ));
@@ -198,9 +199,9 @@ test('processGitHubIssueJob handles already processing issues', async () => {
     const result = await processGitHubIssueJob(mockJob);
 
     assert.strictEqual(result.status, 'simulated_processing_complete');
-    
+
     // Should not try to add processing tag again
-    const labelCalls = mockOctokit.request.mock.calls.filter((call: { arguments: [string, unknown] }) => 
+    const labelCalls = mockOctokit.request.mock.calls.filter((call: { arguments: [string, unknown] }) =>
         call.arguments[0].includes('labels')
     );
     assert.strictEqual(labelCalls.length, 0);
@@ -232,11 +233,23 @@ test('processGitHubIssueJob handles authentication errors', async () => {
 test('startWorker creates worker with correct configuration', async () => {
     const { createWorker } = await import('../src/queue/taskQueue.ts');
     (createWorker as ReturnType<typeof mock.fn>).mock.resetCalls();
-    
+
     const worker = startWorker();
-    
+
     assert.ok(worker);
     assert.strictEqual((createWorker as ReturnType<typeof mock.fn>).mock.calls.length, 1);
     assert.strictEqual((createWorker as ReturnType<typeof mock.fn>).mock.calls[0].arguments[0], 'test-queue');
     assert.strictEqual(typeof (createWorker as ReturnType<typeof mock.fn>).mock.calls[0].arguments[1], 'function');
+});
+
+// Cleanup after tests
+after(async () => {
+    try {
+        const { closeConnection } = await import('@gitfix/core');
+        await closeConnection();
+    } catch {
+        // Ignore cleanup errors
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+    setTimeout(() => process.exit(0), 300);
 });

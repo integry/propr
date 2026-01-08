@@ -1,8 +1,21 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert';
-import { handleError, withErrorHandling, safeAsync } from '@gitfix/core';
 
-test('handleError logs errors without throwing', () => {
+// Set test environment before imports
+process.env.NODE_ENV = 'test';
+
+// Use dynamic import to avoid module initialization issues
+let handleError: typeof import('@gitfix/core').handleError;
+let withErrorHandling: typeof import('@gitfix/core').withErrorHandling;
+let safeAsync: typeof import('@gitfix/core').safeAsync;
+
+test('handleError logs errors without throwing', async () => {
+    // Load modules dynamically
+    const coreModule = await import('@gitfix/core');
+    handleError = coreModule.handleError;
+    withErrorHandling = coreModule.withErrorHandling;
+    safeAsync = coreModule.safeAsync;
+
     const testError = new Error('Test error');
     assert.doesNotThrow(() => {
         handleError(testError, 'test context', {});
@@ -15,7 +28,7 @@ test('withErrorHandling wraps async functions', async () => {
         return value * 2;
     };
     const wrapped = withErrorHandling(successFn, 'test');
-    
+
     const result = await wrapped(5);
     assert.strictEqual(result, 10);
 });
@@ -25,7 +38,7 @@ test('withErrorHandling handles errors', async () => {
         throw new Error('Test error');
     };
     const wrapped = withErrorHandling(errorFn, 'test');
-    
+
     await assert.rejects(wrapped(), /Test error/);
 });
 
@@ -34,7 +47,7 @@ test('safeAsync returns default value on error', async () => {
         throw new Error('Test error');
     };
     const safe = safeAsync(errorFn, 'default');
-    
+
     const result = await safe();
     assert.strictEqual(result, 'default');
 });
@@ -42,7 +55,20 @@ test('safeAsync returns default value on error', async () => {
 test('safeAsync returns result on success', async () => {
     const successFn = async (value: number): Promise<number> => value * 2;
     const safe = safeAsync(successFn, 0);
-    
+
     const result = await safe(5);
     assert.strictEqual(result, 10);
+});
+
+// Cleanup after tests
+after(async () => {
+    try {
+        const { closeConnection, shutdownQueue } = await import('@gitfix/core');
+        await closeConnection();
+        await shutdownQueue();
+    } catch {
+        // Ignore cleanup errors
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+    setTimeout(() => process.exit(0), 300);
 });

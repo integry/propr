@@ -1,8 +1,8 @@
-import { test, mock } from 'node:test';
+import { test, mock, after } from 'node:test';
 import assert from 'node:assert';
-import { fetchIssuesForRepo, pollForIssues } from '@gitfix/core';
 
-// Mock environment variables for testing
+// Set test environment before any imports
+process.env.NODE_ENV = 'test';
 process.env.GITHUB_REPOS_TO_MONITOR = 'test-owner/test-repo';
 process.env.AI_PRIMARY_TAG = 'AI';
 process.env.AI_EXCLUDE_TAGS_PROCESSING = 'AI-processing';
@@ -10,11 +10,20 @@ process.env.AI_DONE_TAG = 'AI-done';
 process.env.MODEL_LABEL_PATTERN = '^llm-claude-(.+)$';
 process.env.DEFAULT_CLAUDE_MODEL = 'claude-3-5-sonnet-20240620';
 
+// Use dynamic import
+let fetchIssuesForRepo: typeof import('@gitfix/core').fetchIssuesForRepo;
+let pollForIssues: typeof import('@gitfix/core').pollForIssues;
+
 interface MockOctokit {
     request?: ReturnType<typeof mock.fn>;
 }
 
+// First test initializes the module
 test('fetchIssuesForRepo handles invalid repository format', async () => {
+    // Load modules dynamically in the first test
+    const coreModule = await import('@gitfix/core');
+    fetchIssuesForRepo = coreModule.fetchIssuesForRepo;
+    pollForIssues = coreModule.pollForIssues;
     const mockOctokit: MockOctokit = {};
     const invalidRepo = 'invalid-format';
     
@@ -240,4 +249,17 @@ test('fetchIssuesForRepo ignores non-matching model labels', async () => {
 test('daemon exports required functions', () => {
     assert.strictEqual(typeof fetchIssuesForRepo, 'function');
     assert.strictEqual(typeof pollForIssues, 'function');
+});
+
+// Cleanup after tests
+after(async () => {
+    try {
+        const { closeConnection, shutdownQueue } = await import('@gitfix/core');
+        await closeConnection();
+        await shutdownQueue();
+    } catch {
+        // Ignore cleanup errors
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+    setTimeout(() => process.exit(0), 300);
 });
