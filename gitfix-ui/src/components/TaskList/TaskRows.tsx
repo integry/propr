@@ -3,6 +3,7 @@ import { ChevronRight } from 'lucide-react';
 import type { Task, TaskGroup } from './types';
 import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration } from './utils.tsx';
 import { TaskTypeBadge } from './TaskTypeBadge';
+import { ProviderLogo } from '../ui/ProviderLogo';
 
 interface ParentTaskRowProps {
   group: TaskGroup;
@@ -60,7 +61,7 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
               return (
                 <div className="flex items-center gap-1 text-xs">
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
-                    <span>🤖</span>
+                    <ProviderLogo provider={agent} className="w-3.5 h-3.5" />
                     <span>{displayText}</span>
                   </span>
                 </div>
@@ -135,7 +136,7 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
               return (
                 <div className="flex items-center gap-1 text-xs pl-4">
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
-                    <span>🤖</span>
+                    <ProviderLogo provider={agent} className="w-3.5 h-3.5" />
                     <span>{displayText}</span>
                   </span>
                 </div>
