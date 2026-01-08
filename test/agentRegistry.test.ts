@@ -222,7 +222,8 @@ after(async () => {
                 hasQueueResources,
                 closeAnalysisRedis,
                 hasAnalysisRedisResources,
-                closeStateManager
+                closeStateManager,
+                hasStateManagerResources
             } = await import('@gitfix/core');
 
             // Only close database if resources were created
@@ -240,8 +241,10 @@ after(async () => {
                 await closeAnalysisRedis();
             }
 
-            // Close state manager Redis
-            await closeStateManager();
+            // Close state manager Redis if it was created
+            if (hasStateManagerResources()) {
+                await closeStateManager();
+            }
         } catch {
             // Connections may already be closed
         }

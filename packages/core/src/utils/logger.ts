@@ -3,9 +3,15 @@ import { v4 as uuidv4 } from 'uuid';
 
 const logLevel: string = process.env.LOG_LEVEL ?? 'info';
 
+// In test mode, disable pino-pretty to prevent worker threads from keeping the process alive
+// In production, use raw JSON output for better log aggregation
+// Only use pino-pretty in development mode
+const shouldUsePrettyPrint = process.env.NODE_ENV === 'development' ||
+    (process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test');
+
 const baseLogger: Logger = pino({
     level: logLevel,
-    transport: process.env.NODE_ENV !== 'production' ? {
+    transport: shouldUsePrettyPrint ? {
         target: 'pino-pretty',
         options: {
             colorize: true,

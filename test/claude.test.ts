@@ -200,7 +200,8 @@ after(async () => {
             hasQueueResources,
             closeAnalysisRedis,
             hasAnalysisRedisResources,
-            closeStateManager
+            closeStateManager,
+            hasStateManagerResources
         } = await import('@gitfix/core');
 
         if (hasDbResources()) {
@@ -215,7 +216,9 @@ after(async () => {
             await closeAnalysisRedis();
         }
 
-        await closeStateManager();
+        if (hasStateManagerResources()) {
+            await closeStateManager();
+        }
     } catch {
         // Ignore cleanup errors
     }

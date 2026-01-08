@@ -319,6 +319,13 @@ export function getStateManager(options: WorkerStateManagerOptions = {}): Worker
     return stateManagerInstance;
 }
 
+/**
+ * Check if state manager resources have been initialized. Useful for tests.
+ */
+export function hasStateManagerResources(): boolean {
+    return stateManagerInstance !== null;
+}
+
 export async function closeStateManager(): Promise<void> {
     if (stateManagerInstance) {
         await stateManagerInstance.close();

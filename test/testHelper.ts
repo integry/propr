@@ -57,8 +57,11 @@ export async function cleanupConnections(): Promise<void> {
     }
 
     try {
-        const { closeStateManager } = await import('@gitfix/core');
-        await closeStateManager();
+        const { closeStateManager, hasStateManagerResources } = await import('@gitfix/core');
+        // Only close if state manager resources were actually created
+        if (hasStateManagerResources()) {
+            await closeStateManager();
+        }
     } catch {
         // Ignore errors - state manager may not exist
     }

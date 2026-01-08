@@ -110,8 +110,9 @@ export async function createLogFiles(claudeResultInput: unknown, issueRef: Issue
     }
 
     if (Object.keys(files).length > 0 && (claudeResult.sessionId || claudeResult.conversationId)) {
+        let redis: InstanceType<typeof Redis> | null = null;
         try {
-            const redis = new Redis({
+            redis = new Redis({
                 host: process.env.REDIS_HOST || 'redis',
                 port: parseInt(process.env.REDIS_PORT || '6379', 10)
             });
@@ -144,14 +145,16 @@ export async function createLogFiles(claudeResultInput: unknown, issueRef: Issue
                 conversationId: claudeResult.conversationId,
                 logFiles: Object.keys(files)
             }, 'Stored log file paths in Redis');
-
-            await redis.quit();
         } catch (redisError) {
             const err = redisError as Error;
             logger.warn({
                 issueNumber: issueRef.number,
                 error: err.message
             }, 'Failed to store log file paths in Redis');
+        } finally {
+            if (redis) {
+                await redis.quit();
+            }
         }
     }
 

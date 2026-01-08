@@ -76,7 +76,8 @@ describe('LLM Metrics Tests', () => {
                 hasQueueResources,
                 closeAnalysisRedis,
                 hasAnalysisRedisResources,
-                closeStateManager
+                closeStateManager,
+                hasStateManagerResources
             } = await import('@gitfix/core');
 
             if (hasDbResources()) {
@@ -91,7 +92,9 @@ describe('LLM Metrics Tests', () => {
                 await closeAnalysisRedis();
             }
 
-            await closeStateManager();
+            if (hasStateManagerResources()) {
+                await closeStateManager();
+            }
         } catch {
             // Ignore cleanup errors
         }
