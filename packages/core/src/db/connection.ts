@@ -87,49 +87,71 @@ function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
     };
 }
 
-let db: Knex;
+// Lazy-loaded database connection - only created when actually needed
+let _db: Knex | null = null;
+let dbInitialized = false;
 
-try {
-    const environment = (process.env.NODE_ENV ?? 'development') as KnexEnvironment;
-    const knexConfig = createKnexConfig();
-    const config = knexConfig[environment];
+/**
+ * Get the database connection, creating it lazily if needed.
+ * This avoids creating connections at module load time which can
+ * keep the process alive and prevent tests from exiting cleanly.
+ */
+export function getDb(): Knex {
+    if (!_db) {
+        const environment = (process.env.NODE_ENV ?? 'development') as KnexEnvironment;
+        const knexConfig = createKnexConfig();
+        const config = knexConfig[environment];
 
-    if (!config) {
-        throw new Error(`No database configuration found for environment: ${environment}`);
+        if (!config) {
+            throw new Error(`No database configuration found for environment: ${environment}`);
+        }
+
+        const dbFilename = (config.connection as { filename: string }).filename;
+
+        // Ensure data directory exists
+        ensureDataDirectory(dbFilename);
+
+        _db = knex(config);
+        dbInitialized = true;
+
+        // Test connection (non-blocking)
+        _db.raw('SELECT 1')
+            .then(() => {
+                logger.info({
+                    filename: dbFilename,
+                    environment
+                }, 'SQLite database connection established successfully');
+            })
+            .catch((error: Error) => {
+                logger.error({
+                    error: error.message,
+                    filename: dbFilename
+                }, 'SQLite database connection test failed');
+            });
     }
-
-    const dbFilename = (config.connection as { filename: string }).filename;
-
-    // Ensure data directory exists
-    ensureDataDirectory(dbFilename);
-
-    db = knex(config);
-
-    // Test connection
-    db.raw('SELECT 1')
-        .then(() => {
-            logger.info({
-                filename: dbFilename,
-                environment
-            }, 'SQLite database connection established successfully');
-        })
-        .catch((error: Error) => {
-            logger.error({
-                error: error.message,
-                filename: dbFilename
-            }, 'SQLite database connection test failed');
-        });
-
-} catch (error) {
-    const err = error as Error;
-    logger.error({
-        error: err.message,
-        stack: err.stack
-    }, 'Failed to initialize SQLite database connection');
-    throw err;
+    return _db;
 }
 
-export { db };
+/**
+ * Check if database resources have been initialized. Useful for tests.
+ */
+export function hasDbResources(): boolean {
+    return dbInitialized;
+}
+
+/**
+ * Backwards compatibility: db object that lazily initializes on first property access.
+ * This allows existing code using `db.` to continue working without changes,
+ * while still benefiting from lazy initialization.
+ */
+export const db: Knex = new Proxy({} as Knex, {
+    get(_target, prop) {
+        return Reflect.get(getDb(), prop);
+    },
+    set(_target, prop, value) {
+        return Reflect.set(getDb(), prop, value);
+    }
+});
 
 export function createKnexConfigForMigrations(): Record<KnexEnvironment, Knex.Config> {
     return createKnexConfig();
@@ -138,7 +160,7 @@ export function createKnexConfigForMigrations(): Record<KnexEnvironment, Knex.Co
 export async function runMigrations(): Promise<void> {
     try {
         logger.info('Running database migrations...');
-        await db.migrate.latest();
+        await getDb().migrate.latest();
         logger.info('Database migrations completed successfully');
     } catch (error) {
         const err = error as Error;
@@ -151,9 +173,9 @@ export async function runMigrations(): Promise<void> {
 }
 
 export async function closeConnection(): Promise<void> {
-    if (db) {
+    if (_db && dbInitialized) {
         try {
-            await db.destroy();
+            await _db.destroy();
             logger.info('SQLite database connection closed');
         } catch (error) {
             const err = error as Error;
@@ -161,5 +183,7 @@ export async function closeConnection(): Promise<void> {
                 error: err.message
             }, 'Error closing SQLite database connection');
         }
+        _db = null;
+        dbInitialized = false;
     }
 }

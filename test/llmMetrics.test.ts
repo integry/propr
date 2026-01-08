@@ -71,6 +71,7 @@ describe('LLM Metrics Tests', () => {
         try {
             const {
                 closeConnection,
+                hasDbResources,
                 shutdownQueue,
                 hasQueueResources,
                 closeAnalysisRedis,
@@ -78,7 +79,9 @@ describe('LLM Metrics Tests', () => {
                 closeStateManager
             } = await import('@gitfix/core');
 
-            await closeConnection();
+            if (hasDbResources()) {
+                await closeConnection();
+            }
 
             if (hasQueueResources()) {
                 await shutdownQueue();

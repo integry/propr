@@ -7,10 +7,10 @@
  * - Setting up test environment
  * - Mocking external dependencies
  *
- * IMPORTANT: The queue module now uses lazy initialization, so importing
- * @gitfix/core will NOT automatically create Redis connections. Connections
- * are only created when actually used (e.g., when adding jobs or creating workers).
- * This eliminates the need for forced process.exit() in most tests.
+ * IMPORTANT: Both the queue module and database connection now use lazy initialization,
+ * so importing @gitfix/core will NOT automatically create Redis or database connections.
+ * Connections are only created when actually used (e.g., when adding jobs, creating workers,
+ * or accessing the database). This eliminates the need for forced process.exit() in most tests.
  */
 
 import { after } from 'node:test';
@@ -27,8 +27,11 @@ export async function cleanupConnections(): Promise<void> {
     try {
         // Dynamic import to avoid module initialization side effects
         // when this helper is imported
-        const { closeConnection } = await import('@gitfix/core');
-        await closeConnection();
+        const { closeConnection, hasDbResources } = await import('@gitfix/core');
+        // Only close if database resources were actually created
+        if (hasDbResources()) {
+            await closeConnection();
+        }
     } catch {
         // Ignore errors - connection may not exist
     }

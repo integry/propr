@@ -115,6 +115,7 @@ after(async () => {
     try {
         const {
             closeConnection,
+            hasDbResources,
             shutdownQueue,
             hasQueueResources,
             closeAnalysisRedis,
@@ -122,7 +123,9 @@ after(async () => {
             closeStateManager
         } = await import('@gitfix/core');
 
-        await closeConnection();
+        if (hasDbResources()) {
+            await closeConnection();
+        }
 
         if (hasQueueResources()) {
             await shutdownQueue();
