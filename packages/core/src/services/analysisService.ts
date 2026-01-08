@@ -6,10 +6,38 @@ import logger from '../utils/logger.js';
 import fs from 'fs';
 import { execa } from 'execa';
 
-const redis = new Redis({
-  host: process.env.REDIS_HOST || 'redis',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-});
+// Lazy-loaded Redis connection - only created when actually needed
+let redis: InstanceType<typeof Redis> | null = null;
+let redisInitialized = false;
+
+function getRedisConnection(): InstanceType<typeof Redis> {
+  if (!redis) {
+    redis = new Redis({
+      host: process.env.REDIS_HOST || 'redis',
+      port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    });
+    redisInitialized = true;
+  }
+  return redis;
+}
+
+/** Check if Redis resources have been initialized. Useful for tests. */
+export function hasAnalysisRedisResources(): boolean {
+  return redisInitialized;
+}
+
+/** Close the Redis connection used by analysisService. */
+export async function closeAnalysisRedis(): Promise<void> {
+  if (redis && redisInitialized) {
+    try {
+      await redis.quit();
+    } catch {
+      // Ignore errors during close
+    }
+    redis = null;
+    redisInitialized = false;
+  }
+}
 
 interface PromptData {
   prompt?: string;
@@ -186,7 +214,7 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
 
   try {
     const promptKey = `execution:prompt:session:${sessionId}`;
-    const promptData: PromptData = JSON.parse(await redis.get(promptKey) || '{}');
+    const promptData: PromptData = JSON.parse(await getRedisConnection().get(promptKey) || '{}');
     const originalPrompt = promptData.prompt || 'Original prompt not found.';
     const issueRef = promptData.issueRef;
 
@@ -275,7 +303,7 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     ) as string;
 
     const githubTokenKey = `github:token:${task.repository}`;
-    const tokenData = await redis.get(githubTokenKey);
+    const tokenData = await getRedisConnection().get(githubTokenKey);
     const githubToken = tokenData || process.env.GH_TOKEN || '';
 
     const [repoOwner, repoName] = task.repository.split('/');

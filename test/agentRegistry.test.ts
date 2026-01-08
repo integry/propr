@@ -215,12 +215,29 @@ after(async () => {
 
         // Also close any remaining connections
         try {
-            const { closeConnection, shutdownQueue, hasQueueResources } = await import('@gitfix/core');
+            const {
+                closeConnection,
+                shutdownQueue,
+                hasQueueResources,
+                closeAnalysisRedis,
+                hasAnalysisRedisResources,
+                closeStateManager
+            } = await import('@gitfix/core');
+
             await closeConnection();
+
             // Only shutdown queue if resources were created
             if (hasQueueResources()) {
                 await shutdownQueue();
             }
+
+            // Close analysis service Redis if it was created
+            if (hasAnalysisRedisResources()) {
+                await closeAnalysisRedis();
+            }
+
+            // Close state manager Redis
+            await closeStateManager();
         } catch {
             // Connections may already be closed
         }

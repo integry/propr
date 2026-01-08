@@ -79,7 +79,7 @@ export { handleCommentDeleted, handleCommentEdited, processCommentEvent } from '
 export type { CommentPayload, CommentEventConfig, CommentEventType } from './webhook/commentEventHandler.js';
 export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './webhook/commentEventHelpers.js';
 
-export { getExecutionAnalysis } from './services/analysisService.js';
+export { getExecutionAnalysis, closeAnalysisRedis, hasAnalysisRedisResources } from './services/analysisService.js';
 export { getModelPricing } from './services/pricingService.js';
 export { generateContext, SecurityException } from './services/contextService.js';
 export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile } from './services/contextService.js';

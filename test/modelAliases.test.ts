@@ -67,11 +67,26 @@ test('Model Aliases Configuration', async (t) => {
 // Cleanup after tests
 after(async () => {
     try {
-        const { closeConnection, shutdownQueue, hasQueueResources } = await import('@gitfix/core');
+        const {
+            closeConnection,
+            shutdownQueue,
+            hasQueueResources,
+            closeAnalysisRedis,
+            hasAnalysisRedisResources,
+            closeStateManager
+        } = await import('@gitfix/core');
+
         await closeConnection();
+
         if (hasQueueResources()) {
             await shutdownQueue();
         }
+
+        if (hasAnalysisRedisResources()) {
+            await closeAnalysisRedis();
+        }
+
+        await closeStateManager();
     } catch {
         // Ignore cleanup errors
     }

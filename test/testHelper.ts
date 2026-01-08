@@ -43,6 +43,23 @@ export async function cleanupConnections(): Promise<void> {
         // Ignore errors - queue may not exist
     }
 
+    try {
+        const { closeAnalysisRedis, hasAnalysisRedisResources } = await import('@gitfix/core');
+        // Only close if resources were actually created
+        if (hasAnalysisRedisResources()) {
+            await closeAnalysisRedis();
+        }
+    } catch {
+        // Ignore errors - redis may not exist
+    }
+
+    try {
+        const { closeStateManager } = await import('@gitfix/core');
+        await closeStateManager();
+    } catch {
+        // Ignore errors - state manager may not exist
+    }
+
     // Brief delay to allow async cleanup to complete
     await new Promise(resolve => setTimeout(resolve, 50));
 }
