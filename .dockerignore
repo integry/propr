@@ -5,6 +5,7 @@ npm-debug.log
 README.md
 .env
 .env.example
+test/
 coverage/
 .nyc_output/
 .vscode/

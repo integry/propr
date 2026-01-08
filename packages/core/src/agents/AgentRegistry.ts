@@ -7,8 +7,6 @@ import { CodexAgent } from './impl/CodexAgent.js';
 import { GeminiAgent } from './impl/GeminiAgent.js';
 import * as configManager from '../config/configManager.js';
 import { ensureAgentDockerImage } from '../claude/docker/dockerExecutor.js';
-import { closeConnection } from '../db/connection.js';
-import { shutdownQueue } from '../queue/taskQueue.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -243,49 +241,6 @@ export class AgentRegistry {
             agentAlias: defaultConfig.alias,
             dockerImage: defaultConfig.dockerImage
         }, 'Default Claude agent registered');
-    }
-
-    /**
-     * Clean up resources and connections.
-     * Should be called during shutdown or test cleanup.
-     */
-    async destroy(): Promise<void> {
-        try {
-            // Clear agents and state
-            this.agents.clear();
-            this.agentsByAlias.clear();
-            this.initialized = false;
-
-            // Close database connection
-            await closeConnection();
-
-            // Shutdown queues and Redis connections
-            await shutdownQueue();
-
-            logger.debug('AgentRegistry destroyed and cleaned up');
-        } catch (error) {
-            const err = error as Error;
-            logger.error({ error: err.message }, 'Error during AgentRegistry cleanup');
-            throw err;
-        }
-    }
-
-    /**
-     * Reset the singleton instance (for testing).
-     * This will force a new instance to be created on next getInstance() call.
-     */
-    static async resetInstance(): Promise<void> {
-        if (AgentRegistry.instance) {
-            // Clean up the existing instance
-            try {
-                await AgentRegistry.instance.destroy();
-            } catch (err) {
-                const error = err as Error;
-                logger.error({ error: error.message }, 'Error destroying AgentRegistry instance');
-                throw err;
-            }
-        }
-        AgentRegistry.instance = undefined as any;
     }
 }
 

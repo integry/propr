@@ -1,4 +1,4 @@
-import { test, mock, beforeEach, afterEach, after } from 'node:test';
+import { test, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { AgentRegistry, ClaudeAgent } from '@gitfix/core';
 import type { AgentConfig } from '@gitfix/core';
@@ -195,17 +195,4 @@ test('Agent Interface Contract', async (t) => {
         assert.ok('analyze' in agent, 'Should have analyze method');
         assert.ok('healthCheck' in agent, 'Should have healthCheck method');
     });
-});
-
-// Cleanup after all tests
-after(async () => {
-    try {
-        // Reset and cleanup the AgentRegistry instance
-        await AgentRegistry.resetInstance();
-
-        // Give a moment for cleanup to complete
-        await new Promise(resolve => setTimeout(resolve, 100));
-    } catch (error) {
-        console.error('Error during test cleanup:', error);
-    }
 });

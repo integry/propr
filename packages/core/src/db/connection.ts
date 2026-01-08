@@ -7,7 +7,7 @@ import logger from '../utils/logger.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-type KnexEnvironment = 'development' | 'production' | 'test';
+type KnexEnvironment = 'development' | 'production';
 
 // Get database filename from env or use default
 function getDbFilename(): string {
@@ -30,7 +30,6 @@ function ensureDataDirectory(filename: string): void {
 
 function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
     const dbFilename = getDbFilename();
-    const testDbFilename = path.join(path.dirname(dbFilename), 'gitfix.test.sqlite');
 
     return {
         development: {
@@ -54,23 +53,6 @@ function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
             client: 'better-sqlite3',
             connection: {
                 filename: dbFilename
-            },
-            useNullAsDefault: true,
-            migrations: {
-                directory: path.join(__dirname, 'migrations'),
-                tableName: 'knex_migrations'
-            },
-            pool: {
-                afterCreate: (conn: { pragma: (arg: string) => void }, done: (err: Error | null) => void) => {
-                    conn.pragma('foreign_keys = ON');
-                    done(null);
-                }
-            }
-        },
-        test: {
-            client: 'better-sqlite3',
-            connection: {
-                filename: testDbFilename
             },
             useNullAsDefault: true,
             migrations: {
