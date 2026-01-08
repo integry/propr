@@ -1,6 +1,6 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@gitfix/core';
-import { indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit } from '@gitfix/core';
+import { indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus } from '@gitfix/core';
 import type { IndexingJobData } from '@gitfix/core';
 
 interface AgentConfig {
@@ -289,4 +289,29 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   );
 
   return { success: true, jobId: job.id, correlationId };
+}
+
+/**
+ * Stop an indexing job for a repository.
+ * Removes the job from the queue if found and resets the repository status to 'idle'.
+ */
+export async function stopIndexingJob(repository: string): Promise<{ success: boolean; message?: string }> {
+  try {
+    const jobs = await indexingQueue.getJobs(['active', 'waiting', 'delayed']);
+    const job = jobs.find((j: { data: IndexingJobData }) => j.data.repository === repository);
+
+    if (job) {
+      // Remove the job from the queue
+      await job.remove();
+    }
+
+    // Always force the status back to idle in the DB, even if no job was found
+    // (to handle stuck states)
+    await updateRepositoryStatus(repository, 'idle');
+
+    return { success: true };
+  } catch (error) {
+    console.error('Error stopping indexing job:', error);
+    return { success: false, message: (error as Error).message };
+  }
 }
