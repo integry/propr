@@ -9,12 +9,22 @@ import { execa } from 'execa';
 // Lazy-loaded Redis connection - only created when actually needed
 let redis: InstanceType<typeof Redis> | null = null;
 let redisInitialized = false;
+let analysisServiceShuttingDown = false;
 
 function getRedisConnection(): InstanceType<typeof Redis> {
   if (!redis) {
     redis = new Redis({
       host: process.env.REDIS_HOST || 'redis',
       port: parseInt(process.env.REDIS_PORT || '6379', 10),
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+      // Disable auto-reconnect during shutdown
+      retryStrategy: () => {
+        if (analysisServiceShuttingDown || !redis) {
+          return null; // Stop retrying if we're shutting down
+        }
+        return 1000; // Retry after 1 second
+      }
     });
     redisInitialized = true;
   }
@@ -28,6 +38,9 @@ export function hasAnalysisRedisResources(): boolean {
 
 /** Close the Redis connection used by analysisService. */
 export async function closeAnalysisRedis(): Promise<void> {
+  // Set shutdown flag to prevent reconnection attempts
+  analysisServiceShuttingDown = true;
+
   if (redis && redisInitialized) {
     const conn = redis;
     // Set to null first to prevent reconnection attempts
@@ -38,21 +51,15 @@ export async function closeAnalysisRedis(): Promise<void> {
       // Remove all event listeners before closing
       conn.removeAllListeners();
       // Use disconnect() for immediate cleanup
+      // Do NOT call quit() after disconnect() - it can cause issues
       conn.disconnect();
-
-      // Also try quit() with a timeout
-      try {
-        await Promise.race([
-          conn.quit(),
-          new Promise(resolve => setTimeout(resolve, 500))
-        ]);
-      } catch {
-        // Ignore quit errors
-      }
     } catch {
       // Ignore disconnect errors
     }
   }
+
+  // Reset shutdown flag for potential reuse
+  analysisServiceShuttingDown = false;
 }
 
 interface PromptData {

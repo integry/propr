@@ -41,15 +41,20 @@ import type {
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 
+// Track shutdown state globally to prevent reconnection during cleanup
+let isShuttingDown = false;
+
 const connectionOptions: RedisOptions = {
     host: REDIS_HOST,
     port: REDIS_PORT,
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
+    // Disable lazyConnect to ensure connection status is accurate
+    lazyConnect: false,
     // Disable auto-reconnect to allow clean shutdown in tests
     retryStrategy: (times: number) => {
         // Only retry during normal operation, not during shutdown
-        if (redisConnection === null) {
+        if (isShuttingDown || redisConnection === null) {
             return null; // Stop retrying if we're shutting down
         }
         // Exponential backoff: 50ms, 100ms, 200ms, ... up to 2s
@@ -354,6 +359,9 @@ export function createWorker<T extends JobData = JobData, R extends JobResult = 
 export async function shutdownQueue(): Promise<void> {
     logger.info('Shutting down queue...');
 
+    // Set shutdown flag immediately to prevent reconnection attempts
+    isShuttingDown = true;
+
     const errors: Error[] = [];
 
     // Close all tracked workers first
@@ -421,18 +429,8 @@ export async function shutdownQueue(): Promise<void> {
 
             // Use disconnect() for immediate cleanup
             // disconnect() closes the socket without waiting for pending commands
+            // Do NOT call quit() after disconnect() - it can cause issues
             conn.disconnect();
-
-            // Also call quit() to ensure proper cleanup if connection is still alive
-            // We use a short timeout since disconnect() should have already closed it
-            try {
-                await Promise.race([
-                    conn.quit(),
-                    new Promise(resolve => setTimeout(resolve, 500))
-                ]);
-            } catch {
-                // Ignore quit errors since disconnect already closed the connection
-            }
         } catch (err) {
             errors.push(err as Error);
             logger.error({ err }, 'Error closing Redis connection');
@@ -441,6 +439,9 @@ export async function shutdownQueue(): Promise<void> {
 
     // Give a moment for any async cleanup to settle
     await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Reset shutdown flag to allow reuse of the module if needed
+    isShuttingDown = false;
 
     if (errors.length > 0) {
         logger.warn({ errorCount: errors.length }, 'Queue shutdown completed with errors');

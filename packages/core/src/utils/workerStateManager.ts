@@ -16,13 +16,22 @@ export class WorkerStateManager {
     private redis: InstanceType<typeof Redis>;
     private keyPrefix: string;
     private stateExpiry: number;
+    private isShuttingDown = false;
 
     constructor(options: WorkerStateManagerOptions = {}) {
+        const self = this;
         this.redis = new Redis({
             host: process.env.REDIS_HOST ?? '127.0.0.1',
             port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
             maxRetriesPerRequest: null,
             enableReadyCheck: false,
+            // Disable auto-reconnect during shutdown
+            retryStrategy: () => {
+                if (self.isShuttingDown) {
+                    return null; // Stop retrying if we're shutting down
+                }
+                return 1000; // Retry after 1 second
+            },
             ...options.redis
         });
         this.keyPrefix = options.keyPrefix ?? 'worker:state:';
@@ -305,21 +314,15 @@ export class WorkerStateManager {
      * Closes Redis connection
      */
     async close(): Promise<void> {
+        // Set shutdown flag to prevent reconnection attempts
+        this.isShuttingDown = true;
+
         try {
             // Remove all event listeners before closing
             this.redis.removeAllListeners();
             // Use disconnect() for immediate cleanup
+            // Do NOT call quit() after disconnect() - it can cause issues
             this.redis.disconnect();
-
-            // Also try quit() with a timeout
-            try {
-                await Promise.race([
-                    this.redis.quit(),
-                    new Promise(resolve => setTimeout(resolve, 500))
-                ]);
-            } catch {
-                // Ignore quit errors
-            }
         } catch {
             // Ignore disconnect errors
         }

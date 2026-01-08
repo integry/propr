@@ -239,6 +239,12 @@ after(async () => {
 
         // Brief delay for cleanup to complete
         await new Promise(resolve => setTimeout(resolve, 100));
+
+        // Debug: Log active handles to identify what's keeping the process alive
+        // This uses Node.js internal API to identify open handles
+        if (process.env.DEBUG_HANDLES === 'true') {
+            console.log('Active resources:', process.getActiveResourcesInfo?.() || 'API not available');
+        }
     } catch (error) {
         console.error('Error during test cleanup:', error);
     }
