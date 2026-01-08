@@ -278,7 +278,9 @@ export async function storeCodexPromptInRedis(options: StoreCodexPromptOptions):
             promptKeys
         }, 'Stored Codex execution prompt in Redis');
 
-        await redis.quit();
+        // Use disconnect() for immediate cleanup instead of quit() which may hang
+        redis.removeAllListeners();
+        redis.disconnect();
     } catch (redisError) {
         const error = redisError as Error;
         logger.warn({

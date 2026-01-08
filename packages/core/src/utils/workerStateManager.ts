@@ -308,14 +308,11 @@ export class WorkerStateManager {
         try {
             // Remove all event listeners before closing
             this.redis.removeAllListeners();
-            await this.redis.quit();
+            // Use disconnect() instead of quit() for more aggressive cleanup
+            // disconnect() immediately closes the socket without waiting
+            this.redis.disconnect();
         } catch {
-            // Force disconnect if quit fails
-            try {
-                this.redis.disconnect();
-            } catch {
-                // Ignore disconnect errors
-            }
+            // Ignore disconnect errors
         }
     }
 }

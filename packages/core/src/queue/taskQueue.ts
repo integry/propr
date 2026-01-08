@@ -356,34 +356,44 @@ export async function shutdownQueue(): Promise<void> {
     createdWorkers.length = 0;
 
     // Close queues if they were created
+    // Use Promise.allSettled for parallel close to speed up shutdown
+    const queueClosePromises: Promise<void>[] = [];
+
     if (_issueQueue) {
-        try {
-            await _issueQueue.close();
-        } catch (err) {
-            errors.push(err as Error);
-            logger.error({ err }, 'Error closing issue queue');
-        }
+        queueClosePromises.push(
+            _issueQueue.close().catch((err) => {
+                errors.push(err as Error);
+                logger.error({ err }, 'Error closing issue queue');
+            })
+        );
         _issueQueue = null;
     }
 
     if (_analysisQueue) {
-        try {
-            await _analysisQueue.close();
-        } catch (err) {
-            errors.push(err as Error);
-            logger.error({ err }, 'Error closing analysis queue');
-        }
+        queueClosePromises.push(
+            _analysisQueue.close().catch((err) => {
+                errors.push(err as Error);
+                logger.error({ err }, 'Error closing analysis queue');
+            })
+        );
         _analysisQueue = null;
     }
 
     if (_indexingQueue) {
-        try {
-            await _indexingQueue.close();
-        } catch (err) {
-            errors.push(err as Error);
-            logger.error({ err }, 'Error closing indexing queue');
-        }
+        queueClosePromises.push(
+            _indexingQueue.close().catch((err) => {
+                errors.push(err as Error);
+                logger.error({ err }, 'Error closing indexing queue');
+            })
+        );
         _indexingQueue = null;
+    }
+
+    // Wait for all queues to close
+    if (queueClosePromises.length > 0) {
+        await Promise.allSettled(queueClosePromises);
+        // Small delay to allow queue close operations to fully complete
+        await new Promise(resolve => setTimeout(resolve, 50));
     }
 
     // Close Redis connection if it was created
@@ -391,16 +401,13 @@ export async function shutdownQueue(): Promise<void> {
         try {
             // Remove all event listeners before closing to prevent keeping the connection alive
             redisConnection.removeAllListeners();
-            await redisConnection.quit();
+            // Use disconnect() instead of quit() for more aggressive cleanup
+            // quit() sends QUIT command and waits for response, which may hang
+            // disconnect() immediately closes the socket
+            redisConnection.disconnect();
         } catch (err) {
             errors.push(err as Error);
             logger.error({ err }, 'Error closing Redis connection');
-            // Force disconnect if quit fails
-            try {
-                redisConnection.disconnect();
-            } catch {
-                // Ignore disconnect errors
-            }
         }
         redisConnection = null;
         redisConnectionInitialized = false;

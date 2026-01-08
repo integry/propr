@@ -81,6 +81,8 @@ export async function getModelPricing(openRouterModelId: string): Promise<ModelP
         logger.error({ error: (error as Error).message }, 'Error in getModelPricing');
         return null;
     } finally {
-        await redis.quit();
+        // Use disconnect() for immediate cleanup instead of quit() which may hang
+        redis.removeAllListeners();
+        redis.disconnect();
     }
 }

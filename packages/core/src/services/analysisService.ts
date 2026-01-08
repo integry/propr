@@ -32,14 +32,11 @@ export async function closeAnalysisRedis(): Promise<void> {
     try {
       // Remove all event listeners before closing
       redis.removeAllListeners();
-      await redis.quit();
+      // Use disconnect() instead of quit() for more aggressive cleanup
+      // disconnect() immediately closes the socket without waiting
+      redis.disconnect();
     } catch {
-      // Force disconnect if quit fails
-      try {
-        redis.disconnect();
-      } catch {
-        // Ignore disconnect errors
-      }
+      // Ignore disconnect errors
     }
     redis = null;
     redisInitialized = false;

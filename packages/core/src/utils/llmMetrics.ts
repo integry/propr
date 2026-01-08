@@ -253,7 +253,9 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');
     } finally {
-        await metricsRedis.quit();
+        // Use disconnect() for immediate cleanup instead of quit() which may hang
+        metricsRedis.removeAllListeners();
+        metricsRedis.disconnect();
     }
 }
 
@@ -328,7 +330,9 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummaryResult> {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack }, 'Failed to retrieve LLM metrics summary');
         throw error;
     } finally {
-        await metricsRedis.quit();
+        // Use disconnect() for immediate cleanup instead of quit() which may hang
+        metricsRedis.removeAllListeners();
+        metricsRedis.disconnect();
     }
 }
 
@@ -345,6 +349,8 @@ export async function getLLMMetricsByCorrelationId(correlationId: string): Promi
         logger.error({ error: (error as Error).message, correlationId }, 'Failed to retrieve LLM metrics by correlation ID');
         return null;
     } finally {
-        await metricsRedis.quit();
+        // Use disconnect() for immediate cleanup instead of quit() which may hang
+        metricsRedis.removeAllListeners();
+        metricsRedis.disconnect();
     }
 }

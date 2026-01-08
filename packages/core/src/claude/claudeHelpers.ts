@@ -381,7 +381,9 @@ export async function storePromptInRedis(options: StorePromptOptions): Promise<v
             promptLength: prompt.length
         }, 'Stored execution prompt in Redis with unique identifiers');
 
-        await redis.quit();
+        // Use disconnect() for immediate cleanup instead of quit() which may hang
+        redis.removeAllListeners();
+        redis.disconnect();
     } catch (redisError) {
         const error = redisError as Error;
         logger.warn({ issueNumber: issueRef.number, error: error.message }, 'Failed to store execution prompt in Redis - continuing');
