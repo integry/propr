@@ -186,7 +186,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     // Phase C: Directory Aggregation (only if some files were processed)
     if (batchResult.filesProcessed > 0) {
-      await aggregateDirectories(fullName, agent, correlatedLogger);
+      await aggregateDirectories(fullName, agent, correlatedLogger, modelOverride);
     }
 
     // Phase D: Cleanup - Mark status based on results
