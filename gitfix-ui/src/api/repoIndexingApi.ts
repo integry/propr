@@ -25,3 +25,14 @@ export const stopRepositoryIndexing = async (repository: string): Promise<{ succ
   await handleApiResponse(response);
   return response.json();
 };
+
+export const triggerRepositoryIndexing = async (repository: string): Promise<{ success: boolean; jobId?: string }> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/repos/trigger-indexing`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repository, fullReindex: true }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};

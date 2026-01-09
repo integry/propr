@@ -13,6 +13,7 @@ import {
 } from './summaryMinerMetrics.js';
 import type { SummarizationCallMetrics, SummarizationMetricsSummary } from './summaryMinerMetrics.js';
 import { aggregateDirectories } from './summaryMinerDirectories.js';
+import { isIndexingCancelled, IndexingCancelledError } from './indexingCancellation.js';
 
 // Re-export metrics types and functions for backwards compatibility
 export { getSummarizationMetricsSummary, getSummarizationCallHistory };
@@ -104,6 +105,12 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   let filesFailed = 0;
 
   for (const file of files) {
+    // Check for cancellation before processing each file
+    if (await isIndexingCancelled(fullName)) {
+      log.info({ repository: fullName }, 'Indexing cancelled by user');
+      throw new IndexingCancelledError(fullName);
+    }
+
     const filePath = path.join(repoPath, file.path);
 
     // Read file content
@@ -151,6 +158,12 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
   // Process remaining batch
   if (currentBatch.length > 0) {
+    // Check for cancellation before final batch
+    if (await isIndexingCancelled(fullName)) {
+      log.info({ repository: fullName }, 'Indexing cancelled by user');
+      throw new IndexingCancelledError(fullName);
+    }
+
     batchNumber++;
     log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing final batch');
     const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt });

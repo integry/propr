@@ -4,6 +4,7 @@ import { RepositoryIndexingStatus } from '../api/gitfixApi';
 interface IndexingStatusIndicatorProps {
   status: RepositoryIndexingStatus | undefined;
   onStop?: () => void;
+  onReindex?: () => void;
 }
 
 const formatTimestamp = (ts: string | null) => {
@@ -12,12 +13,30 @@ const formatTimestamp = (ts: string | null) => {
   return date.toLocaleString();
 };
 
-export const IndexingStatusIndicator: React.FC<IndexingStatusIndicatorProps> = ({ status, onStop }) => {
+export const IndexingStatusIndicator: React.FC<IndexingStatusIndicatorProps> = ({ status, onStop, onReindex }) => {
+  const ReindexButton = () => onReindex ? (
+    <button
+      onClick={(e) => {
+        e.preventDefault();
+        onReindex();
+      }}
+      className="p-1 hover:bg-blue-100 rounded text-blue-600 transition-colors"
+      title="Reindex Repository"
+    >
+      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+      </svg>
+    </button>
+  ) : null;
+
   if (!status) {
     // No indexing info available - show idle/default state
     return (
-      <div className="flex items-center gap-1.5" title="No indexing info">
-        <div className="w-2 h-2 rounded-full bg-gray-300"></div>
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5" title="No indexing info">
+          <div className="w-2 h-2 rounded-full bg-gray-300"></div>
+        </div>
+        <ReindexButton />
       </div>
     );
   }
@@ -51,32 +70,41 @@ export const IndexingStatusIndicator: React.FC<IndexingStatusIndicatorProps> = (
       );
     case 'completed':
       return (
-        <div className="flex items-center gap-1.5" title={`Index up to date. Last indexed: ${formatTimestamp(status.last_indexed_at)}`}>
-          <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-          </svg>
-          {status.last_indexed_at && (
-            <span className="text-xs text-gray-500">
-              {formatTimestamp(status.last_indexed_at)}
-            </span>
-          )}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5" title={`Index up to date. Last indexed: ${formatTimestamp(status.last_indexed_at)}`}>
+            <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            {status.last_indexed_at && (
+              <span className="text-xs text-gray-500">
+                {formatTimestamp(status.last_indexed_at)}
+              </span>
+            )}
+          </div>
+          <ReindexButton />
         </div>
       );
     case 'failed':
       return (
-        <div className="flex items-center gap-1.5" title="Indexing failed. Check logs.">
-          <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-          </svg>
-          <span className="text-xs text-red-600">Failed</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5" title="Indexing failed. Click to retry.">
+            <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <span className="text-xs text-red-600">Failed</span>
+          </div>
+          <ReindexButton />
         </div>
       );
     case 'idle':
     default:
       return (
-        <div className="flex items-center gap-1.5" title="Not indexed">
-          <div className="w-2 h-2 rounded-full bg-gray-300"></div>
-          <span className="text-xs text-gray-500">Not indexed</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5" title="Not indexed">
+            <div className="w-2 h-2 rounded-full bg-gray-300"></div>
+            <span className="text-xs text-gray-500">Not indexed</span>
+          </div>
+          <ReindexButton />
         </div>
       );
   }

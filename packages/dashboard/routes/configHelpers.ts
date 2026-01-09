@@ -1,6 +1,6 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@gitfix/core';
-import { indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus } from '@gitfix/core';
+import { indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation } from '@gitfix/core';
 import type { IndexingJobData } from '@gitfix/core';
 
 interface AgentConfig {
@@ -293,7 +293,8 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
 
 /**
  * Stop an indexing job for a repository and reset its status to idle.
- * Removes any active, waiting, or delayed jobs from the queue.
+ * For active jobs, sets a cancellation flag in Redis that the worker checks.
+ * For waiting/delayed jobs, removes them from the queue directly.
  */
 export async function stopIndexingJob(repository: string): Promise<{ success: boolean; message?: string }> {
   try {
@@ -301,8 +302,15 @@ export async function stopIndexingJob(repository: string): Promise<{ success: bo
     const job = jobs.find((j: { data: IndexingJobData }) => j.data.repository === repository);
 
     if (job) {
-      // Remove the job from the queue
-      await job.remove();
+      const state = await job.getState();
+      if (state === 'active') {
+        // Active jobs are locked by the worker. Set a cancellation flag in Redis
+        // that the worker will check and stop processing gracefully.
+        await requestIndexingCancellation(repository);
+      } else {
+        // Waiting/delayed jobs can be removed directly
+        await job.remove();
+      }
     }
 
     // Always force the status back to idle in the DB, even if no job was found

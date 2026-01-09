@@ -9,6 +9,7 @@ import {
   processBatches,
   aggregateDirectories
 } from './summaryMinerHelpers.js';
+import { clearIndexingCancellation, IndexingCancelledError } from './indexingCancellation.js';
 
 // Re-export metrics functions and types for external access
 export {
@@ -198,16 +199,31 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       correlatedLogger.info({ repoPath, fullName, ...batchResult }, 'Repository indexing completed successfully');
     }
 
+    // Clear any cancellation flag on successful completion
+    await clearIndexingCancellation(fullName);
+
   } catch (error) {
+    const repoName = options.fullName || path.basename(repoPath);
+
+    // Always clear the cancellation flag
+    await clearIndexingCancellation(repoName);
+
+    // Handle user-initiated cancellation
+    if (error instanceof IndexingCancelledError) {
+      correlatedLogger.info({ repoPath, fullName: repoName }, 'Repository indexing was cancelled by user');
+      // Status already set to 'idle' by stopIndexingJob, just return without throwing
+      return;
+    }
+
     const err = error as Error;
     correlatedLogger.error(
-      { error: err.message, stack: err.stack, repoPath, fullName },
+      { error: err.message, stack: err.stack, repoPath, fullName: repoName },
       'Repository indexing failed'
     );
 
     // Set status to failed
     try {
-      await updateRepositoryStatus(options.fullName || path.basename(repoPath), 'failed');
+      await updateRepositoryStatus(repoName, 'failed');
     } catch (statusError) {
       correlatedLogger.error(
         { error: (statusError as Error).message },

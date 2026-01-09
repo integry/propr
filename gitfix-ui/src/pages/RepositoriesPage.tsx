@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import React, { useState, useEffect, useCallback } from 'react';
 import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/gitfixApi';
+import { triggerRepositoryIndexing } from '../api/repoIndexingApi';
 import { BaseBranchSelector } from '../components/BaseBranchSelector';
 import { IndexingStatusIndicator } from '../components/IndexingStatusIndicator';
 
@@ -64,6 +65,10 @@ const RepositoriesPage: React.FC = () => {
     loadRepos();
     loadAvailableRepos();
     loadIndexingStatuses();
+
+    // Poll for indexing status updates every 3 seconds
+    const pollInterval = setInterval(loadIndexingStatuses, 3000);
+    return () => clearInterval(pollInterval);
   }, [loadRepos]);
 
   const loadAvailableRepos = async () => {
@@ -96,6 +101,16 @@ const RepositoriesPage: React.FC = () => {
       setTimeout(loadIndexingStatuses, 500);
     } catch (err) {
       alert('Failed to stop indexing: ' + (err as Error).message);
+    }
+  };
+
+  const handleReindexRepo = async (repoName: string) => {
+    try {
+      await triggerRepositoryIndexing(repoName);
+      // Short delay to allow backend to process
+      setTimeout(loadIndexingStatuses, 500);
+    } catch (err) {
+      alert('Failed to trigger reindex: ' + (err as Error).message);
     }
   };
 
@@ -299,6 +314,7 @@ const RepositoriesPage: React.FC = () => {
               <IndexingStatusIndicator
                 status={indexingStatuses[repo.name]}
                 onStop={() => handleStopIndexing(repo.name)}
+                onReindex={() => handleReindexRepo(repo.name)}
               />
               <Link
                 to={`/summaries/${repo.name}`}
