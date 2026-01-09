@@ -97,7 +97,18 @@ export { scorePaths } from './services/relevance/pathScorer.js';
 export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries, updateRepositoryStatus } from './services/relevance/summaryMiner.js';
 export type { FileSummary, DirectorySummary, GitFileInfo, IndexingOptions } from './services/relevance/summaryMiner.js';
 export { DEFAULT_INSTRUCTIONS } from './services/relevance/summaryMinerHelpers.js';
-export { requestIndexingCancellation, isIndexingCancelled, clearIndexingCancellation, IndexingCancelledError } from './services/relevance/indexingCancellation.js';
+export {
+  requestIndexingCancellation,
+  isIndexingCancelled,
+  clearIndexingCancellation,
+  IndexingCancelledError,
+  initIndexingProgress,
+  updateIndexingProgress,
+  setTotalBatches,
+  getIndexingProgress,
+  clearIndexingProgress
+} from './services/relevance/indexingCancellation.js';
+export type { IndexingProgress } from './services/relevance/indexingCancellation.js';
 
 export {
     executeClaudeCode,

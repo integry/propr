@@ -1,5 +1,5 @@
 import React from 'react';
-import { RepositoryIndexingStatus } from '../api/gitfixApi';
+import { RepositoryIndexingStatus } from '../api/repoIndexingApi';
 
 interface IndexingStatusIndicatorProps {
   status: RepositoryIndexingStatus | undefined;
@@ -11,6 +11,12 @@ const formatTimestamp = (ts: string | null) => {
   if (!ts) return 'Never';
   const date = new Date(ts);
   return date.toLocaleString();
+};
+
+const formatTokens = (tokens: number): string => {
+  if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(1)}M`;
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}K`;
+  return tokens.toString();
 };
 
 export const IndexingStatusIndicator: React.FC<IndexingStatusIndicatorProps> = ({ status, onStop, onReindex }) => {
@@ -42,15 +48,29 @@ export const IndexingStatusIndicator: React.FC<IndexingStatusIndicatorProps> = (
   }
 
   switch (status.indexing_status) {
-    case 'indexing':
+    case 'indexing': {
+      const progress = status.progress;
+      const progressText = progress
+        ? `${progress.percentComplete}% (${progress.processedFiles}/${progress.totalFiles} files)`
+        : 'Starting...';
+      const tokenText = progress && (progress.inputTokens > 0 || progress.outputTokens > 0)
+        ? `${formatTokens(progress.inputTokens)} in / ${formatTokens(progress.outputTokens)} out`
+        : '';
+      const tooltipText = progress
+        ? `Indexing: ${progress.processedFiles}/${progress.totalFiles} files\nTokens: ${progress.inputTokens.toLocaleString()} input, ${progress.outputTokens.toLocaleString()} output`
+        : 'Indexing codebase...';
+
       return (
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5" title="Indexing codebase...">
+          <div className="flex items-center gap-1.5" title={tooltipText}>
             <svg className="animate-spin h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
             </svg>
-            <span className="text-xs text-blue-600">Indexing...</span>
+            <span className="text-xs text-blue-600">{progressText}</span>
+            {tokenText && (
+              <span className="text-xs text-gray-400 ml-1">({tokenText})</span>
+            )}
           </div>
           {onStop && (
             <button
@@ -68,6 +88,7 @@ export const IndexingStatusIndicator: React.FC<IndexingStatusIndicatorProps> = (
           )}
         </div>
       );
+    }
     case 'completed':
       return (
         <div className="flex items-center gap-3">

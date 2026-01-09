@@ -13,7 +13,7 @@ import {
 } from './summaryMinerMetrics.js';
 import type { SummarizationCallMetrics, SummarizationMetricsSummary } from './summaryMinerMetrics.js';
 import { aggregateDirectories } from './summaryMinerDirectories.js';
-import { isIndexingCancelled, IndexingCancelledError } from './indexingCancellation.js';
+import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress } from './indexingCancellation.js';
 
 // Re-export metrics types and functions for backwards compatibility
 export { getSummarizationMetricsSummary, getSummarizationCallHistory };
@@ -135,13 +135,25 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing batch');
 
       const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt });
+      const batchFileCount = currentBatch.length;
+      const batchInputTokens = currentTokens;
+      const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
+
       if (success) {
         successfulBatches++;
-        filesProcessed += currentBatch.length;
+        filesProcessed += batchFileCount;
       } else {
         failedBatches++;
-        filesFailed += currentBatch.length;
+        filesFailed += batchFileCount;
       }
+
+      // Update progress tracking
+      await updateIndexingProgress(fullName, {
+        filesProcessed: batchFileCount,
+        batchCompleted: true,
+        inputTokens: batchInputTokens,
+        outputTokens: batchOutputTokens,
+      });
 
       currentBatch = [];
       currentTokens = 0;
@@ -167,13 +179,25 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     batchNumber++;
     log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing final batch');
     const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt });
+    const batchFileCount = currentBatch.length;
+    const batchInputTokens = currentTokens;
+    const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
+
     if (success) {
       successfulBatches++;
-      filesProcessed += currentBatch.length;
+      filesProcessed += batchFileCount;
     } else {
       failedBatches++;
-      filesFailed += currentBatch.length;
+      filesFailed += batchFileCount;
     }
+
+    // Update progress tracking
+    await updateIndexingProgress(fullName, {
+      filesProcessed: batchFileCount,
+      batchCompleted: true,
+      inputTokens: batchInputTokens,
+      outputTokens: batchOutputTokens,
+    });
   }
 
   log.info({ totalBatches: batchNumber, successfulBatches, failedBatches, filesProcessed, filesFailed }, 'Batch processing complete');

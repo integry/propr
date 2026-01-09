@@ -9,7 +9,7 @@ import {
   processBatches,
   aggregateDirectories
 } from './summaryMinerHelpers.js';
-import { clearIndexingCancellation, IndexingCancelledError } from './indexingCancellation.js';
+import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, clearIndexingProgress } from './indexingCancellation.js';
 
 // Re-export metrics functions and types for external access
 export {
@@ -170,6 +170,9 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     correlatedLogger.info({ count: filesToProcess.length }, 'Files need processing');
 
+    // Initialize progress tracking
+    await initIndexingProgress(fullName, filesToProcess.length);
+
     // Phase B: Batch Summarization
     const batchResult = await processBatches({
       repoPath,
@@ -199,14 +202,16 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       correlatedLogger.info({ repoPath, fullName, ...batchResult }, 'Repository indexing completed successfully');
     }
 
-    // Clear any cancellation flag on successful completion
+    // Clear cancellation flag and progress on successful completion
     await clearIndexingCancellation(fullName);
+    await clearIndexingProgress(fullName);
 
   } catch (error) {
     const repoName = options.fullName || path.basename(repoPath);
 
-    // Always clear the cancellation flag
+    // Always clear the cancellation flag and progress
     await clearIndexingCancellation(repoName);
+    await clearIndexingProgress(repoName);
 
     // Handle user-initiated cancellation
     if (error instanceof IndexingCancelledError) {

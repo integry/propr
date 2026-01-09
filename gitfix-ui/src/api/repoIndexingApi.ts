@@ -1,10 +1,19 @@
 // Repository Indexing Status
 import { API_BASE_URL, handleApiResponse } from './gitfixApi';
 
+export interface RepositoryIndexingProgress {
+  totalFiles: number;
+  processedFiles: number;
+  percentComplete: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface RepositoryIndexingStatus {
   full_name: string;
   indexing_status: 'idle' | 'indexing' | 'completed' | 'failed';
   last_indexed_at: string | null;
+  progress?: RepositoryIndexingProgress;
 }
 
 export const getRepositoriesIndexingStatus = async (): Promise<{ repositories: RepositoryIndexingStatus[] }> => {
