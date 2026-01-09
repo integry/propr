@@ -110,95 +110,15 @@ export function buildCodexPrompt(options: BuildCodexPromptOptions): string {
     return prompt;
 }
 
-interface ParseState {
-    logs: string;
-    result: string | undefined;
-    isError: boolean;
-    errorMessage: string | undefined;
-    sessionId: string | undefined;
-    conversationId: string | undefined;
-    model: string | undefined;
-}
-
-function handleItemCompleted(event: CodexEvent, state: ParseState): void {
-    const item = event.item;
-    if (!item) return;
-
-    if (item.type === 'agent_message') {
-        state.result = item.text;
-        state.logs += `[Assistant] ${item.text || ''}\n`;
-    } else if (item.type === 'reasoning') {
-        state.logs += `[Reasoning] ${item.text || ''}\n`;
-    } else if (item.type === 'command_execution') {
-        state.logs += `[Command] ${item.command || ''}\n`;
-        if (item.aggregated_output) {
-            state.logs += `[Output] ${item.aggregated_output}\n`;
-        }
-    }
-}
-
-function handleResultEvent(event: CodexEvent, state: ParseState): void {
-    state.result = event.result || event.content;
-    if (event.status === 'error') {
-        state.isError = true;
-        state.errorMessage = event.message || 'Unknown error';
-    }
-}
-
-function updateMetadata(event: CodexEvent, state: ParseState): void {
-    if (event.session_id) state.sessionId = event.session_id;
-    if (event.conversation_id) state.conversationId = event.conversation_id;
-    if (event.thread_id && !state.sessionId) state.sessionId = event.thread_id;
-    if (event.model) state.model = event.model;
-}
-
-function processEvent(event: CodexEvent, state: ParseState): void {
-    updateMetadata(event, state);
-
-    switch (event.type) {
-        case 'item.completed':
-            handleItemCompleted(event, state);
-            break;
-        case 'thread.started':
-            if (event.thread_id) state.sessionId = event.thread_id;
-            break;
-        case 'message':
-            state.logs += `[${event.role || 'unknown'}] ${event.content || ''}\n`;
-            break;
-        case 'tool_use':
-            state.logs += `[Tool] ${event.tool} params: ${JSON.stringify(event.params)}\n`;
-            break;
-        case 'error':
-            state.isError = true;
-            state.errorMessage = event.message;
-            state.logs += `[Error] ${event.message}\n`;
-            break;
-        case 'result':
-            handleResultEvent(event, state);
-            break;
-        case 'turn.started':
-        case 'turn.completed':
-            state.logs += `[${event.type}]\n`;
-            break;
-        case 'item.started':
-            // Skip progress indicator events
-            break;
-        default:
-            state.logs += `[${event.type || 'unknown'}] ${JSON.stringify(event)}\n`;
-    }
-}
-
 export function parseCodexStreamOutput(stdout: string): CodexOutput {
-    const state: ParseState = {
-        logs: '',
-        result: undefined,
-        isError: false,
-        errorMessage: undefined,
-        sessionId: undefined,
-        conversationId: undefined,
-        model: undefined
-    };
+    let logs = '';
+    let result: string | undefined;
+    let isError = false;
+    let errorMessage: string | undefined;
     const conversationLog: CodexEvent[] = [];
+    let sessionId: string | undefined;
+    let conversationId: string | undefined;
+    let model: string | undefined;
 
     const lines = stdout.split('\n');
     for (const line of lines) {
@@ -207,21 +127,65 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
         try {
             const event: CodexEvent = JSON.parse(line);
             conversationLog.push(event);
-            processEvent(event, state);
+
+            // Capture metadata from various event types
+            if (event.session_id) sessionId = event.session_id;
+            if (event.conversation_id) conversationId = event.conversation_id;
+            if (event.thread_id && !sessionId) sessionId = event.thread_id;
+            if (event.model) model = event.model;
+
+            // Handle Codex CLI output format (item.completed events)
+            if (event.type === 'item.completed' && event.item) {
+                if (event.item.type === 'agent_message') {
+                    // This is the actual response text
+                    result = event.item.text;
+                    logs += `[Assistant] ${event.item.text || ''}\n`;
+                } else if (event.item.type === 'reasoning') {
+                    logs += `[Reasoning] ${event.item.text || ''}\n`;
+                } else if (event.item.type === 'command_execution') {
+                    logs += `[Command] ${event.item.command || ''}\n`;
+                    if (event.item.aggregated_output) {
+                        logs += `[Output] ${event.item.aggregated_output}\n`;
+                    }
+                }
+            } else if (event.type === 'thread.started') {
+                if (event.thread_id) sessionId = event.thread_id;
+            } else if (event.type === 'message') {
+                logs += `[${event.role || 'unknown'}] ${event.content || ''}\n`;
+            } else if (event.type === 'tool_use') {
+                logs += `[Tool] ${event.tool} params: ${JSON.stringify(event.params)}\n`;
+            } else if (event.type === 'error') {
+                isError = true;
+                errorMessage = event.message;
+                logs += `[Error] ${event.message}\n`;
+            } else if (event.type === 'result') {
+                result = event.result || event.content;
+                if (event.status === 'error') {
+                    isError = true;
+                    errorMessage = event.message || 'Unknown error';
+                }
+            } else if (event.type === 'turn.started' || event.type === 'turn.completed') {
+                // Metadata events, just log them
+                logs += `[${event.type}]\n`;
+            } else if (event.type !== 'item.started') {
+                // Log other unknown event types (skip item.started as it's just a progress indicator)
+                logs += `[${event.type || 'unknown'}] ${JSON.stringify(event)}\n`;
+            }
         } catch {
-            state.logs += line + '\n';
+            // Fallback for non-JSON lines
+            logs += line + '\n';
         }
     }
 
     return {
-        success: !state.isError,
-        logs: state.logs,
-        result: state.result,
-        error: state.errorMessage,
+        success: !isError,
+        logs,
+        result,
+        error: errorMessage,
         conversationLog,
-        sessionId: state.sessionId,
-        conversationId: state.conversationId,
-        model: state.model
+        sessionId,
+        conversationId,
+        model
     };
 }
 
