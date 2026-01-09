@@ -7,7 +7,6 @@ import {
     setWorktreeOwnership,
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
-import { resolveModelAlias } from '../../config/modelAliases.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 
 // Re-export UsageLimitError for convenience
@@ -179,8 +178,8 @@ export class GeminiAgent implements Agent {
             requestedModel: model
         }, 'Running lightweight analysis via Gemini agent...');
 
-        // Use provided model or fallback to haiku for lightweight analysis
-        const effectiveModel = model || resolveModelAlias('haiku');
+        // Use provided model or fallback to gemini-2.5-flash for lightweight analysis
+        const effectiveModel = model || 'gemini-2.5-flash';
 
         const analysisPrompt = context
             ? `${prompt}\n\nContext:\n${context}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`

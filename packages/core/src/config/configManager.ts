@@ -1,6 +1,7 @@
 import path from 'path';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
+import { getIndexingProgress } from '../services/relevance/indexingCancellation.js';
 
 // --- Interfaces ---
 
@@ -286,10 +287,22 @@ export async function saveSummarizationSettings(settings: SummarizationSettings)
 /**
  * Repository indexing status from the repositories table.
  */
+export interface RepositoryIndexingProgress {
+    totalFiles: number;
+    processedFiles: number;
+    percentComplete: number;
+    inputTokens: number;
+    outputTokens: number;
+    phase: 'files' | 'directories' | 'done';
+    totalDirectories: number;
+    processedDirectories: number;
+}
+
 export interface RepositoryIndexingStatus {
     full_name: string;
     indexing_status: 'idle' | 'indexing' | 'completed' | 'failed';
     last_indexed_at: string | null;
+    progress?: RepositoryIndexingProgress;
 }
 
 /**
@@ -299,11 +312,39 @@ export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexin
     try {
         const repos = await db('repositories')
             .select('full_name', 'indexing_status', 'last_indexed_at');
-        return repos.map(r => ({
-            full_name: r.full_name,
-            indexing_status: r.indexing_status || 'idle',
-            last_indexed_at: r.last_indexed_at ? new Date(r.last_indexed_at).toISOString() : null
-        }));
+
+        const results: RepositoryIndexingStatus[] = [];
+        for (const r of repos) {
+            const status: RepositoryIndexingStatus = {
+                full_name: r.full_name,
+                indexing_status: r.indexing_status || 'idle',
+                last_indexed_at: r.last_indexed_at ? new Date(r.last_indexed_at).toISOString() : null
+            };
+
+            // Fetch progress data for repos that are actively indexing
+            if (status.indexing_status === 'indexing') {
+                const progress = await getIndexingProgress(r.full_name);
+                if (progress) {
+                    const percentComplete = progress.totalFiles > 0
+                        ? Math.round((progress.processedFiles / progress.totalFiles) * 100)
+                        : 0;
+                    status.progress = {
+                        totalFiles: progress.totalFiles,
+                        processedFiles: progress.processedFiles,
+                        percentComplete,
+                        inputTokens: progress.inputTokens,
+                        outputTokens: progress.outputTokens,
+                        phase: progress.phase,
+                        totalDirectories: progress.totalDirectories,
+                        processedDirectories: progress.processedDirectories
+                    };
+                }
+            }
+
+            results.push(status);
+        }
+
+        return results;
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message }, 'Failed to load repositories indexing status');

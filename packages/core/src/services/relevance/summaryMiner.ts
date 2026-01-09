@@ -9,6 +9,7 @@ import {
   processBatches,
   aggregateDirectories
 } from './summaryMinerHelpers.js';
+import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, clearIndexingProgress } from './indexingCancellation.js';
 
 // Re-export metrics functions and types for external access
 export {
@@ -169,6 +170,9 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     correlatedLogger.info({ count: filesToProcess.length }, 'Files need processing');
 
+    // Initialize progress tracking
+    await initIndexingProgress(fullName, filesToProcess.length);
+
     // Phase B: Batch Summarization
     const batchResult = await processBatches({
       repoPath,
@@ -182,7 +186,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     // Phase C: Directory Aggregation (only if some files were processed)
     if (batchResult.filesProcessed > 0) {
-      await aggregateDirectories(fullName, agent, correlatedLogger);
+      await aggregateDirectories(fullName, agent, correlatedLogger, modelOverride);
     }
 
     // Phase D: Cleanup - Mark status based on results
@@ -198,16 +202,33 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       correlatedLogger.info({ repoPath, fullName, ...batchResult }, 'Repository indexing completed successfully');
     }
 
+    // Clear cancellation flag and progress on successful completion
+    await clearIndexingCancellation(fullName);
+    await clearIndexingProgress(fullName);
+
   } catch (error) {
+    const repoName = options.fullName || path.basename(repoPath);
+
+    // Always clear the cancellation flag and progress
+    await clearIndexingCancellation(repoName);
+    await clearIndexingProgress(repoName);
+
+    // Handle user-initiated cancellation
+    if (error instanceof IndexingCancelledError) {
+      correlatedLogger.info({ repoPath, fullName: repoName }, 'Repository indexing was cancelled by user');
+      // Status already set to 'idle' by stopIndexingJob, just return without throwing
+      return;
+    }
+
     const err = error as Error;
     correlatedLogger.error(
-      { error: err.message, stack: err.stack, repoPath, fullName },
+      { error: err.message, stack: err.stack, repoPath, fullName: repoName },
       'Repository indexing failed'
     );
 
     // Set status to failed
     try {
-      await updateRepositoryStatus(options.fullName || path.basename(repoPath), 'failed');
+      await updateRepositoryStatus(repoName, 'failed');
     } catch (statusError) {
       correlatedLogger.error(
         { error: (statusError as Error).message },

@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
+import { startDirectoryPhase, updateDirectoryProgress } from './indexingCancellation.js';
 
 // --- Constants ---
 
@@ -17,6 +18,7 @@ interface AggregateDirOptions {
   dirSummaryCache: Map<string, string>;
   agent: Agent;
   log: Logger;
+  modelOverride?: string;
 }
 
 // --- Phase C: Directory Aggregation ---
@@ -27,7 +29,8 @@ interface AggregateDirOptions {
 export async function aggregateDirectories(
   fullName: string,
   agent: Agent,
-  log: Logger
+  log: Logger,
+  modelOverride?: string
 ): Promise<void> {
   // Get all file summaries
   const fileSummaries = await db('file_summaries').select('path', 'summary', 'commit_hash');
@@ -47,11 +50,16 @@ export async function aggregateDirectories(
 
   log.info({ directoryCount: sortedDirs.length }, 'Aggregating directory summaries');
 
+  // Start directory phase tracking
+  await startDirectoryPhase(fullName, sortedDirs.length);
+
   // Cache for directory summaries to avoid repeated DB lookups
   const dirSummaryCache = new Map<string, string>();
 
   for (const dir of sortedDirs) {
-    await aggregateSingleDirectory({ dirPath: dir, fileSummaries, dirSummaryCache, agent, log });
+    await aggregateSingleDirectory({ dirPath: dir, fileSummaries, dirSummaryCache, agent, log, modelOverride });
+    // Update progress after each directory
+    await updateDirectoryProgress(fullName);
   }
 
   log.info({ directoryCount: sortedDirs.length }, 'Directory aggregation complete');
@@ -80,7 +88,7 @@ function extractDirectories(filePaths: string[]): string[] {
  * Aggregates a single directory's children summaries
  */
 async function aggregateSingleDirectory(options: AggregateDirOptions): Promise<void> {
-  const { dirPath, fileSummaries, dirSummaryCache, agent, log } = options;
+  const { dirPath, fileSummaries, dirSummaryCache, agent, log, modelOverride } = options;
   // Get immediate children (files and subdirs)
   const childFiles = fileSummaries.filter(f => {
     const dir = path.dirname(f.path);
@@ -125,14 +133,14 @@ async function aggregateSingleDirectory(options: AggregateDirOptions): Promise<v
   // Estimate output tokens (directory summary is typically 100-200 tokens)
   const estimatedOutputTokens = 150;
 
-  // Get the model being used (from agent config)
-  const modelUsed = agent.config.defaultModel || 'unknown';
+  // Get the model being used (prefer override, fallback to agent config)
+  const modelUsed = modelOverride || agent.config.defaultModel || 'unknown';
 
   let success = false;
   let errorMessage: string | undefined;
 
   try {
-    const response = await agent.analyze(prompt);
+    const response = await agent.analyze(prompt, undefined, modelOverride);
     const summary = parseDirectorySummaryResponse(response);
 
     if (summary) {
