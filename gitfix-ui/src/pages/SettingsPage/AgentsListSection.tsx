@@ -3,6 +3,7 @@ import { AgentConfig } from '../../api/gitfixApi';
 import Alert from './Alert';
 import AgentConfigModal from './AgentConfigModal';
 import { MODEL_INFO_MAP, typeBadgeColors } from '../../config/modelDefinitions';
+import { ProviderLogo } from '../../components/ui/ProviderLogo';
 
 // --- Icons ---
 
@@ -96,6 +97,7 @@ const AgentCard: React.FC<{
              {/* Status Dot */}
             <div className={`w-2.5 h-2.5 rounded-full ${agent.enabled ? 'bg-green-500' : 'bg-gray-300'}`} title={agent.enabled ? "Active" : "Disabled"} />
 
+            <ProviderLogo provider={agent.alias} className="w-5 h-5 text-gray-700" />
             <span className="font-bold text-lg text-gray-900">{agent.alias}</span>
             <span className={`px-2 py-0.5 text-xs font-medium rounded border capitalize ${typeBadgeColors[agent.type]}`}>
               {agent.type}

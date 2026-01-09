@@ -2,6 +2,7 @@ import React from 'react';
 import { TaskInfo, HistoryItem } from './types';
 import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest } from 'lucide-react';
 import { formatRelativeTime } from './utils';
+import { ProviderLogo } from '../ui/ProviderLogo';
 
 // GitHub icon component
 const GitHubIcon: React.FC<{ size?: number; className?: string }> = ({ size = 14, className = '' }) => (
@@ -160,9 +161,10 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
 
         {/* Model with distinct style */}
         <span
-          className="flex items-center gap-1 bg-purple-50 text-purple-700 px-2 py-0.5 rounded text-xs font-medium border border-purple-100 cursor-default"
+          className="flex items-center gap-1.5 bg-purple-50 text-purple-700 px-2 py-0.5 rounded text-xs font-medium border border-purple-100 cursor-default"
           title={modelName}
         >
+          <ProviderLogo provider={modelName} className="w-3.5 h-3.5" />
           {getDisplayModelName(modelName)}
         </span>
 
