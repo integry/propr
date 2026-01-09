@@ -16,6 +16,10 @@ export interface IndexingProgress {
   inputTokens: number;
   outputTokens: number;
   startedAt: number;
+  // Directory aggregation phase
+  totalDirectories: number;
+  processedDirectories: number;
+  phase: 'files' | 'directories' | 'done';
 }
 
 let redisClient: Redis | null = null;
@@ -97,6 +101,9 @@ export async function initIndexingProgress(repository: string, totalFiles: numbe
     inputTokens: 0,
     outputTokens: 0,
     startedAt: Date.now(),
+    totalDirectories: 0,
+    processedDirectories: 0,
+    phase: 'files',
   };
   await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
 }
@@ -140,6 +147,36 @@ export async function setTotalBatches(repository: string, totalBatches: number):
 
   const progress: IndexingProgress = JSON.parse(existing);
   progress.totalBatches = totalBatches;
+  await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
+}
+
+/**
+ * Start the directory aggregation phase.
+ */
+export async function startDirectoryPhase(repository: string, totalDirectories: number): Promise<void> {
+  const redis = getRedis();
+  const key = getProgressKey(repository);
+  const existing = await redis.get(key);
+  if (!existing) return;
+
+  const progress: IndexingProgress = JSON.parse(existing);
+  progress.phase = 'directories';
+  progress.totalDirectories = totalDirectories;
+  progress.processedDirectories = 0;
+  await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
+}
+
+/**
+ * Update progress after processing a directory.
+ */
+export async function updateDirectoryProgress(repository: string): Promise<void> {
+  const redis = getRedis();
+  const key = getProgressKey(repository);
+  const existing = await redis.get(key);
+  if (!existing) return;
+
+  const progress: IndexingProgress = JSON.parse(existing);
+  progress.processedDirectories++;
   await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
 }
 

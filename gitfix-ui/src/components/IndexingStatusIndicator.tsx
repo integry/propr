@@ -50,15 +50,25 @@ export const IndexingStatusIndicator: React.FC<IndexingStatusIndicatorProps> = (
   switch (status.indexing_status) {
     case 'indexing': {
       const progress = status.progress;
-      const progressText = progress
-        ? `${progress.percentComplete}% (${progress.processedFiles}/${progress.totalFiles} files)`
-        : 'Starting...';
+      let progressText = 'Starting...';
+      let tooltipText = 'Indexing codebase...';
+
+      if (progress) {
+        if (progress.phase === 'directories') {
+          const dirPercent = progress.totalDirectories > 0
+            ? Math.round((progress.processedDirectories / progress.totalDirectories) * 100)
+            : 0;
+          progressText = `Dirs: ${dirPercent}% (${progress.processedDirectories}/${progress.totalDirectories})`;
+          tooltipText = `Files: ${progress.processedFiles}/${progress.totalFiles} complete\nDirectories: ${progress.processedDirectories}/${progress.totalDirectories}\nTokens: ${progress.inputTokens.toLocaleString()} input, ${progress.outputTokens.toLocaleString()} output`;
+        } else {
+          progressText = `${progress.percentComplete}% (${progress.processedFiles}/${progress.totalFiles} files)`;
+          tooltipText = `Indexing: ${progress.processedFiles}/${progress.totalFiles} files\nTokens: ${progress.inputTokens.toLocaleString()} input, ${progress.outputTokens.toLocaleString()} output`;
+        }
+      }
+
       const tokenText = progress && (progress.inputTokens > 0 || progress.outputTokens > 0)
         ? `${formatTokens(progress.inputTokens)} in / ${formatTokens(progress.outputTokens)} out`
         : '';
-      const tooltipText = progress
-        ? `Indexing: ${progress.processedFiles}/${progress.totalFiles} files\nTokens: ${progress.inputTokens.toLocaleString()} input, ${progress.outputTokens.toLocaleString()} output`
-        : 'Indexing codebase...';
 
       return (
         <div className="flex items-center gap-3">

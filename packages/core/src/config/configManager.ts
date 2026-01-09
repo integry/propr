@@ -293,6 +293,9 @@ export interface RepositoryIndexingProgress {
     percentComplete: number;
     inputTokens: number;
     outputTokens: number;
+    phase: 'files' | 'directories' | 'done';
+    totalDirectories: number;
+    processedDirectories: number;
 }
 
 export interface RepositoryIndexingStatus {
@@ -330,7 +333,10 @@ export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexin
                         processedFiles: progress.processedFiles,
                         percentComplete,
                         inputTokens: progress.inputTokens,
-                        outputTokens: progress.outputTokens
+                        outputTokens: progress.outputTokens,
+                        phase: progress.phase,
+                        totalDirectories: progress.totalDirectories,
+                        processedDirectories: progress.processedDirectories
                     };
                 }
             }
