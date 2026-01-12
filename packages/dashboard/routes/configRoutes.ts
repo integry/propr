@@ -433,14 +433,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function stopIndexing(req: Request, res: Response): Promise<void> {
     try {
-      const { repository } = req.body;
+      const { repository, branch } = req.body;
 
       if (!repository || typeof repository !== 'string') {
         res.status(400).json({ error: 'Repository is required' });
         return;
       }
 
-      const result = await stopIndexingJob(repository);
+      const result = await stopIndexingJob(repository, branch);
 
       if (!result.success) {
         res.status(500).json({ error: result.message || 'Failed to stop indexing' });
@@ -448,8 +448,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
 
       // Log activity
+      const branchInfo = branch ? ` (branch: ${branch})` : '';
       await logActivityHelper(
-        `Stopped indexing for ${repository}`,
+        `Stopped indexing for ${repository}${branchInfo}`,
         'indexing-stop',
         'indexing_stopped',
         req.user?.username
