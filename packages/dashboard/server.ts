@@ -172,6 +172,8 @@ function setupRoutes(): void {
 
   app.get('/api/config/followup-keywords', ensureAuthenticated, configRoutes.getFollowupKeywords);
   app.post('/api/config/followup-keywords', ensureAuthenticated, configRoutes.postFollowupKeywords);
+  app.get('/api/config/followup-ignore-keywords', ensureAuthenticated, configRoutes.getFollowupIgnoreKeywords);
+  app.post('/api/config/followup-ignore-keywords', ensureAuthenticated, configRoutes.postFollowupIgnoreKeywords);
   app.get('/api/config/repos', ensureAuthenticated, configRoutes.getRepos);
   app.post('/api/config/repos', ensureAuthenticated, configRoutes.postRepos);
   app.get('/api/config/settings', ensureAuthenticated, configRoutes.getSettings);

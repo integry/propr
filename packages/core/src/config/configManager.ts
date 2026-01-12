@@ -146,6 +146,18 @@ export async function saveFollowupKeywords(keywords: string[]): Promise<boolean>
     return true;
 }
 
+export async function loadFollowupIgnoreKeywords(): Promise<string[]> {
+    const keywords = await getConfig<string[]>('followup_ignore_keywords', []);
+    logger.info({ followup_ignore_keywords: keywords }, 'Successfully loaded followup ignore keywords');
+    return keywords;
+}
+
+export async function saveFollowupIgnoreKeywords(keywords: string[]): Promise<boolean> {
+    await saveConfig('followup_ignore_keywords', keywords);
+    logger.info({ keywords }, 'Successfully saved followup ignore keywords');
+    return true;
+}
+
 export async function loadMonitoredRepos(): Promise<string[]> {
     const rawRepos = await getConfig<RepoToMonitor[]>('repos_to_monitor', []);
     const repos = rawRepos.filter(r => r.enabled).map(r => r.name);

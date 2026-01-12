@@ -71,6 +71,35 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     res.status(result.status).json(result.body);
   }
 
+  async function getFollowupIgnoreKeywords(_req: Request, res: Response): Promise<void> {
+    try {
+      const keywords = await configManager.loadFollowupIgnoreKeywords();
+      res.json({ followup_ignore_keywords: keywords });
+    } catch (error) {
+      console.error('Error in /api/config/followup-ignore-keywords GET:', error);
+      res.status(500).json({ error: 'Failed to load followup ignore keywords' });
+    }
+  }
+
+  async function postFollowupIgnoreKeywords(req: Request, res: Response): Promise<void> {
+    const result = await withConfigLock(redisClient, 'config:ignore-keywords:lock', async () => {
+      const { followup_ignore_keywords } = req.body;
+
+      if (!Array.isArray(followup_ignore_keywords)) {
+        return { status: 400, body: { error: 'followup_ignore_keywords must be an array of strings' } };
+      }
+
+      await configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords);
+
+      // Publish config update event
+      await publishConfigUpdate('followup_ignore_keywords_update');
+
+      return { status: 200, body: { success: true, followup_ignore_keywords } };
+    });
+
+    res.status(result.status).json(result.body);
+  }
+
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
       const repos = await configManager.loadMonitoredReposRaw();
@@ -466,6 +495,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   return {
     getFollowupKeywords,
     postFollowupKeywords,
+    getFollowupIgnoreKeywords,
+    postFollowupIgnoreKeywords,
     getRepos,
     postRepos,
     getSettings,

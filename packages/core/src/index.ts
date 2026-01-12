@@ -12,7 +12,7 @@ export type { PRValidationResult, PRInfo, ValidatePRCreationOptions, CurrentIssu
 export { IdempotentGitHubOps, IdempotentGitOps } from './utils/idempotentOps.js';
 export { estimateTokens, countTokens, getUsageStats } from './utils/tokenCalculation.js';
 export { formatResetTime, addModelSpecificDelay } from './utils/scheduling.js';
-export { filterCommentByAuthor, checkCommentTrigger } from './utils/commentFilters.js';
+export { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from './utils/commentFilters.js';
 export { ensureGitRepository } from './utils/git/gitValidation.js';
 export { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from './utils/github/labelOperations.js';
 export type { LabelContext, UpdateResults } from './utils/github/labelOperations.js';
