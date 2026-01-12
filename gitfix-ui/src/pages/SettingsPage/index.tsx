@@ -138,14 +138,15 @@ const SettingsPage: React.FC = () => {
   }, []);
 
   // Auto-save function
-  const performAutoSave = useCallback(async (
-    settingsToSave: Settings,
-    whitelistToSave: string[],
-    prLabelToSave: string,
-    primaryLabelsToSave: string[],
-    keywordsToSave: string[],
-    ignoreKeywordsToSave: string[]
-  ) => {
+  const performAutoSave = useCallback(async (options: {
+    settings: Settings;
+    whitelist: string[];
+    prLabel: string;
+    primaryLabels: string[];
+    keywords: string[];
+    ignoreKeywords: string[];
+  }) => {
+    const { settings: settingsToSave, whitelist: whitelistToSave, prLabel: prLabelToSave, primaryLabels: primaryLabelsToSave, keywords: keywordsToSave, ignoreKeywords: ignoreKeywordsToSave } = options;
     // Clear any pending save timeout
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
@@ -192,7 +193,7 @@ const SettingsPage: React.FC = () => {
 
   // Trigger auto-save (called on blur and list changes)
   const triggerAutoSave = useCallback(() => {
-    performAutoSave(settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords);
+    performAutoSave({ settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords });
   }, [settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords, performAutoSave]);
 
   // List management functions that trigger auto-save
@@ -201,13 +202,13 @@ const SettingsPage: React.FC = () => {
     const newList = [...whitelist, newWhitelistItem.trim()];
     setWhitelist(newList);
     setNewWhitelistItem('');
-    performAutoSave(settings, newList, prLabel, primaryLabels, keywords, ignoreKeywords);
+    performAutoSave({ settings, whitelist: newList, prLabel, primaryLabels, keywords, ignoreKeywords });
   };
 
   const removeWhitelistItem = (item: string) => {
     const newList = whitelist.filter(i => i !== item);
     setWhitelist(newList);
-    performAutoSave(settings, newList, prLabel, primaryLabels, keywords, ignoreKeywords);
+    performAutoSave({ settings, whitelist: newList, prLabel, primaryLabels, keywords, ignoreKeywords });
   };
 
   const addPrimaryLabel = () => {
@@ -215,13 +216,13 @@ const SettingsPage: React.FC = () => {
     const newList = [...primaryLabels, newPrimaryLabel.trim()];
     setPrimaryLabels(newList);
     setNewPrimaryLabel('');
-    performAutoSave(settings, whitelist, prLabel, newList, keywords, ignoreKeywords);
+    performAutoSave({ settings, whitelist, prLabel, primaryLabels: newList, keywords, ignoreKeywords });
   };
 
   const removePrimaryLabel = (item: string) => {
     const newList = primaryLabels.filter(i => i !== item);
     setPrimaryLabels(newList);
-    performAutoSave(settings, whitelist, prLabel, newList, keywords, ignoreKeywords);
+    performAutoSave({ settings, whitelist, prLabel, primaryLabels: newList, keywords, ignoreKeywords });
   };
 
   const addKeyword = () => {
@@ -229,13 +230,13 @@ const SettingsPage: React.FC = () => {
     const newList = [...keywords, newKeyword.trim()];
     setKeywords(newList);
     setNewKeyword('');
-    performAutoSave(settings, whitelist, prLabel, primaryLabels, newList, ignoreKeywords);
+    performAutoSave({ settings, whitelist, prLabel, primaryLabels, keywords: newList, ignoreKeywords });
   };
 
   const removeKeyword = (item: string) => {
     const newList = keywords.filter(i => i !== item);
     setKeywords(newList);
-    performAutoSave(settings, whitelist, prLabel, primaryLabels, newList, ignoreKeywords);
+    performAutoSave({ settings, whitelist, prLabel, primaryLabels, keywords: newList, ignoreKeywords });
   };
 
   const addIgnoreKeyword = () => {
@@ -243,13 +244,13 @@ const SettingsPage: React.FC = () => {
     const newList = [...ignoreKeywords, newIgnoreKeyword.trim()];
     setIgnoreKeywords(newList);
     setNewIgnoreKeyword('');
-    performAutoSave(settings, whitelist, prLabel, primaryLabels, keywords, newList);
+    performAutoSave({ settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords: newList });
   };
 
   const removeIgnoreKeyword = (item: string) => {
     const newList = ignoreKeywords.filter(i => i !== item);
     setIgnoreKeywords(newList);
-    performAutoSave(settings, whitelist, prLabel, primaryLabels, keywords, newList);
+    performAutoSave({ settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords: newList });
   };
 
   // Debounce delay for prompt changes (in milliseconds)
