@@ -4,6 +4,8 @@ import {
   updateSettings,
   getFollowupKeywords,
   updateFollowupKeywords,
+  getFollowupIgnoreKeywords,
+  updateFollowupIgnoreKeywords,
   getPrLabel,
   updatePrLabel,
   getPrimaryProcessingLabels,
@@ -51,6 +53,9 @@ const SettingsPage: React.FC = () => {
   const [keywords, setKeywords] = useState<string[]>([]);
   const [newKeyword, setNewKeyword] = useState('');
 
+  const [ignoreKeywords, setIgnoreKeywords] = useState<string[]>([]);
+  const [newIgnoreKeyword, setNewIgnoreKeyword] = useState('');
+
   const [agents, setAgents] = useState<AgentConfig[]>([]);
 
   const [summarizationSettings, setSummarizationSettings] = useState<SummarizationSettings>({
@@ -65,9 +70,10 @@ const SettingsPage: React.FC = () => {
     const loadData = async () => {
       setLoading(true);
       try {
-        const [sData, kData, pLabelData, pLabelsData, aData, sumData] = await Promise.all([
+        const [sData, kData, ignoreData, pLabelData, pLabelsData, aData, sumData] = await Promise.all([
           getSettings(),
           getFollowupKeywords(),
+          getFollowupIgnoreKeywords(),
           getPrLabel(),
           getPrimaryProcessingLabels(),
           getAgents(),
@@ -82,6 +88,7 @@ const SettingsPage: React.FC = () => {
           github_user_whitelist?: string[];
         };
         const keywordsData = kData as { followup_keywords?: string[] };
+        const ignoreKeywordsData = ignoreData as { followup_ignore_keywords?: string[] };
         const prLabelDataTyped = pLabelData as { pr_label?: string };
         const primaryLabelsData = pLabelsData as { primary_processing_labels?: string[] };
         const agentsData = aData as { agents?: AgentConfig[] };
@@ -99,6 +106,7 @@ const SettingsPage: React.FC = () => {
         setWhitelist(Array.isArray(whitelistRaw) ? whitelistRaw : []);
 
         setKeywords(keywordsData.followup_keywords || []);
+        setIgnoreKeywords(ignoreKeywordsData.followup_ignore_keywords || []);
         setPrLabel(prLabelDataTyped.pr_label || 'gitfix');
         setPrimaryLabels(primaryLabelsData.primary_processing_labels || ['AI']);
         setAgents(agentsData.agents || []);
@@ -135,7 +143,8 @@ const SettingsPage: React.FC = () => {
     whitelistToSave: string[],
     prLabelToSave: string,
     primaryLabelsToSave: string[],
-    keywordsToSave: string[]
+    keywordsToSave: string[],
+    ignoreKeywordsToSave: string[]
   ) => {
     // Clear any pending save timeout
     if (saveTimeoutRef.current) {
@@ -167,7 +176,8 @@ const SettingsPage: React.FC = () => {
         }),
         updatePrLabel(prLabelToSave.trim()),
         updatePrimaryProcessingLabels(primaryLabelsToSave),
-        updateFollowupKeywords(keywordsToSave)
+        updateFollowupKeywords(keywordsToSave),
+        updateFollowupIgnoreKeywords(ignoreKeywordsToSave)
       ]);
 
       setSaveStatus('saved');
@@ -182,8 +192,8 @@ const SettingsPage: React.FC = () => {
 
   // Trigger auto-save (called on blur and list changes)
   const triggerAutoSave = useCallback(() => {
-    performAutoSave(settings, whitelist, prLabel, primaryLabels, keywords);
-  }, [settings, whitelist, prLabel, primaryLabels, keywords, performAutoSave]);
+    performAutoSave(settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords);
+  }, [settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords, performAutoSave]);
 
   // List management functions that trigger auto-save
   const addWhitelistItem = () => {
@@ -191,13 +201,13 @@ const SettingsPage: React.FC = () => {
     const newList = [...whitelist, newWhitelistItem.trim()];
     setWhitelist(newList);
     setNewWhitelistItem('');
-    performAutoSave(settings, newList, prLabel, primaryLabels, keywords);
+    performAutoSave(settings, newList, prLabel, primaryLabels, keywords, ignoreKeywords);
   };
 
   const removeWhitelistItem = (item: string) => {
     const newList = whitelist.filter(i => i !== item);
     setWhitelist(newList);
-    performAutoSave(settings, newList, prLabel, primaryLabels, keywords);
+    performAutoSave(settings, newList, prLabel, primaryLabels, keywords, ignoreKeywords);
   };
 
   const addPrimaryLabel = () => {
@@ -205,13 +215,13 @@ const SettingsPage: React.FC = () => {
     const newList = [...primaryLabels, newPrimaryLabel.trim()];
     setPrimaryLabels(newList);
     setNewPrimaryLabel('');
-    performAutoSave(settings, whitelist, prLabel, newList, keywords);
+    performAutoSave(settings, whitelist, prLabel, newList, keywords, ignoreKeywords);
   };
 
   const removePrimaryLabel = (item: string) => {
     const newList = primaryLabels.filter(i => i !== item);
     setPrimaryLabels(newList);
-    performAutoSave(settings, whitelist, prLabel, newList, keywords);
+    performAutoSave(settings, whitelist, prLabel, newList, keywords, ignoreKeywords);
   };
 
   const addKeyword = () => {
@@ -219,13 +229,27 @@ const SettingsPage: React.FC = () => {
     const newList = [...keywords, newKeyword.trim()];
     setKeywords(newList);
     setNewKeyword('');
-    performAutoSave(settings, whitelist, prLabel, primaryLabels, newList);
+    performAutoSave(settings, whitelist, prLabel, primaryLabels, newList, ignoreKeywords);
   };
 
   const removeKeyword = (item: string) => {
     const newList = keywords.filter(i => i !== item);
     setKeywords(newList);
-    performAutoSave(settings, whitelist, prLabel, primaryLabels, newList);
+    performAutoSave(settings, whitelist, prLabel, primaryLabels, newList, ignoreKeywords);
+  };
+
+  const addIgnoreKeyword = () => {
+    if (!newIgnoreKeyword.trim() || ignoreKeywords.includes(newIgnoreKeyword.trim())) return;
+    const newList = [...ignoreKeywords, newIgnoreKeyword.trim()];
+    setIgnoreKeywords(newList);
+    setNewIgnoreKeyword('');
+    performAutoSave(settings, whitelist, prLabel, primaryLabels, keywords, newList);
+  };
+
+  const removeIgnoreKeyword = (item: string) => {
+    const newList = ignoreKeywords.filter(i => i !== item);
+    setIgnoreKeywords(newList);
+    performAutoSave(settings, whitelist, prLabel, primaryLabels, keywords, newList);
   };
 
   // Debounce delay for prompt changes (in milliseconds)
@@ -428,6 +452,19 @@ const SettingsPage: React.FC = () => {
             onRemoveItem={removeKeyword}
             placeholder="e.g., GITFIX"
             emptyMessage="No keywords configured."
+            showEmptyIcon={true}
+          />
+
+          <TagListSection
+            title="PR Follow-up Ignore Keywords"
+            description="Ignore comments containing these phrases (prevents loops)."
+            items={ignoreKeywords}
+            newItem={newIgnoreKeyword}
+            onNewItemChange={setNewIgnoreKeyword}
+            onAddItem={addIgnoreKeyword}
+            onRemoveItem={removeIgnoreKeyword}
+            placeholder="e.g., Deployment In Progress"
+            emptyMessage="No ignore keywords configured."
             showEmptyIcon={true}
           />
         </div>

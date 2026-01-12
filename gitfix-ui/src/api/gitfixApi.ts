@@ -200,6 +200,25 @@ export const updateFollowupKeywords = async (keywords: string[]): Promise<unknow
   return response.json();
 };
 
+export const getFollowupIgnoreKeywords = async (): Promise<unknown> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const updateFollowupIgnoreKeywords = async (keywords: string[]): Promise<unknown> => {
+  const response = await fetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ followup_ignore_keywords: keywords }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export const fetchPrompt = async (promptPath: string): Promise<string> => {
   const response = await fetch(`${API_BASE_URL}${promptPath}`, {
     credentials: 'include'
