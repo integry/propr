@@ -3,6 +3,7 @@ import path from 'path';
 import type { Logger } from 'pino';
 import logger, { generateCorrelationId } from '../../utils/logger.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
+import type { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
 import { loadSummarizationSettings } from '../../config/configManager.js';
 import {
@@ -87,6 +88,44 @@ const EXCLUDED_PATHS = [
   'obj/'
 ];
 
+// --- Helper Functions ---
+
+interface AgentSetupResult {
+  agent: Agent;
+  modelOverride: string | undefined;
+  effectiveModel: string | undefined;
+}
+
+/**
+ * Sets up the agent for summarization based on settings
+ */
+async function setupAgent(settings: { agent_alias?: string }): Promise<AgentSetupResult> {
+  const registry = AgentRegistry.getInstance();
+  await registry.ensureInitialized();
+
+  // Parse agent_alias which may be in format "agent_alias:model" or just "agent_alias"
+  let agentAlias = settings.agent_alias;
+  let modelOverride: string | undefined;
+
+  if (settings.agent_alias && settings.agent_alias.includes(':')) {
+    const parts = settings.agent_alias.split(':');
+    agentAlias = parts[0];
+    modelOverride = parts.slice(1).join(':'); // Handle model IDs that might contain colons
+  }
+
+  const agent = agentAlias
+    ? registry.getAgentByAlias(agentAlias)
+    : registry.getDefaultAgent();
+
+  if (!agent) {
+    throw new Error(`No agent found for summarization (alias: ${agentAlias || 'default'})`);
+  }
+
+  const effectiveModel = modelOverride || agent.config.defaultModel;
+
+  return { agent, modelOverride, effectiveModel };
+}
+
 // --- Main Export ---
 
 /**
@@ -115,29 +154,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     }
 
     // 2. Get agent from registry
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    // Parse agent_alias which may be in format "agent_alias:model" or just "agent_alias"
-    let agentAlias = settings.agent_alias;
-    let modelOverride: string | undefined;
-
-    if (settings.agent_alias && settings.agent_alias.includes(':')) {
-      const parts = settings.agent_alias.split(':');
-      agentAlias = parts[0];
-      modelOverride = parts.slice(1).join(':'); // Handle model IDs that might contain colons
-    }
-
-    const agent = agentAlias
-      ? registry.getAgentByAlias(agentAlias)
-      : registry.getDefaultAgent();
-
-    if (!agent) {
-      throw new Error(`No agent found for summarization (alias: ${agentAlias || 'default'})`);
-    }
-
-    // Determine which model to use for budgeting and logging
-    const effectiveModel = modelOverride || agent.config.defaultModel;
+    const { agent, modelOverride, effectiveModel } = await setupAgent(settings);
 
     correlatedLogger.info(
       { agentAlias: agent.config.alias, model: effectiveModel },
@@ -190,7 +207,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     // Phase C: Directory Aggregation (only if some files were processed)
     if (batchResult.filesProcessed > 0) {
-      await aggregateDirectories(fullName, agent, correlatedLogger, modelOverride, branch);
+      await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, branch });
     }
 
     // Phase D: Cleanup - Mark status based on results

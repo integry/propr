@@ -35,6 +35,14 @@ interface SummaryResult {
   summary: string;
 }
 
+interface SaveBatchSummariesOptions {
+  fullName: string;
+  batch: BatchFile[];
+  summaries: SummaryResult[];
+  modelUsed: string;
+  branch: string;
+}
+
 // --- Constants ---
 
 const BATCH_TOKEN_RATIO = 0.8; // Use 80% of max tokens for batch
@@ -244,7 +252,7 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
     const summaries = parseBatchResponse(response);
 
     // Save summaries to DB with the actual model used
-    await saveBatchSummaries(fullName, batch, summaries, modelUsed, branch);
+    await saveBatchSummaries({ fullName, batch, summaries, modelUsed, branch });
 
     success = true;
     log.debug({ savedCount: summaries.length }, 'Saved batch summaries');
@@ -339,13 +347,8 @@ function parseBatchResponse(response: string): SummaryResult[] {
 /**
  * Saves batch summaries to the database
  */
-async function saveBatchSummaries(
-  fullName: string,
-  batch: BatchFile[],
-  summaries: SummaryResult[],
-  modelUsed: string,
-  branch: string
-): Promise<void> {
+async function saveBatchSummaries(options: SaveBatchSummariesOptions): Promise<void> {
+  const { fullName, batch, summaries, modelUsed, branch } = options;
   const summaryMap = new Map(summaries.map(s => [s.path, s.summary]));
 
   for (const file of batch) {

@@ -143,16 +143,19 @@ async function cloneRepositoryForIndexing(repoName: string, branch: string): Pro
     });
 }
 
+interface QueueIndexingJobOptions {
+    repoName: string;
+    repoPath: string;
+    reason: string;
+    log: Logger;
+    branch: string;
+}
+
 /**
  * Queue an indexing job for a repository
  */
-async function queueIndexingJob(
-    repoName: string,
-    repoPath: string,
-    reason: string,
-    log: Logger,
-    branch: string
-): Promise<void> {
+async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void> {
+    const { repoName, repoPath, reason, log, branch } = options;
     const jobCorrelationId = generateCorrelationId();
     const priority = reason === 'previous indexing failed' ? 'high' : 'normal';
 
@@ -208,7 +211,7 @@ async function processRepositoryForIndexing(
 
     // Clone and queue
     const repoPath = await cloneRepositoryForIndexing(repoName, branch);
-    await queueIndexingJob(repoName, repoPath, decision.reason, log, branch);
+    await queueIndexingJob({ repoName, repoPath, reason: decision.reason, log, branch });
 }
 
 /**

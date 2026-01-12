@@ -22,18 +22,23 @@ interface AggregateDirOptions {
   branch: string;
 }
 
+export interface AggregateDirectoriesOptions {
+  fullName: string;
+  agent: Agent;
+  log: Logger;
+  modelOverride?: string;
+  branch?: string;
+}
+
 // --- Phase C: Directory Aggregation ---
 
 /**
  * Aggregates file summaries into directory summaries (bottom-up)
  */
 export async function aggregateDirectories(
-  fullName: string,
-  agent: Agent,
-  log: Logger,
-  modelOverride?: string,
-  branch: string = 'HEAD'
+  options: AggregateDirectoriesOptions
 ): Promise<void> {
+  const { fullName, agent, log, modelOverride, branch = 'HEAD' } = options;
   // Get all file summaries for the specific branch
   const fileSummaries = await db('file_summaries')
     .where('path', 'like', `${fullName}/%`)
