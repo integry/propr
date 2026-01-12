@@ -94,6 +94,12 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
         await configureGitAuthor(git, author, worktreePath, issueNumber);
 
         await git.add('.');
+        // Unstage .gitfix/assets if it was staged - this directory should never be committed
+        try {
+            await git.raw(['reset', 'HEAD', '--', '.gitfix/assets']);
+        } catch {
+            // Ignore error if .gitfix/assets doesn't exist or wasn't staged
+        }
         const status = await git.status();
 
         logGitStatus(status, worktreePath, issueNumber);
