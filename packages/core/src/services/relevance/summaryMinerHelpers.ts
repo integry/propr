@@ -73,6 +73,7 @@ export interface ProcessBatchesOptions {
   log: Logger;
   modelOverride?: string; // Optional model override for token budgeting and logging
   customPrompt?: string; // Optional custom prompt to override default instructions
+  branch?: string; // Branch being indexed (defaults to 'HEAD')
 }
 
 export interface ProcessBatchesResult {
@@ -88,7 +89,7 @@ export interface ProcessBatchesResult {
  * Returns stats about success/failure for proper status tracking
  */
 export async function processBatches(options: ProcessBatchesOptions): Promise<ProcessBatchesResult> {
-  const { repoPath, fullName, files, agent, log, modelOverride, customPrompt } = options;
+  const { repoPath, fullName, files, agent, log, modelOverride, customPrompt, branch = 'HEAD' } = options;
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
@@ -134,7 +135,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       batchNumber++;
       log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing batch');
 
-      const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt });
+      const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt, branch });
       const batchFileCount = currentBatch.length;
       const batchInputTokens = currentTokens;
       const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
@@ -178,7 +179,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
     batchNumber++;
     log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing final batch');
-    const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt });
+    const success = await processSingleBatch({ fullName, batch: currentBatch, agent, log, modelUsed: modelId, customPrompt, branch });
     const batchFileCount = currentBatch.length;
     const batchInputTokens = currentTokens;
     const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
@@ -218,6 +219,7 @@ interface ProcessSingleBatchOptions {
   log: Logger;
   modelUsed: string;
   customPrompt?: string;
+  branch: string;
 }
 
 /**
@@ -225,7 +227,7 @@ interface ProcessSingleBatchOptions {
  * Returns true if successful, false if failed
  */
 async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<boolean> {
-  const { fullName, batch, agent, log, modelUsed, customPrompt } = options;
+  const { fullName, batch, agent, log, modelUsed, customPrompt, branch } = options;
   const prompt = buildBatchPrompt(batch, customPrompt);
   const startTime = Date.now();
 
@@ -242,7 +244,7 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
     const summaries = parseBatchResponse(response);
 
     // Save summaries to DB with the actual model used
-    await saveBatchSummaries(fullName, batch, summaries, modelUsed);
+    await saveBatchSummaries(fullName, batch, summaries, modelUsed, branch);
 
     success = true;
     log.debug({ savedCount: summaries.length }, 'Saved batch summaries');
@@ -341,7 +343,8 @@ async function saveBatchSummaries(
   fullName: string,
   batch: BatchFile[],
   summaries: SummaryResult[],
-  modelUsed: string
+  modelUsed: string,
+  branch: string
 ): Promise<void> {
   const summaryMap = new Map(summaries.map(s => [s.path, s.summary]));
 
@@ -358,12 +361,13 @@ async function saveBatchSummaries(
     await db('file_summaries')
       .insert({
         path: storedPath,
+        branch,
         summary,
         commit_hash: file.blobHash,
         model_used: modelUsed,
         last_updated_at: db.fn.now()
       })
-      .onConflict('path')
+      .onConflict(['path', 'branch'])
       .merge({
         summary,
         commit_hash: file.blobHash,
