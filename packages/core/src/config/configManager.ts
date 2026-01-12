@@ -300,6 +300,7 @@ export interface RepositoryIndexingProgress {
 
 export interface RepositoryIndexingStatus {
     full_name: string;
+    branch: string;
     indexing_status: 'idle' | 'indexing' | 'completed' | 'failed';
     last_indexed_at: string | null;
     progress?: RepositoryIndexingProgress;
@@ -311,12 +312,13 @@ export interface RepositoryIndexingStatus {
 export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexingStatus[]> {
     try {
         const repos = await db('repositories')
-            .select('full_name', 'indexing_status', 'last_indexed_at');
+            .select('full_name', 'branch', 'indexing_status', 'last_indexed_at');
 
         const results: RepositoryIndexingStatus[] = [];
         for (const r of repos) {
             const status: RepositoryIndexingStatus = {
                 full_name: r.full_name,
+                branch: r.branch || 'HEAD',
                 indexing_status: r.indexing_status || 'idle',
                 last_indexed_at: r.last_indexed_at ? new Date(r.last_indexed_at).toISOString() : null
             };
@@ -353,22 +355,23 @@ export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexin
 }
 
 /**
- * Gets the indexing status for a specific repository.
+ * Gets the indexing status for a specific repository and branch.
  */
-export async function getRepositoryIndexingStatus(fullName: string): Promise<RepositoryIndexingStatus | null> {
+export async function getRepositoryIndexingStatus(fullName: string, branch: string = 'HEAD'): Promise<RepositoryIndexingStatus | null> {
     try {
         const repo = await db('repositories')
-            .where({ full_name: fullName })
+            .where({ full_name: fullName, branch })
             .first();
         if (!repo) return null;
         return {
             full_name: repo.full_name,
+            branch: repo.branch || 'HEAD',
             indexing_status: repo.indexing_status || 'idle',
             last_indexed_at: repo.last_indexed_at ? new Date(repo.last_indexed_at).toISOString() : null
         };
     } catch (error) {
         const err = error as Error;
-        logger.error({ error: err.message, fullName }, 'Failed to load repository indexing status');
+        logger.error({ error: err.message, fullName, branch }, 'Failed to load repository indexing status');
         return null;
     }
 }

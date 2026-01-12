@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import React, { useState, useEffect, useCallback } from 'react';
 import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/gitfixApi';
-import { triggerRepositoryIndexing } from '../api/repoIndexingApi';
+import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
 import { BaseBranchSelector } from '../components/BaseBranchSelector';
 import { IndexingStatusIndicator } from '../components/IndexingStatusIndicator';
 
@@ -85,7 +85,9 @@ const RepositoriesPage: React.FC = () => {
       const data = await getRepositoriesIndexingStatus();
       const statusMap: Record<string, RepositoryIndexingStatus> = {};
       for (const repo of data.repositories) {
-        statusMap[repo.full_name] = repo;
+        // Use composite key to distinguish same repo with different branches
+        const key = getRepoStatusKey(repo.full_name, repo.branch);
+        statusMap[key] = repo;
       }
       setIndexingStatuses(statusMap);
     } catch (err) {
@@ -93,10 +95,11 @@ const RepositoriesPage: React.FC = () => {
     }
   };
 
-  const handleStopIndexing = async (repoName: string) => {
+  const handleStopIndexing = async (repoName: string, baseBranch?: string) => {
     try {
-      if (!confirm(`Are you sure you want to stop indexing for ${repoName}?`)) return;
-      await stopRepositoryIndexing(repoName);
+      const displayName = baseBranch ? `${repoName} (${baseBranch})` : repoName;
+      if (!confirm(`Are you sure you want to stop indexing for ${displayName}?`)) return;
+      await stopRepositoryIndexing(repoName, baseBranch);
       // Short delay to allow backend to process
       setTimeout(loadIndexingStatuses, 500);
     } catch (err) {
@@ -104,9 +107,9 @@ const RepositoriesPage: React.FC = () => {
     }
   };
 
-  const handleReindexRepo = async (repoName: string) => {
+  const handleReindexRepo = async (repoName: string, baseBranch?: string) => {
     try {
-      await triggerRepositoryIndexing(repoName);
+      await triggerRepositoryIndexing(repoName, baseBranch);
       // Short delay to allow backend to process
       setTimeout(loadIndexingStatuses, 500);
     } catch (err) {
@@ -312,9 +315,9 @@ const RepositoriesPage: React.FC = () => {
                 )}
               </div>
               <IndexingStatusIndicator
-                status={indexingStatuses[repo.name]}
-                onStop={() => handleStopIndexing(repo.name)}
-                onReindex={() => handleReindexRepo(repo.name)}
+                status={indexingStatuses[getRepoStatusKey(repo.name, repo.baseBranch)]}
+                onStop={() => handleStopIndexing(repo.name, repo.baseBranch)}
+                onReindex={() => handleReindexRepo(repo.name, repo.baseBranch)}
               />
               <Link
                 to={`/summaries/${repo.name}`}
