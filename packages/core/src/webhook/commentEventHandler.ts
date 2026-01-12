@@ -1,7 +1,8 @@
 import logger, { generateCorrelationId } from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.js';
-import { filterCommentByAuthor, checkCommentTrigger } from '../utils/commentFilters.js';
+import { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from '../utils/commentFilters.js';
+import { loadFollowupIgnoreKeywords } from '../config/configManager.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPendingPrCommentsKey } from '../utils/constants.js';
 import type { Job } from 'bullmq';
@@ -140,6 +141,12 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const commentAuthor = comment.user.login;
     const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
     if (filterResult.shouldFilter) return;
+
+    // Check for ignore keywords
+    const ignoreKeywords = await loadFollowupIgnoreKeywords();
+    const ignoreResult = checkCommentIgnore(comment.body, ignoreKeywords, correlationId);
+    if (ignoreResult.shouldIgnore) return;
+
     const triggerResult = checkCommentTrigger(comment.body, correlationId);
     if (!triggerResult.isTriggered) return;
 
