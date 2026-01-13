@@ -9,8 +9,7 @@ import { parseFileReferences, getResolvedPaths } from './relevance/fileReference
 import logger from '../utils/logger.js';
 import type { LogFn } from 'pino';
 import { simpleGit } from 'simple-git';
-import { Plan, GRANULARITY_INSTRUCTIONS } from '../claude/prompts/plannerPrompts.js';
-import { PLANNER_SYSTEM_PROMPT } from '../claude/prompts/plannerPrompts.js';
+import { Plan, GRANULARITY_INSTRUCTIONS, PLANNER_SYSTEM_PROMPT } from '../claude/prompts/plannerPrompts.js';
 
 /** Number of most relevant files to include summaries for */
 export const RELEVANT_SUMMARY_COUNT = 100;
@@ -101,17 +100,11 @@ export async function updateTrace(
     .first();
 
   const rawTrace = draft?.generation_trace as GenerationTrace | undefined;
-  const trace: GenerationTrace = {
-    steps: Array.isArray(rawTrace?.steps) ? rawTrace.steps : []
-  };
+  const trace: GenerationTrace = { steps: Array.isArray(rawTrace?.steps) ? rawTrace.steps : [] };
 
   const existingStepIndex = trace.steps.findIndex((s) => s.name === step);
   if (existingStepIndex >= 0) {
-    trace.steps[existingStepIndex] = {
-      ...trace.steps[existingStepIndex],
-      status,
-      data: { ...trace.steps[existingStepIndex].data, ...data }
-    };
+    trace.steps[existingStepIndex] = { ...trace.steps[existingStepIndex], status, data: { ...trace.steps[existingStepIndex].data, ...data } };
   } else {
     trace.steps.push({ name: step, status, data });
   }
