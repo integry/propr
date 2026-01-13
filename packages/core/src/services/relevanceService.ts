@@ -51,7 +51,8 @@ const SEMANTIC_SCORE_WEIGHT = 0.50;
 
 // No artificial limit - let context service handle token-based truncation
 const DEFAULT_MAX_RESULTS = 500;
-const DEFAULT_MIN_SCORE = 30;
+// Low threshold - include files with any relevance signal; context service handles token limits
+const DEFAULT_MIN_SCORE = 10;
 const TIMEOUT_MS = 2000;
 const SEMANTIC_TIMEOUT_MS = 30000;
 const SUMMARY_SCORING_TIMEOUT_MS = 60000;
