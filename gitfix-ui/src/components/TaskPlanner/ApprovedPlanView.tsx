@@ -182,7 +182,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
         <div className="flex items-center gap-4">
-          <div className="text-sm text-gray-500 truncate max-w-md">{draft.task_title || draft.title || 'Untitled Task'}</div>
+          <div className="text-sm text-gray-500 truncate max-w-md">{(draft as DraftWithPlan & { name?: string }).name || 'Untitled Task'}</div>
           <span className="px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-700 flex items-center gap-1">
             <CheckCircle size={12} />
             Approved

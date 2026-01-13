@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
     "@gitfix/shared": "*",
     "@octokit/auth-app": "^8.0.1",
     "@octokit/core": "^7.0.2",

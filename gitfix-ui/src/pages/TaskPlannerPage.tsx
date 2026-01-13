@@ -1,5 +1,5 @@
 import React from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useDraft } from '../hooks/useDraft';
 import SetupWizard from '../components/TaskPlanner/SetupWizard';
@@ -10,7 +10,6 @@ import { DraftWithPlan } from '../api/gitfixApi';
 
 const TaskPlannerPage: React.FC = () => {
   const { draftId } = useParams<{ draftId: string }>();
-  const navigate = useNavigate();
   const { draft, loading, error, refetch } = useDraft(draftId || '');
 
   if (loading) {
@@ -52,7 +51,7 @@ const TaskPlannerPage: React.FC = () => {
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
             <div className="flex items-center gap-4">
-              <div className="text-sm text-gray-500 truncate max-w-md">{draft.task_title || draft.title || 'Untitled Task'}</div>
+              <div className="text-sm text-gray-500 truncate max-w-md">{(draft as DraftWithPlan & { name?: string }).name || 'Untitled Task'}</div>
               <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-700 flex items-center gap-1">
                 <motion.span
                   animate={{ opacity: [1, 0.5, 1] }}
@@ -106,9 +105,12 @@ const TaskPlannerPage: React.FC = () => {
   if (draft.status === 'review') {
     return (
       <div className="h-[calc(100vh-120px)] p-4">
-        <PlanEditor 
-          draft={draft as DraftWithPlan} 
-          onFinalize={() => navigate('/')}
+        <PlanEditor
+          draft={draft as DraftWithPlan}
+          onFinalize={() => {
+            // Refetch to update status to 'approved'/'executed' and show ApprovedPlanView
+            refetch();
+          }}
         />
       </div>
     );

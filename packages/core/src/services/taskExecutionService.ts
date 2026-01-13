@@ -1,6 +1,7 @@
 import { db } from '../db/connection.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
+import Anthropic from '@anthropic-ai/sdk';
 
 export interface IssueLink {
   number: number;
@@ -34,6 +35,41 @@ interface PlanTask {
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Generates a short, descriptive title for a task based on the initial prompt.
+ * Uses Claude Haiku for fast, lightweight generation.
+ */
+async function generateTaskTitle(initialPrompt: string, correlatedLogger: typeof logger): Promise<string | null> {
+  try {
+    const client = new Anthropic();
+
+    const message = await client.messages.create({
+      model: 'claude-3-5-haiku-20241022',
+      max_tokens: 100,
+      messages: [
+        {
+          role: 'user',
+          content: `Generate a short, descriptive title (5-8 words) for this task. Output ONLY the title, nothing else.
+
+Task description:
+${initialPrompt}`
+        }
+      ]
+    });
+
+    const content = message.content[0];
+    if (content.type === 'text') {
+      const title = content.text.trim();
+      correlatedLogger.info({ title }, 'Generated task title');
+      return title;
+    }
+    return null;
+  } catch (error) {
+    correlatedLogger.warn({ error: (error as Error).message }, 'Failed to generate task title, using default');
+    return null;
+  }
+}
 
 export async function executeDraft(draftId: string, userId: string, correlationId?: string): Promise<ExecutionResult> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -136,25 +172,41 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     }
   }
 
-  const existingConfig = typeof draft.context_config === 'string' 
-    ? JSON.parse(draft.context_config) 
+  const existingConfig = typeof draft.context_config === 'string'
+    ? JSON.parse(draft.context_config)
     : (draft.context_config || {});
+
+  // Generate a descriptive title if the name is still the default
+  let generatedTitle: string | null = null;
+  const isDefaultName = !draft.name || draft.name === 'Untitled Plan' || (draft.initial_prompt && draft.name === draft.initial_prompt.substring(0, 50) + (draft.initial_prompt.length > 50 ? '...' : ''));
+
+  if (isDefaultName && draft.initial_prompt) {
+    correlatedLogger.info({ draftId }, 'Generating task title');
+    generatedTitle = await generateTaskTitle(draft.initial_prompt, correlatedLogger);
+  }
+
+  const updateData: Record<string, unknown> = {
+    status: 'executed',
+    context_config: JSON.stringify({
+      ...existingConfig,
+      executionResults: results,
+      executedAt: new Date().toISOString()
+    }),
+    updated_at: db.fn.now()
+  };
+
+  if (generatedTitle) {
+    updateData.name = generatedTitle;
+  }
 
   await db('task_drafts')
     .where({ draft_id: draftId })
-    .update({
-      status: 'executed',
-      context_config: JSON.stringify({
-        ...existingConfig,
-        executionResults: results,
-        executedAt: new Date().toISOString()
-      }),
-      updated_at: db.fn.now()
-    });
+    .update(updateData);
 
-  correlatedLogger.info({ 
-    draftId, 
-    issuesCreated: results.length 
+  correlatedLogger.info({
+    draftId,
+    issuesCreated: results.length,
+    generatedTitle
   }, 'Draft execution completed');
 
   return { success: true, results };
