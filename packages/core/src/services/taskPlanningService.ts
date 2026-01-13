@@ -9,6 +9,7 @@ import { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, Plan, PlanItem, GRANULARI
 import { parseLlmJson, JsonParseError } from '../utils/jsonUtils.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
+import { getAgentRegistry } from '../agents/AgentRegistry.js';
 import {
   updateTrace,
   validatePromptTokens,
@@ -404,7 +405,20 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   }
 
   correlatedLogger.info({ repository: draft.repository }, 'Finding relevant files for preview');
-  const relevanceResult = await findRelevantFiles(worktreePath, prompt, { correlationId });
+
+  // Get agent for semantic scoring
+  const registry = getAgentRegistry();
+  await registry.ensureInitialized();
+  const agent = registry.getDefaultAgent();
+
+  // Pass the baseBranch - semantic scorer will use it if indexed, otherwise defaults to HEAD
+  const relevanceResult = await findRelevantFiles(worktreePath, prompt, {
+    correlationId,
+    useSummaryScoring: !!agent,
+    agent,
+    repoName: draft.repository,
+    branch: baseBranch
+  });
   const manualFiles = files || [], autoFilePaths = relevanceResult.files.map(f => f.path);
   const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
 

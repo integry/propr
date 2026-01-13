@@ -3,6 +3,7 @@ import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js
 import { countTokens, estimateTokens } from '../utils/tokenCalculation.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { getModelPricing } from './pricingService.js';
+import { getAgentRegistry } from '../agents/AgentRegistry.js';
 import logger from '../utils/logger.js';
 import { simpleGit } from 'simple-git';
 
@@ -207,7 +208,19 @@ export async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]
   }
 
   correlatedLogger.info({ repository: draft.repository }, 'Finding relevant files');
-  const relevanceResult = await findRelevantFiles(worktreePath, draft.initial_prompt, { correlationId });
+
+  // Get agent for semantic scoring
+  const registry = getAgentRegistry();
+  await registry.ensureInitialized();
+  const agent = registry.getDefaultAgent();
+
+  // Let semantic scorer default to HEAD branch
+  const relevanceResult = await findRelevantFiles(worktreePath, draft.initial_prompt, {
+    correlationId,
+    useSummaryScoring: !!agent,
+    agent,
+    repoName: draft.repository
+  });
   const relevantFilePaths = relevanceResult.files.map(f => f.path);
 
   correlatedLogger.info({

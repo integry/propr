@@ -30,6 +30,8 @@ export interface RelevanceOptions {
   modelId?: string;
   /** Repository full name (e.g., "owner/repo") for filtering summaries */
   repoName?: string;
+  /** Branch to filter summaries (e.g., "HEAD", "main", "dev") */
+  branch?: string;
 }
 
 // --- Score Aggregation Weights ---
@@ -170,7 +172,8 @@ export async function findRelevantFiles(
     useSummaryScoring = false,
     agent,
     modelId,
-    repoName
+    repoName,
+    branch
   } = options;
 
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -273,7 +276,8 @@ export async function findRelevantFiles(
         priorityPaths,
         correlationId,
         modelId,
-        repoName
+        repoName,
+        branch
       };
 
       const summaryPromise = scoreSemanticRelevance(prompt, summaryOptions);

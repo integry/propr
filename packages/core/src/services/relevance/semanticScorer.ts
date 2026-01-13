@@ -22,6 +22,8 @@ export interface SemanticScoringOptions {
   modelId?: string;
   /** Repository full name (e.g., "owner/repo") to filter summaries */
   repoName?: string;
+  /** Branch to filter summaries (e.g., "HEAD", "main", "dev") */
+  branch?: string;
 }
 
 export interface SemanticLLMFile {
@@ -56,7 +58,7 @@ export async function scoreSemanticRelevance(
   userPrompt: string,
   options: SemanticScoringOptions
 ): Promise<SemanticFileScore[]> {
-  const { agent, correlationId, repoName } = options;
+  const { agent, correlationId, repoName, branch } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   try {
@@ -64,14 +66,29 @@ export async function scoreSemanticRelevance(
     let fileSummaries = await loadFileSummaries();
     let dirSummaries = await loadDirectorySummaries();
 
-    // Filter by repository if specified
+    // Filter by repository and branch if specified
     if (repoName) {
       const repoPrefix = repoName + '/';
-      fileSummaries = fileSummaries
-        .filter((f: FileSummaryRow) => f.path.startsWith(repoPrefix))
+      // Try specified branch first, fall back to HEAD if no results
+      const targetBranch = branch || 'HEAD';
+
+      let filteredFiles = fileSummaries
+        .filter((f: FileSummaryRow) => f.path.startsWith(repoPrefix) && f.branch === targetBranch);
+      let filteredDirs = dirSummaries
+        .filter((d: DirectorySummaryRow) => d.path.startsWith(repoPrefix) && d.branch === targetBranch);
+
+      // If no results for specified branch and it's not HEAD, try HEAD as fallback
+      if (filteredFiles.length === 0 && filteredDirs.length === 0 && targetBranch !== 'HEAD') {
+        correlatedLogger.debug({ targetBranch }, 'No summaries for branch, falling back to HEAD');
+        filteredFiles = fileSummaries
+          .filter((f: FileSummaryRow) => f.path.startsWith(repoPrefix) && f.branch === 'HEAD');
+        filteredDirs = dirSummaries
+          .filter((d: DirectorySummaryRow) => d.path.startsWith(repoPrefix) && d.branch === 'HEAD');
+      }
+
+      fileSummaries = filteredFiles
         .map((f: FileSummaryRow) => ({ ...f, path: f.path.slice(repoPrefix.length) }));
-      dirSummaries = dirSummaries
-        .filter((d: DirectorySummaryRow) => d.path.startsWith(repoPrefix))
+      dirSummaries = filteredDirs
         .map((d: DirectorySummaryRow) => ({ ...d, path: d.path.slice(repoPrefix.length) }));
     }
 
