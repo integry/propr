@@ -160,6 +160,161 @@ function buildSortedFiles(
     });
 }
 
+/**
+ * Extract keywords with optional LLM enhancement
+ */
+async function extractKeywordsForRelevance(
+  prompt: string,
+  agent: Agent | undefined,
+  useLLMKeywords: boolean,
+  correlationId?: string
+): Promise<string[]> {
+  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+  let keywords = extractKeywords(prompt);
+
+  if (useLLMKeywords && agent) {
+    try {
+      const llmKeywords = await extractKeywordsWithLLM(prompt, { agent, correlationId });
+      keywords = mergeKeywords(keywords, llmKeywords);
+      correlatedLogger.info({
+        basicCount: extractKeywords(prompt).length,
+        llmPrimary: llmKeywords.primary,
+        llmAlternatives: llmKeywords.alternatives.slice(0, 10),
+        mergedCount: keywords.length
+      }, 'LLM keyword extraction merged');
+    } catch (error) {
+      correlatedLogger.warn({ error: (error as Error).message }, 'LLM keyword extraction failed, using basic keywords');
+    }
+  }
+
+  return keywords;
+}
+
+interface GitSemanticMiningParams {
+  repoPath: string;
+  prompt: string;
+  semanticMiningOptions: SemanticMiningOptions;
+  finalScores: Record<string, AggregatedFileScore>;
+  correlationId?: string;
+}
+
+/**
+ * Phase 1: Git History Semantic Mining (via commit analysis)
+ */
+async function performGitSemanticMining(params: GitSemanticMiningParams): Promise<boolean> {
+  const { repoPath, prompt, semanticMiningOptions, finalScores, correlationId } = params;
+  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+
+  try {
+    const semanticTimeoutPromise = new Promise<GitFileScore[]>((_, reject) => {
+      setTimeout(() => reject(new Error('Semantic mining timeout')), SEMANTIC_TIMEOUT_MS);
+    });
+
+    const semanticPromise = mineGitHistoryWithLLM(
+      repoPath,
+      prompt,
+      { ...semanticMiningOptions, correlationId }
+    );
+
+    const semanticScores = await Promise.race([semanticPromise, semanticTimeoutPromise]);
+
+    addRawScoresToMap(semanticScores, finalScores, 'semantic', 'llm-semantic');
+
+    correlatedLogger.info({ semanticFileCount: semanticScores.length }, 'Git semantic mining completed');
+    return semanticScores.length > 0;
+  } catch (error) {
+    correlatedLogger.warn(
+      { error: (error as Error).message },
+      'Git semantic mining failed or timed out'
+    );
+    return false;
+  }
+}
+
+/**
+ * Phase 2: Keyword-based scoring (Git history + Path matching)
+ */
+async function performKeywordScoring(
+  repoPath: string,
+  keywords: string[],
+  finalScores: Record<string, AggregatedFileScore>,
+  correlationId?: string
+): Promise<void> {
+  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+
+  const timeoutPromise = new Promise<{ gitScores: GitFileScore[]; pathScores: PathFileScore[] }>((_, reject) => {
+    setTimeout(() => reject(new Error('Relevance analysis timeout')), TIMEOUT_MS);
+  });
+
+  const analysisPromise = Promise.all([
+    mineGitHistory(repoPath, keywords),
+    scorePaths(repoPath, keywords)
+  ]).then(([git, path]) => ({ gitScores: git, pathScores: path }));
+
+  try {
+    const result = await Promise.race([analysisPromise, timeoutPromise]);
+    addRawScoresToMap(result.gitScores, finalScores, 'git', 'git-history');
+    addRawScoresToMap(result.pathScores, finalScores, 'path', 'path-match');
+  } catch (error) {
+    if ((error as Error).message === 'Relevance analysis timeout') {
+      correlatedLogger.warn('Keyword-based relevance analysis timed out');
+    } else {
+      throw error;
+    }
+  }
+}
+
+/**
+ * Phase 3: Summary-based Semantic Scoring
+ */
+async function performSummaryScoring(
+  prompt: string,
+  agent: Agent,
+  finalScores: Record<string, AggregatedFileScore>,
+  options: { correlationId?: string; modelId?: string; repoName?: string; branch?: string }
+): Promise<boolean> {
+  const { correlationId, modelId, repoName, branch } = options;
+  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+
+  try {
+    // Extract priority paths from current git/path scores for Tier 2 context building
+    const priorityPaths = Object.entries(finalScores)
+      .filter(([, data]) => data.rawScores.git > 0 || data.rawScores.path > 0)
+      .sort(([, a], [, b]) =>
+        (b.rawScores.git + b.rawScores.path) - (a.rawScores.git + a.rawScores.path)
+      )
+      .slice(0, 50)
+      .map(([path]) => path);
+
+    const summaryTimeoutPromise = new Promise<SemanticFileScore[]>((_, reject) => {
+      setTimeout(() => reject(new Error('Summary scoring timeout')), SUMMARY_SCORING_TIMEOUT_MS);
+    });
+
+    const summaryOptions: SemanticScoringOptions = {
+      agent,
+      priorityPaths,
+      correlationId,
+      modelId,
+      repoName,
+      branch
+    };
+
+    const summaryPromise = scoreSemanticRelevance(prompt, summaryOptions);
+    const summaryScores = await Promise.race([summaryPromise, summaryTimeoutPromise]);
+
+    addRawScoresToMap(summaryScores, finalScores, 'semantic', 'semantic');
+
+    correlatedLogger.info({ summaryFileCount: summaryScores.length }, 'Summary-based semantic scoring completed');
+    return summaryScores.length > 0;
+  } catch (error) {
+    correlatedLogger.warn(
+      { error: (error as Error).message },
+      'Summary-based semantic scoring failed or timed out'
+    );
+    return false;
+  }
+}
+
 export async function findRelevantFiles(
   repoPath: string,
   prompt: string,
@@ -190,22 +345,7 @@ export async function findRelevantFiles(
   }, 'Starting relevance analysis');
 
   // Extract keywords - optionally enhanced with LLM
-  let keywords = extractKeywords(prompt);
-
-  if (useLLMKeywords && agent) {
-    try {
-      const llmKeywords = await extractKeywordsWithLLM(prompt, { agent, correlationId });
-      keywords = mergeKeywords(keywords, llmKeywords);
-      correlatedLogger.info({
-        basicCount: extractKeywords(prompt).length,
-        llmPrimary: llmKeywords.primary,
-        llmAlternatives: llmKeywords.alternatives.slice(0, 10),
-        mergedCount: keywords.length
-      }, 'LLM keyword extraction merged');
-    } catch (error) {
-      correlatedLogger.warn({ error: (error as Error).message }, 'LLM keyword extraction failed, using basic keywords');
-    }
-  }
+  const keywords = await extractKeywordsForRelevance(prompt, agent, useLLMKeywords, correlationId);
 
   correlatedLogger.debug({ keywords }, 'Extracted keywords');
 
@@ -215,29 +355,9 @@ export async function findRelevantFiles(
 
   // --- Phase 1: Git History Semantic Mining (via commit analysis) ---
   if (useSemanticMining && semanticMiningOptions) {
-    try {
-      const semanticTimeoutPromise = new Promise<GitFileScore[]>((_, reject) => {
-        setTimeout(() => reject(new Error('Semantic mining timeout')), SEMANTIC_TIMEOUT_MS);
-      });
-
-      const semanticPromise = mineGitHistoryWithLLM(
-        repoPath,
-        prompt,
-        { ...semanticMiningOptions, correlationId }
-      );
-
-      const semanticScores = await Promise.race([semanticPromise, semanticTimeoutPromise]);
-
-      addRawScoresToMap(semanticScores, finalScores, 'semantic', 'llm-semantic');
-
-      usedSemanticMining = semanticScores.length > 0;
-      correlatedLogger.info({ semanticFileCount: semanticScores.length }, 'Git semantic mining completed');
-    } catch (error) {
-      correlatedLogger.warn(
-        { error: (error as Error).message },
-        'Git semantic mining failed or timed out'
-      );
-    }
+    usedSemanticMining = await performGitSemanticMining({
+      repoPath, prompt, semanticMiningOptions, finalScores, correlationId
+    });
   }
 
   // --- Phase 2: Keyword-based scoring (Git history + Path matching) ---
@@ -246,73 +366,15 @@ export async function findRelevantFiles(
     return { files: [], keywordsDetected: [] };
   }
 
-  let gitScores: GitFileScore[] = [];
-  let pathScores: PathFileScore[] = [];
-
   if (keywords.length > 0) {
-    const timeoutPromise = new Promise<{ gitScores: GitFileScore[]; pathScores: PathFileScore[] }>((_, reject) => {
-      setTimeout(() => reject(new Error('Relevance analysis timeout')), TIMEOUT_MS);
-    });
-
-    const analysisPromise = Promise.all([
-      mineGitHistory(repoPath, keywords),
-      scorePaths(repoPath, keywords)
-    ]).then(([git, path]) => ({ gitScores: git, pathScores: path }));
-
-    try {
-      const result = await Promise.race([analysisPromise, timeoutPromise]);
-      gitScores = result.gitScores;
-      pathScores = result.pathScores;
-    } catch (error) {
-      if ((error as Error).message === 'Relevance analysis timeout') {
-        correlatedLogger.warn('Keyword-based relevance analysis timed out');
-      } else {
-        throw error;
-      }
-    }
+    await performKeywordScoring(repoPath, keywords, finalScores, correlationId);
   }
-
-  addRawScoresToMap(gitScores, finalScores, 'git', 'git-history');
-  addRawScoresToMap(pathScores, finalScores, 'path', 'path-match');
 
   // --- Phase 3: Summary-based Semantic Scoring ---
   if (useSummaryScoring && agent) {
-    try {
-      // Extract priority paths from current git/path scores for Tier 2 context building
-      const priorityPaths = Object.entries(finalScores)
-        .filter(([, data]) => data.rawScores.git > 0 || data.rawScores.path > 0)
-        .sort(([, a], [, b]) =>
-          (b.rawScores.git + b.rawScores.path) - (a.rawScores.git + a.rawScores.path)
-        )
-        .slice(0, 50)
-        .map(([path]) => path);
-
-      const summaryTimeoutPromise = new Promise<SemanticFileScore[]>((_, reject) => {
-        setTimeout(() => reject(new Error('Summary scoring timeout')), SUMMARY_SCORING_TIMEOUT_MS);
-      });
-
-      const summaryOptions: SemanticScoringOptions = {
-        agent,
-        priorityPaths,
-        correlationId,
-        modelId,
-        repoName,
-        branch
-      };
-
-      const summaryPromise = scoreSemanticRelevance(prompt, summaryOptions);
-      const summaryScores = await Promise.race([summaryPromise, summaryTimeoutPromise]);
-
-      addRawScoresToMap(summaryScores, finalScores, 'semantic', 'semantic');
-
-      usedSummaryScoring = summaryScores.length > 0;
-      correlatedLogger.info({ summaryFileCount: summaryScores.length }, 'Summary-based semantic scoring completed');
-    } catch (error) {
-      correlatedLogger.warn(
-        { error: (error as Error).message },
-        'Summary-based semantic scoring failed or timed out'
-      );
-    }
+    usedSummaryScoring = await performSummaryScoring(prompt, agent, finalScores, {
+      correlationId, modelId, repoName, branch
+    });
   }
 
   // --- Phase 4: Weighted Score Aggregation ---
