@@ -227,13 +227,16 @@ async function processRepositoryForIndexing(
     // Clone/fetch to get latest state
     const repoPath = await cloneRepositoryForIndexing(repoName, branch);
 
-    // Get current HEAD hash from the cloned/fetched repo
+    // Get the hash of the configured branch (not just HEAD, since same repo can track different branches)
     let currentHash: string | undefined;
     try {
         const git = simpleGit(repoPath);
-        currentHash = await git.revparse(['HEAD']);
+        // Use the specific branch to get hash - supports both local and remote refs
+        // For 'HEAD', use HEAD directly; for named branches, try origin/<branch> first
+        const refToResolve = branch === 'HEAD' ? 'HEAD' : `origin/${branch}`;
+        currentHash = await git.revparse([refToResolve]);
     } catch (hashError) {
-        log.warn({ repository: repoName, branch, error: (hashError as Error).message }, 'Failed to get HEAD hash');
+        log.warn({ repository: repoName, branch, error: (hashError as Error).message }, 'Failed to get branch hash');
     }
 
     const decision = shouldIndexRepository(repoStatus, currentHash);

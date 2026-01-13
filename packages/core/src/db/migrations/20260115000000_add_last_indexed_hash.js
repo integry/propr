@@ -12,32 +12,24 @@ export async function up(knex) {
 }
 
 export async function down(knex) {
-  const isSQLite = knex.client.config.client === 'sqlite3' || knex.client.config.client === 'better-sqlite3';
+  // SQLite doesn't support dropping columns directly, recreate the table
+  await knex.schema.createTable('repositories_new', (table) => {
+    table.string('full_name').notNullable();
+    table.string('branch').defaultTo('HEAD').notNullable();
+    table.string('indexing_status').defaultTo('idle');
+    table.timestamp('last_indexed_at').nullable();
+    table.timestamp('created_at').defaultTo(knex.fn.now());
+    table.timestamp('updated_at').defaultTo(knex.fn.now());
+    table.primary(['full_name', 'branch']);
+    table.index('indexing_status');
+  });
 
-  if (isSQLite) {
-    // SQLite doesn't support dropping columns directly, recreate the table
-    await knex.schema.createTable('repositories_new', (table) => {
-      table.string('full_name').notNullable();
-      table.string('branch').defaultTo('HEAD').notNullable();
-      table.string('indexing_status').defaultTo('idle');
-      table.timestamp('last_indexed_at').nullable();
-      table.timestamp('created_at').defaultTo(knex.fn.now());
-      table.timestamp('updated_at').defaultTo(knex.fn.now());
-      table.primary(['full_name', 'branch']);
-      table.index('indexing_status');
-    });
+  await knex.raw(`
+    INSERT INTO repositories_new (full_name, branch, indexing_status, last_indexed_at, created_at, updated_at)
+    SELECT full_name, branch, indexing_status, last_indexed_at, created_at, updated_at
+    FROM repositories
+  `);
 
-    await knex.raw(`
-      INSERT INTO repositories_new (full_name, branch, indexing_status, last_indexed_at, created_at, updated_at)
-      SELECT full_name, branch, indexing_status, last_indexed_at, created_at, updated_at
-      FROM repositories
-    `);
-
-    await knex.schema.dropTable('repositories');
-    await knex.schema.renameTable('repositories_new', 'repositories');
-  } else {
-    await knex.schema.alterTable('repositories', (table) => {
-      table.dropColumn('last_indexed_hash');
-    });
-  }
+  await knex.schema.dropTable('repositories');
+  await knex.schema.renameTable('repositories_new', 'repositories');
 }
