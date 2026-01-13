@@ -1,4 +1,4 @@
-import { extractKeywords } from './relevance/keywordExtractor.js';
+import { extractKeywords, extractKeywordsWithLLM, mergeKeywords } from './relevance/keywordExtractor.js';
 import { mineGitHistory, mineGitHistoryWithLLM, FileScore as GitFileScore, SemanticMiningOptions } from './relevance/gitMiner.js';
 import { scorePaths, FileScore as PathFileScore } from './relevance/pathScorer.js';
 import { scoreSemanticRelevance, SemanticFileScore, SemanticScoringOptions } from './relevance/semanticScorer.js';
@@ -32,6 +32,8 @@ export interface RelevanceOptions {
   repoName?: string;
   /** Branch to filter summaries (e.g., "HEAD", "main", "dev") */
   branch?: string;
+  /** Enable LLM-based keyword extraction for better alternatives and spelling variants */
+  useLLMKeywords?: boolean;
 }
 
 // --- Score Aggregation Weights ---
@@ -173,7 +175,8 @@ export async function findRelevantFiles(
     agent,
     modelId,
     repoName,
-    branch
+    branch,
+    useLLMKeywords = false
   } = options;
 
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -182,10 +185,27 @@ export async function findRelevantFiles(
     repoPath,
     promptLength: prompt.length,
     useSemanticMining,
-    useSummaryScoring
+    useSummaryScoring,
+    useLLMKeywords
   }, 'Starting relevance analysis');
 
-  const keywords = extractKeywords(prompt);
+  // Extract keywords - optionally enhanced with LLM
+  let keywords = extractKeywords(prompt);
+
+  if (useLLMKeywords && agent) {
+    try {
+      const llmKeywords = await extractKeywordsWithLLM(prompt, { agent, correlationId });
+      keywords = mergeKeywords(keywords, llmKeywords);
+      correlatedLogger.info({
+        basicCount: extractKeywords(prompt).length,
+        llmPrimary: llmKeywords.primary,
+        llmAlternatives: llmKeywords.alternatives.slice(0, 10),
+        mergedCount: keywords.length
+      }, 'LLM keyword extraction merged');
+    } catch (error) {
+      correlatedLogger.warn({ error: (error as Error).message }, 'LLM keyword extraction failed, using basic keywords');
+    }
+  }
 
   correlatedLogger.debug({ keywords }, 'Extracted keywords');
 

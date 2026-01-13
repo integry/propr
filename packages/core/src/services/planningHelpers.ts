@@ -417,9 +417,11 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const agent = registry.getDefaultAgent();
 
   // Use cleaned prompt (without @references) for relevance search
+  // Enable LLM keyword extraction for better alternatives and spelling variants
   const relevanceResult = await findRelevantFiles(worktreePath, fileRefResult.cleanedPrompt || prompt, {
     correlationId,
     useSummaryScoring: !!agent,
+    useLLMKeywords: true,
     agent,
     repoName: draft.repository,
     branch: baseBranch
