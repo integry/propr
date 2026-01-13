@@ -220,6 +220,18 @@ async function postImplementationComment(options: PostImplementationCommentOptio
 }
 
 /**
+ * Options for creating all GitHub issues.
+ */
+interface CreateAllGitHubIssuesOptions {
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+  owner: string;
+  repoName: string;
+  planJson: PlanTask[];
+  draftId: string;
+  correlatedLogger: CorrelatedLogger;
+}
+
+/**
  * Checks if the draft name is a default/placeholder name.
  */
 function isDefaultDraftName(name: string | undefined, initialPrompt: string | undefined): boolean {
@@ -236,14 +248,8 @@ function isDefaultDraftName(name: string | undefined, initialPrompt: string | un
 /**
  * Creates all GitHub issues for the plan tasks with rate limiting.
  */
-async function createAllGitHubIssues(
-  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
-  owner: string,
-  repoName: string,
-  planJson: PlanTask[],
-  draftId: string,
-  correlatedLogger: CorrelatedLogger
-): Promise<IssueLink[]> {
+async function createAllGitHubIssues(options: CreateAllGitHubIssuesOptions): Promise<IssueLink[]> {
+  const { octokit, owner, repoName, planJson, draftId, correlatedLogger } = options;
   const results: IssueLink[] = [];
 
   for (let i = 0; i < planJson.length; i++) {
@@ -339,7 +345,14 @@ export async function executeDraft(draftId: string, userId: string, correlationI
 
   correlatedLogger.info({ draftId, taskCount: planJson.length }, 'Creating GitHub issues');
 
-  const results = await createAllGitHubIssues(octokit, owner, repoName, planJson, draftId, correlatedLogger);
+  const results = await createAllGitHubIssues({
+    octokit,
+    owner,
+    repoName,
+    planJson,
+    draftId,
+    correlatedLogger
+  });
 
   const existingConfig = parseContextConfig(validDraft.context_config);
   const effectiveCorrelationId = correlationId || draftId;
