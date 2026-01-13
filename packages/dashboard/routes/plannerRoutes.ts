@@ -96,7 +96,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       if (draft.user_id !== req.user!.id) { res.status(403).json({ error: 'Unauthorized access to draft' }); return; }
 
       // Parse JSON string fields before returning
-      const parsedDraft = { ...draft };
+      const parsedDraft: Record<string, any> = { ...draft };
       if (typeof parsedDraft.plan_json === 'string') {
         try { parsedDraft.plan_json = JSON.parse(parsedDraft.plan_json); } catch { parsedDraft.plan_json = []; }
       }
@@ -112,6 +112,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       if (typeof parsedDraft.generation_trace === 'string') {
         try { parsedDraft.generation_trace = JSON.parse(parsedDraft.generation_trace); } catch { parsedDraft.generation_trace = null; }
       }
+      // Map name to task_title as expected by frontend
+      parsedDraft.task_title = draft.name;
 
       res.json(parsedDraft);
     } catch (error) {
@@ -139,6 +141,10 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       await db!('task_drafts').where({ draft_id: req.params.id }).update(updateData);
       // Fetch the updated draft (SQLite doesn't support returning() properly)
       const updated = await db!('task_drafts').where({ draft_id: req.params.id }).first();
+      // Map name to task_title as expected by frontend
+      if (updated) {
+        (updated as any).task_title = updated.name;
+      }
       res.json(updated);
     } catch (error) {
       console.error('Update draft error:', error);

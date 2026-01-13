@@ -108,7 +108,7 @@ const TaskPlannerPage: React.FC = () => {
       <div className="h-[calc(100vh-120px)] p-4">
         <PlanEditor 
           draft={draft as DraftWithPlan} 
-          onFinalize={() => navigate('/')}
+          onFinalize={() => refetch()}
         />
       </div>
     );

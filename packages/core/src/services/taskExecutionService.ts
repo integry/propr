@@ -1,6 +1,8 @@
 import { db } from '../db/connection.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { getAuthenticatedOctokit, getGitHubInstallationToken } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
+import { ensureRepoCloned } from '../git/repoManager.js';
+import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 
 export interface IssueLink {
   number: number;
@@ -74,6 +76,44 @@ export async function executeDraft(draftId: string, userId: string, correlationI
   const [owner, repoName] = draft.repository.split('/');
   if (!owner || !repoName) {
     throw new Error(`Invalid repository format: ${draft.repository}`);
+  }
+
+  try {
+    const githubToken = await getGitHubInstallationToken();
+    const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+    
+    // Ensure repo is cloned to get a path for the LLM container
+    const worktreePath = await ensureRepoCloned({ 
+      repoUrl, 
+      owner, 
+      repoName, 
+      authToken: githubToken 
+    });
+
+    const planSummary = JSON.stringify(planJson).substring(0, 3000); 
+    const prompt = `Generate a short, descriptive title (5-8 words) for this task based on the following plan:\n\n${planSummary}\n\nTitle:`;
+    
+    correlatedLogger.info({ draftId }, 'Generating task title via LLM');
+    
+    const generatedTitle = await runLightweightLLMAnalysis({
+      prompt,
+      model: 'haiku', 
+      correlationId: correlationId || 'finalize-title-gen',
+      worktreePath,
+      githubToken,
+      issueRef: { number: 0, repoOwner: owner, repoName }
+    });
+    
+    const cleanTitle = generatedTitle.replace(/^"|"$/g, '').trim();
+    if (cleanTitle) {
+      await db('task_drafts')
+        .where({ draft_id: draftId })
+        .update({ name: cleanTitle });
+        
+      correlatedLogger.info({ draftId, oldName: draft.name, newName: cleanTitle }, 'Updated task title');
+    }
+  } catch (err) {
+    correlatedLogger.warn({ err: (err as Error).message }, 'Failed to generate task title, keeping original name');
   }
 
   const octokit = await getAuthenticatedOctokit();
