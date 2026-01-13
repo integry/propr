@@ -1,67 +1,20 @@
 import { db } from '../db/connection.js';
-import type { LogFn } from 'pino';
 import { generateContext } from './contextService.js';
-import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
-import { findRelevantFiles } from './relevanceService.js';
 import { loadFileSummaries } from './relevance/contextBuilder.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
-import { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, Plan, PlanItem, GRANULARITY_INSTRUCTIONS, Granularity as GranularityType } from '../claude/prompts/plannerPrompts.js';
+import { REFINER_SYSTEM_PROMPT, Plan, PlanItem } from '../claude/prompts/plannerPrompts.js';
 import { parseLlmJson, JsonParseError } from '../utils/jsonUtils.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
-import { getAgentRegistry } from '../agents/AgentRegistry.js';
 import {
-  updateTrace,
-  validatePromptTokens,
-  checkoutBranch,
-  BranchNotFoundError,
-  CLAUDE_CODE_OVERHEAD,
-  getDefaultModelLimit,
-  calculateCostEstimate,
-  findFilesForPlan,
-  GenerationTrace
+  updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, getDefaultModelLimit, findFilesForPlan,
+  GenerationTrace, RELEVANT_SUMMARY_COUNT, RESERVED_OVERHEAD_TOKENS, CHARS_PER_TOKEN,
+  parseContextConfig, checkoutBaseBranch, TaskDraftConfig, Granularity, PlanningFailedError, buildFullContext
 } from './planningHelpers.js';
 
-export class PlanningFailedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'PlanningFailedError';
-  }
-}
-
 // Re-export for backwards compatibility
-export { BranchNotFoundError } from './planningHelpers.js';
-
-interface BuildFullContextOptions {
-  userRequest: string;
-  repomixContext: string;
-  granularity: GranularityType;
-  /** Optional file summaries for files not fully included in the context */
-  fileSummaries?: string;
-}
-
-export function buildFullContext(options: BuildFullContextOptions): string {
-  const { userRequest, repomixContext, granularity, fileSummaries } = options;
-  const granularitySpec = GRANULARITY_INSTRUCTIONS[granularity];
-
-  const summariesSection = fileSummaries && fileSummaries.trim().length > 0
-    ? `
-  <relevant-file-summaries>
-${fileSummaries}
-  </relevant-file-summaries>`
-    : '';
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<llm-context>
-  <system-prompt><![CDATA[${PLANNER_SYSTEM_PROMPT}]]></system-prompt>
-  <user-request><![CDATA[${userRequest}]]></user-request>
-  <granularity-spec><![CDATA[${granularitySpec}]]></granularity-spec>
-  <repository-context>
-${repomixContext}
-  </repository-context>${summariesSection}
-  <output-guidelines><![CDATA[Output ONLY a valid JSON array. No markdown, no explanations.]]></output-guidelines>
-</llm-context>`;
-}
+export { BranchNotFoundError, PlanningFailedError, buildFullContext } from './planningHelpers.js';
+export { SmartFileSelection, PreviewStats, PreviewResult, GenerateContextPreviewOptions, generateContextPreview } from './planningHelpers.js';
 
 export interface GeneratePlanOptions {
   draftId: string;
@@ -93,50 +46,7 @@ interface TaskDraft {
   updated_at: Date;
 }
 
-export interface TaskDraftConfig {
-  baseBranch: string;
-  granularity: 'single' | 'balanced' | 'granular';
-  contextLevel?: ContextLevel;
-  compress?: boolean;
-  manualFiles: string[];
-  autoFiles: string[];
-}
-
-export type Granularity = 'single' | 'balanced' | 'granular';
-
-export interface SmartFileSelection {
-  path: string;
-  reason: string;
-  source: 'manual' | 'auto';
-  score?: number;
-}
-
-export interface PreviewStats {
-  totalTokens: number;      // Estimated actual Claude tokens
-  tiktokenCount?: number;   // Raw tiktoken count (for debugging)
-  costEstimate: number;
-  contextLength: number;
-  fileCount: number;
-}
-
-export interface PreviewResult {
-  success: boolean;
-  stats: PreviewStats;
-  smartSelection: SmartFileSelection[];
-  warnings: string[];
-}
-
-export interface GenerateContextPreviewOptions {
-  draftId: string;
-  prompt: string;
-  baseBranch: string;
-  granularity: Granularity;
-  contextLevel?: ContextLevel;
-  compress?: boolean;
-  files?: string[];
-  worktreePath: string;
-  correlationId?: string;
-}
+export type { Granularity, TaskDraftConfig } from './planningHelpers.js';
 
 interface CallLLMOptions {
   draftId: string;
@@ -191,55 +101,6 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<Plan> {
   }
   return plan;
 }
-
-interface ParsedContextConfig {
-  baseBranch?: string;
-  granularity: Granularity;
-  contextLevel: ContextLevel;
-  compress: boolean;
-  tokenLimit: number;
-  manualFiles: string[];
-  autoFiles: string[];
-}
-
-function parseContextConfig(contextConfig: TaskDraftConfig | null): ParsedContextConfig {
-  return {
-    baseBranch: contextConfig?.baseBranch,
-    granularity: contextConfig?.granularity || 'balanced',
-    contextLevel: contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL,
-    compress: contextConfig?.compress ?? false,
-    tokenLimit: getEffectiveTokenLimit(undefined, contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL),
-    manualFiles: contextConfig?.manualFiles || [],
-    autoFiles: contextConfig?.autoFiles || []
-  };
-}
-
-/** Minimal logger interface compatible with both pino Logger and EnhancedLogger */
-type MinimalLogger = { info: LogFn; warn: LogFn };
-
-async function checkoutBaseBranch(
-  worktreePath: string,
-  baseBranch: string | undefined,
-  correlatedLogger: MinimalLogger
-): Promise<void> {
-  if (!baseBranch) return;
-  try {
-    await checkoutBranch(worktreePath, baseBranch);
-    correlatedLogger.info({ baseBranch, worktreePath }, 'Checked out configured base branch');
-  } catch (error) {
-    if (error instanceof BranchNotFoundError) throw error;
-    correlatedLogger.warn({ baseBranch, error: (error as Error).message }, 'Failed to checkout base branch');
-  }
-}
-
-/** Number of most relevant files to include summaries for */
-const RELEVANT_SUMMARY_COUNT = 100;
-
-/** Reserved overhead for system prompts, XML structure, etc. */
-const RESERVED_OVERHEAD_TOKENS = 5000;
-
-/** Chars per token estimate (conservative) */
-const CHARS_PER_TOKEN = 3;
 
 export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> {
   const { draftId, worktreePath, githubToken, correlationId } = options;
@@ -383,128 +244,3 @@ export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
 
 // Re-export checkoutBranch for backwards compatibility
 export { checkoutBranch } from './planningHelpers.js';
-
-export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
-  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId } = options;
-  const previewTokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
-  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
-  const warnings: string[] = [];
-
-  if (!db) throw new PlanningFailedError('Database not available');
-  correlatedLogger.info({ draftId, baseBranch, granularity }, 'Starting context preview generation');
-
-  const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
-  if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
-
-  try {
-    await checkoutBranch(worktreePath, baseBranch);
-    correlatedLogger.info({ baseBranch, worktreePath }, 'Checked out branch for preview');
-  } catch (error) {
-    if (error instanceof BranchNotFoundError) throw error;
-    throw new PlanningFailedError(`Failed to checkout branch '${baseBranch}': ${(error as Error).message}`);
-  }
-
-  correlatedLogger.info({ repository: draft.repository }, 'Finding relevant files for preview');
-
-  // Get agent for semantic scoring
-  const registry = getAgentRegistry();
-  await registry.ensureInitialized();
-  const agent = registry.getDefaultAgent();
-
-  // Pass the baseBranch - semantic scorer will use it if indexed, otherwise defaults to HEAD
-  const relevanceResult = await findRelevantFiles(worktreePath, prompt, {
-    correlationId,
-    useSummaryScoring: !!agent,
-    agent,
-    repoName: draft.repository,
-    branch: baseBranch
-  });
-  const manualFiles = files || [], autoFilePaths = relevanceResult.files.map(f => f.path);
-  const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
-
-  // Detailed logging for preview file selection breakdown
-  correlatedLogger.info({
-    manualFiles: {
-      count: manualFiles.length,
-      files: manualFiles.slice(0, 10)
-    },
-    autoFiles: {
-      count: autoFilePaths.length,
-      topCandidates: relevanceResult.files.slice(0, 5).map(f => ({
-        path: f.path,
-        score: f.score,
-        reason: f.reason
-      }))
-    },
-    scoreDistribution: {
-      high: relevanceResult.files.filter(f => f.score > 80).length,
-      medium: relevanceResult.files.filter(f => f.score > 50 && f.score <= 80).length,
-      low: relevanceResult.files.filter(f => f.score <= 50).length
-    },
-    combinedCount: combinedFiles.length,
-    overlap: manualFiles.filter(f => autoFilePaths.includes(f)).length
-  }, 'Preview file selection breakdown');
-
-  // When compression is enabled, include all files but prioritize relevant ones
-  // This allows repomix to pack as many files as possible within the budget
-  const filesToInclude = compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined);
-  const priorityFiles = compress ? combinedFiles : undefined;
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: previewTokenLimit, compress, correlationId });
-  const costEstimate = await calculateCostEstimate(contextResult.totalTokens, warnings, correlatedLogger);
-
-  const includedFilesSet = new Set(contextResult.includedFiles);
-
-  // Build smart selection - when compress is enabled, show all included files
-  let smartSelection: SmartFileSelection[];
-  if (compress) {
-    // Create a map of relevance scores for files that were found by relevance
-    const relevanceScores = new Map(relevanceResult.files.map(f => [f.path, f]));
-    smartSelection = contextResult.includedFiles.map(path => {
-      const relevanceInfo = relevanceScores.get(path);
-      if (manualFiles.includes(path)) {
-        return { path, reason: 'Explicitly included', source: 'manual' as const };
-      } else if (relevanceInfo) {
-        return { path, reason: `${relevanceInfo.reason} (score: ${relevanceInfo.score})`, source: 'auto' as const, score: relevanceInfo.score };
-      } else {
-        return { path, reason: 'Included via compression', source: 'auto' as const };
-      }
-    });
-  } else {
-    smartSelection = [
-      ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
-      ...relevanceResult.files.filter(f => includedFilesSet.has(f.path)).map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
-    ];
-  }
-
-  const fullContext = buildFullContext({ userRequest: prompt, repomixContext: contextResult.context, granularity });
-
-  await db('task_drafts').where({ draft_id: draftId }).update({
-    initial_prompt: prompt,
-    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, compress, manualFiles, autoFiles: autoFilePaths }),
-    generated_context: fullContext,
-    updated_at: db.fn.now()
-  });
-
-  // Convert tiktoken count to estimated actual Claude tokens for UI display
-  const estimatedActualTokens = Math.ceil(contextResult.totalTokens * TIKTOKEN_TO_CLAUDE_RATIO);
-
-  correlatedLogger.info({
-    tiktokenCount: contextResult.totalTokens,
-    estimatedActualTokens,
-    costEstimate,
-    fileCount: contextResult.includedFiles.length
-  }, 'Context preview completed');
-
-  return {
-    success: true,
-    stats: {
-      totalTokens: estimatedActualTokens,  // Show estimated actual Claude tokens
-      tiktokenCount: contextResult.totalTokens,  // Also include raw tiktoken for debugging
-      costEstimate,
-      contextLength: contextResult.totalCharacters,
-      fileCount: contextResult.includedFiles.length
-    },
-    smartSelection,
-    warnings
-  };
-}
