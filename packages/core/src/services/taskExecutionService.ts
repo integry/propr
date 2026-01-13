@@ -37,14 +37,17 @@ interface PlanTask {
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function generateAndSaveTaskTitle(
-  draftId: string,
-  planJson: PlanTask[],
-  owner: string,
-  repoName: string,
-  oldName: string,
-  correlationId?: string
-): Promise<void> {
+interface GenerateTitleOptions {
+  draftId: string;
+  planJson: PlanTask[];
+  owner: string;
+  repoName: string;
+  oldName: string;
+  correlationId?: string;
+}
+
+async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<void> {
+  const { draftId, planJson, owner, repoName, oldName, correlationId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   const githubToken = await getGitHubInstallationToken();
@@ -123,7 +126,14 @@ export async function executeDraft(draftId: string, userId: string, correlationI
   }
 
   try {
-    await generateAndSaveTaskTitle(draftId, planJson, owner, repoName, draft.name, correlationId);
+    await generateAndSaveTaskTitle({
+      draftId,
+      planJson,
+      owner,
+      repoName,
+      oldName: draft.name,
+      correlationId
+    });
   } catch (err) {
     correlatedLogger.warn({ err: (err as Error).message }, 'Failed to generate task title, keeping original name');
   }
