@@ -6,12 +6,14 @@ import logger from '../../utils/logger.js';
 
 export interface FileSummaryRow {
   path: string;
+  branch: string;
   summary: string;
   commit_hash: string;
 }
 
 export interface DirectorySummaryRow {
   path: string;
+  branch: string;
   summary: string;
   hash: string;
 }
@@ -296,14 +298,14 @@ export async function buildSummaryContext(options: ContextBuildOptions = {}): Pr
  * Loads all file summaries from the database.
  */
 export async function loadFileSummaries(): Promise<FileSummaryRow[]> {
-  return db('file_summaries').select('path', 'summary', 'commit_hash');
+  return db('file_summaries').select('path', 'branch', 'summary', 'commit_hash');
 }
 
 /**
  * Loads all directory summaries from the database.
  */
 export async function loadDirectorySummaries(): Promise<DirectorySummaryRow[]> {
-  return db('directory_summaries').select('path', 'summary', 'hash');
+  return db('directory_summaries').select('path', 'branch', 'summary', 'hash');
 }
 
 // --- Helper Functions ---
