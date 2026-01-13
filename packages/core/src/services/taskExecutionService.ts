@@ -40,7 +40,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
  * Generates a short, descriptive title for a task based on the initial prompt.
  * Uses Claude Haiku for fast, lightweight generation.
  */
-async function generateTaskTitle(initialPrompt: string, correlatedLogger: typeof logger): Promise<string | null> {
+async function generateTaskTitle(initialPrompt: string, correlatedLogger: Pick<typeof logger, 'info' | 'warn'>): Promise<string | null> {
   try {
     const client = new Anthropic();
 
