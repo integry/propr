@@ -1,7 +1,8 @@
 import { db } from '../db/connection.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
-import Anthropic from '@anthropic-ai/sdk';
+import { getAnthropicClient } from '../utils/tokenCalculation.js';
+import { resolveModelAlias } from '../config/modelAliases.js';
 
 export interface IssueLink {
   number: number;
@@ -38,14 +39,15 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Generates a short, descriptive title for a task based on the initial prompt.
- * Uses Claude Haiku for fast, lightweight generation.
+ * Uses the shared Anthropic client and Haiku model for fast, lightweight generation.
  */
 async function generateTaskTitle(initialPrompt: string, correlatedLogger: Pick<typeof logger, 'info' | 'warn'>): Promise<string | null> {
   try {
-    const client = new Anthropic();
+    const client = getAnthropicClient();
+    const model = resolveModelAlias('haiku');
 
     const message = await client.messages.create({
-      model: 'claude-3-5-haiku-20241022',
+      model,
       max_tokens: 100,
       messages: [
         {
@@ -61,7 +63,7 @@ ${initialPrompt}`
     const content = message.content[0];
     if (content.type === 'text') {
       const title = content.text.trim();
-      correlatedLogger.info({ title }, 'Generated task title');
+      correlatedLogger.info({ title, model }, 'Generated task title');
       return title;
     }
     return null;

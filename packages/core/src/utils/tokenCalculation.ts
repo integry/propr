@@ -49,10 +49,14 @@ export function getUsageStats(claudeResult: ClaudeResult | null): UsageStats {
     };
 }
 
-// Anthropic client for accurate token counting via API
+// Anthropic client singleton for accurate token counting and lightweight LLM calls
 let anthropicClient: Anthropic | null = null;
 
-function getAnthropicClient(): Anthropic {
+/**
+ * Returns a shared Anthropic client instance.
+ * Used for token counting and lightweight LLM operations.
+ */
+export function getAnthropicClient(): Anthropic {
     if (!anthropicClient) {
         anthropicClient = new Anthropic();
     }
