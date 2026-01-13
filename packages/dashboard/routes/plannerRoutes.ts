@@ -96,7 +96,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       if (draft.user_id !== req.user!.id) { res.status(403).json({ error: 'Unauthorized access to draft' }); return; }
 
       // Parse JSON string fields before returning
-      const parsedDraft: Record<string, any> = { ...draft };
+      const parsedDraft: Record<string, unknown> & { task_title?: string } = { ...draft };
       if (typeof parsedDraft.plan_json === 'string') {
         try { parsedDraft.plan_json = JSON.parse(parsedDraft.plan_json); } catch { parsedDraft.plan_json = []; }
       }
@@ -143,9 +143,12 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const updated = await db!('task_drafts').where({ draft_id: req.params.id }).first();
       // Map name to task_title as expected by frontend
       if (updated) {
-        (updated as any).task_title = updated.name;
+        const responseData: Record<string, unknown> & { task_title?: string } = { ...updated };
+        responseData.task_title = updated.name;
+        res.json(responseData);
+      } else {
+        res.json(updated);
       }
-      res.json(updated);
     } catch (error) {
       console.error('Update draft error:', error);
       res.status(500).json({ error: 'Failed to update draft' });
