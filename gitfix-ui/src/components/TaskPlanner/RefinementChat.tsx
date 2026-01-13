@@ -56,6 +56,14 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       }));
   }, []);
 
+  // Handle keyboard shortcuts: Enter to submit, Shift+Enter for new line
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit(e);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
@@ -143,19 +151,20 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       </div>
 
       <form onSubmit={handleSubmit} className="p-4 border-t bg-white">
-        <div className="flex gap-2">
-          <input
-            type="text"
+        <div className="flex gap-2 items-end">
+          <textarea
             value={input}
             onChange={e => setInput(e.target.value)}
-            placeholder="Ask the AI to refine the plan..."
+            onKeyDown={handleKeyDown}
+            placeholder="Ask the AI to refine the plan... (Shift+Enter for new line)"
             disabled={isLoading}
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100"
+            rows={1}
+            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 resize-none min-h-[44px] max-h-[120px] overflow-y-auto"
           />
           <button
             type="submit"
             disabled={!input.trim() || isLoading}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+            className="px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
           >
             {isLoading ? (
               <Loader2 size={18} className="animate-spin" />
