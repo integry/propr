@@ -194,6 +194,79 @@ function isDefaultDraftName(name: string | undefined, initialPrompt: string | un
   return false;
 }
 
+/**
+ * Creates all GitHub issues for the plan tasks with rate limiting.
+ */
+async function createAllGitHubIssues(
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
+  owner: string,
+  repoName: string,
+  planJson: PlanTask[],
+  draftId: string,
+  correlatedLogger: CorrelatedLogger
+): Promise<IssueLink[]> {
+  const results: IssueLink[] = [];
+
+  for (let i = 0; i < planJson.length; i++) {
+    const issueLink = await createGitHubIssue(octokit, owner, repoName, planJson[i], draftId, i + 1, correlatedLogger);
+    results.push(issueLink);
+
+    if (i < planJson.length - 1) {
+      await sleep(1000);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Builds the update data object for the draft after execution.
+ */
+function buildExecutionUpdateData(
+  existingConfig: Record<string, unknown>,
+  results: IssueLink[],
+  generatedTitle: string | null,
+  dbFn: typeof db.fn
+): Record<string, unknown> {
+  const updateData: Record<string, unknown> = {
+    status: 'executed',
+    context_config: JSON.stringify({
+      ...existingConfig,
+      executionResults: results,
+      executedAt: new Date().toISOString()
+    }),
+    updated_at: dbFn.now()
+  };
+
+  if (generatedTitle) {
+    updateData.name = generatedTitle;
+  }
+
+  return updateData;
+}
+
+/**
+ * Parses the context config from a draft.
+ */
+function parseContextConfig(contextConfig: string | Record<string, unknown>): Record<string, unknown> {
+  return typeof contextConfig === 'string'
+    ? JSON.parse(contextConfig)
+    : (contextConfig || {});
+}
+
+/**
+ * Parses the plan JSON from a draft.
+ */
+function parsePlanJson(planJson: string | PlanTask[]): PlanTask[] {
+  const parsed = typeof planJson === 'string' ? JSON.parse(planJson) : planJson;
+
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error('Draft has no tasks to execute');
+  }
+
+  return parsed;
+}
+
 export async function executeDraft(draftId: string, userId: string, correlationId?: string): Promise<ExecutionResult> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
@@ -213,52 +286,18 @@ export async function executeDraft(draftId: string, userId: string, correlationI
   // TypeScript now knows draft is defined after validation
   const validDraft = draft as TaskDraft;
 
-  const planJson: PlanTask[] = typeof validDraft.plan_json === 'string'
-    ? JSON.parse(validDraft.plan_json)
-    : validDraft.plan_json;
-
-  if (!Array.isArray(planJson) || planJson.length === 0) {
-    throw new Error('Draft has no tasks to execute');
-  }
-
+  const planJson = parsePlanJson(validDraft.plan_json);
   const { owner, repoName } = parseRepository(validDraft.repository);
   const octokit = await getAuthenticatedOctokit();
-  const results: IssueLink[] = [];
 
   correlatedLogger.info({ draftId, taskCount: planJson.length }, 'Creating GitHub issues');
 
-  for (let i = 0; i < planJson.length; i++) {
-    const issueLink = await createGitHubIssue(octokit, owner, repoName, planJson[i], draftId, i + 1, correlatedLogger);
-    results.push(issueLink);
+  const results = await createAllGitHubIssues(octokit, owner, repoName, planJson, draftId, correlatedLogger);
 
-    if (i < planJson.length - 1) {
-      await sleep(1000);
-    }
-  }
+  const existingConfig = parseContextConfig(validDraft.context_config);
+  const generatedTitle = await maybeGenerateTaskTitle(validDraft, draftId, correlatedLogger);
 
-  const existingConfig = typeof validDraft.context_config === 'string'
-    ? JSON.parse(validDraft.context_config)
-    : (validDraft.context_config || {});
-
-  let generatedTitle: string | null = null;
-  if (isDefaultDraftName(validDraft.name, validDraft.initial_prompt) && validDraft.initial_prompt) {
-    correlatedLogger.info({ draftId }, 'Generating task title');
-    generatedTitle = await generateTaskTitle(validDraft.initial_prompt, correlatedLogger);
-  }
-
-  const updateData: Record<string, unknown> = {
-    status: 'executed',
-    context_config: JSON.stringify({
-      ...existingConfig,
-      executionResults: results,
-      executedAt: new Date().toISOString()
-    }),
-    updated_at: db.fn.now()
-  };
-
-  if (generatedTitle) {
-    updateData.name = generatedTitle;
-  }
+  const updateData = buildExecutionUpdateData(existingConfig, results, generatedTitle, db.fn);
 
   await db('task_drafts')
     .where({ draft_id: draftId })
@@ -271,4 +310,19 @@ export async function executeDraft(draftId: string, userId: string, correlationI
   }, 'Draft execution completed');
 
   return { success: true, results };
+}
+
+/**
+ * Generates a task title if the draft has a default name.
+ */
+async function maybeGenerateTaskTitle(
+  validDraft: TaskDraft,
+  draftId: string,
+  correlatedLogger: CorrelatedLogger
+): Promise<string | null> {
+  if (isDefaultDraftName(validDraft.name, validDraft.initial_prompt) && validDraft.initial_prompt) {
+    correlatedLogger.info({ draftId }, 'Generating task title');
+    return generateTaskTitle(validDraft.initial_prompt, correlatedLogger);
+  }
+  return null;
 }
