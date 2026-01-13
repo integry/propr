@@ -37,13 +37,13 @@ export interface RelevanceOptions {
 // Tunable based on testing results.
 
 /** Weight for git history-based scores (temporal relevance) */
-const GIT_SCORE_WEIGHT = 0.4;
+const GIT_SCORE_WEIGHT = 0.35;
 
 /** Weight for path/naming convention-based scores */
-const PATH_SCORE_WEIGHT = 0.2;
+const PATH_SCORE_WEIGHT = 0.15;
 
 /** Weight for semantic/summary-based scores (content understanding) */
-const SEMANTIC_SCORE_WEIGHT = 0.4;
+const SEMANTIC_SCORE_WEIGHT = 0.50;
 
 // No artificial limit - let context service handle token-based truncation
 const DEFAULT_MAX_RESULTS = 500;
@@ -102,7 +102,7 @@ function addRawScoresToMap(
 
 /**
  * Applies weighted aggregation to compute final normalized scores.
- * Formula: Final = (Git * 0.4) + (Path * 0.2) + (Semantic * 0.4)
+ * Formula: Final = (Git * 0.35) + (Path * 0.15) + (Semantic * 0.50)
  * All individual scores are normalized to 0-100 before weighting.
  */
 function computeWeightedScores(

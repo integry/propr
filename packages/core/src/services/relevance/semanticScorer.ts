@@ -1,6 +1,6 @@
 import logger from '../../utils/logger.js';
 import { Agent } from '../../agents/types.js';
-import { buildSummaryContext, ContextBuildOptions } from './contextBuilder.js';
+import { loadFileSummaries, loadDirectorySummaries, FileSummaryRow, DirectorySummaryRow } from './contextBuilder.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
 
 // --- Types ---
@@ -38,91 +38,156 @@ export interface SemanticLLMResponse {
 
 const CHARS_PER_TOKEN_ESTIMATE = 3;
 
+/** Maximum tokens per chunk to avoid context window limits and truncation */
+const MAX_CHUNK_TOKENS = 30000;
+
 // --- Main Export ---
 
 /**
  * Uses AI-generated summaries to semantically score files based on the user's request.
  *
- * This function:
- * 1. Builds a "smart context" from stored file/directory summaries
- * 2. Sends the context to an LLM with the user's prompt
- * 3. Returns confidence scores for files that need modification
+ * This function handles large repositories by processing summaries in chunks:
+ * 1. Loads ALL file and directory summaries from the database
+ * 2. Splits summaries into chunks that fit within token limits
+ * 3. Queries the LLM for each chunk to identify relevant files
+ * 4. Aggregates and deduplicates results across all chunks
  */
 export async function scoreSemanticRelevance(
   userPrompt: string,
   options: SemanticScoringOptions
 ): Promise<SemanticFileScore[]> {
-  const { agent, priorityPaths = [], correlationId, modelId, repoName } = options;
+  const { agent, correlationId, repoName } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   try {
-    // Build smart context from summaries
-    const contextOptions: ContextBuildOptions = {
-      modelId,
-      priorityPaths,
-      correlationId,
-      repoName
-    };
+    // 1. Load ALL summaries from the database
+    let fileSummaries = await loadFileSummaries();
+    let dirSummaries = await loadDirectorySummaries();
 
-    const contextResult = await buildSummaryContext(contextOptions);
+    // Filter by repository if specified
+    if (repoName) {
+      const repoPrefix = repoName + '/';
+      fileSummaries = fileSummaries
+        .filter((f: FileSummaryRow) => f.path.startsWith(repoPrefix))
+        .map((f: FileSummaryRow) => ({ ...f, path: f.path.slice(repoPrefix.length) }));
+      dirSummaries = dirSummaries
+        .filter((d: DirectorySummaryRow) => d.path.startsWith(repoPrefix))
+        .map((d: DirectorySummaryRow) => ({ ...d, path: d.path.slice(repoPrefix.length) }));
+    }
 
-    if (!contextResult.context || contextResult.context.trim().length === 0) {
-      correlatedLogger.debug('No summary context available, skipping semantic scoring');
+    if (fileSummaries.length === 0 && dirSummaries.length === 0) {
+      correlatedLogger.debug('No summaries found, skipping semantic scoring');
       return [];
     }
 
-    correlatedLogger.info({
-      fileSummaries: contextResult.fileSummaryCount,
-      dirSummaries: contextResult.dirSummaryCount,
-      estimatedTokens: contextResult.estimatedTokens,
-      truncated: contextResult.truncated
-    }, 'Built context for semantic scoring');
+    // 2. Prepare summary items for chunking
+    const allItems: string[] = [
+      ...dirSummaries.map((d: DirectorySummaryRow) => `DIR ${d.path}/: ${d.summary}`),
+      ...fileSummaries.map((f: FileSummaryRow) => `FILE ${f.path}: ${f.summary}`)
+    ];
 
-    // Build the ranking prompt
-    const prompt = buildSemanticRankingPrompt(userPrompt, contextResult.context);
-    const startTime = Date.now();
+    // 3. Split into chunks that fit within token budget
+    const chunks: string[] = [];
+    let currentChunk = '';
+    const maxChunkChars = MAX_CHUNK_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 
-    // Estimate tokens for metrics
-    const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
-    const estimatedOutputTokens = 500; // Expect ~500 tokens for the file list response
-
-    let success = false;
-    let errorMessage: string | undefined;
-    let scores: SemanticFileScore[] = [];
-
-    try {
-      // Use the agent's analyze method for lightweight analysis
-      const response = await agent.analyze(prompt);
-      const parsed = parseSemanticResponse(response);
-
-      scores = parsed.files.map(f => ({
-        path: f.path,
-        score: f.score,
-        reason: 'semantic' as const
-      }));
-
-      success = true;
-      correlatedLogger.info({ fileCount: scores.length }, 'Semantic scoring completed');
-    } catch (error) {
-      errorMessage = (error as Error).message;
-      correlatedLogger.warn({ error: errorMessage }, 'Semantic scoring LLM call failed');
+    for (const item of allItems) {
+      if ((currentChunk.length + item.length + 1) > maxChunkChars && currentChunk.length > 0) {
+        chunks.push(currentChunk);
+        currentChunk = '';
+      }
+      currentChunk += item + '\n';
+    }
+    if (currentChunk.length > 0) {
+      chunks.push(currentChunk);
     }
 
-    const durationMs = Date.now() - startTime;
+    correlatedLogger.info({
+      chunkCount: chunks.length,
+      totalItems: allItems.length,
+      fileSummaryCount: fileSummaries.length,
+      dirSummaryCount: dirSummaries.length
+    }, 'Processing semantic scoring in chunks');
 
-    // Log metrics
-    await logSummarizationCall({
-      timestamp: new Date().toISOString(),
-      callType: 'semantic_scoring',
-      model: agent.config.defaultModel || 'haiku',
-      agentAlias: agent.config.alias,
-      estimatedInputTokens,
-      estimatedOutputTokens,
-      estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
-      success,
-      durationMs,
-      error: errorMessage
-    }, correlatedLogger);
+    // 4. Process each chunk in parallel
+    const startTime = Date.now();
+    const chunkPromises = chunks.map(async (chunkContext, index) => {
+      const prompt = buildSemanticRankingPrompt(userPrompt, chunkContext);
+      const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
+      const estimatedOutputTokens = 500;
+
+      try {
+        const response = await agent.analyze(prompt);
+        const parsed = parseSemanticResponse(response);
+
+        // Log metrics for this chunk
+        await logSummarizationCall({
+          timestamp: new Date().toISOString(),
+          callType: 'semantic_scoring',
+          model: agent.config.defaultModel || 'haiku',
+          agentAlias: agent.config.alias,
+          estimatedInputTokens,
+          estimatedOutputTokens,
+          estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
+          success: true,
+          durationMs: Date.now() - startTime,
+          error: undefined
+        }, correlatedLogger);
+
+        return parsed.files;
+      } catch (err) {
+        correlatedLogger.warn({
+          chunkIndex: index,
+          error: (err as Error).message
+        }, 'Failed to score chunk');
+
+        await logSummarizationCall({
+          timestamp: new Date().toISOString(),
+          callType: 'semantic_scoring',
+          model: agent.config.defaultModel || 'haiku',
+          agentAlias: agent.config.alias,
+          estimatedInputTokens,
+          estimatedOutputTokens,
+          estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
+          success: false,
+          durationMs: Date.now() - startTime,
+          error: (err as Error).message
+        }, correlatedLogger);
+
+        return [];
+      }
+    });
+
+    const results = await Promise.all(chunkPromises);
+
+    // 5. Aggregate and deduplicate results (keep max score per file)
+    const scoreMap = new Map<string, number>();
+    const reasonMap = new Map<string, string>();
+
+    for (const chunkFiles of results) {
+      for (const file of chunkFiles) {
+        const existingScore = scoreMap.get(file.path) || 0;
+        if (file.score > existingScore) {
+          scoreMap.set(file.path, file.score);
+          if (file.reason) {
+            reasonMap.set(file.path, file.reason);
+          }
+        }
+      }
+    }
+
+    const scores: SemanticFileScore[] = Array.from(scoreMap.entries()).map(([path, score]) => ({
+      path,
+      score,
+      reason: 'semantic' as const
+    }));
+
+    const durationMs = Date.now() - startTime;
+    correlatedLogger.info({
+      fileCount: scores.length,
+      chunkCount: chunks.length,
+      durationMs
+    }, 'Chunked semantic scoring completed');
 
     return scores;
   } catch (error) {

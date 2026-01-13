@@ -3,6 +3,7 @@ import type { LogFn } from 'pino';
 import { generateContext } from './contextService.js';
 import { getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
 import { findRelevantFiles } from './relevanceService.js';
+import { loadFileSummaries } from './relevance/contextBuilder.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { PLANNER_SYSTEM_PROMPT, REFINER_SYSTEM_PROMPT, Plan, PlanItem, GRANULARITY_INSTRUCTIONS, Granularity as GranularityType } from '../claude/prompts/plannerPrompts.js';
 import { parseLlmJson, JsonParseError } from '../utils/jsonUtils.js';
@@ -34,11 +35,20 @@ interface BuildFullContextOptions {
   userRequest: string;
   repomixContext: string;
   granularity: GranularityType;
+  /** Optional file summaries for files not fully included in the context */
+  fileSummaries?: string;
 }
 
 export function buildFullContext(options: BuildFullContextOptions): string {
-  const { userRequest, repomixContext, granularity } = options;
+  const { userRequest, repomixContext, granularity, fileSummaries } = options;
   const granularitySpec = GRANULARITY_INSTRUCTIONS[granularity];
+
+  const summariesSection = fileSummaries && fileSummaries.trim().length > 0
+    ? `
+  <relevant-file-summaries>
+${fileSummaries}
+  </relevant-file-summaries>`
+    : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <llm-context>
@@ -47,7 +57,7 @@ export function buildFullContext(options: BuildFullContextOptions): string {
   <granularity-spec><![CDATA[${granularitySpec}]]></granularity-spec>
   <repository-context>
 ${repomixContext}
-  </repository-context>
+  </repository-context>${summariesSection}
   <output-guidelines><![CDATA[Output ONLY a valid JSON array. No markdown, no explanations.]]></output-guidelines>
 </llm-context>`;
 }
@@ -136,14 +146,16 @@ interface CallLLMOptions {
   githubToken: string;
   repository: string;
   correlationId?: string;
+  /** Optional file summaries for files not fully included in the context */
+  fileSummaries?: string;
 }
 
 async function callLLMForPlan(opts: CallLLMOptions): Promise<Plan> {
-  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId } = opts;
+  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
 
-  const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity });
+  const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity, fileSummaries });
   correlatedLogger.info('Calling LLM for plan generation');
 
   // Validate token count before sending to LLM
@@ -219,6 +231,15 @@ async function checkoutBaseBranch(
   }
 }
 
+/** Number of most relevant files to include summaries for */
+const RELEVANT_SUMMARY_COUNT = 100;
+
+/** Reserved overhead for system prompts, XML structure, etc. */
+const RESERVED_OVERHEAD_TOKENS = 5000;
+
+/** Chars per token estimate (conservative) */
+const CHARS_PER_TOKEN = 3;
+
 export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> {
   const { draftId, worktreePath, githubToken, correlationId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -238,13 +259,87 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   await updateTrace(draftId, 'context', 'pending');
   correlatedLogger.info({ fileCount: relevantFilePaths.length, compress: config.compress }, 'Generating context');
 
+  // Load all file summaries and prepare the top relevant ones
+  const allSummaries = await loadFileSummaries();
+  const repoPrefix = draft.repository + '/';
+
+  // Filter summaries to this repository and strip the prefix
+  const repoSummaries = allSummaries
+    .filter(s => s.path.startsWith(repoPrefix))
+    .map(s => ({ ...s, path: s.path.slice(repoPrefix.length) }));
+
+  // Create a map for quick lookup
+  const summaryMap = new Map(repoSummaries.map(s => [s.path, s.summary]));
+
+  // Get the top N most relevant files for summary inclusion
+  const topRelevantFiles = relevantFilePaths.slice(0, RELEVANT_SUMMARY_COUNT);
+
+  // Prepare candidate summaries for the relevant files
+  const candidateSummaries = topRelevantFiles
+    .map(path => {
+      const summary = summaryMap.get(path);
+      return summary ? { path, summary } : null;
+    })
+    .filter((item): item is { path: string; summary: string } => item !== null);
+
+  // Calculate token cost for summaries (3 chars per token estimate)
+  const fullSummaryText = candidateSummaries
+    .map(s => `FILE ${s.path}: ${s.summary}`)
+    .join('\n');
+  const summaryTokenCost = Math.ceil(fullSummaryText.length / CHARS_PER_TOKEN);
+
+  // Calculate reduced token limit for repomix context
+  const repomixTokenLimit = Math.max(
+    5000, // Minimum budget for context
+    config.tokenLimit - summaryTokenCost - RESERVED_OVERHEAD_TOKENS
+  );
+
+  correlatedLogger.info({
+    totalLimit: config.tokenLimit,
+    summaryCost: summaryTokenCost,
+    repomixLimit: repomixTokenLimit,
+    candidateSummaryCount: candidateSummaries.length
+  }, 'Calculated token budgets for summaries');
+
   // When compression is enabled, include all files but prioritize relevant ones
   const filesToInclude = config.compress ? undefined : (relevantFilePaths.length > 0 ? relevantFilePaths : undefined);
   const priorityFiles = config.compress ? relevantFilePaths : undefined;
-  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: config.tokenLimit, compress: config.compress, correlationId });
+
+  // Generate context with reduced token limit to make room for summaries
+  const contextResult = await generateContext({
+    repoPath: worktreePath,
+    filesToInclude,
+    priorityFiles,
+    tokenLimit: repomixTokenLimit,
+    compress: config.compress,
+    correlationId
+  });
   await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
 
-  const plan = await callLLMForPlan({ draftId, context: contextResult.context, prompt: draft.initial_prompt, granularity: config.granularity, worktreePath, githubToken, repository: draft.repository, correlationId });
+  // Filter summaries: Only include descriptions for files NOT fully included in repomix context
+  const includedFilesSet = new Set(contextResult.includedFiles);
+  const filteredSummaries = candidateSummaries
+    .filter(s => !includedFilesSet.has(s.path))
+    .map(s => `FILE ${s.path}: ${s.summary}`)
+    .join('\n');
+
+  correlatedLogger.info({
+    totalCandidates: candidateSummaries.length,
+    includedInContext: contextResult.includedFiles.length,
+    summariesIncluded: candidateSummaries.filter(s => !includedFilesSet.has(s.path)).length
+  }, 'Filtered summaries for context enrichment');
+
+  const plan = await callLLMForPlan({
+    draftId,
+    context: contextResult.context,
+    prompt: draft.initial_prompt,
+    granularity: config.granularity,
+    worktreePath,
+    githubToken,
+    repository: draft.repository,
+    correlationId,
+    fileSummaries: filteredSummaries
+  });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
   const validatedPlan = await PathValidationService.validateAndRepair(worktreePath, plan, { correlationId });
