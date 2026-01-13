@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
 import type { Logger } from 'pino';
+import { simpleGit } from 'simple-git';
 import { createWorker, INDEXING_QUEUE_NAME, indexingQueue } from '@gitfix/core';
 import type { IndexingJobData, JobResult } from '@gitfix/core';
 import { logger } from '@gitfix/core';
@@ -88,6 +89,7 @@ interface RepoStatus {
     indexing_status: string;
     last_indexed_at: string | null;
     updated_at: string | null;
+    last_indexed_hash: string | null;
 }
 
 interface IndexDecision {
@@ -101,7 +103,7 @@ const STUCK_INDEXING_TIMEOUT_MS = 30 * 60 * 1000;
 /**
  * Determine if a repository needs indexing based on its status
  */
-function shouldIndexRepository(repoStatus: RepoStatus | undefined): IndexDecision {
+function shouldIndexRepository(repoStatus: RepoStatus | undefined, currentHash?: string): IndexDecision {
     if (!repoStatus || repoStatus.indexing_status === 'idle') {
         return { shouldIndex: true, reason: 'never indexed' };
     }
@@ -117,6 +119,17 @@ function shouldIndexRepository(repoStatus: RepoStatus | undefined): IndexDecisio
         return { shouldIndex: false, reason: 'currently indexing' };
     }
 
+    // Check for new commits - if current hash differs from last indexed hash
+    if (currentHash && repoStatus.last_indexed_hash && currentHash !== repoStatus.last_indexed_hash) {
+        return { shouldIndex: true, reason: 'new commits detected' };
+    }
+
+    // If hash is missing (first run after migration), trigger indexing to populate it
+    if (currentHash && !repoStatus.last_indexed_hash) {
+        return { shouldIndex: true, reason: 'missing index hash' };
+    }
+
+    // Fallback: Re-index if stale (24 hour safety net)
     const lastIndexed = repoStatus.last_indexed_at ? new Date(repoStatus.last_indexed_at) : null;
     if (lastIndexed && (Date.now() - lastIndexed.getTime()) > REINDEX_INTERVAL_MS) {
         return { shouldIndex: true, reason: 'stale index' };
@@ -191,14 +204,16 @@ async function processRepositoryForIndexing(
         .where({ full_name: repoName, branch })
         .first() as RepoStatus | undefined;
 
-    const decision = shouldIndexRepository(repoStatus);
-
-    if (!decision.shouldIndex) {
-        log.debug({ repository: repoName, branch, reason: decision.reason }, 'Skipping repository');
-        return;
+    // If currently indexing, perform quick stuck check without cloning
+    if (repoStatus?.indexing_status === 'indexing') {
+        const decision = shouldIndexRepository(repoStatus);
+        if (!decision.shouldIndex) {
+            log.debug({ repository: repoName, branch, reason: decision.reason }, 'Skipping repository');
+            return;
+        }
     }
 
-    // Check if job already queued for this specific repo+branch combination
+    // Check if job already queued before cloning to save bandwidth
     const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed']);
     const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
         j.data.repository === repoName && (j.data.baseBranch || 'HEAD') === branch
@@ -209,8 +224,25 @@ async function processRepositoryForIndexing(
         return;
     }
 
-    // Clone and queue
+    // Clone/fetch to get latest state
     const repoPath = await cloneRepositoryForIndexing(repoName, branch);
+
+    // Get current HEAD hash from the cloned/fetched repo
+    let currentHash: string | undefined;
+    try {
+        const git = simpleGit(repoPath);
+        currentHash = await git.revparse(['HEAD']);
+    } catch (hashError) {
+        log.warn({ repository: repoName, branch, error: (hashError as Error).message }, 'Failed to get HEAD hash');
+    }
+
+    const decision = shouldIndexRepository(repoStatus, currentHash);
+
+    if (!decision.shouldIndex) {
+        log.debug({ repository: repoName, branch, reason: decision.reason, currentHash, lastIndexedHash: repoStatus?.last_indexed_hash }, 'Skipping repository');
+        return;
+    }
+
     await queueIndexingJob({ repoName, repoPath, reason: decision.reason, log, branch });
 }
 
