@@ -164,14 +164,15 @@ export async function scoreSemanticRelevance(
     const scoreMap = new Map<string, number>();
     const reasonMap = new Map<string, string>();
 
-    for (const chunkFiles of results) {
-      for (const file of chunkFiles) {
-        const existingScore = scoreMap.get(file.path) || 0;
-        if (file.score > existingScore) {
-          scoreMap.set(file.path, file.score);
-          if (file.reason) {
-            reasonMap.set(file.path, file.reason);
-          }
+    // Flatten results from all chunks into a single array
+    const allFiles = results.flat();
+
+    for (const file of allFiles) {
+      const existingScore = scoreMap.get(file.path) || 0;
+      if (file.score > existingScore) {
+        scoreMap.set(file.path, file.score);
+        if (file.reason) {
+          reasonMap.set(file.path, file.reason);
         }
       }
     }
