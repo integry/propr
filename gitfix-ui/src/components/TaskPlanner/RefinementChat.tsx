@@ -35,6 +35,18 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize textarea based on content
+  const adjustTextareaHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      // Reset height to auto to get the correct scrollHeight
+      textarea.style.height = 'auto';
+      // Set to scrollHeight, capped by max-height via CSS
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    }
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -43,6 +55,11 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Adjust textarea height when input changes
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [input, adjustTextareaHeight]);
 
   // Convert messages to ChatMessage format for persistence (excluding 'thinking' messages)
   const toChatMessages = useCallback((msgs: Message[]): ChatMessage[] => {
@@ -153,13 +170,14 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       <form onSubmit={handleSubmit} className="p-4 border-t bg-white">
         <div className="flex gap-2 items-end">
           <textarea
+            ref={textareaRef}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Ask the AI to refine the plan... (Shift+Enter for new line)"
             disabled={isLoading}
             rows={1}
-            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 resize-none min-h-[44px] max-h-[120px] overflow-y-auto"
+            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 resize-none min-h-[44px] max-h-[300px] overflow-y-auto"
           />
           <button
             type="submit"
