@@ -1,8 +1,7 @@
 import { db } from '../db/connection.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { getAuthenticatedOctokit, getGitHubInstallationToken } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
-import { getAnthropicClient } from '../utils/tokenCalculation.js';
-import { resolveModelAlias } from '../config/modelAliases.js';
+import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 
 export interface IssueLink {
   number: number;
@@ -66,35 +65,55 @@ interface PostImplementationCommentOptions {
 }
 
 /**
- * Generates a short, descriptive title for a task based on the initial prompt.
- * Uses the shared Anthropic client and Haiku model for fast, lightweight generation.
+ * Options for generating a task title.
  */
-async function generateTaskTitle(initialPrompt: string, correlatedLogger: CorrelatedLogger): Promise<string | null> {
-  try {
-    const client = getAnthropicClient();
-    const model = resolveModelAlias('haiku');
+interface GenerateTaskTitleOptions {
+  initialPrompt: string;
+  repository: string;
+  correlatedLogger: CorrelatedLogger;
+  correlationId: string;
+}
 
-    const message = await client.messages.create({
-      model,
-      max_tokens: 100,
-      messages: [
-        {
-          role: 'user',
-          content: `Generate a short, descriptive title (5-8 words) for this task. Output ONLY the title, nothing else.
+const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones';
+
+/**
+ * Generates a short, descriptive title for a task based on the initial prompt.
+ * Uses the lightweight LLM analysis via Docker execution.
+ */
+async function generateTaskTitle(options: GenerateTaskTitleOptions): Promise<string | null> {
+  const { initialPrompt, repository, correlatedLogger, correlationId } = options;
+
+  try {
+    const [repoOwner, repoName] = repository.split('/');
+    if (!repoOwner || !repoName) {
+      correlatedLogger.warn({ repository }, 'Invalid repository format for title generation');
+      return null;
+    }
+
+    const worktreePath = `${CLONES_BASE_PATH}/${repository}`;
+    const githubToken = await getGitHubInstallationToken();
+
+    const prompt = `Generate a short, descriptive title (5-8 words) for this task. Output ONLY the title, nothing else.
 
 Task description:
-${initialPrompt}`
-        }
-      ]
+${initialPrompt}`;
+
+    const title = await runLightweightLLMAnalysis({
+      prompt,
+      model: 'haiku',
+      correlationId,
+      worktreePath,
+      githubToken,
+      issueRef: {
+        number: 0, // No specific issue for draft title generation
+        repoOwner,
+        repoName
+      }
     });
 
-    const content = message.content[0];
-    if (content.type === 'text') {
-      const title = content.text.trim();
-      correlatedLogger.info({ title, model }, 'Generated task title');
-      return title;
-    }
-    return null;
+    const cleanedTitle = title.trim();
+    correlatedLogger.info({ title: cleanedTitle }, 'Generated task title');
+    return cleanedTitle;
   } catch (error) {
     correlatedLogger.warn({ error: (error as Error).message }, 'Failed to generate task title, using default');
     return null;
@@ -323,7 +342,8 @@ export async function executeDraft(draftId: string, userId: string, correlationI
   const results = await createAllGitHubIssues(octokit, owner, repoName, planJson, draftId, correlatedLogger);
 
   const existingConfig = parseContextConfig(validDraft.context_config);
-  const generatedTitle = await maybeGenerateTaskTitle(validDraft, draftId, correlatedLogger);
+  const effectiveCorrelationId = correlationId || draftId;
+  const generatedTitle = await maybeGenerateTaskTitle(validDraft, draftId, correlatedLogger, effectiveCorrelationId);
 
   const updateData = buildExecutionUpdateData(existingConfig, results, generatedTitle, db.fn);
 
@@ -346,11 +366,17 @@ export async function executeDraft(draftId: string, userId: string, correlationI
 async function maybeGenerateTaskTitle(
   validDraft: TaskDraft,
   draftId: string,
-  correlatedLogger: CorrelatedLogger
+  correlatedLogger: CorrelatedLogger,
+  correlationId: string
 ): Promise<string | null> {
   if (isDefaultDraftName(validDraft.name, validDraft.initial_prompt) && validDraft.initial_prompt) {
     correlatedLogger.info({ draftId }, 'Generating task title');
-    return generateTaskTitle(validDraft.initial_prompt, correlatedLogger);
+    return generateTaskTitle({
+      initialPrompt: validDraft.initial_prompt,
+      repository: validDraft.repository,
+      correlatedLogger,
+      correlationId
+    });
   }
   return null;
 }
