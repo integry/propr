@@ -5,6 +5,7 @@ import { findRelevantFiles } from './relevanceService.js';
 import { getModelPricing } from './pricingService.js';
 import { getAgentRegistry } from '../agents/AgentRegistry.js';
 import { generateContext } from './contextService.js';
+import { parseFileReferences, getResolvedPaths } from './relevance/fileReferenceParser.js';
 import logger from '../utils/logger.js';
 import type { LogFn } from 'pino';
 import { simpleGit } from 'simple-git';
@@ -407,18 +408,33 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   correlatedLogger.info({ repository: draft.repository }, 'Finding relevant files for preview');
 
+  // Parse @file references from the prompt (e.g., @tab-top.html, @www/css/style.less)
+  const fileRefResult = await parseFileReferences(prompt, worktreePath, { correlationId });
+  const referencedFiles = getResolvedPaths(fileRefResult);
+
+  if (referencedFiles.length > 0) {
+    correlatedLogger.info({
+      referencedFiles,
+      unresolvedRefs: fileRefResult.references.filter(r => !r.resolved).map(r => r.original)
+    }, 'Parsed @file references from prompt');
+  }
+
   const registry = getAgentRegistry();
   await registry.ensureInitialized();
   const agent = registry.getDefaultAgent();
 
-  const relevanceResult = await findRelevantFiles(worktreePath, prompt, {
+  // Use cleaned prompt (without @references) for relevance search
+  const relevanceResult = await findRelevantFiles(worktreePath, fileRefResult.cleanedPrompt || prompt, {
     correlationId,
     useSummaryScoring: !!agent,
     agent,
     repoName: draft.repository,
     branch: baseBranch
   });
-  const manualFiles = files || [], autoFilePaths = relevanceResult.files.map(f => f.path);
+
+  // Combine: user-provided files + @referenced files + auto-detected files
+  const manualFiles = [...new Set([...(files || []), ...referencedFiles])];
+  const autoFilePaths = relevanceResult.files.map(f => f.path);
   const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
 
   correlatedLogger.info({
