@@ -1,5 +1,5 @@
 import React from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useDraft } from '../hooks/useDraft';
 import SetupWizard from '../components/TaskPlanner/SetupWizard';
@@ -10,7 +10,6 @@ import { DraftWithPlan } from '../api/gitfixApi';
 
 const TaskPlannerPage: React.FC = () => {
   const { draftId } = useParams<{ draftId: string }>();
-  const navigate = useNavigate();
   const { draft, loading, error, refetch } = useDraft(draftId || '');
 
   if (loading) {
@@ -108,7 +107,7 @@ const TaskPlannerPage: React.FC = () => {
       <div className="h-[calc(100vh-120px)] p-4">
         <PlanEditor 
           draft={draft as DraftWithPlan} 
-          onFinalize={() => navigate('/')}
+          onFinalize={() => refetch()}
         />
       </div>
     );
