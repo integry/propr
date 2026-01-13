@@ -43,7 +43,7 @@ async function processAnalysisJob(job: Job<AnalysisJobData>): Promise<AnalysisRe
         if (db) {
             await db('llm_executions')
                 .where({ execution_id: executionId })
-                .update({ analysis_report: analysisReport });
+                .update({ analysis_report: JSON.stringify(analysisReport) });
         }
 
         correlatedLogger.info({ executionId }, 'Execution analysis complete and saved.');
