@@ -142,9 +142,22 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
   const fullName = options.fullName || path.basename(repoPath);
   const branch = options.branch || 'HEAD';
 
+  // Get the hash of the configured branch for tracking indexed state
+  // (same repo can be tracked multiple times with different branches)
+  let currentHeadHash: string | undefined;
+  try {
+    const git: SimpleGit = simpleGit(repoPath);
+    // Use the specific branch to get hash - supports both local and remote refs
+    // For 'HEAD', use HEAD directly; for named branches, try origin/<branch> first
+    const refToResolve = branch === 'HEAD' ? 'HEAD' : `origin/${branch}`;
+    currentHeadHash = await git.revparse([refToResolve]);
+  } catch (hashError) {
+    correlatedLogger.warn({ error: (hashError as Error).message, branch }, 'Failed to resolve branch hash');
+  }
+
   try {
     // Phase A: Setup & Staleness Check
-    correlatedLogger.info({ repoPath, fullName, branch }, 'Starting repository indexing');
+    correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash }, 'Starting repository indexing');
 
     // 1. Check if summarization is enabled
     const settings = await loadSummarizationSettings();
@@ -184,7 +197,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     if (filesToProcess.length === 0) {
       correlatedLogger.info('No files need processing, all summaries up to date');
-      await updateRepositoryStatus(fullName, 'completed', branch);
+      await updateRepositoryStatus(fullName, 'completed', branch, currentHeadHash);
       return;
     }
 
@@ -219,8 +232,8 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         'Repository indexing completed with failures - will retry on next scan'
       );
     } else {
-      await updateRepositoryStatus(fullName, 'completed', branch);
-      correlatedLogger.info({ repoPath, fullName, branch, ...batchResult }, 'Repository indexing completed successfully');
+      await updateRepositoryStatus(fullName, 'completed', branch, currentHeadHash);
+      correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, ...batchResult }, 'Repository indexing completed successfully');
     }
 
     // Clear cancellation flag and progress on successful completion
@@ -408,7 +421,8 @@ async function deleteFileSummaries(paths: string[], branch: string): Promise<voi
 export async function updateRepositoryStatus(
   fullName: string,
   status: 'idle' | 'indexing' | 'completed' | 'failed',
-  branch: string = 'HEAD'
+  branch: string = 'HEAD',
+  lastIndexedHash?: string
 ): Promise<void> {
   const updateData: Record<string, unknown> = {
     indexing_status: status,
@@ -417,6 +431,9 @@ export async function updateRepositoryStatus(
 
   if (status === 'completed') {
     updateData.last_indexed_at = db.fn.now();
+    if (lastIndexedHash) {
+      updateData.last_indexed_hash = lastIndexedHash;
+    }
   }
 
   await db('repositories')
@@ -426,6 +443,7 @@ export async function updateRepositoryStatus(
       indexing_status: status,
       created_at: db.fn.now(),
       updated_at: db.fn.now(),
+      last_indexed_hash: lastIndexedHash || null,
       ...(status === 'completed' ? { last_indexed_at: db.fn.now() } : {})
     })
     .onConflict(['full_name', 'branch'])

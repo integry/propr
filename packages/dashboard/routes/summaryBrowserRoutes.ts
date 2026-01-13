@@ -40,17 +40,19 @@ async function getDirectoryTree(req: Request, res: Response): Promise<void> {
   const repository = `${owner}/${repo}`;
   const basePath = pathParam ? pathParam.replace(/^\/+|\/+$/g, '') : '';
   const repoPrefix = getRepositoryPrefix(owner, repo);
+  // Get branch from query parameter or default to HEAD
+  const branch = (req.query.branch as string) || 'HEAD';
 
   try {
-    // Check if repository has been indexed
+    // Check if repository has been indexed for this branch
     const repoRecord = await db('repositories')
-      .where({ full_name: repository })
+      .where({ full_name: repository, branch })
       .first();
 
     if (!repoRecord) {
       res.status(404).json({
         error: 'Repository not indexed',
-        message: `No summaries found for repository ${repository}. The repository may not have been indexed yet.`
+        message: `No summaries found for repository ${repository} on branch ${branch}. The repository may not have been indexed yet.`
       });
       return;
     }
@@ -58,17 +60,19 @@ async function getDirectoryTree(req: Request, res: Response): Promise<void> {
     // Build the full path prefix for database queries
     const fullBasePath = basePath === '' ? repoPrefix.slice(0, -1) : `${repoPrefix}${basePath}`;
 
-    // Query file summaries that are direct children of the current path
+    // Query file summaries that are direct children of the current path (filtered by branch)
     const fileQuery = db('file_summaries')
       .select('path', 'summary')
       .where('path', 'LIKE', `${fullBasePath}/%`)
-      .whereRaw(`path NOT LIKE ?`, [`${fullBasePath}/%/%`]);
+      .whereRaw(`path NOT LIKE ?`, [`${fullBasePath}/%/%`])
+      .andWhere({ branch });
 
-    // Query directory summaries that are direct children of the current path
+    // Query directory summaries that are direct children of the current path (filtered by branch)
     const dirQuery = db('directory_summaries')
       .select('path', 'summary')
       .where('path', 'LIKE', `${fullBasePath}/%`)
-      .whereRaw(`path NOT LIKE ?`, [`${fullBasePath}/%/%`]);
+      .whereRaw(`path NOT LIKE ?`, [`${fullBasePath}/%/%`])
+      .andWhere({ branch });
 
     const [files, directories] = await Promise.all([fileQuery, dirQuery]);
 
@@ -135,6 +139,8 @@ async function getPathSummary(req: Request, res: Response): Promise<void> {
   const repository = `${owner}/${repo}`;
   const filePath = pathParam.replace(/^\/+|\/+$/g, '');
   const repoPrefix = getRepositoryPrefix(owner, repo);
+  // Get branch from query parameter or default to HEAD
+  const branch = (req.query.branch as string) || 'HEAD';
 
   if (!filePath) {
     res.status(400).json({ error: 'Path is required' });
@@ -144,10 +150,10 @@ async function getPathSummary(req: Request, res: Response): Promise<void> {
   const fullPath = `${repoPrefix}${filePath}`;
 
   try {
-    // Check file_summaries first
+    // Check file_summaries first (filtered by branch)
     const fileEntry = await db('file_summaries')
       .select('path', 'summary')
-      .where({ path: fullPath })
+      .where({ path: fullPath, branch })
       .first();
 
     if (fileEntry) {
@@ -161,10 +167,10 @@ async function getPathSummary(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // Check directory_summaries
+    // Check directory_summaries (filtered by branch)
     const dirEntry = await db('directory_summaries')
       .select('path', 'summary')
-      .where({ path: fullPath })
+      .where({ path: fullPath, branch })
       .first();
 
     if (dirEntry) {
@@ -180,7 +186,7 @@ async function getPathSummary(req: Request, res: Response): Promise<void> {
 
     res.status(404).json({
       error: 'Path not found',
-      message: `No summary found for path '${filePath}' in repository ${repository}`
+      message: `No summary found for path '${filePath}' in repository ${repository} on branch ${branch}`
     });
   } catch (error) {
     console.error('Error fetching path summary:', error);
@@ -195,16 +201,19 @@ async function getIndexingStatus(req: Request, res: Response): Promise<void> {
   const { owner, repo } = req.params;
   const repository = `${owner}/${repo}`;
   const repoPrefix = getRepositoryPrefix(owner, repo);
+  // Get branch from query parameter or default to HEAD
+  const branch = (req.query.branch as string) || 'HEAD';
 
   try {
-    // Get repository record
+    // Get repository record for the specific branch
     const repoRecord = await db('repositories')
-      .where({ full_name: repository })
+      .where({ full_name: repository, branch })
       .first();
 
     if (!repoRecord) {
       res.json({
         repository,
+        branch,
         indexed: false,
         indexingStatus: 'idle',
         totalEntries: 0,
@@ -215,14 +224,16 @@ async function getIndexingStatus(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // Count files and directories
+    // Count files and directories (filtered by branch)
     const [fileStats, dirStats] = await Promise.all([
       db('file_summaries')
         .where('path', 'LIKE', `${repoPrefix}%`)
+        .andWhere({ branch })
         .count('* as count')
         .first(),
       db('directory_summaries')
         .where('path', 'LIKE', `${repoPrefix}%`)
+        .andWhere({ branch })
         .count('* as count')
         .first()
     ]);
@@ -232,6 +243,7 @@ async function getIndexingStatus(req: Request, res: Response): Promise<void> {
 
     res.json({
       repository,
+      branch,
       indexed: repoRecord.indexing_status === 'completed',
       indexingStatus: repoRecord.indexing_status,
       totalEntries: fileCount + directoryCount,
