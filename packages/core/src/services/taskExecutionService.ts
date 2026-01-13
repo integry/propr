@@ -40,6 +40,32 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 type CorrelatedLogger = Pick<typeof logger, 'info' | 'warn'>;
 
 /**
+ * Options for creating a GitHub issue.
+ */
+interface CreateGitHubIssueOptions {
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+  owner: string;
+  repoName: string;
+  task: PlanTask;
+  draftId: string;
+  taskIndex: number;
+  correlatedLogger: CorrelatedLogger;
+}
+
+/**
+ * Options for posting an implementation comment.
+ */
+interface PostImplementationCommentOptions {
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+  owner: string;
+  repoName: string;
+  issueNumber: number;
+  implementation: string;
+  draftId: string;
+  correlatedLogger: CorrelatedLogger;
+}
+
+/**
  * Generates a short, descriptive title for a task based on the initial prompt.
  * Uses the shared Anthropic client and Haiku model for fast, lightweight generation.
  */
@@ -118,15 +144,8 @@ function parseRepository(repository: string): { owner: string; repoName: string 
 /**
  * Creates a single GitHub issue and optionally posts an implementation comment.
  */
-async function createGitHubIssue(
-  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
-  owner: string,
-  repoName: string,
-  task: PlanTask,
-  draftId: string,
-  taskIndex: number,
-  correlatedLogger: CorrelatedLogger
-): Promise<IssueLink> {
+async function createGitHubIssue(options: CreateGitHubIssueOptions): Promise<IssueLink> {
+  const { octokit, owner, repoName, task, draftId, taskIndex, correlatedLogger } = options;
   const issueBody = (task.body || '') + '\n\n---\n*Created by GitFix AI Planner*';
 
   correlatedLogger.info({ draftId, taskIndex, taskTitle: task.title }, 'Creating issue');
@@ -146,7 +165,15 @@ async function createGitHubIssue(
   }, 'Issue created');
 
   if (task.implementation) {
-    await postImplementationComment(octokit, owner, repoName, response.data.number, task.implementation, draftId, correlatedLogger);
+    await postImplementationComment({
+      octokit,
+      owner,
+      repoName,
+      issueNumber: response.data.number,
+      implementation: task.implementation,
+      draftId,
+      correlatedLogger
+    });
   }
 
   return {
@@ -159,15 +186,8 @@ async function createGitHubIssue(
 /**
  * Posts an implementation comment on a GitHub issue.
  */
-async function postImplementationComment(
-  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
-  owner: string,
-  repoName: string,
-  issueNumber: number,
-  implementation: string,
-  draftId: string,
-  correlatedLogger: CorrelatedLogger
-): Promise<void> {
+async function postImplementationComment(options: PostImplementationCommentOptions): Promise<void> {
+  const { octokit, owner, repoName, issueNumber, implementation, draftId, correlatedLogger } = options;
   const commentBody = '**Suggested Implementation:**\n```\n' + implementation + '\n```';
 
   await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -208,7 +228,15 @@ async function createAllGitHubIssues(
   const results: IssueLink[] = [];
 
   for (let i = 0; i < planJson.length; i++) {
-    const issueLink = await createGitHubIssue(octokit, owner, repoName, planJson[i], draftId, i + 1, correlatedLogger);
+    const issueLink = await createGitHubIssue({
+      octokit,
+      owner,
+      repoName,
+      task: planJson[i],
+      draftId,
+      taskIndex: i + 1,
+      correlatedLogger
+    });
     results.push(issueLink);
 
     if (i < planJson.length - 1) {
