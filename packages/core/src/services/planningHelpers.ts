@@ -447,6 +447,13 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const filesToInclude = compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined);
   const priorityFiles = compress ? combinedFiles : undefined;
   const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: previewTokenLimit, compress, correlationId });
+
+  // Add warning if files were skipped due to security concerns
+  if (contextResult.skippedSecurityFiles && contextResult.skippedSecurityFiles.length > 0) {
+    const skippedPaths = contextResult.skippedSecurityFiles.map(f => f.filePath).join(', ');
+    warnings.push(`${contextResult.skippedSecurityFiles.length} file(s) skipped due to potential secrets: ${skippedPaths}`);
+  }
+
   const costEstimate = await calculateCostEstimate(contextResult.totalTokens, warnings, correlatedLogger);
 
   const includedFilesSet = new Set(contextResult.includedFiles);
