@@ -1,12 +1,12 @@
 1. Color:
 
-Primary Red:
+Primary Teal:
 
-Hex: #E63946
+Hex: #1D8A8A
 
-RGB: rgb(230, 57, 70)
+RGB: rgb(29, 138, 138)
 
-CMYK: C:0 M:75 Y:70 K:10 (Approximate for print)
+CMYK: C:79 M:0 Y:0 K:46
 
 Secondary Grey:
 
@@ -40,19 +40,19 @@ RGB: rgb(52, 58, 64)
 
 CMYK: C:19 M:8 Y:0 K:75
 
-"Fix" Part: (Matches the logo mark's primary red)
+"Fix" Part: (Matches the logo mark's primary teal)
 
-Hex: #E63946
+Hex: #1D8A8A
 
-RGB: rgb(230, 57, 70)
+RGB: rgb(29, 138, 138)
 
-CMYK: C:0 M:75 Y:70 K:10 (Approximate for print)
+CMYK: C:79 M:0 Y:0 K:46
 
 3. Overall Color Palette (for general branding use)
 
 Primary (for accent and action):
 
-Red: #E63946 (Main logo red)
+Teal: #1D8A8A (Main logo teal)
 
 Secondary (for text, background elements):
 
@@ -68,4 +68,4 @@ Clear Space: Always maintain adequate clear space around the logo (e.g., minimum
 
 Minimum Size: Ensure the logo is not reproduced at a size where the internal elements become indistinguishable or blurry.
 
-Backgrounds: Prefer placement on white, light grey, or other light, neutral backgrounds to maximize contrast. If used on a dark background, inverse the colors (e.g., white diamond outline with red sparkle/nodes, and white "Git" with red "Fix").
+Backgrounds: Prefer placement on white, light grey, or other light, neutral backgrounds to maximize contrast. If used on a dark background, inverse the colors (e.g., white diamond outline with teal sparkle/nodes, and white "Git" with teal "Fix").

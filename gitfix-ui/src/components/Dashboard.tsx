@@ -121,7 +121,7 @@ const Dashboard: React.FC = () => {
             <select
               value={selectedRepo}
               onChange={(e) => setSelectedRepo(e.target.value)}
-              className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
               disabled={repos.length === 0}
             >
               {repos.length === 0 ? (
@@ -142,7 +142,7 @@ const Dashboard: React.FC = () => {
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="Describe the feature or task you want to implement..."
               rows={3}
-              className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-red-500 resize-none"
+              className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 resize-none"
             />
           </div>
           <div>
@@ -158,7 +158,7 @@ const Dashboard: React.FC = () => {
                     <span className="max-w-[150px] truncate">{file.name}</span>
                     <button
                       onClick={() => handleRemoveFile(index)}
-                      className="text-gray-400 hover:text-red-500 transition-colors"
+                      className="text-gray-400 hover:text-primary-500 transition-colors"
                       type="button"
                     >
                       <X className="w-3.5 h-3.5" />
@@ -178,7 +178,7 @@ const Dashboard: React.FC = () => {
             />
             <label
               htmlFor="dashboard-file-upload"
-              className="inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-red-600 cursor-pointer transition-colors"
+              className="inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-primary-600 cursor-pointer transition-colors"
             >
               <Paperclip className="w-4 h-4" />
               Attach screenshots, logs, or files
@@ -195,7 +195,7 @@ const Dashboard: React.FC = () => {
             className={`w-full py-3 font-medium rounded-md transition-colors ${
               isCreating || !selectedRepo || !prompt.trim()
                 ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                : 'bg-red-600 text-white hover:bg-red-700 cursor-pointer'
+                : 'bg-primary-600 text-white hover:bg-primary-700 cursor-pointer'
             }`}
           >
             {isCreating ? (
