@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import SystemStatus from './SystemStatus';
 import TaskQueueStats from './TaskQueueStats';
@@ -6,7 +6,8 @@ import TaskStatsChart from './TaskStatsChart';
 import RepositoryReport from './RepositoryReport';
 import RepositoryBreakdown from './RepositoryBreakdown';
 import TaskList from './TaskList';
-import { getRepoConfig, createDraft } from '../api/gitfixApi';
+import { getRepoConfig, createDraft, uploadAttachment } from '../api/gitfixApi';
+import { X, Paperclip, Loader2 } from 'lucide-react';
 
 interface Repo {
   name: string;
@@ -21,6 +22,8 @@ const Dashboard: React.FC = () => {
   const [prompt, setPrompt] = useState<string>('');
   const [isCreating, setIsCreating] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const loadRepos = async () => {
@@ -60,17 +63,42 @@ const Dashboard: React.FC = () => {
 
   const handleStartPlanning = async () => {
     if (!selectedRepo || !prompt.trim()) return;
-    
+
     setIsCreating(true);
     setError(null);
     try {
       const draft = await createDraft(selectedRepo, prompt.trim());
+
+      // Upload any selected files to the draft
+      for (const file of selectedFiles) {
+        try {
+          await uploadAttachment(draft.draft_id, file);
+        } catch (uploadErr) {
+          console.error('Failed to upload attachment:', uploadErr);
+          // Continue with navigation even if some uploads fail
+        }
+      }
+
       navigate(`/tasks/plan/${draft.draft_id}`);
     } catch (err) {
       setError((err as Error).message || 'Failed to create draft');
     } finally {
       setIsCreating(false);
     }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      setSelectedFiles(prev => [...prev, ...Array.from(files)]);
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   return (
@@ -117,6 +145,45 @@ const Dashboard: React.FC = () => {
               className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-red-500 resize-none"
             />
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Attachments (optional)</label>
+            {selectedFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2">
+                {selectedFiles.map((file, index) => (
+                  <div
+                    key={`${file.name}-${index}`}
+                    className="inline-flex items-center gap-1.5 bg-gray-100 border border-gray-200 rounded-md px-2 py-1 text-sm text-gray-700"
+                  >
+                    <Paperclip className="w-3.5 h-3.5 text-gray-500" />
+                    <span className="max-w-[150px] truncate">{file.name}</span>
+                    <button
+                      onClick={() => handleRemoveFile(index)}
+                      className="text-gray-400 hover:text-red-500 transition-colors"
+                      type="button"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileSelect}
+              className="hidden"
+              id="dashboard-file-upload"
+              accept="image/*,.log,.txt,.json,.md,.csv"
+              multiple
+            />
+            <label
+              htmlFor="dashboard-file-upload"
+              className="inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-red-600 cursor-pointer transition-colors"
+            >
+              <Paperclip className="w-4 h-4" />
+              Attach screenshots, logs, or files
+            </label>
+          </div>
           {error && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">
               {error}
@@ -131,7 +198,14 @@ const Dashboard: React.FC = () => {
                 : 'bg-red-600 text-white hover:bg-red-700 cursor-pointer'
             }`}
           >
-            {isCreating ? 'Creating...' : 'Start Planning'}
+            {isCreating ? (
+              <span className="inline-flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                {selectedFiles.length > 0 ? 'Creating & uploading files...' : 'Creating...'}
+              </span>
+            ) : (
+              'Start Planning'
+            )}
           </button>
         </div>
       </div>

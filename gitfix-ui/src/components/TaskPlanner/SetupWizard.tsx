@@ -86,10 +86,27 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const configRef = useRef(config);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     configRef.current = config;
   }, [config]);
+
+  const autoResize = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      // Reset height to auto to get the correct scrollHeight
+      textarea.style.height = 'auto';
+      // Set height to scrollHeight, with minimum of 120px (approximately 5 rows)
+      const minHeight = 120;
+      textarea.style.height = `${Math.max(textarea.scrollHeight, minHeight)}px`;
+    }
+  }, []);
+
+  // Auto-resize textarea when prompt changes (handles initial content and programmatic changes)
+  useEffect(() => {
+    autoResize();
+  }, [config.prompt, autoResize]);
 
   useEffect(() => {
     const loadRepoInfo = async () => {
@@ -335,12 +352,13 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       <div className="mb-6">
         <label className="block text-sm font-medium text-gray-700 mb-2">Prompt</label>
         <textarea
+          ref={textareaRef}
           value={config.prompt}
           onChange={(e) => setConfig(prev => ({ ...prev, prompt: e.target.value }))}
+          onInput={autoResize}
           placeholder="Describe what you want the AI to do..."
-          className="w-full px-4 py-3 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 resize-none"
-          rows={4}
-          style={{ minHeight: '100px' }}
+          className="w-full px-4 py-3 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 resize-none overflow-hidden"
+          style={{ minHeight: '120px' }}
         />
       </div>
 
