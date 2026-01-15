@@ -1,10 +1,75 @@
 import { db } from '../db/connection.js';
-import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
+import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO, getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL } from '../config/modelLimits.js';
 import { countTokens, estimateTokens } from '../utils/tokenCalculation.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { getModelPricing } from './pricingService.js';
+import { getAgentRegistry } from '../agents/AgentRegistry.js';
+import { generateContext } from './contextService.js';
+import { parseFileReferences, getResolvedPaths } from './relevance/fileReferenceParser.js';
 import logger from '../utils/logger.js';
+import type { LogFn } from 'pino';
 import { simpleGit } from 'simple-git';
+import { Plan, GRANULARITY_INSTRUCTIONS, PLANNER_SYSTEM_PROMPT } from '../claude/prompts/plannerPrompts.js';
+
+/** Number of most relevant files to include summaries for */
+export const RELEVANT_SUMMARY_COUNT = 100;
+
+/** Reserved overhead for system prompts, XML structure, etc. */
+export const RESERVED_OVERHEAD_TOKENS = 5000;
+
+/** Chars per token estimate (conservative) */
+export const CHARS_PER_TOKEN = 3;
+
+/** Minimal logger interface compatible with both pino Logger and EnhancedLogger */
+export type MinimalLogger = { info: LogFn; warn: LogFn };
+
+export type Granularity = 'single' | 'balanced' | 'granular';
+
+export interface TaskDraftConfig {
+  baseBranch: string;
+  granularity: Granularity;
+  contextLevel?: ContextLevel;
+  compress?: boolean;
+  manualFiles: string[];
+  autoFiles: string[];
+}
+
+export interface ParsedContextConfig {
+  baseBranch?: string;
+  granularity: Granularity;
+  contextLevel: ContextLevel;
+  compress: boolean;
+  tokenLimit: number;
+  manualFiles: string[];
+  autoFiles: string[];
+}
+
+export function parseContextConfig(contextConfig: TaskDraftConfig | null): ParsedContextConfig {
+  return {
+    baseBranch: contextConfig?.baseBranch,
+    granularity: contextConfig?.granularity || 'balanced',
+    contextLevel: contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL,
+    compress: contextConfig?.compress ?? false,
+    tokenLimit: getEffectiveTokenLimit(undefined, contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL),
+    manualFiles: contextConfig?.manualFiles || [],
+    autoFiles: contextConfig?.autoFiles || []
+  };
+}
+
+export async function checkoutBaseBranch(
+  worktreePath: string,
+  baseBranch: string | undefined,
+  correlatedLogger: MinimalLogger
+): Promise<void> {
+  if (!baseBranch) return;
+  try {
+    await checkoutBranch(worktreePath, baseBranch);
+    correlatedLogger.info({ baseBranch, worktreePath }, 'Checked out configured base branch');
+  } catch (error) {
+    if (error instanceof BranchNotFoundError) throw error;
+    correlatedLogger.warn({ baseBranch, error: (error as Error).message }, 'Failed to checkout base branch');
+  }
+}
 
 // Threshold for API validation (80% of model limit)
 const API_VALIDATION_THRESHOLD = 0.80;
@@ -35,17 +100,11 @@ export async function updateTrace(
     .first();
 
   const rawTrace = draft?.generation_trace as GenerationTrace | undefined;
-  const trace: GenerationTrace = {
-    steps: Array.isArray(rawTrace?.steps) ? rawTrace.steps : []
-  };
+  const trace: GenerationTrace = { steps: Array.isArray(rawTrace?.steps) ? rawTrace.steps : [] };
 
   const existingStepIndex = trace.steps.findIndex((s) => s.name === step);
   if (existingStepIndex >= 0) {
-    trace.steps[existingStepIndex] = {
-      ...trace.steps[existingStepIndex],
-      status,
-      data: { ...trace.steps[existingStepIndex].data, ...data }
-    };
+    trace.steps[existingStepIndex] = { ...trace.steps[existingStepIndex], status, data: { ...trace.steps[existingStepIndex].data, ...data } };
   } else {
     trace.steps.push({ name: step, status, data });
   }
@@ -207,7 +266,19 @@ export async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]
   }
 
   correlatedLogger.info({ repository: draft.repository }, 'Finding relevant files');
-  const relevanceResult = await findRelevantFiles(worktreePath, draft.initial_prompt, { correlationId });
+
+  // Get agent for semantic scoring
+  const registry = getAgentRegistry();
+  await registry.ensureInitialized();
+  const agent = registry.getDefaultAgent();
+
+  // Let semantic scorer default to HEAD branch
+  const relevanceResult = await findRelevantFiles(worktreePath, draft.initial_prompt, {
+    correlationId,
+    useSummaryScoring: !!agent,
+    agent,
+    repoName: draft.repository
+  });
   const relevantFilePaths = relevanceResult.files.map(f => f.path);
 
   correlatedLogger.info({
@@ -227,4 +298,199 @@ export async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]
     candidates: relevanceResult.files.map(f => ({ path: f.path, reason: f.reason, score: f.score }))
   });
   return relevantFilePaths;
+}
+
+export class PlanningFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PlanningFailedError';
+  }
+}
+
+export interface SmartFileSelection {
+  path: string;
+  reason: string;
+  source: 'manual' | 'auto';
+  score?: number;
+}
+
+export interface PreviewStats {
+  totalTokens: number;
+  tiktokenCount?: number;
+  costEstimate: number;
+  contextLength: number;
+  fileCount: number;
+}
+
+export interface PreviewResult {
+  success: boolean;
+  stats: PreviewStats;
+  smartSelection: SmartFileSelection[];
+  warnings: string[];
+}
+
+export interface GenerateContextPreviewOptions {
+  draftId: string;
+  prompt: string;
+  baseBranch: string;
+  granularity: Granularity;
+  contextLevel?: ContextLevel;
+  compress?: boolean;
+  files?: string[];
+  worktreePath: string;
+  correlationId?: string;
+}
+
+interface BuildFullContextOptions {
+  userRequest: string;
+  repomixContext: string;
+  granularity: Granularity;
+  fileSummaries?: string;
+}
+
+export function buildFullContext(options: BuildFullContextOptions): string {
+  const { userRequest, repomixContext, granularity, fileSummaries } = options;
+  const granularitySpec = GRANULARITY_INSTRUCTIONS[granularity];
+  const summariesSection = fileSummaries && fileSummaries.trim().length > 0
+    ? `\n  <relevant-file-summaries>\n${fileSummaries}\n  </relevant-file-summaries>` : '';
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<llm-context>
+  <system-prompt><![CDATA[${PLANNER_SYSTEM_PROMPT}]]></system-prompt>
+  <user-request><![CDATA[${userRequest}]]></user-request>
+  <granularity-spec><![CDATA[${granularitySpec}]]></granularity-spec>
+  <repository-context>
+${repomixContext}
+  </repository-context>${summariesSection}
+  <output-guidelines><![CDATA[Output ONLY a valid JSON array. No markdown, no explanations.]]></output-guidelines>
+</llm-context>`;
+}
+
+interface TaskDraft {
+  draft_id: string;
+  user_id: string;
+  repository: string;
+  name: string;
+  initial_prompt: string;
+  plan_json: Plan;
+  context_config: TaskDraftConfig;
+  generation_trace: GenerationTrace;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
+  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId } = options;
+  const previewTokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
+  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+  const warnings: string[] = [];
+
+  if (!db) throw new PlanningFailedError('Database not available');
+  correlatedLogger.info({ draftId, baseBranch, granularity }, 'Starting context preview generation');
+
+  const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
+  if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
+
+  try {
+    await checkoutBranch(worktreePath, baseBranch);
+    correlatedLogger.info({ baseBranch, worktreePath }, 'Checked out branch for preview');
+  } catch (error) {
+    if (error instanceof BranchNotFoundError) throw error;
+    throw new PlanningFailedError(`Failed to checkout branch '${baseBranch}': ${(error as Error).message}`);
+  }
+
+  correlatedLogger.info({ repository: draft.repository }, 'Finding relevant files for preview');
+
+  // Parse @file references from the prompt (e.g., @tab-top.html, @www/css/style.less)
+  const fileRefResult = await parseFileReferences(prompt, worktreePath, { correlationId });
+  const referencedFiles = getResolvedPaths(fileRefResult);
+
+  if (referencedFiles.length > 0) {
+    correlatedLogger.info({
+      referencedFiles,
+      unresolvedRefs: fileRefResult.references.filter(r => !r.resolved).map(r => r.original)
+    }, 'Parsed @file references from prompt');
+  }
+
+  const registry = getAgentRegistry();
+  await registry.ensureInitialized();
+  const agent = registry.getDefaultAgent();
+
+  // Use cleaned prompt (without @references) for relevance search
+  // Enable LLM keyword extraction for better alternatives and spelling variants
+  const relevanceResult = await findRelevantFiles(worktreePath, fileRefResult.cleanedPrompt || prompt, {
+    correlationId,
+    useSummaryScoring: !!agent,
+    useLLMKeywords: true,
+    agent,
+    repoName: draft.repository,
+    branch: baseBranch
+  });
+
+  // Combine: user-provided files + @referenced files + auto-detected files
+  const manualFiles = [...new Set([...(files || []), ...referencedFiles])];
+  const autoFilePaths = relevanceResult.files.map(f => f.path);
+  const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
+
+  correlatedLogger.info({
+    manualFiles: { count: manualFiles.length, files: manualFiles.slice(0, 10) },
+    autoFiles: { count: autoFilePaths.length, topCandidates: relevanceResult.files.slice(0, 5).map(f => ({ path: f.path, score: f.score, reason: f.reason })) },
+    scoreDistribution: {
+      high: relevanceResult.files.filter(f => f.score > 80).length,
+      medium: relevanceResult.files.filter(f => f.score > 50 && f.score <= 80).length,
+      low: relevanceResult.files.filter(f => f.score <= 50).length
+    },
+    combinedCount: combinedFiles.length,
+    overlap: manualFiles.filter(f => autoFilePaths.includes(f)).length
+  }, 'Preview file selection breakdown');
+
+  const filesToInclude = compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined);
+  const priorityFiles = compress ? combinedFiles : undefined;
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: previewTokenLimit, compress, correlationId });
+
+  // Add warning if files were skipped due to security concerns
+  if (contextResult.skippedSecurityFiles && contextResult.skippedSecurityFiles.length > 0) {
+    const skippedPaths = contextResult.skippedSecurityFiles.map(f => f.filePath).join(', ');
+    warnings.push(`${contextResult.skippedSecurityFiles.length} file(s) skipped due to potential secrets: ${skippedPaths}`);
+  }
+
+  const costEstimate = await calculateCostEstimate(contextResult.totalTokens, warnings, correlatedLogger);
+
+  const includedFilesSet = new Set(contextResult.includedFiles);
+
+  let smartSelection: SmartFileSelection[];
+  if (compress) {
+    const relevanceScores = new Map(relevanceResult.files.map(f => [f.path, f]));
+    smartSelection = contextResult.includedFiles.map(path => {
+      const relevanceInfo = relevanceScores.get(path);
+      if (manualFiles.includes(path)) return { path, reason: 'Explicitly included', source: 'manual' as const };
+      else if (relevanceInfo) return { path, reason: `${relevanceInfo.reason} (score: ${relevanceInfo.score})`, source: 'auto' as const, score: relevanceInfo.score };
+      else return { path, reason: 'Included via compression', source: 'auto' as const };
+    });
+  } else {
+    smartSelection = [
+      ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
+      ...relevanceResult.files.filter(f => includedFilesSet.has(f.path)).map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
+    ];
+  }
+
+  const fullContext = buildFullContext({ userRequest: prompt, repomixContext: contextResult.context, granularity });
+
+  await db('task_drafts').where({ draft_id: draftId }).update({
+    initial_prompt: prompt,
+    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, compress, manualFiles, autoFiles: autoFilePaths }),
+    generated_context: fullContext,
+    updated_at: db.fn.now()
+  });
+
+  const estimatedActualTokens = Math.ceil(contextResult.totalTokens * TIKTOKEN_TO_CLAUDE_RATIO);
+
+  correlatedLogger.info({ tiktokenCount: contextResult.totalTokens, estimatedActualTokens, costEstimate, fileCount: contextResult.includedFiles.length }, 'Context preview completed');
+
+  return {
+    success: true,
+    stats: { totalTokens: estimatedActualTokens, tiktokenCount: contextResult.totalTokens, costEstimate, contextLength: contextResult.totalCharacters, fileCount: contextResult.includedFiles.length },
+    smartSelection,
+    warnings
+  };
 }

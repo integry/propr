@@ -1,62 +1,171 @@
+import { parseLlmJson } from '../../utils/jsonUtils.js';
+import { Agent } from '../../agents/types.js';
+import logger from '../../utils/logger.js';
+
+// --- Basic Keyword Extraction (regex-based) ---
+
+/** Words to filter out during keyword extraction */
 const STOP_WORDS = new Set([
-  'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were',
-  'to', 'in', 'on', 'at', 'for', 'by', 'with', 'from', 'of', 'as',
-  'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
-  'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall',
-  'this', 'that', 'these', 'those', 'it', 'its', 'i', 'me', 'my', 'we', 'our',
-  'you', 'your', 'he', 'she', 'they', 'them', 'their', 'who', 'what',
-  'which', 'when', 'where', 'why', 'how', 'all', 'each', 'every', 'both',
-  'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not',
-  'only', 'own', 'same', 'so', 'than', 'too', 'very', 'can', 'just',
-  'fix', 'feat', 'chore', 'refactor', 'update', 'change', 'add', 'remove',
-  'delete', 'implement', 'improve', 'make', 'use', 'get', 'set', 'new',
-  'create', 'need', 'want', 'like', 'see', 'look', 'find', 'check', 'test',
-  'code', 'file', 'function', 'method', 'class', 'module', 'component',
-  'bug', 'issue', 'error', 'problem', 'work', 'working', 'broken'
+  'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+  'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
+  'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+  'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 'ought',
+  'used', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it',
+  'we', 'they', 'what', 'which', 'who', 'whom', 'when', 'where', 'why', 'how',
+  'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such',
+  'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very',
+  'just', 'also', 'now', 'here', 'there', 'then', 'once', 'always', 'never',
+  // Common action words that don't help file matching
+  'add', 'remove', 'change', 'update', 'fix', 'modify', 'edit', 'create',
+  'delete', 'replace', 'make', 'set', 'get', 'put', 'use', 'find', 'show',
+  'hide', 'move', 'copy', 'paste', 'cut', 'save', 'load', 'open', 'close',
+  'please', 'want', 'need', 'like', 'help', 'try', 'let', 'see', 'look'
 ]);
 
-const CAMEL_CASE_PATTERN = /[A-Z][a-z]+[A-Z][a-zA-Z]*/g;
-const SNAKE_CASE_PATTERN = /[a-z]+_[a-z_]+/g;
-const FILE_EXTENSION_PATTERN = /\.[a-z]{1,5}$/i;
-const PATH_PATTERN = /[a-zA-Z0-9_-]+\/[a-zA-Z0-9_\-/]+/g;
+/** Minimum length for a keyword */
+const MIN_KEYWORD_LENGTH = 2;
 
+/**
+ * Basic regex-based keyword extraction from a prompt.
+ * Extracts meaningful words that might appear in file paths or names.
+ */
 export function extractKeywords(prompt: string): string[] {
-  const keywords: Set<string> = new Set();
+  // Extract words, including hyphenated and underscored terms
+  const words = prompt
+    .toLowerCase()
+    .replace(/[^a-z0-9\s_-]/g, ' ')
+    .split(/\s+/)
+    .filter(word =>
+      word.length >= MIN_KEYWORD_LENGTH &&
+      !STOP_WORDS.has(word) &&
+      !/^\d+$/.test(word) // Exclude pure numbers
+    );
 
-  const camelCaseMatches = prompt.match(CAMEL_CASE_PATTERN) || [];
-  camelCaseMatches.forEach(match => keywords.add(match));
-
-  const snakeCaseMatches = prompt.match(SNAKE_CASE_PATTERN) || [];
-  snakeCaseMatches.forEach(match => keywords.add(match));
-
-  const pathMatches = prompt.match(PATH_PATTERN) || [];
-  pathMatches.forEach(match => keywords.add(match));
-
-  const extensionMatches = prompt.match(/\w+\.[a-z]{1,5}/gi) || [];
-  extensionMatches.forEach(match => {
-    if (FILE_EXTENSION_PATTERN.test(match)) {
-      keywords.add(match);
+  // Also extract camelCase and PascalCase parts
+  const camelCaseWords: string[] = [];
+  for (const word of prompt.match(/[a-zA-Z][a-z]+/g) || []) {
+    const lower = word.toLowerCase();
+    if (lower.length >= MIN_KEYWORD_LENGTH && !STOP_WORDS.has(lower)) {
+      camelCaseWords.push(lower);
     }
-  });
+  }
 
-  const clean = prompt.replace(/[^a-zA-Z0-9_\-/.]/g, ' ');
-  const tokens = clean.split(/\s+/).filter(t => t.length > 2);
-  
-  tokens.forEach(token => {
-    const lowerToken = token.toLowerCase();
-    if (!STOP_WORDS.has(lowerToken)) {
-      const isCamelCase = CAMEL_CASE_PATTERN.test(token);
-      const isSnakeCase = SNAKE_CASE_PATTERN.test(token);
-      const isPath = token.includes('/');
-      const hasExtension = FILE_EXTENSION_PATTERN.test(token);
-      
-      if (isCamelCase || isSnakeCase || isPath || hasExtension) {
-        keywords.add(token);
-      } else if (token.length > 3 || /^[A-Z]/.test(token)) {
-        keywords.add(token);
-      }
+  // Deduplicate and return
+  return [...new Set([...words, ...camelCaseWords])];
+}
+
+// --- LLM-based Keyword Extraction ---
+
+export interface ExtractedKeywords {
+  /** Primary keywords extracted from the prompt */
+  primary: string[];
+  /** Alternative spellings and related terms */
+  alternatives: string[];
+  /** All keywords combined (primary + alternatives) */
+  all: string[];
+}
+
+export interface KeywordExtractionOptions {
+  /** Agent to use for LLM calls */
+  agent: Agent;
+  correlationId?: string;
+}
+
+const KEYWORD_EXTRACTION_PROMPT = `Extract the most relevant keywords from the user's request for finding files in a codebase.
+
+Rules:
+1. Focus on technical terms, file names, component names, feature names
+2. Include spelling alternatives (singular/plural, different cases, abbreviations)
+3. Include related technical terms that might appear in filenames
+4. Ignore common words like "the", "and", "replace", "change", "update"
+5. Return 3-8 primary keywords and 5-15 alternatives
+
+User request:
+{USER_REQUEST}
+
+Return ONLY a JSON object in this exact format:
+{
+  "primary": ["keyword1", "keyword2"],
+  "alternatives": ["alt1", "alt2", "related1"]
+}`;
+
+/**
+ * Extracts relevant keywords and alternatives from a user prompt using an LLM.
+ * This helps improve file matching by understanding the user's intent.
+ */
+export async function extractKeywordsWithLLM(
+  prompt: string,
+  options: KeywordExtractionOptions
+): Promise<ExtractedKeywords> {
+  const { agent, correlationId } = options;
+  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+
+  try {
+    const llmPrompt = KEYWORD_EXTRACTION_PROMPT.replace('{USER_REQUEST}', prompt);
+
+    correlatedLogger.debug({ promptLength: prompt.length }, 'Extracting keywords with LLM');
+
+    const response = await agent.analyze(llmPrompt);
+
+    const parsed = parseLlmJson<{ primary: string[]; alternatives: string[] }>(response);
+
+    if (!parsed || !Array.isArray(parsed.primary)) {
+      correlatedLogger.warn({ response }, 'Invalid LLM response for keyword extraction');
+      return { primary: [], alternatives: [], all: [] };
     }
-  });
 
-  return Array.from(keywords);
+    const primary = parsed.primary
+      .filter((k): k is string => typeof k === 'string')
+      .map(k => k.toLowerCase().trim())
+      .filter(k => k.length > 0);
+
+    const alternatives = (parsed.alternatives || [])
+      .filter((k): k is string => typeof k === 'string')
+      .map(k => k.toLowerCase().trim())
+      .filter(k => k.length > 0);
+
+    const all = [...new Set([...primary, ...alternatives])];
+
+    correlatedLogger.info({
+      primaryCount: primary.length,
+      alternativesCount: alternatives.length,
+      primary: primary.slice(0, 5),
+      alternatives: alternatives.slice(0, 5)
+    }, 'LLM keyword extraction completed');
+
+    return { primary, alternatives, all };
+  } catch (error) {
+    correlatedLogger.warn(
+      { error: (error as Error).message },
+      'LLM keyword extraction failed, falling back to basic extraction'
+    );
+    return { primary: [], alternatives: [], all: [] };
+  }
+}
+
+/**
+ * Merges LLM-extracted keywords with basic regex-extracted keywords.
+ */
+export function mergeKeywords(
+  basicKeywords: string[],
+  llmKeywords: ExtractedKeywords
+): string[] {
+  const merged = new Set<string>();
+
+  // Add basic keywords
+  for (const k of basicKeywords) {
+    merged.add(k.toLowerCase());
+  }
+
+  // Add LLM keywords (prioritize primary)
+  for (const k of llmKeywords.primary) {
+    merged.add(k);
+  }
+
+  // Add alternatives
+  for (const k of llmKeywords.alternatives) {
+    merged.add(k);
+  }
+
+  return Array.from(merged);
 }

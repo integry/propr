@@ -3,19 +3,18 @@ import { RedisClientType } from 'redis';
 import { randomUUID } from 'crypto';
 import * as configManager from '@gitfix/core';
 import { AgentRegistry, DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@gitfix/core';
-import { withConfigLock, queueResummarizationForAllRepos, validateAgentsConfig, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex } from './configHelpers.js';
+import { withConfigLock, validateAgentsConfig } from './configHelpers.js';
+import { createIndexingRoutes } from './configRoutesIndexing.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
 }
 
-// Define the channel name constant for config update events
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
 
 export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const { redisClient } = deps;
 
-  // Helper function to publish config updates via Redis Pub/Sub
   const publishConfigUpdate = async (subtype: string): Promise<void> => {
     try {
       await redisClient.publish(CONFIG_EVENT_CHANNEL, JSON.stringify({
@@ -28,7 +27,6 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
   };
 
-  // Helper function to log activity
   const logActivityHelper = async (description: string, idSuffix: string, type: string, username?: string): Promise<void> => {
     const activity = {
       id: `activity-${Date.now()}-${idSuffix}`,
@@ -41,6 +39,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     await redisClient.lPush('system:activity:log', JSON.stringify(activity));
     await redisClient.lTrim('system:activity:log', 0, 999);
   };
+
+  const indexingRoutes = createIndexingRoutes({ redisClient, publishConfigUpdate, logActivityHelper });
 
   async function getFollowupKeywords(_req: Request, res: Response): Promise<void> {
     try {
@@ -66,6 +66,35 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       await publishConfigUpdate('followup_keywords_update');
 
       return { status: 200, body: { success: true, followup_keywords } };
+    });
+
+    res.status(result.status).json(result.body);
+  }
+
+  async function getFollowupIgnoreKeywords(_req: Request, res: Response): Promise<void> {
+    try {
+      const keywords = await configManager.loadFollowupIgnoreKeywords();
+      res.json({ followup_ignore_keywords: keywords });
+    } catch (error) {
+      console.error('Error in /api/config/followup-ignore-keywords GET:', error);
+      res.status(500).json({ error: 'Failed to load followup ignore keywords' });
+    }
+  }
+
+  async function postFollowupIgnoreKeywords(req: Request, res: Response): Promise<void> {
+    const result = await withConfigLock(redisClient, 'config:ignore-keywords:lock', async () => {
+      const { followup_ignore_keywords } = req.body;
+
+      if (!Array.isArray(followup_ignore_keywords)) {
+        return { status: 400, body: { error: 'followup_ignore_keywords must be an array of strings' } };
+      }
+
+      await configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords);
+
+      // Publish config update event
+      await publishConfigUpdate('followup_ignore_keywords_update');
+
+      return { status: 200, body: { success: true, followup_ignore_keywords } };
     });
 
     res.status(result.status).json(result.body);
@@ -290,150 +319,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
   }
 
-  async function postSummarizationSettings(req: Request, res: Response): Promise<void> {
-    const result = await withConfigLock(redisClient, 'config:summarization:lock', async () => {
-      const validationError = validateSummarizationInput(req.body);
-      if (validationError) {
-        return { status: 400, body: { error: validationError } };
-      }
-
-      const { enabled, agent_alias, custom_prompt } = req.body;
-      const currentSettings = await configManager.loadSummarizationSettings();
-      const newCustomPrompt = custom_prompt || '';
-      const promptChanged = newCustomPrompt !== (currentSettings.custom_prompt || '');
-
-      const settings = {
-        enabled,
-        agent_alias: agent_alias || '',
-        custom_prompt: newCustomPrompt
-      };
-
-      await configManager.saveSummarizationSettings(settings);
-      await publishConfigUpdate('summarization_settings_update');
-
-      // Schedule delayed resummarization if prompt changed and summarization is enabled
-      // The reindex will occur after 10 minutes unless cancelled by another prompt change or manual trigger
-      let reindexScheduled = false;
-      if (promptChanged && enabled && agent_alias) {
-        reindexScheduled = await scheduleDelayedReindex(redisClient);
-      }
-
-      const description = buildSummarizationDescription(enabled, agent_alias, promptChanged, reindexScheduled);
-      await logActivityHelper(description, 'summarization-update', 'summarization_updated', req.user?.username);
-
-      return {
-        status: 200,
-        body: { success: true, ...settings, promptChanged, reindexScheduled }
-      };
-    });
-
-    res.status(result.status).json(result.body);
-  }
-
-  function validateSummarizationInput(body: Record<string, unknown>): string | null {
-    const { enabled, agent_alias, custom_prompt } = body;
-    if (typeof enabled !== 'boolean') return 'enabled must be a boolean';
-    if (agent_alias !== undefined && typeof agent_alias !== 'string') return 'agent_alias must be a string';
-    if (custom_prompt !== undefined && typeof custom_prompt !== 'string') return 'custom_prompt must be a string';
-    return null;
-  }
-
-  async function triggerResummarizationSafe(): Promise<number> {
-    try {
-      return await queueResummarizationForAllRepos();
-    } catch (error) {
-      console.error('Error triggering resummarization for repositories:', error);
-      return 0;
-    }
-  }
-
-  function buildSummarizationDescription(enabled: boolean, agent_alias: string, promptChanged: boolean, reindexScheduled: boolean): string {
-    const base = `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'})`;
-    return promptChanged && reindexScheduled ? `${base}. Scheduled reindexing in 10 minutes.` : base;
-  }
-
-  async function getRepositoriesIndexingStatus(_req: Request, res: Response): Promise<void> {
-    try {
-      const statuses = await configManager.getRepositoriesIndexingStatus();
-      res.json({ repositories: statuses });
-    } catch (error) {
-      console.error('Error in /api/config/repos/indexing-status GET:', error);
-      res.status(500).json({ error: 'Failed to load repositories indexing status' });
-    }
-  }
-
-  async function triggerIndexing(req: Request, res: Response): Promise<void> {
-    try {
-      const { repository, fullReindex, baseBranch } = req.body;
-
-      if (!repository || typeof repository !== 'string') {
-        res.status(400).json({ error: 'repository is required and must be a string (e.g., "owner/repo")' });
-        return;
-      }
-
-      if (!repository.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/)) {
-        res.status(400).json({ error: 'Invalid repository format. Expected "owner/repo"' });
-        return;
-      }
-
-      if (baseBranch !== undefined && typeof baseBranch !== 'string') {
-        res.status(400).json({ error: 'baseBranch must be a string' });
-        return;
-      }
-
-      const result = await queueIndexingJob(repository, !!fullReindex, baseBranch);
-      if (!result.success) {
-        const statusCode = result.error?.includes('already queued') ? 409 : 400;
-        res.status(statusCode).json({ error: result.error });
-        return;
-      }
-
-      await logActivityHelper(
-        `Triggered ${fullReindex ? 'full re-' : ''}indexing for ${repository}${baseBranch ? ` (branch: ${baseBranch})` : ''}`,
-        'indexing-trigger', 'indexing_triggered', req.user?.username
-      );
-
-      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: !!fullReindex, baseBranch });
-    } catch (error) {
-      console.error('Error in /api/config/repos/trigger-indexing POST:', error);
-      res.status(500).json({ error: 'Failed to trigger indexing' });
-    }
-  }
-
-  async function triggerReindexAll(req: Request, res: Response): Promise<void> {
-    try {
-      // Check if summarization is enabled
-      const settings = await configManager.loadSummarizationSettings();
-      if (!settings.enabled) {
-        res.status(400).json({ error: 'Summarization is not enabled. Enable it in settings first.' });
-        return;
-      }
-      if (!settings.agent_alias) {
-        res.status(400).json({ error: 'No agent configured for summarization. Configure one in settings first.' });
-        return;
-      }
-
-      // Cancel any scheduled delayed reindex
-      await cancelDelayedReindex(redisClient);
-
-      // Trigger immediate reindex for all repos
-      const repositoriesQueued = await triggerResummarizationSafe();
-
-      await logActivityHelper(
-        `Manually triggered reindexing for ${repositoriesQueued} repositories`,
-        'reindex-all-trigger', 'reindex_all_triggered', req.user?.username
-      );
-
-      res.json({ success: true, repositoriesQueued });
-    } catch (error) {
-      console.error('Error in /api/config/summarization/reindex-all POST:', error);
-      res.status(500).json({ error: 'Failed to trigger reindexing' });
-    }
-  }
-
   return {
     getFollowupKeywords,
     postFollowupKeywords,
+    getFollowupIgnoreKeywords,
+    postFollowupIgnoreKeywords,
     getRepos,
     postRepos,
     getSettings,
@@ -447,9 +337,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     getAgents,
     postAgents,
     getSummarizationSettings,
-    postSummarizationSettings,
-    getRepositoriesIndexingStatus,
-    triggerIndexing,
-    triggerReindexAll
+    postSummarizationSettings: indexingRoutes.postSummarizationSettings,
+    getRepositoriesIndexingStatus: indexingRoutes.getRepositoriesIndexingStatus,
+    triggerIndexing: indexingRoutes.triggerIndexing,
+    triggerReindexAll: indexingRoutes.triggerReindexAll,
+    stopIndexing: indexingRoutes.stopIndexing
   };
 }

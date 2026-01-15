@@ -172,6 +172,8 @@ function setupRoutes(): void {
 
   app.get('/api/config/followup-keywords', ensureAuthenticated, configRoutes.getFollowupKeywords);
   app.post('/api/config/followup-keywords', ensureAuthenticated, configRoutes.postFollowupKeywords);
+  app.get('/api/config/followup-ignore-keywords', ensureAuthenticated, configRoutes.getFollowupIgnoreKeywords);
+  app.post('/api/config/followup-ignore-keywords', ensureAuthenticated, configRoutes.postFollowupIgnoreKeywords);
   app.get('/api/config/repos', ensureAuthenticated, configRoutes.getRepos);
   app.post('/api/config/repos', ensureAuthenticated, configRoutes.postRepos);
   app.get('/api/config/settings', ensureAuthenticated, configRoutes.getSettings);
@@ -188,6 +190,7 @@ function setupRoutes(): void {
   app.post('/api/config/summarization', ensureAuthenticated, configRoutes.postSummarizationSettings);
   app.get('/api/config/repos/indexing-status', ensureAuthenticated, configRoutes.getRepositoriesIndexingStatus);
   app.post('/api/config/repos/trigger-indexing', ensureAuthenticated, configRoutes.triggerIndexing);
+  app.post('/api/config/repos/stop-indexing', ensureAuthenticated, configRoutes.stopIndexing);
   app.post('/api/config/summarization/reindex-all', ensureAuthenticated, configRoutes.triggerReindexAll);
 
   app.get('/api/queue/stats', ensureAuthenticated, queueRoutes.getQueueStats);

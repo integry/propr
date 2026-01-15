@@ -31,23 +31,34 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      const { repo, pr, commit, commentId, branch, owner } = req.body;
+      const { repo, pr, commit, commentId, owner } = req.body;
 
       // Validate required parameters
-      if (!repo || !pr || !commit || !commentId || !branch || !owner) {
+      if (!repo || !pr || !commit || !commentId || !owner) {
         res.status(400).json({
           error: 'Missing required parameters',
-          required: ['repo', 'pr', 'commit', 'commentId', 'branch', 'owner']
+          required: ['repo', 'pr', 'commit', 'commentId', 'owner']
         });
         return;
       }
 
+      // Fetch branch from PR (same as getRevertPreview does)
+      const octokit = await getAuthenticatedOctokit();
+      const prNumber = parseInt(pr, 10);
+
+      const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner,
+        repo,
+        pull_number: prNumber
+      });
+
+      const branch = prData.head.ref;
       const correlationId = generateCorrelationId();
 
       const jobData: SystemTaskJobData = {
         type: 'revert',
         repoName: repo,
-        prNumber: parseInt(pr, 10),
+        prNumber,
         commitHash: commit,
         targetCommentId: parseInt(commentId, 10),
         prBranch: branch,
@@ -57,7 +68,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
       const job = await taskQueue.add('processSystemTask', jobData);
 
-      console.log(`[revert] Queued revert job ${job.id} for PR #${pr} in ${owner}/${repo}`);
+      console.log(`[revert] Queued revert job ${job.id} for PR #${pr} in ${owner}/${repo} (branch: ${branch})`);
 
       res.json({
         success: true,

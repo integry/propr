@@ -12,7 +12,7 @@ export type { PRValidationResult, PRInfo, ValidatePRCreationOptions, CurrentIssu
 export { IdempotentGitHubOps, IdempotentGitOps } from './utils/idempotentOps.js';
 export { estimateTokens, countTokens, getUsageStats } from './utils/tokenCalculation.js';
 export { formatResetTime, addModelSpecificDelay } from './utils/scheduling.js';
-export { filterCommentByAuthor, checkCommentTrigger } from './utils/commentFilters.js';
+export { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from './utils/commentFilters.js';
 export { ensureGitRepository } from './utils/git/gitValidation.js';
 export { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from './utils/github/labelOperations.js';
 export type { LabelContext, UpdateResults } from './utils/github/labelOperations.js';
@@ -97,6 +97,20 @@ export { scorePaths } from './services/relevance/pathScorer.js';
 export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries, updateRepositoryStatus } from './services/relevance/summaryMiner.js';
 export type { FileSummary, DirectorySummary, GitFileInfo, IndexingOptions } from './services/relevance/summaryMiner.js';
 export { DEFAULT_INSTRUCTIONS } from './services/relevance/summaryMinerHelpers.js';
+export {
+  requestIndexingCancellation,
+  isIndexingCancelled,
+  clearIndexingCancellation,
+  IndexingCancelledError,
+  initIndexingProgress,
+  updateIndexingProgress,
+  setTotalBatches,
+  getIndexingProgress,
+  clearIndexingProgress,
+  startDirectoryPhase,
+  updateDirectoryProgress
+} from './services/relevance/indexingCancellation.js';
+export type { IndexingProgress } from './services/relevance/indexingCancellation.js';
 
 export {
     executeClaudeCode,

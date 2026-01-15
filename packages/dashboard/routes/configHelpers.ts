@@ -1,6 +1,6 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@gitfix/core';
-import { indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit } from '@gitfix/core';
+import { indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation } from '@gitfix/core';
 import type { IndexingJobData } from '@gitfix/core';
 
 interface AgentConfig {
@@ -289,4 +289,45 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   );
 
   return { success: true, jobId: job.id, correlationId };
+}
+
+/**
+ * Stop an indexing job for a repository and reset its status to idle.
+ * For active jobs, sets a cancellation flag in Redis that the worker checks.
+ * For waiting/delayed jobs, removes them from the queue directly.
+ */
+export async function stopIndexingJob(repository: string, branch?: string): Promise<{ success: boolean; message?: string }> {
+  try {
+    const jobs = await indexingQueue.getJobs(['active', 'waiting', 'delayed']);
+    // Find job matching both repository and branch (if specified)
+    const job = jobs.find((j: { data: IndexingJobData }) => {
+      if (j.data.repository !== repository) return false;
+      // If branch is specified, match it; otherwise match any job for this repo
+      if (branch) {
+        return j.data.baseBranch === branch;
+      }
+      return true;
+    });
+
+    if (job) {
+      const state = await job.getState();
+      if (state === 'active') {
+        // Active jobs are locked by the worker. Set a cancellation flag in Redis
+        // that the worker will check and stop processing gracefully.
+        await requestIndexingCancellation(repository);
+      } else {
+        // Waiting/delayed jobs can be removed directly
+        await job.remove();
+      }
+    }
+
+    // Always force the status back to idle in the DB, even if no job was found
+    // (to handle stuck states). Use branch if provided, otherwise default to 'HEAD'.
+    await updateRepositoryStatus(repository, 'idle', branch || 'HEAD');
+
+    return { success: true };
+  } catch (error) {
+    console.error('Error stopping indexing job:', error);
+    return { success: false, message: (error as Error).message };
+  }
 }

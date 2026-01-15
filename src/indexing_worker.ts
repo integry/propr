@@ -1,13 +1,15 @@
 import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
 import type { Logger } from 'pino';
+import { simpleGit } from 'simple-git';
 import { createWorker, INDEXING_QUEUE_NAME, indexingQueue } from '@gitfix/core';
 import type { IndexingJobData, JobResult } from '@gitfix/core';
 import { logger } from '@gitfix/core';
 import { generateCorrelationId } from '@gitfix/core';
 import { db } from '@gitfix/core';
 import { indexRepo, clearRepositorySummaries, updateRepositoryStatus } from '@gitfix/core';
-import { loadSummarizationSettings, loadMonitoredRepos } from '@gitfix/core';
+import { loadSummarizationSettings, loadMonitoredReposRaw } from '@gitfix/core';
+import type { RepoToMonitor } from '@gitfix/core';
 import { ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit } from '@gitfix/core';
 
 process.on('uncaughtException', (error: Error) => {
@@ -36,11 +38,11 @@ const REINDEX_INTERVAL_MS = parseInt(process.env.INDEXING_REINDEX_INTERVAL_MS ||
  * Process a single indexing job
  */
 async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingResult> {
-    const { repository, repoPath, correlationId, fullReindex } = job.data;
+    const { repository, repoPath, correlationId, fullReindex, baseBranch = 'HEAD' } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
     const startTime = Date.now();
 
-    correlatedLogger.info({ repository, repoPath, fullReindex }, 'Starting indexing job...');
+    correlatedLogger.info({ repository, repoPath, fullReindex, branch: baseBranch }, 'Starting indexing job...');
 
     try {
         // Check if summarization is enabled
@@ -52,14 +54,15 @@ async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingRe
 
         // If full reindex requested, clear existing summaries first
         if (fullReindex) {
-            correlatedLogger.info({ repository }, 'Full reindex requested, clearing existing summaries');
-            await clearRepositorySummaries(repository);
+            correlatedLogger.info({ repository, branch: baseBranch }, 'Full reindex requested, clearing existing summaries');
+            await clearRepositorySummaries(repository, baseBranch);
         }
 
         // Run the indexing
         await indexRepo(repoPath, {
             correlationId,
-            fullName: repository
+            fullName: repository,
+            branch: baseBranch
         });
 
         const duration = Date.now() - startTime;
@@ -82,9 +85,11 @@ async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingRe
 
 interface RepoStatus {
     full_name: string;
+    branch: string;
     indexing_status: string;
     last_indexed_at: string | null;
     updated_at: string | null;
+    last_indexed_hash: string | null;
 }
 
 interface IndexDecision {
@@ -98,7 +103,7 @@ const STUCK_INDEXING_TIMEOUT_MS = 30 * 60 * 1000;
 /**
  * Determine if a repository needs indexing based on its status
  */
-function shouldIndexRepository(repoStatus: RepoStatus | undefined): IndexDecision {
+function shouldIndexRepository(repoStatus: RepoStatus | undefined, currentHash?: string): IndexDecision {
     if (!repoStatus || repoStatus.indexing_status === 'idle') {
         return { shouldIndex: true, reason: 'never indexed' };
     }
@@ -114,6 +119,17 @@ function shouldIndexRepository(repoStatus: RepoStatus | undefined): IndexDecisio
         return { shouldIndex: false, reason: 'currently indexing' };
     }
 
+    // Check for new commits - if current hash differs from last indexed hash
+    if (currentHash && repoStatus.last_indexed_hash && currentHash !== repoStatus.last_indexed_hash) {
+        return { shouldIndex: true, reason: 'new commits detected' };
+    }
+
+    // If hash is missing (first run after migration), trigger indexing to populate it
+    if (currentHash && !repoStatus.last_indexed_hash) {
+        return { shouldIndex: true, reason: 'missing index hash' };
+    }
+
+    // Fallback: Re-index if stale (24 hour safety net)
     const lastIndexed = repoStatus.last_indexed_at ? new Date(repoStatus.last_indexed_at) : null;
     if (lastIndexed && (Date.now() - lastIndexed.getTime()) > REINDEX_INTERVAL_MS) {
         return { shouldIndex: true, reason: 'stale index' };
@@ -125,23 +141,34 @@ function shouldIndexRepository(repoStatus: RepoStatus | undefined): IndexDecisio
 /**
  * Clone a repository and return its local path
  */
-async function cloneRepositoryForIndexing(repoName: string): Promise<string> {
+async function cloneRepositoryForIndexing(repoName: string, branch: string): Promise<string> {
     const [owner, name] = repoName.split('/');
     const octokit = await getAuthenticatedOctokit();
     const { token } = await octokit.auth({ type: "installation" }) as { token: string };
     const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
-    return ensureRepoCloned({ repoUrl, owner, repoName: name, authToken: token });
+    // ensureRepoCloned already supports baseBranch - pass it unless it's HEAD
+    return ensureRepoCloned({
+        repoUrl,
+        owner,
+        repoName: name,
+        authToken: token,
+        baseBranch: branch === 'HEAD' ? undefined : branch
+    });
+}
+
+interface QueueIndexingJobOptions {
+    repoName: string;
+    repoPath: string;
+    reason: string;
+    log: Logger;
+    branch: string;
 }
 
 /**
  * Queue an indexing job for a repository
  */
-async function queueIndexingJob(
-    repoName: string,
-    repoPath: string,
-    reason: string,
-    log: Logger
-): Promise<void> {
+async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void> {
+    const { repoName, repoPath, reason, log, branch } = options;
     const jobCorrelationId = generateCorrelationId();
     const priority = reason === 'previous indexing failed' ? 'high' : 'normal';
 
@@ -151,47 +178,75 @@ async function queueIndexingJob(
             repository: repoName,
             repoPath,
             correlationId: jobCorrelationId,
-            priority
+            priority,
+            baseBranch: branch
         },
         {
-            jobId: `index-${repoName.replace('/', '-')}-${Date.now()}`,
+            jobId: `index-${repoName.replace('/', '-')}-${branch}-${Date.now()}`,
             priority: reason === 'previous indexing failed' ? 1 : 5
         }
     );
 
-    log.info({ repository: repoName, reason, jobCorrelationId }, 'Queued repository for indexing');
+    log.info({ repository: repoName, branch, reason, jobCorrelationId }, 'Queued repository for indexing');
 }
 
 /**
  * Process a single repository for potential indexing
  */
 async function processRepositoryForIndexing(
-    repoName: string,
+    repoConfig: RepoToMonitor,
     log: Logger
 ): Promise<void> {
+    const repoName = repoConfig.name;
+    const branch = repoConfig.baseBranch || 'HEAD';
+
     const repoStatus = await db('repositories')
-        .where({ full_name: repoName })
+        .where({ full_name: repoName, branch })
         .first() as RepoStatus | undefined;
 
-    const decision = shouldIndexRepository(repoStatus);
-
-    if (!decision.shouldIndex) {
-        log.debug({ repository: repoName, reason: decision.reason }, 'Skipping repository');
-        return;
+    // If currently indexing, perform quick stuck check without cloning
+    if (repoStatus?.indexing_status === 'indexing') {
+        const decision = shouldIndexRepository(repoStatus);
+        if (!decision.shouldIndex) {
+            log.debug({ repository: repoName, branch, reason: decision.reason }, 'Skipping repository');
+            return;
+        }
     }
 
-    // Check if job already queued
+    // Check if job already queued before cloning to save bandwidth
     const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed']);
-    const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) => j.data.repository === repoName);
+    const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
+        j.data.repository === repoName && (j.data.baseBranch || 'HEAD') === branch
+    );
 
     if (alreadyQueued) {
-        log.debug({ repository: repoName }, 'Indexing job already queued, skipping');
+        log.debug({ repository: repoName, branch }, 'Indexing job already queued, skipping');
         return;
     }
 
-    // Clone and queue
-    const repoPath = await cloneRepositoryForIndexing(repoName);
-    await queueIndexingJob(repoName, repoPath, decision.reason, log);
+    // Clone/fetch to get latest state
+    const repoPath = await cloneRepositoryForIndexing(repoName, branch);
+
+    // Get the hash of the configured branch (not just HEAD, since same repo can track different branches)
+    let currentHash: string | undefined;
+    try {
+        const git = simpleGit(repoPath);
+        // Use the specific branch to get hash - supports both local and remote refs
+        // For 'HEAD', use HEAD directly; for named branches, try origin/<branch> first
+        const refToResolve = branch === 'HEAD' ? 'HEAD' : `origin/${branch}`;
+        currentHash = await git.revparse([refToResolve]);
+    } catch (hashError) {
+        log.warn({ repository: repoName, branch, error: (hashError as Error).message }, 'Failed to get branch hash');
+    }
+
+    const decision = shouldIndexRepository(repoStatus, currentHash);
+
+    if (!decision.shouldIndex) {
+        log.debug({ repository: repoName, branch, reason: decision.reason, currentHash, lastIndexedHash: repoStatus?.last_indexed_hash }, 'Skipping repository');
+        return;
+    }
+
+    await queueIndexingJob({ repoName, repoPath, reason: decision.reason, log, branch });
 }
 
 /**
@@ -208,20 +263,23 @@ async function scanAndQueueRepositories(): Promise<void> {
             return;
         }
 
-        const repos = await loadMonitoredRepos();
-        if (repos.length === 0) {
+        // Load full config objects to access baseBranch
+        const repos = await loadMonitoredReposRaw();
+        const enabledRepos = repos.filter(r => r.enabled);
+
+        if (enabledRepos.length === 0) {
             correlatedLogger.debug('No monitored repositories configured');
             return;
         }
 
-        correlatedLogger.info({ repoCount: repos.length }, 'Scanning repositories for indexing');
+        correlatedLogger.info({ repoCount: enabledRepos.length }, 'Scanning repositories for indexing');
 
-        for (const repoName of repos) {
+        for (const repoConfig of enabledRepos) {
             try {
-                await processRepositoryForIndexing(repoName, correlatedLogger);
+                await processRepositoryForIndexing(repoConfig, correlatedLogger);
             } catch (repoError) {
                 correlatedLogger.error(
-                    { repository: repoName, error: (repoError as Error).message },
+                    { repository: repoConfig.name, branch: repoConfig.baseBranch || 'HEAD', error: (repoError as Error).message },
                     'Error processing repository for indexing'
                 );
             }
@@ -251,15 +309,16 @@ function startIndexingWorker(): Worker<IndexingJobData, IndexingResult> {
     // Handle failed jobs - update repository status
     worker.on('failed', async (job, error) => {
         if (job?.data?.repository) {
+            const branch = job.data.baseBranch || 'HEAD';
             logger.error(
-                { repository: job.data.repository, error: error.message },
+                { repository: job.data.repository, branch, error: error.message },
                 'Indexing job failed, marking repository as failed'
             );
             try {
-                await updateRepositoryStatus(job.data.repository, 'failed');
+                await updateRepositoryStatus(job.data.repository, 'failed', branch);
             } catch (updateError) {
                 logger.error(
-                    { repository: job.data.repository, error: (updateError as Error).message },
+                    { repository: job.data.repository, branch, error: (updateError as Error).message },
                     'Failed to update repository status after job failure'
                 );
             }

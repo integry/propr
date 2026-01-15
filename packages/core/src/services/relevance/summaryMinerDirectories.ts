@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
+import { startDirectoryPhase, updateDirectoryProgress } from './indexingCancellation.js';
 
 // --- Constants ---
 
@@ -17,6 +18,16 @@ interface AggregateDirOptions {
   dirSummaryCache: Map<string, string>;
   agent: Agent;
   log: Logger;
+  modelOverride?: string;
+  branch: string;
+}
+
+export interface AggregateDirectoriesOptions {
+  fullName: string;
+  agent: Agent;
+  log: Logger;
+  modelOverride?: string;
+  branch?: string;
 }
 
 // --- Phase C: Directory Aggregation ---
@@ -25,12 +36,14 @@ interface AggregateDirOptions {
  * Aggregates file summaries into directory summaries (bottom-up)
  */
 export async function aggregateDirectories(
-  fullName: string,
-  agent: Agent,
-  log: Logger
+  options: AggregateDirectoriesOptions
 ): Promise<void> {
-  // Get all file summaries
-  const fileSummaries = await db('file_summaries').select('path', 'summary', 'commit_hash');
+  const { fullName, agent, log, modelOverride, branch = 'HEAD' } = options;
+  // Get all file summaries for the specific branch
+  const fileSummaries = await db('file_summaries')
+    .where('path', 'like', `${fullName}/%`)
+    .andWhere({ branch })
+    .select('path', 'summary', 'commit_hash');
 
   if (fileSummaries.length === 0) {
     log.debug('No file summaries to aggregate');
@@ -47,11 +60,16 @@ export async function aggregateDirectories(
 
   log.info({ directoryCount: sortedDirs.length }, 'Aggregating directory summaries');
 
+  // Start directory phase tracking
+  await startDirectoryPhase(fullName, sortedDirs.length);
+
   // Cache for directory summaries to avoid repeated DB lookups
   const dirSummaryCache = new Map<string, string>();
 
   for (const dir of sortedDirs) {
-    await aggregateSingleDirectory({ dirPath: dir, fileSummaries, dirSummaryCache, agent, log });
+    await aggregateSingleDirectory({ dirPath: dir, fileSummaries, dirSummaryCache, agent, log, modelOverride, branch });
+    // Update progress after each directory
+    await updateDirectoryProgress(fullName);
   }
 
   log.info({ directoryCount: sortedDirs.length }, 'Directory aggregation complete');
@@ -80,17 +98,18 @@ function extractDirectories(filePaths: string[]): string[] {
  * Aggregates a single directory's children summaries
  */
 async function aggregateSingleDirectory(options: AggregateDirOptions): Promise<void> {
-  const { dirPath, fileSummaries, dirSummaryCache, agent, log } = options;
+  const { dirPath, fileSummaries, dirSummaryCache, agent, log, modelOverride, branch } = options;
   // Get immediate children (files and subdirs)
   const childFiles = fileSummaries.filter(f => {
     const dir = path.dirname(f.path);
     return dir === dirPath;
   });
 
-  // Get immediate subdirectory summaries
+  // Get immediate subdirectory summaries (for the same branch)
   const immediateSubdirs = await db('directory_summaries')
     .where('path', 'like', `${dirPath}/%`)
     .whereRaw(`path NOT LIKE ?`, [`${dirPath}/%/%`])
+    .andWhere({ branch })
     .select('path', 'summary', 'hash');
 
   if (childFiles.length === 0 && immediateSubdirs.length === 0) {
@@ -107,7 +126,7 @@ async function aggregateSingleDirectory(options: AggregateDirOptions): Promise<v
 
   // Check if directory summary needs updating
   const existingDirSummary = await db('directory_summaries')
-    .where({ path: dirPath })
+    .where({ path: dirPath, branch })
     .first();
 
   if (existingDirSummary && existingDirSummary.hash === newHash) {
@@ -125,14 +144,14 @@ async function aggregateSingleDirectory(options: AggregateDirOptions): Promise<v
   // Estimate output tokens (directory summary is typically 100-200 tokens)
   const estimatedOutputTokens = 150;
 
-  // Get the model being used (from agent config)
-  const modelUsed = agent.config.defaultModel || 'unknown';
+  // Get the model being used (prefer override, fallback to agent config)
+  const modelUsed = modelOverride || agent.config.defaultModel || 'unknown';
 
   let success = false;
   let errorMessage: string | undefined;
 
   try {
-    const response = await agent.analyze(prompt);
+    const response = await agent.analyze(prompt, undefined, modelOverride);
     const summary = parseDirectorySummaryResponse(response);
 
     if (summary) {
@@ -140,11 +159,12 @@ async function aggregateSingleDirectory(options: AggregateDirOptions): Promise<v
       await db('directory_summaries')
         .insert({
           path: dirPath,
+          branch,
           summary,
           hash: newHash,
           last_updated_at: db.fn.now()
         })
-        .onConflict('path')
+        .onConflict(['path', 'branch'])
         .merge({
           summary,
           hash: newHash,

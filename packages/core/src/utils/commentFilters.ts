@@ -11,6 +11,11 @@ interface FilterResult {
     reason: string | null;
 }
 
+interface IgnoreResult {
+    shouldIgnore: boolean;
+    reason: string | null;
+}
+
 interface TriggerResult {
     isTriggered: boolean;
     extractedLlm: string | null;
@@ -107,4 +112,27 @@ export function checkCommentTrigger(commentBody: string | null | undefined, corr
     }
 
     return { isTriggered, extractedLlm };
+}
+
+/**
+ * Check if a comment should be ignored based on keywords
+ * @param commentBody - The comment body text
+ * @param ignoreKeywords - List of keywords to check against
+ * @param correlationId - Correlation ID for logging
+ * @returns Object with shouldIgnore boolean and reason string
+ */
+export function checkCommentIgnore(commentBody: string | null | undefined, ignoreKeywords: string[], correlationId: string | null = null): IgnoreResult {
+    const correlatedLogger: Logger = correlationId ? logger.withCorrelation(correlationId) : logger as unknown as Logger;
+
+    if (!commentBody || ignoreKeywords.length === 0) {
+        return { shouldIgnore: false, reason: null };
+    }
+
+    const foundKeyword = ignoreKeywords.find(keyword => commentBody.includes(keyword));
+    if (foundKeyword) {
+        correlatedLogger.info({ foundKeyword }, 'Comment contains ignore keyword, skipping processing');
+        return { shouldIgnore: true, reason: 'ignore_keyword_match: ' + foundKeyword };
+    }
+
+    return { shouldIgnore: false, reason: null };
 }

@@ -211,6 +211,13 @@ async function handleInfrastructureEvents(
     if (eventType !== 'pull_request') return;
 
     const prEvent = payload as PullRequestEvent;
+
+    // Only handle infrastructure events for gitfix repo PRs
+    const repoFullName = prEvent.repository.full_name;
+    if (repoFullName !== GITFIX_REPO) {
+        return;
+    }
+
     const prNumber = prEvent.pull_request.number;
     const action = prEvent.action;
     const log = logger.withCorrelation(correlationId);

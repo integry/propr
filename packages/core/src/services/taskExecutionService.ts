@@ -1,6 +1,8 @@
 import { db } from '../db/connection.js';
-import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { getAuthenticatedOctokit, getGitHubInstallationToken } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
+import { ensureRepoCloned } from '../git/repoManager.js';
+import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 
 export interface IssueLink {
   number: number;
@@ -35,6 +37,53 @@ interface PlanTask {
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+interface GenerateTitleOptions {
+  draftId: string;
+  planJson: PlanTask[];
+  owner: string;
+  repoName: string;
+  oldName: string;
+  correlationId?: string;
+}
+
+async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<void> {
+  const { draftId, planJson, owner, repoName, oldName, correlationId } = options;
+  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+
+  const githubToken = await getGitHubInstallationToken();
+  const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+
+  const worktreePath = await ensureRepoCloned({
+    repoUrl,
+    owner,
+    repoName,
+    authToken: githubToken
+  });
+
+  const planSummary = JSON.stringify(planJson).substring(0, 3000);
+  const prompt = `Generate a short, descriptive title (5-8 words) for this task based on the following plan:\n\n${planSummary}\n\nTitle:`;
+
+  correlatedLogger.info({ draftId }, 'Generating task title via LLM');
+
+  const generatedTitle = await runLightweightLLMAnalysis({
+    prompt,
+    model: 'haiku',
+    correlationId: correlationId || 'finalize-title-gen',
+    worktreePath,
+    githubToken,
+    issueRef: { number: 0, repoOwner: owner, repoName }
+  });
+
+  const cleanTitle = generatedTitle.replace(/^"|"$/g, '').trim();
+  if (cleanTitle && db) {
+    await db('task_drafts')
+      .where({ draft_id: draftId })
+      .update({ name: cleanTitle });
+
+    correlatedLogger.info({ draftId, oldName, newName: cleanTitle }, 'Updated task title');
+  }
+}
+
 export async function executeDraft(draftId: string, userId: string, correlationId?: string): Promise<ExecutionResult> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
@@ -45,7 +94,7 @@ export async function executeDraft(draftId: string, userId: string, correlationI
   correlatedLogger.info({ draftId }, 'Starting draft execution');
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
-  
+
   if (!draft) {
     throw new Error('Draft not found');
   }
@@ -63,8 +112,8 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     throw new Error(`Draft must be in 'review' status to execute. Current status: ${draft.status}`);
   }
 
-  const planJson: PlanTask[] = typeof draft.plan_json === 'string' 
-    ? JSON.parse(draft.plan_json) 
+  const planJson: PlanTask[] = typeof draft.plan_json === 'string'
+    ? JSON.parse(draft.plan_json)
     : draft.plan_json;
 
   if (!Array.isArray(planJson) || planJson.length === 0) {
@@ -74,6 +123,19 @@ export async function executeDraft(draftId: string, userId: string, correlationI
   const [owner, repoName] = draft.repository.split('/');
   if (!owner || !repoName) {
     throw new Error(`Invalid repository format: ${draft.repository}`);
+  }
+
+  try {
+    await generateAndSaveTaskTitle({
+      draftId,
+      planJson,
+      owner,
+      repoName,
+      oldName: draft.name,
+      correlationId
+    });
+  } catch (err) {
+    correlatedLogger.warn({ err: (err as Error).message }, 'Failed to generate task title, keeping original name');
   }
 
   const octokit = await getAuthenticatedOctokit();

@@ -285,7 +285,7 @@ export class AgentRegistry {
                 throw err;
             }
         }
-        AgentRegistry.instance = undefined as any;
+        AgentRegistry.instance = undefined as unknown as AgentRegistry;
     }
 }
 

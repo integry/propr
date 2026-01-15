@@ -1,6 +1,7 @@
 import path from 'path';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
+import { getIndexingProgress } from '../services/relevance/indexingCancellation.js';
 
 // --- Interfaces ---
 
@@ -145,6 +146,18 @@ export async function saveFollowupKeywords(keywords: string[]): Promise<boolean>
     return true;
 }
 
+export async function loadFollowupIgnoreKeywords(): Promise<string[]> {
+    const keywords = await getConfig<string[]>('followup_ignore_keywords', []);
+    logger.info({ followup_ignore_keywords: keywords }, 'Successfully loaded followup ignore keywords');
+    return keywords;
+}
+
+export async function saveFollowupIgnoreKeywords(keywords: string[]): Promise<boolean> {
+    await saveConfig('followup_ignore_keywords', keywords);
+    logger.info({ keywords }, 'Successfully saved followup ignore keywords');
+    return true;
+}
+
 export async function loadMonitoredRepos(): Promise<string[]> {
     const rawRepos = await getConfig<RepoToMonitor[]>('repos_to_monitor', []);
     const repos = rawRepos.filter(r => r.enabled).map(r => r.name);
@@ -286,10 +299,23 @@ export async function saveSummarizationSettings(settings: SummarizationSettings)
 /**
  * Repository indexing status from the repositories table.
  */
+export interface RepositoryIndexingProgress {
+    totalFiles: number;
+    processedFiles: number;
+    percentComplete: number;
+    inputTokens: number;
+    outputTokens: number;
+    phase: 'files' | 'directories' | 'done';
+    totalDirectories: number;
+    processedDirectories: number;
+}
+
 export interface RepositoryIndexingStatus {
     full_name: string;
+    branch: string;
     indexing_status: 'idle' | 'indexing' | 'completed' | 'failed';
     last_indexed_at: string | null;
+    progress?: RepositoryIndexingProgress;
 }
 
 /**
@@ -298,12 +324,41 @@ export interface RepositoryIndexingStatus {
 export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexingStatus[]> {
     try {
         const repos = await db('repositories')
-            .select('full_name', 'indexing_status', 'last_indexed_at');
-        return repos.map(r => ({
-            full_name: r.full_name,
-            indexing_status: r.indexing_status || 'idle',
-            last_indexed_at: r.last_indexed_at ? new Date(r.last_indexed_at).toISOString() : null
-        }));
+            .select('full_name', 'branch', 'indexing_status', 'last_indexed_at');
+
+        const results: RepositoryIndexingStatus[] = [];
+        for (const r of repos) {
+            const status: RepositoryIndexingStatus = {
+                full_name: r.full_name,
+                branch: r.branch || 'HEAD',
+                indexing_status: r.indexing_status || 'idle',
+                last_indexed_at: r.last_indexed_at ? new Date(r.last_indexed_at).toISOString() : null
+            };
+
+            // Fetch progress data for repos that are actively indexing
+            if (status.indexing_status === 'indexing') {
+                const progress = await getIndexingProgress(r.full_name);
+                if (progress) {
+                    const percentComplete = progress.totalFiles > 0
+                        ? Math.round((progress.processedFiles / progress.totalFiles) * 100)
+                        : 0;
+                    status.progress = {
+                        totalFiles: progress.totalFiles,
+                        processedFiles: progress.processedFiles,
+                        percentComplete,
+                        inputTokens: progress.inputTokens,
+                        outputTokens: progress.outputTokens,
+                        phase: progress.phase,
+                        totalDirectories: progress.totalDirectories,
+                        processedDirectories: progress.processedDirectories
+                    };
+                }
+            }
+
+            results.push(status);
+        }
+
+        return results;
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message }, 'Failed to load repositories indexing status');
@@ -312,22 +367,23 @@ export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexin
 }
 
 /**
- * Gets the indexing status for a specific repository.
+ * Gets the indexing status for a specific repository and branch.
  */
-export async function getRepositoryIndexingStatus(fullName: string): Promise<RepositoryIndexingStatus | null> {
+export async function getRepositoryIndexingStatus(fullName: string, branch: string = 'HEAD'): Promise<RepositoryIndexingStatus | null> {
     try {
         const repo = await db('repositories')
-            .where({ full_name: fullName })
+            .where({ full_name: fullName, branch })
             .first();
         if (!repo) return null;
         return {
             full_name: repo.full_name,
+            branch: repo.branch || 'HEAD',
             indexing_status: repo.indexing_status || 'idle',
             last_indexed_at: repo.last_indexed_at ? new Date(repo.last_indexed_at).toISOString() : null
         };
     } catch (error) {
         const err = error as Error;
-        logger.error({ error: err.message, fullName }, 'Failed to load repository indexing status');
+        logger.error({ error: err.message, fullName, branch }, 'Failed to load repository indexing status');
         return null;
     }
 }

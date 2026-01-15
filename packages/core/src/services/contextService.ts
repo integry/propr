@@ -20,6 +20,8 @@ export interface ContextGenerationResult {
   fileCharCounts: Record<string, number>;
   fileTokenCounts: Record<string, number>;
   includedFiles: string[];
+  /** Files skipped due to security concerns (potential secrets) */
+  skippedSecurityFiles?: SuspiciousFile[];
 }
 
 export interface SuspiciousFile {
@@ -170,22 +172,52 @@ export async function generateContext(options: ContextGenerationOptions): Promis
     return;
   };
 
+  let skippedSecurityFiles: SuspiciousFile[] | undefined;
+
   try {
     // repomix v1.9+ expects rootDirs as first argument (array of directories)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = await (pack as any)([repoPath], config, () => {}, {
+    let result = await (pack as any)([repoPath], config, () => {}, {
       writeOutputToDisk: captureWriteOutput,
       copyToClipboardIfEnabled: noopCopyToClipboard,
     });
 
+    // If suspicious files are detected, filter them out and retry
     if (result.suspiciousFilesResults && result.suspiciousFilesResults.length > 0) {
+      skippedSecurityFiles = result.suspiciousFilesResults;
+      const suspiciousPaths = new Set(result.suspiciousFilesResults.map((f: SuspiciousFile) => f.filePath));
+
       correlatedLogger.warn(
-        { suspiciousFiles: result.suspiciousFilesResults },
-        'Security check detected suspicious files containing potential secrets'
+        { suspiciousFiles: result.suspiciousFilesResults, count: suspiciousPaths.size },
+        'Security check detected suspicious files - skipping them and retrying'
       );
-      throw new SecurityException(
-        `Security check failed: ${result.suspiciousFilesResults.length} file(s) contain potential secrets`,
-        result.suspiciousFilesResults
+
+      // Add suspicious files to ignore patterns and retry
+      const retryConfig = {
+        ...config,
+        ignore: {
+          ...config.ignore,
+          customPatterns: [
+            ...(config.ignore?.customPatterns || []),
+            ...Array.from(suspiciousPaths)
+          ],
+        },
+      };
+
+      // Also filter from filesToInclude if specified
+      if (retryConfig.include && retryConfig.include.length > 0) {
+        retryConfig.include = retryConfig.include.filter((f: string) => !suspiciousPaths.has(f));
+      }
+
+      capturedOutput = '';
+      result = await (pack as any)([repoPath], retryConfig, () => {}, {
+        writeOutputToDisk: captureWriteOutput,
+        copyToClipboardIfEnabled: noopCopyToClipboard,
+      });
+
+      correlatedLogger.info(
+        { skippedCount: suspiciousPaths.size, newTotalFiles: result.totalFiles },
+        'Retried context generation without suspicious files'
       );
     }
 
@@ -282,6 +314,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
         fileCharCounts: limitedResult.fileCharCounts,
         fileTokenCounts: limitedResult.fileTokenCounts,
         includedFiles: selection.selectedFiles,
+        skippedSecurityFiles,
       };
     }
 
@@ -302,11 +335,9 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       fileCharCounts: result.fileCharCounts,
       fileTokenCounts: result.fileTokenCounts,
       includedFiles: Object.keys(result.fileTokenCounts),
+      skippedSecurityFiles,
     };
   } catch (error) {
-    if (error instanceof SecurityException) {
-      throw error;
-    }
     correlatedLogger.error({ error: (error as Error).message, repoPath }, 'Failed to generate context');
     throw error;
   }
