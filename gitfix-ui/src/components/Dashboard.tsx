@@ -11,6 +11,7 @@ import { getRepoConfig, createDraft } from '../api/gitfixApi';
 interface Repo {
   name: string;
   enabled: boolean;
+  baseBranch?: string;
 }
 
 const Dashboard: React.FC = () => {
@@ -36,8 +37,9 @@ const Dashboard: React.FC = () => {
               const repoObj = repo as Record<string, unknown>;
               const name = (repoObj.name as string) || (repoObj.full_name as string);
               const enabled = typeof repoObj.enabled === 'boolean' ? repoObj.enabled : true;
+              const baseBranch = repoObj.baseBranch as string | undefined;
               if (name) {
-                return { name, enabled };
+                return { name, enabled, baseBranch };
               }
             }
             return null;
@@ -73,50 +75,50 @@ const Dashboard: React.FC = () => {
 
   return (
     <div>
-      <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-lg p-6 mb-8 shadow-lg">
+      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8 shadow-sm">
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-xl font-semibold text-white flex items-center gap-2">
+          <h3 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
             <span>✨</span> Start New AI Plan
           </h3>
           <Link
             to="/plans"
-            className="text-sm text-indigo-100 hover:text-white underline"
+            className="text-sm text-gray-500 hover:text-gray-700 underline"
           >
             View History
           </Link>
         </div>
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-indigo-100 mb-2">Repository</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Repository</label>
             <select
               value={selectedRepo}
               onChange={(e) => setSelectedRepo(e.target.value)}
-              className="w-full px-3 py-2 bg-white/10 text-white border border-white/20 rounded-md focus:ring-2 focus:ring-white/50 focus:border-white/50"
+              className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-red-500"
               disabled={repos.length === 0}
             >
               {repos.length === 0 ? (
                 <option value="">No repositories configured</option>
               ) : (
                 repos.map(repo => (
-                  <option key={repo.name} value={repo.name} className="text-gray-900">
-                    {repo.name}
+                  <option key={repo.name} value={repo.name}>
+                    {repo.baseBranch ? `${repo.name} (${repo.baseBranch})` : repo.name}
                   </option>
                 ))
               )}
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-indigo-100 mb-2">What do you want to build?</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">What do you want to build?</label>
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="Describe the feature or task you want to implement..."
               rows={3}
-              className="w-full px-3 py-2 bg-white/10 text-white placeholder-white/50 border border-white/20 rounded-md focus:ring-2 focus:ring-white/50 focus:border-white/50 resize-none"
+              className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-red-500 focus:border-red-500 resize-none"
             />
           </div>
           {error && (
-            <div className="p-3 bg-red-500/20 border border-red-400/30 rounded-md text-red-100 text-sm">
+            <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">
               {error}
             </div>
           )}
@@ -125,8 +127,8 @@ const Dashboard: React.FC = () => {
             disabled={isCreating || !selectedRepo || !prompt.trim()}
             className={`w-full py-3 font-medium rounded-md transition-colors ${
               isCreating || !selectedRepo || !prompt.trim()
-                ? 'bg-white/20 text-white/50 cursor-not-allowed'
-                : 'bg-white text-indigo-600 hover:bg-indigo-50 cursor-pointer'
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                : 'bg-red-600 text-white hover:bg-red-700 cursor-pointer'
             }`}
           >
             {isCreating ? 'Creating...' : 'Start Planning'}
