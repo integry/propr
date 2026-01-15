@@ -241,7 +241,13 @@ export function createGetAttachmentContentHandler(deps: AttachmentContentDeps) {
       const ownership = await deps.verifyOwnership(req.params.id, req.user!.id, ['user_id', 'attachments']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
-      const attachments = (ownership.draft?.attachments || []) as { id: string; storedPath: string; mimeType: string; originalName: string }[];
+      let attachments: { id: string; storedPath: string; mimeType: string; originalName: string }[] = [];
+      const rawAttachments = ownership.draft?.attachments;
+      if (typeof rawAttachments === 'string') {
+        try { attachments = JSON.parse(rawAttachments); } catch { attachments = []; }
+      } else if (Array.isArray(rawAttachments)) {
+        attachments = rawAttachments;
+      }
       const attachment = attachments.find(a => a.id === req.params.attachmentId);
       if (!attachment) { res.status(404).json({ error: 'Attachment not found' }); return; }
 

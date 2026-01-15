@@ -171,7 +171,12 @@ export class AttachmentService {
       if (!draft) {
         throw new Error('Draft not found');
       }
-      const currentAttachments: Attachment[] = draft.attachments || [];
+      let currentAttachments: Attachment[] = [];
+      if (typeof draft.attachments === 'string') {
+        try { currentAttachments = JSON.parse(draft.attachments); } catch { currentAttachments = []; }
+      } else if (Array.isArray(draft.attachments)) {
+        currentAttachments = draft.attachments;
+      }
 
       await db('task_drafts')
         .where({ draft_id: draftId })
@@ -194,7 +199,12 @@ export class AttachmentService {
       throw new Error('Draft not found');
     }
 
-    const attachments: Attachment[] = draft.attachments || [];
+    let attachments: Attachment[] = [];
+    if (typeof draft.attachments === 'string') {
+      try { attachments = JSON.parse(draft.attachments); } catch { attachments = []; }
+    } else if (Array.isArray(draft.attachments)) {
+      attachments = draft.attachments;
+    }
     const attachment = attachments.find(a => a.id === attachmentId);
 
     if (!attachment) {

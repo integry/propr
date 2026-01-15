@@ -6,11 +6,15 @@ import { REFINER_SYSTEM_PROMPT, Plan, PlanItem } from '../claude/prompts/planner
 import { parseLlmJson, JsonParseError } from '../utils/jsonUtils.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
+import fs from 'fs-extra';
+import path from 'path';
 import {
   updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, getDefaultModelLimit, findFilesForPlan,
   GenerationTrace, RELEVANT_SUMMARY_COUNT, RESERVED_OVERHEAD_TOKENS, CHARS_PER_TOKEN,
-  parseContextConfig, checkoutBaseBranch, TaskDraftConfig, Granularity, PlanningFailedError, buildFullContext
+  parseContextConfig, checkoutBaseBranch, TaskDraftConfig, Granularity, PlanningFailedError, buildFullContext,
+  Base64Image
 } from './planningHelpers.js';
+import type { Attachment } from './attachmentService.js';
 
 // Re-export for backwards compatibility
 export { BranchNotFoundError, PlanningFailedError, buildFullContext } from './planningHelpers.js';
@@ -41,6 +45,7 @@ interface TaskDraft {
   plan_json: Plan;
   context_config: TaskDraftConfig;
   generation_trace: GenerationTrace;
+  attachments?: string | Attachment[];
   status: string;
   created_at: Date;
   updated_at: Date;
@@ -59,15 +64,18 @@ interface CallLLMOptions {
   correlationId?: string;
   /** Optional file summaries for files not fully included in the context */
   fileSummaries?: string;
+  /** Optional base64-encoded images to include in the prompt */
+  images?: Base64Image[];
 }
 
 async function callLLMForPlan(opts: CallLLMOptions): Promise<Plan> {
-  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries } = opts;
+  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries, images } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
 
-  const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity, fileSummaries });
-  correlatedLogger.info('Calling LLM for plan generation');
+  // Build prompt with images embedded as base64
+  const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity, fileSummaries, images });
+  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0 }, 'Calling LLM for plan generation');
 
   // Validate token count before sending to LLM
   const modelLimit = getDefaultModelLimit();
@@ -112,6 +120,36 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
   if (!draft.initial_prompt) throw new PlanningFailedError('Draft has no initial prompt');
+
+  // Parse attachments from draft (stored as JSON string in SQLite)
+  let attachments: Attachment[] = [];
+  if (typeof draft.attachments === 'string') {
+    try { attachments = JSON.parse(draft.attachments); } catch { attachments = []; }
+  } else if (Array.isArray(draft.attachments)) {
+    attachments = draft.attachments;
+  }
+
+  // Load and convert image attachments to base64
+  const base64Images: Base64Image[] = [];
+  const imageAttachments = attachments.filter(a => a.type === 'image');
+  for (const img of imageAttachments) {
+    try {
+      const absolutePath = path.isAbsolute(img.storedPath)
+        ? img.storedPath
+        : path.join(process.cwd(), img.storedPath);
+      const imageData = await fs.readFile(absolutePath);
+      base64Images.push({
+        name: img.originalName,
+        mimeType: img.mimeType,
+        base64Data: imageData.toString('base64'),
+      });
+      correlatedLogger.debug({ imageName: img.originalName, size: imageData.length }, 'Loaded image attachment as base64');
+    } catch (error) {
+      correlatedLogger.warn({ imagePath: img.storedPath, error: (error as Error).message }, 'Failed to load image attachment');
+    }
+  }
+
+  correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length }, 'Loaded attachments from draft');
 
   const config = parseContextConfig(draft.context_config as TaskDraftConfig | null);
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
@@ -200,7 +238,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     githubToken,
     repository: draft.repository,
     correlationId,
-    fileSummaries: filteredSummaries
+    fileSummaries: filteredSummaries,
+    images: base64Images.length > 0 ? base64Images : undefined,
   });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
