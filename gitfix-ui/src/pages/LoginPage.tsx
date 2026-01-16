@@ -19,7 +19,7 @@ const LoginPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-light-100 flex items-center justify-center">
       <div className="bg-white p-8 rounded-lg shadow-md max-w-md w-full text-center">
-        <h1 className="text-primary-600 text-3xl font-bold mb-4">GitFix</h1>
+        <img src="/media/logo-and-name.png" alt="ProPR" className="h-12 w-auto mx-auto mb-4" />
         
         {loggedOut && (
           <div className="mb-6 p-3 bg-green-50 text-green-700 rounded-md">

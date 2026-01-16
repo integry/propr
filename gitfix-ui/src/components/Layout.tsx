@@ -85,7 +85,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
         <div className="flex items-center justify-between px-4 py-6 h-16">
-          <h2 className="text-primary-600 text-xl font-bold">GitFix</h2>
+          <Link to="/" className="flex items-center">
+            <img src="/media/logo-and-name.png" alt="ProPR" className="h-8 w-auto" />
+          </Link>
           <button
             onClick={() => setIsSidebarOpen(false)}
             className="lg:hidden text-gray-500 hover:text-gray-700 p-1"
