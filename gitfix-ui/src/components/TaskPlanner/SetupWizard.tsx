@@ -1,18 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { 
-  uploadAttachment, 
-  removeAttachment, 
-  generatePlan, 
-  getDraft, 
+import {
+  uploadAttachment,
+  removeAttachment,
+  generatePlan,
   previewContext,
   downloadContext,
   getRepositoryInfo,
-  PlannerDraft, 
-  PlannerAttachment, 
-  GenerationTrace,
+  PlannerDraft,
+  PlannerAttachment,
   Granularity,
   PreviewResult
 } from '../../api/gitfixApi';
+import { getPlannerSettings, savePlannerSettings } from '../../hooks/usePlannerSettings';
+import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { GenerationProgress } from './GenerationProgress';
 import { CostPreview } from './CostPreview';
 import { SmartFileSelection } from './SmartFileSelection';
@@ -20,6 +20,7 @@ import { AttachmentUploader } from './AttachmentUploader';
 import { GranularitySelector } from './GranularitySelector';
 import { ContextLevelSlider } from './ContextLevelSlider';
 import { BranchSelector } from './BranchSelector';
+import { GenerateButton } from './GenerateButton';
 import { Loader2, Download } from 'lucide-react';
 
 interface SetupWizardProps {
@@ -53,11 +54,14 @@ interface RepoInfoState {
 }
 
 export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete }) => {
+  // Load saved settings from localStorage
+  const savedSettings = getPlannerSettings();
+
   const [config, setConfig] = useState<PlannerConfig>({
     prompt: draft.initial_prompt || '',
     baseBranch: '',
-    granularity: 'balanced',
-    contextLevel: 50,
+    granularity: savedSettings.lastGranularity,
+    contextLevel: savedSettings.lastContextLevel,
     compress: false,
     files: draft.attachments || []
   });
@@ -75,16 +79,16 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     error: null
   });
 
-  const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [generationTrace, setGenerationTrace] = useState<GenerationTrace | undefined>(undefined);
   const [branchError, setBranchError] = useState<string | null>(null);
   const [initialSyncDone, setInitialSyncDone] = useState<boolean>(false);
-  
+
+  const { isGenerating, generationTrace, generationError, startPolling, setGenerationError } =
+    useGenerationPolling({ draftId: draft.draft_id, onComplete: onGenerateComplete });
+
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const configRef = useRef(config);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -197,6 +201,21 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
   }, [config.files.length, fetchPreview, initialSyncDone]);
 
+  // Save granularity and context level to localStorage when they change
+  useEffect(() => {
+    savePlannerSettings({
+      lastGranularity: config.granularity,
+      lastContextLevel: config.contextLevel,
+    });
+  }, [config.granularity, config.contextLevel]);
+
+  // Save repository to localStorage when draft is loaded (repository is set in the draft)
+  useEffect(() => {
+    if (draft.repository) {
+      savePlannerSettings({ lastRepository: draft.repository });
+    }
+  }, [draft.repository]);
+
   const handleUpload = async (file: File) => {
     setIsUploading(true);
     setError(null);
@@ -261,9 +280,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       return;
     }
 
-    setIsGenerating(true);
     setError(null);
-    setGenerationTrace(undefined);
+    setGenerationError(null);
 
     try {
       // Start generation - returns immediately with 202
@@ -273,61 +291,11 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         contextLevel: config.contextLevel,
         compress: config.compress
       });
+      startPolling();
     } catch (err) {
       setError((err as Error).message || 'Failed to start plan generation');
-      setIsGenerating(false);
-      return;
     }
-
-    // Poll for completion
-    pollingIntervalRef.current = setInterval(async () => {
-      try {
-        const updatedDraft = await getDraft(draft.draft_id);
-        if (updatedDraft.generation_trace) {
-          setGenerationTrace(updatedDraft.generation_trace);
-          // Check for error in generation trace
-          const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
-          if (trace.error) {
-            if (pollingIntervalRef.current) {
-              clearInterval(pollingIntervalRef.current);
-              pollingIntervalRef.current = null;
-            }
-            setError(trace.error);
-            setIsGenerating(false);
-            return;
-          }
-        }
-        // Check if generation completed (status changed to 'review')
-        if (updatedDraft.status === 'review') {
-          if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-            pollingIntervalRef.current = null;
-          }
-          onGenerateComplete();
-        }
-        // Check if generation failed (status went back to 'draft')
-        if (updatedDraft.status === 'draft') {
-          if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-            pollingIntervalRef.current = null;
-          }
-          const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
-          setError(trace?.error || 'Plan generation failed');
-          setIsGenerating(false);
-        }
-      } catch (e) {
-        console.error('Failed to poll draft status:', e);
-      }
-    }, 1000);
   };
-
-  useEffect(() => {
-    return () => {
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current);
-      }
-    };
-  }, []);
 
   const isGenerateDisabled = isGenerating || preview.isLoading || !!branchError || repoInfo.isLoading;
 
@@ -403,45 +371,21 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         onRemove={handleRemoveFile}
       />
 
-      {error && (
+      {(error || generationError) && (
         <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
-          {error}
+          {error || generationError}
         </div>
       )}
 
       {isGenerating && <GenerationProgress trace={generationTrace} />}
 
-      <button 
-        onClick={handleGenerate}
+      <GenerateButton
+        isGenerating={isGenerating}
+        isPreviewLoading={preview.isLoading}
+        isRepoLoading={repoInfo.isLoading}
         disabled={isGenerateDisabled}
-        className={`w-full py-3 rounded-lg font-medium transition-colors ${
-          isGenerateDisabled
-            ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-            : 'bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer'
-        }`}
-      >
-        {isGenerating ? (
-          <span className="flex items-center justify-center gap-2">
-            <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-            </svg>
-            Generating Plan...
-          </span>
-        ) : preview.isLoading ? (
-          <span className="flex items-center justify-center gap-2">
-            <Loader2 className="w-5 h-5 animate-spin" />
-            Syncing...
-          </span>
-        ) : repoInfo.isLoading ? (
-          <span className="flex items-center justify-center gap-2">
-            <Loader2 className="w-5 h-5 animate-spin" />
-            Loading repository info...
-          </span>
-        ) : (
-          'Generate Implementation Plan'
-        )}
-      </button>
+        onClick={handleGenerate}
+      />
     </div>
   );
 };
