@@ -7,6 +7,7 @@ import RepositoryReport from './RepositoryReport';
 import RepositoryBreakdown from './RepositoryBreakdown';
 import TaskList from './TaskList';
 import { getRepoConfig, createDraft, uploadAttachment } from '../api/gitfixApi';
+import { getPlannerSettings } from '../hooks/usePlannerSettings';
 import { X, Paperclip, Loader2 } from 'lucide-react';
 
 interface Repo {
@@ -51,8 +52,21 @@ const Dashboard: React.FC = () => {
 
         const enabledRepos = validRepos.filter((r: Repo) => r.enabled);
         setRepos(enabledRepos);
+
         if (enabledRepos.length > 0) {
-          setSelectedRepo(enabledRepos[0].name);
+          // Try to use the last used repository from localStorage
+          const savedSettings = getPlannerSettings();
+          const lastRepo = savedSettings.lastRepository;
+
+          // Check if the last used repository is still available
+          const isLastRepoAvailable = lastRepo && enabledRepos.some(r => r.name === lastRepo);
+
+          if (isLastRepoAvailable) {
+            setSelectedRepo(lastRepo);
+          } else {
+            // Fall back to first available repository
+            setSelectedRepo(enabledRepos[0].name);
+          }
         }
       } catch (err) {
         console.error('Failed to load repositories:', err);

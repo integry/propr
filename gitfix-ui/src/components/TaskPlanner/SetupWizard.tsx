@@ -1,18 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { 
-  uploadAttachment, 
-  removeAttachment, 
-  generatePlan, 
-  getDraft, 
+import {
+  uploadAttachment,
+  removeAttachment,
+  generatePlan,
+  getDraft,
   previewContext,
   downloadContext,
   getRepositoryInfo,
-  PlannerDraft, 
-  PlannerAttachment, 
+  PlannerDraft,
+  PlannerAttachment,
   GenerationTrace,
   Granularity,
   PreviewResult
 } from '../../api/gitfixApi';
+import { getPlannerSettings, savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { GenerationProgress } from './GenerationProgress';
 import { CostPreview } from './CostPreview';
 import { SmartFileSelection } from './SmartFileSelection';
@@ -53,11 +54,14 @@ interface RepoInfoState {
 }
 
 export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete }) => {
+  // Load saved settings from localStorage
+  const savedSettings = getPlannerSettings();
+
   const [config, setConfig] = useState<PlannerConfig>({
     prompt: draft.initial_prompt || '',
     baseBranch: '',
-    granularity: 'balanced',
-    contextLevel: 50,
+    granularity: savedSettings.lastGranularity,
+    contextLevel: savedSettings.lastContextLevel,
     compress: false,
     files: draft.attachments || []
   });
@@ -196,6 +200,21 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       fetchPreview();
     }
   }, [config.files.length, fetchPreview, initialSyncDone]);
+
+  // Save granularity and context level to localStorage when they change
+  useEffect(() => {
+    savePlannerSettings({
+      lastGranularity: config.granularity,
+      lastContextLevel: config.contextLevel,
+    });
+  }, [config.granularity, config.contextLevel]);
+
+  // Save repository to localStorage when draft is loaded (repository is set in the draft)
+  useEffect(() => {
+    if (draft.repository) {
+      savePlannerSettings({ lastRepository: draft.repository });
+    }
+  }, [draft.repository]);
 
   const handleUpload = async (file: File) => {
     setIsUploading(true);
