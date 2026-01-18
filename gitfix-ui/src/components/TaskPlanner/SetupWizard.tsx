@@ -89,12 +89,22 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     useGenerationPolling({ draftId: draft.draft_id, onComplete: onGenerateComplete });
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const configRef = useRef(config);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     configRef.current = config;
   }, [config]);
+
+  // Cleanup: abort any pending request when component unmounts
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   const autoResize = useCallback(() => {
     const textarea = textareaRef.current;
@@ -131,15 +141,24 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     if (!currentConfig.prompt.trim() || !currentConfig.baseBranch) {
       return;
     }
-    
+
     if (!BRANCH_NAME_REGEX.test(currentConfig.baseBranch)) {
       setBranchError('Invalid branch name format');
       return;
     }
     setBranchError(null);
-    
+
+    // Abort any previous request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    // Create new controller for this request
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setPreview(prev => ({ ...prev, isLoading: true, error: null }));
-    
+
     try {
       const result = await previewContext({
         draftId: draft.draft_id,
@@ -149,8 +168,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         contextLevel: currentConfig.contextLevel,
         compress: currentConfig.compress,
         files: currentConfig.files.map(f => f.originalName)
-      });
-      
+      }, controller.signal);
+
       setPreview({
         isLoading: false,
         data: result,
@@ -158,6 +177,10 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         lastSynced: new Date()
       });
     } catch (err) {
+      // Ignore abort errors - these are expected when we cancel requests
+      if ((err as Error).name === 'AbortError') {
+        return;
+      }
       const errorMessage = (err as Error).message || 'Failed to fetch preview';
       setPreview(prev => ({
         ...prev,

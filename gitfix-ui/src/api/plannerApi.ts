@@ -141,12 +141,13 @@ export const generatePlan = async (draftId: string, options?: PlanGenerationOpti
   await handleApiResponse(response);
 };
 
-export const previewContext = async (options: PreviewOptions): Promise<PreviewResult> => {
+export const previewContext = async (options: PreviewOptions, signal?: AbortSignal): Promise<PreviewResult> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/preview`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(options),
-    credentials: 'include'
+    credentials: 'include',
+    signal
   });
   await handleApiResponse(response);
   return response.json();
