@@ -7,7 +7,7 @@ import RepositoryReport from './RepositoryReport';
 import RepositoryBreakdown from './RepositoryBreakdown';
 import TaskList from './TaskList';
 import { getRepoConfig, createDraft, uploadAttachment } from '../api/gitfixApi';
-import { resizeImage } from './TaskPlanner/AttachmentUploader';
+import { resizeImage } from './TaskPlanner/imageUtils';
 import { getPlannerSettings } from '../hooks/usePlannerSettings';
 import { X, Paperclip, Loader2 } from 'lucide-react';
 
