@@ -9,13 +9,69 @@ import TaskList from './TaskList';
 import { getRepoConfig, createDraft, uploadAttachment } from '../api/gitfixApi';
 import { resizeImage } from './TaskPlanner/imageUtils';
 import { getPlannerSettings } from '../hooks/usePlannerSettings';
-import { X, Paperclip, Loader2 } from 'lucide-react';
+import { X, Paperclip, Loader2, Image } from 'lucide-react';
 
 interface Repo {
   name: string;
   enabled: boolean;
   baseBranch?: string;
 }
+
+// Component for displaying file preview with image thumbnails
+const FilePreview: React.FC<{
+  file: File;
+  index: number;
+  onRemove: (index: number) => void;
+}> = ({ file, index, onRemove }) => {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const isImage = file.type.startsWith('image/');
+
+  useEffect(() => {
+    if (isImage) {
+      const url = URL.createObjectURL(file);
+      setPreviewUrl(url);
+      return () => URL.revokeObjectURL(url);
+    }
+  }, [file, isImage]);
+
+  return (
+    <div className="inline-flex flex-col items-center bg-gray-50 border border-gray-200 rounded-lg p-2 relative group">
+      <button
+        onClick={() => onRemove(index)}
+        className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600 z-10"
+        title="Remove"
+        type="button"
+      >
+        <X className="w-3 h-3" />
+      </button>
+
+      {isImage && previewUrl ? (
+        <div className="w-20 h-20 mb-1.5 overflow-hidden rounded bg-gray-100 flex items-center justify-center">
+          <img
+            src={previewUrl}
+            alt={file.name}
+            className="max-w-full max-h-full object-contain"
+          />
+        </div>
+      ) : (
+        <div className="w-20 h-20 mb-1.5 overflow-hidden rounded bg-gray-100 flex items-center justify-center">
+          <Paperclip className="w-6 h-6 text-gray-400" />
+        </div>
+      )}
+
+      <div className="flex items-center gap-1 max-w-[80px]">
+        {isImage ? (
+          <Image className="w-3 h-3 text-indigo-500 flex-shrink-0" />
+        ) : (
+          <Paperclip className="w-3 h-3 text-gray-500 flex-shrink-0" />
+        )}
+        <span className="text-xs text-gray-700 truncate" title={file.name}>
+          {file.name}
+        </span>
+      </div>
+    </div>
+  );
+};
 
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
@@ -195,22 +251,14 @@ const Dashboard: React.FC = () => {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Attachments (optional)</label>
             {selectedFiles.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-2">
+              <div className="flex flex-wrap gap-3 mb-3">
                 {selectedFiles.map((file, index) => (
-                  <div
+                  <FilePreview
                     key={`${file.name}-${index}`}
-                    className="inline-flex items-center gap-1.5 bg-gray-100 border border-gray-200 rounded-md px-2 py-1 text-sm text-gray-700"
-                  >
-                    <Paperclip className="w-3.5 h-3.5 text-gray-500" />
-                    <span className="max-w-[150px] truncate">{file.name}</span>
-                    <button
-                      onClick={() => handleRemoveFile(index)}
-                      className="text-gray-400 hover:text-primary-500 transition-colors"
-                      type="button"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                    file={file}
+                    index={index}
+                    onRemove={handleRemoveFile}
+                  />
                 ))}
               </div>
             )}
