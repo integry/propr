@@ -4,7 +4,7 @@ import { X, FileText, Image, Loader2 } from 'lucide-react';
 
 const MAX_IMAGE_SIZE = 1024;
 
-const resizeImage = (file: File): Promise<File> => {
+export const resizeImage = (file: File): Promise<File> => {
   return new Promise((resolve) => {
     if (!file.type.startsWith('image/') || file.size <= 1024 * 1024) {
       resolve(file);
@@ -195,7 +195,7 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
               Uploading...
             </span>
           ) : (
-            'Upload logs or screenshots (drag & drop supported)'
+            'Upload logs or screenshots (drag & drop or paste supported)'
           )}
         </label>
         <p className="text-xs text-gray-400 mt-1">Images over 1MB will be automatically resized</p>

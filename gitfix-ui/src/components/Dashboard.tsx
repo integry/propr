@@ -7,6 +7,7 @@ import RepositoryReport from './RepositoryReport';
 import RepositoryBreakdown from './RepositoryBreakdown';
 import TaskList from './TaskList';
 import { getRepoConfig, createDraft, uploadAttachment } from '../api/gitfixApi';
+import { resizeImage } from './TaskPlanner/AttachmentUploader';
 import { getPlannerSettings } from '../hooks/usePlannerSettings';
 import { X, Paperclip, Loader2 } from 'lucide-react';
 
@@ -24,6 +25,7 @@ const Dashboard: React.FC = () => {
   const [isCreating, setIsCreating] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [isPastingImage, setIsPastingImage] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -115,6 +117,35 @@ const Dashboard: React.FC = () => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const blob = item.getAsFile();
+        if (!blob) continue;
+
+        const filename = `pasted-image-${Date.now()}.png`;
+        const file = new File([blob], filename, { type: blob.type });
+
+        setIsPastingImage(true);
+        setError(null);
+        try {
+          const processedFile = await resizeImage(file);
+          setSelectedFiles(prev => [...prev, processedFile]);
+        } catch (err) {
+          setError('Failed to process pasted image');
+          console.error('Paste error:', err);
+        } finally {
+          setIsPastingImage(false);
+        }
+        return;
+      }
+    }
+  };
+
   return (
     <div>
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8 shadow-sm">
@@ -154,10 +185,12 @@ const Dashboard: React.FC = () => {
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
+              onPaste={handlePaste}
               placeholder="Describe the feature or task you want to implement..."
               rows={3}
               className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 resize-none"
             />
+            <p className="text-xs text-gray-400 mt-1">Tip: You can paste screenshots directly into this field</p>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Attachments (optional)</label>
@@ -192,10 +225,19 @@ const Dashboard: React.FC = () => {
             />
             <label
               htmlFor="dashboard-file-upload"
-              className="inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-primary-600 cursor-pointer transition-colors"
+              className={`inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-primary-600 cursor-pointer transition-colors ${isPastingImage ? 'opacity-50' : ''}`}
             >
-              <Paperclip className="w-4 h-4" />
-              Attach screenshots, logs, or files
+              {isPastingImage ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Processing pasted image...
+                </>
+              ) : (
+                <>
+                  <Paperclip className="w-4 h-4" />
+                  Attach screenshots, logs, or files
+                </>
+              )}
             </label>
           </div>
           {error && (
