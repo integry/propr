@@ -17,6 +17,7 @@ import { GenerationProgress } from './GenerationProgress';
 import { CostPreview } from './CostPreview';
 import { SmartFileSelection } from './SmartFileSelection';
 import { AttachmentUploader } from './AttachmentUploader';
+import { resizeImage } from './imageUtils';
 import { GranularitySelector } from './GranularitySelector';
 import { ContextLevelSlider } from './ContextLevelSlider';
 import { BranchSelector } from './BranchSelector';
@@ -262,6 +263,31 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
   };
 
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const blob = item.getAsFile();
+        if (!blob) continue;
+
+        const filename = `pasted-image-${Date.now()}.png`;
+        const file = new File([blob], filename, { type: blob.type });
+
+        try {
+          const processedFile = await resizeImage(file);
+          await handleUpload(processedFile);
+        } catch (err) {
+          setError('Failed to process pasted image');
+          console.error('Paste error:', err);
+        }
+        return;
+      }
+    }
+  };
+
   const handleExportContext = async () => {
     if (!config.prompt.trim() || !config.baseBranch) {
       setError('Please provide a prompt and select a branch before exporting');
@@ -347,10 +373,12 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           value={config.prompt}
           onChange={(e) => setConfig(prev => ({ ...prev, prompt: e.target.value }))}
           onInput={autoResize}
+          onPaste={handlePaste}
           placeholder="Describe what you want the AI to do..."
           className="w-full px-4 py-3 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 resize-none overflow-hidden"
           style={{ minHeight: '120px' }}
         />
+        <p className="text-xs text-gray-400 mt-1">Tip: You can paste screenshots directly into this field</p>
       </div>
 
       <GranularitySelector

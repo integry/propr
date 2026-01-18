@@ -1,50 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { PlannerAttachment, getAttachmentUrl } from '../../api/gitfixApi';
 import { X, FileText, Image, Loader2 } from 'lucide-react';
-
-const MAX_IMAGE_SIZE = 1024;
-
-const resizeImage = (file: File): Promise<File> => {
-  return new Promise((resolve) => {
-    if (!file.type.startsWith('image/') || file.size <= 1024 * 1024) {
-      resolve(file);
-      return;
-    }
-
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const img = new window.Image();
-    
-    img.onload = () => {
-      let { width, height } = img;
-      
-      if (width > MAX_IMAGE_SIZE || height > MAX_IMAGE_SIZE) {
-        if (width > height) {
-          height = (height / width) * MAX_IMAGE_SIZE;
-          width = MAX_IMAGE_SIZE;
-        } else {
-          width = (width / height) * MAX_IMAGE_SIZE;
-          height = MAX_IMAGE_SIZE;
-        }
-      }
-      
-      canvas.width = width;
-      canvas.height = height;
-      ctx?.drawImage(img, 0, 0, width, height);
-      
-      canvas.toBlob((blob) => {
-        if (blob) {
-          resolve(new File([blob], file.name, { type: file.type }));
-        } else {
-          resolve(file);
-        }
-      }, file.type, 0.9);
-    };
-    
-    img.onerror = () => resolve(file);
-    img.src = URL.createObjectURL(file);
-  });
-};
+import { resizeImage } from './imageUtils';
 
 interface AttachmentPreviewProps {
   file: PlannerAttachment;
@@ -195,7 +152,7 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
               Uploading...
             </span>
           ) : (
-            'Upload logs or screenshots (drag & drop supported)'
+            'Upload logs or screenshots (drag & drop or paste supported)'
           )}
         </label>
         <p className="text-xs text-gray-400 mt-1">Images over 1MB will be automatically resized</p>
