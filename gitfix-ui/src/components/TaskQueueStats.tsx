@@ -42,38 +42,38 @@ const TaskQueueStats: React.FC = () => {
   }
 
   const getStatColor = (type: string, value: number): string => {
-    if (type === 'failed' && value > 0) return '#ef4444';
-    if (type === 'active' && value > 0) return '#16A34A';
-    if (type === 'waiting' && value > 10) return '#f59e0b';
-    if (type === 'completed') return '#3b82f6';
-    return '#374151'; // gray-700
+    if (type === 'failed' && value > 0) return '#ef4444'; // red for failure states
+    if (type === 'active' && value > 0) return '#10B981'; // emerald for success/active
+    if (type === 'waiting' && value > 10) return '#f59e0b'; // amber for warning
+    if (type === 'completed') return '#6366F1'; // indigo for primary/neutral
+    return '#1e293b'; // slate-800 for default
   };
 
   return (
     <div className="min-w-[300px]">
-      <h3 className="text-lg font-semibold text-gray-900 mb-6">Task Queue</h3>
-      <div className="grid grid-cols-2 gap-4 bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
-        <div className="stat-item bg-gray-50 rounded-lg p-4 text-center border border-gray-200">
-          <div className="text-sm text-gray-500 mb-1">Active</div>
-          <div className="text-3xl font-bold" style={{ color: getStatColor('active', stats?.active) }}>
+      <h3 className="section-header mb-6">Task Queue</h3>
+      <div className="grid grid-cols-2 gap-4 dashboard-card">
+        <div className="bg-slate-50 rounded-lg p-4 text-center border border-slate-200">
+          <div className="stat-label mb-1">Active</div>
+          <div className="stat-value" style={{ color: getStatColor('active', stats?.active) }}>
             {stats?.active || 0}
           </div>
         </div>
-        <div className="stat-item bg-gray-50 rounded-lg p-4 text-center border border-gray-200">
-          <div className="text-sm text-gray-500 mb-1">Waiting</div>
-          <div className="text-3xl font-bold" style={{ color: getStatColor('waiting', stats?.waiting) }}>
+        <div className="bg-slate-50 rounded-lg p-4 text-center border border-slate-200">
+          <div className="stat-label mb-1">Waiting</div>
+          <div className="stat-value" style={{ color: getStatColor('waiting', stats?.waiting) }}>
             {stats?.waiting || 0}
           </div>
         </div>
-        <div className="stat-item bg-gray-50 rounded-lg p-4 text-center border border-gray-200">
-          <div className="text-sm text-gray-500 mb-1">Completed (24h)</div>
-          <div className="text-3xl font-bold" style={{ color: getStatColor('completed', stats?.completed) }}>
+        <div className="bg-slate-50 rounded-lg p-4 text-center border border-slate-200">
+          <div className="stat-label mb-1">Completed (24h)</div>
+          <div className="stat-value" style={{ color: getStatColor('completed', stats?.completed) }}>
             {stats?.completed || 0}
           </div>
         </div>
-        <div className="stat-item bg-gray-50 rounded-lg p-4 text-center border border-gray-200">
-          <div className="text-sm text-gray-500 mb-1">Failed</div>
-          <div className="text-3xl font-bold" style={{ color: getStatColor('failed', stats?.failed) }}>
+        <div className="bg-slate-50 rounded-lg p-4 text-center border border-slate-200">
+          <div className="stat-label mb-1">Failed</div>
+          <div className="stat-value" style={{ color: getStatColor('failed', stats?.failed) }}>
             {stats?.failed || 0}
           </div>
         </div>
