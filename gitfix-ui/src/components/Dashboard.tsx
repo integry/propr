@@ -1,15 +1,42 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import SystemStatus from './SystemStatus';
-import TaskQueueStats from './TaskQueueStats';
 import TaskStatsChart from './TaskStatsChart';
-import RepositoryReport from './RepositoryReport';
 import RepositoryBreakdown from './RepositoryBreakdown';
 import TaskList from './TaskList';
-import { getRepoConfig, createDraft, uploadAttachment } from '../api/gitfixApi';
+import { getRepoConfig, createDraft, uploadAttachment, getQueueStats } from '../api/gitfixApi';
+import { getTaskStats, TaskStatsResponse } from '../api/taskStatsApi';
 import { resizeImage } from './TaskPlanner/imageUtils';
 import { getPlannerSettings } from '../hooks/usePlannerSettings';
 import { X, Paperclip, Loader2, Image } from 'lucide-react';
+
+interface QueueStats {
+  active: number;
+  waiting: number;
+  completed: number;
+  failed: number;
+}
+
+// KPI Card component for the unified KPI bar
+const KPICard: React.FC<{
+  title: string;
+  value: string | number;
+  color?: string;
+  isLoading?: boolean;
+}> = ({ title, value, color = 'text-slate-800', isLoading }) => (
+  <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+    <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">{title}</div>
+    <div className={`text-2xl font-bold ${color} flex items-center gap-2`}>
+      {isLoading ? (
+        <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
+      ) : (
+        value
+      )}
+      {title === 'Active Tasks' && !isLoading && Number(value) > 0 && (
+        <Loader2 className="w-4 h-4 animate-spin text-green-500" />
+      )}
+    </div>
+  </div>
+);
 
 interface Repo {
   name: string;
@@ -84,6 +111,11 @@ const Dashboard: React.FC = () => {
   const [isPastingImage, setIsPastingImage] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Lifted state for KPIs
+  const [taskStats, setTaskStats] = useState<TaskStatsResponse | null>(null);
+  const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState<boolean>(true);
+
   useEffect(() => {
     const loadRepos = async () => {
       try {
@@ -132,6 +164,37 @@ const Dashboard: React.FC = () => {
     };
     loadRepos();
   }, []);
+
+  // Fetch task stats and queue stats for KPIs
+  useEffect(() => {
+    const fetchAllStats = async () => {
+      try {
+        setStatsLoading(true);
+        const [tStats, qStats] = await Promise.all([
+          getTaskStats(),
+          getQueueStats()
+        ]);
+        setTaskStats(tStats);
+        setQueueStats(qStats as QueueStats);
+      } catch (err) {
+        console.error('Failed to fetch stats:', err);
+      } finally {
+        setStatsLoading(false);
+      }
+    };
+
+    fetchAllStats();
+    const interval = setInterval(fetchAllStats, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Calculate success rate
+  const getSuccessRate = (): string => {
+    if (!taskStats?.summary) return '0%';
+    const { completed, total } = taskStats.summary;
+    if (total === 0) return '0%';
+    return Math.round((completed / total) * 100) + '%';
+  };
 
   const handleStartPlanning = async () => {
     if (!selectedRepo || !prompt.trim()) return;
@@ -314,33 +377,59 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      <h2 className="text-2xl font-semibold text-white mb-6">System Overview</h2>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        <SystemStatus />
-        <TaskQueueStats />
-      </div>
-
-      <h2 className="text-2xl font-semibold text-white mb-6">Task Statistics</h2>
-      <div className="mb-8">
-        <TaskStatsChart />
-      </div>
-
-      <h2 className="text-2xl font-semibold text-white mb-6">Repository Metrics</h2>
-      <div className="mb-8">
-        <RepositoryReport />
-      </div>
-
-      <div className="mb-8">
-        <RepositoryBreakdown />
-      </div>
-
-      <div>
-        <h3 className="text-xl font-semibold text-white mb-4">Recent Tasks</h3>
-        <TaskList
-          limit={5}
-          showViewAll={true}
-          hideFilters={true}
+      {/* KPI Bar */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <KPICard
+          title="Active Tasks"
+          value={queueStats?.active || 0}
+          color="text-green-600"
+          isLoading={statsLoading && !queueStats}
         />
+        <KPICard
+          title="Success Rate"
+          value={getSuccessRate()}
+          color="text-blue-600"
+          isLoading={statsLoading && !taskStats}
+        />
+        <KPICard
+          title="Total Tasks"
+          value={taskStats?.summary?.total || 0}
+          isLoading={statsLoading && !taskStats}
+        />
+        <KPICard
+          title="Failed"
+          value={taskStats?.summary?.failed || 0}
+          color="text-red-500"
+          isLoading={statsLoading && !taskStats}
+        />
+      </div>
+
+      {/* Main Grid - 2 columns */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left Column (2/3 width) */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Trend Charts */}
+          <TaskStatsChart data={taskStats} mode="trends" />
+
+          {/* Recent Tasks */}
+          <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+            <h3 className="text-lg font-bold text-slate-800 mb-4">Recent Tasks</h3>
+            <TaskList
+              limit={5}
+              showViewAll={true}
+              hideFilters={true}
+            />
+          </div>
+        </div>
+
+        {/* Right Column (1/3 width) */}
+        <div className="space-y-6">
+          {/* Status Distribution */}
+          <TaskStatsChart data={taskStats} mode="distribution" />
+
+          {/* Top Repositories */}
+          <RepositoryBreakdown limit={5} />
+        </div>
       </div>
     </div>
   );
