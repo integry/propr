@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { getAgentRegistry, getClaudeUsageStats, ClaudeUsageStats } from '@gitfix/core';
+import { getAgentRegistry, getClaudeUsageStats, ClaudeUsageStats, AgentConfig, Agent } from '@gitfix/core';
+import * as configManager from '@gitfix/core';
 
 interface AgentChatQuery {
   agentId: string;
@@ -90,26 +91,26 @@ export function createAgentRoutes() {
    * GET /api/agents/:agentId/usage
    * Fetches usage statistics for a specific agent.
    * Currently only supported for Claude agents.
+   * Works for both enabled and disabled agents.
    */
   router.get('/:agentId/usage', async (req: Request, res: Response): Promise<void> => {
     try {
       const { agentId } = req.params;
 
-      // Get agent registry and find the agent
-      const registry = getAgentRegistry();
-      await registry.ensureInitialized();
-      const agent = registry.getAgentById(agentId);
+      // Load agent config directly from config (works for both enabled and disabled agents)
+      const allAgentConfigs: AgentConfig[] = await configManager.loadAgents();
+      const agentConfig = allAgentConfigs.find((a: AgentConfig) => a.id === agentId);
 
-      if (!agent) {
+      if (!agentConfig) {
         res.status(404).json({ error: 'Agent not found' });
         return;
       }
 
       // Currently only Claude agents support usage stats
-      if (agent.config.type !== 'claude') {
+      if (agentConfig.type !== 'claude') {
         res.status(400).json({
           error: 'Usage stats only available for Claude agents',
-          agentType: agent.config.type
+          agentType: agentConfig.type
         });
         return;
       }
@@ -120,9 +121,22 @@ export function createAgentRoutes() {
         return;
       }
 
-      // Create LLM parsing function that uses the agent itself
-      const parseWithLLM = async (rawOutput: string): Promise<Partial<ClaudeUsageStats>> => {
-        const parsingPrompt = `You are parsing the raw terminal output from a Claude Code /usage command.
+      // Try to get an enabled agent for LLM parsing (use registry if available)
+      const registry = getAgentRegistry();
+      await registry.ensureInitialized();
+
+      // Try to get the specific agent first (if enabled), otherwise get any enabled Claude agent
+      let parsingAgent: Agent | undefined = registry.getAgentById(agentId);
+      if (!parsingAgent) {
+        // Fall back to any enabled Claude agent for parsing
+        const allAgents = registry.getAllAgents();
+        parsingAgent = allAgents.find((a: Agent) => a.config.type === 'claude');
+      }
+
+      // Create LLM parsing function if we have an available agent
+      const parseWithLLM = parsingAgent
+        ? async (rawOutput: string): Promise<Partial<ClaudeUsageStats>> => {
+            const parsingPrompt = `You are parsing the raw terminal output from a Claude Code /usage command.
 Extract the following information and return it as a JSON object:
 
 {
@@ -139,27 +153,28 @@ Return ONLY the JSON object, no other text.
 Raw terminal output to parse:
 ${rawOutput}`;
 
-        try {
-          // Use the same agent's analyze function with haiku for lightweight parsing
-          const analysisResult = await agent.analyze(parsingPrompt, undefined, 'haiku');
+            try {
+              // Use an available agent's analyze function with haiku for lightweight parsing
+              const analysisResult = await parsingAgent!.analyze(parsingPrompt, undefined, 'haiku');
 
-          // Try to extract JSON from the response
-          const jsonMatch = analysisResult.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            return JSON.parse(jsonMatch[0]);
+              // Try to extract JSON from the response
+              const jsonMatch = analysisResult.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                return JSON.parse(jsonMatch[0]);
+              }
+              return {};
+            } catch {
+              return {};
+            }
           }
-          return {};
-        } catch {
-          return {};
-        }
-      };
+        : undefined; // No LLM parsing if no enabled Claude agent available
 
       const usageStats = await getClaudeUsageStats(githubToken, parseWithLLM);
 
       res.json({
         agentId,
-        agentAlias: agent.config.alias,
-        agentType: agent.config.type,
+        agentAlias: agentConfig.alias,
+        agentType: agentConfig.type,
         usage: usageStats
       });
     } catch (error) {
