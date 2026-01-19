@@ -3,7 +3,7 @@ import os from 'os';
 import logger from '../utils/logger.js';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { generateTaskImportPrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
-import { executeDockerCommand, buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.js';
+import { executeDockerCommand, buildClaudeDockerImage as buildDockerImageInternal, InputSequenceItem } from './docker/dockerExecutor.js';
 import {
     verifyWorktreeStructure,
     verifyWorktreePostExecution,
@@ -301,3 +301,230 @@ CRITICAL: Do not modify any files. Do not run any commands. Only provide direct 
         throw error;
     }
 }
+
+/**
+ * Options for running an interactive Claude session.
+ */
+export interface InteractiveSessionOptions {
+    /** GitHub token for container authentication */
+    githubToken: string;
+    /** Sequence of inputs to send with delays */
+    inputSequence: InputSequenceItem[];
+    /** Timeout in milliseconds (default: 60000) */
+    timeout?: number;
+    /** Docker image to use (defaults to CLAUDE_DOCKER_IMAGE) */
+    dockerImage?: string;
+    /** Config path to mount */
+    configPath?: string;
+}
+
+/**
+ * Result from an interactive Claude session.
+ */
+export interface InteractiveSessionResult {
+    /** Raw stdout output from the session */
+    stdout: string;
+    /** Raw stderr output from the session */
+    stderr: string;
+    /** Exit code of the process */
+    exitCode: number | null;
+    /** Whether the session completed successfully */
+    success: boolean;
+}
+
+/**
+ * Runs a Claude Code interactive session to execute commands like /usage or /doctor.
+ * These commands are only available in the interactive REPL mode, not via -p flag.
+ *
+ * @param options - Interactive session configuration
+ * @returns The raw output from the interactive session
+ *
+ * @example
+ * ```typescript
+ * const result = await runInteractiveSession({
+ *   githubToken: process.env.GH_TOKEN,
+ *   inputSequence: [
+ *     { text: '/usage\n', delayMs: 3000 },
+ *     { text: '/exit\n', delayMs: 5000 }
+ *   ]
+ * });
+ * console.log(result.stdout); // Raw terminal output
+ * ```
+ */
+export async function runInteractiveSession(options: InteractiveSessionOptions): Promise<InteractiveSessionResult> {
+    const {
+        githubToken,
+        inputSequence,
+        timeout = 60000,
+        dockerImage = CLAUDE_DOCKER_IMAGE,
+        configPath = CLAUDE_CONFIG_PATH
+    } = options;
+
+    logger.info({
+        dockerImage,
+        inputCount: inputSequence.length,
+        timeout
+    }, 'Starting interactive Claude session...');
+
+    // Build Docker args for interactive mode (no -p flag, no --output-format)
+    const dockerArgs = [
+        'run', '--rm',
+        '-i', // Interactive mode (keep stdin open)
+        '--security-opt', 'no-new-privileges',
+        '--network', 'bridge',
+        '-v', `${configPath}:/home/node/.claude:rw`,
+        '-e', `GH_TOKEN=${githubToken}`,
+        '-w', '/home/node/workspace',
+        dockerImage,
+        'claude' // No arguments starts REPL
+    ];
+
+    try {
+        const result = await executeDockerCommand('docker', dockerArgs, {
+            timeout,
+            inputSequence
+        });
+
+        logger.info({
+            exitCode: result.exitCode,
+            stdoutLength: result.stdout.length,
+            stderrLength: result.stderr.length
+        }, 'Interactive Claude session completed');
+
+        return {
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.exitCode,
+            success: result.exitCode === 0
+        };
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ error: err.message }, 'Interactive Claude session failed');
+        throw error;
+    }
+}
+
+/**
+ * Parsed usage statistics from Claude Code.
+ */
+export interface ClaudeUsageStats {
+    /** Current session usage percentage (0-100) */
+    currentSessionUsed: number;
+    /** Session reset time */
+    sessionResetTime?: string;
+    /** Current week usage percentage for all models (0-100) */
+    currentWeekAllModelsUsed: number;
+    /** Week reset time for all models */
+    weekAllModelsResetTime?: string;
+    /** Current week usage percentage for Sonnet only (0-100) */
+    currentWeekSonnetUsed?: number;
+    /** Week reset time for Sonnet */
+    weekSonnetResetTime?: string;
+    /** Raw output for debugging */
+    rawOutput: string;
+}
+
+/**
+ * Gets Claude Code usage statistics by running /usage in interactive mode.
+ * The output is parsed using an LLM call since the format may vary.
+ *
+ * @param githubToken - GitHub token for authentication
+ * @param parseWithLLM - Optional function to parse the raw output with an LLM
+ * @returns Parsed usage statistics
+ */
+export async function getClaudeUsageStats(
+    githubToken: string,
+    parseWithLLM?: (rawOutput: string) => Promise<Partial<ClaudeUsageStats>>
+): Promise<ClaudeUsageStats> {
+    logger.info('Fetching Claude usage stats via interactive session...');
+
+    const result = await runInteractiveSession({
+        githubToken,
+        inputSequence: [
+            { text: '/usage\n', delayMs: 3000 }, // Wait for boot, then type command
+            { text: '/exit\n', delayMs: 5000 }   // Wait for output, then exit
+        ],
+        timeout: 30000
+    });
+
+    const rawOutput = result.stdout;
+
+    // Default parsed values (will be overwritten if LLM parsing is provided)
+    let parsedStats: Partial<ClaudeUsageStats> = {};
+
+    // If an LLM parsing function is provided, use it
+    if (parseWithLLM) {
+        try {
+            parsedStats = await parseWithLLM(rawOutput);
+            logger.info({ parsedStats }, 'Successfully parsed usage stats with LLM');
+        } catch (error) {
+            const err = error as Error;
+            logger.warn({ error: err.message }, 'Failed to parse usage stats with LLM, returning raw output');
+        }
+    } else {
+        // Attempt basic regex parsing as fallback
+        parsedStats = parseUsageStatsBasic(rawOutput);
+    }
+
+    return {
+        currentSessionUsed: parsedStats.currentSessionUsed ?? 0,
+        sessionResetTime: parsedStats.sessionResetTime,
+        currentWeekAllModelsUsed: parsedStats.currentWeekAllModelsUsed ?? 0,
+        weekAllModelsResetTime: parsedStats.weekAllModelsResetTime,
+        currentWeekSonnetUsed: parsedStats.currentWeekSonnetUsed,
+        weekSonnetResetTime: parsedStats.weekSonnetResetTime,
+        rawOutput
+    };
+}
+
+/**
+ * Basic regex-based parsing of usage stats output.
+ * This is a fallback when LLM parsing is not available.
+ */
+function parseUsageStatsBasic(rawOutput: string): Partial<ClaudeUsageStats> {
+    const result: Partial<ClaudeUsageStats> = {};
+
+    // Try to extract percentage values using regex
+    // Pattern: "X% used" where X can be a number
+    const percentageMatches = rawOutput.match(/(\d+)%\s*used/g);
+
+    if (percentageMatches && percentageMatches.length > 0) {
+        // First match is typically current session
+        const firstMatch = percentageMatches[0].match(/(\d+)/);
+        if (firstMatch) {
+            result.currentSessionUsed = parseInt(firstMatch[1], 10);
+        }
+
+        // Second match is typically current week (all models)
+        if (percentageMatches.length > 1) {
+            const secondMatch = percentageMatches[1].match(/(\d+)/);
+            if (secondMatch) {
+                result.currentWeekAllModelsUsed = parseInt(secondMatch[1], 10);
+            }
+        }
+
+        // Third match is typically Sonnet only
+        if (percentageMatches.length > 2) {
+            const thirdMatch = percentageMatches[2].match(/(\d+)/);
+            if (thirdMatch) {
+                result.currentWeekSonnetUsed = parseInt(thirdMatch[1], 10);
+            }
+        }
+    }
+
+    // Try to extract reset times
+    const sessionResetMatch = rawOutput.match(/Resets?\s+(\d+[ap]m\s*\([^)]+\))/i);
+    if (sessionResetMatch) {
+        result.sessionResetTime = sessionResetMatch[1];
+    }
+
+    const weekResetMatch = rawOutput.match(/Resets?\s+([A-Za-z]+\s+\d+,?\s*\d*[ap]?m?\s*\([^)]+\))/i);
+    if (weekResetMatch) {
+        result.weekAllModelsResetTime = weekResetMatch[1];
+    }
+
+    return result;
+}
+
+// Re-export InputSequenceItem for consumers
+export type { InputSequenceItem };

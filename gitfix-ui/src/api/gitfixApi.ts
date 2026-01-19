@@ -361,3 +361,27 @@ export * from './taskStatsApi';
 export * from './agentChatApi';
 export * from './repoIndexingApi';
 export * from './summaryApi';
+
+// Agent usage statistics
+export interface AgentUsageStats {
+  currentSessionUsed: number;
+  sessionResetTime?: string;
+  currentWeekAllModelsUsed: number;
+  weekAllModelsResetTime?: string;
+  currentWeekSonnetUsed?: number;
+  weekSonnetResetTime?: string;
+  rawOutput: string;
+}
+
+export interface AgentUsageResponse {
+  agentId: string;
+  agentAlias: string;
+  agentType: string;
+  usage: AgentUsageStats;
+}
+
+export const getAgentUsageStats = async (agentId: string): Promise<AgentUsageResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/agents/${agentId}/usage`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
+};

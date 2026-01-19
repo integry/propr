@@ -9,6 +9,15 @@ export interface ExecutionResult {
     messageTimestamps: Map<string, string>;
 }
 
+/**
+ * Represents a single input to write to stdin with a delay.
+ * Used for interactive sessions where inputs need to be timed.
+ */
+export interface InputSequenceItem {
+    text: string;      // The text to write to stdin (include \n for Enter key)
+    delayMs: number;   // Delay before writing this input (ms)
+}
+
 export interface DockerCommandOptions {
     timeout?: number;
     cwd?: string;
@@ -19,6 +28,8 @@ export interface DockerCommandOptions {
     extraMounts?: string[]; // Additional volume mounts (e.g., ['/host/path:/container/path:rw'])
     extraEnvVars?: Record<string, string>; // Additional environment variables
     taskId?: string; // Task ID for abort signal checking
+    inputSequence?: InputSequenceItem[]; // For interactive sessions: sequence of inputs with delays
+    keepStdinOpen?: boolean; // Keep stdin open after writing inputSequence (for long-running interactive sessions)
 }
 
 interface JsonLineMessage {
@@ -61,7 +72,7 @@ export function executeDockerCommand(
     options: DockerCommandOptions = {}
 ): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId } = options;
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, inputSequence, keepStdinOpen } = options;
 
         let executablePath: string = command;
         if (command === 'docker') {
@@ -92,8 +103,11 @@ export function executeDockerCommand(
             }
         }
 
+        // Determine if we need stdin pipe based on stdinData OR inputSequence
+        const needsStdinPipe = !!stdinData || (inputSequence && inputSequence.length > 0);
+
         const spawnOptions: SpawnOptions = {
-            stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+            stdio: [needsStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'],
             env: process.env
         };
 
@@ -105,8 +119,34 @@ export function executeDockerCommand(
 
         const child: ChildProcess = spawn(executablePath, args, spawnOptions);
 
-        // Write stdin data if provided (for large prompts)
-        if (stdinData && child.stdin) {
+        // Handle input: either single stdinData or interactive inputSequence
+        if (inputSequence && inputSequence.length > 0 && child.stdin) {
+            // Interactive mode: write inputs with delays
+            logger.debug({ inputCount: inputSequence.length }, 'Starting interactive input sequence...');
+
+            const processInputs = async () => {
+                for (const input of inputSequence) {
+                    await new Promise(resolve => setTimeout(resolve, input.delayMs));
+
+                    if (child.stdin?.writable) {
+                        child.stdin.write(input.text);
+                        logger.debug({ input: input.text.trim() }, 'Sent interactive input');
+                    } else {
+                        logger.warn('Child stdin not writable, skipping input');
+                    }
+                }
+
+                if (!keepStdinOpen) {
+                    child.stdin?.end();
+                    logger.debug('Closed stdin after input sequence');
+                }
+            };
+
+            processInputs().catch(err => {
+                logger.error({ error: err }, 'Error processing input sequence');
+            });
+        } else if (stdinData && child.stdin) {
+            // Standard mode: write once and close
             child.stdin.write(stdinData);
             child.stdin.end();
             logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');

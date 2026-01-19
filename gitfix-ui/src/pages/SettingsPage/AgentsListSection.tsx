@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AgentConfig } from '../../api/gitfixApi';
+import { AgentConfig, getAgentUsageStats, AgentUsageStats } from '../../api/gitfixApi';
 import Alert from './Alert';
 import AgentConfigModal from './AgentConfigModal';
 import { MODEL_INFO_MAP, typeBadgeColors } from '../../config/modelDefinitions';
@@ -41,6 +41,47 @@ const TrashIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) 
   <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
   </svg>
+);
+
+const ChartBarIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+  </svg>
+);
+
+const RefreshIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+  </svg>
+);
+
+// --- Components ---
+
+// Usage bar component
+const UsageBar: React.FC<{
+  label: string;
+  percentage: number;
+  resetTime?: string;
+}> = ({ label, percentage, resetTime }) => (
+  <div className="mb-3">
+    <div className="flex justify-between items-center mb-1">
+      <span className="text-sm font-medium text-gray-700">{label}</span>
+      <span className="text-sm text-gray-600">{percentage}% used</span>
+    </div>
+    <div className="w-full bg-gray-200 rounded-full h-2.5">
+      <div
+        className={`h-2.5 rounded-full transition-all duration-300 ${
+          percentage >= 90 ? 'bg-red-500' :
+          percentage >= 70 ? 'bg-yellow-500' :
+          'bg-blue-500'
+        }`}
+        style={{ width: `${Math.min(percentage, 100)}%` }}
+      />
+    </div>
+    {resetTime && (
+      <div className="text-xs text-gray-500 mt-0.5">Resets {resetTime}</div>
+    )}
+  </div>
 );
 
 // --- Components ---
@@ -87,6 +128,32 @@ const AgentCard: React.FC<{
   onToggle: () => void;
 }> = ({ agent, onEdit, onDelete, onToggle }) => {
   const agentDefaultLabel = `llm-${agent.alias}`;
+  const [usageStats, setUsageStats] = useState<AgentUsageStats | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const [showUsage, setShowUsage] = useState(false);
+
+  const fetchUsageStats = async () => {
+    if (agent.type !== 'claude') return;
+
+    setUsageLoading(true);
+    setUsageError(null);
+    try {
+      const response = await getAgentUsageStats(agent.id);
+      setUsageStats(response.usage);
+    } catch (err) {
+      setUsageError((err as Error).message || 'Failed to fetch usage stats');
+    } finally {
+      setUsageLoading(false);
+    }
+  };
+
+  const handleToggleUsage = () => {
+    if (!showUsage && !usageStats && !usageLoading) {
+      fetchUsageStats();
+    }
+    setShowUsage(!showUsage);
+  };
 
   return (
     <div className="border rounded-lg p-4 bg-white shadow-sm">
@@ -116,6 +183,20 @@ const AgentCard: React.FC<{
         <div className="flex items-center gap-3 ml-4">
           {/* Action Buttons */}
           <div className="flex items-center gap-1">
+            {/* Usage stats button - only for Claude agents */}
+            {agent.type === 'claude' && (
+              <button
+                onClick={handleToggleUsage}
+                className={`p-1.5 rounded transition-colors ${
+                  showUsage
+                    ? 'text-blue-600 bg-blue-50 hover:bg-blue-100'
+                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                }`}
+                title="View usage statistics"
+              >
+                <ChartBarIcon className="w-4 h-4" />
+              </button>
+            )}
             <button
               onClick={onEdit}
               className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
@@ -237,6 +318,58 @@ const AgentCard: React.FC<{
           </table>
         </div>
       </div>
+
+      {/* --- Usage Statistics Panel (Claude only) --- */}
+      {agent.type === 'claude' && showUsage && (
+        <div className="ml-5 mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+          <div className="flex justify-between items-center mb-3">
+            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Usage Statistics</h4>
+            <button
+              onClick={fetchUsageStats}
+              disabled={usageLoading}
+              className="p-1 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors disabled:opacity-50"
+              title="Refresh usage stats"
+            >
+              <RefreshIcon className={`w-4 h-4 ${usageLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+
+          {usageLoading && !usageStats && (
+            <div className="text-sm text-gray-500 flex items-center gap-2">
+              <RefreshIcon className="w-4 h-4 animate-spin" />
+              Loading usage statistics...
+            </div>
+          )}
+
+          {usageError && (
+            <div className="text-sm text-red-600 bg-red-50 p-2 rounded border border-red-200">
+              {usageError}
+            </div>
+          )}
+
+          {usageStats && (
+            <div className="space-y-1">
+              <UsageBar
+                label="Current session"
+                percentage={usageStats.currentSessionUsed}
+                resetTime={usageStats.sessionResetTime}
+              />
+              <UsageBar
+                label="Current week (all models)"
+                percentage={usageStats.currentWeekAllModelsUsed}
+                resetTime={usageStats.weekAllModelsResetTime}
+              />
+              {usageStats.currentWeekSonnetUsed !== undefined && (
+                <UsageBar
+                  label="Current week (Sonnet only)"
+                  percentage={usageStats.currentWeekSonnetUsed}
+                  resetTime={usageStats.weekSonnetResetTime}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

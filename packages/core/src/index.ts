@@ -119,7 +119,9 @@ export {
     buildClaudeDockerImage,
     generateTaskImportPrompt,
     runLightweightLLMAnalysis,
-    UsageLimitError
+    UsageLimitError,
+    runInteractiveSession,
+    getClaudeUsageStats
 } from './claude/claudeService.js';
 export type {
     ExecuteClaudeCodeOptions,
@@ -127,7 +129,11 @@ export type {
     GenerateTaskSummaryOptions,
     RunLightweightLLMAnalysisOptions,
     IssueRef as ClaudeIssueRef,
-    IssueDetails
+    IssueDetails,
+    InteractiveSessionOptions,
+    InteractiveSessionResult,
+    ClaudeUsageStats,
+    InputSequenceItem
 } from './claude/claudeService.js';
 export {
     verifyWorktreeStructure,
