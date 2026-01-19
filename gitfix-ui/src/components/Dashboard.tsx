@@ -204,7 +204,7 @@ const Dashboard: React.FC = () => {
 
   return (
     <div>
-      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8 shadow-sm">
+      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8 shadow-md hover:shadow-lg transition-shadow border-t-4 border-t-indigo-500">
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
             <span>✨</span> Start New AI Plan
