@@ -80,10 +80,10 @@ const TaskStatsChart: React.FC = () => {
 
   if (loading && !stats) {
     return (
-      <div className="bg-gray-800/50 rounded-lg p-6">
+      <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 shadow-lg">
         <div className="flex items-center justify-center h-64">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
-          <span className="ml-3 text-gray-400">Loading statistics...</span>
+          <span className="ml-3 text-slate-400">Loading statistics...</span>
         </div>
       </div>
     );
@@ -91,7 +91,7 @@ const TaskStatsChart: React.FC = () => {
 
   if (error) {
     return (
-      <div className="bg-gray-800/50 rounded-lg p-6">
+      <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 shadow-lg">
         <div className="flex items-center justify-center h-64 text-red-400">
           <span>Failed to load statistics: {error}</span>
         </div>
@@ -129,8 +129,8 @@ const TaskStatsChart: React.FC = () => {
   return (
     <div>
       {!hasData ? (
-        <div className="bg-gray-800/50 rounded-lg p-6">
-          <div className="text-gray-400 text-center py-8">
+        <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 shadow-lg">
+          <div className="text-slate-400 text-center py-8">
             No task data available yet. Statistics will appear once tasks are processed.
           </div>
         </div>
@@ -138,25 +138,25 @@ const TaskStatsChart: React.FC = () => {
         <>
           {/* Summary Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-            <div className="bg-gray-800/50 rounded-lg p-4">
+            <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg border-t-4 border-t-indigo-500">
               <div className="text-3xl font-bold text-white">{stats.summary.total}</div>
-              <div className="text-gray-400 text-sm">Total Tasks</div>
+              <div className="text-slate-400 text-xs uppercase tracking-wider">Total Tasks</div>
             </div>
-            <div className="bg-gray-800/50 rounded-lg p-4">
-              <div className="text-3xl font-bold text-green-400">{stats.summary.completed}</div>
-              <div className="text-gray-400 text-sm">Completed</div>
+            <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg border-t-4 border-t-emerald-500">
+              <div className="text-3xl font-bold text-emerald-400">{stats.summary.completed}</div>
+              <div className="text-slate-400 text-xs uppercase tracking-wider">Completed</div>
             </div>
-            <div className="bg-gray-800/50 rounded-lg p-4">
+            <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg border-t-4 border-t-red-500">
               <div className="text-3xl font-bold text-red-400">{stats.summary.failed}</div>
-              <div className="text-gray-400 text-sm">Failed</div>
+              <div className="text-slate-400 text-xs uppercase tracking-wider">Failed</div>
             </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Daily Task Trend - Area Chart */}
             {dailyData.length > 0 && (
-              <div className="bg-gray-800/50 rounded-lg p-4">
-                <h4 className="text-lg font-medium text-white mb-4">Daily Task Volume (Last 30 Days)</h4>
+              <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg">
+                <h4 className="text-lg font-bold text-white mb-4">Daily Task Volume (Last 30 Days)</h4>
                 <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={dailyData}>
@@ -202,8 +202,8 @@ const TaskStatsChart: React.FC = () => {
 
             {/* Status Distribution - Donut Chart */}
             {pieData.length > 0 && (
-              <div className="bg-gray-800/50 rounded-lg p-4">
-                <h4 className="text-lg font-medium text-white mb-4">Task Status Distribution</h4>
+              <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg">
+                <h4 className="text-lg font-bold text-white mb-4">Task Status Distribution</h4>
                 <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
@@ -238,8 +238,8 @@ const TaskStatsChart: React.FC = () => {
 
             {/* Processing Time Trend - Line Chart */}
             {processingTimeData.length > 0 && processingTimeData.some(d => d.avgMinutes > 0) && (
-              <div className="bg-gray-800/50 rounded-lg p-4 lg:col-span-2">
-                <h4 className="text-lg font-medium text-white mb-4">Average Processing Time (Minutes)</h4>
+              <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 lg:col-span-2 shadow-lg">
+                <h4 className="text-lg font-bold text-white mb-4">Average Processing Time (Minutes)</h4>
                 <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={processingTimeData}>
