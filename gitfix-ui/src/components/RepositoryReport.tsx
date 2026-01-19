@@ -1,6 +1,41 @@
 import React, { useState, useEffect } from 'react';
 import { getStatsOverview, StatsOverviewResponse } from '../api/taskStatsApi';
 
+// Model icon component for visual grouping
+const ModelIcon: React.FC<{ modelId: string }> = ({ modelId }) => {
+  const getModelFamily = (id: string): string => {
+    const lower = id.toLowerCase();
+    if (lower.includes('claude') || lower.includes('anthropic')) return 'claude';
+    if (lower.includes('gpt') || lower.includes('openai')) return 'openai';
+    if (lower.includes('gemini') || lower.includes('google')) return 'gemini';
+    if (lower.includes('llama') || lower.includes('meta')) return 'llama';
+    return 'other';
+  };
+
+  const family = getModelFamily(modelId);
+  const iconColors: Record<string, string> = {
+    claude: 'bg-violet-100 text-violet-600',
+    openai: 'bg-emerald-100 text-emerald-600',
+    gemini: 'bg-blue-100 text-blue-600',
+    llama: 'bg-orange-100 text-orange-600',
+    other: 'bg-gray-100 text-gray-600',
+  };
+
+  const iconSymbols: Record<string, string> = {
+    claude: 'C',
+    openai: 'O',
+    gemini: 'G',
+    llama: 'L',
+    other: 'AI',
+  };
+
+  return (
+    <div className={`w-7 h-7 rounded-md flex items-center justify-center text-xs font-semibold ${iconColors[family]}`}>
+      {iconSymbols[family]}
+    </div>
+  );
+};
+
 const RepositoryReport: React.FC = () => {
   const [metrics, setMetrics] = useState<StatsOverviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -27,11 +62,11 @@ const RepositoryReport: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="bg-gray-800/50 rounded-lg p-6">
-        <h3 className="text-xl font-semibold text-white mb-4">Performance Overview</h3>
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+        <h3 className="text-xl font-semibold text-gray-900 mb-4">Performance Overview</h3>
         <div className="flex items-center justify-center h-32">
           <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-500"></div>
-          <span className="ml-3 text-gray-400">Loading performance stats...</span>
+          <span className="ml-3 text-gray-500">Loading performance stats...</span>
         </div>
       </div>
     );
@@ -39,18 +74,18 @@ const RepositoryReport: React.FC = () => {
 
   if (error) {
     return (
-      <div className="bg-gray-800/50 rounded-lg p-6">
-        <h3 className="text-xl font-semibold text-white mb-4">Performance Overview</h3>
-        <div className="text-red-400 text-center py-4">{error}</div>
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+        <h3 className="text-xl font-semibold text-gray-900 mb-4">Performance Overview</h3>
+        <div className="text-red-500 text-center py-4">{error}</div>
       </div>
     );
   }
 
   if (!metrics) {
     return (
-      <div className="bg-gray-800/50 rounded-lg p-6">
-        <h3 className="text-xl font-semibold text-white mb-4">Performance Overview</h3>
-        <div className="text-gray-400 text-center py-4">No data available yet.</div>
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+        <h3 className="text-xl font-semibold text-gray-900 mb-4">Performance Overview</h3>
+        <div className="text-gray-500 text-center py-4">No data available yet.</div>
       </div>
     );
   }
@@ -58,6 +93,9 @@ const RepositoryReport: React.FC = () => {
   // Calculate total model usage for percentage bars
   const modelEntries = Object.entries(metrics.usage.models);
   const totalModelCount = modelEntries.reduce((sum, [, count]) => sum + count, 0);
+
+  // Sort models by usage (highest first)
+  const sortedModelEntries = [...modelEntries].sort((a, b) => b[1] - a[1]);
 
   // Format tokens for display (convert to millions if large)
   const formatTokens = (tokens: number): string => {
@@ -71,81 +109,97 @@ const RepositoryReport: React.FC = () => {
   };
 
   return (
-    <div className="bg-gray-800/50 rounded-lg p-6 space-y-6">
-      <h3 className="text-xl font-semibold text-white">Performance Overview</h3>
+    <div className="bg-white border border-gray-200 rounded-lg p-6 space-y-6 shadow-sm">
+      <h3 className="text-xl font-semibold text-gray-900">Performance Overview</h3>
 
       {/* Key Metrics Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Tasks Completed */}
-        <div className="bg-gray-700/50 p-4 rounded-lg border border-gray-600/50">
-          <p className="text-sm text-gray-400">Tasks Completed</p>
-          <p className="text-3xl font-bold text-blue-400">
+        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+          <p className="text-sm text-gray-500">Tasks Completed</p>
+          <p className="text-3xl font-bold text-blue-600">
             {metrics.tasks.completed}
           </p>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-gray-400">
             {metrics.tasks.planned} Planned
           </p>
         </div>
 
         {/* Cost & Tokens */}
-        <div className="bg-gray-700/50 p-4 rounded-lg border border-gray-600/50">
-          <p className="text-sm text-gray-400">Total Cost</p>
-          <p className="text-3xl font-bold text-green-400">
+        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+          <p className="text-sm text-gray-500">Total Cost</p>
+          <p className="text-3xl font-bold text-emerald-600">
             ${metrics.usage.total_cost_usd.toFixed(2)}
           </p>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-gray-400">
             {formatTokens(metrics.usage.total_tokens)} Tokens
           </p>
         </div>
 
         {/* PR Effectiveness */}
-        <div className="bg-gray-700/50 p-4 rounded-lg border border-gray-600/50">
-          <p className="text-sm text-gray-400">PR Iterations (Avg)</p>
-          <p className="text-3xl font-bold text-orange-400">
+        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+          <p className="text-sm text-gray-500">PR Iterations (Avg)</p>
+          <p className="text-3xl font-bold text-amber-600">
             {metrics.tasks.pr_iterations_avg}
           </p>
-          <div className="flex justify-between text-xs text-gray-500 mt-1">
+          <div className="flex justify-between text-xs text-gray-400 mt-1">
             <span>{metrics.tasks.merged_prs} PRs Created</span>
             <span>{metrics.tasks.total_followups} Follow-ups</span>
           </div>
         </div>
 
         {/* Indexed Repos */}
-        <div className="bg-gray-700/50 p-4 rounded-lg border border-gray-600/50">
-          <p className="text-sm text-gray-400">Indexed Repos</p>
-          <p className="text-3xl font-bold text-purple-400">
+        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+          <p className="text-sm text-gray-500">Indexed Repos</p>
+          <p className="text-3xl font-bold text-violet-600">
             {metrics.system.repos_indexed}
           </p>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-gray-400">
             Repositories
           </p>
         </div>
       </div>
 
       {/* Model Usage Distribution */}
-      {modelEntries.length > 0 && (
-        <div className="bg-gray-700/50 p-4 rounded-lg border border-gray-600/50">
-          <h4 className="font-semibold text-white mb-4">AI Model Distribution</h4>
-          <div className="space-y-3">
-            {modelEntries.map(([modelId, count]) => {
+      {sortedModelEntries.length > 0 && (
+        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+          <h4 className="font-semibold text-gray-900 mb-4">AI Model Distribution</h4>
+          <div className="space-y-1">
+            {sortedModelEntries.map(([modelId, count]) => {
               const percentage = totalModelCount > 0 ? (count / totalModelCount) * 100 : 0;
               return (
-                <div key={modelId} className="flex items-center">
+                <div
+                  key={modelId}
+                  className="flex items-center gap-3 py-2.5 px-3 rounded-lg transition-colors duration-150 hover:bg-white hover:shadow-sm cursor-default group"
+                >
+                  {/* Model Icon */}
+                  <ModelIcon modelId={modelId} />
+
+                  {/* Model Name - Left Aligned */}
                   <span
-                    className="w-48 text-sm text-gray-300 truncate"
+                    className="w-40 sm:w-48 md:w-56 text-sm font-medium text-gray-700 truncate"
                     title={modelId}
                   >
                     {modelId}
                   </span>
-                  <div className="flex-1 h-2 bg-gray-600 rounded-full overflow-hidden mx-4">
+
+                  {/* Thin Progress Bar - Middle */}
+                  <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-indigo-500 rounded-full transition-all duration-300"
-                      style={{ width: `${percentage}%` }}
+                      className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 rounded-full transition-all duration-300"
+                      style={{ width: `${Math.max(percentage, 2)}%` }}
                     />
                   </div>
-                  <span className="text-sm font-medium text-gray-300 w-16 text-right">
-                    {count}
-                  </span>
+
+                  {/* Count and Percentage - Right Aligned */}
+                  <div className="flex items-center gap-2 min-w-[100px] justify-end">
+                    <span className="text-sm font-semibold text-gray-800">
+                      {count.toLocaleString()}
+                    </span>
+                    <span className="text-xs text-gray-500 w-12 text-right">
+                      {percentage.toFixed(1)}%
+                    </span>
+                  </div>
                 </div>
               );
             })}
