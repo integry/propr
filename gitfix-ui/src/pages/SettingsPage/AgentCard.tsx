@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AgentConfig, getAgentUsageStats, AgentUsageStats } from '../../api/gitfixApi';
 import { MODEL_INFO_MAP, typeBadgeColors } from '../../config/modelDefinitions';
 import { ProviderLogo } from '../../components/ui/ProviderLogo';
@@ -69,7 +69,7 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onEdit, onDelete, o
   const [usageStats, setUsageStats] = useState<AgentUsageStats | null>(null);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageError, setUsageError] = useState<string | null>(null);
-  const [showUsage, setShowUsage] = useState(false);
+  const [showUsage, setShowUsage] = useState(agent.type === 'claude'); // Auto-expand for Claude agents
 
   const fetchUsageStats = async () => {
     if (agent.type !== 'claude') return;
@@ -84,6 +84,13 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, onEdit, onDelete, o
       setUsageLoading(false);
     }
   };
+
+  // Automatically fetch usage stats on mount for Claude agents
+  useEffect(() => {
+    if (agent.type === 'claude' && agent.enabled) {
+      fetchUsageStats();
+    }
+  }, [agent.id, agent.type, agent.enabled]);
 
   const handleToggleUsage = () => {
     if (!showUsage && !usageStats && !usageLoading) fetchUsageStats();
