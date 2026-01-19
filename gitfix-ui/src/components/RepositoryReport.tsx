@@ -62,11 +62,11 @@ const RepositoryReport: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
-        <h3 className="text-xl font-semibold text-gray-900 mb-4">Performance Overview</h3>
+      <div className="dashboard-card">
+        <h3 className="section-header">Performance Overview</h3>
         <div className="flex items-center justify-center h-32">
           <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-500"></div>
-          <span className="ml-3 text-gray-500">Loading performance stats...</span>
+          <span className="ml-3 text-slate-500">Loading performance stats...</span>
         </div>
       </div>
     );
@@ -74,8 +74,8 @@ const RepositoryReport: React.FC = () => {
 
   if (error) {
     return (
-      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
-        <h3 className="text-xl font-semibold text-gray-900 mb-4">Performance Overview</h3>
+      <div className="dashboard-card">
+        <h3 className="section-header">Performance Overview</h3>
         <div className="text-red-500 text-center py-4">{error}</div>
       </div>
     );
@@ -83,9 +83,9 @@ const RepositoryReport: React.FC = () => {
 
   if (!metrics) {
     return (
-      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
-        <h3 className="text-xl font-semibold text-gray-900 mb-4">Performance Overview</h3>
-        <div className="text-gray-500 text-center py-4">No data available yet.</div>
+      <div className="dashboard-card">
+        <h3 className="section-header">Performance Overview</h3>
+        <div className="text-slate-500 text-center py-4">No data available yet.</div>
       </div>
     );
   }
@@ -109,52 +109,52 @@ const RepositoryReport: React.FC = () => {
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-6 space-y-6 shadow-sm">
-      <h3 className="text-xl font-semibold text-gray-900">Performance Overview</h3>
+    <div className="dashboard-card space-y-6">
+      <h3 className="section-header !mb-0">Performance Overview</h3>
 
       {/* Key Metrics Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Tasks Completed */}
-        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-          <p className="text-sm text-gray-500">Tasks Completed</p>
-          <p className="text-3xl font-bold text-blue-600">
+        <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+          <p className="stat-label">Tasks Completed</p>
+          <p className="stat-value text-indigo-600">
             {metrics.tasks.completed}
           </p>
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-slate-400">
             {metrics.tasks.planned} Planned
           </p>
         </div>
 
         {/* Cost & Tokens */}
-        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-          <p className="text-sm text-gray-500">Total Cost</p>
-          <p className="text-3xl font-bold text-emerald-600">
+        <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+          <p className="stat-label">Total Cost</p>
+          <p className="stat-value text-violet-600">
             ${metrics.usage.total_cost_usd.toFixed(2)}
           </p>
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-slate-400">
             {formatTokens(metrics.usage.total_tokens)} Tokens
           </p>
         </div>
 
         {/* PR Effectiveness */}
-        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-          <p className="text-sm text-gray-500">PR Iterations (Avg)</p>
-          <p className="text-3xl font-bold text-amber-600">
+        <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+          <p className="stat-label">PR Iterations (Avg)</p>
+          <p className="stat-value text-amber-600">
             {metrics.tasks.pr_iterations_avg}
           </p>
-          <div className="flex justify-between text-xs text-gray-400 mt-1">
+          <div className="flex justify-between text-xs text-slate-400 mt-1">
             <span>{metrics.tasks.merged_prs} PRs Created</span>
             <span>{metrics.tasks.total_followups} Follow-ups</span>
           </div>
         </div>
 
         {/* Indexed Repos */}
-        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-          <p className="text-sm text-gray-500">Indexed Repos</p>
-          <p className="text-3xl font-bold text-violet-600">
+        <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+          <p className="stat-label">Indexed Repos</p>
+          <p className="stat-value text-indigo-600">
             {metrics.system.repos_indexed}
           </p>
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-slate-400">
             Repositories
           </p>
         </div>
@@ -162,8 +162,8 @@ const RepositoryReport: React.FC = () => {
 
       {/* Model Usage Distribution */}
       {sortedModelEntries.length > 0 && (
-        <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-          <h4 className="font-semibold text-gray-900 mb-4">AI Model Distribution</h4>
+        <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+          <h4 className="font-semibold text-slate-800 mb-4">AI Model Distribution</h4>
           <div className="space-y-1">
             {sortedModelEntries.map(([modelId, count]) => {
               const percentage = totalModelCount > 0 ? (count / totalModelCount) * 100 : 0;
@@ -177,7 +177,7 @@ const RepositoryReport: React.FC = () => {
 
                   {/* Model Name - Left Aligned */}
                   <span
-                    className="w-40 sm:w-48 md:w-56 text-sm font-medium text-gray-700 truncate"
+                    className="w-40 sm:w-48 md:w-56 text-sm font-medium text-slate-700 truncate"
                     title={modelId}
                   >
                     {modelId}
@@ -193,10 +193,10 @@ const RepositoryReport: React.FC = () => {
 
                   {/* Count and Percentage - Right Aligned */}
                   <div className="flex items-center gap-2 min-w-[100px] justify-end">
-                    <span className="text-sm font-semibold text-gray-800">
+                    <span className="text-sm font-semibold text-slate-800">
                       {count.toLocaleString()}
                     </span>
-                    <span className="text-xs text-gray-500 w-12 text-right">
+                    <span className="text-xs text-slate-500 w-12 text-right">
                       {percentage.toFixed(1)}%
                     </span>
                   </div>

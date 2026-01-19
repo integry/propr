@@ -15,7 +15,10 @@ export default {
         light: {
           '100': '#F8F9FA',
           '200': '#EDF2F7',
-        }
+        },
+        // Dashboard card styling
+        'card-bg': '#FFFFFF',
+        'card-border': '#E2E8F0',
       }
     },
   },
