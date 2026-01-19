@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { getQueueStats, getCurrentUser, logout } from '../api/gitfixApi';
+import { getQueueStats, getCurrentUser, logout, getSystemStatus } from '../api/gitfixApi';
+
+interface SystemStatusData {
+  daemon: string;
+  redis: string;
+  githubAuth: string;
+}
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -24,6 +30,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
   const [user, setUser] = useState<User | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [systemStatus, setSystemStatus] = useState<SystemStatusData | null>(null);
 
   const navigation: NavItem[] = [
     { name: 'Dashboard', href: '/', icon: HomeIcon },
@@ -45,7 +52,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     const fetchStats = async () => {
       try {
         const data = await getQueueStats();
-        setActiveTaskCount(data.active || 0);
+        setActiveTaskCount((data as { active?: number }).active || 0);
       } catch (err) {
         console.error('Error fetching queue stats for layout:', err);
         setActiveTaskCount(0);
@@ -55,17 +62,40 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     const fetchUser = async () => {
       try {
         const userData = await getCurrentUser();
-        setUser(userData);
+        setUser(userData as User);
       } catch (err) {
         console.error('Error fetching user:', err);
       }
     };
 
+    const fetchSystemStatus = async () => {
+      try {
+        const status = await getSystemStatus();
+        setSystemStatus(status);
+      } catch (err) {
+        console.error('Error fetching system status:', err);
+      }
+    };
+
     fetchStats();
     fetchUser();
-    const interval = setInterval(fetchStats, 5000);
+    fetchSystemStatus();
+    const interval = setInterval(() => {
+      fetchStats();
+      fetchSystemStatus();
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // Helper for status color
+  const getStatusColor = (status?: string): string => {
+    if (!status) return 'bg-gray-400';
+    const lowerStatus = status.toLowerCase();
+    if (lowerStatus === 'running' || lowerStatus === 'connected' || lowerStatus === 'authenticated') {
+      return 'bg-green-500';
+    }
+    return 'bg-red-500';
+  };
 
   return (
     <div className="flex min-h-screen bg-light-100 relative">
@@ -135,6 +165,22 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           <div className="hidden lg:block"></div>
 
           <div className="flex items-center gap-4">
+            {/* System Status Indicators */}
+            <div className="hidden md:flex items-center gap-4 mr-4 border-r border-gray-200 pr-4">
+              <div className="flex items-center gap-2" title={`Daemon: ${systemStatus?.daemon || 'Unknown'}`}>
+                <div className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.daemon)}`} />
+                <span className="text-xs text-gray-500">Daemon</span>
+              </div>
+              <div className="flex items-center gap-2" title={`Redis: ${systemStatus?.redis || 'Unknown'}`}>
+                <div className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.redis)}`} />
+                <span className="text-xs text-gray-500">Redis</span>
+              </div>
+              <div className="flex items-center gap-2" title={`GitHub: ${systemStatus?.githubAuth || 'Unknown'}`}>
+                <div className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.githubAuth)}`} />
+                <span className="text-xs text-gray-500">GitHub</span>
+              </div>
+            </div>
+
             {user && (
               <>
                 <div className="hidden sm:flex flex-col items-end">

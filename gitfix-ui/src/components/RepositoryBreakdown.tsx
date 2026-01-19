@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { getRepositoryStats, RepositoryStats } from '../api/taskStatsApi';
 
-const RepositoryBreakdown: React.FC = () => {
+interface RepositoryBreakdownProps {
+  limit?: number;
+}
+
+const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit }) => {
   const [repositories, setRepositories] = useState<RepositoryStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -48,49 +52,46 @@ const RepositoryBreakdown: React.FC = () => {
 
   if (repositories.length === 0) {
     return (
-      <div className="dashboard-card">
-        <h3 className="section-header">Repository Breakdown</h3>
+      <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+        <h3 className="text-lg font-bold text-slate-800 mb-4">Top Repositories</h3>
         <div className="text-slate-500 text-center py-4">No repository data available yet.</div>
       </div>
     );
   }
 
+  // Apply limit if specified, sort by total tasks descending
+  const displayRepos = limit
+    ? [...repositories].sort((a, b) => b.total - a.total).slice(0, limit)
+    : repositories;
+
   return (
-    <div className="dashboard-card">
-      <h3 className="section-header">Repository Breakdown</h3>
+    <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+      <h3 className="text-lg font-bold text-slate-800 mb-4">
+        {limit ? 'Top Repositories' : 'Repository Breakdown'}
+      </h3>
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
             <tr className="border-b border-slate-200">
-              <th className="text-left py-3 px-4 stat-label">Repository</th>
-              <th className="text-right py-3 px-4 stat-label">Total</th>
-              <th className="text-right py-3 px-4 stat-label">Completed</th>
-              <th className="text-right py-3 px-4 stat-label">Failed</th>
-              <th className="text-right py-3 px-4 stat-label">In Progress</th>
-              <th className="text-right py-3 px-4 stat-label">Success Rate</th>
+              <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Repository</th>
+              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Total</th>
+              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Success</th>
             </tr>
           </thead>
           <tbody>
-            {repositories.map((repo) => (
+            {displayRepos.map((repo) => (
               <tr key={repo.repository} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                <td className="py-3 px-4">
-                  <span className="text-slate-800 font-medium">{repo.repository}</span>
+                <td className="py-2 px-2">
+                  <span className="text-slate-800 font-medium text-sm truncate block max-w-[150px]" title={repo.repository}>
+                    {repo.repository.split('/').pop()}
+                  </span>
                 </td>
-                <td className="py-3 px-4 text-right">
-                  <span className="text-slate-600">{repo.total}</span>
+                <td className="py-2 px-2 text-right">
+                  <span className="text-slate-600 text-sm">{repo.total}</span>
                 </td>
-                <td className="py-3 px-4 text-right">
-                  <span className="text-emerald-600 font-medium">{repo.completed}</span>
-                </td>
-                <td className="py-3 px-4 text-right">
-                  <span className="text-red-600 font-medium">{repo.failed}</span>
-                </td>
-                <td className="py-3 px-4 text-right">
-                  <span className="text-amber-600 font-medium">{repo.inProgress}</span>
-                </td>
-                <td className="py-3 px-4 text-right">
+                <td className="py-2 px-2 text-right">
                   <div className="flex items-center justify-end gap-2">
-                    <div className="w-16 h-2 bg-slate-200 rounded-full overflow-hidden">
+                    <div className="w-12 h-1.5 bg-slate-200 rounded-full overflow-hidden">
                       <div
                         className={`h-full rounded-full ${
                           repo.successRate >= 80 ? 'bg-emerald-500' :
@@ -99,7 +100,7 @@ const RepositoryBreakdown: React.FC = () => {
                         style={{ width: `${repo.successRate}%` }}
                       />
                     </div>
-                    <span className={`text-sm font-medium ${
+                    <span className={`text-xs font-medium ${
                       repo.successRate >= 80 ? 'text-emerald-600' :
                       repo.successRate >= 50 ? 'text-amber-600' : 'text-red-600'
                     }`}>
