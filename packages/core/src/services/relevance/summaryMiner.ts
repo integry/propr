@@ -48,6 +48,7 @@ export interface IndexingOptions {
   correlationId?: string;
   fullName?: string; // repository full name for status tracking
   branch?: string; // branch to index (defaults to 'HEAD')
+  fullReindex?: boolean; // if true, process all files regardless of staleness (but preserve existing summaries as fallback)
 }
 
 // --- Constants ---
@@ -186,7 +187,8 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       fullName,
       gitFiles,
       correlatedLogger,
-      branch
+      branch,
+      options.fullReindex
     );
 
     // 6. Delete removed files from DB
@@ -340,13 +342,15 @@ function shouldProcessFile(filePath: string): boolean {
 }
 
 /**
- * Identifies files that need processing (new or changed) and files to delete
+ * Identifies files that need processing (new or changed) and files to delete.
+ * If fullReindex is true, all files are marked for processing regardless of staleness.
  */
 async function identifyStaleFiles(
   fullName: string,
   gitFiles: GitFileInfo[],
   log: Logger,
-  branch: string
+  branch: string,
+  fullReindex?: boolean
 ): Promise<{
   filesToProcess: GitFileInfo[];
   filesToDelete: string[];
@@ -368,22 +372,28 @@ async function identifyStaleFiles(
   const filesToProcess: GitFileInfo[] = [];
   const filesToDelete: string[] = [];
 
-  // Find new and changed files
-  for (const file of gitFiles) {
-    const fullPath = `${fullName}/${file.path}`;
-    const dbHash = dbHashMap.get(fullPath);
+  // If fullReindex, process all files (existing summaries will be overwritten)
+  if (fullReindex) {
+    log.info({ fullReindex: true, fileCount: gitFiles.length }, 'Full reindex requested - processing all files');
+    filesToProcess.push(...gitFiles);
+  } else {
+    // Find new and changed files
+    for (const file of gitFiles) {
+      const fullPath = `${fullName}/${file.path}`;
+      const dbHash = dbHashMap.get(fullPath);
 
-    if (!dbHash) {
-      // New file
-      filesToProcess.push(file);
-    } else if (dbHash !== file.blobHash) {
-      // Changed file
-      filesToProcess.push(file);
+      if (!dbHash) {
+        // New file
+        filesToProcess.push(file);
+      } else if (dbHash !== file.blobHash) {
+        // Changed file
+        filesToProcess.push(file);
+      }
+      // else: unchanged, skip
     }
-    // else: unchanged, skip
   }
 
-  // Find deleted files (in DB but not in git)
+  // Find deleted files (in DB but not in git) - always clean these up
   for (const dbPath of dbHashMap.keys()) {
     if (!gitFileFullPathSet.has(dbPath)) {
       filesToDelete.push(dbPath);
@@ -391,11 +401,12 @@ async function identifyStaleFiles(
   }
 
   log.debug({
+    fullReindex: !!fullReindex,
     existingInDb: dbHashMap.size,
     newFiles: filesToProcess.filter(f => !dbHashMap.has(`${fullName}/${f.path}`)).length,
     changedFiles: filesToProcess.filter(f => dbHashMap.has(`${fullName}/${f.path}`)).length,
     deletedFiles: filesToDelete.length,
-    unchangedFiles: gitFiles.length - filesToProcess.length
+    unchangedFiles: fullReindex ? 0 : (gitFiles.length - filesToProcess.length)
   }, 'Staleness check complete');
 
   return { filesToProcess, filesToDelete };

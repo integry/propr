@@ -7,7 +7,7 @@ import type { IndexingJobData, JobResult } from '@gitfix/core';
 import { logger } from '@gitfix/core';
 import { generateCorrelationId } from '@gitfix/core';
 import { db } from '@gitfix/core';
-import { indexRepo, clearRepositorySummaries, updateRepositoryStatus } from '@gitfix/core';
+import { indexRepo, updateRepositoryStatus } from '@gitfix/core';
 import { loadSummarizationSettings, loadMonitoredReposRaw } from '@gitfix/core';
 import type { RepoToMonitor } from '@gitfix/core';
 import { ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit } from '@gitfix/core';
@@ -52,17 +52,15 @@ async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingRe
             return { status: 'skipped', success: true };
         }
 
-        // If full reindex requested, clear existing summaries first
-        if (fullReindex) {
-            correlatedLogger.info({ repository, branch: baseBranch }, 'Full reindex requested, clearing existing summaries');
-            await clearRepositorySummaries(repository, baseBranch);
-        }
-
         // Run the indexing
+        // Note: We no longer clear summaries before indexing. If fullReindex is true,
+        // indexRepo will process all files but preserve existing summaries as fallback
+        // in case of failure. Old summaries for deleted files are cleaned up by indexRepo.
         await indexRepo(repoPath, {
             correlationId,
             fullName: repository,
-            branch: baseBranch
+            branch: baseBranch,
+            fullReindex
         });
 
         const duration = Date.now() - startTime;
@@ -169,6 +167,19 @@ interface QueueIndexingJobOptions {
  */
 async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void> {
     const { repoName, repoPath, reason, log, branch } = options;
+
+    // Final check right before queueing to prevent race conditions
+    // (the earlier check may be stale due to slow clone operations)
+    const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed']);
+    const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
+        j.data.repository === repoName && (j.data.baseBranch || 'HEAD') === branch
+    );
+
+    if (alreadyQueued) {
+        log.debug({ repository: repoName, branch }, 'Indexing job already queued (final check), skipping');
+        return;
+    }
+
     const jobCorrelationId = generateCorrelationId();
     const priority = reason === 'previous indexing failed' ? 'high' : 'normal';
 
