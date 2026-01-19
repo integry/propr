@@ -80,10 +80,10 @@ const TaskStatsChart: React.FC = () => {
 
   if (loading && !stats) {
     return (
-      <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 shadow-lg">
+      <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)]">
         <div className="flex items-center justify-center h-64">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
-          <span className="ml-3 text-slate-400">Loading statistics...</span>
+          <span className="ml-3 text-slate-500">Loading statistics...</span>
         </div>
       </div>
     );
@@ -91,8 +91,8 @@ const TaskStatsChart: React.FC = () => {
 
   if (error) {
     return (
-      <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 shadow-lg">
-        <div className="flex items-center justify-center h-64 text-red-400">
+      <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)]">
+        <div className="flex items-center justify-center h-64 text-red-500">
           <span>Failed to load statistics: {error}</span>
         </div>
       </div>
@@ -129,8 +129,8 @@ const TaskStatsChart: React.FC = () => {
   return (
     <div>
       {!hasData ? (
-        <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 shadow-lg">
-          <div className="text-slate-400 text-center py-8">
+        <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)]">
+          <div className="text-slate-500 text-center py-8">
             No task data available yet. Statistics will appear once tasks are processed.
           </div>
         </div>
@@ -138,25 +138,25 @@ const TaskStatsChart: React.FC = () => {
         <>
           {/* Summary Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-            <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg border-t-4 border-t-indigo-500">
-              <div className="text-3xl font-bold text-white">{stats.summary.total}</div>
-              <div className="text-slate-400 text-xs uppercase tracking-wider">Total Tasks</div>
+            <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)] border-t-4 border-t-indigo-500">
+              <div className="text-3xl font-bold text-slate-800">{stats.summary.total}</div>
+              <div className="text-slate-500 text-xs uppercase tracking-wider">Total Tasks</div>
             </div>
-            <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg border-t-4 border-t-emerald-500">
-              <div className="text-3xl font-bold text-emerald-400">{stats.summary.completed}</div>
-              <div className="text-slate-400 text-xs uppercase tracking-wider">Completed</div>
+            <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)] border-t-4 border-t-emerald-500">
+              <div className="text-3xl font-bold text-emerald-600">{stats.summary.completed}</div>
+              <div className="text-slate-500 text-xs uppercase tracking-wider">Completed</div>
             </div>
-            <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg border-t-4 border-t-red-500">
-              <div className="text-3xl font-bold text-red-400">{stats.summary.failed}</div>
-              <div className="text-slate-400 text-xs uppercase tracking-wider">Failed</div>
+            <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)] border-t-4 border-t-red-500">
+              <div className="text-3xl font-bold text-red-600">{stats.summary.failed}</div>
+              <div className="text-slate-500 text-xs uppercase tracking-wider">Failed</div>
             </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Daily Task Trend - Area Chart */}
             {dailyData.length > 0 && (
-              <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg">
-                <h4 className="text-lg font-bold text-white mb-4">Daily Task Volume (Last 30 Days)</h4>
+              <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)]">
+                <h4 className="text-lg font-bold text-slate-800 mb-4">Daily Task Volume (Last 30 Days)</h4>
                 <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={dailyData}>
@@ -166,24 +166,25 @@ const TaskStatsChart: React.FC = () => {
                           <stop offset="95%" stopColor="#6366F1" stopOpacity={0.1}/>
                         </linearGradient>
                       </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                      <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                       <XAxis
                         dataKey="displayDate"
-                        stroke="#9CA3AF"
-                        tick={{ fill: '#9CA3AF', fontSize: 12 }}
+                        stroke="#64748B"
+                        tick={{ fill: '#64748B', fontSize: 12 }}
                         interval="preserveStartEnd"
                       />
                       <YAxis
-                        stroke="#9CA3AF"
-                        tick={{ fill: '#9CA3AF', fontSize: 12 }}
+                        stroke="#64748B"
+                        tick={{ fill: '#64748B', fontSize: 12 }}
                         allowDecimals={false}
                       />
                       <Tooltip
                         contentStyle={{
-                          backgroundColor: '#1F2937',
-                          border: '1px solid #374151',
+                          backgroundColor: '#FFFFFF',
+                          border: '1px solid #E2E8F0',
                           borderRadius: '8px',
-                          color: '#F9FAFB',
+                          color: '#1E293B',
+                          boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
                         }}
                       />
                       <Area
@@ -202,8 +203,8 @@ const TaskStatsChart: React.FC = () => {
 
             {/* Status Distribution - Donut Chart */}
             {pieData.length > 0 && (
-              <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg">
-                <h4 className="text-lg font-bold text-white mb-4">Task Status Distribution</h4>
+              <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)]">
+                <h4 className="text-lg font-bold text-slate-800 mb-4">Task Status Distribution</h4>
                 <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
@@ -216,7 +217,7 @@ const TaskStatsChart: React.FC = () => {
                         paddingAngle={2}
                         dataKey="value"
                         label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                        labelLine={{ stroke: '#6B7280' }}
+                        labelLine={{ stroke: '#94A3B8' }}
                       >
                         {pieData.map((entry, index) => (
                           <Cell key={`cell-${index}`} fill={entry.color} />
@@ -224,10 +225,11 @@ const TaskStatsChart: React.FC = () => {
                       </Pie>
                       <Tooltip
                         contentStyle={{
-                          backgroundColor: '#1F2937',
-                          border: '1px solid #374151',
+                          backgroundColor: '#FFFFFF',
+                          border: '1px solid #E2E8F0',
                           borderRadius: '8px',
-                          color: '#F9FAFB',
+                          color: '#1E293B',
+                          boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
                         }}
                       />
                     </PieChart>
@@ -238,33 +240,34 @@ const TaskStatsChart: React.FC = () => {
 
             {/* Processing Time Trend - Line Chart */}
             {processingTimeData.length > 0 && processingTimeData.some(d => d.avgMinutes > 0) && (
-              <div className="bg-slate-900 border border-slate-700 rounded-lg p-4 lg:col-span-2 shadow-lg">
-                <h4 className="text-lg font-bold text-white mb-4">Average Processing Time (Minutes)</h4>
+              <div className="bg-white border border-slate-200 rounded-lg p-4 lg:col-span-2 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)]">
+                <h4 className="text-lg font-bold text-slate-800 mb-4">Average Processing Time (Minutes)</h4>
                 <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={processingTimeData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                      <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                       <XAxis
                         dataKey="displayDate"
-                        stroke="#9CA3AF"
-                        tick={{ fill: '#9CA3AF', fontSize: 12 }}
+                        stroke="#64748B"
+                        tick={{ fill: '#64748B', fontSize: 12 }}
                         interval="preserveStartEnd"
                       />
                       <YAxis
-                        stroke="#9CA3AF"
-                        tick={{ fill: '#9CA3AF', fontSize: 12 }}
+                        stroke="#64748B"
+                        tick={{ fill: '#64748B', fontSize: 12 }}
                       />
                       <Tooltip
                         contentStyle={{
-                          backgroundColor: '#1F2937',
-                          border: '1px solid #374151',
+                          backgroundColor: '#FFFFFF',
+                          border: '1px solid #E2E8F0',
                           borderRadius: '8px',
-                          color: '#F9FAFB',
+                          color: '#1E293B',
+                          boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
                         }}
                         formatter={(value: number) => [`${value.toFixed(1)} min`, 'Avg Time']}
                       />
                       <Legend
-                        wrapperStyle={{ color: '#9CA3AF' }}
+                        wrapperStyle={{ color: '#64748B' }}
                       />
                       <Line
                         type="monotone"
