@@ -1,7 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  LineChart,
-  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -162,11 +160,11 @@ const TaskStatsChart: React.FC = () => {
                     <AreaChart data={dailyData}>
                       <defs>
                         <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#6366F1" stopOpacity={0.8}/>
-                          <stop offset="95%" stopColor="#6366F1" stopOpacity={0.1}/>
+                          <stop offset="5%" stopColor="#6366F1" stopOpacity={0.2}/>
+                          <stop offset="95%" stopColor="#6366F1" stopOpacity={0}/>
                         </linearGradient>
                       </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(100, 116, 139, 0.1)" />
                       <XAxis
                         dataKey="displayDate"
                         stroke="#64748B"
@@ -212,12 +210,11 @@ const TaskStatsChart: React.FC = () => {
                         data={pieData}
                         cx="50%"
                         cy="50%"
-                        innerRadius={60}
-                        outerRadius={90}
-                        paddingAngle={2}
+                        innerRadius={70}
+                        outerRadius={100}
+                        paddingAngle={3}
                         dataKey="value"
-                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                        labelLine={{ stroke: '#94A3B8' }}
+                        labelLine={false}
                       >
                         {pieData.map((entry, index) => (
                           <Cell key={`cell-${index}`} fill={entry.color} />
@@ -231,6 +228,18 @@ const TaskStatsChart: React.FC = () => {
                           color: '#1E293B',
                           boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
                         }}
+                        formatter={(value: number, name: string) => [`${value} tasks`, name]}
+                      />
+                      <Legend
+                        layout="vertical"
+                        align="right"
+                        verticalAlign="middle"
+                        iconType="circle"
+                        iconSize={10}
+                        wrapperStyle={{ paddingLeft: '20px' }}
+                        formatter={(value: string) => (
+                          <span style={{ color: '#64748B', fontSize: '12px' }}>{value}</span>
+                        )}
                       />
                     </PieChart>
                   </ResponsiveContainer>
@@ -244,8 +253,14 @@ const TaskStatsChart: React.FC = () => {
                 <h4 className="text-lg font-bold text-slate-800 mb-4">Average Processing Time (Minutes)</h4>
                 <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={processingTimeData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                    <AreaChart data={processingTimeData}>
+                      <defs>
+                        <linearGradient id="colorProcessingTime" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#A855F7" stopOpacity={0.2}/>
+                          <stop offset="95%" stopColor="#A855F7" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(100, 116, 139, 0.1)" />
                       <XAxis
                         dataKey="displayDate"
                         stroke="#64748B"
@@ -269,16 +284,17 @@ const TaskStatsChart: React.FC = () => {
                       <Legend
                         wrapperStyle={{ color: '#64748B' }}
                       />
-                      <Line
+                      <Area
                         type="monotone"
                         dataKey="avgMinutes"
                         stroke="#A855F7"
                         strokeWidth={2}
-                        dot={{ fill: '#A855F7', strokeWidth: 2 }}
-                        activeDot={{ r: 6, fill: '#A855F7' }}
+                        fill="url(#colorProcessingTime)"
+                        dot={{ fill: '#A855F7', r: 3, strokeWidth: 0 }}
+                        activeDot={{ r: 5, fill: '#A855F7', stroke: '#FFFFFF', strokeWidth: 2 }}
                         name="Processing Time"
                       />
-                    </LineChart>
+                    </AreaChart>
                   </ResponsiveContainer>
                 </div>
               </div>
