@@ -66,6 +66,66 @@ async function checkAbortSignal(taskId: string): Promise<boolean> {
     }
 }
 
+function findDockerExecutable(): string {
+    const possiblePaths: string[] = [
+        '/usr/bin/docker',
+        '/usr/local/bin/docker',
+        '/bin/docker'
+    ];
+
+    for (const dockerPath of possiblePaths) {
+        try {
+            if (fs.existsSync(dockerPath)) {
+                fs.accessSync(dockerPath, fs.constants.X_OK);
+                logger.debug({ dockerPath }, 'Found docker executable');
+                return dockerPath;
+            }
+        } catch {
+            // Continue to next path
+        }
+    }
+
+    logger.debug('Using docker from PATH');
+    return 'docker';
+}
+
+interface InputHandler {
+    child: ChildProcess;
+    inputSequence?: InputSequenceItem[];
+    stdinData?: string;
+    keepStdinOpen?: boolean;
+}
+
+async function handleInput(handler: InputHandler): Promise<void> {
+    const { child, inputSequence, stdinData, keepStdinOpen } = handler;
+
+    if (inputSequence && inputSequence.length > 0 && child.stdin) {
+        // Interactive mode: write inputs with delays
+        logger.debug({ inputCount: inputSequence.length }, 'Starting interactive input sequence...');
+
+        for (const input of inputSequence) {
+            await new Promise(resolve => setTimeout(resolve, input.delayMs));
+
+            if (child.stdin?.writable) {
+                child.stdin.write(input.text);
+                logger.debug({ input: input.text.trim() }, 'Sent interactive input');
+            } else {
+                logger.warn('Child stdin not writable, skipping input');
+            }
+        }
+
+        if (!keepStdinOpen) {
+            child.stdin?.end();
+            logger.debug('Closed stdin after input sequence');
+        }
+    } else if (stdinData && child.stdin) {
+        // Standard mode: write once and close
+        child.stdin.write(stdinData);
+        child.stdin.end();
+        logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');
+    }
+}
+
 export function executeDockerCommand(
     command: string,
     args: string[],
@@ -74,34 +134,7 @@ export function executeDockerCommand(
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, inputSequence, keepStdinOpen } = options;
 
-        let executablePath: string = command;
-        if (command === 'docker') {
-            const possiblePaths: string[] = [
-                '/usr/bin/docker',
-                '/usr/local/bin/docker',
-                '/bin/docker'
-            ];
-
-            let found = false;
-            for (const dockerPath of possiblePaths) {
-                try {
-                    if (fs.existsSync(dockerPath)) {
-                        fs.accessSync(dockerPath, fs.constants.X_OK);
-                        executablePath = dockerPath;
-                        found = true;
-                        logger.debug({ dockerPath }, 'Found docker executable');
-                        break;
-                    }
-                } catch {
-                    // Continue to next path
-                }
-            }
-
-            if (!found) {
-                executablePath = 'docker';
-                logger.debug('Using docker from PATH');
-            }
-        }
+        const executablePath = command === 'docker' ? findDockerExecutable() : command;
 
         // Determine if we need stdin pipe based on stdinData OR inputSequence
         const needsStdinPipe = !!stdinData || (inputSequence && inputSequence.length > 0);
@@ -120,37 +153,9 @@ export function executeDockerCommand(
         const child: ChildProcess = spawn(executablePath, args, spawnOptions);
 
         // Handle input: either single stdinData or interactive inputSequence
-        if (inputSequence && inputSequence.length > 0 && child.stdin) {
-            // Interactive mode: write inputs with delays
-            logger.debug({ inputCount: inputSequence.length }, 'Starting interactive input sequence...');
-
-            const processInputs = async () => {
-                for (const input of inputSequence) {
-                    await new Promise(resolve => setTimeout(resolve, input.delayMs));
-
-                    if (child.stdin?.writable) {
-                        child.stdin.write(input.text);
-                        logger.debug({ input: input.text.trim() }, 'Sent interactive input');
-                    } else {
-                        logger.warn('Child stdin not writable, skipping input');
-                    }
-                }
-
-                if (!keepStdinOpen) {
-                    child.stdin?.end();
-                    logger.debug('Closed stdin after input sequence');
-                }
-            };
-
-            processInputs().catch(err => {
-                logger.error({ error: err }, 'Error processing input sequence');
-            });
-        } else if (stdinData && child.stdin) {
-            // Standard mode: write once and close
-            child.stdin.write(stdinData);
-            child.stdin.end();
-            logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');
-        }
+        handleInput({ child, inputSequence, stdinData, keepStdinOpen }).catch(err => {
+            logger.error({ error: err }, 'Error processing input');
+        });
 
         let stdout = '';
         let stderr = '';

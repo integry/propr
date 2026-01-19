@@ -210,6 +210,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       }
 
       capturedOutput = '';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       result = await (pack as any)([repoPath], retryConfig, () => {}, {
         writeOutputToDisk: captureWriteOutput,
         copyToClipboardIfEnabled: noopCopyToClipboard,

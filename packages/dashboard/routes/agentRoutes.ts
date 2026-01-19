@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getAgentRegistry, getClaudeUsageStats, runLightweightLLMAnalysis, ClaudeUsageStats } from '@gitfix/core';
+import { getAgentRegistry, getClaudeUsageStats, ClaudeUsageStats } from '@gitfix/core';
 
 interface AgentChatQuery {
   agentId: string;
