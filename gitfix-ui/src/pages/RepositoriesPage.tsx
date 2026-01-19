@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/gitfixApi';
 import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
 import { BaseBranchSelector } from '../components/BaseBranchSelector';
@@ -14,14 +14,14 @@ type Repo = MonitoredRepo;
 const RepositoriesPage: React.FC = () => {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [newRepo, setNewRepo] = useState<string>('');
   const [newAlias, setNewAlias] = useState<string>('');
   const [newBaseBranch, setNewBaseBranch] = useState<string>('');
   const [availableRepos, setAvailableRepos] = useState<string[]>([]);
   const [indexingStatuses, setIndexingStatuses] = useState<Record<string, RepositoryIndexingStatus>>({});
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const loadRepos = useCallback(async () => {
     try {
@@ -95,6 +95,39 @@ const RepositoriesPage: React.FC = () => {
     }
   };
 
+  // Auto-save function
+  const performAutoSave = useCallback(async (reposToSave: Repo[]) => {
+    // Clear any pending save timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    setSaveStatus('saving');
+    setError(null);
+
+    try {
+      // Validate that at least one repository is enabled
+      const enabledRepos = reposToSave.filter(r => r.enabled);
+      if (enabledRepos.length === 0 && reposToSave.length > 0) {
+        if (!window.confirm('No repositories are enabled. This will effectively disable GitFix monitoring. Continue?')) {
+          setSaveStatus('idle');
+          return false;
+        }
+      }
+
+      await updateRepoConfig(reposToSave);
+      setSaveStatus('saved');
+
+      // Clear "Saved" status after 3 seconds
+      saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
+      return true;
+    } catch (err) {
+      setSaveStatus('error');
+      setError((err as Error).message || 'Failed to save repository configuration');
+      return false;
+    }
+  }, []);
+
   const handleStopIndexing = async (repoName: string, baseBranch?: string) => {
     try {
       const displayName = baseBranch ? `${repoName} (${baseBranch})` : repoName;
@@ -141,44 +174,28 @@ const RepositoriesPage: React.FC = () => {
       baseBranch: newBaseBranch.trim() || undefined
     };
 
-    setRepos([...repos, newEntry]);
+    const newRepos = [...repos, newEntry];
+    setRepos(newRepos);
     setNewRepo('');
     setNewAlias('');
     setNewBaseBranch('');
+    performAutoSave(newRepos);
   };
 
   const handleRemoveRepo = (repoId: string) => {
-    setRepos(repos.filter(r => r.id !== repoId));
+    const newRepos = repos.filter(r => r.id !== repoId);
+    setRepos(newRepos);
+    performAutoSave(newRepos);
   };
 
   const handleToggleRepo = (repoId: string) => {
-    setRepos(repos.map(repo =>
+    const newRepos = repos.map(repo =>
       repo.id === repoId
         ? { ...repo, enabled: !repo.enabled }
         : repo
-    ));
-  };
-
-  const handleSave = async () => {
-    try {
-      setSaving(true);
-      setError(null);
-      setSuccess(null);
-      
-      // Validate that at least one repository is enabled
-      const enabledRepos = repos.filter(r => r.enabled);
-      if (enabledRepos.length === 0 && repos.length > 0) {
-        if (!window.confirm('No repositories are enabled. This will effectively disable GitFix monitoring. Continue?')) {
-          return;
-        }
-      }
-      await updateRepoConfig(repos);
-      setSuccess('Repository list updated successfully! Changes are applied immediately.');
-    } catch (err) {
-      setError((err as Error).message || 'Failed to update repository list');
-    } finally {
-      setSaving(false);
-    }
+    );
+    setRepos(newRepos);
+    performAutoSave(newRepos);
   };
 
   if (loading && repos.length === 0) {
@@ -229,9 +246,39 @@ const RepositoriesPage: React.FC = () => {
 
   return (
     <div>
-      <h2 className="text-gray-900 text-2xl font-semibold mb-4">Manage Monitored Repositories</h2>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-gray-900 text-2xl font-semibold">Manage Monitored Repositories</h2>
+        {/* Auto-save status indicator */}
+        <div className="flex items-center gap-2">
+          {saveStatus === 'saving' && (
+            <span className="flex items-center gap-1.5 text-sm text-gray-500">
+              <svg className="animate-spin h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              Saving...
+            </span>
+          )}
+          {saveStatus === 'saved' && (
+            <span className="flex items-center gap-1.5 text-sm text-green-600">
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+              Saved
+            </span>
+          )}
+          {saveStatus === 'error' && error && (
+            <span className="flex items-center gap-1.5 text-sm text-red-600">
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              {error}
+            </span>
+          )}
+        </div>
+      </div>
       <p className="text-gray-600 mb-4">
-        Add repositories to monitor, enable/disable them, or remove them from the list. Changes are applied immediately.
+        Add repositories to monitor, enable/disable them, or remove them from the list. Changes are saved automatically.
       </p>
       
       <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
@@ -357,30 +404,6 @@ const RepositoriesPage: React.FC = () => {
           </div>
         )}
       </div>
-      
-      <button
-        onClick={handleSave}
-        disabled={saving || repos.length === 0}
-        className={`px-6 py-3 font-medium rounded-md transition-colors ${
-          saving || repos.length === 0
-            ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
-            : 'bg-primary-600 text-white hover:bg-primary-700 cursor-pointer'
-        }`}
-      >
-        {saving ? 'Saving...' : 'Save Changes'}
-      </button>
-      
-      {error && (
-        <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
-          {error}
-        </div>
-      )}
-      
-      {success && (
-        <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-md text-green-700">
-          {success}
-        </div>
-      )}
     </div>
   );
 };
