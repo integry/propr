@@ -183,13 +183,13 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     correlatedLogger.info({ fileCount: gitFiles.length }, 'Scanned git files');
 
     // 5. Filter and identify staleness
-    const { filesToProcess, filesToDelete } = await identifyStaleFiles(
+    const { filesToProcess, filesToDelete } = await identifyStaleFiles({
       fullName,
       gitFiles,
-      correlatedLogger,
+      log: correlatedLogger,
       branch,
-      options.fullReindex
-    );
+      fullReindex: options.fullReindex
+    });
 
     // 6. Delete removed files from DB
     if (filesToDelete.length > 0) {
@@ -341,20 +341,23 @@ function shouldProcessFile(filePath: string): boolean {
   return SUMMARIZABLE_EXTENSIONS.has(ext);
 }
 
+interface IdentifyStaleFilesOptions {
+  fullName: string;
+  gitFiles: GitFileInfo[];
+  log: Logger;
+  branch: string;
+  fullReindex?: boolean;
+}
+
 /**
  * Identifies files that need processing (new or changed) and files to delete.
  * If fullReindex is true, all files are marked for processing regardless of staleness.
  */
-async function identifyStaleFiles(
-  fullName: string,
-  gitFiles: GitFileInfo[],
-  log: Logger,
-  branch: string,
-  fullReindex?: boolean
-): Promise<{
+async function identifyStaleFiles(options: IdentifyStaleFilesOptions): Promise<{
   filesToProcess: GitFileInfo[];
   filesToDelete: string[];
 }> {
+  const { fullName, gitFiles, log, branch, fullReindex } = options;
   // Fetch existing summaries from DB (paths are stored as fullName/relativePath)
   const existingSummaries = await db('file_summaries')
     .where('path', 'like', `${fullName}/%`)
