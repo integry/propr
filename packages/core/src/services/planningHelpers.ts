@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { db } from '../db/connection.js';
 import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO, getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL } from '../config/modelLimits.js';
 import { countTokens, estimateTokens } from '../utils/tokenCalculation.js';
