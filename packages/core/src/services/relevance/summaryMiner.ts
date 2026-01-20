@@ -187,8 +187,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       fullName,
       gitFiles,
       correlatedLogger,
-      branch,
-      options.fullReindex
+      { branch, fullReindex: options.fullReindex }
     );
 
     // 6. Delete removed files from DB
@@ -341,6 +340,11 @@ function shouldProcessFile(filePath: string): boolean {
   return SUMMARIZABLE_EXTENSIONS.has(ext);
 }
 
+interface IdentifyStaleFilesOptions {
+  branch: string;
+  fullReindex?: boolean;
+}
+
 /**
  * Identifies files that need processing (new or changed) and files to delete.
  * If fullReindex is true, all files are marked for processing regardless of staleness.
@@ -349,12 +353,12 @@ async function identifyStaleFiles(
   fullName: string,
   gitFiles: GitFileInfo[],
   log: Logger,
-  branch: string,
-  fullReindex?: boolean
+  options: IdentifyStaleFilesOptions
 ): Promise<{
   filesToProcess: GitFileInfo[];
   filesToDelete: string[];
 }> {
+  const { branch, fullReindex } = options;
   // Fetch existing summaries from DB (paths are stored as fullName/relativePath)
   const existingSummaries = await db('file_summaries')
     .where('path', 'like', `${fullName}/%`)
