@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { execSync } from 'child_process';
+import { stopDockerContainer, clearAbortSignal } from '@gitfix/core';
 
 interface DockerRoutesDeps {
   redisClient: RedisClientType;
@@ -71,16 +72,66 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         res.status(404).json({ error: 'Task not found', message: 'The task may have already completed or does not exist.' });
         return;
       }
-      const state = JSON.parse(stateData) as { history: Array<{ state: string }> };
+      const state = JSON.parse(stateData) as { history: Array<{ state: string; metadata?: { containerId?: string } }> };
       const currentState = state.history[state.history.length - 1]?.state;
       if (!['processing', 'claude_execution', 'post_processing'].includes(currentState)) {
         res.status(400).json({ error: 'Task is not running', message: 'The task has already completed or is not in an active state.', currentState });
         return;
       }
+
+      // Set abort signal in Redis
       await redisClient.set(`worker:abort:${taskId}`, JSON.stringify({ timestamp: new Date().toISOString(), requestedBy: req.user?.username || 'user' }), { EX: 3600 });
-      await redisClient.rPush(`conversation:${taskId}`, JSON.stringify({ type: 'system', timestamp: new Date().toISOString(), content: 'Stop requested by user. Waiting for worker to acknowledge...', level: 'warning' }));
+      await redisClient.rPush(`conversation:${taskId}`, JSON.stringify({ type: 'system', timestamp: new Date().toISOString(), content: 'Stop requested by user. Terminating execution...', level: 'warning' }));
       console.log(`[stop-execution] Abort signal set for task: ${taskId}`);
-      res.json({ success: true, message: 'Stop request sent to worker. The execution will be terminated shortly.', taskId });
+
+      // Try to directly stop the Docker container if available
+      let containerStopped = false;
+      let containerId: string | undefined;
+      const containerEntry = state.history.find(h => h.state === 'claude_execution' && h.metadata?.containerId);
+      if (containerEntry?.metadata?.containerId) {
+        containerId = containerEntry.metadata.containerId;
+        console.log(`[stop-execution] Found container ID: ${containerId}, attempting direct stop`);
+
+        const stopResult = await stopDockerContainer(containerId, 5);
+        containerStopped = stopResult.success;
+
+        if (stopResult.success) {
+          console.log(`[stop-execution] Container ${containerId} stopped successfully (alreadyStopped: ${stopResult.alreadyStopped})`);
+          await redisClient.rPush(`conversation:${taskId}`, JSON.stringify({
+            type: 'system',
+            timestamp: new Date().toISOString(),
+            content: stopResult.alreadyStopped
+              ? 'Docker container had already stopped.'
+              : 'Docker container terminated successfully.',
+            level: 'info'
+          }));
+        } else {
+          console.error(`[stop-execution] Failed to stop container ${containerId}: ${stopResult.error}`);
+          await redisClient.rPush(`conversation:${taskId}`, JSON.stringify({
+            type: 'system',
+            timestamp: new Date().toISOString(),
+            content: `Warning: Failed to stop container directly: ${stopResult.error}. Worker will handle cleanup.`,
+            level: 'warning'
+          }));
+        }
+
+        // Clear the abort signal after successful container stop
+        if (containerStopped) {
+          await clearAbortSignal(taskId);
+        }
+      } else {
+        console.log(`[stop-execution] No container ID found for task: ${taskId}, relying on worker to handle abort`);
+      }
+
+      res.json({
+        success: true,
+        message: containerStopped
+          ? 'Execution stopped. Docker container terminated.'
+          : 'Stop request sent to worker. The execution will be terminated shortly.',
+        taskId,
+        containerId,
+        containerStopped
+      });
     } catch (error) {
       console.error('Error in /api/task/:taskId/stop:', error);
       res.status(500).json({ error: 'Internal server error', message: (error as Error).message });

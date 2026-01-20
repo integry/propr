@@ -33,6 +33,103 @@ interface JsonLineMessage {
 
 const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
 
+/**
+ * Forcefully stops a Docker container by ID
+ * First attempts graceful stop (SIGTERM), then forcefully kills if necessary
+ * @param containerId - The Docker container ID to stop
+ * @param timeoutSeconds - Seconds to wait before force killing (default: 10)
+ * @returns Object with success status and any error message
+ */
+export async function stopDockerContainer(
+    containerId: string,
+    timeoutSeconds: number = 10
+): Promise<{ success: boolean; error?: string; alreadyStopped?: boolean }> {
+    if (!containerId) {
+        return { success: false, error: 'No container ID provided' };
+    }
+
+    logger.info({ containerId, timeoutSeconds }, 'Attempting to stop Docker container');
+
+    try {
+        // First check if container exists and is running
+        try {
+            const statusOutput = execSync(
+                `/usr/bin/docker inspect --format='{{.State.Running}}' ${containerId}`,
+                { encoding: 'utf8', timeout: 5000 }
+            ).trim();
+
+            if (statusOutput === 'false') {
+                logger.info({ containerId }, 'Container is already stopped');
+                return { success: true, alreadyStopped: true };
+            }
+        } catch (inspectError) {
+            const err = inspectError as Error;
+            if (err.message.includes('No such container') || err.message.includes('No such object')) {
+                logger.info({ containerId }, 'Container no longer exists');
+                return { success: true, alreadyStopped: true };
+            }
+            // Container exists but inspection failed, proceed with stop attempt
+            logger.debug({ containerId, error: err.message }, 'Container inspection failed, proceeding with stop');
+        }
+
+        // Attempt graceful stop with timeout
+        try {
+            execSync(
+                `/usr/bin/docker stop --time=${timeoutSeconds} ${containerId}`,
+                { encoding: 'utf8', timeout: (timeoutSeconds + 5) * 1000 }
+            );
+            logger.info({ containerId }, 'Docker container stopped gracefully');
+            return { success: true };
+        } catch (stopError) {
+            const err = stopError as Error;
+            logger.warn({ containerId, error: err.message }, 'Graceful stop failed, attempting force kill');
+        }
+
+        // Force kill if graceful stop failed
+        try {
+            execSync(
+                `/usr/bin/docker kill ${containerId}`,
+                { encoding: 'utf8', timeout: 10000 }
+            );
+            logger.info({ containerId }, 'Docker container force killed');
+            return { success: true };
+        } catch (killError) {
+            const err = killError as Error;
+            // If container is already gone, treat as success
+            if (err.message.includes('No such container') || err.message.includes('is not running')) {
+                logger.info({ containerId }, 'Container already stopped or removed');
+                return { success: true, alreadyStopped: true };
+            }
+            logger.error({ containerId, error: err.message }, 'Failed to kill Docker container');
+            return { success: false, error: err.message };
+        }
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ containerId, error: err.message }, 'Error stopping Docker container');
+        return { success: false, error: err.message };
+    }
+}
+
+/**
+ * Clears the abort signal for a task from Redis
+ * @param taskId - The task ID to clear abort signal for
+ */
+export async function clearAbortSignal(taskId: string): Promise<void> {
+    try {
+        const Redis = await import('ioredis');
+        const redis = new Redis.default({
+            host: process.env.REDIS_HOST || 'redis',
+            port: parseInt(process.env.REDIS_PORT || '6379', 10)
+        });
+        await redis.del(`worker:abort:${taskId}`);
+        await redis.quit();
+        logger.debug({ taskId }, 'Cleared abort signal from Redis');
+    } catch (error) {
+        const err = error as Error;
+        logger.warn({ taskId, error: err.message }, 'Failed to clear abort signal');
+    }
+}
+
 // Mapping from agent types to their Dockerfiles
 const AGENT_DOCKERFILES: Record<string, string> = {
     'claude': 'Dockerfile.claude',
@@ -118,6 +215,7 @@ export function executeDockerCommand(
         let aborted = false;
         let sessionIdDetected = false;
         let containerIdDetected = false;
+        let detectedContainerId: string | null = null;
         const messageTimestamps = new Map<string, string>();
 
         const timeoutHandle = setTimeout(() => {
@@ -138,18 +236,34 @@ export function executeDockerCommand(
                 const shouldAbort = await checkAbortSignal(taskId);
                 if (shouldAbort && !aborted && !child.killed) {
                     aborted = true;
-                    logger.info({ taskId }, 'Abort signal detected, terminating execution');
+                    logger.info({ taskId, containerId: detectedContainerId }, 'Abort signal detected, terminating execution');
+
+                    // Stop the Docker container if we have a container ID
+                    if (detectedContainerId) {
+                        logger.info({ taskId, containerId: detectedContainerId }, 'Stopping Docker container due to abort signal');
+                        const stopResult = await stopDockerContainer(detectedContainerId, 5);
+                        if (stopResult.success) {
+                            logger.info({ taskId, containerId: detectedContainerId, alreadyStopped: stopResult.alreadyStopped }, 'Docker container stopped successfully');
+                        } else {
+                            logger.error({ taskId, containerId: detectedContainerId, error: stopResult.error }, 'Failed to stop Docker container');
+                        }
+                    }
+
+                    // Also kill the spawn process
                     child.kill('SIGTERM');
                     setTimeout(() => {
                         if (!child.killed) {
                             child.kill('SIGKILL');
                         }
                     }, 5000);
+
+                    // Clear the abort signal from Redis
+                    await clearAbortSignal(taskId);
                 }
             }, 2000); // Check every 2 seconds
         }
 
-        if (command === 'docker' && args[0] === 'run' && onContainerId && worktreePath) {
+        if (command === 'docker' && args[0] === 'run' && worktreePath) {
             setTimeout(async () => {
                 if (!containerIdDetected) {
                     try {
@@ -161,7 +275,10 @@ export function executeDockerCommand(
                         if (containersOutput) {
                             const [containerId, containerName] = containersOutput.split(':');
                             containerIdDetected = true;
-                            onContainerId(containerId, containerName);
+                            detectedContainerId = containerId;
+                            if (onContainerId) {
+                                onContainerId(containerId, containerName);
+                            }
                             logger.debug({
                                 containerId,
                                 containerName,

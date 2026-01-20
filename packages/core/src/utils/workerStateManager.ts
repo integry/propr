@@ -220,6 +220,28 @@ export class WorkerStateManager {
     }
 
     /**
+     * Marks task as cancelled (stopped by user or system)
+     * @param taskId - Task identifier
+     * @param cancelledBy - Who/what cancelled the task (e.g., 'user', 'system', username)
+     * @param reason - Optional reason for cancellation
+     * @returns Updated state
+     */
+    async markTaskCancelled(
+        taskId: string,
+        cancelledBy: string = 'user',
+        reason?: string
+    ): Promise<TaskStateData> {
+        const cancelMetadata: UpdateMetadata = {
+            reason: reason ?? `Task cancelled by ${cancelledBy}`,
+            historyMetadata: {
+                cancelledBy,
+                cancelledAt: new Date().toISOString()
+            }
+        };
+        return await this.updateTaskState(taskId, TaskStates.CANCELLED, cancelMetadata);
+    }
+
+    /**
      * Marks task as completed
      * @param taskId - Task identifier
      * @param result - Task result
