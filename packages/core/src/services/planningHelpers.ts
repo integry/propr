@@ -355,9 +355,27 @@ interface BuildFullContextOptions {
   images?: Base64Image[];
 }
 
+/**
+ * Get a final reminder string based on granularity to reinforce task count constraints
+ */
+function getGranularityReminder(granularity: Granularity): string {
+  switch (granularity) {
+    case 'single':
+      return `FINAL REMINDER — SINGLE TASK MODE:
+⚠️ You MUST return a JSON array with EXACTLY 1 element.
+⚠️ Do NOT create multiple tasks. Combine everything into ONE comprehensive task.
+⚠️ Array length must equal 1. This is mandatory.`;
+    case 'balanced':
+      return `REMINDER: Aim for 2-4 tasks total. Group related changes together.`;
+    case 'granular':
+      return `REMINDER: Create fine-grained tasks (5+ if needed). Each task should be small and focused.`;
+  }
+}
+
 export function buildFullContext(options: BuildFullContextOptions): string {
   const { userRequest, repomixContext, granularity, fileSummaries, images } = options;
   const granularitySpec = GRANULARITY_INSTRUCTIONS[granularity];
+  const granularityReminder = getGranularityReminder(granularity);
   const summariesSection = fileSummaries && fileSummaries.trim().length > 0
     ? `\n  <relevant-file-summaries>\n${fileSummaries}\n  </relevant-file-summaries>` : '';
 
@@ -379,6 +397,7 @@ export function buildFullContext(options: BuildFullContextOptions): string {
 ${repomixContext}
   </repository-context>${summariesSection}
   <output-guidelines><![CDATA[Output ONLY a valid JSON array. No markdown, no explanations.]]></output-guidelines>
+  <granularity-reminder><![CDATA[${granularityReminder}]]></granularity-reminder>
 </llm-context>`;
 }
 
