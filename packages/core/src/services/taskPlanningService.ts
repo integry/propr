@@ -12,9 +12,87 @@ import {
   updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, getDefaultModelLimit, findFilesForPlan,
   GenerationTrace, RELEVANT_SUMMARY_COUNT, RESERVED_OVERHEAD_TOKENS, CHARS_PER_TOKEN,
   parseContextConfig, checkoutBaseBranch, TaskDraftConfig, Granularity, PlanningFailedError, buildFullContext,
-  Base64Image
+  Base64Image, MinimalLogger
 } from './planningHelpers.js';
 import type { Attachment } from './attachmentService.js';
+
+/**
+ * Merge multiple plan items into a single comprehensive task.
+ * Used when granularity is 'single' but the LLM returned multiple tasks.
+ */
+function mergePlanItemsIntoOne(plan: Plan, correlatedLogger: MinimalLogger): Plan {
+  if (plan.length <= 1) return plan;
+
+  correlatedLogger.info({ originalTaskCount: plan.length }, 'Merging multiple tasks into single task (granularity enforcement)');
+
+  // Create a merged title that captures all tasks
+  const mergedTitle = plan.length <= 3
+    ? plan.map(item => item.title).join(' & ')
+    : `${plan[0].title} (and ${plan.length - 1} more changes)`;
+
+  // Merge bodies with clear separation
+  const mergedBody = plan.map((item, index) => {
+    return `## Part ${index + 1}: ${item.title}\n\n${item.body}`;
+  }).join('\n\n---\n\n');
+
+  // Merge implementations with clear file/section separation
+  const mergedImplementation = plan.map((item, index) => {
+    return `// ========== Part ${index + 1}: ${item.title} ==========\n\n${item.implementation}`;
+  }).join('\n\n');
+
+  const mergedItem: PlanItem = {
+    title: mergedTitle,
+    body: mergedBody,
+    implementation: mergedImplementation
+  };
+
+  return [mergedItem];
+}
+
+/**
+ * Enforce granularity constraints on the generated plan.
+ * - For 'single': Merge multiple tasks into one if needed
+ * - For 'balanced': Log warning if outside 2-4 range
+ * - For 'granular': Log warning if less than expected
+ */
+function enforceGranularityConstraints(
+  plan: Plan,
+  granularity: Granularity,
+  correlatedLogger: MinimalLogger
+): Plan {
+  switch (granularity) {
+    case 'single':
+      if (plan.length > 1) {
+        correlatedLogger.warn(
+          { taskCount: plan.length, expected: 1 },
+          'LLM returned multiple tasks for single granularity - merging into one'
+        );
+        return mergePlanItemsIntoOne(plan, correlatedLogger);
+      }
+      return plan;
+
+    case 'balanced':
+      if (plan.length < 2 || plan.length > 4) {
+        correlatedLogger.info(
+          { taskCount: plan.length, expectedRange: '2-4' },
+          'Plan task count outside balanced range (informational)'
+        );
+      }
+      return plan;
+
+    case 'granular':
+      if (plan.length < 5) {
+        correlatedLogger.info(
+          { taskCount: plan.length, expectedMinimum: 5 },
+          'Plan has fewer tasks than expected for granular mode (informational)'
+        );
+      }
+      return plan;
+
+    default:
+      return plan;
+  }
+}
 
 // Re-export for backwards compatibility
 export { BranchNotFoundError, PlanningFailedError, buildFullContext } from './planningHelpers.js';
@@ -107,6 +185,10 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<Plan> {
   if (!Array.isArray(plan) || plan.length === 0) {
     throw new PlanningFailedError('Generated plan is empty. The prompt may be too vague.');
   }
+
+  // Enforce granularity constraints (e.g., merge multiple tasks into one for 'single' mode)
+  plan = enforceGranularityConstraints(plan, granularity, correlatedLogger);
+
   return plan;
 }
 

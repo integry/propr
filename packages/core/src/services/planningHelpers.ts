@@ -355,9 +355,24 @@ interface BuildFullContextOptions {
   images?: Base64Image[];
 }
 
+/**
+ * Get task count constraint reminder based on granularity
+ */
+function getTaskCountReminder(granularity: Granularity): string {
+  switch (granularity) {
+    case 'single':
+      return `⚠️ FINAL REMINDER - SINGLE TASK MODE: Your output MUST contain EXACTLY 1 task. Array length must equal 1. Do not create multiple tasks under any circumstances.`;
+    case 'balanced':
+      return `REMINDER - BALANCED MODE: Your output should contain 2-4 tasks. Group related changes logically.`;
+    case 'granular':
+      return `REMINDER - GRANULAR MODE: Your output should contain 5+ tasks for complex requests. Break down work into small, focused units.`;
+  }
+}
+
 export function buildFullContext(options: BuildFullContextOptions): string {
   const { userRequest, repomixContext, granularity, fileSummaries, images } = options;
   const granularitySpec = GRANULARITY_INSTRUCTIONS[granularity];
+  const taskCountReminder = getTaskCountReminder(granularity);
   const summariesSection = fileSummaries && fileSummaries.trim().length > 0
     ? `\n  <relevant-file-summaries>\n${fileSummaries}\n  </relevant-file-summaries>` : '';
 
@@ -373,12 +388,14 @@ export function buildFullContext(options: BuildFullContextOptions): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <llm-context>
   <system-prompt><![CDATA[${PLANNER_SYSTEM_PROMPT}]]></system-prompt>
+  <granularity-spec priority="high"><![CDATA[${granularitySpec}]]></granularity-spec>
   <user-request><![CDATA[${userRequest}]]></user-request>${imagesSection}
-  <granularity-spec><![CDATA[${granularitySpec}]]></granularity-spec>
   <repository-context>
 ${repomixContext}
   </repository-context>${summariesSection}
-  <output-guidelines><![CDATA[Output ONLY a valid JSON array. No markdown, no explanations.]]></output-guidelines>
+  <output-guidelines><![CDATA[Output ONLY a valid JSON array. No markdown, no explanations.
+
+${taskCountReminder}]]></output-guidelines>
 </llm-context>`;
 }
 

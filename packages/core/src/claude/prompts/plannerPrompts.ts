@@ -24,15 +24,41 @@ Do not include markdown formatting or explanations outside the JSON.`;
 
 export const GRANULARITY_INSTRUCTIONS: Record<Granularity, string> = {
   single: `
-**Task Granularity: SINGLE**
-You MUST create exactly ONE comprehensive task that encompasses all required changes. Combine all modifications into a single issue with a thorough implementation.
-Output a strict JSON array with exactly ONE item.`,
+**Task Granularity: SINGLE - CRITICAL CONSTRAINT**
+
+⚠️ MANDATORY: You MUST create EXACTLY ONE task. This is a hard requirement that cannot be violated.
+
+CONSTRAINTS:
+- Output a JSON array containing EXACTLY 1 item - no more, no less
+- Combine ALL required changes into this single comprehensive task
+- Even if the request involves multiple files, components, or concerns - merge them into ONE task
+- The single task should have a thorough implementation covering all aspects
+
+VALIDATION: Your output MUST be a JSON array with array.length === 1
+
+DO NOT create multiple tasks. DO NOT split the work. ONE TASK ONLY.`,
   balanced: `
 **Task Granularity: BALANCED**
-Group related changes together into logical units. Separate distinct concerns but avoid creating too many small tasks. Aim for 2-4 tasks that each represent a cohesive piece of work.`,
+
+Create 2-4 tasks that group related changes together into logical units.
+
+CONSTRAINTS:
+- Minimum: 2 tasks
+- Maximum: 4 tasks
+- Each task should represent a cohesive piece of work
+- Separate distinct concerns but avoid creating too many small tasks
+
+If the request is small enough to be a single task, still aim for at least 2 logical groupings.`,
   granular: `
 **Task Granularity: GRANULAR**
-Break down the work into small, focused units. Each task should be independently reviewable and testable. Create separate issues for distinct logical concerns.`
+
+Break down the work into small, focused units for maximum reviewability.
+
+CONSTRAINTS:
+- Create 5 or more tasks when appropriate
+- Each task should be independently reviewable and testable
+- Separate distinct logical concerns into their own tasks
+- Prefer smaller, focused tasks over larger comprehensive ones`
 };
 
 export function getPlannerPrompt(granularity: Granularity): string {
