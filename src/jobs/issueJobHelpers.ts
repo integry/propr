@@ -332,11 +332,20 @@ ${completionComment}
             error: (prError as Error).message
         }, 'Direct PR creation failed, checking if PR already exists...');
 
-        return await findExistingPR(octokit, issueRef, worktreeInfo, prError as Error, correlatedLogger);
+        return await findExistingPR({ octokit, issueRef, worktreeInfo, prError: prError as Error, correlatedLogger });
     }
 }
 
-async function findExistingPR(octokit: Octokit, issueRef: IssueJobData, worktreeInfo: WorktreeInfo, prError: Error, correlatedLogger: Logger): Promise<PostProcessingResult> {
+interface FindExistingPROptions {
+    octokit: Octokit;
+    issueRef: IssueJobData;
+    worktreeInfo: WorktreeInfo;
+    prError: Error;
+    correlatedLogger: Logger;
+}
+
+async function findExistingPR(options: FindExistingPROptions): Promise<PostProcessingResult> {
+    const { octokit, issueRef, worktreeInfo, prError, correlatedLogger } = options;
     try {
         const existingPRs = await octokit.request<{ data: Array<{ number: number; html_url: string; title: string }> }>('GET /repos/{owner}/{repo}/pulls', { owner: issueRef.repoOwner, repo: issueRef.repoName, head: `${issueRef.repoOwner}:${worktreeInfo.branchName}`, state: 'open' });
         if (existingPRs.data.length > 0) {
@@ -350,15 +359,41 @@ async function findExistingPR(octokit: Octokit, issueRef: IssueJobData, worktree
 
 interface FinalResultResults { worktreeInfo: WorktreeInfo | undefined; claudeResult: ClaudeCodeResponse | null; postProcessingResult: PostProcessingResult | null; commitResult: CommitResult | null; }
 
+function determineResultStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
+    if (!claudeResult?.success) return 'claude_processing_failed';
+    if (postProcessingResult?.pr) return 'complete_with_pr';
+    return 'claude_success_no_changes';
+}
+
+function buildClaudeResultSection(claudeResult: ClaudeCodeResponse | null): { success: boolean } {
+    return {
+        success: claudeResult?.success ?? false,
+        executionTime: claudeResult?.executionTime ?? 0,
+        modifiedFiles: claudeResult?.modifiedFiles ?? [],
+        conversationLog: claudeResult?.conversationLog ?? [],
+        error: claudeResult?.error ?? null,
+        sessionId: claudeResult?.sessionId ?? null,
+        conversationId: claudeResult?.conversationId ?? null,
+        model: claudeResult?.model ?? null
+    } as { success: boolean };
+}
+
+function buildPostProcessingSection(postProcessingResult: PostProcessingResult | null): { success: boolean; pr: PostProcessingResult['pr']; updatedLabels: string[] } {
+    return {
+        success: !!postProcessingResult,
+        pr: postProcessingResult?.pr ?? null,
+        updatedLabels: postProcessingResult?.updatedLabels ?? []
+    };
+}
+
 export function buildFinalResult(issueRef: IssueJobData, localRepoPath: string, results: FinalResultResults): JobResult {
     const { worktreeInfo, claudeResult, postProcessingResult } = results;
-    const status = !claudeResult?.success ? 'claude_processing_failed' : (postProcessingResult?.pr ? 'complete_with_pr' : 'claude_success_no_changes');
     return {
-        status,
+        status: determineResultStatus(claudeResult, postProcessingResult),
         issueNumber: issueRef.number,
         repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
         gitSetup: { localRepoPath, worktreeCreated: !!worktreeInfo, branchName: worktreeInfo?.branchName },
-        claudeResult: { success: claudeResult?.success || false, executionTime: claudeResult?.executionTime || 0, modifiedFiles: claudeResult?.modifiedFiles || [], conversationLog: claudeResult?.conversationLog || [], error: claudeResult?.error || null, sessionId: claudeResult?.sessionId || null, conversationId: claudeResult?.conversationId || null, model: claudeResult?.model || null } as { success: boolean },
-        postProcessing: { success: !!postProcessingResult, pr: postProcessingResult?.pr || null, updatedLabels: postProcessingResult?.updatedLabels || [] }
+        claudeResult: buildClaudeResultSection(claudeResult),
+        postProcessing: buildPostProcessingSection(postProcessingResult)
     };
 }
