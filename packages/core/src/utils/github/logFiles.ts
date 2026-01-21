@@ -225,6 +225,6 @@ export async function generateCompletionComment(claudeResultInput: unknown, issu
         const err = logError as Error;
         logger.warn({ issueNumber: issueRef.number, error: err.message }, 'Failed to create log files');
     }
-    comment += `---\n*Powered by Claude Code v${process.env.npm_package_version || 'unknown'}*`;
+    comment += `---\n*This PR was created automatically by [ProPR](https://propr.dev) after processing issue #${issueRef.number}.*`;
     return comment;
 }
