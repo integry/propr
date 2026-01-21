@@ -184,16 +184,42 @@ export async function handleGenericError(
         }
     }
 
-    if (octokit) {
+    // Don't post error comment to GitHub if task was cancelled by user
+    const isUserCancelled = error.message?.includes('aborted by user');
+    if (octokit && !isUserCancelled) {
         await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger });
+    } else if (octokit && isUserCancelled) {
+        // Post a cancellation notice instead
+        try {
+            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner: issueRef.repoOwner,
+                repo: issueRef.repoName,
+                issue_number: issueRef.number,
+                body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can re-add the AI label to restart processing.`
+            });
+            await safeRemoveLabel(
+                { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
+                AI_PROCESSING_TAG
+            );
+        } catch (commentError) {
+            correlatedLogger.warn({ error: (commentError as Error).message }, 'Failed to post cancellation notice');
+        }
     }
 
     try {
-        await stateManager.markTaskFailed(taskId, error, {
-            errorCategory
-        });
+        // Check if this was a user-initiated abort and mark as cancelled instead of failed
+        if (error.message?.includes('aborted by user')) {
+            await stateManager.markTaskCancelled(taskId, 'user', {
+                historyMetadata: { originalError: error.message }
+            });
+            correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
+        } else {
+            await stateManager.markTaskFailed(taskId, error, {
+                errorCategory
+            });
+        }
     } catch (stateError) {
-        correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state to failed');
+        correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state');
     }
 }
 
