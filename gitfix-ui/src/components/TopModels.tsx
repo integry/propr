@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { getStatsOverview, StatsOverviewResponse } from '../api/taskStatsApi';
+import { ProviderLogo } from './ui/ProviderLogo';
 
-// Model icon component for visual grouping
+// Model icon component using ProviderLogo for visual grouping
 const ModelIcon: React.FC<{ modelId: string }> = ({ modelId }) => {
   const getModelFamily = (id: string): string => {
     const lower = id.toLowerCase();
@@ -21,17 +22,9 @@ const ModelIcon: React.FC<{ modelId: string }> = ({ modelId }) => {
     other: 'bg-gray-100 text-gray-600',
   };
 
-  const iconSymbols: Record<string, string> = {
-    claude: 'C',
-    openai: 'O',
-    gemini: 'G',
-    llama: 'L',
-    other: 'AI',
-  };
-
   return (
-    <div className={`w-6 h-6 rounded flex items-center justify-center text-xs font-semibold ${iconColors[family]}`}>
-      {iconSymbols[family]}
+    <div className={`w-6 h-6 rounded flex items-center justify-center ${iconColors[family]}`}>
+      <ProviderLogo provider={modelId} className="w-4 h-4" />
     </div>
   );
 };
