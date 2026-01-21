@@ -120,8 +120,8 @@ const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
                   <td className="py-2 px-2">
                     <div className="flex items-center gap-2">
                       <ModelIcon modelId={modelId} />
-                      <span className="text-slate-800 font-medium text-sm truncate block max-w-[120px]" title={modelId}>
-                        {modelId.split('-').slice(0, 2).join('-')}
+                      <span className="text-slate-800 font-medium text-sm truncate block max-w-[200px]" title={modelId}>
+                        {modelId}
                       </span>
                     </div>
                   </td>
