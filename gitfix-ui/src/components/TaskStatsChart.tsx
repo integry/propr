@@ -1,18 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import {
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  AreaChart,
-  Area,
-  Legend,
-} from 'recharts';
 import { getTaskStats, TaskStatsResponse } from '../api/gitfixApi';
+import { VolumeChart, ProcessingTimeChart, StatusPieChart } from './TaskStatsChartParts';
 
 // Color palette matching the dashboard's indigo/purple theme
 const STATUS_COLORS: Record<string, string> = {
@@ -85,7 +73,6 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     };
 
     fetchStats();
-    // Refresh every 5 minutes
     const interval = setInterval(fetchStats, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, [externalData]);
@@ -111,25 +98,21 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     );
   }
 
-  if (!stats) {
-    return null;
-  }
+  if (!stats) return null;
 
-  // Format daily counts for chart
+  // Format data for charts
   const dailyData = stats.dailyCounts.map(item => ({
     date: item.date,
     displayDate: formatDate(item.date),
     count: item.count,
   }));
 
-  // Format status distribution for pie chart
   const pieData = stats.statusDistribution.map(item => ({
     name: formatStatus(item.status),
     value: item.count,
     color: getStatusColor(item.status),
   }));
 
-  // Format processing time data
   const processingTimeData = stats.avgProcessingTime.map(item => ({
     date: item.date,
     displayDate: formatDate(item.date),
@@ -137,112 +120,43 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   }));
 
   const hasData = dailyData.length > 0 || pieData.length > 0;
+  const hasProcessingTimeData = processingTimeData.length > 0 && processingTimeData.some(d => d.avgMinutes > 0);
 
-  // Render trends section (volume and processing time charts)
-  const renderTrends = () => (
-    <div className={mode === 'trends' ? 'space-y-6' : 'grid grid-cols-1 lg:grid-cols-2 gap-6'}>
-      {/* Daily Task Trend - Area Chart */}
-      {dailyData.length > 0 && (
+  // Render trends section - simplified to show only tasks processed
+  const renderTrends = () => {
+    if (mode === 'trends') {
+      return (
         <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-          <h4 className="text-lg font-bold text-slate-800 mb-4">Daily Task Volume (Last 30 Days)</h4>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={dailyData}>
-                <defs>
-                  <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#6366F1" stopOpacity={0.2}/>
-                    <stop offset="95%" stopColor="#6366F1" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(100, 116, 139, 0.1)" />
-                <XAxis
-                  dataKey="displayDate"
-                  stroke="#64748B"
-                  tick={{ fill: '#64748B', fontSize: 12 }}
-                  interval="preserveStartEnd"
-                />
-                <YAxis
-                  stroke="#64748B"
-                  tick={{ fill: '#64748B', fontSize: 12 }}
-                  allowDecimals={false}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #E2E8F0',
-                    borderRadius: '8px',
-                    color: '#1E293B',
-                    boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
-                  }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="count"
-                  stroke="#6366F1"
-                  strokeWidth={2}
-                  fill="url(#colorCount)"
-                  name="Tasks"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+          <h4 className="text-lg font-bold text-slate-800 mb-4">Tasks Processed (Last 30 Days)</h4>
+          {dailyData.length > 0 ? (
+            <div className="h-64"><VolumeChart data={dailyData} /></div>
+          ) : (
+            <div className="h-64 flex items-center justify-center text-slate-500">
+              No data available
+            </div>
+          )}
         </div>
-      )}
+      );
+    }
 
-      {/* Processing Time Trend - Line Chart */}
-      {processingTimeData.length > 0 && processingTimeData.some(d => d.avgMinutes > 0) && (
-        <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-          <h4 className="text-lg font-bold text-slate-800 mb-4">Average Processing Time (Minutes)</h4>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={processingTimeData}>
-                <defs>
-                  <linearGradient id="colorProcessingTime" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#A855F7" stopOpacity={0.2}/>
-                    <stop offset="95%" stopColor="#A855F7" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(100, 116, 139, 0.1)" />
-                <XAxis
-                  dataKey="displayDate"
-                  stroke="#64748B"
-                  tick={{ fill: '#64748B', fontSize: 12 }}
-                  interval="preserveStartEnd"
-                />
-                <YAxis
-                  stroke="#64748B"
-                  tick={{ fill: '#64748B', fontSize: 12 }}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #E2E8F0',
-                    borderRadius: '8px',
-                    color: '#1E293B',
-                    boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
-                  }}
-                  formatter={(value: number) => [`${value.toFixed(1)} min`, 'Avg Time']}
-                />
-                <Legend
-                  wrapperStyle={{ color: '#64748B' }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="avgMinutes"
-                  stroke="#A855F7"
-                  strokeWidth={2}
-                  fill="url(#colorProcessingTime)"
-                  dot={{ fill: '#A855F7', r: 3, strokeWidth: 0 }}
-                  activeDot={{ r: 5, fill: '#A855F7', stroke: '#FFFFFF', strokeWidth: 2 }}
-                  name="Processing Time"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+    // In 'all' mode, show both charts side by side
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {dailyData.length > 0 && (
+          <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+            <h4 className="text-lg font-bold text-slate-800 mb-4">Tasks Processed (Last 30 Days)</h4>
+            <div className="h-64"><VolumeChart data={dailyData} /></div>
           </div>
-        </div>
-      )}
-    </div>
-  );
+        )}
+        {hasProcessingTimeData && (
+          <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+            <h4 className="text-lg font-bold text-slate-800 mb-4">Average Processing Time (Minutes)</h4>
+            <div className="h-64"><ProcessingTimeChart data={processingTimeData} showLegend /></div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // Render distribution section (donut chart)
   const renderDistribution = () => (
@@ -250,46 +164,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
       {pieData.length > 0 && (
         <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
           <h4 className="text-lg font-bold text-slate-800 mb-4">Task Status Distribution</h4>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={pieData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={90}
-                  paddingAngle={3}
-                  dataKey="value"
-                  labelLine={false}
-                >
-                  {pieData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #E2E8F0',
-                    borderRadius: '8px',
-                    color: '#1E293B',
-                    boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
-                  }}
-                  formatter={(value: number, name: string) => [`${value} tasks`, name]}
-                />
-                <Legend
-                  layout="horizontal"
-                  align="center"
-                  verticalAlign="bottom"
-                  iconType="circle"
-                  iconSize={8}
-                  formatter={(value: string) => (
-                    <span style={{ color: '#64748B', fontSize: '11px' }}>{value}</span>
-                  )}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
+          <div className="h-64"><StatusPieChart data={pieData} /></div>
         </div>
       )}
     </>
@@ -305,7 +180,6 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
         </div>
       ) : (
         <>
-          {/* Summary Cards - only show in 'all' mode */}
           {mode === 'all' && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
               <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm border-t-4 border-t-indigo-500">
@@ -322,8 +196,6 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
               </div>
             </div>
           )}
-
-          {/* Conditional rendering based on mode */}
           {mode === 'all' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {renderTrends()}

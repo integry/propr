@@ -235,12 +235,14 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
         })
         .first() as unknown as { cost: number | string | null } | undefined;
 
-      // 3. Model Distribution - count tasks per model
-      const modelStats = await db('tasks')
+      // 3. Model Distribution - count unique tasks per model from llm_executions
+      // This gives accurate counts since a task may use multiple models or have retries
+      const modelStats = await db('llm_executions')
         .select('model_name')
-        .count('* as count')
+        .countDistinct('task_id as count')
         .whereNotNull('model_name')
-        .groupBy('model_name') as unknown as ModelCountRow[];
+        .groupBy('model_name')
+        .orderBy('count', 'desc') as unknown as ModelCountRow[];
 
       // Format model stats as object
       const modelDistribution: Record<string, number> = {};

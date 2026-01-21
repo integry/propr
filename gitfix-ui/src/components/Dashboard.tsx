@@ -2,9 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import TaskStatsChart from './TaskStatsChart';
 import RepositoryBreakdown from './RepositoryBreakdown';
+import TopModels from './TopModels';
 import TaskList from './TaskList';
 import { getRepoConfig, createDraft, uploadAttachment, getQueueStats } from '../api/gitfixApi';
-import { getTaskStats, TaskStatsResponse } from '../api/taskStatsApi';
+import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
 import { resizeImage } from './TaskPlanner/imageUtils';
 import { NewPlanForm, KPICard, transformRepoData, getInitialSelectedRepo, Repo } from './Dashboard/index';
 
@@ -24,11 +25,13 @@ const Dashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isPastingImage, setIsPastingImage] = useState<boolean>(false);
+  const [isFormExpanded, setIsFormExpanded] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Lifted state for KPIs
   const [taskStats, setTaskStats] = useState<TaskStatsResponse | null>(null);
   const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
+  const [overviewStats, setOverviewStats] = useState<StatsOverviewResponse | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(true);
 
   useEffect(() => {
@@ -47,17 +50,19 @@ const Dashboard: React.FC = () => {
     loadRepos();
   }, []);
 
-  // Fetch task stats and queue stats for KPIs
+  // Fetch task stats, queue stats, and overview stats for KPIs
   useEffect(() => {
     const fetchAllStats = async () => {
       try {
         setStatsLoading(true);
-        const [tStats, qStats] = await Promise.all([
+        const [tStats, qStats, oStats] = await Promise.all([
           getTaskStats(),
-          getQueueStats()
+          getQueueStats(),
+          getStatsOverview()
         ]);
         setTaskStats(tStats);
         setQueueStats(qStats as QueueStats);
+        setOverviewStats(oStats);
       } catch (err) {
         console.error('Failed to fetch stats:', err);
       } finally {
@@ -163,10 +168,12 @@ const Dashboard: React.FC = () => {
         error={error}
         isCreating={isCreating}
         onStartPlanning={handleStartPlanning}
+        isExpanded={isFormExpanded}
+        onExpandChange={setIsFormExpanded}
       />
 
       {/* KPI Bar */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
         <KPICard
           title="Active Tasks"
           value={queueStats?.active || 0}
@@ -189,6 +196,12 @@ const Dashboard: React.FC = () => {
           value={taskStats?.summary?.failed || 0}
           color="text-red-500"
           isLoading={statsLoading && !taskStats}
+        />
+        <KPICard
+          title="Total Cost"
+          value={`$${(overviewStats?.usage?.total_cost_usd ?? 0).toFixed(2)}`}
+          color="text-violet-600"
+          isLoading={statsLoading && !overviewStats}
         />
       </div>
 
@@ -217,6 +230,9 @@ const Dashboard: React.FC = () => {
 
           {/* Top Repositories */}
           <RepositoryBreakdown limit={5} />
+
+          {/* Top Models */}
+          <TopModels limit={5} />
         </div>
       </div>
     </div>
