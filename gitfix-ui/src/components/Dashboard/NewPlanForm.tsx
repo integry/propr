@@ -79,6 +79,8 @@ export interface NewPlanFormProps {
   error: string | null;
   isCreating: boolean;
   onStartPlanning: () => void;
+  isExpanded?: boolean;
+  onExpandChange?: (expanded: boolean) => void;
 }
 
 export const NewPlanForm: React.FC<NewPlanFormProps> = ({
@@ -96,114 +98,156 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
   error,
   isCreating,
   onStartPlanning,
-}) => (
-  <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8 shadow-md hover:shadow-lg transition-shadow border-t-4 border-t-indigo-500">
-    <div className="flex justify-between items-center mb-4">
-      <h3 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-        <span>✨</span> Start New AI Plan
-      </h3>
-      <Link
-        to="/plans"
-        className="text-sm text-gray-500 hover:text-gray-700 underline"
-      >
-        View History
-      </Link>
-    </div>
-    <div className="space-y-4">
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">Repository</label>
-        <select
-          value={selectedRepo}
-          onChange={(e) => onRepoChange(e.target.value)}
-          className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-          disabled={repos.length === 0}
+  isExpanded: controlledExpanded,
+  onExpandChange,
+}) => {
+  // Use internal state if not controlled externally
+  const [internalExpanded, setInternalExpanded] = useState(false);
+  const isExpanded = controlledExpanded !== undefined ? controlledExpanded : internalExpanded;
+
+  const handleExpand = () => {
+    if (onExpandChange) {
+      onExpandChange(true);
+    } else {
+      setInternalExpanded(true);
+    }
+  };
+
+  // Auto-expand if there's content or files
+  const shouldBeExpanded = isExpanded || prompt.trim().length > 0 || selectedFiles.length > 0;
+
+  return (
+    <div className={`bg-white border border-gray-200 rounded-lg p-6 mb-8 shadow-md hover:shadow-lg transition-all duration-300 border-t-4 border-t-indigo-500`}>
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
+          <span>✨</span> Start New AI Plan
+        </h3>
+        <Link
+          to="/plans"
+          className="text-sm text-gray-500 hover:text-gray-700 underline"
         >
-          {repos.length === 0 ? (
-            <option value="">No repositories configured</option>
-          ) : (
-            repos.map(repo => (
-              <option key={repo.name} value={repo.name}>
-                {repo.baseBranch ? `${repo.name} (${repo.baseBranch})` : repo.name}
-              </option>
-            ))
-          )}
-        </select>
+          View History
+        </Link>
       </div>
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">What do you want to build?</label>
-        <textarea
-          value={prompt}
-          onChange={(e) => onPromptChange(e.target.value)}
-          onPaste={onPaste}
-          placeholder="Describe the feature or task you want to implement..."
-          rows={3}
-          className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 resize-none"
-        />
-        <p className="text-xs text-gray-400 mt-1">Tip: You can paste screenshots directly into this field</p>
-      </div>
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">Attachments (optional)</label>
-        {selectedFiles.length > 0 && (
-          <div className="flex flex-wrap gap-3 mb-3">
-            {selectedFiles.map((file, index) => (
-              <FilePreview
-                key={`${file.name}-${index}`}
-                file={file}
-                index={index}
-                onRemove={onRemoveFile}
-              />
-            ))}
+      <div className="space-y-4">
+        {/* Repository Select - Always visible */}
+        <div className="flex gap-4 items-end">
+          <div className="flex-shrink-0 w-64">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Repository</label>
+            <select
+              value={selectedRepo}
+              onChange={(e) => onRepoChange(e.target.value)}
+              className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              disabled={repos.length === 0}
+            >
+              {repos.length === 0 ? (
+                <option value="">No repositories configured</option>
+              ) : (
+                repos.map(repo => (
+                  <option key={repo.name} value={repo.name}>
+                    {repo.baseBranch ? `${repo.name} (${repo.baseBranch})` : repo.name}
+                  </option>
+                ))
+              )}
+            </select>
           </div>
-        )}
-        <input
-          type="file"
-          ref={fileInputRef}
-          onChange={onFileSelect}
-          className="hidden"
-          id="dashboard-file-upload"
-          accept="image/*,.log,.txt,.json,.md,.csv"
-          multiple
-        />
-        <label
-          htmlFor="dashboard-file-upload"
-          className={`inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-primary-600 cursor-pointer transition-colors ${isPastingImage ? 'opacity-50' : ''}`}
-        >
-          {isPastingImage ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Processing pasted image...
-            </>
-          ) : (
-            <>
-              <Paperclip className="w-4 h-4" />
-              Attach screenshots, logs, or files
-            </>
+          {/* Compact Input - visible when collapsed */}
+          {!shouldBeExpanded && (
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-gray-700 mb-2">What do you want to build?</label>
+              <input
+                type="text"
+                value={prompt}
+                onChange={(e) => onPromptChange(e.target.value)}
+                onFocus={handleExpand}
+                placeholder="Describe the feature or task you want to implement..."
+                className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
           )}
-        </label>
-      </div>
-      {error && (
-        <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">
-          {error}
         </div>
-      )}
-      <button
-        onClick={onStartPlanning}
-        disabled={isCreating || !selectedRepo || !prompt.trim()}
-        className={`w-full py-3 font-medium rounded-md transition-colors ${
-          isCreating || !selectedRepo || !prompt.trim()
-            ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-            : 'bg-primary-600 text-white hover:bg-primary-700 cursor-pointer'
-        }`}
-      >
-        {isCreating ? (
-          <span className="inline-flex items-center justify-center gap-2">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            {selectedFiles.length > 0 ? 'Creating & uploading files...' : 'Creating...'}
-          </span>
-        ) : (
-          'Start Planning'
-        )}
-      </button>
+
+        {/* Expanded Section */}
+        <div className={`transition-all duration-300 overflow-hidden ${shouldBeExpanded ? 'max-h-[1000px] opacity-100' : 'max-h-0 opacity-0'}`}>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">What do you want to build?</label>
+              <textarea
+                value={prompt}
+                onChange={(e) => onPromptChange(e.target.value)}
+                onPaste={onPaste}
+                placeholder="Describe the feature or task you want to implement..."
+                rows={3}
+                className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 resize-none"
+              />
+              <p className="text-xs text-gray-400 mt-1">Tip: You can paste screenshots directly into this field</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Attachments (optional)</label>
+              {selectedFiles.length > 0 && (
+                <div className="flex flex-wrap gap-3 mb-3">
+                  {selectedFiles.map((file, index) => (
+                    <FilePreview
+                      key={`${file.name}-${index}`}
+                      file={file}
+                      index={index}
+                      onRemove={onRemoveFile}
+                    />
+                  ))}
+                </div>
+              )}
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={onFileSelect}
+                className="hidden"
+                id="dashboard-file-upload"
+                accept="image/*,.log,.txt,.json,.md,.csv"
+                multiple
+              />
+              <label
+                htmlFor="dashboard-file-upload"
+                className={`inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-primary-600 cursor-pointer transition-colors ${isPastingImage ? 'opacity-50' : ''}`}
+              >
+                {isPastingImage ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Processing pasted image...
+                  </>
+                ) : (
+                  <>
+                    <Paperclip className="w-4 h-4" />
+                    Attach screenshots, logs, or files
+                  </>
+                )}
+              </label>
+            </div>
+            {error && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">
+                {error}
+              </div>
+            )}
+            <button
+              onClick={onStartPlanning}
+              disabled={isCreating || !selectedRepo || !prompt.trim()}
+              className={`w-full py-3 font-medium rounded-md transition-colors ${
+                isCreating || !selectedRepo || !prompt.trim()
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : 'bg-primary-600 text-white hover:bg-primary-700 cursor-pointer'
+              }`}
+            >
+              {isCreating ? (
+                <span className="inline-flex items-center justify-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {selectedFiles.length > 0 ? 'Creating & uploading files...' : 'Creating...'}
+                </span>
+              ) : (
+                'Start Planning'
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
-  </div>
-);
+  );
+};

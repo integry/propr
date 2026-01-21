@@ -59,6 +59,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   const [internalStats, setInternalStats] = useState<TaskStatsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(!externalData);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'volume' | 'time'>('volume');
 
   // Use external data if provided, otherwise fetch internally
   const stats = externalData !== undefined ? externalData : internalStats;
@@ -138,111 +139,250 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
 
   const hasData = dailyData.length > 0 || pieData.length > 0;
 
-  // Render trends section (volume and processing time charts)
-  const renderTrends = () => (
-    <div className={mode === 'trends' ? 'space-y-6' : 'grid grid-cols-1 lg:grid-cols-2 gap-6'}>
-      {/* Daily Task Trend - Area Chart */}
-      {dailyData.length > 0 && (
-        <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-          <h4 className="text-lg font-bold text-slate-800 mb-4">Daily Task Volume (Last 30 Days)</h4>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={dailyData}>
-                <defs>
-                  <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#6366F1" stopOpacity={0.2}/>
-                    <stop offset="95%" stopColor="#6366F1" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(100, 116, 139, 0.1)" />
-                <XAxis
-                  dataKey="displayDate"
-                  stroke="#64748B"
-                  tick={{ fill: '#64748B', fontSize: 12 }}
-                  interval="preserveStartEnd"
-                />
-                <YAxis
-                  stroke="#64748B"
-                  tick={{ fill: '#64748B', fontSize: 12 }}
-                  allowDecimals={false}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #E2E8F0',
-                    borderRadius: '8px',
-                    color: '#1E293B',
-                    boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
-                  }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="count"
-                  stroke="#6366F1"
-                  strokeWidth={2}
-                  fill="url(#colorCount)"
-                  name="Tasks"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
+  // Render trends section with tabbed interface for trends mode
+  const renderTrends = () => {
+    const hasProcessingTimeData = processingTimeData.length > 0 && processingTimeData.some(d => d.avgMinutes > 0);
 
-      {/* Processing Time Trend - Line Chart */}
-      {processingTimeData.length > 0 && processingTimeData.some(d => d.avgMinutes > 0) && (
+    // In 'trends' mode, use tabbed interface
+    if (mode === 'trends') {
+      return (
         <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-          <h4 className="text-lg font-bold text-slate-800 mb-4">Average Processing Time (Minutes)</h4>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={processingTimeData}>
-                <defs>
-                  <linearGradient id="colorProcessingTime" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#A855F7" stopOpacity={0.2}/>
-                    <stop offset="95%" stopColor="#A855F7" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(100, 116, 139, 0.1)" />
-                <XAxis
-                  dataKey="displayDate"
-                  stroke="#64748B"
-                  tick={{ fill: '#64748B', fontSize: 12 }}
-                  interval="preserveStartEnd"
-                />
-                <YAxis
-                  stroke="#64748B"
-                  tick={{ fill: '#64748B', fontSize: 12 }}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #E2E8F0',
-                    borderRadius: '8px',
-                    color: '#1E293B',
-                    boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
-                  }}
-                  formatter={(value: number) => [`${value.toFixed(1)} min`, 'Avg Time']}
-                />
-                <Legend
-                  wrapperStyle={{ color: '#64748B' }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="avgMinutes"
-                  stroke="#A855F7"
-                  strokeWidth={2}
-                  fill="url(#colorProcessingTime)"
-                  dot={{ fill: '#A855F7', r: 3, strokeWidth: 0 }}
-                  activeDot={{ r: 5, fill: '#A855F7', stroke: '#FFFFFF', strokeWidth: 2 }}
-                  name="Processing Time"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+          <div className="flex justify-between items-center mb-4">
+            <h4 className="text-lg font-bold text-slate-800">Activity Trends</h4>
+            <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+              <button
+                onClick={() => setActiveTab('volume')}
+                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                  activeTab === 'volume'
+                    ? 'bg-white text-slate-800 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Volume
+              </button>
+              {hasProcessingTimeData && (
+                <button
+                  onClick={() => setActiveTab('time')}
+                  className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                    activeTab === 'time'
+                      ? 'bg-white text-slate-800 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  Time
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* Volume Chart */}
+          {activeTab === 'volume' && dailyData.length > 0 && (
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={dailyData}>
+                  <defs>
+                    <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#6366F1" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#6366F1" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(100, 116, 139, 0.1)" />
+                  <XAxis
+                    dataKey="displayDate"
+                    stroke="#64748B"
+                    tick={{ fill: '#64748B', fontSize: 12 }}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    stroke="#64748B"
+                    tick={{ fill: '#64748B', fontSize: 12 }}
+                    allowDecimals={false}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#FFFFFF',
+                      border: '1px solid #E2E8F0',
+                      borderRadius: '8px',
+                      color: '#1E293B',
+                      boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
+                    }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="count"
+                    stroke="#6366F1"
+                    strokeWidth={2}
+                    fill="url(#colorCount)"
+                    name="Tasks"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Processing Time Chart */}
+          {activeTab === 'time' && hasProcessingTimeData && (
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={processingTimeData}>
+                  <defs>
+                    <linearGradient id="colorProcessingTime" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#A855F7" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#A855F7" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(100, 116, 139, 0.1)" />
+                  <XAxis
+                    dataKey="displayDate"
+                    stroke="#64748B"
+                    tick={{ fill: '#64748B', fontSize: 12 }}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    stroke="#64748B"
+                    tick={{ fill: '#64748B', fontSize: 12 }}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#FFFFFF',
+                      border: '1px solid #E2E8F0',
+                      borderRadius: '8px',
+                      color: '#1E293B',
+                      boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
+                    }}
+                    formatter={(value: number) => [`${value.toFixed(1)} min`, 'Avg Time']}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="avgMinutes"
+                    stroke="#A855F7"
+                    strokeWidth={2}
+                    fill="url(#colorProcessingTime)"
+                    dot={{ fill: '#A855F7', r: 3, strokeWidth: 0 }}
+                    activeDot={{ r: 5, fill: '#A855F7', stroke: '#FFFFFF', strokeWidth: 2 }}
+                    name="Processing Time"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Empty state */}
+          {activeTab === 'volume' && dailyData.length === 0 && (
+            <div className="h-64 flex items-center justify-center text-slate-500">
+              No volume data available
+            </div>
+          )}
         </div>
-      )}
-    </div>
-  );
+      );
+    }
+
+    // In 'all' mode, show both charts side by side
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Daily Task Trend - Area Chart */}
+        {dailyData.length > 0 && (
+          <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+            <h4 className="text-lg font-bold text-slate-800 mb-4">Daily Task Volume (Last 30 Days)</h4>
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={dailyData}>
+                  <defs>
+                    <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#6366F1" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#6366F1" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(100, 116, 139, 0.1)" />
+                  <XAxis
+                    dataKey="displayDate"
+                    stroke="#64748B"
+                    tick={{ fill: '#64748B', fontSize: 12 }}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    stroke="#64748B"
+                    tick={{ fill: '#64748B', fontSize: 12 }}
+                    allowDecimals={false}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#FFFFFF',
+                      border: '1px solid #E2E8F0',
+                      borderRadius: '8px',
+                      color: '#1E293B',
+                      boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
+                    }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="count"
+                    stroke="#6366F1"
+                    strokeWidth={2}
+                    fill="url(#colorCount)"
+                    name="Tasks"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* Processing Time Trend - Line Chart */}
+        {hasProcessingTimeData && (
+          <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+            <h4 className="text-lg font-bold text-slate-800 mb-4">Average Processing Time (Minutes)</h4>
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={processingTimeData}>
+                  <defs>
+                    <linearGradient id="colorProcessingTime" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#A855F7" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#A855F7" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(100, 116, 139, 0.1)" />
+                  <XAxis
+                    dataKey="displayDate"
+                    stroke="#64748B"
+                    tick={{ fill: '#64748B', fontSize: 12 }}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    stroke="#64748B"
+                    tick={{ fill: '#64748B', fontSize: 12 }}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#FFFFFF',
+                      border: '1px solid #E2E8F0',
+                      borderRadius: '8px',
+                      color: '#1E293B',
+                      boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
+                    }}
+                    formatter={(value: number) => [`${value.toFixed(1)} min`, 'Avg Time']}
+                  />
+                  <Legend
+                    wrapperStyle={{ color: '#64748B' }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="avgMinutes"
+                    stroke="#A855F7"
+                    strokeWidth={2}
+                    fill="url(#colorProcessingTime)"
+                    dot={{ fill: '#A855F7', r: 3, strokeWidth: 0 }}
+                    activeDot={{ r: 5, fill: '#A855F7', stroke: '#FFFFFF', strokeWidth: 2 }}
+                    name="Processing Time"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // Render distribution section (donut chart)
   const renderDistribution = () => (

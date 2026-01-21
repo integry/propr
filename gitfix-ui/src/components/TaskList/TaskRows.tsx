@@ -74,14 +74,16 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
       <td className="py-3 px-4 align-top">
         {getStatusPill(task.status)}
       </td>
-      <td className="py-3 px-4 align-top text-sm text-gray-500 whitespace-nowrap" title={new Date(task.createdAt).toLocaleString()}>
-        {formatRelativeTime(task.createdAt)}
-      </td>
-      <td className="py-3 px-4 align-top text-sm text-gray-600 font-mono whitespace-nowrap text-right">
-        {formatDuration(task.processedAt || task.createdAt, task.completedAt)}
+      <td className="py-3 px-4 align-top">
+        <div className="text-sm text-gray-800" title={new Date(task.createdAt).toLocaleString()}>
+          {formatRelativeTime(task.createdAt)}
+        </div>
+        <div className="text-xs text-gray-400 font-mono">
+          {formatDuration(task.processedAt || task.createdAt, task.completedAt)}
+        </div>
       </td>
       <td className="py-3 px-4 align-top text-right">
-        <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors">
+        <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors opacity-0 group-hover:opacity-100">
           <ChevronRight size={16} />
         </button>
       </td>
@@ -111,7 +113,7 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
 
   return (
     <tr
-      className="hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30"
+      className="hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30 group"
       onClick={() => onRowClick(task.id)}
     >
       <td className="py-3 px-4 align-top relative">
@@ -149,14 +151,16 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
       <td className="py-3 px-4 align-top">
         {getStatusPill(task.status)}
       </td>
-      <td className="py-3 px-4 align-top text-sm text-gray-500 whitespace-nowrap" title={new Date(task.createdAt).toLocaleString()}>
-        {formatRelativeTime(task.createdAt)}
-      </td>
-      <td className="py-3 px-4 align-top text-sm text-gray-600 font-mono whitespace-nowrap text-right">
-        {formatDuration(task.processedAt || task.createdAt, task.completedAt)}
+      <td className="py-3 px-4 align-top">
+        <div className="text-sm text-gray-800" title={new Date(task.createdAt).toLocaleString()}>
+          {formatRelativeTime(task.createdAt)}
+        </div>
+        <div className="text-xs text-gray-400 font-mono">
+          {formatDuration(task.processedAt || task.createdAt, task.completedAt)}
+        </div>
       </td>
       <td className="py-3 px-4 align-top text-right">
-         <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors">
+         <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors opacity-0 group-hover:opacity-100">
             <ChevronRight size={16} />
          </button>
       </td>
@@ -175,7 +179,7 @@ export const CollapseToggleRow: React.FC<CollapseToggleRowProps> = ({ groupKey, 
     <td className="py-3 px-4 align-top relative">
        {/* Empty cell for repository column alignment */}
     </td>
-    <td colSpan={5} className="py-0 px-4 align-top text-xs relative">
+    <td colSpan={4} className="py-0 px-4 align-top text-xs relative">
        {/* Vertical line connecting to the tree structure - extends from top to the horizontal arm with z-index to sit above row borders */}
        <div className="absolute left-6 top-0 w-0.5 bg-gray-200 z-10" style={{ height: 'calc(0.75rem + 0.5rem + 0.5em - 2px)', top: '-1px' }}></div>
        {/* Horizontal arm - aligned with the middle of the button text */}

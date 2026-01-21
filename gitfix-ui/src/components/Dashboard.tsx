@@ -24,6 +24,7 @@ const Dashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isPastingImage, setIsPastingImage] = useState<boolean>(false);
+  const [isFormExpanded, setIsFormExpanded] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Lifted state for KPIs
@@ -163,6 +164,8 @@ const Dashboard: React.FC = () => {
         error={error}
         isCreating={isCreating}
         onStartPlanning={handleStartPlanning}
+        isExpanded={isFormExpanded}
+        onExpandChange={setIsFormExpanded}
       />
 
       {/* KPI Bar */}
