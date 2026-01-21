@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { HistoryItem } from './types';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
-import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest } from 'lucide-react';
+import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban } from 'lucide-react';
 
 interface TaskStatusTableProps {
   history: HistoryItem[];
@@ -20,6 +20,7 @@ const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[
   if (stateUpper === 'POST_PROCESSING') return 'Creating Pull Request';
   if (stateUpper === 'COMPLETED') return 'Task Completed';
   if (stateUpper === 'FAILED') return 'Task Failed';
+  if (stateUpper === 'CANCELLED') return 'Task Cancelled';
 
   return item.state?.replace(/_/g, ' ').toLowerCase() || '';
 };
@@ -38,10 +39,11 @@ const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: Hist
   return claudeCount === 1 ? 'Implementing Changes' : `Retry Implementation ${claudeCount}`;
 };
 
-const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boolean }> = ({
+const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boolean; isCancelled: boolean }> = ({
   state,
   isRunning,
-  isFailure
+  isFailure,
+  isCancelled
 }) => {
   const stateUpper = state?.toUpperCase() || '';
 
@@ -55,6 +57,10 @@ const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boo
 
   if (isFailure) {
     return <XCircle className="h-5 w-5 text-red-500" />;
+  }
+
+  if (isCancelled) {
+    return <Ban className="h-5 w-5 text-orange-500" />;
   }
 
   // Specific icons for different states
@@ -154,9 +160,10 @@ const TaskTimelineItem: React.FC<{
   compact?: boolean;
 }> = ({ item, index, history, maxDurationIndex, isLast, compact }) => {
   const stateUpper = item.state?.toUpperCase() || '';
-  const isCompletedState = ['COMPLETED', 'FAILED'].includes(stateUpper);
+  const isCompletedState = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(stateUpper);
   const isRunning = isLast && !isCompletedState;
   const isFailure = stateUpper === 'FAILED';
+  const isCancelled = stateUpper === 'CANCELLED';
 
   // Check if date changed from previous item
   const prevDate = index > 0 && history[index - 1].timestamp ? formatDateOnly(history[index - 1].timestamp!) : null;
@@ -181,7 +188,7 @@ const TaskTimelineItem: React.FC<{
 
           {/* Icon/Dot */}
           <div className="relative z-10 bg-white p-0.5">
-            <TimelineIcon state={stateUpper} isRunning={isRunning} isFailure={isFailure} />
+            <TimelineIcon state={stateUpper} isRunning={isRunning} isFailure={isFailure} isCancelled={isCancelled} />
           </div>
         </div>
 

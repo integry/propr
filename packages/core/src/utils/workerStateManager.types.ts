@@ -65,6 +65,14 @@ export interface TaskStateData {
     prResult?: PRResult;
 }
 
+export interface CancellationMetadata {
+    cancelledBy?: 'user' | 'system';
+    cancelledAt?: string;
+    reason?: string;
+    containerStopped?: boolean;
+    containerId?: string;
+}
+
 export interface UpdateMetadata {
     isRetry?: boolean;
     error?: {
@@ -78,6 +86,7 @@ export interface UpdateMetadata {
     historyMetadata?: Record<string, unknown>;
     errorCategory?: string;
     commitHash?: string;
+    cancellation?: CancellationMetadata;
 }
 
 export interface TaskResult {

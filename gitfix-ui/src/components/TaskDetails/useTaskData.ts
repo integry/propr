@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { 
-  getTaskHistory, 
-  getTaskLiveDetails, 
-  getTaskAnalysis, 
-  stopTaskExecution, 
-  generateDeepDiveAnalysis 
+import {
+  getTaskHistory,
+  getTaskLiveDetails,
+  getTaskAnalysis,
+  stopTaskExecution,
+  StopExecutionResponse,
+  generateDeepDiveAnalysis
 } from '../../api/gitfixApi';
 import { 
   HistoryItem, 
@@ -94,7 +95,7 @@ export const useTaskData = (taskId: string | undefined) => {
     if (!taskId || history.length === 0) return;
 
     const lastHistoryItem = history[history.length - 1];
-    const isTaskActive = lastHistoryItem && !['COMPLETED', 'FAILED'].includes(lastHistoryItem.state?.toUpperCase() || '');
+    const isTaskActive = lastHistoryItem && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(lastHistoryItem.state?.toUpperCase() || '');
 
     const fetchLiveDetails = async () => {
       try {
@@ -115,26 +116,53 @@ export const useTaskData = (taskId: string | undefined) => {
 
   const handleStopExecution = async () => {
     if (!taskId) return;
-    
+
     const confirmed = window.confirm('Are you sure you want to stop this execution? This action cannot be undone.');
     if (!confirmed) return;
 
     try {
       setStoppingExecution(true);
-      await stopTaskExecution(taskId);
-      
-      setTimeout(async () => {
+      const result: StopExecutionResponse = await stopTaskExecution(taskId);
+
+      // Immediately refresh task history to show the new state
+      const refreshHistory = async () => {
         try {
           const data = await getTaskHistory(taskId);
           setHistory(data.history || []);
+          setTaskInfo(data.taskInfo || null);
         } catch (err) {
           console.error('Error refreshing task history after stop:', err);
         }
+      };
+
+      // Refresh immediately
+      await refreshHistory();
+
+      // If container was stopped successfully, clear stopping state immediately
+      // Otherwise, poll a couple more times to wait for state to update
+      if (result.containerStopped) {
         setStoppingExecution(false);
-      }, 1000);
+      } else {
+        // Container might still be stopping, poll for updates
+        let pollCount = 0;
+        const pollInterval = setInterval(async () => {
+          pollCount++;
+          await refreshHistory();
+
+          // Check if task is now in a terminal state
+          const updatedData = await getTaskHistory(taskId);
+          const latestState = updatedData.history?.[updatedData.history.length - 1]?.state?.toUpperCase();
+          const isTerminal = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(latestState || '');
+
+          if (isTerminal || pollCount >= 5) {
+            clearInterval(pollInterval);
+            setStoppingExecution(false);
+          }
+        }, 1500);
+      }
     } catch (err) {
       console.error('Error stopping execution:', err);
-      alert(`Failed to stop execution: ${(err as Error).message || 'Unknown error'}`);
+      alert(`Failed to stop execution: ${(err as Error).message || 'Unknown error'}. Please try again.`);
       setStoppingExecution(false);
     }
   };

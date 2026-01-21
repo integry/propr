@@ -239,7 +239,14 @@ export const updatePrimaryProcessingLabels = async (primaryLabels: string[]): Pr
   return response.json();
 };
 
-export const stopTaskExecution = async (taskId: string): Promise<unknown> => {
+export interface StopExecutionResponse {
+  success: boolean;
+  containerStopped: boolean;
+  containerId?: string;
+  message?: string;
+}
+
+export const stopTaskExecution = async (taskId: string): Promise<StopExecutionResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/stop`, { method: 'POST', credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
