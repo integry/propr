@@ -24,15 +24,42 @@ Do not include markdown formatting or explanations outside the JSON.`;
 
 export const GRANULARITY_INSTRUCTIONS: Record<Granularity, string> = {
   single: `
-**Task Granularity: SINGLE**
-You MUST create exactly ONE comprehensive task that encompasses all required changes. Combine all modifications into a single issue with a thorough implementation.
-Output a strict JSON array with exactly ONE item.`,
+**Task Granularity: SINGLE — CRITICAL CONSTRAINT**
+
+⚠️ MANDATORY REQUIREMENT: You MUST output EXACTLY ONE task. This is non-negotiable.
+
+- Create ONE comprehensive task that encompasses ALL required changes
+- Combine ALL modifications into a SINGLE issue with a thorough implementation
+- Even if the request involves multiple files or multiple logical changes, merge them into ONE task
+- Your JSON array output MUST contain exactly 1 item: [{ "title": "...", "body": "...", "implementation": "..." }]
+
+🚫 DO NOT create multiple tasks under any circumstances
+🚫 DO NOT split the work into separate issues
+🚫 DO NOT argue that the request requires multiple tasks
+
+✅ DO combine all changes into one comprehensive task
+✅ DO make the single task detailed and complete
+✅ DO ensure the output array has exactly one element
+
+REMEMBER: Output exactly 1 task. No more, no less.`,
   balanced: `
 **Task Granularity: BALANCED**
-Group related changes together into logical units. Separate distinct concerns but avoid creating too many small tasks. Aim for 2-4 tasks that each represent a cohesive piece of work.`,
+
+Target: 2-4 tasks total.
+
+- Group related changes together into logical units
+- Separate distinct concerns but avoid creating too many small tasks
+- Aim for 2-4 tasks that each represent a cohesive piece of work
+- Each task should be substantial enough to be meaningful but not overwhelming`,
   granular: `
 **Task Granularity: GRANULAR**
-Break down the work into small, focused units. Each task should be independently reviewable and testable. Create separate issues for distinct logical concerns.`
+
+Target: 5+ tasks if the scope warrants it.
+
+- Break down the work into small, focused units
+- Each task should be independently reviewable and testable
+- Create separate issues for distinct logical concerns
+- Fine-grained tasks are preferred for complex requests`
 };
 
 export function getPlannerPrompt(granularity: Granularity): string {
