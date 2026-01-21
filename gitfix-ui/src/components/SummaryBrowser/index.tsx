@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Folder, AlertCircle, Loader2 } from 'lucide-react';
+import { Folder, AlertCircle, Loader2, GitCommit } from 'lucide-react';
 import { motion } from 'framer-motion';
 import {
   getDirectoryTree,
@@ -9,6 +9,18 @@ import {
 } from '../../api/summaryApi';
 import TreeNode from './TreeNode';
 import SummaryPanel from './SummaryPanel';
+
+const shortenHash = (hash: string | null): string => {
+  if (!hash) return '';
+  return hash.substring(0, 7);
+};
+
+const truncateMessage = (message: string | null, maxLength: number = 60): string => {
+  if (!message) return '';
+  const firstLine = message.split('\n')[0];
+  if (firstLine.length <= maxLength) return firstLine;
+  return firstLine.substring(0, maxLength - 3) + '...';
+};
 
 export interface SummaryBrowserProps {
   owner: string;
@@ -171,6 +183,22 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
         <p className="text-xs text-gray-500 mt-0.5">
           {indexingStatus.fileCount} files, {indexingStatus.directoryCount} directories indexed
         </p>
+        {indexingStatus.lastIndexedHash && (
+          <div
+            className="flex items-center gap-2 mt-1.5"
+            title={indexingStatus.lastIndexedCommitMessage || undefined}
+          >
+            <GitCommit className="w-3.5 h-3.5 text-gray-400" />
+            <span className="text-xs font-mono text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
+              {shortenHash(indexingStatus.lastIndexedHash)}
+            </span>
+            {indexingStatus.lastIndexedCommitMessage && (
+              <span className="text-xs text-gray-500 truncate">
+                {truncateMessage(indexingStatus.lastIndexedCommitMessage)}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col md:flex-row">

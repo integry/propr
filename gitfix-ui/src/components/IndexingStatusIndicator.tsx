@@ -19,6 +19,18 @@ const formatTokens = (tokens: number): string => {
   return tokens.toString();
 };
 
+const shortenHash = (hash: string | null): string => {
+  if (!hash) return '';
+  return hash.substring(0, 7);
+};
+
+const truncateMessage = (message: string | null, maxLength: number = 50): string => {
+  if (!message) return '';
+  const firstLine = message.split('\n')[0];
+  if (firstLine.length <= maxLength) return firstLine;
+  return firstLine.substring(0, maxLength - 3) + '...';
+};
+
 export const IndexingStatusIndicator: React.FC<IndexingStatusIndicatorProps> = ({ status, onStop, onReindex }) => {
   const ReindexButton = () => onReindex ? (
     <button
@@ -99,14 +111,33 @@ export const IndexingStatusIndicator: React.FC<IndexingStatusIndicatorProps> = (
         </div>
       );
     }
-    case 'completed':
+    case 'completed': {
+      const shortHash = shortenHash(status.last_indexed_hash);
+      const commitMessage = truncateMessage(status.last_indexed_commit_message);
+      const fullTooltip = [
+        `Index up to date`,
+        `Last indexed: ${formatTimestamp(status.last_indexed_at)}`,
+        status.last_indexed_hash ? `Commit: ${status.last_indexed_hash}` : null,
+        status.last_indexed_commit_message ? `Message: ${status.last_indexed_commit_message}` : null
+      ].filter(Boolean).join('\n');
+
       return (
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5" title={`Index up to date. Last indexed: ${formatTimestamp(status.last_indexed_at)}`}>
+          <div className="flex items-center gap-1.5" title={fullTooltip}>
             <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
-            {status.last_indexed_at && (
+            {shortHash && (
+              <span className="text-xs font-mono text-gray-600 bg-gray-100 px-1 rounded">
+                {shortHash}
+              </span>
+            )}
+            {commitMessage && (
+              <span className="text-xs text-gray-500 truncate max-w-[200px]">
+                {commitMessage}
+              </span>
+            )}
+            {!shortHash && status.last_indexed_at && (
               <span className="text-xs text-gray-500">
                 {formatTimestamp(status.last_indexed_at)}
               </span>
@@ -115,6 +146,7 @@ export const IndexingStatusIndicator: React.FC<IndexingStatusIndicatorProps> = (
           <ReindexButton />
         </div>
       );
+    }
     case 'failed':
       return (
         <div className="flex items-center gap-3">

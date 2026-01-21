@@ -17,6 +17,8 @@ export interface RepositoryIndexingStatus {
   branch: string;
   indexing_status: 'idle' | 'indexing' | 'completed' | 'failed';
   last_indexed_at: string | null;
+  last_indexed_hash: string | null;
+  last_indexed_commit_message: string | null;
   progress?: RepositoryIndexingProgress;
 }
 
