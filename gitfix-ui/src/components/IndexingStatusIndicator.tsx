@@ -127,7 +127,18 @@ export const IndexingStatusIndicator: React.FC<IndexingStatusIndicatorProps> = (
             <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
-            {shortHash && (
+            {shortHash && status.full_name && (
+              <a
+                href={`https://github.com/${status.full_name}/commit/${status.last_indexed_hash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-mono text-gray-600 bg-gray-100 px-1 rounded hover:bg-gray-200 hover:text-blue-600 transition-colors"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {shortHash}
+              </a>
+            )}
+            {shortHash && !status.full_name && (
               <span className="text-xs font-mono text-gray-600 bg-gray-100 px-1 rounded">
                 {shortHash}
               </span>

@@ -189,9 +189,14 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
             title={indexingStatus.lastIndexedCommitMessage || undefined}
           >
             <GitCommit className="w-3.5 h-3.5 text-gray-400" />
-            <span className="text-xs font-mono text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
+            <a
+              href={`https://github.com/${owner}/${repo}/commit/${indexingStatus.lastIndexedHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs font-mono text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded hover:bg-gray-200 hover:text-blue-600 transition-colors"
+            >
               {shortenHash(indexingStatus.lastIndexedHash)}
-            </span>
+            </a>
             {indexingStatus.lastIndexedCommitMessage && (
               <span className="text-xs text-gray-500 truncate">
                 {truncateMessage(indexingStatus.lastIndexedCommitMessage)}
