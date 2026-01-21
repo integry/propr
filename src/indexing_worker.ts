@@ -10,7 +10,7 @@ import { db } from '@gitfix/core';
 import { indexRepo, updateRepositoryStatus } from '@gitfix/core';
 import { loadSummarizationSettings, loadMonitoredReposRaw } from '@gitfix/core';
 import type { RepoToMonitor } from '@gitfix/core';
-import { ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit } from '@gitfix/core';
+import { ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, fetchLatestChanges } from '@gitfix/core';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in indexing worker');
@@ -238,7 +238,30 @@ async function processRepositoryForIndexing(
     // Clone/fetch to get latest state
     const repoPath = await cloneRepositoryForIndexing(repoName, branch);
 
+    // Explicitly fetch latest changes before getting the hash
+    // This ensures we have the most up-to-date remote state for comparison
+    const [owner, name] = repoName.split('/');
+    const octokit = await getAuthenticatedOctokit();
+    const { token } = await octokit.auth({ type: "installation" }) as { token: string };
+
+    const fetchResult = await fetchLatestChanges({
+        owner,
+        repoName: name,
+        authToken: token,
+        branch: branch === 'HEAD' ? undefined : branch
+    });
+
+    if (!fetchResult.success) {
+        log.warn(
+            { repository: repoName, branch, error: fetchResult.error },
+            'Failed to fetch latest changes, will continue with existing local state'
+        );
+    } else {
+        log.info({ repository: repoName, branch }, 'Successfully fetched latest changes before indexing check');
+    }
+
     // Get the hash of the configured branch (not just HEAD, since same repo can track different branches)
+    // This hash should now reflect the freshly fetched remote state
     let currentHash: string | undefined;
     try {
         const git = simpleGit(repoPath);

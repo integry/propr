@@ -215,5 +215,104 @@ export function getRepoUrl(issue: IssueRef): string {
     return `https://github.com/${issue.repoOwner}/${issue.repoName}.git`;
 }
 
+export interface FetchLatestChangesOptions {
+    owner: string;
+    repoName: string;
+    authToken: string;
+    branch?: string;
+}
+
+export interface FetchLatestChangesResult {
+    success: boolean;
+    repoPath: string;
+    error?: string;
+}
+
+/**
+ * Fetch latest changes from the remote repository for a specific branch.
+ * This function should be called before indexing to ensure the local copy is up-to-date.
+ *
+ * @param options - Configuration options for fetching
+ * @returns Result indicating success/failure and the repository path
+ */
+export async function fetchLatestChanges(options: FetchLatestChangesOptions): Promise<FetchLatestChangesResult> {
+    const { owner, repoName, authToken, branch } = options;
+    const localRepoPath = await getRepoPath(owner, repoName);
+
+    try {
+        // Check if repo exists locally
+        if (!await fs.pathExists(path.join(localRepoPath, ".git"))) {
+            logger.warn(
+                { repo: `${owner}/${repoName}`, path: localRepoPath },
+                'Repository does not exist locally, cannot fetch. Will be cloned on next ensureRepoCloned call.'
+            );
+            return { success: false, repoPath: localRepoPath, error: 'Repository not cloned yet' };
+        }
+
+        const git: SimpleGit = simpleGit(localRepoPath);
+
+        // Validate it's a proper git repository
+        const isRepo = await git.checkIsRepo();
+        if (!isRepo) {
+            logger.warn(
+                { repo: `${owner}/${repoName}`, path: localRepoPath },
+                'Directory exists but is not a valid git repository'
+            );
+            return { success: false, repoPath: localRepoPath, error: 'Not a valid git repository' };
+        }
+
+        // Set up authenticated remote
+        const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+        await setupAuthenticatedRemote(git, repoUrl, authToken);
+
+        // Fetch latest changes
+        if (branch && branch !== 'HEAD') {
+            // Fetch specific branch
+            logger.info(
+                { repo: `${owner}/${repoName}`, branch },
+                'Fetching latest changes for specific branch...'
+            );
+            await git.fetch(['origin', branch, '--prune']);
+
+            // Also reset local branch to match remote to ensure we have latest code
+            try {
+                await git.checkout(branch);
+                await git.reset(['--hard', `origin/${branch}`]);
+                logger.info(
+                    { repo: `${owner}/${repoName}`, branch },
+                    'Reset local branch to match remote'
+                );
+            } catch (resetError) {
+                // Non-fatal: branch checkout/reset may fail if local state is unusual
+                logger.warn(
+                    { repo: `${owner}/${repoName}`, branch, error: (resetError as Error).message },
+                    'Could not reset local branch to remote, continuing with fetched refs'
+                );
+            }
+        } else {
+            // Fetch all branches
+            logger.info(
+                { repo: `${owner}/${repoName}` },
+                'Fetching latest changes from origin...'
+            );
+            await git.fetch(['origin', '--prune']);
+        }
+
+        logger.info(
+            { repo: `${owner}/${repoName}`, branch: branch || 'all', path: localRepoPath },
+            'Successfully fetched latest changes'
+        );
+
+        return { success: true, repoPath: localRepoPath };
+    } catch (error) {
+        const errorMessage = (error as Error).message;
+        logger.warn(
+            { repo: `${owner}/${repoName}`, branch, error: errorMessage },
+            'Failed to fetch latest changes, will continue with existing local state'
+        );
+        return { success: false, repoPath: localRepoPath, error: errorMessage };
+    }
+}
+
 export { cleanupWorktree, cleanupExpiredWorktrees, createWorktreeFromExistingBranch, ensureBranchAndPush, pushBranch, commitChanges, detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations };
 export type { CommitResult } from './commitOperations.js';

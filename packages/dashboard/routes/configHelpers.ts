@@ -1,6 +1,6 @@
 import { RedisClientType } from 'redis';
 import * as configManager from '@gitfix/core';
-import { indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation } from '@gitfix/core';
+import { indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges } from '@gitfix/core';
 import type { IndexingJobData } from '@gitfix/core';
 
 interface AgentConfig {
@@ -100,6 +100,18 @@ async function queueResummarizationForRepo(repoFullName: string, token: string):
   } catch {
     console.error(`Failed to clone repository ${repoFullName} for resummarization`);
     return false;
+  }
+
+  // Fetch latest changes before queuing to ensure we have the most up-to-date code
+  const fetchResult = await fetchLatestChanges({
+    owner,
+    repoName: name,
+    authToken: token
+  });
+
+  if (!fetchResult.success) {
+    // Log warning but continue - we'll index with existing local state
+    console.warn(`Failed to fetch latest changes for ${repoFullName}: ${fetchResult.error}`);
   }
 
   // Queue the indexing job with fullReindex to apply new prompt
@@ -279,6 +291,19 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
     repoPath = await ensureRepoCloned({ repoUrl, owner, repoName: name, authToken: token, baseBranch });
   } catch (cloneError) {
     return { success: false, error: `Failed to clone repository: ${(cloneError as Error).message}` };
+  }
+
+  // Fetch latest changes before queuing to ensure we have the most up-to-date code
+  const fetchResult = await fetchLatestChanges({
+    owner,
+    repoName: name,
+    authToken: token,
+    branch: baseBranch
+  });
+
+  if (!fetchResult.success) {
+    // Log warning but continue - we'll index with existing local state
+    console.warn(`Failed to fetch latest changes for ${repository}: ${fetchResult.error}`);
   }
 
   const correlationId = generateCorrelationId();
