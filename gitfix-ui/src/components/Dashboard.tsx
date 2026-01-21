@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import TaskStatsChart from './TaskStatsChart';
 import RepositoryBreakdown from './RepositoryBreakdown';
+import TopModels from './TopModels';
 import TaskList from './TaskList';
 import { getRepoConfig, createDraft, uploadAttachment, getQueueStats } from '../api/gitfixApi';
 import { getTaskStats, TaskStatsResponse } from '../api/taskStatsApi';
@@ -220,6 +221,9 @@ const Dashboard: React.FC = () => {
 
           {/* Top Repositories */}
           <RepositoryBreakdown limit={5} />
+
+          {/* Top Models */}
+          <TopModels limit={5} />
         </div>
       </div>
     </div>
