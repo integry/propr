@@ -32,6 +32,8 @@ export interface IndexingStatusResponse {
   fileCount: number;
   directoryCount: number;
   lastIndexedAt: string | null;
+  lastIndexedHash: string | null;
+  lastIndexedCommitMessage: string | null;
 }
 
 // ============= API Functions =============

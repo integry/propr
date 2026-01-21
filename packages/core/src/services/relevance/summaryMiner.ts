@@ -143,17 +143,23 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
   const fullName = options.fullName || path.basename(repoPath);
   const branch = options.branch || 'HEAD';
 
-  // Get the hash of the configured branch for tracking indexed state
+  // Get the hash and commit message of the configured branch for tracking indexed state
   // (same repo can be tracked multiple times with different branches)
   let currentHeadHash: string | undefined;
+  let currentHeadCommitMessage: string | undefined;
   try {
     const git: SimpleGit = simpleGit(repoPath);
     // Use the specific branch to get hash - supports both local and remote refs
     // For 'HEAD', use HEAD directly; for named branches, try origin/<branch> first
     const refToResolve = branch === 'HEAD' ? 'HEAD' : `origin/${branch}`;
     currentHeadHash = await git.revparse([refToResolve]);
+    // Get the commit message for the HEAD commit
+    const logResult = await git.log({ maxCount: 1, from: refToResolve });
+    if (logResult.latest) {
+      currentHeadCommitMessage = logResult.latest.message;
+    }
   } catch (hashError) {
-    correlatedLogger.warn({ error: (hashError as Error).message, branch }, 'Failed to resolve branch hash');
+    correlatedLogger.warn({ error: (hashError as Error).message, branch }, 'Failed to resolve branch hash or commit message');
   }
 
   try {
@@ -198,7 +204,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     if (filesToProcess.length === 0) {
       correlatedLogger.info('No files need processing, all summaries up to date');
-      await updateRepositoryStatus(fullName, 'completed', branch, currentHeadHash);
+      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage });
       return;
     }
 
@@ -233,7 +239,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         'Repository indexing completed with failures - will retry on next scan'
       );
     } else {
-      await updateRepositoryStatus(fullName, 'completed', branch, currentHeadHash);
+      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage });
       correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, ...batchResult }, 'Repository indexing completed successfully');
     }
 
@@ -437,8 +443,10 @@ export async function updateRepositoryStatus(
   fullName: string,
   status: 'idle' | 'indexing' | 'completed' | 'failed',
   branch: string = 'HEAD',
-  lastIndexedHash?: string
+  commitInfo?: { hash?: string; message?: string }
 ): Promise<void> {
+  const lastIndexedHash = commitInfo?.hash;
+  const lastIndexedCommitMessage = commitInfo?.message;
   const updateData: Record<string, unknown> = {
     indexing_status: status,
     updated_at: db.fn.now()
@@ -448,6 +456,9 @@ export async function updateRepositoryStatus(
     updateData.last_indexed_at = db.fn.now();
     if (lastIndexedHash) {
       updateData.last_indexed_hash = lastIndexedHash;
+    }
+    if (lastIndexedCommitMessage) {
+      updateData.last_indexed_commit_message = lastIndexedCommitMessage;
     }
   }
 
@@ -459,6 +470,7 @@ export async function updateRepositoryStatus(
       created_at: db.fn.now(),
       updated_at: db.fn.now(),
       last_indexed_hash: lastIndexedHash || null,
+      last_indexed_commit_message: lastIndexedCommitMessage || null,
       ...(status === 'completed' ? { last_indexed_at: db.fn.now() } : {})
     })
     .onConflict(['full_name', 'branch'])

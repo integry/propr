@@ -315,6 +315,8 @@ export interface RepositoryIndexingStatus {
     branch: string;
     indexing_status: 'idle' | 'indexing' | 'completed' | 'failed';
     last_indexed_at: string | null;
+    last_indexed_hash: string | null;
+    last_indexed_commit_message: string | null;
     progress?: RepositoryIndexingProgress;
 }
 
@@ -324,7 +326,7 @@ export interface RepositoryIndexingStatus {
 export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexingStatus[]> {
     try {
         const repos = await db('repositories')
-            .select('full_name', 'branch', 'indexing_status', 'last_indexed_at');
+            .select('full_name', 'branch', 'indexing_status', 'last_indexed_at', 'last_indexed_hash', 'last_indexed_commit_message');
 
         const results: RepositoryIndexingStatus[] = [];
         for (const r of repos) {
@@ -332,7 +334,9 @@ export async function getRepositoriesIndexingStatus(): Promise<RepositoryIndexin
                 full_name: r.full_name,
                 branch: r.branch || 'HEAD',
                 indexing_status: r.indexing_status || 'idle',
-                last_indexed_at: r.last_indexed_at ? new Date(r.last_indexed_at).toISOString() : null
+                last_indexed_at: r.last_indexed_at ? new Date(r.last_indexed_at).toISOString() : null,
+                last_indexed_hash: r.last_indexed_hash || null,
+                last_indexed_commit_message: r.last_indexed_commit_message || null
             };
 
             // Fetch progress data for repos that are actively indexing
@@ -379,7 +383,9 @@ export async function getRepositoryIndexingStatus(fullName: string, branch: stri
             full_name: repo.full_name,
             branch: repo.branch || 'HEAD',
             indexing_status: repo.indexing_status || 'idle',
-            last_indexed_at: repo.last_indexed_at ? new Date(repo.last_indexed_at).toISOString() : null
+            last_indexed_at: repo.last_indexed_at ? new Date(repo.last_indexed_at).toISOString() : null,
+            last_indexed_hash: repo.last_indexed_hash || null,
+            last_indexed_commit_message: repo.last_indexed_commit_message || null
         };
     } catch (error) {
         const err = error as Error;

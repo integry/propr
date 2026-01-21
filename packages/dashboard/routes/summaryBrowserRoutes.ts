@@ -219,7 +219,9 @@ async function getIndexingStatus(req: Request, res: Response): Promise<void> {
         totalEntries: 0,
         fileCount: 0,
         directoryCount: 0,
-        lastIndexedAt: null
+        lastIndexedAt: null,
+        lastIndexedHash: null,
+        lastIndexedCommitMessage: null
       });
       return;
     }
@@ -249,7 +251,9 @@ async function getIndexingStatus(req: Request, res: Response): Promise<void> {
       totalEntries: fileCount + directoryCount,
       fileCount,
       directoryCount,
-      lastIndexedAt: repoRecord.last_indexed_at
+      lastIndexedAt: repoRecord.last_indexed_at,
+      lastIndexedHash: repoRecord.last_indexed_hash || null,
+      lastIndexedCommitMessage: repoRecord.last_indexed_commit_message || null
     });
   } catch (error) {
     console.error('Error fetching indexing status:', error);
