@@ -47,7 +47,6 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   const [internalStats, setInternalStats] = useState<TaskStatsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(!externalData);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'volume' | 'time'>('volume');
 
   // Use external data if provided, otherwise fetch internally
   const stats = externalData !== undefined ? externalData : internalStats;
@@ -123,41 +122,17 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   const hasData = dailyData.length > 0 || pieData.length > 0;
   const hasProcessingTimeData = processingTimeData.length > 0 && processingTimeData.some(d => d.avgMinutes > 0);
 
-  // Tab button component
-  const TabButton: React.FC<{ tab: 'volume' | 'time'; label: string }> = ({ tab, label }) => (
-    <button
-      onClick={() => setActiveTab(tab)}
-      className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-        activeTab === tab
-          ? 'bg-white text-slate-800 shadow-sm'
-          : 'text-gray-500 hover:text-gray-700'
-      }`}
-    >
-      {label}
-    </button>
-  );
-
-  // Render trends section with tabbed interface for trends mode
+  // Render trends section - simplified to show only tasks processed
   const renderTrends = () => {
     if (mode === 'trends') {
       return (
         <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-          <div className="flex justify-between items-center mb-4">
-            <h4 className="text-lg font-bold text-slate-800">Activity Trends</h4>
-            <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
-              <TabButton tab="volume" label="Volume" />
-              {hasProcessingTimeData && <TabButton tab="time" label="Time" />}
-            </div>
-          </div>
-          {activeTab === 'volume' && dailyData.length > 0 && (
+          <h4 className="text-lg font-bold text-slate-800 mb-4">Tasks Processed (Last 30 Days)</h4>
+          {dailyData.length > 0 ? (
             <div className="h-64"><VolumeChart data={dailyData} /></div>
-          )}
-          {activeTab === 'time' && hasProcessingTimeData && (
-            <div className="h-64"><ProcessingTimeChart data={processingTimeData} /></div>
-          )}
-          {activeTab === 'volume' && dailyData.length === 0 && (
+          ) : (
             <div className="h-64 flex items-center justify-center text-slate-500">
-              No volume data available
+              No data available
             </div>
           )}
         </div>
@@ -169,7 +144,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {dailyData.length > 0 && (
           <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-            <h4 className="text-lg font-bold text-slate-800 mb-4">Daily Task Volume (Last 30 Days)</h4>
+            <h4 className="text-lg font-bold text-slate-800 mb-4">Tasks Processed (Last 30 Days)</h4>
             <div className="h-64"><VolumeChart data={dailyData} /></div>
           </div>
         )}
