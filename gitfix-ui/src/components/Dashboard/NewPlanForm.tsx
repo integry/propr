@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { X, Paperclip, Loader2, Image } from 'lucide-react';
 
@@ -104,6 +104,8 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
   // Use internal state if not controlled externally
   const [internalExpanded, setInternalExpanded] = useState(false);
   const isExpanded = controlledExpanded !== undefined ? controlledExpanded : internalExpanded;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [shouldFocusTextarea, setShouldFocusTextarea] = useState(false);
 
   const handleExpand = () => {
     if (onExpandChange) {
@@ -111,7 +113,37 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
     } else {
       setInternalExpanded(true);
     }
+    setShouldFocusTextarea(true);
   };
+
+  // Focus textarea when it becomes visible after expansion
+  useEffect(() => {
+    if (shouldFocusTextarea && textareaRef.current) {
+      textareaRef.current.focus();
+      setShouldFocusTextarea(false);
+    }
+  }, [shouldFocusTextarea, isExpanded]);
+
+  // Auto-expand textarea based on content
+  const adjustTextareaHeight = () => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      // Reset height to calculate new scroll height
+      textarea.style.height = 'auto';
+      // Set minimum height (6 rows ~ 144px) and max height
+      const minHeight = 144;
+      const maxHeight = 400;
+      const newHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+      textarea.style.height = `${newHeight}px`;
+    }
+  };
+
+  // Adjust height when prompt changes
+  useEffect(() => {
+    if (isExpanded || prompt.trim().length > 0 || selectedFiles.length > 0) {
+      adjustTextareaHeight();
+    }
+  }, [prompt, isExpanded, selectedFiles.length]);
 
   // Auto-expand if there's content or files
   const shouldBeExpanded = isExpanded || prompt.trim().length > 0 || selectedFiles.length > 0;
@@ -173,12 +205,16 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">What do you want to build?</label>
               <textarea
+                ref={textareaRef}
                 value={prompt}
-                onChange={(e) => onPromptChange(e.target.value)}
+                onChange={(e) => {
+                  onPromptChange(e.target.value);
+                  adjustTextareaHeight();
+                }}
                 onPaste={onPaste}
                 placeholder="Describe the feature or task you want to implement..."
-                rows={3}
-                className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 resize-none"
+                rows={6}
+                className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 resize-y min-h-[144px]"
               />
               <p className="text-xs text-gray-400 mt-1">Tip: You can paste screenshots directly into this field</p>
             </div>
