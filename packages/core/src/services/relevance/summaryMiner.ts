@@ -204,7 +204,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     if (filesToProcess.length === 0) {
       correlatedLogger.info('No files need processing, all summaries up to date');
-      await updateRepositoryStatus(fullName, 'completed', branch, currentHeadHash, currentHeadCommitMessage);
+      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage });
       return;
     }
 
@@ -239,7 +239,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         'Repository indexing completed with failures - will retry on next scan'
       );
     } else {
-      await updateRepositoryStatus(fullName, 'completed', branch, currentHeadHash, currentHeadCommitMessage);
+      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage });
       correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, ...batchResult }, 'Repository indexing completed successfully');
     }
 
@@ -443,9 +443,10 @@ export async function updateRepositoryStatus(
   fullName: string,
   status: 'idle' | 'indexing' | 'completed' | 'failed',
   branch: string = 'HEAD',
-  lastIndexedHash?: string,
-  lastIndexedCommitMessage?: string
+  commitInfo?: { hash?: string; message?: string }
 ): Promise<void> {
+  const lastIndexedHash = commitInfo?.hash;
+  const lastIndexedCommitMessage = commitInfo?.message;
   const updateData: Record<string, unknown> = {
     indexing_status: status,
     updated_at: db.fn.now()
