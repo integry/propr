@@ -278,8 +278,9 @@ export async function fetchLatestChanges(options: FetchLatestChangesOptions): Pr
             try {
                 await git.checkout(branch);
                 await git.reset(['--hard', `origin/${branch}`]);
+                const newHead = await git.revparse(['HEAD']);
                 logger.info(
-                    { repo: `${owner}/${repoName}`, branch },
+                    { repo: `${owner}/${repoName}`, branch, commitHash: newHead.trim() },
                     'Reset local branch to match remote'
                 );
             } catch (resetError) {
@@ -296,6 +297,36 @@ export async function fetchLatestChanges(options: FetchLatestChangesOptions): Pr
                 'Fetching latest changes from origin...'
             );
             await git.fetch(['origin', '--prune']);
+
+            // Also reset current branch to match remote to ensure we have latest code
+            try {
+                // Get the current branch name
+                const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
+                if (currentBranch && currentBranch !== 'HEAD') {
+                    // Check if remote tracking branch exists
+                    try {
+                        const remoteHash = await git.revparse([`origin/${currentBranch}`]);
+                        await git.reset(['--hard', `origin/${currentBranch}`]);
+                        const newHead = await git.revparse(['HEAD']);
+                        logger.info(
+                            { repo: `${owner}/${repoName}`, branch: currentBranch, commitHash: newHead.trim(), remoteHash: remoteHash.trim() },
+                            'Reset local branch to match remote'
+                        );
+                    } catch {
+                        // Remote branch doesn't exist, skip reset
+                        logger.debug(
+                            { repo: `${owner}/${repoName}`, branch: currentBranch },
+                            'No remote tracking branch found, skipping reset'
+                        );
+                    }
+                }
+            } catch (resetError) {
+                // Non-fatal: reset may fail if local state is unusual
+                logger.warn(
+                    { repo: `${owner}/${repoName}`, error: (resetError as Error).message },
+                    'Could not reset local branch to remote, continuing with fetched refs'
+                );
+            }
         }
 
         logger.info(
