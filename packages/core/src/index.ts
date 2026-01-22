@@ -36,8 +36,8 @@ export type { BranchConfiguration } from './git/branchConfig.js';
 export { commitChanges } from './git/commitOperations.js';
 export type { CommitResult } from './git/commitOperations.js';
 export { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './git/repoBranching.js';
-export { ensureRepoCloned, createWorktreeForIssue, getRepoUrl } from './git/repoManager.js';
-export type { WorktreeResult, WorktreeInfo } from './git/repoManager.js';
+export { ensureRepoCloned, createWorktreeForIssue, getRepoUrl, fetchLatestChanges } from './git/repoManager.js';
+export type { WorktreeResult, WorktreeInfo, FetchLatestChangesOptions, FetchLatestChangesResult } from './git/repoManager.js';
 export { cleanupExistingBranch, createWorktreeFromExistingBranch } from './git/worktreeCreation.js';
 export { cleanupWorktree, cleanupExpiredWorktrees, setupWorktreePermissions, addToSafeDirectories, verifyWorktreeCreation, setupWorktreeRemote, getWorktreePath } from './git/worktreeOperations.js';
 
