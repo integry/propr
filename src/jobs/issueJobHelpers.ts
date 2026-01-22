@@ -283,7 +283,7 @@ ${completionComment}
 
 ---
 
-*This PR was created automatically by Claude Code after processing issue #${issueRef.number}.*`;
+*This PR was created automatically by [ProPR](https://propr.dev) after processing issue #${issueRef.number}.*`;
 
     try {
         const prResponse = await octokit.request<{ data: { number: number; html_url: string; title: string } }>('POST /repos/{owner}/{repo}/pulls', {
