@@ -229,6 +229,40 @@ export interface FetchLatestChangesResult {
 }
 
 /**
+ * Helper function to reset the current branch to match the remote.
+ * Returns true if reset was successful, false otherwise.
+ */
+async function resetCurrentBranchToRemote(
+    git: SimpleGit,
+    owner: string,
+    repoName: string
+): Promise<boolean> {
+    const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
+    if (!currentBranch || currentBranch.trim() === 'HEAD') {
+        return false;
+    }
+
+    const branchName = currentBranch.trim();
+    try {
+        const remoteHash = await git.revparse([`origin/${branchName}`]);
+        await git.reset(['--hard', `origin/${branchName}`]);
+        const newHead = await git.revparse(['HEAD']);
+        logger.info(
+            { repo: `${owner}/${repoName}`, branch: branchName, commitHash: newHead.trim(), remoteHash: remoteHash.trim() },
+            'Reset local branch to match remote'
+        );
+        return true;
+    } catch {
+        // Remote branch doesn't exist, skip reset
+        logger.debug(
+            { repo: `${owner}/${repoName}`, branch: branchName },
+            'No remote tracking branch found, skipping reset'
+        );
+        return false;
+    }
+}
+
+/**
  * Fetch latest changes from the remote repository for a specific branch.
  * This function should be called before indexing to ensure the local copy is up-to-date.
  *
@@ -300,26 +334,7 @@ export async function fetchLatestChanges(options: FetchLatestChangesOptions): Pr
 
             // Also reset current branch to match remote to ensure we have latest code
             try {
-                // Get the current branch name
-                const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
-                if (currentBranch && currentBranch !== 'HEAD') {
-                    // Check if remote tracking branch exists
-                    try {
-                        const remoteHash = await git.revparse([`origin/${currentBranch}`]);
-                        await git.reset(['--hard', `origin/${currentBranch}`]);
-                        const newHead = await git.revparse(['HEAD']);
-                        logger.info(
-                            { repo: `${owner}/${repoName}`, branch: currentBranch, commitHash: newHead.trim(), remoteHash: remoteHash.trim() },
-                            'Reset local branch to match remote'
-                        );
-                    } catch {
-                        // Remote branch doesn't exist, skip reset
-                        logger.debug(
-                            { repo: `${owner}/${repoName}`, branch: currentBranch },
-                            'No remote tracking branch found, skipping reset'
-                        );
-                    }
-                }
+                await resetCurrentBranchToRemote(git, owner, repoName);
             } catch (resetError) {
                 // Non-fatal: reset may fail if local state is unusual
                 logger.warn(
