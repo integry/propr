@@ -22,7 +22,7 @@ export const getHistoryDerivedData = (history: HistoryItem[], taskInfo: TaskInfo
   });
   
   const prInfo = completedStep?.metadata?.pr || completedStep?.metadata?.pullRequest;
-  const isTaskActive = !['COMPLETED', 'FAILED'].includes(currentStatus);
+  const isTaskActive = !['COMPLETED', 'FAILED', 'CANCELLED'].includes(currentStatus);
 
   return {
     historyItemWithPaths,

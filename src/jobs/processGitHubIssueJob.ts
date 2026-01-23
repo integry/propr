@@ -317,6 +317,17 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
     // Convert to ClaudeCodeResponse for backwards compatibility
     const claudeResult = agentResultToClaudeResponse(agentResult);
 
+    // Check if task was cancelled during execution - if so, don't update state and throw immediately
+    const currentState = await stateManager.getTaskState(taskId);
+    const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
+    if (currentState && TERMINAL_STATES.includes(currentState.state)) {
+        correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state after agent execution, skipping state update');
+        if (currentState.state === TaskStates.CANCELLED) {
+            throw new Error('Execution aborted by user request');
+        }
+        throw new Error(`Task already in terminal state: ${currentState.state}`);
+    }
+
     await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
         reason: `${agent.config.type} agent execution completed`,
         claudeResult: { success: claudeResult.success, sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, executionTime: claudeResult.executionTime },
@@ -430,7 +441,11 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
             await handleUsageLimitError(error, job, issueRef, { octokit, correlatedLogger, stateManager, taskId });
         } else {
             await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
-            throw error;
+            // Don't re-throw for user cancellations (not an error, just cancelled)
+            const isUserCancelled = (error as Error).message?.includes('aborted by user');
+            if (!isUserCancelled) {
+                throw error;
+            }
         }
         return { status: 'error', error: (error as Error).message };
     }

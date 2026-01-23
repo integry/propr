@@ -41,6 +41,13 @@ export const getStatusPill = (status: string) => {
            Failed
         </span>
       );
+    case 'cancelled':
+      return (
+        <span className={`${baseClasses} bg-orange-50 text-orange-700 border border-orange-200`}>
+           <span className="w-1.5 h-1.5 rounded-full bg-orange-500"></span>
+           Cancelled
+        </span>
+      );
     case 'active':
     case 'claude_execution':
     case 'processing':

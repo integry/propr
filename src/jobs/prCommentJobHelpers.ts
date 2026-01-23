@@ -4,13 +4,13 @@ import fs from 'fs-extra';
 import type { Redis } from 'ioredis';
 import { TaskStates } from '@gitfix/core';
 import type { WorkerStateManager } from '@gitfix/core';
-import { getUsageStats, type ClaudeResult as TokenClaudeResult } from '@gitfix/core';
 import { db } from '@gitfix/core';
 import { filterCommentByAuthor } from '@gitfix/core';
 import type { UnprocessedComment, CommentJobData } from '@gitfix/core';
 import type { ClaudeCodeResponse } from '@gitfix/core';
 import type { CommitResult } from '@gitfix/core';
 import type { IssueRef } from '@gitfix/core';
+import { buildMetricsSection } from './prCommentJobUtils.js';
 
 interface ValidationComment {
     id: number;
@@ -251,13 +251,28 @@ export function createSessionIdCallbackForPR(
 ): (sessionId: string, conversationId?: string) => Promise<void> {
     const { pullRequestNumber, repoOwner, repoName } = prContext;
     const { llm, stateManager, correlatedLogger, redisClient } = options;
+    const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     return async (sessionId: string, conversationId?: string): Promise<void> => {
         try {
-            await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
-                reason: 'Claude execution started',
-                claudeResult: { success: false, sessionId, conversationId },
-                historyMetadata: { sessionId, conversationId, model: llm }
-            });
+            // Check current state - don't update if already in a terminal state
+            const currentState = await stateManager.getTaskState(taskId);
+            if (currentState && TERMINAL_STATES.includes(currentState.state)) {
+                correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping session ID update');
+                return;
+            }
+            if (currentState?.state === TaskStates.CLAUDE_EXECUTION) {
+                // Already in claude_execution, just update the history metadata with session info
+                await stateManager.updateHistoryMetadata(taskId, 'claude_execution', {
+                    sessionId, conversationId, model: llm
+                });
+            } else {
+                // Transition to claude_execution state
+                await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
+                    reason: 'Claude execution started',
+                    claudeResult: { success: false, sessionId, conversationId },
+                    historyMetadata: { sessionId, conversationId, model: llm }
+                });
+            }
 
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const logDir = '/tmp/claude-logs';
@@ -290,9 +305,32 @@ export function createContainerIdCallbackForPR(
     taskId: string,
     stateManager: WorkerStateManager
 ): (containerId: string, containerName: string) => Promise<void> {
+    const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     return async (containerId: string, containerName: string): Promise<void> => {
         try {
-            await stateManager.updateHistoryMetadata(taskId, 'claude_execution', { containerId, containerName });
+            // Check current state - don't update if already in a terminal state
+            const currentState = await stateManager.getTaskState(taskId);
+            if (!currentState) {
+                logger.warn({ taskId }, 'Task state not found when trying to store container info');
+                return;
+            }
+
+            if (TERMINAL_STATES.includes(currentState.state)) {
+                logger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping container ID update');
+                return;
+            }
+
+            if (currentState.state === TaskStates.CLAUDE_EXECUTION) {
+                // Already in claude_execution, just update the history metadata
+                await stateManager.updateHistoryMetadata(taskId, 'claude_execution', { containerId, containerName });
+            } else {
+                // Not yet in claude_execution state - transition to it with container info
+                // This happens when container starts before session_id is received
+                await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
+                    reason: 'Docker container started',
+                    historyMetadata: { containerId, containerName }
+                });
+            }
             logger.info({ taskId, containerId, containerName }, 'Docker container info added to task state');
         } catch (err) {
             logger.warn({ taskId, error: (err as Error).message }, 'Failed to update state with container info');
@@ -433,31 +471,4 @@ function buildUndoLink(undoContext: UndoLinkContext, commitHash: string): string
     return `${webUiUrl}/revert?${params.toString()}`;
 }
 
-function buildMetricsSection(
-    claudeResult: ClaudeCodeResponse,
-    llm: string | null | undefined,
-    authorsText: string,
-    isAnalysis = false
-): string {
-    const defaultModel = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
-    const model = claudeResult.model || llm || defaultModel;
-    const executionTime = claudeResult.executionTime ? `${Math.round(claudeResult.executionTime / 1000)}s` : null;
-    const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
-
-    const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as TokenClaudeResult['conversationLog'] });
-
-    const cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
-
-    let section = `\n---\n`;
-    section += `### 🤖 ${isAnalysis ? 'Analysis' : 'Implementation'} Details\n\n`;
-
-    section += `* **Model:** ${model}\n`;
-    if (!isAnalysis) section += `* **Requested By:** ${authorsText}\n`;
-    if (numTurns) section += `* **Turns:** ${numTurns}\n`;
-    if (executionTime) section += `* **Time:** ${executionTime}\n`;
-    if (totalTokens > 0) section += `* **Tokens:** ${totalTokens.toLocaleString()} (${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out)\n`;
-    if (cost != null) section += `* **Cost:** $${cost.toFixed(2)}\n`;
-
-    return section;
-}
 

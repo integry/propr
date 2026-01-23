@@ -1,6 +1,6 @@
 import React from 'react';
 import { TaskInfo, HistoryItem } from './types';
-import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest } from 'lucide-react';
+import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { ProviderLogo } from '../ui/ProviderLogo';
 
@@ -141,6 +141,7 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   stats
 }) => {
   const isActive = ['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
+  const isCancelled = currentStatus === 'CANCELLED';
   const hasDuration = duration !== null && duration !== undefined;
 
   return (
@@ -196,19 +197,37 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
 
       {/* Right: Actions */}
       <div className="flex items-center gap-2 self-end sm:self-auto">
+        {/* Cancelled Badge - shown when task was cancelled by user */}
+        {isCancelled && (
+          <span
+            className="flex items-center gap-1.5 bg-orange-50 text-orange-700 px-2 py-1 rounded text-xs font-medium border border-orange-200"
+            title="Task was cancelled by user"
+          >
+            <Ban size={14} />
+            Cancelled
+          </span>
+        )}
+
         {/* Stop Execution Button - Red background to distinguish from navigation */}
         {isActive && (
           <button
             onClick={onStopExecution}
             disabled={stoppingExecution}
             title={stoppingExecution ? 'Stopping execution...' : 'Stop Execution'}
-            className={`p-1.5 sm:p-2 rounded transition-colors ${
+            className={`flex items-center gap-1.5 p-1.5 sm:p-2 rounded transition-colors ${
               stoppingExecution
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                ? 'bg-red-50 text-red-400 cursor-not-allowed border border-red-200'
                 : 'bg-red-100 hover:bg-red-200 text-red-600 hover:text-red-700 border border-red-200'
             }`}
           >
-            <Square size={16} className="sm:w-[18px] sm:h-[18px]" fill={stoppingExecution ? 'currentColor' : 'none'} />
+            {stoppingExecution ? (
+              <>
+                <Loader2 size={16} className="sm:w-[18px] sm:h-[18px] animate-spin" />
+                <span className="text-xs font-medium hidden sm:inline">Stopping...</span>
+              </>
+            ) : (
+              <Square size={16} className="sm:w-[18px] sm:h-[18px]" />
+            )}
           </button>
         )}
 
