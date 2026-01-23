@@ -262,6 +262,33 @@ interface ExecuteProcessingParams {
     state: ProcessingState;
 }
 
+function checkTerminalStateAfterExecution(currentState: { state: string } | null, taskId: string, correlatedLogger: Logger): void {
+    const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
+    if (currentState && TERMINAL_STATES.includes(currentState.state)) {
+        correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state after agent execution, skipping state update');
+        if (currentState.state === TaskStates.CANCELLED) {
+            throw new Error('Execution aborted by user request');
+        }
+        throw new Error(`Task already in terminal state: ${currentState.state}`);
+    }
+}
+
+interface UndoContextParams {
+    commitResult: Awaited<ReturnType<typeof commitChanges>>;
+    unprocessedComments: UnprocessedComment[];
+    repoOwner: string;
+    repoName: string;
+    pullRequestNumber: number;
+    branchName: string;
+}
+
+function buildUndoContext(params: UndoContextParams) {
+    const { commitResult, unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName } = params;
+    const instructionCommentId = unprocessedComments.length > 0 ? unprocessedComments[0].id : 0;
+    if (!commitResult || !instructionCommentId) return undefined;
+    return { repoOwner, repoName, prNumber: pullRequestNumber, branchName, instructionCommentId };
+}
+
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
     const { job, context, taskId, stateManager, state } = params;
     let { llm } = params;
@@ -281,15 +308,12 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
 
-    // Construct Task URL for linking to the Web UI
     const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
     const taskUrl = `${webUiUrl}/tasks/${taskId}`;
 
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
     const commentsByTime = allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
-    const originalTaskSpec = linkedIssueResult.context;
-    const linkedIssueNumber = linkedIssueResult.linkedIssueNumber;
     const commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
 
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -308,50 +332,25 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     state.worktreeInfo = await createWorktreeFromExistingBranch(state.localRepoPath, branchName, { worktreeDirName: `pr-${pullRequestNumber}-followup-${timestamp}`, owner: repoOwner, repoName });
     correlatedLogger.info({ worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName }, 'Created worktree from existing PR branch');
 
-    // Localize remote images FIRST so they're available for summary generation
-    // This downloads images to the worktree so the agent can access them
-    // We pass body_html which contains signed URLs for GitHub user-attachments
-    // Assets are stored in subdirectory identified by PR number for cleanup when PR is merged
     const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: combinedBodyHtml, issueOrPrId: pullRequestNumber });
-    // For originalTaskSpec (linked issue), we'd need body_html from the issue
-    const localizedOriginalTaskSpec = originalTaskSpec
-        ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: linkedIssueResult.bodyHtml, issueOrPrId: pullRequestNumber })
-        : originalTaskSpec;
+    const localizedOriginalTaskSpec = linkedIssueResult.context
+        ? await localizeContentImages(linkedIssueResult.context, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: linkedIssueResult.bodyHtml, issueOrPrId: pullRequestNumber })
+        : linkedIssueResult.context;
 
-    // Generate summary using localized content so Haiku can see images
     const summaryTitle = await generateSummaryTitle({ combinedCommentBody: localizedCombinedCommentBody, worktreeInfo: state.worktreeInfo, githubToken, pullRequestNumber, repoOwner, repoName, correlationId, taskId, correlatedLogger });
     job.data.title = `Followup: ${prData!.data.title}`;
     job.data.subtitle = summaryTitle;
-    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber });
+    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length });
 
-    // Execute agent task
     const { claudeResult, agentType } = await resolveAndExecuteAgent({
-        llm,
-        worktreePath: state.worktreeInfo.worktreePath,
-        branchName: state.worktreeInfo.branchName,
-        prompt,
-        pullRequestNumber,
-        repoOwner,
-        repoName,
-        stateManager,
-        correlatedLogger,
-        githubToken: githubToken.token,
-        taskId
+        llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
+        pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId
     });
     state.claudeResult = claudeResult;
 
-    // Check if task was cancelled during execution - if so, don't update state and throw immediately
-    const currentState = await stateManager.getTaskState(taskId);
-    const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
-    if (currentState && TERMINAL_STATES.includes(currentState.state)) {
-        correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state after agent execution, skipping state update');
-        if (currentState.state === TaskStates.CANCELLED) {
-            throw new Error('Execution aborted by user request');
-        }
-        throw new Error(`Task already in terminal state: ${currentState.state}`);
-    }
+    checkTerminalStateAfterExecution(await stateManager.getTaskState(taskId), taskId, correlatedLogger);
 
     await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
     await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
@@ -371,18 +370,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         await pushBranch(state.worktreeInfo.worktreePath, state.worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
     }
 
-    // Build undo context using the first instruction comment (user's original request)
-    const instructionCommentId = state.unprocessedComments.length > 0 ? state.unprocessedComments[0].id : 0;
-    const undoContext = commitResult && instructionCommentId ? {
-        repoOwner,
-        repoName,
-        prNumber: pullRequestNumber,
-        branchName: state.worktreeInfo.branchName,
-        instructionCommentId
-    } : undefined;
-
+    const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
     const prCommentBody = buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl }, state.claudeResult);
-    const completionComment = await state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
+    const completionComment = await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment!.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {

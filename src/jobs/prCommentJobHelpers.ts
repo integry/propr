@@ -4,13 +4,13 @@ import fs from 'fs-extra';
 import type { Redis } from 'ioredis';
 import { TaskStates } from '@gitfix/core';
 import type { WorkerStateManager } from '@gitfix/core';
-import { getUsageStats, type ClaudeResult as TokenClaudeResult } from '@gitfix/core';
 import { db } from '@gitfix/core';
 import { filterCommentByAuthor } from '@gitfix/core';
 import type { UnprocessedComment, CommentJobData } from '@gitfix/core';
 import type { ClaudeCodeResponse } from '@gitfix/core';
 import type { CommitResult } from '@gitfix/core';
 import type { IssueRef } from '@gitfix/core';
+import { buildMetricsSection } from './prCommentJobUtils.js';
 
 interface ValidationComment {
     id: number;
@@ -471,31 +471,4 @@ function buildUndoLink(undoContext: UndoLinkContext, commitHash: string): string
     return `${webUiUrl}/revert?${params.toString()}`;
 }
 
-function buildMetricsSection(
-    claudeResult: ClaudeCodeResponse,
-    llm: string | null | undefined,
-    authorsText: string,
-    isAnalysis = false
-): string {
-    const defaultModel = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
-    const model = claudeResult.model || llm || defaultModel;
-    const executionTime = claudeResult.executionTime ? `${Math.round(claudeResult.executionTime / 1000)}s` : null;
-    const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
-
-    const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as TokenClaudeResult['conversationLog'] });
-
-    const cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
-
-    let section = `\n---\n`;
-    section += `### 🤖 ${isAnalysis ? 'Analysis' : 'Implementation'} Details\n\n`;
-
-    section += `* **Model:** ${model}\n`;
-    if (!isAnalysis) section += `* **Requested By:** ${authorsText}\n`;
-    if (numTurns) section += `* **Turns:** ${numTurns}\n`;
-    if (executionTime) section += `* **Time:** ${executionTime}\n`;
-    if (totalTokens > 0) section += `* **Tokens:** ${totalTokens.toLocaleString()} (${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out)\n`;
-    if (cost != null) section += `* **Cost:** $${cost.toFixed(2)}\n`;
-
-    return section;
-}
 
