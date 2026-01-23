@@ -187,6 +187,30 @@ export class UsageLimitError extends Error {
 
 export async function handleJobError(error: Error, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
     const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId } = options;
+
+    // Check if this was a user-initiated cancellation
+    const isUserCancelled = error.message?.includes('aborted by user');
+
+    // Check if task is already in a terminal state (e.g., already cancelled by stop endpoint)
+    const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
+    const currentState = await stateManager.getTaskState(taskId);
+    if (currentState && TERMINAL_STATES.includes(currentState.state)) {
+        correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping error handler state update');
+        // Still update the GitHub comment for cancelled tasks
+        if (currentState.state === TaskStates.CANCELLED && octokit && startingWorkComment) {
+            try {
+                await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+                    owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id,
+                    body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can post a new comment to restart processing.`,
+                });
+                correlatedLogger.info({ taskId, commentId: startingWorkComment.data.id }, 'Updated GitHub comment for cancelled task');
+            } catch (commentError) {
+                correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post cancellation comment');
+            }
+        }
+        return;
+    }
+
     if (error.name === 'UsageLimitError' || error.message?.includes('usage limit')) {
         const usageLimitError = error as UsageLimitError;
         correlatedLogger.warn({ pullRequestNumber, resetTimestamp: usageLimitError.resetTimestamp }, 'Claude usage limit hit during PR comment processing. Requeueing job.');
@@ -207,6 +231,21 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
         }
 
         await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
+    } else if (isUserCancelled) {
+        // User cancelled the task - mark as cancelled and post notice
+        await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: error.message } });
+        correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
+
+        if (octokit && startingWorkComment) {
+            try {
+                await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+                    owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id,
+                    body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can post a new comment to restart processing.`,
+                });
+            } catch (commentError) {
+                correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post cancellation comment');
+            }
+        }
     } else {
         handleError(error, 'Failed to process PR comment job', { correlationId });
 

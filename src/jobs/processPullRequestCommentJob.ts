@@ -342,6 +342,17 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
     state.claudeResult = claudeResult;
 
+    // Check if task was cancelled during execution - if so, don't update state and throw immediately
+    const currentState = await stateManager.getTaskState(taskId);
+    const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
+    if (currentState && TERMINAL_STATES.includes(currentState.state)) {
+        correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state after agent execution, skipping state update');
+        if (currentState.state === TaskStates.CANCELLED) {
+            throw new Error('Execution aborted by user request');
+        }
+        throw new Error(`Task already in terminal state: ${currentState.state}`);
+    }
+
     await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
     await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
     await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
@@ -406,6 +417,11 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         return await executeProcessing({ job, context, llm, taskId, stateManager, state });
     } catch (error) {
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId });
+        // Don't re-throw for user cancellations (not an error, just cancelled)
+        const isUserCancelled = (error as Error).message?.includes('aborted by user');
+        if (isUserCancelled) {
+            return { status: 'cancelled', reason: 'user_cancelled' };
+        }
         if (!(error instanceof UsageLimitError)) throw error;
         return { status: 'requeued', reason: 'usage_limit' };
     } finally {

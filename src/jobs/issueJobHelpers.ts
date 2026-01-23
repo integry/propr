@@ -196,6 +196,14 @@ export async function handleGenericError(
     }
 
     try {
+        // Check if task is already in a terminal state (e.g., already cancelled by stop endpoint)
+        const currentState = await stateManager.getTaskState(taskId);
+        const TERMINAL_STATES = ['completed', 'failed', 'cancelled'];
+        if (currentState && TERMINAL_STATES.includes(currentState.state)) {
+            correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping error handler state update');
+            return;
+        }
+
         if (isUserCancelled) {
             await stateManager.markTaskCancelled(taskId, 'user', { historyMetadata: { originalError: error.message } });
             correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');

@@ -210,7 +210,7 @@ async function getTasksFromDb(
       'task_id',
       db.raw('MIN(timestamp) as completion_timestamp')
     )
-    .whereIn('state', ['completed', 'failed'])
+    .whereIn('state', ['completed', 'failed', 'cancelled'])
     .groupBy('task_id')
     .as('cs');
 
@@ -329,7 +329,7 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
     completedAt: row.completion_timestamp ? new Date(row.completion_timestamp as string).toISOString() : null,
     processedAt: row.processing_start_timestamp ? new Date(row.processing_start_timestamp as string).toISOString() : null,
     failedReason: row.state === 'failed' ? row.failedReason : null,
-    progress: (row.state === 'completed' || row.state === 'failed') ? 100 : (row.state === 'processing' ? 50 : 0),
+    progress: (row.state === 'completed' || row.state === 'failed' || row.state === 'cancelled') ? 100 : (row.state === 'processing' ? 50 : 0),
     attemptsMade: 1,
     modelName: row.model_name,
     model: row.model_name,
