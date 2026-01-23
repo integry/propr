@@ -139,7 +139,7 @@ export {
     buildClaudePrompt
 } from './claude/claudeHelpers.js';
 export type { ClaudeOutput, ConversationLogEntry, ClaudeOutputResult, BuildClaudePromptOptions, DockerArgsParams, StorePromptOptions } from './claude/claudeHelpers.js';
-export { executeDockerCommand, stopDockerContainer } from './claude/docker/dockerExecutor.js';
+export { executeDockerCommand, stopDockerContainer, ExecutionAbortedError } from './claude/docker/dockerExecutor.js';
 export { generateExecutionAnalysisPrompt, generateClaudePrompt } from './claude/prompts/promptGenerator.js';
 export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult } from './claude/prompts/promptGenerator.js';
 
