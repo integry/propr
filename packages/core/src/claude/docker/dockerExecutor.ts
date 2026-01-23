@@ -33,6 +33,17 @@ interface JsonLineMessage {
 
 const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
 
+/**
+ * Custom error class for when task execution is aborted by user request.
+ * This allows job processors to distinguish between aborts and other errors.
+ */
+export class ExecutionAbortedError extends Error {
+    constructor(message: string = 'Execution aborted by user request') {
+        super(message);
+        this.name = 'ExecutionAbortedError';
+    }
+}
+
 // Mapping from agent types to their Dockerfiles
 const AGENT_DOCKERFILES: Record<string, string> = {
     'claude': 'Dockerfile.claude',
@@ -335,7 +346,7 @@ export function executeDockerCommand(
             }
 
             if (aborted) {
-                reject(new Error(`Execution aborted by user request`));
+                reject(new ExecutionAbortedError());
                 return;
             }
 

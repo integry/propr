@@ -439,15 +439,16 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     } catch (error) {
         if (error instanceof UsageLimitError) {
             await handleUsageLimitError(error, job, issueRef, { octokit, correlatedLogger, stateManager, taskId });
+            return { status: 'error', error: (error as Error).message };
         } else {
             await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
             // Don't re-throw for user cancellations (not an error, just cancelled)
-            const isUserCancelled = (error as Error).message?.includes('aborted by user');
-            if (!isUserCancelled) {
-                throw error;
+            const isUserCancelled = (error as Error).message?.includes('aborted by user') || (error as Error).name === 'ExecutionAbortedError';
+            if (isUserCancelled) {
+                return { status: 'cancelled', reason: 'user_request' };
             }
+            throw error;
         }
-        return { status: 'error', error: (error as Error).message };
     }
 }
 
