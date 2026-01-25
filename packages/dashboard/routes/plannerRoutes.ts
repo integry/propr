@@ -9,10 +9,16 @@ import {
   refinePlan,
   executeDraft,
   getGitHubInstallationToken,
+  getAuthenticatedOctokit,
   ensureRepoCloned,
-  generateCorrelationId
+  generateCorrelationId,
+  getPlanIssuesByDraft,
+  getPlanIssue,
+  updatePlanIssue,
+  batchUpdatePlanIssueConfig,
+  loadPrimaryProcessingLabels
 } from '@gitfix/core';
-import type { Plan } from '@gitfix/core';
+import type { Plan, PlanIssue, PlanIssueStatus } from '@gitfix/core';
 import {
   checkDbAndAuth,
   sendCheckError,
@@ -428,6 +434,216 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     return downloadContextHandler(req, res);
   }
 
+  // --- Plan Issue Management Endpoints ---
+
+  /**
+   * GET /api/planner/drafts/:id/issues
+   * Get all issues created from a plan with their status.
+   */
+  async function getIssues(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const issues = await getPlanIssuesByDraft(req.params.id);
+      res.json(issues);
+    } catch (error) {
+      console.error('Get issues error:', error);
+      res.status(500).json({ error: 'Failed to fetch issues' });
+    }
+  }
+
+  /**
+   * POST /api/planner/drafts/:id/issues/:issueNumber/implement
+   * Add implementation label to trigger AI processing for a specific issue.
+   */
+  async function implementIssue(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    const draftId = req.params.id;
+    const issueNumber = parseInt(req.params.issueNumber, 10);
+
+    if (isNaN(issueNumber)) {
+      res.status(400).json({ error: 'Invalid issue number' });
+      return;
+    }
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id, ['user_id', 'repository']);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const draft = ownership.draft!;
+      const repository = draft.repository as string;
+      const [owner, repo] = repository.split('/');
+
+      if (!owner || !repo) {
+        res.status(400).json({ error: 'Invalid repository format' });
+        return;
+      }
+
+      // Get the plan issue to verify it exists
+      const planIssue = await getPlanIssue(draftId, issueNumber);
+      if (!planIssue) {
+        res.status(404).json({ error: 'Issue not found in this plan' });
+        return;
+      }
+
+      // Get the implementation label(s) from config
+      const processingLabels = await loadPrimaryProcessingLabels();
+      const implementLabel = processingLabels[0] || 'AI';
+
+      // Add label to the GitHub issue
+      const octokit = await getAuthenticatedOctokit();
+      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+        owner,
+        repo,
+        issue_number: issueNumber,
+        labels: [implementLabel]
+      });
+
+      // Update the plan issue status to processing
+      await updatePlanIssue(draftId, issueNumber, { status: 'processing' });
+
+      res.json({ success: true, message: `Added '${implementLabel}' label to issue #${issueNumber}` });
+    } catch (error) {
+      console.error('Implement issue error:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issue' });
+    }
+  }
+
+  /**
+   * PATCH /api/planner/drafts/:id/issues/:issueNumber
+   * Update agent/model selection for a specific issue.
+   */
+  async function updateIssue(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    const draftId = req.params.id;
+    const issueNumber = parseInt(req.params.issueNumber, 10);
+
+    if (isNaN(issueNumber)) {
+      res.status(400).json({ error: 'Invalid issue number' });
+      return;
+    }
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const { agent_alias, model_name, status } = req.body;
+
+      // Validate status if provided
+      const validStatuses: PlanIssueStatus[] = ['pending', 'processing', 'under_review', 'in_refinement', 'refinement_processing', 'merged', 'closed'];
+      if (status && !validStatuses.includes(status)) {
+        res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+        return;
+      }
+
+      const updated = await updatePlanIssue(draftId, issueNumber, {
+        agent_alias: agent_alias !== undefined ? agent_alias : undefined,
+        model_name: model_name !== undefined ? model_name : undefined,
+        status: status !== undefined ? status : undefined
+      });
+
+      if (!updated) {
+        res.status(404).json({ error: 'Issue not found in this plan' });
+        return;
+      }
+
+      res.json(updated);
+    } catch (error) {
+      console.error('Update issue error:', error);
+      res.status(500).json({ error: 'Failed to update issue' });
+    }
+  }
+
+  /**
+   * POST /api/planner/drafts/:id/implement-all
+   * Batch add implementation labels with optional agent/model override.
+   */
+  async function implementAllIssues(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    const draftId = req.params.id;
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id, ['user_id', 'repository']);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const draft = ownership.draft!;
+      const repository = draft.repository as string;
+      const [owner, repo] = repository.split('/');
+
+      if (!owner || !repo) {
+        res.status(400).json({ error: 'Invalid repository format' });
+        return;
+      }
+
+      const { agent_alias, model_name } = req.body;
+
+      // Update all issues with the provided agent/model config if specified
+      if (agent_alias !== undefined || model_name !== undefined) {
+        await batchUpdatePlanIssueConfig(draftId, agent_alias, model_name);
+      }
+
+      // Get all pending issues for this draft
+      const issues = await getPlanIssuesByDraft(draftId);
+      const pendingIssues = issues.filter(issue => issue.status === 'pending');
+
+      if (pendingIssues.length === 0) {
+        res.json({ success: true, message: 'No pending issues to implement', implemented: 0 });
+        return;
+      }
+
+      // Get the implementation label(s) from config
+      const processingLabels = await loadPrimaryProcessingLabels();
+      const implementLabel = processingLabels[0] || 'AI';
+
+      const octokit = await getAuthenticatedOctokit();
+      const results: { issueNumber: number; success: boolean; error?: string }[] = [];
+
+      // Add label to each pending issue
+      for (const issue of pendingIssues) {
+        try {
+          await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+            owner,
+            repo,
+            issue_number: issue.issue_number,
+            labels: [implementLabel]
+          });
+
+          // Update the plan issue status to processing
+          await updatePlanIssue(draftId, issue.issue_number, { status: 'processing' });
+
+          results.push({ issueNumber: issue.issue_number, success: true });
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : 'Unknown error';
+          results.push({ issueNumber: issue.issue_number, success: false, error: errMsg });
+        }
+      }
+
+      const successCount = results.filter(r => r.success).length;
+      const failedCount = results.filter(r => !r.success).length;
+
+      res.json({
+        success: failedCount === 0,
+        message: `Implemented ${successCount} issues${failedCount > 0 ? `, ${failedCount} failed` : ''}`,
+        implemented: successCount,
+        failed: failedCount,
+        results
+      });
+    } catch (error) {
+      console.error('Implement all issues error:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issues' });
+    }
+  }
+
   return {
     listDrafts,
     createDraft,
@@ -443,6 +659,11 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     downloadContext,
     generate,
     refine,
-    finalize
+    finalize,
+    // Plan issue management endpoints
+    getIssues,
+    implementIssue,
+    updateIssue,
+    implementAllIssues
   };
 }
