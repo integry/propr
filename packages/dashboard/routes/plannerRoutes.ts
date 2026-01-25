@@ -9,16 +9,10 @@ import {
   refinePlan,
   executeDraft,
   getGitHubInstallationToken,
-  getAuthenticatedOctokit,
   ensureRepoCloned,
-  generateCorrelationId,
-  getPlanIssuesByDraft,
-  getPlanIssue,
-  updatePlanIssue,
-  batchUpdatePlanIssueConfig,
-  loadPrimaryProcessingLabels
+  generateCorrelationId
 } from '@gitfix/core';
-import type { Plan, PlanIssue, PlanIssueStatus } from '@gitfix/core';
+import type { Plan } from '@gitfix/core';
 import {
   checkDbAndAuth,
   sendCheckError,
@@ -31,6 +25,10 @@ import {
   createDeleteAttachmentHandler,
   createUploadAttachmentHandler,
   createGetContextStatsHandler,
+  createGetIssuesHandler,
+  createImplementIssueHandler,
+  createUpdateIssueHandler,
+  createImplementAllIssuesHandler,
   validatePreviewInput,
   VALID_GRANULARITIES
 } from './plannerHelpers.js';
@@ -176,41 +174,27 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  const uploadAttachmentHandler = createUploadAttachmentHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
+  const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
+  const uploadAttachmentHandler = createUploadAttachmentHandler({ verifyOwnership: ownershipVerifier });
+  const getContextStatsHandler = createGetContextStatsHandler({ verifyOwnership: ownershipVerifier });
+  const previewContextHandler = createPreviewContextHandler({ verifyOwnership: ownershipVerifier, validateInput: validatePreviewInput });
+  const deleteAttachmentHandler = createDeleteAttachmentHandler({ verifyOwnership: ownershipVerifier });
 
   async function uploadAttachment(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return uploadAttachmentHandler(req, res);
   }
-
-  const getContextStatsHandler = createGetContextStatsHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
-
   async function getContextStats(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return getContextStatsHandler(req, res);
   }
-
-  const previewContextHandler = createPreviewContextHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields),
-    validateInput: validatePreviewInput
-  });
-
   async function previewContext(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return previewContextHandler(req, res);
   }
-
-  const deleteAttachmentHandler = createDeleteAttachmentHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
-
   async function deleteAttachment(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
@@ -404,244 +388,48 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  const getAttachmentContentHandler = createGetAttachmentContentHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
+  const getAttachmentContentHandler = createGetAttachmentContentHandler({ verifyOwnership: ownershipVerifier });
+  const getRepositoryInfoHandler = createGetRepositoryInfoHandler({ verifyOwnership: ownershipVerifier });
+  const downloadContextHandler = createDownloadContextHandler({ verifyOwnership: ownershipVerifier });
+  const getIssuesHandler = createGetIssuesHandler({ verifyOwnership: ownershipVerifier });
+  const implementIssueHandler = createImplementIssueHandler({ verifyOwnership: ownershipVerifier });
+  const updateIssueHandler = createUpdateIssueHandler({ verifyOwnership: ownershipVerifier });
+  const implementAllIssuesHandler = createImplementAllIssuesHandler({ verifyOwnership: ownershipVerifier });
 
   async function getAttachmentContent(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return getAttachmentContentHandler(req, res);
   }
-
-  const getRepositoryInfoHandler = createGetRepositoryInfoHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
-
   async function getRepositoryInfo(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return getRepositoryInfoHandler(req, res);
   }
-
-  const downloadContextHandler = createDownloadContextHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
-
   async function downloadContext(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return downloadContextHandler(req, res);
   }
-
-  // --- Plan Issue Management Endpoints ---
-
-  /**
-   * GET /api/planner/drafts/:id/issues
-   * Get all issues created from a plan with their status.
-   */
   async function getIssues(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
-    try {
-      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const issues = await getPlanIssuesByDraft(req.params.id);
-      res.json(issues);
-    } catch (error) {
-      console.error('Get issues error:', error);
-      res.status(500).json({ error: 'Failed to fetch issues' });
-    }
+    return getIssuesHandler(req, res);
   }
-
-  /**
-   * POST /api/planner/drafts/:id/issues/:issueNumber/implement
-   * Add implementation label to trigger AI processing for a specific issue.
-   */
   async function implementIssue(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
-    const draftId = req.params.id;
-    const issueNumber = parseInt(req.params.issueNumber, 10);
-
-    if (isNaN(issueNumber)) {
-      res.status(400).json({ error: 'Invalid issue number' });
-      return;
-    }
-
-    try {
-      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id, ['user_id', 'repository']);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const draft = ownership.draft!;
-      const repository = draft.repository as string;
-      const [owner, repo] = repository.split('/');
-
-      if (!owner || !repo) {
-        res.status(400).json({ error: 'Invalid repository format' });
-        return;
-      }
-
-      // Get the plan issue to verify it exists
-      const planIssue = await getPlanIssue(draftId, issueNumber);
-      if (!planIssue) {
-        res.status(404).json({ error: 'Issue not found in this plan' });
-        return;
-      }
-
-      // Get the implementation label(s) from config
-      const processingLabels = await loadPrimaryProcessingLabels();
-      const implementLabel = processingLabels[0] || 'AI';
-
-      // Add label to the GitHub issue
-      const octokit = await getAuthenticatedOctokit();
-      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-        owner,
-        repo,
-        issue_number: issueNumber,
-        labels: [implementLabel]
-      });
-
-      // Update the plan issue status to processing
-      await updatePlanIssue(draftId, issueNumber, { status: 'processing' });
-
-      res.json({ success: true, message: `Added '${implementLabel}' label to issue #${issueNumber}` });
-    } catch (error) {
-      console.error('Implement issue error:', error);
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issue' });
-    }
+    return implementIssueHandler(req, res);
   }
-
-  /**
-   * PATCH /api/planner/drafts/:id/issues/:issueNumber
-   * Update agent/model selection for a specific issue.
-   */
   async function updateIssue(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
-    const draftId = req.params.id;
-    const issueNumber = parseInt(req.params.issueNumber, 10);
-
-    if (isNaN(issueNumber)) {
-      res.status(400).json({ error: 'Invalid issue number' });
-      return;
-    }
-
-    try {
-      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const { agent_alias, model_name, status } = req.body;
-
-      // Validate status if provided
-      const validStatuses: PlanIssueStatus[] = ['pending', 'processing', 'under_review', 'in_refinement', 'refinement_processing', 'merged', 'closed'];
-      if (status && !validStatuses.includes(status)) {
-        res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
-        return;
-      }
-
-      const updated = await updatePlanIssue(draftId, issueNumber, {
-        agent_alias: agent_alias !== undefined ? agent_alias : undefined,
-        model_name: model_name !== undefined ? model_name : undefined,
-        status: status !== undefined ? status : undefined
-      });
-
-      if (!updated) {
-        res.status(404).json({ error: 'Issue not found in this plan' });
-        return;
-      }
-
-      res.json(updated);
-    } catch (error) {
-      console.error('Update issue error:', error);
-      res.status(500).json({ error: 'Failed to update issue' });
-    }
+    return updateIssueHandler(req, res);
   }
-
-  /**
-   * POST /api/planner/drafts/:id/implement-all
-   * Batch add implementation labels with optional agent/model override.
-   */
   async function implementAllIssues(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
-
-    const draftId = req.params.id;
-
-    try {
-      const ownership = await verifyDraftOwnership(db!, draftId, req.user!.id, ['user_id', 'repository']);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const draft = ownership.draft!;
-      const repository = draft.repository as string;
-      const [owner, repo] = repository.split('/');
-
-      if (!owner || !repo) {
-        res.status(400).json({ error: 'Invalid repository format' });
-        return;
-      }
-
-      const { agent_alias, model_name } = req.body;
-
-      // Update all issues with the provided agent/model config if specified
-      if (agent_alias !== undefined || model_name !== undefined) {
-        await batchUpdatePlanIssueConfig(draftId, agent_alias, model_name);
-      }
-
-      // Get all pending issues for this draft
-      const issues = await getPlanIssuesByDraft(draftId);
-      const pendingIssues = issues.filter(issue => issue.status === 'pending');
-
-      if (pendingIssues.length === 0) {
-        res.json({ success: true, message: 'No pending issues to implement', implemented: 0 });
-        return;
-      }
-
-      // Get the implementation label(s) from config
-      const processingLabels = await loadPrimaryProcessingLabels();
-      const implementLabel = processingLabels[0] || 'AI';
-
-      const octokit = await getAuthenticatedOctokit();
-      const results: { issueNumber: number; success: boolean; error?: string }[] = [];
-
-      // Add label to each pending issue
-      for (const issue of pendingIssues) {
-        try {
-          await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner,
-            repo,
-            issue_number: issue.issue_number,
-            labels: [implementLabel]
-          });
-
-          // Update the plan issue status to processing
-          await updatePlanIssue(draftId, issue.issue_number, { status: 'processing' });
-
-          results.push({ issueNumber: issue.issue_number, success: true });
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : 'Unknown error';
-          results.push({ issueNumber: issue.issue_number, success: false, error: errMsg });
-        }
-      }
-
-      const successCount = results.filter(r => r.success).length;
-      const failedCount = results.filter(r => !r.success).length;
-
-      res.json({
-        success: failedCount === 0,
-        message: `Implemented ${successCount} issues${failedCount > 0 ? `, ${failedCount} failed` : ''}`,
-        implemented: successCount,
-        failed: failedCount,
-        results
-      });
-    } catch (error) {
-      console.error('Implement all issues error:', error);
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issues' });
-    }
+    return implementAllIssuesHandler(req, res);
   }
 
   return {
@@ -660,7 +448,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     generate,
     refine,
     finalize,
-    // Plan issue management endpoints
     getIssues,
     implementIssue,
     updateIssue,

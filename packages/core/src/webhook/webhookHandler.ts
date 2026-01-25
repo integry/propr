@@ -4,13 +4,11 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { getGitHubInstallationToken } from '../auth/githubAuth.js';
 import {
-    findPlanIssueByRepoAndNumber,
-    findPlanIssueByRepoAndPR,
-    updatePlanIssueStatus,
-    linkPRToPlanIssue,
-    updatePlanIssueByPR,
-    type PlanIssueStatus
-} from '../config/planIssueManager.js';
+    handlePlanIssueStatusUpdate,
+    handlePlanPRUpdate,
+    handlePlanPRCommentTracking,
+    type CommentEventType
+} from './planIssueTracking.js';
 import type {
     IssuesEvent,
     IssuesLabeledEvent,
@@ -60,7 +58,7 @@ const HOST_ADDRESS = process.env.HOST_GATEWAY_ADDRESS || 'http://host.docker.int
 export function getProcessorPrNumber(): number | null {
     return processorPrNumber;
 }
-export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
+export type { CommentEventType };
 
 export interface DetectedIssue {
     id: number;
@@ -335,197 +333,60 @@ async function handlePullRequestReviewCommentEvent(
     }
 }
 
-// --- PLAN ISSUE TRACKING ---
-// Track plan-related issue and PR events to update plan_issues table
-
 /**
- * Handles plan issue status updates based on issue label events.
- * Updates the plan_issues table when issues labeled/created by planner receive processing labels.
+ * Handles plan issue tracking for various event types.
+ * This tracks plan-related events and updates the plan_issues table.
  */
-async function handlePlanIssueStatusUpdate(
-    payload: IssuesEvent,
-    correlationId: string
+async function handlePlanIssueTracking(
+    payload: unknown,
+    eventType: WebhookEventType,
+    correlationId: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
 ): Promise<void> {
-    const log = logger.withCorrelation(correlationId);
-    const repository = payload.repository.full_name;
-    const issueNumber = payload.issue.number;
-
     try {
-        // Check if this issue is tracked in plan_issues
-        const planIssue = await findPlanIssueByRepoAndNumber(repository, issueNumber);
-        if (!planIssue) {
-            return; // Not a plan issue, nothing to track
+        if (eventType === 'issues' && isIssuesEvent(payload)) {
+            await handlePlanIssueStatusUpdate(payload, correlationId);
+        } else if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
+            await handlePlanPRUpdate(payload, correlationId);
+        } else if (eventType === 'issue_comment' && isIssueCommentEvent(payload)) {
+            await handlePlanPRCommentTracking(payload, 'issue_comment', correlationId);
+        } else if (eventType === 'pull_request_review_comment' && isPullRequestReviewCommentEvent(payload)) {
+            await handlePlanPRCommentTracking(payload, 'pull_request_review_comment', correlationId);
         }
-
-        const labels = payload.issue.labels?.map(l => typeof l === 'string' ? l : l.name) ?? [];
-
-        // Determine new status based on issue state and labels
-        let newStatus: PlanIssueStatus | null = null;
-
-        if (payload.action === 'closed') {
-            newStatus = 'closed';
-        } else if (payload.action === 'labeled') {
-            // Check if processing label was added (indicates AI processing started)
-            const processingLabels = (process.env.PRIMARY_PROCESSING_LABELS || 'AI').split(',').map(l => l.trim());
-            const hasProcessingLabel = labels.some(label => processingLabels.includes(label));
-
-            if (hasProcessingLabel && planIssue.status === 'pending') {
-                newStatus = 'processing';
-            }
-        }
-
-        if (newStatus && newStatus !== planIssue.status) {
-            await updatePlanIssueStatus(repository, issueNumber, newStatus);
-            log.info(
-                { repository, issueNumber, oldStatus: planIssue.status, newStatus },
-                'Updated plan issue status'
-            );
-        }
-    } catch (error) {
-        log.error({ error, repository, issueNumber }, 'Failed to handle plan issue status update');
+    } catch (planTrackingError) {
+        correlatedLogger.warn({ error: planTrackingError }, 'Plan issue tracking failed, continuing with standard processing');
     }
 }
 
 /**
- * Handles PR events to track PR associations with plan issues.
- * Updates plan_issues when PRs are opened, closed, or merged.
+ * Processes standard webhook events locally.
  */
-async function handlePlanPRUpdate(
-    payload: PullRequestEvent,
-    correlationId: string
+async function processStandardWebhookEvent(
+    payload: unknown,
+    eventType: WebhookEventType,
+    correlationId: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
 ): Promise<void> {
-    const log = logger.withCorrelation(correlationId);
-    const repository = payload.repository.full_name;
-    const prNumber = payload.pull_request.number;
-    const action = payload.action;
-
-    try {
-        // First check if this PR is already linked to a plan issue
-        let planIssue = await findPlanIssueByRepoAndPR(repository, prNumber);
-
-        // If not linked, check if PR body references a plan issue
-        if (!planIssue && action === 'opened') {
-            // Try to find linked issue from PR body (common pattern: "Fixes #123" or "Closes #123")
-            const prBody = payload.pull_request.body || '';
-            const issueRefs = prBody.match(/(?:fixes|closes|resolves|fix|close|resolve)\s*#(\d+)/gi);
-
-            if (issueRefs) {
-                for (const ref of issueRefs) {
-                    const match = ref.match(/#(\d+)/);
-                    if (match) {
-                        const linkedIssueNumber = parseInt(match[1], 10);
-                        const linkedPlanIssue = await findPlanIssueByRepoAndNumber(repository, linkedIssueNumber);
-
-                        if (linkedPlanIssue) {
-                            // Link this PR to the plan issue
-                            await linkPRToPlanIssue(repository, linkedIssueNumber, prNumber);
-                            planIssue = linkedPlanIssue;
-                            log.info(
-                                { repository, prNumber, issueNumber: linkedIssueNumber },
-                                'Linked PR to plan issue'
-                            );
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!planIssue) {
-            return; // Not related to a plan issue
-        }
-
-        // Update status based on PR action
-        let newStatus: PlanIssueStatus | null = null;
-
-        if (action === 'closed') {
-            if (payload.pull_request.merged) {
-                newStatus = 'merged';
-            } else {
-                // PR closed without merge, revert to pending if issue still open
-                newStatus = 'closed';
-            }
-        } else if (action === 'opened' || action === 'reopened') {
-            newStatus = 'under_review';
-        } else if (action === 'synchronize') {
-            // PR was updated, might be processing follow-up
-            if (planIssue.status === 'in_refinement') {
-                newStatus = 'refinement_processing';
-            }
-        }
-
-        if (newStatus) {
-            await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
-            log.info(
-                { repository, prNumber, newStatus },
-                'Updated plan issue status from PR event'
-            );
-        }
-    } catch (error) {
-        log.error({ error, repository, prNumber }, 'Failed to handle plan PR update');
+    if (!processDetectedIssue || !processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
+        correlatedLogger.error('Webhook handler not properly initialized');
+        throw new Error('Webhook handler not initialized');
     }
-}
 
-/**
- * Tracks comment counts on PRs linked to plan issues.
- */
-async function handlePlanPRCommentTracking(
-    payload: IssueCommentEvent | PullRequestReviewCommentEvent,
-    eventType: CommentEventType,
-    correlationId: string
-): Promise<void> {
-    const log = logger.withCorrelation(correlationId);
-    const repository = payload.repository.full_name;
-
-    try {
-        // Get PR number from the payload
-        let prNumber: number | null = null;
-
-        if (eventType === 'pull_request_review_comment') {
-            const prPayload = payload as PullRequestReviewCommentEvent;
-            prNumber = prPayload.pull_request.number;
-        } else if (eventType === 'issue_comment') {
-            const issuePayload = payload as IssueCommentEvent;
-            // Only track if this is a PR comment
-            if ('pull_request' in issuePayload.issue && issuePayload.issue.pull_request) {
-                prNumber = issuePayload.issue.number;
-            }
-        }
-
-        if (!prNumber) {
-            return; // Not a PR comment
-        }
-
-        const planIssue = await findPlanIssueByRepoAndPR(repository, prNumber);
-        if (!planIssue) {
-            return; // Not a plan issue PR
-        }
-
-        // If a new comment is created, update the follow-up count and status
-        if (payload.action === 'created') {
-            // Don't count bot comments
-            const commentAuthor = payload.comment.user?.login;
-            const botUsername = process.env.BOT_USERNAME || 'gitfixio[bot]';
-            if (commentAuthor === botUsername) {
-                return;
-            }
-
-            // Increment follow-up count and update status
-            const newFollowupCount = (planIssue.followup_count || 0) + 1;
-            let newStatus: PlanIssueStatus = 'in_refinement';
-
-            await updatePlanIssueByPR(repository, prNumber, {
-                followup_count: newFollowupCount,
-                status: newStatus
-            });
-
-            log.info(
-                { repository, prNumber, followupCount: newFollowupCount },
-                'Updated plan issue follow-up count from PR comment'
-            );
-        }
-    } catch (error) {
-        log.error({ error, repository }, 'Failed to handle plan PR comment tracking');
+    switch (eventType) {
+        case 'issues':
+            if (isIssuesEvent(payload)) await handleIssuesEvent(payload, correlationId);
+            break;
+        case 'issue_comment':
+            if (isIssueCommentEvent(payload)) await handleIssueCommentEvent(payload, correlationId);
+            break;
+        case 'pull_request':
+            if (isPullRequestEvent(payload) && processPullRequest) await processPullRequest(payload, correlationId);
+            break;
+        case 'pull_request_review_comment':
+            if (isPullRequestReviewCommentEvent(payload)) await handlePullRequestReviewCommentEvent(payload, correlationId);
+            break;
+        default:
+            correlatedLogger.debug({ event: eventType }, 'Ignoring webhook event');
     }
 }
 
@@ -537,7 +398,6 @@ export async function processWebhookEvent(
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     // 1. Handle Processor Label Changes (Watch for 'preview-env' label on gitfix repo PRs)
-    // This must run BEFORE routing decisions to ensure processor state is current.
     if (ENABLE_PREVIEW_ROUTING && eventType === 'pull_request' && isPullRequestEvent(payload)) {
         handleProcessorLabelChange(payload, correlationId);
     }
@@ -548,72 +408,15 @@ export async function processWebhookEvent(
     }
 
     // 3. Routing Decision: Forward to preview instance if applicable
-    // Note: processorPrNumber refers to a gitfix repo PR that has the 'preview-env' label.
-    // When set, ALL webhooks (from any source repo) are routed to that PR's preview instance.
-    // The source issues/PRs do NOT need any special labels - routing is based solely on
-    // whether a gitfix PR is designated as the processor via the 'preview-env' label.
     if (ENABLE_PREVIEW_ROUTING && processorPrNumber) {
-        correlatedLogger.info(
-            { processorPrNumber },
-            'Forwarding webhook to designated processor PR instance'
-        );
+        correlatedLogger.info({ processorPrNumber }, 'Forwarding webhook to designated processor PR instance');
         await forwardToProcessor(payload, processorPrNumber, correlationId);
         return;
     }
 
     // 4. Plan Issue Tracking (runs before standard processing to update status)
-    // This tracks plan-related events and updates the plan_issues table
-    try {
-        if (eventType === 'issues' && isIssuesEvent(payload)) {
-            await handlePlanIssueStatusUpdate(payload, correlationId);
-        } else if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
-            await handlePlanPRUpdate(payload, correlationId);
-        } else if (
-            (eventType === 'issue_comment' && isIssueCommentEvent(payload)) ||
-            (eventType === 'pull_request_review_comment' && isPullRequestReviewCommentEvent(payload))
-        ) {
-            await handlePlanPRCommentTracking(
-                payload as IssueCommentEvent | PullRequestReviewCommentEvent,
-                eventType as CommentEventType,
-                correlationId
-            );
-        }
-    } catch (planTrackingError) {
-        correlatedLogger.warn({ error: planTrackingError }, 'Plan issue tracking failed, continuing with standard processing');
-    }
+    await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);
 
     // 5. Standard Local Processing
-    if (!processDetectedIssue || !processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
-        correlatedLogger.error('Webhook handler not properly initialized');
-        throw new Error('Webhook handler not initialized');
-    }
-
-    switch (eventType) {
-        case 'issues':
-            if (isIssuesEvent(payload)) {
-                await handleIssuesEvent(payload, correlationId);
-            }
-            break;
-
-        case 'issue_comment':
-            if (isIssueCommentEvent(payload)) {
-                await handleIssueCommentEvent(payload, correlationId);
-            }
-            break;
-
-        case 'pull_request':
-            if (isPullRequestEvent(payload) && processPullRequest) {
-                await processPullRequest(payload, correlationId);
-            }
-            break;
-
-        case 'pull_request_review_comment':
-            if (isPullRequestReviewCommentEvent(payload)) {
-                await handlePullRequestReviewCommentEvent(payload, correlationId);
-            }
-            break;
-
-        default:
-            correlatedLogger.debug({ event: eventType }, 'Ignoring webhook event');
-    }
+    await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger);
 }
