@@ -7,7 +7,9 @@ import {
   RefreshCw,
   Loader2,
   CheckCircle,
-  AlertCircle
+  AlertCircle,
+  ExternalLink,
+  Github
 } from 'lucide-react';
 import {
   PlanIssue,
@@ -25,6 +27,7 @@ import AgentModelSelector from './AgentModelSelector';
 interface PlanIssuesManagerProps {
   draftId: string;
   tasks: PlanTask[];
+  repository?: string;
   onRefresh?: () => void;
 }
 
@@ -34,6 +37,7 @@ const POLL_INTERVAL = 5000;
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
   tasks,
+  repository,
   onRefresh
 }) => {
   const [issues, setIssues] = useState<PlanIssue[]>([]);
@@ -260,10 +264,23 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   }
 
   if (issues.length === 0) {
+    const issuesUrl = repository ? `https://github.com/${repository}/issues` : null;
     return (
       <div className="text-center py-8 text-gray-500">
         <AlertCircle className="mx-auto mb-2 text-gray-400" size={24} />
         <p>No issues found for this plan.</p>
+        {issuesUrl && (
+          <a
+            href={issuesUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+          >
+            <Github size={16} />
+            View Issues
+            <ExternalLink size={14} />
+          </a>
+        )}
       </div>
     );
   }
