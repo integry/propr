@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, CheckCircle, MessageSquare, StickyNote, Github, ChevronDown } from 'lucide-react';
+import { ExternalLink, CheckCircle, MessageSquare, StickyNote, Github, ChevronDown, Settings2 } from 'lucide-react';
 import { DraftWithPlan, PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
+import PlanIssuesManager from './PlanIssuesManager';
 
 interface ApprovedPlanViewProps {
   draft: DraftWithPlan;
@@ -153,7 +154,11 @@ const ViewOnlyTaskCard: React.FC<ViewOnlyTaskCardProps> = ({ task, index }) => {
   );
 };
 
+type ViewMode = 'tasks' | 'issues';
+
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => {
+  const [viewMode, setViewMode] = useState<ViewMode>('issues');
+
   // Defensively ensure plan_json is an array
   const tasks = (() => {
     let planJson = draft.plan_json;
@@ -190,6 +195,36 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
         </div>
 
         <div className="flex items-center gap-2">
+          {/* View Mode Toggle */}
+          <div className="flex items-center bg-gray-100 rounded-lg p-1">
+            <button
+              onClick={() => setViewMode('issues')}
+              className={`
+                flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors
+                ${viewMode === 'issues'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-800'
+                }
+              `}
+            >
+              <Settings2 size={14} />
+              Manage Issues
+            </button>
+            <button
+              onClick={() => setViewMode('tasks')}
+              className={`
+                flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors
+                ${viewMode === 'tasks'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-800'
+                }
+              `}
+            >
+              <CheckCircle size={14} />
+              View Plan
+            </button>
+          </div>
+
           {repoUrl && (
             <a
               href={repoUrl}
@@ -227,42 +262,67 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
         </div>
       </motion.div>
 
-      {/* Task List */}
+      {/* Content Area */}
       <div className="flex-1 overflow-y-auto p-4">
-        <div className="flex">
-          {/* Timeline */}
-          <div className="w-16 flex-shrink-0 py-2">
-            <div className="flex flex-col items-center">
-              {tasks.map((_, index) => (
-                <div key={index} className="flex flex-col items-center">
-                  <motion.div
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    transition={{ delay: 0.3 + index * 0.1, type: "spring", stiffness: 500 }}
-                    className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center"
-                  >
-                    <CheckCircle size={16} className="text-green-600" />
-                  </motion.div>
-                  {index < tasks.length - 1 && (
-                    <motion.div
-                      initial={{ height: 0 }}
-                      animate={{ height: 40 }}
-                      transition={{ delay: 0.4 + index * 0.1 }}
-                      className="w-0.5 bg-green-200"
-                    />
-                  )}
+        <AnimatePresence mode="wait">
+          {viewMode === 'issues' ? (
+            <motion.div
+              key="issues"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              transition={{ duration: 0.2 }}
+            >
+              <PlanIssuesManager
+                draftId={draft.draft_id}
+                tasks={tasks}
+              />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="tasks"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              transition={{ duration: 0.2 }}
+            >
+              <div className="flex">
+                {/* Timeline */}
+                <div className="w-16 flex-shrink-0 py-2">
+                  <div className="flex flex-col items-center">
+                    {tasks.map((_, index) => (
+                      <div key={index} className="flex flex-col items-center">
+                        <motion.div
+                          initial={{ scale: 0 }}
+                          animate={{ scale: 1 }}
+                          transition={{ delay: 0.3 + index * 0.1, type: "spring", stiffness: 500 }}
+                          className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center"
+                        >
+                          <CheckCircle size={16} className="text-green-600" />
+                        </motion.div>
+                        {index < tasks.length - 1 && (
+                          <motion.div
+                            initial={{ height: 0 }}
+                            animate={{ height: 40 }}
+                            transition={{ delay: 0.4 + index * 0.1 }}
+                            className="w-0.5 bg-green-200"
+                          />
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              ))}
-            </div>
-          </div>
 
-          {/* Cards */}
-          <div className="flex-1 space-y-4">
-            {tasks.map((task, index) => (
-              <ViewOnlyTaskCard key={task.id} task={task} index={index} />
-            ))}
-          </div>
-        </div>
+                {/* Cards */}
+                <div className="flex-1 space-y-4">
+                  {tasks.map((task, index) => (
+                    <ViewOnlyTaskCard key={task.id} task={task} index={index} />
+                  ))}
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </motion.div>
   );
