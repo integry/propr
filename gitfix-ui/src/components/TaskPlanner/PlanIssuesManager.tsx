@@ -277,7 +277,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
           >
             <Github size={16} />
-            View Issues
+            View Plan
             <ExternalLink size={14} />
           </a>
         )}
