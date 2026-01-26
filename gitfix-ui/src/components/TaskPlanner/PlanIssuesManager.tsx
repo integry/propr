@@ -25,7 +25,6 @@ import AgentModelSelector from './AgentModelSelector';
 interface PlanIssuesManagerProps {
   draftId: string;
   tasks: PlanTask[];
-  repository?: string;
   onRefresh?: () => void;
   onViewPlanClick?: () => void;
 }
@@ -36,7 +35,6 @@ const POLL_INTERVAL = 5000;
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
   tasks,
-  repository: _repository,
   onRefresh,
   onViewPlanClick
 }) => {

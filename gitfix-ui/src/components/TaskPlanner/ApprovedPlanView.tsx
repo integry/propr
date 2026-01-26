@@ -276,7 +276,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
               <PlanIssuesManager
                 draftId={draft.draft_id}
                 tasks={tasks}
-                repository={draft.repository}
                 onViewPlanClick={() => setViewMode('tasks')}
               />
             </motion.div>
