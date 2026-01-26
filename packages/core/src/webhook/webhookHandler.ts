@@ -3,6 +3,12 @@ import { fetch } from 'undici';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { getGitHubInstallationToken } from '../auth/githubAuth.js';
+import {
+    handlePlanIssueStatusUpdate,
+    handlePlanPRUpdate,
+    handlePlanPRCommentTracking,
+    type CommentEventType
+} from './planIssueTracking.js';
 import type {
     IssuesEvent,
     IssuesLabeledEvent,
@@ -52,7 +58,7 @@ const HOST_ADDRESS = process.env.HOST_GATEWAY_ADDRESS || 'http://host.docker.int
 export function getProcessorPrNumber(): number | null {
     return processorPrNumber;
 }
-export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
+export type { CommentEventType };
 
 export interface DetectedIssue {
     id: number;
@@ -327,6 +333,63 @@ async function handlePullRequestReviewCommentEvent(
     }
 }
 
+/**
+ * Handles plan issue tracking for various event types.
+ * This tracks plan-related events and updates the plan_issues table.
+ */
+async function handlePlanIssueTracking(
+    payload: unknown,
+    eventType: WebhookEventType,
+    correlationId: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    try {
+        if (eventType === 'issues' && isIssuesEvent(payload)) {
+            await handlePlanIssueStatusUpdate(payload, correlationId);
+        } else if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
+            await handlePlanPRUpdate(payload, correlationId);
+        } else if (eventType === 'issue_comment' && isIssueCommentEvent(payload)) {
+            await handlePlanPRCommentTracking(payload, 'issue_comment', correlationId);
+        } else if (eventType === 'pull_request_review_comment' && isPullRequestReviewCommentEvent(payload)) {
+            await handlePlanPRCommentTracking(payload, 'pull_request_review_comment', correlationId);
+        }
+    } catch (planTrackingError) {
+        correlatedLogger.warn({ error: planTrackingError }, 'Plan issue tracking failed, continuing with standard processing');
+    }
+}
+
+/**
+ * Processes standard webhook events locally.
+ */
+async function processStandardWebhookEvent(
+    payload: unknown,
+    eventType: WebhookEventType,
+    correlationId: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    if (!processDetectedIssue || !processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
+        correlatedLogger.error('Webhook handler not properly initialized');
+        throw new Error('Webhook handler not initialized');
+    }
+
+    switch (eventType) {
+        case 'issues':
+            if (isIssuesEvent(payload)) await handleIssuesEvent(payload, correlationId);
+            break;
+        case 'issue_comment':
+            if (isIssueCommentEvent(payload)) await handleIssueCommentEvent(payload, correlationId);
+            break;
+        case 'pull_request':
+            if (isPullRequestEvent(payload) && processPullRequest) await processPullRequest(payload, correlationId);
+            break;
+        case 'pull_request_review_comment':
+            if (isPullRequestReviewCommentEvent(payload)) await handlePullRequestReviewCommentEvent(payload, correlationId);
+            break;
+        default:
+            correlatedLogger.debug({ event: eventType }, 'Ignoring webhook event');
+    }
+}
+
 export async function processWebhookEvent(
     payload: unknown,
     eventType: WebhookEventType,
@@ -335,7 +398,6 @@ export async function processWebhookEvent(
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     // 1. Handle Processor Label Changes (Watch for 'preview-env' label on gitfix repo PRs)
-    // This must run BEFORE routing decisions to ensure processor state is current.
     if (ENABLE_PREVIEW_ROUTING && eventType === 'pull_request' && isPullRequestEvent(payload)) {
         handleProcessorLabelChange(payload, correlationId);
     }
@@ -346,51 +408,15 @@ export async function processWebhookEvent(
     }
 
     // 3. Routing Decision: Forward to preview instance if applicable
-    // Note: processorPrNumber refers to a gitfix repo PR that has the 'preview-env' label.
-    // When set, ALL webhooks (from any source repo) are routed to that PR's preview instance.
-    // The source issues/PRs do NOT need any special labels - routing is based solely on
-    // whether a gitfix PR is designated as the processor via the 'preview-env' label.
     if (ENABLE_PREVIEW_ROUTING && processorPrNumber) {
-        correlatedLogger.info(
-            { processorPrNumber },
-            'Forwarding webhook to designated processor PR instance'
-        );
+        correlatedLogger.info({ processorPrNumber }, 'Forwarding webhook to designated processor PR instance');
         await forwardToProcessor(payload, processorPrNumber, correlationId);
         return;
     }
 
-    // 4. Standard Local Processing
-    if (!processDetectedIssue || !processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
-        correlatedLogger.error('Webhook handler not properly initialized');
-        throw new Error('Webhook handler not initialized');
-    }
+    // 4. Plan Issue Tracking (runs before standard processing to update status)
+    await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);
 
-    switch (eventType) {
-        case 'issues':
-            if (isIssuesEvent(payload)) {
-                await handleIssuesEvent(payload, correlationId);
-            }
-            break;
-
-        case 'issue_comment':
-            if (isIssueCommentEvent(payload)) {
-                await handleIssueCommentEvent(payload, correlationId);
-            }
-            break;
-
-        case 'pull_request':
-            if (isPullRequestEvent(payload) && processPullRequest) {
-                await processPullRequest(payload, correlationId);
-            }
-            break;
-
-        case 'pull_request_review_comment':
-            if (isPullRequestReviewCommentEvent(payload)) {
-                await handlePullRequestReviewCommentEvent(payload, correlationId);
-            }
-            break;
-
-        default:
-            correlatedLogger.debug({ event: eventType }, 'Ignoring webhook event');
-    }
+    // 5. Standard Local Processing
+    await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger);
 }

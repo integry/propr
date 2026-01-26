@@ -25,6 +25,10 @@ import {
   createDeleteAttachmentHandler,
   createUploadAttachmentHandler,
   createGetContextStatsHandler,
+  createGetIssuesHandler,
+  createImplementIssueHandler,
+  createUpdateIssueHandler,
+  createImplementAllIssuesHandler,
   validatePreviewInput,
   VALID_GRANULARITIES
 } from './plannerHelpers.js';
@@ -170,41 +174,27 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  const uploadAttachmentHandler = createUploadAttachmentHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
+  const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
+  const uploadAttachmentHandler = createUploadAttachmentHandler({ verifyOwnership: ownershipVerifier });
+  const getContextStatsHandler = createGetContextStatsHandler({ verifyOwnership: ownershipVerifier });
+  const previewContextHandler = createPreviewContextHandler({ verifyOwnership: ownershipVerifier, validateInput: validatePreviewInput });
+  const deleteAttachmentHandler = createDeleteAttachmentHandler({ verifyOwnership: ownershipVerifier });
 
   async function uploadAttachment(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return uploadAttachmentHandler(req, res);
   }
-
-  const getContextStatsHandler = createGetContextStatsHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
-
   async function getContextStats(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return getContextStatsHandler(req, res);
   }
-
-  const previewContextHandler = createPreviewContextHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields),
-    validateInput: validatePreviewInput
-  });
-
   async function previewContext(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return previewContextHandler(req, res);
   }
-
-  const deleteAttachmentHandler = createDeleteAttachmentHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
-
   async function deleteAttachment(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
@@ -398,34 +388,48 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  const getAttachmentContentHandler = createGetAttachmentContentHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
+  const getAttachmentContentHandler = createGetAttachmentContentHandler({ verifyOwnership: ownershipVerifier });
+  const getRepositoryInfoHandler = createGetRepositoryInfoHandler({ verifyOwnership: ownershipVerifier });
+  const downloadContextHandler = createDownloadContextHandler({ verifyOwnership: ownershipVerifier });
+  const getIssuesHandler = createGetIssuesHandler({ verifyOwnership: ownershipVerifier });
+  const implementIssueHandler = createImplementIssueHandler({ verifyOwnership: ownershipVerifier });
+  const updateIssueHandler = createUpdateIssueHandler({ verifyOwnership: ownershipVerifier });
+  const implementAllIssuesHandler = createImplementAllIssuesHandler({ verifyOwnership: ownershipVerifier });
 
   async function getAttachmentContent(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return getAttachmentContentHandler(req, res);
   }
-
-  const getRepositoryInfoHandler = createGetRepositoryInfoHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
-
   async function getRepositoryInfo(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return getRepositoryInfoHandler(req, res);
   }
-
-  const downloadContextHandler = createDownloadContextHandler({
-    verifyOwnership: (draftId, userId, fields) => verifyDraftOwnership(db!, draftId, userId, fields)
-  });
-
   async function downloadContext(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     return downloadContextHandler(req, res);
+  }
+  async function getIssues(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+    return getIssuesHandler(req, res);
+  }
+  async function implementIssue(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+    return implementIssueHandler(req, res);
+  }
+  async function updateIssue(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+    return updateIssueHandler(req, res);
+  }
+  async function implementAllIssues(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+    return implementAllIssuesHandler(req, res);
   }
 
   return {
@@ -443,6 +447,10 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     downloadContext,
     generate,
     refine,
-    finalize
+    finalize,
+    getIssues,
+    implementIssue,
+    updateIssue,
+    implementAllIssues
   };
 }

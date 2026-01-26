@@ -22,6 +22,26 @@ export { getGitHubInstallationToken, getAuthenticatedOctokit } from './auth/gith
 export type { PaginatedOctokitInstance } from './auth/githubAuth.js';
 
 export * from './config/configManager.js';
+export {
+    createPlanIssue,
+    getPlanIssuesByDraft,
+    getPlanIssue,
+    updatePlanIssue,
+    incrementFollowupCount,
+    findPlanIssueByRepoAndNumber,
+    findPlanIssueByRepoAndPR,
+    updatePlanIssueStatus,
+    linkPRToPlanIssue,
+    updatePlanIssueByPR,
+    batchUpdatePlanIssueConfig,
+    deletePlanIssue
+} from './config/planIssueManager.js';
+export type {
+    PlanIssueStatus,
+    PlanIssue,
+    CreatePlanIssueInput,
+    UpdatePlanIssueInput
+} from './config/planIssueManager.js';
 export { resolveModelAlias, getDefaultModel, getModelShortName, MODEL_ALIASES, MODEL_SHORT_NAMES, DEFAULT_MODEL_ALIAS, resolveLlmLabel } from './config/modelAliases.js';
 export type { LlmLabelResolution } from './config/modelAliases.js';
 export { CLAUDE_MODELS, CODEX_MODELS, GEMINI_MODELS, ALL_MODELS, AGENT_MODELS, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';

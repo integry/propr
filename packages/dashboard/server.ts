@@ -223,6 +223,11 @@ function setupRoutes(): void {
   app.get('/api/planner/drafts/:id/attachments/:attachmentId', ensureAuthenticated, plannerRoutes.getAttachmentContent);
   app.delete('/api/planner/drafts/:id/attachments/:attachmentId', ensureAuthenticated, plannerRoutes.deleteAttachment);
   app.get('/api/planner/drafts/:id/repository-info', ensureAuthenticated, plannerRoutes.getRepositoryInfo);
+  // Plan issue management endpoints
+  app.get('/api/planner/drafts/:id/issues', ensureAuthenticated, plannerRoutes.getIssues);
+  app.post('/api/planner/drafts/:id/issues/:issueNumber/implement', ensureAuthenticated, plannerRoutes.implementIssue);
+  app.patch('/api/planner/drafts/:id/issues/:issueNumber', ensureAuthenticated, plannerRoutes.updateIssue);
+  app.post('/api/planner/drafts/:id/implement-all', ensureAuthenticated, plannerRoutes.implementAllIssues);
   app.post('/api/planner/context/stats', ensureAuthenticated, plannerRoutes.getContextStats);
   app.post('/api/planner/preview', ensureAuthenticated, plannerRoutes.previewContext);
   app.post('/api/planner/preview/context', ensureAuthenticated, plannerRoutes.downloadContext);
