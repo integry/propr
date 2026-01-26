@@ -7,9 +7,7 @@ import {
   RefreshCw,
   Loader2,
   CheckCircle,
-  AlertCircle,
-  ExternalLink,
-  Github
+  AlertCircle
 } from 'lucide-react';
 import {
   PlanIssue,
@@ -29,6 +27,7 @@ interface PlanIssuesManagerProps {
   tasks: PlanTask[];
   repository?: string;
   onRefresh?: () => void;
+  onViewPlanClick?: () => void;
 }
 
 // Polling interval for active issues (5 seconds)
@@ -37,8 +36,9 @@ const POLL_INTERVAL = 5000;
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
   tasks,
-  repository,
-  onRefresh
+  repository: _repository,
+  onRefresh,
+  onViewPlanClick
 }) => {
   const [issues, setIssues] = useState<PlanIssue[]>([]);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
@@ -264,22 +264,18 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   }
 
   if (issues.length === 0) {
-    const issuesUrl = repository ? `https://github.com/${repository}/issues` : null;
     return (
       <div className="text-center py-8 text-gray-500">
         <AlertCircle className="mx-auto mb-2 text-gray-400" size={24} />
         <p>No issues found for this plan.</p>
-        {issuesUrl && (
-          <a
-            href={issuesUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+        {onViewPlanClick && (
+          <button
+            onClick={onViewPlanClick}
+            className="inline-flex items-center gap-1.5 mt-4 px-3 py-1.5 text-sm font-medium rounded-md bg-white text-gray-900 shadow-sm border border-gray-200 hover:bg-gray-50 transition-colors"
           >
-            <Github size={16} />
+            <CheckCircle size={14} />
             View Plan
-            <ExternalLink size={14} />
-          </a>
+          </button>
         )}
       </div>
     );
