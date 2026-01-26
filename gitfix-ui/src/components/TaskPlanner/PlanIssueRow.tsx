@@ -47,6 +47,100 @@ const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) => {
   );
 };
 
+const getModelName = (modelId: string | null): string => {
+  if (!modelId) return '';
+  const modelInfo = MODEL_INFO_MAP[modelId];
+  return modelInfo?.name || modelId;
+};
+
+const getImplementButtonClassName = (implementing: boolean, hasAgent: boolean): string => {
+  if (implementing || !hasAgent) {
+    return 'bg-gray-100 text-gray-400 cursor-not-allowed';
+  }
+  return 'bg-primary-600 text-white hover:bg-primary-700';
+};
+
+interface ImplementButtonProps {
+  implementing: boolean;
+  hasAgent: boolean;
+  onClick: () => void;
+}
+
+const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, hasAgent, onClick }) => (
+  <button
+    onClick={onClick}
+    disabled={implementing || !hasAgent}
+    className={`
+      flex items-center gap-1.5
+      px-3 py-1.5
+      text-sm font-medium
+      rounded-md
+      transition-colors
+      ${getImplementButtonClassName(implementing, hasAgent)}
+    `}
+    title={!hasAgent ? 'Select an agent first' : 'Start AI implementation'}
+  >
+    {implementing ? (
+      <>
+        <Loader2 size={14} className="animate-spin" />
+        <span>Starting...</span>
+      </>
+    ) : (
+      <>
+        <Play size={14} />
+        <span>Implement</span>
+      </>
+    )}
+  </button>
+);
+
+interface AgentModelInfoProps {
+  agentAlias: string;
+  modelName: string | null;
+}
+
+const AgentModelInfo: React.FC<AgentModelInfoProps> = ({ agentAlias, modelName }) => (
+  <span className="flex items-center gap-1.5 text-gray-500">
+    <ProviderLogo provider={agentAlias} className="w-3 h-3" />
+    <span>{agentAlias}</span>
+    {modelName && (
+      <>
+        <span className="text-gray-300">/</span>
+        <span>{getModelName(modelName)}</span>
+      </>
+    )}
+  </span>
+);
+
+interface PrLinkProps {
+  prUrl: string;
+  prNumber: number;
+}
+
+const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (
+  <a
+    href={prUrl}
+    target="_blank"
+    rel="noopener noreferrer"
+    className="flex items-center gap-1 text-purple-600 hover:text-purple-800"
+  >
+    <GitPullRequest size={12} />
+    PR #{prNumber}
+    <ExternalLink size={10} className="opacity-50" />
+  </a>
+);
+
+interface FollowupCountProps {
+  count: number;
+}
+
+const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
+  <span className="flex items-center gap-1 text-gray-500">
+    <MessageSquare size={12} />
+    {count} follow-up{count !== 1 ? 's' : ''}
+  </span>
+);
+
 export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   issue,
   issueTitle,
@@ -60,32 +154,26 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   const isActive = STATUS_CONFIG[issue.status]?.isActive || false;
   const isMerged = issue.status === 'merged';
 
-  // Get GitHub URLs
   const issueUrl = `https://github.com/${issue.repository}/issues/${issue.issue_number}`;
   const prUrl = issue.pr_number
     ? `https://github.com/${issue.repository}/pull/${issue.pr_number}`
     : null;
 
-  // Get model display name
-  const getModelName = (modelId: string | null): string => {
-    if (!modelId) return '';
-    const modelInfo = MODEL_INFO_MAP[modelId];
-    return modelInfo?.name || modelId;
-  };
+  const containerClassName = isMerged
+    ? 'bg-gray-50 border-gray-200'
+    : 'bg-white border-gray-200';
+
+  const titleClassName = isMerged ? 'text-gray-500' : 'text-gray-600';
+  const showAgentInfo = !isPending && issue.agent_alias;
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`
-        border rounded-lg overflow-hidden
-        ${isMerged ? 'bg-gray-50 border-gray-200' : 'bg-white border-gray-200'}
-      `}
+      className={`border rounded-lg overflow-hidden ${containerClassName}`}
     >
-      {/* Main Row Content */}
       <div className="p-4">
         <div className="flex items-start justify-between gap-4">
-          {/* Left: Issue Info */}
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
               <a
@@ -101,52 +189,21 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
             </div>
 
             {issueTitle && (
-              <p className={`text-sm ${isMerged ? 'text-gray-500' : 'text-gray-600'} truncate`}>
+              <p className={`text-sm ${titleClassName} truncate`}>
                 {issueTitle}
               </p>
             )}
 
-            {/* PR Link and Follow-up Count */}
             <div className="flex items-center gap-4 mt-2 text-xs">
-              {prUrl && (
-                <a
-                  href={prUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-purple-600 hover:text-purple-800"
-                >
-                  <GitPullRequest size={12} />
-                  PR #{issue.pr_number}
-                  <ExternalLink size={10} className="opacity-50" />
-                </a>
-              )}
-
-              {issue.followup_count > 0 && (
-                <span className="flex items-center gap-1 text-gray-500">
-                  <MessageSquare size={12} />
-                  {issue.followup_count} follow-up{issue.followup_count !== 1 ? 's' : ''}
-                </span>
-              )}
-
-              {/* Agent/Model Info (when already set and not pending) */}
-              {!isPending && issue.agent_alias && (
-                <span className="flex items-center gap-1.5 text-gray-500">
-                  <ProviderLogo provider={issue.agent_alias} className="w-3 h-3" />
-                  <span>{issue.agent_alias}</span>
-                  {issue.model_name && (
-                    <>
-                      <span className="text-gray-300">/</span>
-                      <span>{getModelName(issue.model_name)}</span>
-                    </>
-                  )}
-                </span>
+              {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
+              {issue.followup_count > 0 && <FollowupCount count={issue.followup_count} />}
+              {showAgentInfo && (
+                <AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} />
               )}
             </div>
           </div>
 
-          {/* Right: Actions */}
           <div className="flex items-center gap-3 flex-shrink-0">
-            {/* Agent/Model Selector (only for pending issues) */}
             {isPending && (
               <AgentModelSelector
                 agents={agents}
@@ -159,41 +216,14 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               />
             )}
 
-            {/* Implement Button (only for pending issues) */}
             {isPending && (
-              <button
+              <ImplementButton
+                implementing={implementing}
+                hasAgent={!!issue.agent_alias}
                 onClick={() => onImplement(issue.issue_number)}
-                disabled={implementing || !issue.agent_alias}
-                className={`
-                  flex items-center gap-1.5
-                  px-3 py-1.5
-                  text-sm font-medium
-                  rounded-md
-                  transition-colors
-                  ${implementing
-                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                    : issue.agent_alias
-                      ? 'bg-primary-600 text-white hover:bg-primary-700'
-                      : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                  }
-                `}
-                title={!issue.agent_alias ? 'Select an agent first' : 'Start AI implementation'}
-              >
-                {implementing ? (
-                  <>
-                    <Loader2 size={14} className="animate-spin" />
-                    <span>Starting...</span>
-                  </>
-                ) : (
-                  <>
-                    <Play size={14} />
-                    <span>Implement</span>
-                  </>
-                )}
-              </button>
+              />
             )}
 
-            {/* Status Indicator for Active Issues */}
             {isActive && !isPending && (
               <div className="flex items-center gap-1.5 text-sm text-blue-600">
                 <Loader2 size={14} className="animate-spin" />
