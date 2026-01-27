@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Undo2, CheckCircle, AlertCircle, Info } from 'lucide-react';
+import { X, Undo2, CheckCircle, AlertCircle, Info, AlertTriangle } from 'lucide-react';
 import { Toast, ToastContext } from './useToast';
 
 const ToastItem: React.FC<{ toast: Toast; onRemove: () => void }> = ({ toast, onRemove }) => {
@@ -15,6 +15,7 @@ const ToastItem: React.FC<{ toast: Toast; onRemove: () => void }> = ({ toast, on
     success: <CheckCircle size={18} className="text-green-500" />,
     error: <AlertCircle size={18} className="text-red-500" />,
     info: <Info size={18} className="text-blue-500" />,
+    warning: <AlertTriangle size={18} className="text-amber-500" />,
     undo: <Undo2 size={18} className="text-indigo-500" />
   };
 
@@ -22,6 +23,7 @@ const ToastItem: React.FC<{ toast: Toast; onRemove: () => void }> = ({ toast, on
     success: 'bg-green-50 border-green-200',
     error: 'bg-red-50 border-red-200',
     info: 'bg-blue-50 border-blue-200',
+    warning: 'bg-amber-50 border-amber-200',
     undo: 'bg-white border-gray-200'
   };
 
