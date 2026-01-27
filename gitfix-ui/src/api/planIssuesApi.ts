@@ -179,14 +179,14 @@ export const STATUS_CONFIG: Record<PlanIssueStatus, {
     color: 'text-purple-700',
     bgColor: 'bg-purple-100',
     borderColor: 'border-purple-200',
-    isActive: true
+    isActive: false
   },
   in_refinement: {
     label: 'In Refinement',
     color: 'text-amber-700',
     bgColor: 'bg-amber-100',
     borderColor: 'border-amber-200',
-    isActive: true
+    isActive: false
   },
   refinement_processing: {
     label: 'Processing Feedback',
