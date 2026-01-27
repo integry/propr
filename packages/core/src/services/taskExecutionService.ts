@@ -3,6 +3,7 @@ import { getAuthenticatedOctokit, getGitHubInstallationToken } from '../auth/git
 import logger from '../utils/logger.js';
 import { ensureRepoCloned } from '../git/repoManager.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
+import { createPlanIssue } from '../config/planIssueManager.js';
 
 export interface IssueLink {
   number: number;
@@ -30,9 +31,13 @@ interface TaskDraft {
 }
 
 interface PlanTask {
+  id?: string;
   title: string;
   body: string;
   implementation: string;
+  notes?: string;
+  issue_number?: number;
+  issue_url?: string;
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -170,11 +175,34 @@ export async function executeDraft(draftId: string, userId: string, correlationI
       title: response.data.title
     });
 
+    // Update the task with issue information
+    planJson[i].issue_number = response.data.number;
+    planJson[i].issue_url = response.data.html_url;
+
     correlatedLogger.info({
       draftId,
       issueNumber: response.data.number,
       issueUrl: response.data.html_url
     }, 'Issue created');
+
+    // Create plan_issue record to track this issue
+    try {
+      await createPlanIssue({
+        draft_id: draftId,
+        repository: draft.repository,
+        issue_number: response.data.number
+      });
+      correlatedLogger.info({
+        draftId,
+        issueNumber: response.data.number
+      }, 'Plan issue record created');
+    } catch (planIssueError) {
+      correlatedLogger.warn({
+        err: (planIssueError as Error).message,
+        draftId,
+        issueNumber: response.data.number
+      }, 'Failed to create plan issue record, continuing');
+    }
 
     // Post implementation as a separate comment if it exists
     if (task.implementation) {
@@ -198,14 +226,15 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     }
   }
 
-  const existingConfig = typeof draft.context_config === 'string' 
-    ? JSON.parse(draft.context_config) 
+  const existingConfig = typeof draft.context_config === 'string'
+    ? JSON.parse(draft.context_config)
     : (draft.context_config || {});
 
   await db('task_drafts')
     .where({ draft_id: draftId })
     .update({
       status: 'executed',
+      plan_json: JSON.stringify(planJson),
       context_config: JSON.stringify({
         ...existingConfig,
         executionResults: results,

@@ -58,9 +58,38 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const limit = Math.min(Number(req.query.limit) || 10, 100);
       const drafts = await db!('task_drafts')
         .where({ user_id: req.user!.id })
-        .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at')
+        .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt')
         .orderBy('updated_at', 'desc')
         .limit(limit);
+
+      // Get issue summaries for each draft
+      const draftIds = drafts.map((d: { draft_id: string }) => d.draft_id);
+      if (draftIds.length > 0) {
+        const issueSummaries = await db!('plan_issues')
+          .whereIn('draft_id', draftIds)
+          .select('draft_id', 'status')
+          .then((issues: Array<{ draft_id: string; status: string }>) => {
+            const summaryMap: Record<string, { total: number; pending: number; processing: number; merged: number; closed: number }> = {};
+            for (const issue of issues) {
+              if (!summaryMap[issue.draft_id]) {
+                summaryMap[issue.draft_id] = { total: 0, pending: 0, processing: 0, merged: 0, closed: 0 };
+              }
+              summaryMap[issue.draft_id].total++;
+              if (issue.status === 'pending') summaryMap[issue.draft_id].pending++;
+              else if (issue.status === 'processing' || issue.status === 'under_review' || issue.status === 'in_refinement' || issue.status === 'refinement_processing') summaryMap[issue.draft_id].processing++;
+              else if (issue.status === 'merged') summaryMap[issue.draft_id].merged++;
+              else if (issue.status === 'closed') summaryMap[issue.draft_id].closed++;
+            }
+            return summaryMap;
+          });
+
+        // Attach issue summaries to drafts
+        for (const draft of drafts) {
+          const typedDraft = draft as { draft_id: string; issue_summary?: { total: number; pending: number; processing: number; merged: number; closed: number } };
+          typedDraft.issue_summary = issueSummaries[typedDraft.draft_id] || null;
+        }
+      }
+
       res.json(drafts);
     } catch (error) {
       console.error('List drafts error:', error);

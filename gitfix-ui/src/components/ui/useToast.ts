@@ -2,7 +2,7 @@ import { createContext, useContext } from 'react';
 
 export interface Toast {
   id: string;
-  type: 'success' | 'error' | 'info' | 'undo';
+  type: 'success' | 'error' | 'info' | 'warning' | 'undo';
   message: string;
   duration?: number;
   onUndo?: () => void;
