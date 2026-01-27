@@ -43,6 +43,22 @@ export interface ContextStats {
 
 export type Granularity = 'single' | 'balanced' | 'granular';
 
+/**
+ * Metadata about granularity enforcement actions applied during plan generation
+ */
+export interface GranularityEnforcementMetadata {
+  /** Whether enforcement was applied (tasks were merged) */
+  enforced: boolean;
+  /** The granularity setting that was used */
+  granularity: Granularity;
+  /** Original task count before enforcement */
+  originalTaskCount: number;
+  /** Final task count after enforcement */
+  finalTaskCount: number;
+  /** Human-readable message about the enforcement action */
+  message?: string;
+}
+
 export interface SmartFileSelection {
   path: string;
   reason: string;
@@ -170,9 +186,24 @@ export interface ChatMessage {
   timestamp: string;
 }
 
+/**
+ * Context configuration stored with the draft, including granularity enforcement info
+ */
+export interface DraftContextConfig {
+  baseBranch?: string;
+  granularity?: Granularity;
+  contextLevel?: number;
+  compress?: boolean;
+  manualFiles?: string[];
+  autoFiles?: string[];
+  /** Granularity enforcement metadata (populated after plan generation) */
+  granularityEnforcement?: GranularityEnforcementMetadata;
+}
+
 export interface DraftWithPlan extends PlannerDraft {
   plan_json: PlanTask[];
   chat_history?: ChatMessage[];
+  context_config?: DraftContextConfig;
   // These fields are dynamically added by the backend
   task_title?: string;
   title?: string;
