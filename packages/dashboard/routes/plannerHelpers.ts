@@ -5,16 +5,20 @@ import {
   ensureRepoCloned,
   generateCorrelationId,
   generateContextPreview,
+  generatePlan,
   BranchNotFoundError,
-  AttachmentService,
-  getPlanIssuesByDraft,
-  getPlanIssue,
-  updatePlanIssue,
-  batchUpdatePlanIssueConfig,
-  loadPrimaryProcessingLabels,
-  getAuthenticatedOctokit
+  AttachmentService
 } from '@gitfix/core';
-import type { Granularity, MulterFile, PlanIssueStatus } from '@gitfix/core';
+import { Knex as KnexType } from 'knex';
+import type { Granularity, MulterFile } from '@gitfix/core';
+
+// Re-export plan issue handlers from separate module
+export {
+  createGetIssuesHandler,
+  createImplementIssueHandler,
+  createUpdateIssueHandler,
+  createImplementAllIssuesHandler
+} from './planIssueHandlers.js';
 
 export interface DbCheckResult {
   valid: false;
@@ -36,6 +40,16 @@ export function checkDbAndAuth(
     return { valid: false, error: 'User not authenticated', status: 401 };
   }
   return { valid: true };
+}
+
+export type HandlerFunction = (req: Request, res: Response) => Promise<void>;
+
+export function withAuthCheck(db: Knex, handler: HandlerFunction): HandlerFunction {
+  return async (req: Request, res: Response): Promise<void> => {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+    return handler(req, res);
+  };
 }
 
 export function checkAuth(userId: string | undefined): DbCheck {
@@ -110,6 +124,14 @@ export async function setupRepoContext(
 
 export const VALID_GRANULARITIES = ['single', 'balanced', 'granular'] as const;
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9._/-]+$/;
+
+export interface GenerateRequestBody {
+  draftId?: string;
+  baseBranch?: string;
+  granularity?: string;
+  contextLevel?: number;
+  compress?: boolean;
+}
 
 export function validatePreviewInput(body: Record<string, unknown>): { valid: boolean; error?: string } {
   const { draftId, prompt, baseBranch, granularity, files } = body;
@@ -335,158 +357,70 @@ export function createDownloadContextHandler(deps: DownloadContextDeps) {
   };
 }
 
-// --- Plan Issue Management Handlers ---
+export async function updateDraftContextConfig(
+  db: KnexType,
+  draftId: string,
+  draft: Record<string, unknown>,
+  body: GenerateRequestBody
+): Promise<void> {
+  const { baseBranch, granularity, contextLevel, compress } = body;
+  const hasUpdates = baseBranch || granularity || contextLevel !== undefined || compress !== undefined;
+  if (!hasUpdates) return;
 
-interface PlanIssueDeps {
-  verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
+  const existingConfig = (draft.context_config as Record<string, unknown>) || {};
+  const updatedConfig = {
+    ...existingConfig,
+    ...(baseBranch && { baseBranch }),
+    ...(granularity && VALID_GRANULARITIES.includes(granularity as typeof VALID_GRANULARITIES[number]) && { granularity }),
+    ...(contextLevel !== undefined && { contextLevel }),
+    ...(compress !== undefined && { compress })
+  };
+  await db('task_drafts').where({ draft_id: draftId }).update({
+    context_config: JSON.stringify(updatedConfig),
+    updated_at: db.fn.now()
+  });
 }
 
-export function createGetIssuesHandler(deps: PlanIssueDeps) {
-  return async function getIssues(req: Request, res: Response): Promise<void> {
-    try {
-      const ownership = await deps.verifyOwnership(req.params.id, req.user!.id);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const issues = await getPlanIssuesByDraft(req.params.id);
-      res.json(issues);
-    } catch (error) {
-      console.error('Get issues error:', error);
-      res.status(500).json({ error: 'Failed to fetch issues' });
-    }
-  };
+export interface BackgroundGenerationOptions {
+  db: KnexType;
+  draftId: string;
+  worktreePath: string;
+  authToken: string;
+  correlationId: string;
 }
 
-export function createImplementIssueHandler(deps: PlanIssueDeps) {
-  return async function implementIssue(req: Request, res: Response): Promise<void> {
-    const draftId = req.params.id;
-    const issueNumber = parseInt(req.params.issueNumber, 10);
-
-    if (isNaN(issueNumber)) { res.status(400).json({ error: 'Invalid issue number' }); return; }
-
-    try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const draft = ownership.draft!;
-      const repository = draft.repository as string;
-      const [owner, repo] = repository.split('/');
-
-      if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
-
-      const planIssue = await getPlanIssue(draftId, issueNumber);
-      if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-
-      const processingLabels = await loadPrimaryProcessingLabels();
-      const implementLabel = processingLabels[0] || 'AI';
-
-      const octokit = await getAuthenticatedOctokit();
-      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-        owner, repo, issue_number: issueNumber, labels: [implementLabel]
-      });
-
-      await updatePlanIssue(draftId, issueNumber, { status: 'processing' });
-      res.json({ success: true, message: `Added '${implementLabel}' label to issue #${issueNumber}` });
-    } catch (error) {
-      console.error('Implement issue error:', error);
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issue' });
-    }
-  };
+export function runBackgroundGeneration(options: BackgroundGenerationOptions): void {
+  const { db, draftId, worktreePath, authToken, correlationId } = options;
+  generatePlan({ draftId, worktreePath, githubToken: authToken, correlationId })
+    .then(() => {
+      console.log(`[generate] Plan generation completed for draft ${draftId}`);
+    })
+    .catch(async (error) => {
+      console.error(`[generate] Plan generation failed for draft ${draftId}:`, error);
+      try {
+        await db('task_drafts').where({ draft_id: draftId }).update({
+          status: 'draft',
+          generation_trace: JSON.stringify({
+            steps: [],
+            error: error instanceof Error ? error.message : 'Plan generation failed'
+          }),
+          updated_at: db.fn.now()
+        });
+      } catch (dbError) {
+        console.error(`[generate] Failed to update draft status after error:`, dbError);
+      }
+    });
 }
 
-export function createUpdateIssueHandler(deps: PlanIssueDeps) {
-  return async function updateIssueHandler(req: Request, res: Response): Promise<void> {
-    const draftId = req.params.id;
-    const issueNumber = parseInt(req.params.issueNumber, 10);
-
-    if (isNaN(issueNumber)) { res.status(400).json({ error: 'Invalid issue number' }); return; }
-
-    try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const { agent_alias, model_name, status } = req.body;
-
-      const validStatuses: PlanIssueStatus[] = ['pending', 'processing', 'under_review', 'in_refinement', 'refinement_processing', 'merged', 'closed'];
-      if (status && !validStatuses.includes(status)) {
-        res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
-        return;
-      }
-
-      const updated = await updatePlanIssue(draftId, issueNumber, {
-        agent_alias: agent_alias !== undefined ? agent_alias : undefined,
-        model_name: model_name !== undefined ? model_name : undefined,
-        status: status !== undefined ? status : undefined
-      });
-
-      if (!updated) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-      res.json(updated);
-    } catch (error) {
-      console.error('Update issue error:', error);
-      res.status(500).json({ error: 'Failed to update issue' });
-    }
-  };
-}
-
-export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
-  return async function implementAllIssues(req: Request, res: Response): Promise<void> {
-    const draftId = req.params.id;
-
-    try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const draft = ownership.draft!;
-      const repository = draft.repository as string;
-      const [owner, repo] = repository.split('/');
-
-      if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
-
-      const { agent_alias, model_name } = req.body;
-
-      if (agent_alias !== undefined || model_name !== undefined) {
-        await batchUpdatePlanIssueConfig(draftId, agent_alias, model_name);
-      }
-
-      const issues = await getPlanIssuesByDraft(draftId);
-      const pendingIssues = issues.filter(issue => issue.status === 'pending');
-
-      if (pendingIssues.length === 0) {
-        res.json({ success: true, message: 'No pending issues to implement', implemented: 0 });
-        return;
-      }
-
-      const processingLabels = await loadPrimaryProcessingLabels();
-      const implementLabel = processingLabels[0] || 'AI';
-
-      const octokit = await getAuthenticatedOctokit();
-      const results: { issueNumber: number; success: boolean; error?: string }[] = [];
-
-      for (const issue of pendingIssues) {
-        try {
-          await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner, repo, issue_number: issue.issue_number, labels: [implementLabel]
-          });
-          await updatePlanIssue(draftId, issue.issue_number, { status: 'processing' });
-          results.push({ issueNumber: issue.issue_number, success: true });
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : 'Unknown error';
-          results.push({ issueNumber: issue.issue_number, success: false, error: errMsg });
-        }
-      }
-
-      const successCount = results.filter(r => r.success).length;
-      const failedCount = results.filter(r => !r.success).length;
-
-      res.json({
-        success: failedCount === 0,
-        message: `Implemented ${successCount} issues${failedCount > 0 ? `, ${failedCount} failed` : ''}`,
-        implemented: successCount,
-        failed: failedCount,
-        results
-      });
-    } catch (error) {
-      console.error('Implement all issues error:', error);
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issues' });
-    }
-  };
+export async function getRefineRepoContext(
+  db: KnexType,
+  draftId: string | undefined,
+  fallbackToken: string
+): Promise<RepoSetupResult> {
+  if (!draftId) {
+    return { worktreePath: process.cwd(), authToken: fallbackToken, repository: 'unknown/unknown' };
+  }
+  const draft = await db('task_drafts').where({ draft_id: draftId }).first();
+  if (!draft) return { worktreePath: process.cwd(), authToken: fallbackToken, repository: 'unknown/unknown' };
+  return setupRepoContext(draft, fallbackToken);
 }
