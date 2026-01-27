@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   ChevronDown,
   ChevronUp,
-  Play,
   RefreshCw,
   Loader2,
   CheckCircle,
@@ -14,8 +13,7 @@ import {
   STATUS_CONFIG,
   getPlanIssues,
   implementIssue,
-  updatePlanIssue,
-  implementAllIssues
+  updatePlanIssue
 } from '../../api/planIssuesApi';
 import { AgentConfig, getAgents } from '../../api/gitfixApi';
 import { PlanTask } from '../../api/plannerApi';
@@ -43,10 +41,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [implementingIssue, setImplementingIssue] = useState<number | null>(null);
-  const [implementingAll, setImplementingAll] = useState(false);
   const [showMerged, setShowMerged] = useState(false);
 
-  // Global agent/model selection for "Implement All"
+  // Global agent/model selection for all pending issues
   const [globalAgent, setGlobalAgent] = useState<string | null>(null);
   const [globalModel, setGlobalModel] = useState<string | null>(null);
 
@@ -171,26 +168,72 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     }
   };
 
-  // Handle implement all issues
-  const handleImplementAll = async () => {
-    if (!globalAgent) {
-      setError('Please select an agent first');
-      return;
-    }
+  // Handle global agent change - applies to all pending issues
+  const handleGlobalAgentChange = async (agentAlias: string | null) => {
+    setGlobalAgent(agentAlias);
 
-    setImplementingAll(true);
+    // Get default model for the agent
+    let modelName: string | null = null;
+    if (agentAlias) {
+      const agent = agents.find(a => a.alias === agentAlias);
+      if (agent?.defaultModel) {
+        modelName = agent.defaultModel;
+      } else if (agent?.supportedModels?.length) {
+        modelName = agent.supportedModels[0];
+      }
+    }
+    setGlobalModel(modelName);
+
+    // Apply to all pending issues
+    const pendingIssues = issues.filter(issue => issue.status === 'pending');
     try {
-      await implementAllIssues(draftId, {
-        agent_alias: globalAgent,
-        model_name: globalModel || undefined
-      });
-      await fetchIssues();
-      onRefresh?.();
+      await Promise.all(
+        pendingIssues.map(issue =>
+          updatePlanIssue(draftId, issue.issue_number, {
+            agent_alias: agentAlias,
+            model_name: modelName
+          })
+        )
+      );
+
+      // Update local state
+      setIssues(prev =>
+        prev.map(issue =>
+          issue.status === 'pending'
+            ? { ...issue, agent_alias: agentAlias, model_name: modelName }
+            : issue
+        )
+      );
     } catch (err) {
-      console.error('Failed to implement all issues:', err);
-      setError('Failed to start batch implementation');
-    } finally {
-      setImplementingAll(false);
+      console.error('Failed to update agent for all issues:', err);
+      setError('Failed to update agent for all issues');
+    }
+  };
+
+  // Handle global model change - applies to all pending issues
+  const handleGlobalModelChange = async (modelName: string | null) => {
+    setGlobalModel(modelName);
+
+    // Apply to all pending issues
+    const pendingIssues = issues.filter(issue => issue.status === 'pending');
+    try {
+      await Promise.all(
+        pendingIssues.map(issue =>
+          updatePlanIssue(draftId, issue.issue_number, { model_name: modelName })
+        )
+      );
+
+      // Update local state
+      setIssues(prev =>
+        prev.map(issue =>
+          issue.status === 'pending'
+            ? { ...issue, model_name: modelName }
+            : issue
+        )
+      );
+    } catch (err) {
+      console.error('Failed to update model for all issues:', err);
+      setError('Failed to update model for all issues');
     }
   };
 
@@ -330,54 +373,21 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         </div>
       )}
 
-      {/* Implement All Section */}
+      {/* Global Agent/Model Selector for All Issues */}
       {pendingCount > 0 && (
-        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
-          <div className="flex items-center gap-3">
-            <span className="text-sm font-medium text-gray-700">
-              Implement all pending issues:
-            </span>
-            <AgentModelSelector
-              agents={agents}
-              selectedAgent={globalAgent}
-              selectedModel={globalModel}
-              onAgentChange={setGlobalAgent}
-              onModelChange={setGlobalModel}
-              disabled={implementingAll}
-              compact
-            />
-          </div>
-
-          <button
-            onClick={handleImplementAll}
-            disabled={implementingAll || !globalAgent}
-            className={`
-              flex items-center gap-1.5
-              px-4 py-2
-              text-sm font-medium
-              rounded-md
-              transition-colors
-              ${implementingAll
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                : globalAgent
-                  ? 'bg-green-600 text-white hover:bg-green-700'
-                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-              }
-            `}
-            title={!globalAgent ? 'Select an agent first' : `Implement all ${pendingCount} pending issues`}
-          >
-            {implementingAll ? (
-              <>
-                <Loader2 size={16} className="animate-spin" />
-                <span>Starting...</span>
-              </>
-            ) : (
-              <>
-                <Play size={16} />
-                <span>Implement All ({pendingCount})</span>
-              </>
-            )}
-          </button>
+        <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+          <span className="text-sm font-medium text-gray-700">
+            Select agent/model for all issues:
+          </span>
+          <AgentModelSelector
+            agents={agents}
+            selectedAgent={globalAgent}
+            selectedModel={globalModel}
+            onAgentChange={handleGlobalAgentChange}
+            onModelChange={handleGlobalModelChange}
+            disabled={false}
+            compact
+          />
         </div>
       )}
 
