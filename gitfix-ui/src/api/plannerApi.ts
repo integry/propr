@@ -173,6 +173,10 @@ export interface ChatMessage {
 export interface DraftWithPlan extends PlannerDraft {
   plan_json: PlanTask[];
   chat_history?: ChatMessage[];
+  // These fields are dynamically added by the backend
+  task_title?: string;
+  title?: string;
+  name?: string;
 }
 
 export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
