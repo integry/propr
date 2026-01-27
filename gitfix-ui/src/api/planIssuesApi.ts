@@ -119,7 +119,7 @@ export const updatePlanIssue = async (
   const response = await fetch(
     `${API_BASE_URL}/api/planner/drafts/${draftId}/issues/${issueNumber}`,
     {
-      method: 'PUT',
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(options),
       credentials: 'include'
