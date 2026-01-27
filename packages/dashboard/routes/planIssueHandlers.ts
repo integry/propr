@@ -5,13 +5,25 @@ import {
   updatePlanIssue,
   batchUpdatePlanIssueConfig,
   loadPrimaryProcessingLabels,
-  getAuthenticatedOctokit
+  getAuthenticatedOctokit,
+  MODEL_INFO_MAP,
+  getDefaultModel
 } from '@gitfix/core';
 import type { PlanIssueStatus } from '@gitfix/core';
 import type { OwnershipResult } from './plannerHelpers.js';
 
 interface PlanIssueDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
+}
+
+/**
+ * Gets the LLM GitHub label for a given model name.
+ * Falls back to the default model's label if model_name is null.
+ */
+function getLlmLabel(modelName: string | null): string | null {
+  const effectiveModel = modelName || getDefaultModel();
+  const modelInfo = MODEL_INFO_MAP[effectiveModel];
+  return modelInfo?.githubLabel || null;
 }
 
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
@@ -52,13 +64,20 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
 
+      // Get LLM label based on the issue's model (or default model)
+      const llmLabel = getLlmLabel(planIssue.model_name);
+      const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
+
       const octokit = await getAuthenticatedOctokit();
       await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-        owner, repo, issue_number: issueNumber, labels: [implementLabel]
+        owner, repo, issue_number: issueNumber, labels: labelsToAdd
       });
 
       await updatePlanIssue(draftId, issueNumber, { status: 'processing' });
-      res.json({ success: true, message: `Added '${implementLabel}' label to issue #${issueNumber}` });
+      const labelMessage = llmLabel
+        ? `Added '${implementLabel}' and '${llmLabel}' labels to issue #${issueNumber}`
+        : `Added '${implementLabel}' label to issue #${issueNumber}`;
+      res.json({ success: true, message: labelMessage });
     } catch (error) {
       console.error('Implement issue error:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issue' });
@@ -136,8 +155,12 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
 
       for (const issue of pendingIssues) {
         try {
+          // Get LLM label based on the issue's model (or default model)
+          const llmLabel = getLlmLabel(issue.model_name);
+          const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
+
           await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner, repo, issue_number: issue.issue_number, labels: [implementLabel]
+            owner, repo, issue_number: issue.issue_number, labels: labelsToAdd
           });
           await updatePlanIssue(draftId, issue.issue_number, { status: 'processing' });
           results.push({ issueNumber: issue.issue_number, success: true });
