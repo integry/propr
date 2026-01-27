@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { getDrafts, deleteDraft, DraftListItem } from '../api/gitfixApi';
+import { getDrafts, deleteDraft, DraftListItem, IssueSummary } from '../api/gitfixApi';
+import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2 } from 'lucide-react';
 
 const formatRelativeTime = (dateString: string): string => {
   const date = new Date(dateString);
@@ -59,10 +60,81 @@ const PlansPage: React.FC = () => {
       case 'review':
         return 'bg-blue-100 text-blue-800';
       case 'generating':
+      case 'refining':
         return 'bg-yellow-100 text-yellow-800';
       default:
         return 'bg-gray-100 text-gray-800';
     }
+  };
+
+  const getStatusLabel = (status: string) => {
+    switch (status) {
+      case 'executed':
+        return 'Finalized';
+      case 'review':
+        return 'Ready for Review';
+      case 'generating':
+        return 'Generating';
+      case 'refining':
+        return 'Refining';
+      case 'draft':
+        return 'Draft';
+      default:
+        return status.charAt(0).toUpperCase() + status.slice(1);
+    }
+  };
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'executed':
+        return <CheckCircle size={12} className="text-green-600" />;
+      case 'review':
+        return <Settings2 size={12} className="text-blue-600" />;
+      case 'generating':
+      case 'refining':
+        return <Loader2 size={12} className="text-yellow-600 animate-spin" />;
+      default:
+        return <Clock size={12} className="text-gray-500" />;
+    }
+  };
+
+  const renderIssueSummary = (summary: IssueSummary | null | undefined) => {
+    if (!summary || summary.total === 0) {
+      return <span className="text-gray-400 text-sm">No issues</span>;
+    }
+
+    return (
+      <div className="flex items-center gap-2 text-xs">
+        <span className="flex items-center gap-1 text-gray-600">
+          <AlertCircle size={12} />
+          {summary.total}
+        </span>
+        {summary.processing > 0 && (
+          <span className="flex items-center gap-1 text-blue-600" title="Processing">
+            <Play size={12} />
+            {summary.processing}
+          </span>
+        )}
+        {summary.pending > 0 && (
+          <span className="flex items-center gap-1 text-yellow-600" title="Pending">
+            <Clock size={12} />
+            {summary.pending}
+          </span>
+        )}
+        {summary.merged > 0 && (
+          <span className="flex items-center gap-1 text-green-600" title="Merged">
+            <GitPullRequest size={12} />
+            {summary.merged}
+          </span>
+        )}
+        {summary.closed > 0 && (
+          <span className="flex items-center gap-1 text-red-600" title="Closed">
+            <XCircle size={12} />
+            {summary.closed}
+          </span>
+        )}
+      </div>
+    );
   };
 
   if (loading) {
@@ -122,6 +194,9 @@ const PlansPage: React.FC = () => {
                   Status
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Issues
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Last Updated
                 </th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -141,9 +216,13 @@ const PlansPage: React.FC = () => {
                     </Link>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusBadge(draft.status)}`}>
-                      {draft.status.toUpperCase()}
+                    <span className={`px-2 inline-flex items-center gap-1 text-xs leading-5 font-semibold rounded-full ${getStatusBadge(draft.status)}`}>
+                      {getStatusIcon(draft.status)}
+                      {getStatusLabel(draft.status)}
                     </span>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    {renderIssueSummary(draft.issue_summary)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     {formatRelativeTime(draft.updated_at)}
@@ -153,7 +232,7 @@ const PlansPage: React.FC = () => {
                       to={`/tasks/plan/${draft.draft_id}`}
                       className="text-indigo-600 hover:text-indigo-900 mr-4"
                     >
-                      Resume
+                      {draft.status === 'executed' ? 'Manage' : 'Resume'}
                     </Link>
                     <button
                       onClick={(e) => handleDelete(draft.draft_id, e)}

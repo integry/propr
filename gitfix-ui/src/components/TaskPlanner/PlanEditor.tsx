@@ -113,7 +113,14 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
     setIsFinalizing(true);
     setFinalizeError(null);
     try {
-      await finalizePlan(draft.draft_id);
+      const result = await finalizePlan(draft.draft_id);
+      if (result.alreadyExecuted) {
+        addToast({
+          type: 'warning',
+          message: 'This plan has already been finalized. No new issues were created.',
+          duration: 5000
+        });
+      }
       onFinalize?.();
     } catch (err) {
       setFinalizeError((err as Error).message || 'Failed to create issues');

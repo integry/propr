@@ -213,7 +213,13 @@ export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instr
   return response.json();
 };
 
-export const finalizePlan = async (draftId: string): Promise<{ issuesCreated: number }> => {
+export interface FinalizeResponse {
+  success: boolean;
+  issuesCreated: number;
+  alreadyExecuted?: boolean;
+}
+
+export const finalizePlan = async (draftId: string): Promise<FinalizeResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/finalize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -224,6 +230,14 @@ export const finalizePlan = async (draftId: string): Promise<{ issuesCreated: nu
   return response.json();
 };
 
+export interface IssueSummary {
+  total: number;
+  pending: number;
+  processing: number;
+  merged: number;
+  closed: number;
+}
+
 export interface DraftListItem {
   draft_id: string;
   repository: string;
@@ -232,6 +246,7 @@ export interface DraftListItem {
   status: 'draft' | 'review' | 'executed' | 'generating' | 'refining' | 'approved';
   updated_at: string;
   created_at: string;
+  issue_summary?: IssueSummary | null;
 }
 
 export const getDrafts = async (): Promise<DraftListItem[]> => {

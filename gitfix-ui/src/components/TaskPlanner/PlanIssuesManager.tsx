@@ -1,22 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import {
-  ChevronDown,
-  ChevronUp,
-  Play,
-  RefreshCw,
-  Loader2,
-  CheckCircle,
-  AlertCircle
-} from 'lucide-react';
-import {
-  PlanIssue,
-  STATUS_CONFIG,
-  getPlanIssues,
-  implementIssue,
-  updatePlanIssue,
-  implementAllIssues
-} from '../../api/planIssuesApi';
+import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
+import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue } from '../../api/planIssuesApi';
 import { AgentConfig, getAgents } from '../../api/gitfixApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
@@ -25,16 +10,17 @@ import AgentModelSelector from './AgentModelSelector';
 interface PlanIssuesManagerProps {
   draftId: string;
   tasks: PlanTask[];
+  repository?: string;
   onRefresh?: () => void;
   onViewPlanClick?: () => void;
 }
 
-// Polling interval for active issues (5 seconds)
-const POLL_INTERVAL = 5000;
+const POLL_INTERVAL = 5000; // Polling interval for active issues
 
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
   tasks,
+  repository,
   onRefresh,
   onViewPlanClick
 }) => {
@@ -43,57 +29,32 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [implementingIssue, setImplementingIssue] = useState<number | null>(null);
-  const [implementingAll, setImplementingAll] = useState(false);
   const [showMerged, setShowMerged] = useState(false);
 
-  // Global agent/model selection for "Implement All"
   const [globalAgent, setGlobalAgent] = useState<string | null>(null);
   const [globalModel, setGlobalModel] = useState<string | null>(null);
-
-  // Ref for polling interval
   const pollIntervalRef = useRef<number | null>(null);
 
-  // Create a map of issue_number to task title
   const issueTitles = React.useMemo(() => {
     const map: Record<number, string> = {};
-    tasks.forEach(task => {
-      if (task.issue_number) {
-        map[task.issue_number] = task.title;
-      }
-    });
+    tasks.forEach(task => { if (task.issue_number) map[task.issue_number] = task.title; });
     return map;
   }, [tasks]);
 
-  // Categorize issues
   const { activeIssues, mergedIssues, pendingCount, hasActiveIssues } = React.useMemo(() => {
-    const active: PlanIssue[] = [];
-    const merged: PlanIssue[] = [];
-    let pending = 0;
-    let hasActive = false;
-
+    const active: PlanIssue[] = [], merged: PlanIssue[] = [];
+    let pending = 0, hasActive = false;
     issues.forEach(issue => {
-      if (issue.status === 'merged') {
-        merged.push(issue);
-      } else {
+      if (issue.status === 'merged') { merged.push(issue); }
+      else {
         active.push(issue);
-        if (issue.status === 'pending') {
-          pending++;
-        }
-        if (STATUS_CONFIG[issue.status]?.isActive) {
-          hasActive = true;
-        }
+        if (issue.status === 'pending') pending++;
+        if (STATUS_CONFIG[issue.status]?.isActive) hasActive = true;
       }
     });
-
-    return {
-      activeIssues: active,
-      mergedIssues: merged,
-      pendingCount: pending,
-      hasActiveIssues: hasActive
-    };
+    return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive };
   }, [issues]);
 
-  // Fetch issues
   const fetchIssues = useCallback(async () => {
     try {
       const fetchedIssues = await getPlanIssues(draftId);
@@ -105,7 +66,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     }
   }, [draftId]);
 
-  // Fetch agents
   const fetchAgents = useCallback(async () => {
     try {
       const { agents: fetchedAgents } = await getAgents();
@@ -126,7 +86,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     }
   }, [globalAgent]);
 
-  // Initial load
   useEffect(() => {
     const load = async () => {
       setLoading(true);
@@ -136,27 +95,16 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     load();
   }, [fetchIssues, fetchAgents]);
 
-  // Polling for active issues
   useEffect(() => {
     if (hasActiveIssues) {
-      // Start polling
       pollIntervalRef.current = window.setInterval(fetchIssues, POLL_INTERVAL);
-    } else {
-      // Stop polling
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-      }
+    } else if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
     }
-
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-      }
-    };
+    return () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); };
   }, [hasActiveIssues, fetchIssues]);
 
-  // Handle implement single issue
   const handleImplementIssue = async (issueNumber: number) => {
     setImplementingIssue(issueNumber);
     try {
@@ -171,33 +119,60 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     }
   };
 
-  // Handle implement all issues
-  const handleImplementAll = async () => {
-    if (!globalAgent) {
-      setError('Please select an agent first');
-      return;
-    }
+  const [applyingGlobal, setApplyingGlobal] = useState(false);
 
-    setImplementingAll(true);
-    try {
-      await implementAllIssues(draftId, {
-        agent_alias: globalAgent,
-        model_name: globalModel || undefined
-      });
-      await fetchIssues();
-      onRefresh?.();
-    } catch (err) {
-      console.error('Failed to implement all issues:', err);
-      setError('Failed to start batch implementation');
-    } finally {
-      setImplementingAll(false);
+  const handleGlobalAgentChange = (agentAlias: string | null) => {
+    setGlobalAgent(agentAlias);
+
+    // Get default model for the agent
+    if (agentAlias) {
+      const agent = agents.find(a => a.alias === agentAlias);
+      if (agent?.defaultModel) {
+        setGlobalModel(agent.defaultModel);
+      } else if (agent?.supportedModels?.length) {
+        setGlobalModel(agent.supportedModels[0]);
+      }
+    } else {
+      setGlobalModel(null);
     }
   };
 
-  // Handle agent change for single issue
+  const handleGlobalModelChange = (modelName: string | null) => setGlobalModel(modelName);
+
+  const handleApplyToAll = async () => {
+    if (!globalAgent) return;
+
+    setApplyingGlobal(true);
+    const pendingIssues = issues.filter(issue => issue.status === 'pending');
+
+    try {
+      await Promise.all(
+        pendingIssues.map(issue =>
+          updatePlanIssue(draftId, issue.issue_number, {
+            agent_alias: globalAgent,
+            model_name: globalModel
+          })
+        )
+      );
+
+      // Update local state
+      setIssues(prev =>
+        prev.map(issue =>
+          issue.status === 'pending'
+            ? { ...issue, agent_alias: globalAgent, model_name: globalModel }
+            : issue
+        )
+      );
+    } catch (err) {
+      console.error('Failed to apply agent/model to all issues:', err);
+      setError('Failed to apply agent/model to all issues');
+    } finally {
+      setApplyingGlobal(false);
+    }
+  };
+
   const handleAgentChange = async (issueNumber: number, agentAlias: string | null) => {
     try {
-      // Get default model for the agent
       let modelName: string | null = null;
       if (agentAlias) {
         const agent = agents.find(a => a.alias === agentAlias);
@@ -208,45 +183,28 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         }
       }
 
-      await updatePlanIssue(draftId, issueNumber, {
-        agent_alias: agentAlias,
-        model_name: modelName
-      });
-
-      // Update local state
-      setIssues(prev =>
-        prev.map(issue =>
-          issue.issue_number === issueNumber
-            ? { ...issue, agent_alias: agentAlias, model_name: modelName }
-            : issue
-        )
-      );
+      await updatePlanIssue(draftId, issueNumber, { agent_alias: agentAlias, model_name: modelName });
+      setIssues(prev => prev.map(issue =>
+        issue.issue_number === issueNumber ? { ...issue, agent_alias: agentAlias, model_name: modelName } : issue
+      ));
     } catch (err) {
       console.error('Failed to update agent:', err);
       setError('Failed to update agent');
     }
   };
 
-  // Handle model change for single issue
   const handleModelChange = async (issueNumber: number, modelName: string | null) => {
     try {
       await updatePlanIssue(draftId, issueNumber, { model_name: modelName });
-
-      // Update local state
-      setIssues(prev =>
-        prev.map(issue =>
-          issue.issue_number === issueNumber
-            ? { ...issue, model_name: modelName }
-            : issue
-        )
-      );
+      setIssues(prev => prev.map(issue =>
+        issue.issue_number === issueNumber ? { ...issue, model_name: modelName } : issue
+      ));
     } catch (err) {
       console.error('Failed to update model:', err);
       setError('Failed to update model');
     }
   };
 
-  // Manual refresh
   const handleRefresh = async () => {
     await fetchIssues();
     onRefresh?.();
@@ -281,7 +239,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   return (
     <div className="space-y-4">
-      {/* Header with Actions */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
@@ -291,10 +248,20 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             {issues.length} total
             {pendingCount > 0 && ` (${pendingCount} pending)`}
           </span>
+          {repository && (
+            <a
+              href={`https://github.com/${repository}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
+            >
+              <Github size={12} />
+              {repository}
+            </a>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Refresh Button */}
           <button
             onClick={handleRefresh}
             className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
@@ -302,8 +269,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           >
             <RefreshCw size={16} />
           </button>
-
-          {/* Polling Indicator */}
           {hasActiveIssues && (
             <span className="flex items-center gap-1 text-xs text-blue-600">
               <span className="relative flex h-2 w-2">
@@ -315,8 +280,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           )}
         </div>
       </div>
-
-      {/* Error Message */}
       {error && (
         <div className="flex items-center gap-2 p-3 bg-red-50 text-red-700 text-sm rounded-lg border border-red-200">
           <AlertCircle size={16} />
@@ -329,59 +292,39 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           </button>
         </div>
       )}
-
-      {/* Implement All Section */}
       {pendingCount > 0 && (
-        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
-          <div className="flex items-center gap-3">
-            <span className="text-sm font-medium text-gray-700">
-              Implement all pending issues:
-            </span>
-            <AgentModelSelector
-              agents={agents}
-              selectedAgent={globalAgent}
-              selectedModel={globalModel}
-              onAgentChange={setGlobalAgent}
-              onModelChange={setGlobalModel}
-              disabled={implementingAll}
-              compact
-            />
-          </div>
-
+        <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+          <span className="text-sm font-medium text-gray-700">
+            Set agent/model for all issues:
+          </span>
+          <AgentModelSelector
+            agents={agents}
+            selectedAgent={globalAgent}
+            selectedModel={globalModel}
+            onAgentChange={handleGlobalAgentChange}
+            onModelChange={handleGlobalModelChange}
+            disabled={applyingGlobal}
+            compact
+          />
           <button
-            onClick={handleImplementAll}
-            disabled={implementingAll || !globalAgent}
-            className={`
-              flex items-center gap-1.5
-              px-4 py-2
-              text-sm font-medium
-              rounded-md
-              transition-colors
-              ${implementingAll
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                : globalAgent
-                  ? 'bg-green-600 text-white hover:bg-green-700'
-                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-              }
-            `}
-            title={!globalAgent ? 'Select an agent first' : `Implement all ${pendingCount} pending issues`}
+            onClick={handleApplyToAll}
+            disabled={!globalAgent || applyingGlobal}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {implementingAll ? (
+            {applyingGlobal ? (
               <>
-                <Loader2 size={16} className="animate-spin" />
-                <span>Starting...</span>
+                <Loader2 size={14} className="animate-spin" />
+                Applying...
               </>
             ) : (
               <>
-                <Play size={16} />
-                <span>Implement All ({pendingCount})</span>
+                <CheckCircle size={14} />
+                Apply to All
               </>
             )}
           </button>
         </div>
       )}
-
-      {/* Active Issues List */}
       <div className="space-y-2">
         {activeIssues.map(issue => (
           <PlanIssueRow
@@ -396,8 +339,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           />
         ))}
       </div>
-
-      {/* Merged Issues Section (Collapsible) */}
       {mergedIssues.length > 0 && (
         <div className="border-t border-gray-200 pt-4 mt-4">
           <button
