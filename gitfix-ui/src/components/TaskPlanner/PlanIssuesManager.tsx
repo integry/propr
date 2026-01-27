@@ -6,7 +6,8 @@ import {
   RefreshCw,
   Loader2,
   CheckCircle,
-  AlertCircle
+  AlertCircle,
+  Github
 } from 'lucide-react';
 import {
   PlanIssue,
@@ -23,6 +24,7 @@ import AgentModelSelector from './AgentModelSelector';
 interface PlanIssuesManagerProps {
   draftId: string;
   tasks: PlanTask[];
+  repository?: string;
   onRefresh?: () => void;
   onViewPlanClick?: () => void;
 }
@@ -33,6 +35,7 @@ const POLL_INTERVAL = 5000;
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
   tasks,
+  repository,
   onRefresh,
   onViewPlanClick
 }) => {
@@ -323,6 +326,17 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             {issues.length} total
             {pendingCount > 0 && ` (${pendingCount} pending)`}
           </span>
+          {repository && (
+            <a
+              href={`https://github.com/${repository}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
+            >
+              <Github size={12} />
+              {repository}
+            </a>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
