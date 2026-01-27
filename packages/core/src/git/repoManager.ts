@@ -181,12 +181,10 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
 
         logger.info({ localRepoPath, worktreePath, branchName, baseBranch: resolvedBaseBranch, issueId }, 'Creating Git worktree...');
 
-        try {
-            await git.raw(['worktree', 'prune']);
-            logger.debug('Pruned stale worktree references');
-        } catch (pruneError) {
-            logger.debug({ error: (pruneError as Error).message }, 'Failed to prune worktrees, continuing');
-        }
+        // NOTE: Removed `git worktree prune` here - it was causing race conditions
+        // when multiple tasks run concurrently on the same repo. The prune could
+        // delete worktree metadata for actively running tasks. Prune is still
+        // called during cleanup in worktreeOperations.ts after task completion.
 
         await cleanupExistingBranch(git, branchName);
         await git.fetch('origin', resolvedBaseBranch);
