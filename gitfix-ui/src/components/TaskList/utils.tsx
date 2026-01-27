@@ -1,5 +1,38 @@
 import type { Task, TaskTypeInfo } from './types';
 
+/**
+ * Extracts a clean title for document/browser tab display.
+ * Transforms titles like "Followup: [870 by Claude Opus] Update checkout..."
+ * to "870: Update checkout..."
+ *
+ * @param title - The full task title
+ * @param issueNumber - Optional issue number to use if extraction fails
+ * @returns Clean title in format "issueId: title" or the original title if no pattern matches
+ */
+export const getCleanDocumentTitle = (title: string | undefined, issueNumber?: number): string => {
+  if (!title) return issueNumber ? `Task #${issueNumber}` : 'Task';
+
+  // Pattern: "Followup: [870 by Claude Opus] Title here" or "New Issue: [870 by Claude Opus] Title here"
+  // Extract issue number and clean title
+  const bracketPattern = /^(?:Followup:|New Issue:)?\s*\[(\d+)\s+by\s+[^\]]+\]\s*(.+)$/i;
+  const match = title.match(bracketPattern);
+
+  if (match) {
+    const [, extractedIssueId, cleanTitle] = match;
+    return `${extractedIssueId}: ${cleanTitle.trim()}`;
+  }
+
+  // If no bracket pattern but we have "Followup:" or "New Issue:" prefix, strip it
+  const prefixPattern = /^(?:Followup:|New Issue:)\s*(.+)$/i;
+  const prefixMatch = title.match(prefixPattern);
+  if (prefixMatch && issueNumber) {
+    return `${issueNumber}: ${prefixMatch[1].trim()}`;
+  }
+
+  // Return original title if no patterns match
+  return title;
+};
+
 export const getTaskTypeInfo = (task: Task): TaskTypeInfo => {
   const title = task.title || '';
 

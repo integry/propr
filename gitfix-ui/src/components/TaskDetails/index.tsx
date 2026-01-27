@@ -15,6 +15,7 @@ import ProgressBar from './ProgressBar';
 import { useTaskData, usePromptData, useLogFilesData } from './hooks';
 import { useThinkingLog } from './useThinkingLog';
 import { getHistoryDerivedData } from './useHistoryData';
+import { getCleanDocumentTitle } from '../TaskList/utils';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
@@ -23,9 +24,9 @@ const TaskDetails: React.FC = () => {
   const logFilesData = useLogFilesData();
   const thinkingLog = useThinkingLog(taskData.liveDetails, taskData.history);
 
-  // Set document title with task info - prefer task title when available
+  // Set document title with task info - use clean title format (e.g., "870: Title here")
   const documentTitle = taskData.taskInfo?.title
-    ? taskData.taskInfo.title
+    ? getCleanDocumentTitle(taskData.taskInfo.title, taskData.taskInfo.issueNumber)
     : taskId ? `Task #${taskId}` : undefined;
   useDocumentTitle(documentTitle);
 
