@@ -7,7 +7,9 @@ import {
   loadPrimaryProcessingLabels,
   getAuthenticatedOctokit,
   MODEL_INFO_MAP,
-  getDefaultModel
+  getDefaultModel,
+  safeUpdateLabels,
+  logger
 } from '@gitfix/core';
 import type { PlanIssueStatus } from '@gitfix/core';
 import type { OwnershipResult } from './plannerHelpers.js';
@@ -93,7 +95,7 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
     if (isNaN(issueNumber)) { res.status(400).json({ error: 'Invalid issue number' }); return; }
 
     try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id);
+      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const { agent_alias, model_name, status } = req.body;
@@ -102,6 +104,37 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       if (status && !validStatuses.includes(status)) {
         res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
         return;
+      }
+
+      // Get current plan issue to compare model changes
+      const currentIssue = await getPlanIssue(draftId, issueNumber);
+      if (!currentIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
+
+      // Update GitHub labels when model_name is provided
+      // Always ensure the correct label is set, even if model_name hasn't changed (sync behavior)
+      if (model_name !== undefined) {
+        const draft = ownership.draft!;
+        const repository = draft.repository as string;
+        const [owner, repo] = repository.split('/');
+
+        if (owner && repo) {
+          const oldLabel = getLlmLabel(currentIssue.model_name);
+          const newLabel = getLlmLabel(model_name);
+          const octokit = await getAuthenticatedOctokit();
+          const labelLogger = logger.withCorrelation(`update-issue-${draftId}-${issueNumber}`);
+
+          // Only remove old label if it's different from new label
+          const labelsToRemove = (oldLabel && oldLabel !== newLabel) ? [oldLabel] : [];
+          const labelsToAdd = newLabel ? [newLabel] : [];
+
+          if (labelsToRemove.length > 0 || labelsToAdd.length > 0) {
+            await safeUpdateLabels(
+              { octokit, owner, repo, issueNumber, logger: labelLogger },
+              labelsToRemove,
+              labelsToAdd
+            );
+          }
+        }
       }
 
       const updated = await updatePlanIssue(draftId, issueNumber, {
