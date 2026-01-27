@@ -168,30 +168,44 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     }
   };
 
-  // Handle global agent change - applies to all pending issues
-  const handleGlobalAgentChange = async (agentAlias: string | null) => {
+  // State for tracking if we're applying global settings
+  const [applyingGlobal, setApplyingGlobal] = useState(false);
+
+  // Handle global agent change - just update local state, don't apply yet
+  const handleGlobalAgentChange = (agentAlias: string | null) => {
     setGlobalAgent(agentAlias);
 
     // Get default model for the agent
-    let modelName: string | null = null;
     if (agentAlias) {
       const agent = agents.find(a => a.alias === agentAlias);
       if (agent?.defaultModel) {
-        modelName = agent.defaultModel;
+        setGlobalModel(agent.defaultModel);
       } else if (agent?.supportedModels?.length) {
-        modelName = agent.supportedModels[0];
+        setGlobalModel(agent.supportedModels[0]);
       }
+    } else {
+      setGlobalModel(null);
     }
-    setGlobalModel(modelName);
+  };
 
-    // Apply to all pending issues
+  // Handle global model change - just update local state, don't apply yet
+  const handleGlobalModelChange = (modelName: string | null) => {
+    setGlobalModel(modelName);
+  };
+
+  // Apply global agent/model to all pending issues
+  const handleApplyToAll = async () => {
+    if (!globalAgent) return;
+
+    setApplyingGlobal(true);
     const pendingIssues = issues.filter(issue => issue.status === 'pending');
+
     try {
       await Promise.all(
         pendingIssues.map(issue =>
           updatePlanIssue(draftId, issue.issue_number, {
-            agent_alias: agentAlias,
-            model_name: modelName
+            agent_alias: globalAgent,
+            model_name: globalModel
           })
         )
       );
@@ -200,40 +214,15 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
       setIssues(prev =>
         prev.map(issue =>
           issue.status === 'pending'
-            ? { ...issue, agent_alias: agentAlias, model_name: modelName }
+            ? { ...issue, agent_alias: globalAgent, model_name: globalModel }
             : issue
         )
       );
     } catch (err) {
-      console.error('Failed to update agent for all issues:', err);
-      setError('Failed to update agent for all issues');
-    }
-  };
-
-  // Handle global model change - applies to all pending issues
-  const handleGlobalModelChange = async (modelName: string | null) => {
-    setGlobalModel(modelName);
-
-    // Apply to all pending issues
-    const pendingIssues = issues.filter(issue => issue.status === 'pending');
-    try {
-      await Promise.all(
-        pendingIssues.map(issue =>
-          updatePlanIssue(draftId, issue.issue_number, { model_name: modelName })
-        )
-      );
-
-      // Update local state
-      setIssues(prev =>
-        prev.map(issue =>
-          issue.status === 'pending'
-            ? { ...issue, model_name: modelName }
-            : issue
-        )
-      );
-    } catch (err) {
-      console.error('Failed to update model for all issues:', err);
-      setError('Failed to update model for all issues');
+      console.error('Failed to apply agent/model to all issues:', err);
+      setError('Failed to apply agent/model to all issues');
+    } finally {
+      setApplyingGlobal(false);
     }
   };
 
@@ -377,7 +366,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
       {pendingCount > 0 && (
         <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
           <span className="text-sm font-medium text-gray-700">
-            Select agent/model for all issues:
+            Set agent/model for all issues:
           </span>
           <AgentModelSelector
             agents={agents}
@@ -385,9 +374,26 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             selectedModel={globalModel}
             onAgentChange={handleGlobalAgentChange}
             onModelChange={handleGlobalModelChange}
-            disabled={false}
+            disabled={applyingGlobal}
             compact
           />
+          <button
+            onClick={handleApplyToAll}
+            disabled={!globalAgent || applyingGlobal}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {applyingGlobal ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                Applying...
+              </>
+            ) : (
+              <>
+                <CheckCircle size={14} />
+                Apply to All
+              </>
+            )}
+          </button>
         </div>
       )}
 
