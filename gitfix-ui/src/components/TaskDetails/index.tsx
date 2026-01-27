@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import DeepDiveAnalysis from '../DeepDiveAnalysis';
 import { renderMarkdown } from './renderMarkdown';
 import TaskStatusTable from './TaskStatusTable';
@@ -14,6 +15,7 @@ import ProgressBar from './ProgressBar';
 import { useTaskData, usePromptData, useLogFilesData } from './hooks';
 import { useThinkingLog } from './useThinkingLog';
 import { getHistoryDerivedData } from './useHistoryData';
+import { getCleanDocumentTitle } from '../TaskList/utils';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
@@ -21,6 +23,12 @@ const TaskDetails: React.FC = () => {
   const promptData = usePromptData();
   const logFilesData = useLogFilesData();
   const thinkingLog = useThinkingLog(taskData.liveDetails, taskData.history);
+
+  // Set document title with task info - use clean title format (e.g., "870: Title here")
+  const documentTitle = taskData.taskInfo?.title
+    ? getCleanDocumentTitle(taskData.taskInfo.title, taskData.taskInfo.issueNumber)
+    : taskId ? `Task #${taskId}` : undefined;
+  useDocumentTitle(documentTitle);
 
   // State for bi-directional highlighting between TodoList and ThinkingLog
   const [highlightedTodoId, setHighlightedTodoId] = useState<string | null>(null);

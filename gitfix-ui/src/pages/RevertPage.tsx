@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AlertTriangle, RotateCcw, CheckCircle, Loader2, GitCommit, ArrowDown, Trash2, GitBranch } from 'lucide-react';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { revertCommit, getRevertPreview, type RevertPreviewResponse, type CommitInfo } from '../api/gitfixApi';
 
 type RevertState = 'loading' | 'idle' | 'processing' | 'success' | 'error';
@@ -257,6 +258,7 @@ const WarningBox: React.FC = () => (
 );
 
 const RevertPage: React.FC = () => {
+  useDocumentTitle('Revert Commit');
   const [searchParams] = useSearchParams();
   const [state, setState] = useState<RevertState>('loading');
   const [errorMessage, setErrorMessage] = useState<string>('');

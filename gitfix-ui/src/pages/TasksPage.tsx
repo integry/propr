@@ -1,10 +1,14 @@
-import React from 'react'; 
+import React from 'react';
 import { useParams } from 'react-router-dom';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import TaskList from '../components/TaskList';
 import TaskDetails from '../components/TaskDetails';
 
 const TasksPage: React.FC = () => {
   const { taskId } = useParams();
+
+  // Only set title when viewing task list (TaskDetails sets its own title)
+  useDocumentTitle(taskId ? undefined : 'Tasks');
 
   return (
     <div>

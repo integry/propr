@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import TaskStatsChart from './TaskStatsChart';
 import RepositoryBreakdown from './RepositoryBreakdown';
 import TopModels from './TopModels';
@@ -17,6 +18,7 @@ interface QueueStats {
 }
 
 const Dashboard: React.FC = () => {
+  useDocumentTitle('Dashboard');
   const navigate = useNavigate();
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<string>('');

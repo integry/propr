@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Book, ChevronLeft, Search, Loader2 } from 'lucide-react';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import SummaryBrowser from '../components/SummaryBrowser';
 import { getAvailableGithubRepos } from '../api/gitfixApi';
 
@@ -14,6 +15,10 @@ const SummaryBrowserPage: React.FC = () => {
   const [repos, setRepos] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Set document title with repository name or default
+  const documentTitle = owner && repo ? `${owner}/${repo}` : 'File Summaries';
+  useDocumentTitle(documentTitle);
 
   useEffect(() => {
     async function fetchRepos() {

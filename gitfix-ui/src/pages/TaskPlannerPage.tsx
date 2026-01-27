@@ -1,6 +1,7 @@
 import React from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDraft } from '../hooks/useDraft';
 import SetupWizard from '../components/TaskPlanner/SetupWizard';
 import PlanEditor from '../components/TaskPlanner/PlanEditor';
@@ -11,6 +12,12 @@ import { DraftWithPlan } from '../api/gitfixApi';
 const TaskPlannerPage: React.FC = () => {
   const { draftId } = useParams<{ draftId: string }>();
   const { draft, loading, error, refetch } = useDraft(draftId || '');
+
+  // Set document title with plan/draft name or repository
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const draftAny = draft as any;
+  const documentTitle = draftAny?.name || draftAny?.task_title || draft?.repository || 'Plan';
+  useDocumentTitle(documentTitle);
 
   if (loading) {
     return (
