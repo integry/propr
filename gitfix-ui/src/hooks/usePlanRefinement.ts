@@ -9,6 +9,52 @@ export interface DeletedTask {
   index: number;
 }
 
+/**
+ * Ensures all tasks have unique, non-empty IDs.
+ * - Generates IDs for tasks missing them
+ * - Handles duplicate IDs by appending unique suffixes
+ * - Ensures no empty or undefined IDs exist
+ */
+const ensureTaskIds = (tasks: PlanTask[]): PlanTask[] => {
+  const seenIds = new Set<string>();
+  let idCounter = 0;
+
+  return tasks.map((task, index) => {
+    // Generate a unique base ID using timestamp + index + counter
+    const generateUniqueId = (): string => {
+      const baseId = `task-${Date.now()}-${index}-${idCounter++}`;
+      return baseId;
+    };
+
+    // Check if task has a valid ID
+    const hasValidId = task.id && typeof task.id === 'string' && task.id.trim() !== '';
+
+    let finalId: string;
+
+    if (!hasValidId) {
+      // Task is missing an ID, generate one
+      finalId = generateUniqueId();
+      console.warn(`[usePlanRefinement] Task at index ${index} missing ID, generated: ${finalId}`);
+    } else if (seenIds.has(task.id)) {
+      // Duplicate ID detected, generate a unique suffix
+      const originalId = task.id;
+      finalId = `${originalId}-dup-${idCounter++}`;
+      console.warn(`[usePlanRefinement] Duplicate ID "${originalId}" at index ${index}, renamed to: ${finalId}`);
+    } else {
+      // ID is valid and unique
+      finalId = task.id;
+    }
+
+    seenIds.add(finalId);
+
+    // Return task with ensured ID (only create new object if ID changed)
+    if (finalId !== task.id) {
+      return { ...task, id: finalId };
+    }
+    return task;
+  });
+};
+
 interface UsePlanRefinementResult {
   plan: PlanTask[];
   updatePlan: (newPlan: PlanTask[], origin?: 'user' | 'ai') => void;
@@ -27,7 +73,8 @@ interface UsePlanRefinementResult {
 }
 
 export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): UsePlanRefinementResult => {
-  const [history, setHistory] = useState<PlanTask[][]>([initialPlan]);
+  // Ensure initial plan has valid unique IDs
+  const [history, setHistory] = useState<PlanTask[][]>(() => [ensureTaskIds(initialPlan)]);
   const [pointer, setPointer] = useState(0);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
@@ -56,26 +103,29 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
   }, []);
 
   const updatePlan = useCallback((newPlan: PlanTask[], origin: 'user' | 'ai' = 'user') => {
+    // Ensure all tasks have valid unique IDs before updating
+    const normalizedPlan = ensureTaskIds(newPlan);
+
     if (origin === 'ai') {
       const changed: string[] = [];
-      newPlan.forEach((task, i) => {
+      normalizedPlan.forEach((task, i) => {
         const oldTask = currentPlan[i];
         if (!oldTask || JSON.stringify(task) !== JSON.stringify(oldTask)) {
           changed.push(task.id);
         }
       });
-      if (newPlan.length !== currentPlan.length) {
-        newPlan.slice(currentPlan.length).forEach(t => changed.push(t.id));
+      if (normalizedPlan.length !== currentPlan.length) {
+        normalizedPlan.slice(currentPlan.length).forEach(t => changed.push(t.id));
       }
       setHighlightedIds(changed);
       setTimeout(() => setHighlightedIds([]), 2000);
     }
 
     const newHistory = history.slice(0, pointer + 1);
-    newHistory.push(newPlan);
+    newHistory.push(normalizedPlan);
     setHistory(newHistory);
     setPointer(newHistory.length - 1);
-    saveToServer(newPlan);
+    saveToServer(normalizedPlan);
   }, [history, pointer, currentPlan, saveToServer]);
 
   const updateTask = useCallback((taskId: string, updates: Partial<PlanTask>) => {
@@ -99,11 +149,33 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
   }, [currentPlan, updatePlan]);
 
   const deleteTask = useCallback((taskId: string): DeletedTask | null => {
+    // Validate that taskId is provided and non-empty
+    if (!taskId || typeof taskId !== 'string' || taskId.trim() === '') {
+      console.warn('[usePlanRefinement] deleteTask called with invalid taskId:', taskId);
+      return null;
+    }
+
     const index = currentPlan.findIndex(t => t.id === taskId);
-    if (index === -1) return null;
+    if (index === -1) {
+      console.warn(`[usePlanRefinement] deleteTask: task with id "${taskId}" not found in plan`);
+      return null;
+    }
 
     const task = currentPlan[index];
+
+    // Defensive check: ensure we're only removing one task
     const newPlan = currentPlan.filter(t => t.id !== taskId);
+
+    // Safety check: verify we only removed one task
+    if (newPlan.length !== currentPlan.length - 1) {
+      console.error(`[usePlanRefinement] deleteTask: unexpected number of tasks removed. Expected to remove 1, but removed ${currentPlan.length - newPlan.length}`);
+      // If something went wrong, don't modify the state
+      if (newPlan.length < currentPlan.length - 1) {
+        console.error('[usePlanRefinement] deleteTask: More than one task would be removed. Aborting delete operation.');
+        return null;
+      }
+    }
+
     updatePlan(newPlan, 'user');
 
     return { task, index };

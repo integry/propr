@@ -178,7 +178,12 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                     isHighlighted={isHighlighted}
                     stepNumber={index + 1}
                     onChange={(updatedTask) => onTaskChange(task.id, updatedTask)}
-                    onDelete={() => onDeleteTask(task.id)}
+                    onDelete={() => {
+                      // Explicitly capture and log the task.id for debugging
+                      const taskIdToDelete = task.id;
+                      console.log(`[TaskCardList] Deleting task: id="${taskIdToDelete}", title="${task.title}"`);
+                      onDeleteTask(taskIdToDelete);
+                    }}
                     onAddBelow={() => onAddTask(task.id)}
                   />
                   {/* Hover zone after each task */}
