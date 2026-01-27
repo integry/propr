@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/gitfixApi';
 import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
 import { BaseBranchSelector } from '../components/BaseBranchSelector';
@@ -12,6 +13,7 @@ const generateId = (): string => crypto.randomUUID();
 type Repo = MonitoredRepo;
 
 const RepositoriesPage: React.FC = () => {
+  useDocumentTitle('Repositories');
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import {
   getAgents,
   saveAgents,
@@ -8,6 +9,7 @@ import AgentsListSection from './SettingsPage/AgentsListSection';
 import ChatPanel from '../components/AgentChat/ChatPanel';
 
 const AiAgentsPage: React.FC = () => {
+  useDocumentTitle('AI Agents');
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [agentsLoading, setAgentsLoading] = useState<boolean>(true);
   const [agentsSaving, setAgentsSaving] = useState<boolean>(false);

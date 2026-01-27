@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import {
   getSettings,
   updateSettings,
@@ -24,6 +25,8 @@ import TagListSection from './TagListSection';
 import KnowledgeBaseSection from './KnowledgeBaseSection';
 
 const SettingsPage: React.FC = () => {
+  useDocumentTitle('Settings');
+
   // Global state
   const [loading, setLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');

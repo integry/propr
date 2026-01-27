@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, DraftListItem, IssueSummary } from '../api/gitfixApi';
 import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2 } from 'lucide-react';
 
@@ -20,6 +21,7 @@ const formatRelativeTime = (dateString: string): string => {
 };
 
 const PlansPage: React.FC = () => {
+  useDocumentTitle('Plans');
   const [drafts, setDrafts] = useState<DraftListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

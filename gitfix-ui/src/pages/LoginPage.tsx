@@ -1,5 +1,6 @@
 import React from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 // For OAuth, use main API to avoid registering multiple callback URLs
@@ -7,6 +8,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 const OAUTH_API_URL = import.meta.env.VITE_OAUTH_API_URL || API_BASE_URL;
 
 const LoginPage: React.FC = () => {
+  useDocumentTitle('Login');
   const [searchParams] = useSearchParams();
   const loggedOut = searchParams.get('logged_out') === 'true';
 
