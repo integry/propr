@@ -23,9 +23,9 @@ const TaskDetails: React.FC = () => {
   const logFilesData = useLogFilesData();
   const thinkingLog = useThinkingLog(taskData.liveDetails, taskData.history);
 
-  // Set document title with task info
+  // Set document title with task info - prefer task title when available
   const documentTitle = taskData.taskInfo?.title
-    ? `Task #${taskId} - ${taskData.taskInfo.title}`
+    ? taskData.taskInfo.title
     : taskId ? `Task #${taskId}` : undefined;
   useDocumentTitle(documentTitle);
 
