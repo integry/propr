@@ -26,12 +26,6 @@ const getUsageColor = (percentage: number): string => {
   return 'bg-green-500';
 };
 
-const getCostBadgeStyle = (cost: number): string => {
-  if (cost > 0.5) return 'bg-red-100 text-red-700 border-red-200';
-  if (cost > 0.1) return 'bg-yellow-100 text-yellow-700 border-yellow-200';
-  return 'bg-green-100 text-green-700 border-green-200';
-};
-
 export const CostPreview: React.FC<CostPreviewProps> = ({ preview }) => {
   if (preview.isLoading) {
     return (
@@ -66,7 +60,6 @@ export const CostPreview: React.FC<CostPreviewProps> = ({ preview }) => {
   const { stats, smartSelection, warnings } = preview.data;
   const usagePercentage = getContextUsagePercentage(stats.totalTokens);
   const usageColor = getUsageColor(usagePercentage);
-  const costStyle = getCostBadgeStyle(stats.costEstimate);
 
   return (
     <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm space-y-4">
@@ -106,17 +99,6 @@ export const CostPreview: React.FC<CostPreviewProps> = ({ preview }) => {
             style={{ width: `${usagePercentage}%` }}
           />
         </div>
-      </div>
-
-      {/* Cost badge summary */}
-      <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border ${costStyle}`}>
-        <span className="text-xs font-medium">
-          {stats.costEstimate > 0.5
-            ? 'High cost - consider reducing context level'
-            : stats.costEstimate > 0.1
-              ? 'Moderate cost'
-              : 'Low cost'}
-        </span>
       </div>
 
       {/* Warnings - styled as neutral info tips */}

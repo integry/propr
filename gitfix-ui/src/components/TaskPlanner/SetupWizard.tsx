@@ -20,8 +20,10 @@ import { GenerateButton } from './GenerateButton';
 import { FileSelectionSkeleton } from './SkeletonLoader';
 import { ContextHeader } from './ContextHeader';
 import { HeroPromptArea } from './HeroPromptArea';
+import { TaskGranularitySection } from './TaskGranularitySection';
 import { ContextSettingsSection } from './ContextSettingsSection';
-import { CostPreviewSection } from './CostPreviewSection';
+import { CostPreview } from './CostPreview';
+import { ExportContextButton } from './ExportContextButton';
 
 interface SetupWizardProps {
   draft: PlannerDraft;
@@ -340,23 +342,22 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
             onRemoveFile={handleRemoveFile}
           />
 
+          {/* Task Granularity Section - now separate from Context Settings */}
+          <TaskGranularitySection
+            granularity={config.granularity}
+            onGranularityChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
+          />
+
           {/* Context Settings Section */}
           <ContextSettingsSection
-            granularity={config.granularity}
             contextLevel={config.contextLevel}
             compress={config.compress}
-            onGranularityChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
             onContextLevelChange={(contextLevel) => setConfig(prev => ({ ...prev, contextLevel }))}
             onCompressChange={(compress) => setConfig(prev => ({ ...prev, compress }))}
           />
 
-          {/* Cost Preview Section */}
-          <CostPreviewSection
-            preview={preview}
-            isExporting={isExporting}
-            canExport={!!(config.prompt.trim() && config.baseBranch)}
-            onExport={handleExportContext}
-          />
+          {/* Cost Preview */}
+          <CostPreview preview={preview} />
 
           {/* Smart File Selection - with skeleton during loading */}
           {preview.isLoading && !preview.data ? (
@@ -376,15 +377,20 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           {isGenerating && <GenerationProgress trace={generationTrace} />}
         </div>
 
-        {/* Sticky Footer with Generate Button */}
-        <div className="sticky bottom-0 bg-white border-t border-gray-200 p-4 rounded-b-xl">
+        {/* Sticky Footer with Generate and Export Buttons */}
+        <div className="sticky bottom-0 bg-white border-t border-gray-200 p-4 rounded-b-xl space-y-3">
           <GenerateButton
             isGenerating={isGenerating}
             isPreviewLoading={preview.isLoading}
             isRepoLoading={repoInfo.isLoading}
             disabled={isGenerateDisabled}
             onClick={handleGenerate}
-            costEstimate={preview.data?.stats.costEstimate}
+          />
+          <ExportContextButton
+            isExporting={isExporting}
+            isPreviewLoading={preview.isLoading}
+            canExport={!!(config.prompt.trim() && config.baseBranch)}
+            onExport={handleExportContext}
           />
         </div>
       </div>

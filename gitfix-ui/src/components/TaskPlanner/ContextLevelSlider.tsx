@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, Minimize2 } from 'lucide-react';
+import { Layers, Minimize2, Zap, Clock } from 'lucide-react';
 
 interface ContextLevelSliderProps {
   value: number;
@@ -12,15 +12,15 @@ const MIN_LEVEL = 10;
 const MAX_LEVEL = 100;
 const STEP = 10;
 
-// Semantic labels for context levels
-const getSemanticLabel = (value: number): { label: string; description: string } => {
+// Semantic labels for context levels with speed indication
+const getSemanticLabel = (value: number): { label: string; description: string; speed: string } => {
   if (value <= 30) {
-    return { label: 'Standard', description: 'Essential files only' };
+    return { label: 'Standard', description: 'Essential files only', speed: 'Faster' };
   }
   if (value <= 60) {
-    return { label: 'Comprehensive', description: 'Related modules included' };
+    return { label: 'Comprehensive', description: 'Related modules included', speed: 'Moderate' };
   }
-  return { label: 'Deep Dive', description: 'Full context analysis' };
+  return { label: 'Deep Dive', description: 'Full context analysis', speed: 'Slower' };
 };
 
 const getLabelColor = (value: number): string => {
@@ -29,9 +29,16 @@ const getLabelColor = (value: number): string => {
   return 'text-purple-600 bg-purple-50 border-purple-200';
 };
 
+const getSpeedColor = (value: number): string => {
+  if (value <= 30) return 'text-green-600';
+  if (value <= 60) return 'text-yellow-600';
+  return 'text-orange-600';
+};
+
 export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange, compress = false, onCompressChange }) => {
   const semantic = getSemanticLabel(value);
   const labelColor = getLabelColor(value);
+  const speedColor = getSpeedColor(value);
 
   return (
     <div className="space-y-4">
@@ -42,8 +49,18 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
             Context Level
           </label>
         </div>
-        <div className={`px-3 py-1 text-sm font-medium rounded-full border ${labelColor}`}>
-          {semantic.label}
+        <div className="flex items-center gap-2">
+          <div className={`flex items-center gap-1 text-xs ${speedColor}`}>
+            {value <= 30 ? (
+              <Zap className="w-3.5 h-3.5" />
+            ) : (
+              <Clock className="w-3.5 h-3.5" />
+            )}
+            <span>{semantic.speed}</span>
+          </div>
+          <div className={`px-3 py-1 text-sm font-medium rounded-full border ${labelColor}`}>
+            {semantic.label}
+          </div>
         </div>
       </div>
 

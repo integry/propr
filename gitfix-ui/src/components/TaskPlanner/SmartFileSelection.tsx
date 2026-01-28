@@ -47,18 +47,9 @@ const getRelevanceColor = (percentage: number): string => {
   return 'bg-gray-400';
 };
 
-// Format file size (placeholder - actual size would come from API)
-const formatTotalSize = (fileCount: number): string => {
-  // Estimate ~10KB per file average
-  const estimatedKB = fileCount * 10;
-  if (estimatedKB >= 1024) {
-    return `~${(estimatedKB / 1024).toFixed(1)} MB`;
-  }
-  return `~${estimatedKB} KB`;
-};
-
 export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSelection }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+  // Auto-expand when files are selected
+  const [isExpanded, setIsExpanded] = useState(true);
 
   const { autoCount, manualCount, maxScore } = useMemo(() => {
     const auto = smartSelection.filter(f => f.source === 'auto').length;
@@ -82,9 +73,6 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
           <FolderOpen className="w-5 h-5 text-indigo-500" />
           <span className="font-medium text-gray-900">
             {smartSelection.length} files selected
-          </span>
-          <span className="text-sm text-gray-500">
-            ({formatTotalSize(smartSelection.length)})
           </span>
           {autoCount > 0 && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">
