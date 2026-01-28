@@ -287,11 +287,7 @@ ${commitResult ? `Closes #${issueRef.number}` : `Addresses #${issueRef.number}`}
 
 ---
 
-${completionComment}
-
----
-
-*This PR was created automatically by [ProPR](https://propr.dev) after processing issue #${issueRef.number}.*`;
+${completionComment}`;
 
     try {
         const prResponse = await octokit.request<{ data: { number: number; html_url: string; title: string } }>('POST /repos/{owner}/{repo}/pulls', {
