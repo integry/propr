@@ -15,6 +15,82 @@ import {
   Base64Image, MinimalLogger
 } from './planningHelpers.js';
 import type { Attachment } from './attachmentService.js';
+import { loadSettings } from '../config/configManager.js';
+
+/** Default model for context analysis (fast, cost-effective) */
+const DEFAULT_CONTEXT_MODEL = 'haiku';
+
+/** Default model for plan generation (high capability) */
+const DEFAULT_GENERATION_MODEL = 'opus';
+
+/**
+ * Parse attachments from draft (stored as JSON string in SQLite)
+ */
+function parseAttachments(draftAttachments: string | Attachment[] | undefined): Attachment[] {
+  if (typeof draftAttachments === 'string') {
+    try {
+      return JSON.parse(draftAttachments);
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(draftAttachments)) {
+    return draftAttachments;
+  }
+  return [];
+}
+
+/**
+ * Load image attachments and convert them to base64
+ */
+async function loadImageAttachmentsAsBase64(
+  attachments: Attachment[],
+  correlatedLogger: MinimalLogger
+): Promise<Base64Image[]> {
+  const base64Images: Base64Image[] = [];
+  const imageAttachments = attachments.filter(a => a.type === 'image');
+
+  for (const img of imageAttachments) {
+    try {
+      const absolutePath = path.isAbsolute(img.storedPath)
+        ? img.storedPath
+        : path.join(process.cwd(), img.storedPath);
+      const imageData = await fs.readFile(absolutePath);
+      base64Images.push({
+        name: img.originalName,
+        mimeType: img.mimeType,
+        base64Data: imageData.toString('base64'),
+      });
+      correlatedLogger.info({ imageName: img.originalName, size: imageData.length }, 'Loaded image attachment as base64');
+    } catch (error) {
+      correlatedLogger.warn({ imagePath: img.storedPath, error: (error as Error).message }, 'Failed to load image attachment');
+    }
+  }
+
+  return base64Images;
+}
+
+/**
+ * Parse context_config from draft (JSON string from SQLite or object)
+ */
+function parseDraftContextConfig(
+  contextConfig: string | TaskDraftConfig | null | undefined,
+  draftId: string,
+  correlatedLogger: MinimalLogger
+): TaskDraftConfig | null {
+  if (typeof contextConfig === 'string') {
+    try {
+      return JSON.parse(contextConfig);
+    } catch {
+      correlatedLogger.warn({ draftId }, 'Failed to parse context_config, using defaults');
+      return null;
+    }
+  }
+  if (contextConfig) {
+    return contextConfig as TaskDraftConfig;
+  }
+  return null;
+}
 
 /**
  * Metadata about granularity enforcement actions
@@ -201,6 +277,8 @@ interface CallLLMOptions {
   fileSummaries?: string;
   /** Optional base64-encoded images to include in the prompt */
   images?: Base64Image[];
+  /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
+  model?: string;
 }
 
 interface CallLLMForPlanResult {
@@ -209,13 +287,13 @@ interface CallLLMForPlanResult {
 }
 
 async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
-  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries, images } = opts;
+  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries, images, model = DEFAULT_GENERATION_MODEL } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
 
   // Build prompt with images embedded as base64
   const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity, fileSummaries, images });
-  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0 }, 'Calling LLM for plan generation');
+  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0, model }, 'Calling LLM for plan generation');
 
   // Validate token count before sending to LLM
   const modelLimit = getDefaultModelLimit();
@@ -231,7 +309,7 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResul
   correlatedLogger.info({ tokenCount: validation.tokenCount, source: validation.source }, 'Token validation passed');
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
-  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: 'opus', correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef });
+  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model, correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef });
 
   let plan: Plan;
   try {
@@ -258,58 +336,29 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!db) throw new PlanningFailedError('Database not available');
-  correlatedLogger.info({ draftId }, 'Starting plan generation');
+
+  // Load planner models from settings
+  const settings = await loadSettings();
+  const contextModel = settings.planner_context_model || DEFAULT_CONTEXT_MODEL;
+  const generationModel = settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
+  correlatedLogger.info({ draftId, contextModel, generationModel }, 'Starting plan generation');
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
   if (!draft.initial_prompt) throw new PlanningFailedError('Draft has no initial prompt');
 
-  // Parse attachments from draft (stored as JSON string in SQLite)
-  let attachments: Attachment[] = [];
-  if (typeof draft.attachments === 'string') {
-    try { attachments = JSON.parse(draft.attachments); } catch { attachments = []; }
-  } else if (Array.isArray(draft.attachments)) {
-    attachments = draft.attachments;
-  }
-
-  // Load and convert image attachments to base64
-  const base64Images: Base64Image[] = [];
-  const imageAttachments = attachments.filter(a => a.type === 'image');
-  for (const img of imageAttachments) {
-    try {
-      const absolutePath = path.isAbsolute(img.storedPath)
-        ? img.storedPath
-        : path.join(process.cwd(), img.storedPath);
-      const imageData = await fs.readFile(absolutePath);
-      base64Images.push({
-        name: img.originalName,
-        mimeType: img.mimeType,
-        base64Data: imageData.toString('base64'),
-      });
-      correlatedLogger.debug({ imageName: img.originalName, size: imageData.length }, 'Loaded image attachment as base64');
-    } catch (error) {
-      correlatedLogger.warn({ imagePath: img.storedPath, error: (error as Error).message }, 'Failed to load image attachment');
-    }
-  }
-
+  // Parse and load attachments
+  const attachments = parseAttachments(draft.attachments);
+  const base64Images = await loadImageAttachmentsAsBase64(attachments, correlatedLogger);
   correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length }, 'Loaded attachments from draft');
 
-  // Parse context_config from JSON string (SQLite stores it as string)
-  let parsedContextConfig: TaskDraftConfig | null = null;
-  if (typeof draft.context_config === 'string') {
-    try {
-      parsedContextConfig = JSON.parse(draft.context_config);
-    } catch {
-      correlatedLogger.warn({ draftId }, 'Failed to parse context_config, using defaults');
-    }
-  } else if (draft.context_config) {
-    parsedContextConfig = draft.context_config as TaskDraftConfig;
-  }
+  // Parse context_config
+  const parsedContextConfig = parseDraftContextConfig(draft.context_config, draftId, correlatedLogger);
   const config = parseContextConfig(parsedContextConfig);
   correlatedLogger.info({ draftId, granularity: config.granularity }, 'Using granularity setting for plan generation');
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 
-  const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId });
+  const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId, contextModel });
 
   await updateTrace(draftId, 'context', 'pending');
   correlatedLogger.info({ fileCount: relevantFilePaths.length, compress: config.compress }, 'Generating context');
@@ -395,6 +444,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     correlationId,
     fileSummaries: filteredSummaries,
     images: base64Images.length > 0 ? base64Images : undefined,
+    model: generationModel,
   });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
@@ -439,13 +489,17 @@ export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!Array.isArray(currentPlan)) throw new PlanningFailedError('Current plan must be an array');
-  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository }, 'Refining plan');
+
+  // Load planner generation model from settings (refinement uses the generation model)
+  const settings = await loadSettings();
+  const generationModel = settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
+  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, generationModel }, 'Refining plan');
 
   const userPrompt = `${REFINER_SYSTEM_PROMPT}\n\nCurrent Plan:\n${JSON.stringify(currentPlan, null, 2)}\n\nInstruction:\n"${instruction}"\n\nRemember: Return ONLY the updated JSON array. No markdown, no explanations.`;
   const [repoOwner, repoName] = repository.split('/');
   const issueRef = { number: 0, repoOwner: repoOwner || 'unknown', repoName: repoName || 'unknown' };
 
-  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: 'opus', correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef });
+  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: generationModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef });
 
   let refinedPlan: Plan;
   try {

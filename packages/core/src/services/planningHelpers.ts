@@ -240,10 +240,12 @@ export interface FindFilesOptions {
   manualFiles: string[];
   autoFiles: string[];
   correlationId?: string;
+  /** Model to use for context analysis (e.g., 'haiku', 'claude:claude-haiku-4-5-20251001') */
+  contextModel?: string;
 }
 
 export async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]> {
-  const { draftId, worktreePath, draft, manualFiles, autoFiles, correlationId } = opts;
+  const { draftId, worktreePath, draft, manualFiles, autoFiles, correlationId, contextModel } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'relevance', 'pending');
   const hasPrecomputedFiles = manualFiles.length > 0 || autoFiles.length > 0;
@@ -266,7 +268,7 @@ export async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]
     return relevantFilePaths;
   }
 
-  correlatedLogger.info({ repository: draft.repository }, 'Finding relevant files');
+  correlatedLogger.info({ repository: draft.repository, contextModel }, 'Finding relevant files');
 
   // Get agent for semantic scoring
   const registry = getAgentRegistry();
@@ -274,11 +276,13 @@ export async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]
   const agent = registry.getDefaultAgent();
 
   // Let semantic scorer default to HEAD branch
+  // Pass modelId for context analysis if specified
   const relevanceResult = await findRelevantFiles(worktreePath, draft.initial_prompt, {
     correlationId,
     useSummaryScoring: !!agent,
     agent,
-    repoName: draft.repository
+    repoName: draft.repository,
+    modelId: contextModel
   });
   const relevantFilePaths = relevanceResult.files.map(f => f.path);
 
@@ -340,6 +344,8 @@ export interface GenerateContextPreviewOptions {
   files?: string[];
   worktreePath: string;
   correlationId?: string;
+  /** Model to use for context analysis (e.g., 'haiku', 'claude:claude-haiku-4-5-20251001') */
+  contextModel?: string;
 }
 
 export interface Base64Image {
@@ -417,13 +423,13 @@ interface TaskDraft {
 }
 
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
-  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId } = options;
+  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel } = options;
   const previewTokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   const warnings: string[] = [];
 
   if (!db) throw new PlanningFailedError('Database not available');
-  correlatedLogger.info({ draftId, baseBranch, granularity }, 'Starting context preview generation');
+  correlatedLogger.info({ draftId, baseBranch, granularity, contextModel }, 'Starting context preview generation');
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
@@ -455,13 +461,15 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   // Use cleaned prompt (without @references) for relevance search
   // Enable LLM keyword extraction for better alternatives and spelling variants
+  // Pass modelId for context analysis if specified
   const relevanceResult = await findRelevantFiles(worktreePath, fileRefResult.cleanedPrompt || prompt, {
     correlationId,
     useSummaryScoring: !!agent,
     useLLMKeywords: true,
     agent,
     repoName: draft.repository,
-    branch: baseBranch
+    branch: baseBranch,
+    modelId: contextModel
   });
 
   // Combine: user-provided files + @referenced files + auto-detected files

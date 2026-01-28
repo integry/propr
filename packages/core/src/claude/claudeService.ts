@@ -2,6 +2,7 @@ import path from 'path';
 import os from 'os';
 import logger from '../utils/logger.js';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
+import { AgentRegistry } from '../agents/AgentRegistry.js';
 import { generateTaskImportPrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
 import { executeDockerCommand, buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.js';
 import {
@@ -254,7 +255,43 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
     const { prompt, model, correlationId, worktreePath, githubToken, issueRef } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
-    const resolvedModel = resolveModelAlias(model);
+    // Parse model which may be in format "agent_alias:model" or just "model"
+    let agentAlias: string | undefined;
+    let modelOverride: string | undefined;
+    let effectiveModel = model;
+
+    if (model && model.includes(':')) {
+        const parts = model.split(':');
+        agentAlias = parts[0];
+        modelOverride = parts.slice(1).join(':'); // Handle model IDs that might contain colons
+        effectiveModel = modelOverride;
+        correlatedLogger.info({ model, agentAlias, modelOverride }, 'Parsed agent:model format for lightweight analysis');
+    }
+
+    // If an agent alias was specified, use the AgentRegistry to get the appropriate agent
+    if (agentAlias) {
+        try {
+            const registry = AgentRegistry.getInstance();
+            await registry.ensureInitialized();
+
+            const agent = registry.getAgentByAlias(agentAlias);
+            if (agent) {
+                const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
+                correlatedLogger.info({ agentAlias, resolvedModel }, 'Using agent-specific lightweight LLM analysis');
+
+                // Use the agent's analyze method
+                return await agent.analyze(prompt, undefined, resolvedModel);
+            } else {
+                correlatedLogger.warn({ agentAlias }, 'Agent not found, falling back to default execution');
+            }
+        } catch (agentError) {
+            const err = agentError as Error;
+            correlatedLogger.warn({ error: err.message, agentAlias }, 'Failed to use agent, falling back to default execution');
+        }
+    }
+
+    // Fall back to default behavior (uses Claude via executeClaudeCode)
+    const resolvedModel = resolveModelAlias(effectiveModel);
 
     correlatedLogger.info({ model, resolvedModel }, 'Running lightweight LLM analysis via Docker...');
 
