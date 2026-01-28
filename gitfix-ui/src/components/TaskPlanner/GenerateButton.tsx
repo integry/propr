@@ -1,5 +1,5 @@
 import React from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Sparkles } from 'lucide-react';
 
 interface GenerateButtonProps {
   isGenerating: boolean;
@@ -44,17 +44,23 @@ export const GenerateButton: React.FC<GenerateButtonProps> = ({
         </span>
       );
     }
-    return 'Generate Implementation Plan';
+
+    return (
+      <span className="flex items-center justify-center gap-2">
+        <Sparkles className="w-5 h-5" />
+        <span>Generate Plan</span>
+      </span>
+    );
   };
 
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`w-full py-3 rounded-lg font-medium transition-colors ${
+      className={`w-full py-4 rounded-xl font-semibold text-lg transition-all ${
         disabled
           ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-          : 'bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer'
+          : 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white hover:from-indigo-700 hover:to-indigo-800 shadow-lg hover:shadow-xl cursor-pointer'
       }`}
     >
       {buttonContent()}

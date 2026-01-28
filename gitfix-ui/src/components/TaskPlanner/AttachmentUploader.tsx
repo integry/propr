@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { PlannerAttachment, getAttachmentUrl } from '../../api/gitfixApi';
-import { X, FileText, Image, Loader2 } from 'lucide-react';
+import { X, FileText, Loader2, Paperclip } from 'lucide-react';
 import { resizeImage } from './imageUtils';
 
 interface AttachmentPreviewProps {
@@ -12,7 +12,7 @@ interface AttachmentPreviewProps {
 const AttachmentPreview: React.FC<AttachmentPreviewProps> = ({ file, draftId, onRemove }) => {
   const [textPreview, setTextPreview] = useState<string | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
-  const isImage = file.type === 'image' || file.mimeType?.startsWith('image/') || 
+  const isImage = file.type === 'image' || file.mimeType?.startsWith('image/') ||
     /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(file.originalName);
 
   useEffect(() => {
@@ -21,7 +21,7 @@ const AttachmentPreview: React.FC<AttachmentPreviewProps> = ({ file, draftId, on
       fetch(getAttachmentUrl(draftId, file.id), { credentials: 'include' })
         .then(res => res.text())
         .then(text => {
-          const preview = text.length > 150 ? text.slice(0, 150) + '...' : text;
+          const preview = text.length > 100 ? text.slice(0, 100) + '...' : text;
           setTextPreview(preview);
         })
         .catch(() => setTextPreview('Unable to load preview'))
@@ -30,47 +30,30 @@ const AttachmentPreview: React.FC<AttachmentPreviewProps> = ({ file, draftId, on
   }, [file.id, draftId, isImage, textPreview, isLoadingPreview]);
 
   return (
-    <div className="inline-flex flex-col items-start bg-gray-50 border border-gray-200 rounded-lg p-2 m-1 max-w-[200px] relative group">
-      <button
-        onClick={() => onRemove(file.id)}
-        className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-        title="Remove"
-      >
-        <X className="w-3 h-3" />
-      </button>
-      
+    <div className="inline-flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm group relative">
       {isImage ? (
-        <div className="w-full h-24 mb-2 overflow-hidden rounded bg-gray-100 flex items-center justify-center">
+        <div className="w-6 h-6 rounded overflow-hidden flex-shrink-0 bg-gray-200">
           <img
             src={getAttachmentUrl(draftId, file.id)}
             alt={file.originalName}
-            className="max-w-full max-h-full object-contain"
+            className="w-full h-full object-cover"
             crossOrigin="use-credentials"
           />
         </div>
       ) : (
-        <div className="w-full h-24 mb-2 overflow-hidden rounded bg-gray-100 p-2 text-xs font-mono text-gray-600 flex items-start">
-          {isLoadingPreview ? (
-            <div className="flex items-center justify-center w-full h-full">
-              <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
-            </div>
-          ) : (
-            <span className="line-clamp-5 break-all">{textPreview}</span>
-          )}
-        </div>
+        <FileText className="w-4 h-4 text-gray-500 flex-shrink-0" />
       )}
-      
-      <div className="flex items-center gap-1.5 w-full">
-        {isImage ? (
-          <Image className="w-3.5 h-3.5 text-indigo-500 flex-shrink-0" />
-        ) : (
-          <FileText className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
-        )}
-        <span className="text-xs text-gray-700 truncate flex-1" title={file.originalName}>
-          {file.originalName}
-        </span>
-      </div>
-      <span className="text-[10px] text-gray-400 mt-0.5">{file.tokenEstimate} tokens</span>
+      <span className="text-gray-700 max-w-[150px] truncate" title={file.originalName}>
+        {file.originalName}
+      </span>
+      <span className="text-xs text-gray-400">{file.tokenEstimate}t</span>
+      <button
+        onClick={() => onRemove(file.id)}
+        className="ml-1 p-0.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+        title="Remove"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
     </div>
   );
 };
@@ -81,6 +64,7 @@ interface AttachmentUploaderProps {
   isUploading: boolean;
   onUpload: (file: File) => Promise<void>;
   onRemove: (attachmentId: string) => Promise<void>;
+  compact?: boolean;
 }
 
 export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
@@ -88,9 +72,11 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
   draftId,
   isUploading,
   onUpload,
-  onRemove
+  onRemove,
+  compact = false
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -98,7 +84,7 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
 
     const processedFile = await resizeImage(file);
     await onUpload(processedFile);
-    
+
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -106,6 +92,7 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    setIsDragging(false);
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
 
@@ -115,35 +102,98 @@ export const AttachmentUploader: React.FC<AttachmentUploaderProps> = ({
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    setIsDragging(true);
   };
 
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  // Compact inline version for prompt area integration
+  if (compact) {
+    return (
+      <div className="space-y-2">
+        {files.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {files.map(f => (
+              <AttachmentPreview key={f.id} file={f} draftId={draftId} onRemove={onRemove} />
+            ))}
+          </div>
+        )}
+
+        <div
+          className={`flex items-center gap-2 p-2 rounded-lg border-2 border-dashed transition-colors ${
+            isDragging
+              ? 'border-indigo-400 bg-indigo-50'
+              : 'border-gray-200 hover:border-gray-300 bg-gray-50'
+          }`}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+        >
+          <input
+            type="file"
+            onChange={handleFileChange}
+            className="hidden"
+            id="file-upload-compact"
+            ref={fileInputRef}
+            accept="image/*,.log,.txt,.json"
+          />
+          <label
+            htmlFor="file-upload-compact"
+            className={`flex items-center gap-2 cursor-pointer text-sm ${isUploading ? 'opacity-50' : ''}`}
+          >
+            {isUploading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                <span className="text-gray-500">Uploading...</span>
+              </>
+            ) : (
+              <>
+                <Paperclip className="w-4 h-4 text-gray-400" />
+                <span className="text-gray-500">Add files or drop here</span>
+              </>
+            )}
+          </label>
+        </div>
+      </div>
+    );
+  }
+
+  // Full version with larger previews
   return (
-    <div className="mb-8">
-      <label className="block text-sm font-medium text-gray-700 mb-2">Attachments</label>
-      
+    <div className="space-y-3">
+      <label className="block text-sm font-medium text-gray-700">Attachments</label>
+
       {files.length > 0 && (
-        <div className="flex flex-wrap mb-4">
+        <div className="flex flex-wrap gap-2">
           {files.map(f => (
             <AttachmentPreview key={f.id} file={f} draftId={draftId} onRemove={onRemove} />
           ))}
         </div>
       )}
-      
-      <div 
-        className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:bg-gray-50 transition-colors"
+
+      <div
+        className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
+          isDragging
+            ? 'border-indigo-400 bg-indigo-50'
+            : 'border-gray-300 hover:bg-gray-50'
+        }`}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
       >
-        <input 
-          type="file" 
-          onChange={handleFileChange} 
-          className="hidden" 
-          id="file-upload" 
+        <input
+          type="file"
+          onChange={handleFileChange}
+          className="hidden"
+          id="file-upload"
           ref={fileInputRef}
           accept="image/*,.log,.txt,.json"
         />
-        <label 
-          htmlFor="file-upload" 
+        <label
+          htmlFor="file-upload"
           className={`cursor-pointer text-indigo-600 hover:text-indigo-500 text-sm ${isUploading ? 'opacity-50' : ''}`}
         >
           {isUploading ? (

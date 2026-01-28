@@ -5,6 +5,79 @@ interface SkeletonLoaderProps {
   count?: number;
 }
 
+// Basic shimmer skeleton for inline use
+export const Shimmer: React.FC<{ className?: string }> = ({ className = '' }) => {
+  return (
+    <motion.div
+      animate={{ opacity: [0.5, 0.8, 0.5] }}
+      transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+      className={`bg-gray-200 rounded ${className}`}
+    />
+  );
+};
+
+// Cost preview skeleton for analysis loading state
+export const CostPreviewSkeleton: React.FC = () => {
+  return (
+    <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-4">
+          <Shimmer className="h-7 w-36" />
+          <Shimmer className="h-5 w-28" />
+        </div>
+        <Shimmer className="h-7 w-44 rounded-full" />
+      </div>
+      <div className="flex items-center gap-3">
+        <Shimmer className="h-2 flex-1 rounded-full" />
+        <Shimmer className="h-4 w-16" />
+      </div>
+    </div>
+  );
+};
+
+// File selection skeleton for analysis loading state
+export const FileSelectionSkeleton: React.FC = () => {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+      <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+        <Shimmer className="h-5 w-52" />
+        <Shimmer className="h-8 w-24 rounded-lg" />
+      </div>
+      <div className="divide-y divide-gray-100">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <motion.div
+            key={i}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: i * 0.1 }}
+            className="px-4 py-3 flex items-center justify-between"
+          >
+            <div className="flex items-center gap-3">
+              <Shimmer className="h-5 w-5 rounded" />
+              <Shimmer className="h-4" />
+            </div>
+            <Shimmer className="h-2 w-20 rounded-full" />
+          </motion.div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// Analysis loading state component
+export const AnalysisLoadingState: React.FC = () => {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="space-y-4"
+    >
+      <CostPreviewSkeleton />
+      <FileSelectionSkeleton />
+    </motion.div>
+  );
+};
+
 const SkeletonCard: React.FC<{ delay?: number }> = ({ delay = 0 }) => {
   return (
     <motion.div
