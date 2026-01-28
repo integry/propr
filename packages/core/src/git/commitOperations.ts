@@ -37,6 +37,22 @@ async function validateWorktree(worktreePath: string, issueNumber?: number): Pro
     } else if (gitStats.isFile()) {
         const gitFileContent = await fs.readFile(gitPath, 'utf8');
         logger.debug({ worktreePath, gitPath, gitFileContent: gitFileContent.trim(), issueNumber }, 'Validated worktree .git file');
+
+        // Verify the gitdir path actually exists (critical check)
+        const match = gitFileContent.match(/gitdir:\s*(.+)/);
+        if (match) {
+            const gitdirPath = match[1].trim();
+            if (!await fs.pathExists(gitdirPath)) {
+                logger.error({
+                    worktreePath,
+                    gitdirPath,
+                    gitFileContent: gitFileContent.trim(),
+                    issueNumber
+                }, 'Worktree metadata directory was deleted during execution - this may be caused by concurrent git operations or Claude running git commands');
+                throw new Error(`Worktree metadata was deleted: ${gitdirPath} no longer exists. The worktree .git file points to a non-existent directory.`);
+            }
+            logger.debug({ worktreePath, gitdirPath, issueNumber }, 'Worktree gitdir path verified');
+        }
     }
 }
 
