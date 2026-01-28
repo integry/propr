@@ -65,11 +65,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       // Build query with optional repository filter
       let query = db!('task_drafts').where({ user_id: req.user!.id });
-      let countQuery = db!('task_drafts').where({ user_id: req.user!.id });
 
       if (repository && repository !== 'all') {
         query = query.andWhere('repository', repository);
-        countQuery = countQuery.andWhere('repository', repository);
       }
 
       // Apply search filter to name and initial_prompt with partial word matching
@@ -83,18 +81,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
               .orWhere('initial_prompt', 'like', wordPattern);
           }
         });
-        countQuery = countQuery.andWhere(function() {
-          for (const word of searchWords) {
-            const wordPattern = `%${word}%`;
-            this.orWhere('name', 'like', wordPattern)
-              .orWhere('initial_prompt', 'like', wordPattern);
-          }
-        });
       }
-
-      // Get total count for pagination
-      const [{ count: totalCount }] = await countQuery.count('* as count');
-      const total = Number(totalCount);
 
       let drafts = await query
         .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt')
@@ -140,6 +127,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
         // Remove the score property before returning
         drafts = scoredDrafts.map((d: { _searchScore?: number; [key: string]: unknown }) => {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
           const { _searchScore, ...rest } = d;
           return rest;
         });
