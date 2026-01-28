@@ -294,7 +294,19 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length }, 'Loaded attachments from draft');
 
-  const config = parseContextConfig(draft.context_config as TaskDraftConfig | null);
+  // Parse context_config from JSON string (SQLite stores it as string)
+  let parsedContextConfig: TaskDraftConfig | null = null;
+  if (typeof draft.context_config === 'string') {
+    try {
+      parsedContextConfig = JSON.parse(draft.context_config);
+    } catch {
+      correlatedLogger.warn({ draftId }, 'Failed to parse context_config, using defaults');
+    }
+  } else if (draft.context_config) {
+    parsedContextConfig = draft.context_config as TaskDraftConfig;
+  }
+  const config = parseContextConfig(parsedContextConfig);
+  correlatedLogger.info({ draftId, granularity: config.granularity }, 'Using granularity setting for plan generation');
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 
   const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId });
@@ -406,9 +418,9 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   await updateTrace(draftId, 'llm', 'completed');
 
   // Merge enforcement metadata into context_config for UI display
-  const existingConfig = draft.context_config as TaskDraftConfig | null;
+  // Use the already-parsed config (parsedContextConfig) instead of raw string
   const updatedContextConfig = {
-    ...existingConfig,
+    ...parsedContextConfig,
     granularityEnforcement: enforcementMetadata
   };
 
