@@ -41,7 +41,8 @@ export function useSettingsState() {
     worker_concurrency: '',
     analysis_model_fast: '',
     analysis_model_advanced: '',
-    planner_model: ''
+    planner_context_model: '',
+    planner_generation_model: ''
   });
   const [prLabel, setPrLabel] = useState('');
 
@@ -87,7 +88,8 @@ export function useSettingsState() {
           worker_concurrency?: string;
           analysis_model_fast?: string;
           analysis_model_advanced?: string;
-          planner_model?: string;
+          planner_context_model?: string;
+          planner_generation_model?: string;
           github_user_whitelist?: string[];
         };
         const keywordsData = kData as { followup_keywords?: string[] };
@@ -102,7 +104,8 @@ export function useSettingsState() {
           worker_concurrency: settingsData.worker_concurrency || '',
           analysis_model_fast: settingsData.analysis_model_fast || '',
           analysis_model_advanced: settingsData.analysis_model_advanced || '',
-          planner_model: settingsData.planner_model || ''
+          planner_context_model: settingsData.planner_context_model || '',
+          planner_generation_model: settingsData.planner_generation_model || ''
         });
 
         // Parse Whitelist
@@ -178,7 +181,8 @@ export function useSettingsState() {
           github_user_whitelist: whitelistToSave,
           analysis_model_fast: settingsToSave.analysis_model_fast,
           analysis_model_advanced: settingsToSave.analysis_model_advanced,
-          planner_model: settingsToSave.planner_model
+          planner_context_model: settingsToSave.planner_context_model,
+          planner_generation_model: settingsToSave.planner_generation_model
         }),
         updatePrLabel(prLabelToSave.trim()),
         updatePrimaryProcessingLabels(primaryLabelsToSave),

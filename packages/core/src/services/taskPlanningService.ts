@@ -17,8 +17,11 @@ import {
 import type { Attachment } from './attachmentService.js';
 import { loadSettings } from '../config/configManager.js';
 
-/** Default planner model if none configured */
-const DEFAULT_PLANNER_MODEL = 'opus';
+/** Default model for context analysis (fast, cost-effective) */
+const DEFAULT_CONTEXT_MODEL = 'haiku';
+
+/** Default model for plan generation (high capability) */
+const DEFAULT_GENERATION_MODEL = 'opus';
 
 /**
  * Metadata about granularity enforcement actions
@@ -265,10 +268,11 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   if (!db) throw new PlanningFailedError('Database not available');
 
-  // Load planner model from settings
+  // Load planner models from settings
   const settings = await loadSettings();
-  const plannerModel = settings.planner_model || DEFAULT_PLANNER_MODEL;
-  correlatedLogger.info({ draftId, plannerModel }, 'Starting plan generation');
+  const contextModel = settings.planner_context_model || DEFAULT_CONTEXT_MODEL;
+  const generationModel = settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
+  correlatedLogger.info({ draftId, contextModel, generationModel }, 'Starting plan generation');
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
@@ -319,7 +323,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   correlatedLogger.info({ draftId, granularity: config.granularity }, 'Using granularity setting for plan generation');
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 
-  const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId });
+  const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId, contextModel });
 
   await updateTrace(draftId, 'context', 'pending');
   correlatedLogger.info({ fileCount: relevantFilePaths.length, compress: config.compress }, 'Generating context');
@@ -405,7 +409,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     correlationId,
     fileSummaries: filteredSummaries,
     images: base64Images.length > 0 ? base64Images : undefined,
-    model: plannerModel,
+    model: generationModel,
   });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
@@ -451,16 +455,16 @@ export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
 
   if (!Array.isArray(currentPlan)) throw new PlanningFailedError('Current plan must be an array');
 
-  // Load planner model from settings
+  // Load planner generation model from settings (refinement uses the generation model)
   const settings = await loadSettings();
-  const plannerModel = settings.planner_model || DEFAULT_PLANNER_MODEL;
-  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, plannerModel }, 'Refining plan');
+  const generationModel = settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
+  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, generationModel }, 'Refining plan');
 
   const userPrompt = `${REFINER_SYSTEM_PROMPT}\n\nCurrent Plan:\n${JSON.stringify(currentPlan, null, 2)}\n\nInstruction:\n"${instruction}"\n\nRemember: Return ONLY the updated JSON array. No markdown, no explanations.`;
   const [repoOwner, repoName] = repository.split('/');
   const issueRef = { number: 0, repoOwner: repoOwner || 'unknown', repoName: repoName || 'unknown' };
 
-  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: plannerModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef });
+  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: generationModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef });
 
   let refinedPlan: Plan;
   try {
