@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github, AlertTriangle } from 'lucide-react';
+import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
 import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue } from '../../api/planIssuesApi';
 import { AgentConfig, getAgents } from '../../api/gitfixApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
 import AgentModelSelector from './AgentModelSelector';
+import SequentialWarningDialog from './SequentialWarningDialog';
 
 interface PlanIssuesManagerProps {
   draftId: string;
@@ -35,8 +36,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   const [globalModel, setGlobalModel] = useState<string | null>(null);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
   const [pendingImplementIssue, setPendingImplementIssue] = useState<number | null>(null);
-  const pollIntervalRef = useRef<number | null>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
+  const pollIntervalRef = React.useRef<number | null>(null);
 
   const issueTitles = React.useMemo(() => {
     const map: Record<number, string> = {};
@@ -80,16 +80,10 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     try {
       const { agents: fetchedAgents } = await getAgents();
       setAgents(fetchedAgents);
-
-      // Set default global agent/model from first enabled agent
       const enabledAgent = fetchedAgents.find(a => a.enabled);
       if (enabledAgent && !globalAgent) {
         setGlobalAgent(enabledAgent.alias);
-        if (enabledAgent.defaultModel) {
-          setGlobalModel(enabledAgent.defaultModel);
-        } else if (enabledAgent.supportedModels?.length) {
-          setGlobalModel(enabledAgent.supportedModels[0]);
-        }
+        setGlobalModel(enabledAgent.defaultModel ?? enabledAgent.supportedModels?.[0] ?? null);
       }
     } catch (err) {
       console.error('Failed to fetch agents:', err);
@@ -131,20 +125,15 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   const [applyingGlobal, setApplyingGlobal] = useState(false);
 
+  const getDefaultModelForAgent = (agentAlias: string | null): string | null => {
+    if (!agentAlias) return null;
+    const agent = agents.find(a => a.alias === agentAlias);
+    return agent?.defaultModel ?? agent?.supportedModels?.[0] ?? null;
+  };
+
   const handleGlobalAgentChange = (agentAlias: string | null) => {
     setGlobalAgent(agentAlias);
-
-    // Get default model for the agent
-    if (agentAlias) {
-      const agent = agents.find(a => a.alias === agentAlias);
-      if (agent?.defaultModel) {
-        setGlobalModel(agent.defaultModel);
-      } else if (agent?.supportedModels?.length) {
-        setGlobalModel(agent.supportedModels[0]);
-      }
-    } else {
-      setGlobalModel(null);
-    }
+    setGlobalModel(getDefaultModelForAgent(agentAlias));
   };
 
   const handleGlobalModelChange = (modelName: string | null) => setGlobalModel(modelName);
@@ -183,16 +172,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   const handleAgentChange = async (issueNumber: number, agentAlias: string | null) => {
     try {
-      let modelName: string | null = null;
-      if (agentAlias) {
-        const agent = agents.find(a => a.alias === agentAlias);
-        if (agent?.defaultModel) {
-          modelName = agent.defaultModel;
-        } else if (agent?.supportedModels?.length) {
-          modelName = agent.supportedModels[0];
-        }
-      }
-
+      const modelName = getDefaultModelForAgent(agentAlias);
       await updatePlanIssue(draftId, issueNumber, { agent_alias: agentAlias, model_name: modelName });
       setIssues(prev => prev.map(issue =>
         issue.issue_number === issueNumber ? { ...issue, agent_alias: agentAlias, model_name: modelName } : issue
@@ -215,19 +195,14 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     }
   };
 
-  const handleRefresh = async () => {
-    await fetchIssues();
-    onRefresh?.();
-  };
+  const handleRefresh = async () => { await fetchIssues(); onRefresh?.(); };
 
   const handleImplementWithWarning = useCallback((issueNumber: number) => {
-    setPendingImplementIssue(issueNumber);
-    setShowSequenceWarning(true);
+    setPendingImplementIssue(issueNumber); setShowSequenceWarning(true);
   }, []);
 
   const handleCloseWarning = useCallback(() => {
-    setShowSequenceWarning(false);
-    setPendingImplementIssue(null);
+    setShowSequenceWarning(false); setPendingImplementIssue(null);
   }, []);
 
   const handleProceedAnyway = useCallback(async () => {
@@ -236,30 +211,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
       await handleImplementIssue(pendingImplementIssue);
       setPendingImplementIssue(null);
     }
-  }, [pendingImplementIssue]);
-
-  // Keyboard handling for dialog
-  useEffect(() => {
-    if (!showSequenceWarning) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleCloseWarning();
-      }
-    };
-
-    // Prevent body scroll when dialog is open
-    document.body.style.overflow = 'hidden';
-    document.addEventListener('keydown', handleKeyDown);
-
-    // Focus the dialog for accessibility
-    dialogRef.current?.focus();
-
-    return () => {
-      document.body.style.overflow = '';
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [showSequenceWarning, handleCloseWarning]);
+  }, [pendingImplementIssue, handleImplementIssue]);
 
   if (loading) {
     return (
@@ -434,73 +386,11 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         </div>
       )}
 
-      {/* Sequential Implementation Warning Dialog */}
-      <AnimatePresence>
-        {showSequenceWarning && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-            onClick={(e) => {
-              // Close on backdrop click
-              if (e.target === e.currentTarget) {
-                handleCloseWarning();
-              }
-            }}
-          >
-            <motion.div
-              ref={dialogRef}
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              transition={{ duration: 0.15 }}
-              className="bg-white rounded-lg max-w-md w-full border border-gray-300 shadow-lg"
-              tabIndex={-1}
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="warning-dialog-title"
-            >
-              <div className="p-6">
-                <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
-                    <AlertTriangle className="w-5 h-5 text-amber-600" />
-                  </div>
-                  <div className="flex-1">
-                    <h3 id="warning-dialog-title" className="text-lg font-semibold text-gray-900 mb-2">
-                      Previous Tasks Not Merged
-                    </h3>
-                    <p className="text-sm text-gray-600 mb-4">
-                      This task should ideally be implemented after the previous tasks have been merged.
-                      Implementing out of order may lead to conflicts or incomplete implementations.
-                    </p>
-                    <p className="text-sm text-gray-600">
-                      Are you sure you want to proceed?
-                    </p>
-                  </div>
-                </div>
-              </div>
-              <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50 rounded-b-lg">
-                <button
-                  type="button"
-                  onClick={handleCloseWarning}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleProceedAnyway}
-                  className="px-4 py-2 text-sm font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700 transition-colors"
-                >
-                  Proceed Anyway
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <SequentialWarningDialog
+        isOpen={showSequenceWarning}
+        onClose={handleCloseWarning}
+        onProceed={handleProceedAnyway}
+      />
     </div>
   );
 };
