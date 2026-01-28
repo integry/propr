@@ -24,6 +24,75 @@ const DEFAULT_CONTEXT_MODEL = 'haiku';
 const DEFAULT_GENERATION_MODEL = 'opus';
 
 /**
+ * Parse attachments from draft (stored as JSON string in SQLite)
+ */
+function parseAttachments(draftAttachments: string | Attachment[] | undefined): Attachment[] {
+  if (typeof draftAttachments === 'string') {
+    try {
+      return JSON.parse(draftAttachments);
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(draftAttachments)) {
+    return draftAttachments;
+  }
+  return [];
+}
+
+/**
+ * Load image attachments and convert them to base64
+ */
+async function loadImageAttachmentsAsBase64(
+  attachments: Attachment[],
+  correlatedLogger: MinimalLogger
+): Promise<Base64Image[]> {
+  const base64Images: Base64Image[] = [];
+  const imageAttachments = attachments.filter(a => a.type === 'image');
+
+  for (const img of imageAttachments) {
+    try {
+      const absolutePath = path.isAbsolute(img.storedPath)
+        ? img.storedPath
+        : path.join(process.cwd(), img.storedPath);
+      const imageData = await fs.readFile(absolutePath);
+      base64Images.push({
+        name: img.originalName,
+        mimeType: img.mimeType,
+        base64Data: imageData.toString('base64'),
+      });
+      correlatedLogger.info({ imageName: img.originalName, size: imageData.length }, 'Loaded image attachment as base64');
+    } catch (error) {
+      correlatedLogger.warn({ imagePath: img.storedPath, error: (error as Error).message }, 'Failed to load image attachment');
+    }
+  }
+
+  return base64Images;
+}
+
+/**
+ * Parse context_config from draft (JSON string from SQLite or object)
+ */
+function parseDraftContextConfig(
+  contextConfig: string | TaskDraftConfig | null | undefined,
+  draftId: string,
+  correlatedLogger: MinimalLogger
+): TaskDraftConfig | null {
+  if (typeof contextConfig === 'string') {
+    try {
+      return JSON.parse(contextConfig);
+    } catch {
+      correlatedLogger.warn({ draftId }, 'Failed to parse context_config, using defaults');
+      return null;
+    }
+  }
+  if (contextConfig) {
+    return contextConfig as TaskDraftConfig;
+  }
+  return null;
+}
+
+/**
  * Metadata about granularity enforcement actions
  */
 export interface GranularityEnforcementMetadata {
@@ -278,47 +347,13 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
   if (!draft.initial_prompt) throw new PlanningFailedError('Draft has no initial prompt');
 
-  // Parse attachments from draft (stored as JSON string in SQLite)
-  let attachments: Attachment[] = [];
-  if (typeof draft.attachments === 'string') {
-    try { attachments = JSON.parse(draft.attachments); } catch { attachments = []; }
-  } else if (Array.isArray(draft.attachments)) {
-    attachments = draft.attachments;
-  }
-
-  // Load and convert image attachments to base64
-  const base64Images: Base64Image[] = [];
-  const imageAttachments = attachments.filter(a => a.type === 'image');
-  for (const img of imageAttachments) {
-    try {
-      const absolutePath = path.isAbsolute(img.storedPath)
-        ? img.storedPath
-        : path.join(process.cwd(), img.storedPath);
-      const imageData = await fs.readFile(absolutePath);
-      base64Images.push({
-        name: img.originalName,
-        mimeType: img.mimeType,
-        base64Data: imageData.toString('base64'),
-      });
-      correlatedLogger.debug({ imageName: img.originalName, size: imageData.length }, 'Loaded image attachment as base64');
-    } catch (error) {
-      correlatedLogger.warn({ imagePath: img.storedPath, error: (error as Error).message }, 'Failed to load image attachment');
-    }
-  }
-
+  // Parse and load attachments
+  const attachments = parseAttachments(draft.attachments);
+  const base64Images = await loadImageAttachmentsAsBase64(attachments, correlatedLogger);
   correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length }, 'Loaded attachments from draft');
 
-  // Parse context_config from JSON string (SQLite stores it as string)
-  let parsedContextConfig: TaskDraftConfig | null = null;
-  if (typeof draft.context_config === 'string') {
-    try {
-      parsedContextConfig = JSON.parse(draft.context_config);
-    } catch {
-      correlatedLogger.warn({ draftId }, 'Failed to parse context_config, using defaults');
-    }
-  } else if (draft.context_config) {
-    parsedContextConfig = draft.context_config as TaskDraftConfig;
-  }
+  // Parse context_config
+  const parsedContextConfig = parseDraftContextConfig(draft.context_config, draftId, correlatedLogger);
   const config = parseContextConfig(parsedContextConfig);
   correlatedLogger.info({ draftId, granularity: config.granularity }, 'Using granularity setting for plan generation');
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
