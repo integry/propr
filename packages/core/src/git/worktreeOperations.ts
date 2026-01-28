@@ -205,8 +205,8 @@ export async function safePruneWorktrees(localRepoPath: string, minAgeHours: num
 
     try {
         const git = simpleGit(localRepoPath);
-        // Get worktree list for logging purposes
-        await git.raw(['worktree', 'list', '--porcelain']);
+        const worktreeList = await git.raw(['worktree', 'list', '--porcelain']);
+        const lines = worktreeList.split('\n');
 
         const worktreesDir = path.join(localRepoPath, '.git', 'worktrees');
         if (!await fs.pathExists(worktreesDir)) {

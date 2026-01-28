@@ -7,6 +7,7 @@ import { safeUpdateLabels } from '@gitfix/core';
 import { generateCompletionComment } from '@gitfix/core';
 import { executeClaudeCode } from '@gitfix/core';
 import { validatePRCreation } from '@gitfix/core';
+import { linkPRToPlanIssue } from '@gitfix/core';
 import type { RepoValidationResult, PRValidationResult } from '@gitfix/core';
 import type { IssueJobData } from '@gitfix/core';
 import { createPullRequest, type PostProcessingResult } from './issueJobHelpers.js';
@@ -72,6 +73,13 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             { commitResult, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger, issueTitle: currentIssueData.data.title }
         );
 
+        // Update plan issue status to 'under_review' if PR was created successfully
+        if (postProcessingResult?.pr?.number) {
+            const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+            await linkPRToPlanIssue(repository, issueRef.number, postProcessingResult.pr.number);
+            correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber: postProcessingResult.pr.number }, 'Linked PR to plan issue');
+        }
+
         await safeUpdateLabels(
             { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
             [AI_PROCESSING_TAG], [AI_DONE_TAG]
@@ -125,6 +133,14 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
 
     if (finalPRValidation.isValid && !postProcessingResult?.pr) {
         await safeUpdateLabels({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, [AI_PROCESSING_TAG], [AI_DONE_TAG]);
+
+        // Link PR to plan issue if found during validation
+        if (finalPRValidation.pr?.number) {
+            const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+            await linkPRToPlanIssue(repository, issueRef.number, finalPRValidation.pr.number);
+            correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber: finalPRValidation.pr.number }, 'Linked PR to plan issue (found during validation)');
+        }
+
         return { success: true, pr: finalPRValidation.pr ? { number: finalPRValidation.pr.number, url: finalPRValidation.pr.url, title: finalPRValidation.pr.title } : null, updatedLabels: postProcessingResult?.updatedLabels || [] };
     }
 
@@ -243,6 +259,11 @@ async function attemptEmergencyPRCreation(options: EmergencyPROptions): Promise<
 
         if (emergencyValidation.isValid && emergencyValidation.pr) {
             correlatedLogger.info({ issueNumber: issueRef.number, prNumber: emergencyValidation.pr.number }, 'Emergency PR creation successful');
+
+            // Link PR to plan issue after emergency creation
+            const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+            await linkPRToPlanIssue(repository, issueRef.number, emergencyValidation.pr.number);
+            correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber: emergencyValidation.pr.number }, 'Linked PR to plan issue (emergency creation)');
         }
     }
 }
