@@ -97,3 +97,18 @@ export const getStatsOverview = async (): Promise<StatsOverviewResponse> => {
   await handleApiResponse(response);
   return response.json();
 };
+
+// Generating Plans Count Types and API
+export interface GeneratingPlansCountResponse {
+  count: number;
+}
+
+export const getGeneratingPlansCount = async (): Promise<GeneratingPlansCountResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/stats/generating-plans`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};

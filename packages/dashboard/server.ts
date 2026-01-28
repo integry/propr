@@ -244,6 +244,7 @@ function setupRoutes(): void {
   app.get('/api/stats/tasks', ensureAuthenticated, statsRoutes.getTaskStats);
   app.get('/api/stats/repositories', ensureAuthenticated, statsRoutes.getRepositoryStats);
   app.get('/api/stats/overview', ensureAuthenticated, statsRoutes.getOverview);
+  app.get('/api/stats/generating-plans', ensureAuthenticated, statsRoutes.getGeneratingPlansCount);
   // Summary browser routes for exploring repository file summaries
   app.get('/api/summaries/:owner/:repo/status', ensureAuthenticated, summaryBrowserRoutes.getIndexingStatus);
   app.get('/api/summaries/:owner/:repo/tree', ensureAuthenticated, summaryBrowserRoutes.getDirectoryTree);

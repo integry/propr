@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { getQueueStats, getCurrentUser, logout, getSystemStatus } from '../api/gitfixApi';
+import { getGeneratingPlansCount } from '../api/taskStatsApi';
 
 interface SystemStatusData {
   daemon: string;
@@ -28,6 +29,7 @@ interface User {
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
+  const [generatingPlansCount, setGeneratingPlansCount] = useState<number>(0);
   const [user, setUser] = useState<User | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatusData | null>(null);
@@ -77,12 +79,24 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       }
     };
 
+    const fetchGeneratingPlansCount = async () => {
+      try {
+        const data = await getGeneratingPlansCount();
+        setGeneratingPlansCount(data.count || 0);
+      } catch (err) {
+        console.error('Error fetching generating plans count:', err);
+        setGeneratingPlansCount(0);
+      }
+    };
+
     fetchStats();
     fetchUser();
     fetchSystemStatus();
+    fetchGeneratingPlansCount();
     const interval = setInterval(() => {
       fetchStats();
       fetchSystemStatus();
+      fetchGeneratingPlansCount();
     }, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -142,6 +156,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               {item.name === 'Tasks' && activeTaskCount > 0 && (
                 <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">
                   {activeTaskCount}
+                </span>
+              )}
+              {item.name === 'Plans' && generatingPlansCount > 0 && (
+                <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">
+                  {generatingPlansCount}
                 </span>
               )}
             </Link>
