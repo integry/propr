@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, DraftListItem, IssueSummary } from '../api/gitfixApi';
-import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2 } from 'lucide-react';
+import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, Filter } from 'lucide-react';
 
 const formatRelativeTime = (dateString: string): string => {
   const date = new Date(dateString);
@@ -25,6 +25,32 @@ const PlansPage: React.FC = () => {
   const [drafts, setDrafts] = useState<DraftListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [repoFilter, setRepoFilter] = useState<string>('all');
+
+  // Extract unique repositories with counts
+  const repositoriesWithCounts = useMemo(() => {
+    const repoCounts: Record<string, number> = {};
+    drafts.forEach(draft => {
+      const repo = draft.repository;
+      repoCounts[repo] = (repoCounts[repo] || 0) + 1;
+    });
+    return Object.entries(repoCounts)
+      .map(([repo, count]) => ({ repo, count }))
+      .sort((a, b) => a.repo.localeCompare(b.repo));
+  }, [drafts]);
+
+  // Filter drafts based on selected repository
+  const filteredDrafts = useMemo(() => {
+    if (repoFilter === 'all') return drafts;
+    return drafts.filter(draft => draft.repository === repoFilter);
+  }, [drafts, repoFilter]);
+
+  // Reset filter when selected repo no longer exists
+  useEffect(() => {
+    if (repoFilter !== 'all' && !repositoriesWithCounts.some(r => r.repo === repoFilter)) {
+      setRepoFilter('all');
+    }
+  }, [repositoriesWithCounts, repoFilter]);
 
   useEffect(() => {
     const loadDrafts = async () => {
@@ -161,12 +187,31 @@ const PlansPage: React.FC = () => {
     <div className="p-6">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
-        <Link
-          to="/"
-          className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
-        >
-          + New Plan
-        </Link>
+        <div className="flex items-center gap-4">
+          {repositoriesWithCounts.length > 1 && (
+            <div className="flex items-center gap-2">
+              <Filter size={16} className="text-gray-500" />
+              <select
+                value={repoFilter}
+                onChange={(e) => setRepoFilter(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              >
+                <option value="all">All Repositories ({drafts.length})</option>
+                {repositoriesWithCounts.map(({ repo, count }) => (
+                  <option key={repo} value={repo}>
+                    {repo} ({count})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          <Link
+            to="/"
+            className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+          >
+            + New Plan
+          </Link>
+        </div>
       </div>
 
       {drafts.length === 0 ? (
@@ -183,6 +228,19 @@ const PlansPage: React.FC = () => {
           >
             Create Your First Plan
           </Link>
+        </div>
+      ) : filteredDrafts.length === 0 ? (
+        <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+          <div className="mb-4">
+            <Filter className="w-16 h-16 mx-auto text-gray-400" />
+          </div>
+          <p className="text-gray-500 mb-4">No plans found for the selected repository.</p>
+          <button
+            onClick={() => setRepoFilter('all')}
+            className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+          >
+            Show All Plans
+          </button>
         </div>
       ) : (
         <div className="bg-white shadow rounded-lg overflow-hidden">
@@ -207,7 +265,7 @@ const PlansPage: React.FC = () => {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {drafts.map((draft) => (
+              {filteredDrafts.map((draft) => (
                 <tr key={draft.draft_id} className="hover:bg-gray-50 group">
                   <td className="px-6 py-4">
                     <Link to={`/tasks/plan/${draft.draft_id}`} className="block">

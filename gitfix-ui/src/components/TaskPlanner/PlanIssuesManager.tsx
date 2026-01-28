@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
+import { ChevronDown, ChevronUp, ChevronLeft, ChevronRight, RefreshCw, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
 import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue } from '../../api/planIssuesApi';
 import { AgentConfig, getAgents } from '../../api/gitfixApi';
 import { PlanTask } from '../../api/plannerApi';
@@ -16,6 +16,7 @@ interface PlanIssuesManagerProps {
 }
 
 const POLL_INTERVAL = 5000; // Polling interval for active issues
+const DEFAULT_ISSUES_PER_PAGE = 10;
 
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
@@ -31,6 +32,10 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   const [implementingIssue, setImplementingIssue] = useState<number | null>(null);
   const [showMerged, setShowMerged] = useState(false);
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(0);
+  const [issuesPerPage] = useState(DEFAULT_ISSUES_PER_PAGE);
+
   const [globalAgent, setGlobalAgent] = useState<string | null>(null);
   const [globalModel, setGlobalModel] = useState<string | null>(null);
   const pollIntervalRef = useRef<number | null>(null);
@@ -41,7 +46,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     return map;
   }, [tasks]);
 
-  const { activeIssues, mergedIssues, pendingCount, hasActiveIssues } = React.useMemo(() => {
+  const { activeIssues, mergedIssues, pendingCount, hasActiveIssues } = useMemo(() => {
     const active: PlanIssue[] = [], merged: PlanIssue[] = [];
     let pending = 0, hasActive = false;
     issues.forEach(issue => {
@@ -54,6 +59,25 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     });
     return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive };
   }, [issues]);
+
+  // Pagination calculations
+  const totalActivePages = useMemo(() =>
+    Math.ceil(activeIssues.length / issuesPerPage),
+    [activeIssues.length, issuesPerPage]
+  );
+
+  const paginatedActiveIssues = useMemo(() => {
+    const startIndex = currentPage * issuesPerPage;
+    const endIndex = startIndex + issuesPerPage;
+    return activeIssues.slice(startIndex, endIndex);
+  }, [activeIssues, currentPage, issuesPerPage]);
+
+  // Reset to first page if current page is out of bounds after issues update
+  useEffect(() => {
+    if (currentPage >= totalActivePages && totalActivePages > 0) {
+      setCurrentPage(totalActivePages - 1);
+    }
+  }, [currentPage, totalActivePages]);
 
   const fetchIssues = useCallback(async () => {
     try {
@@ -326,7 +350,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         </div>
       )}
       <div className="space-y-2">
-        {activeIssues.map(issue => (
+        {paginatedActiveIssues.map(issue => (
           <PlanIssueRow
             key={issue.id}
             issue={issue}
@@ -339,6 +363,34 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           />
         ))}
       </div>
+      {activeIssues.length > issuesPerPage && (
+        <div className="flex items-center justify-between pt-4 border-t border-gray-200">
+          <span className="text-sm text-gray-600">
+            Showing {currentPage * issuesPerPage + 1}-{Math.min((currentPage + 1) * issuesPerPage, activeIssues.length)} of {activeIssues.length} issues
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+              disabled={currentPage === 0}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronLeft size={16} />
+              Previous
+            </button>
+            <span className="text-sm text-gray-600 px-2">
+              Page {currentPage + 1} of {totalActivePages}
+            </span>
+            <button
+              onClick={() => setCurrentPage(p => Math.min(totalActivePages - 1, p + 1))}
+              disabled={currentPage >= totalActivePages - 1}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              Next
+              <ChevronRight size={16} />
+            </button>
+          </div>
+        </div>
+      )}
       {mergedIssues.length > 0 && (
         <div className="border-t border-gray-200 pt-4 mt-4">
           <button
