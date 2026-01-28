@@ -1,9 +1,9 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Undo2, Redo2, Check, Loader2, AlertCircle, FileText, GripVertical } from 'lucide-react';
+import { Undo2, Redo2, Check, Loader2, AlertCircle, FileText, GripVertical, Info, X } from 'lucide-react';
 import { debounce } from 'lodash';
 import { usePlanRefinement, SaveStatus } from '../../hooks/usePlanRefinement';
-import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage } from '../../api/gitfixApi';
+import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, GranularityEnforcementMetadata } from '../../api/gitfixApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
 import { useToast } from '../ui/useToast';
@@ -51,10 +51,40 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   );
 };
 
+interface GranularityEnforcementNoticeProps {
+  enforcement: GranularityEnforcementMetadata;
+  onDismiss: () => void;
+}
+
+const GranularityEnforcementNotice: React.FC<GranularityEnforcementNoticeProps> = ({ enforcement, onDismiss }) => {
+  if (!enforcement.enforced) return null;
+
+  return (
+    <div className="px-4 py-2 bg-blue-50 border-b border-blue-200 text-blue-700 text-sm flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        <Info size={14} />
+        <span>{enforcement.message || `${enforcement.originalTaskCount} tasks merged into ${enforcement.finalTaskCount} per your Single Task setting`}</span>
+      </div>
+      <button
+        onClick={onDismiss}
+        className="p-1 hover:bg-blue-100 rounded transition-colors"
+        title="Dismiss"
+        aria-label="Dismiss granularity enforcement notice"
+      >
+        <X size={14} />
+      </button>
+    </div>
+  );
+};
+
 export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => {
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
+  const [enforcementNoticeDismissed, setEnforcementNoticeDismissed] = useState(false);
   const { addToast } = useToast();
+
+  // Extract granularity enforcement metadata from context_config
+  const granularityEnforcement = draft.context_config?.granularityEnforcement;
 
   // Defensively ensure plan_json is an array
   const initialPlan = (() => {
@@ -183,6 +213,13 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize }) => 
           <AlertCircle size={14} />
           {finalizeError}
         </div>
+      )}
+
+      {granularityEnforcement && granularityEnforcement.enforced && !enforcementNoticeDismissed && (
+        <GranularityEnforcementNotice
+          enforcement={granularityEnforcement}
+          onDismiss={() => setEnforcementNoticeDismissed(true)}
+        />
       )}
 
       <div className="flex-1 overflow-hidden">

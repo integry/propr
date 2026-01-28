@@ -17,20 +17,62 @@ import {
 import type { Attachment } from './attachmentService.js';
 
 /**
+ * Metadata about granularity enforcement actions
+ */
+export interface GranularityEnforcementMetadata {
+  /** Whether enforcement was applied */
+  enforced: boolean;
+  /** The granularity setting that was used */
+  granularity: Granularity;
+  /** Original task count before enforcement */
+  originalTaskCount: number;
+  /** Final task count after enforcement */
+  finalTaskCount: number;
+  /** Human-readable message about the enforcement action */
+  message?: string;
+}
+
+/**
+ * Result of granularity enforcement
+ */
+interface EnforceGranularityResult {
+  plan: Plan;
+  metadata: GranularityEnforcementMetadata;
+}
+
+/**
  * Enforce granularity constraints on the generated plan.
  * - For 'single': If multiple tasks are returned, merge them into one comprehensive task
  * - For 'balanced' and 'granular': No enforcement needed, LLM output is used as-is
  */
-function enforceGranularity(plan: Plan, granularity: Granularity, correlatedLogger: MinimalLogger): Plan {
+function enforceGranularity(plan: Plan, granularity: Granularity, correlatedLogger: MinimalLogger): EnforceGranularityResult {
+  const originalTaskCount = plan.length;
+
   if (granularity !== 'single') {
     // For balanced and granular, no enforcement needed
-    return plan;
+    return {
+      plan,
+      metadata: {
+        enforced: false,
+        granularity,
+        originalTaskCount,
+        finalTaskCount: plan.length
+      }
+    };
   }
 
   // For single granularity, enforce exactly one task
   if (plan.length === 1) {
     correlatedLogger.info({ taskCount: 1 }, 'Single granularity: Plan already has exactly one task');
-    return plan;
+    return {
+      plan,
+      metadata: {
+        enforced: false,
+        granularity,
+        originalTaskCount: 1,
+        finalTaskCount: 1
+      }
+    };
   }
 
   // Multiple tasks returned for single granularity - merge them
@@ -51,7 +93,16 @@ function enforceGranularity(plan: Plan, granularity: Granularity, correlatedLogg
     'Successfully merged tasks into single comprehensive task'
   );
 
-  return [mergedTask];
+  return {
+    plan: [mergedTask],
+    metadata: {
+      enforced: true,
+      granularity,
+      originalTaskCount,
+      finalTaskCount: 1,
+      message: `${originalTaskCount} tasks merged into 1 per your Single Task setting`
+    }
+  };
 }
 
 /**
@@ -152,7 +203,12 @@ interface CallLLMOptions {
   images?: Base64Image[];
 }
 
-async function callLLMForPlan(opts: CallLLMOptions): Promise<Plan> {
+interface CallLLMForPlanResult {
+  plan: Plan;
+  enforcementMetadata: GranularityEnforcementMetadata;
+}
+
+async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
   const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries, images } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
@@ -193,8 +249,8 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<Plan> {
   }
 
   // Enforce granularity constraints - merge tasks if needed for 'single' mode
-  const enforcedPlan = enforceGranularity(plan, granularity, correlatedLogger);
-  return enforcedPlan;
+  const enforceResult = enforceGranularity(plan, granularity, correlatedLogger);
+  return { plan: enforceResult.plan, enforcementMetadata: enforceResult.metadata };
 }
 
 export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> {
@@ -238,7 +294,19 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length }, 'Loaded attachments from draft');
 
-  const config = parseContextConfig(draft.context_config as TaskDraftConfig | null);
+  // Parse context_config from JSON string (SQLite stores it as string)
+  let parsedContextConfig: TaskDraftConfig | null = null;
+  if (typeof draft.context_config === 'string') {
+    try {
+      parsedContextConfig = JSON.parse(draft.context_config);
+    } catch {
+      correlatedLogger.warn({ draftId }, 'Failed to parse context_config, using defaults');
+    }
+  } else if (draft.context_config) {
+    parsedContextConfig = draft.context_config as TaskDraftConfig;
+  }
+  const config = parseContextConfig(parsedContextConfig);
+  correlatedLogger.info({ draftId, granularity: config.granularity }, 'Using granularity setting for plan generation');
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 
   const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId });
@@ -316,7 +384,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     summariesIncluded: candidateSummaries.filter(s => !includedFilesSet.has(s.path)).length
   }, 'Filtered summaries for context enrichment');
 
-  const plan = await callLLMForPlan({
+  const { plan, enforcementMetadata } = await callLLMForPlan({
     draftId,
     context: contextResult.context,
     prompt: draft.initial_prompt,
@@ -333,8 +401,35 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const validatedPlan = await PathValidationService.validateAndRepair(worktreePath, plan, { correlationId });
   correlatedLogger.info({ taskCount: validatedPlan.length }, 'Plan generated successfully');
 
+  // Add trace step for granularity enforcement if tasks were merged
+  if (enforcementMetadata.enforced) {
+    await updateTrace(draftId, 'granularity_enforcement', 'completed', {
+      originalTaskCount: enforcementMetadata.originalTaskCount,
+      finalTaskCount: enforcementMetadata.finalTaskCount,
+      granularity: enforcementMetadata.granularity,
+      message: enforcementMetadata.message
+    });
+    correlatedLogger.info(
+      { originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount },
+      'Granularity enforcement applied - added trace step'
+    );
+  }
+
   await updateTrace(draftId, 'llm', 'completed');
-  await db('task_drafts').where({ draft_id: draftId }).update({ plan_json: JSON.stringify(validatedPlan), status: 'review', updated_at: db.fn.now() });
+
+  // Merge enforcement metadata into context_config for UI display
+  // Use the already-parsed config (parsedContextConfig) instead of raw string
+  const updatedContextConfig = {
+    ...parsedContextConfig,
+    granularityEnforcement: enforcementMetadata
+  };
+
+  await db('task_drafts').where({ draft_id: draftId }).update({
+    plan_json: JSON.stringify(validatedPlan),
+    context_config: JSON.stringify(updatedContextConfig),
+    status: 'review',
+    updated_at: db.fn.now()
+  });
 
   return validatedPlan;
 }
