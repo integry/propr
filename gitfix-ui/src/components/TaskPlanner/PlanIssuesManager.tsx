@@ -109,7 +109,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     return () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); };
   }, [hasActiveIssues, fetchIssues]);
 
-  const handleImplementIssue = async (issueNumber: number) => {
+  const handleImplementIssue = useCallback(async (issueNumber: number) => {
     setImplementingIssue(issueNumber);
     try {
       await implementIssue(draftId, issueNumber);
@@ -121,7 +121,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     } finally {
       setImplementingIssue(null);
     }
-  };
+  }, [draftId, fetchIssues, onRefresh]);
 
   const [applyingGlobal, setApplyingGlobal] = useState(false);
 
