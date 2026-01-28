@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
+import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github, AlertTriangle } from 'lucide-react';
 import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue } from '../../api/planIssuesApi';
 import { AgentConfig, getAgents } from '../../api/gitfixApi';
 import { PlanTask } from '../../api/plannerApi';
@@ -33,7 +33,10 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   const [globalAgent, setGlobalAgent] = useState<string | null>(null);
   const [globalModel, setGlobalModel] = useState<string | null>(null);
+  const [showSequenceWarning, setShowSequenceWarning] = useState(false);
+  const [pendingImplementIssue, setPendingImplementIssue] = useState<number | null>(null);
   const pollIntervalRef = useRef<number | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   const issueTitles = React.useMemo(() => {
     const map: Record<number, string> = {};
@@ -41,18 +44,25 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     return map;
   }, [tasks]);
 
-  const { activeIssues, mergedIssues, pendingCount, hasActiveIssues } = useMemo(() => {
+  const { activeIssues, mergedIssues, pendingCount, hasActiveIssues, firstPendingIssueNumber } = useMemo(() => {
     const active: PlanIssue[] = [], merged: PlanIssue[] = [];
     let pending = 0, hasActive = false;
+    let firstPending: number | null = null;
     issues.forEach(issue => {
       if (issue.status === 'merged') { merged.push(issue); }
       else {
         active.push(issue);
-        if (issue.status === 'pending') pending++;
+        if (issue.status === 'pending') {
+          pending++;
+          // Track the first pending issue (lowest issue_number among pending)
+          if (firstPending === null || issue.issue_number < firstPending) {
+            firstPending = issue.issue_number;
+          }
+        }
         if (STATUS_CONFIG[issue.status]?.isActive) hasActive = true;
       }
     });
-    return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive };
+    return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive, firstPendingIssueNumber: firstPending };
   }, [issues]);
 
   const fetchIssues = useCallback(async () => {
@@ -210,6 +220,47 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     onRefresh?.();
   };
 
+  const handleImplementWithWarning = useCallback((issueNumber: number) => {
+    setPendingImplementIssue(issueNumber);
+    setShowSequenceWarning(true);
+  }, []);
+
+  const handleCloseWarning = useCallback(() => {
+    setShowSequenceWarning(false);
+    setPendingImplementIssue(null);
+  }, []);
+
+  const handleProceedAnyway = useCallback(async () => {
+    if (pendingImplementIssue !== null) {
+      setShowSequenceWarning(false);
+      await handleImplementIssue(pendingImplementIssue);
+      setPendingImplementIssue(null);
+    }
+  }, [pendingImplementIssue]);
+
+  // Keyboard handling for dialog
+  useEffect(() => {
+    if (!showSequenceWarning) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleCloseWarning();
+      }
+    };
+
+    // Prevent body scroll when dialog is open
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', handleKeyDown);
+
+    // Focus the dialog for accessibility
+    dialogRef.current?.focus();
+
+    return () => {
+      document.body.style.overflow = '';
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showSequenceWarning, handleCloseWarning]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8 text-gray-500">
@@ -336,6 +387,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             onAgentChange={handleAgentChange}
             onModelChange={handleModelChange}
             implementing={implementingIssue === issue.issue_number}
+            isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
+            onImplementWithWarning={handleImplementWithWarning}
           />
         ))}
       </div>
@@ -380,6 +433,74 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           </AnimatePresence>
         </div>
       )}
+
+      {/* Sequential Implementation Warning Dialog */}
+      <AnimatePresence>
+        {showSequenceWarning && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+            onClick={(e) => {
+              // Close on backdrop click
+              if (e.target === e.currentTarget) {
+                handleCloseWarning();
+              }
+            }}
+          >
+            <motion.div
+              ref={dialogRef}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.15 }}
+              className="bg-white rounded-lg max-w-md w-full border border-gray-300 shadow-lg"
+              tabIndex={-1}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="warning-dialog-title"
+            >
+              <div className="p-6">
+                <div className="flex items-start gap-4">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
+                    <AlertTriangle className="w-5 h-5 text-amber-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 id="warning-dialog-title" className="text-lg font-semibold text-gray-900 mb-2">
+                      Previous Tasks Not Merged
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-4">
+                      This task should ideally be implemented after the previous tasks have been merged.
+                      Implementing out of order may lead to conflicts or incomplete implementations.
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      Are you sure you want to proceed?
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50 rounded-b-lg">
+                <button
+                  type="button"
+                  onClick={handleCloseWarning}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleProceedAnyway}
+                  className="px-4 py-2 text-sm font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700 transition-colors"
+                >
+                  Proceed Anyway
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
