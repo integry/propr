@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import {
   getPlanIssuesByDraft,
+  getPlanIssuesByDraftPaginated,
   getPlanIssue,
   updatePlanIssue,
   batchUpdatePlanIssueConfig,
@@ -34,8 +35,34 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
       const ownership = await deps.verifyOwnership(req.params.id, req.user!.id);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
-      const issues = await getPlanIssuesByDraft(req.params.id);
-      res.json(issues);
+      // Check for pagination query params
+      const { page, limit, status } = req.query;
+      const hasPagination = page !== undefined || limit !== undefined;
+
+      if (hasPagination) {
+        // Return paginated response
+        const pageNum = page ? parseInt(page as string, 10) : 0;
+        const limitNum = limit ? parseInt(limit as string, 10) : 50;
+
+        const options: { page?: number; limit?: number; status?: PlanIssueStatus } = {
+          page: isNaN(pageNum) ? 0 : pageNum,
+          limit: isNaN(limitNum) ? 50 : Math.min(limitNum, 100)
+        };
+
+        if (status) {
+          const validStatuses: PlanIssueStatus[] = ['pending', 'processing', 'under_review', 'in_refinement', 'refinement_processing', 'merged', 'closed'];
+          if (validStatuses.includes(status as PlanIssueStatus)) {
+            options.status = status as PlanIssueStatus;
+          }
+        }
+
+        const result = await getPlanIssuesByDraftPaginated(req.params.id, options);
+        res.json(result);
+      } else {
+        // Return all issues for backward compatibility
+        const issues = await getPlanIssuesByDraft(req.params.id);
+        res.json(issues);
+      }
     } catch (error) {
       console.error('Get issues error:', error);
       res.status(500).json({ error: 'Failed to fetch issues' });

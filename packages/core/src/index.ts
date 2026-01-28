@@ -25,6 +25,7 @@ export * from './config/configManager.js';
 export {
     createPlanIssue,
     getPlanIssuesByDraft,
+    getPlanIssuesByDraftPaginated,
     getPlanIssue,
     updatePlanIssue,
     incrementFollowupCount,
@@ -40,7 +41,9 @@ export type {
     PlanIssueStatus,
     PlanIssue,
     CreatePlanIssueInput,
-    UpdatePlanIssueInput
+    UpdatePlanIssueInput,
+    GetPlanIssuesOptions,
+    PaginatedPlanIssuesResult
 } from './config/planIssueManager.js';
 export { resolveModelAlias, getDefaultModel, getModelShortName, MODEL_ALIASES, MODEL_SHORT_NAMES, DEFAULT_MODEL_ALIAS, resolveLlmLabel } from './config/modelAliases.js';
 export type { LlmLabelResolution } from './config/modelAliases.js';

@@ -55,6 +55,26 @@ export interface ImplementAllIssuesOptions {
 }
 
 /**
+ * Options for fetching paginated plan issues.
+ */
+export interface GetPlanIssuesOptions {
+  page?: number;
+  limit?: number;
+  status?: PlanIssueStatus;
+}
+
+/**
+ * Paginated response for plan issues.
+ */
+export interface PaginatedPlanIssuesResponse {
+  issues: PlanIssue[];
+  total: number;
+  page: number;
+  limit: number;
+  hasMore: boolean;
+}
+
+/**
  * Response from implement issue endpoint.
  */
 export interface ImplementIssueResponse {
@@ -81,6 +101,28 @@ export interface ImplementAllIssuesResponse {
  */
 export const getPlanIssues = async (draftId: string): Promise<PlanIssue[]> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/issues`, {
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+/**
+ * Fetches plan issues for a draft with pagination support.
+ */
+export const getPlanIssuesPaginated = async (
+  draftId: string,
+  options: GetPlanIssuesOptions = {}
+): Promise<PaginatedPlanIssuesResponse> => {
+  const params = new URLSearchParams();
+  if (options.page !== undefined) params.set('page', options.page.toString());
+  if (options.limit !== undefined) params.set('limit', options.limit.toString());
+  if (options.status) params.set('status', options.status);
+
+  const queryString = params.toString();
+  const url = `${API_BASE_URL}/api/planner/drafts/${draftId}/issues${queryString ? `?${queryString}` : ''}`;
+
+  const response = await fetch(url, {
     credentials: 'include'
   });
   await handleApiResponse(response);

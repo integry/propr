@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
 import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue } from '../../api/planIssuesApi';
@@ -41,7 +41,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     return map;
   }, [tasks]);
 
-  const { activeIssues, mergedIssues, pendingCount, hasActiveIssues } = React.useMemo(() => {
+  const { activeIssues, mergedIssues, pendingCount, hasActiveIssues } = useMemo(() => {
     const active: PlanIssue[] = [], merged: PlanIssue[] = [];
     let pending = 0, hasActive = false;
     issues.forEach(issue => {

@@ -60,6 +60,26 @@ export interface UpdatePlanIssueInput {
 }
 
 /**
+ * Options for paginated plan issues query.
+ */
+export interface GetPlanIssuesOptions {
+    page?: number;
+    limit?: number;
+    status?: PlanIssueStatus;
+}
+
+/**
+ * Result from paginated plan issues query.
+ */
+export interface PaginatedPlanIssuesResult {
+    issues: PlanIssue[];
+    total: number;
+    page: number;
+    limit: number;
+    hasMore: boolean;
+}
+
+/**
  * Creates a new plan issue record.
  */
 export async function createPlanIssue(input: CreatePlanIssueInput): Promise<PlanIssue> {
@@ -99,6 +119,53 @@ export async function getPlanIssuesByDraft(draftId: string): Promise<PlanIssue[]
         const err = error as Error;
         logger.error({ error: err.message, draftId }, 'Failed to get plan issues by draft');
         return [];
+    }
+}
+
+/**
+ * Gets plan issues for a draft with pagination support.
+ */
+export async function getPlanIssuesByDraftPaginated(
+    draftId: string,
+    options: GetPlanIssuesOptions = {}
+): Promise<PaginatedPlanIssuesResult> {
+    const page = options.page ?? 0;
+    const limit = Math.min(options.limit ?? 50, 100); // Cap at 100
+    const offset = page * limit;
+
+    try {
+        let query = db('plan_issues').where({ draft_id: draftId });
+        let countQuery = db('plan_issues').where({ draft_id: draftId });
+
+        if (options.status) {
+            query = query.andWhere({ status: options.status });
+            countQuery = countQuery.andWhere({ status: options.status });
+        }
+
+        const [issues, countResult] = await Promise.all([
+            query.orderBy('created_at', 'asc').limit(limit).offset(offset),
+            countQuery.count('* as count').first()
+        ]);
+
+        const total = Number(countResult?.count ?? 0);
+
+        return {
+            issues,
+            total,
+            page,
+            limit,
+            hasMore: offset + issues.length < total
+        };
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ error: err.message, draftId, options }, 'Failed to get paginated plan issues');
+        return {
+            issues: [],
+            total: 0,
+            page,
+            limit,
+            hasMore: false
+        };
     }
 }
 

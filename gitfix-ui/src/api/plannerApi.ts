@@ -249,8 +249,34 @@ export interface DraftListItem {
   issue_summary?: IssueSummary | null;
 }
 
-export const getDrafts = async (): Promise<DraftListItem[]> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts`, {
+export interface GetDraftsOptions {
+  page?: number;
+  limit?: number;
+  repository?: string;
+  search?: string;
+}
+
+export interface PaginatedDraftsResponse {
+  drafts: DraftListItem[];
+  total: number;
+  page: number;
+  limit: number;
+  hasMore: boolean;
+}
+
+export const getDrafts = async (options: GetDraftsOptions = {}): Promise<PaginatedDraftsResponse> => {
+  const params = new URLSearchParams();
+  if (options.page !== undefined) params.append('page', options.page.toString());
+  if (options.limit !== undefined) params.append('limit', options.limit.toString());
+  if (options.repository && options.repository !== 'all') params.append('repository', options.repository);
+  if (options.search && options.search.trim()) params.append('search', options.search.trim());
+
+  const queryString = params.toString();
+  const url = queryString
+    ? `${API_BASE_URL}/api/planner/drafts?${queryString}`
+    : `${API_BASE_URL}/api/planner/drafts`;
+
+  const response = await fetch(url, {
     credentials: 'include'
   });
   await handleApiResponse(response);
