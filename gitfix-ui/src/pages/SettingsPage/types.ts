@@ -2,6 +2,7 @@ export interface Settings {
   worker_concurrency: string;
   analysis_model_fast: string;
   analysis_model_advanced: string;
+  planner_model: string;
   // github_user_whitelist is now handled as string[] in main state
 }
 

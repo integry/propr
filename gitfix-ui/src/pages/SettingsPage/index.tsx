@@ -20,6 +20,7 @@ import {
 } from '../../api/gitfixApi';
 import { Settings } from './types';
 import GeneralSettingsSection from './GeneralSettingsSection';
+import AIModelSelectionSection from './AIModelSelectionSection';
 import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
 import KnowledgeBaseSection from './KnowledgeBaseSection';
@@ -42,7 +43,8 @@ const SettingsPage: React.FC = () => {
   const [settings, setSettings] = useState<Settings>({
     worker_concurrency: '',
     analysis_model_fast: '',
-    analysis_model_advanced: ''
+    analysis_model_advanced: '',
+    planner_model: ''
   });
   const [prLabel, setPrLabel] = useState('');
 
@@ -88,6 +90,7 @@ const SettingsPage: React.FC = () => {
           worker_concurrency?: string;
           analysis_model_fast?: string;
           analysis_model_advanced?: string;
+          planner_model?: string;
           github_user_whitelist?: string[];
         };
         const keywordsData = kData as { followup_keywords?: string[] };
@@ -101,7 +104,8 @@ const SettingsPage: React.FC = () => {
         setSettings({
           worker_concurrency: settingsData.worker_concurrency || '',
           analysis_model_fast: settingsData.analysis_model_fast || '',
-          analysis_model_advanced: settingsData.analysis_model_advanced || ''
+          analysis_model_advanced: settingsData.analysis_model_advanced || '',
+          planner_model: settingsData.planner_model || ''
         });
 
         // Parse Whitelist
@@ -176,7 +180,8 @@ const SettingsPage: React.FC = () => {
           worker_concurrency: settingsToSave.worker_concurrency ? concurrency : undefined,
           github_user_whitelist: whitelistToSave,
           analysis_model_fast: settingsToSave.analysis_model_fast,
-          analysis_model_advanced: settingsToSave.analysis_model_advanced
+          analysis_model_advanced: settingsToSave.analysis_model_advanced,
+          planner_model: settingsToSave.planner_model
         }),
         updatePrLabel(prLabelToSave.trim()),
         updatePrimaryProcessingLabels(primaryLabelsToSave),
@@ -197,6 +202,13 @@ const SettingsPage: React.FC = () => {
   // Trigger auto-save (called on blur and list changes)
   const triggerAutoSave = useCallback(() => {
     performAutoSave({ settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords });
+  }, [settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords, performAutoSave]);
+
+  // Handle model selection changes (immediate save)
+  const handleModelSelectionChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newSettings = { ...settings, [e.target.name]: e.target.value };
+    setSettings(newSettings);
+    performAutoSave({ settings: newSettings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords });
   }, [settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords, performAutoSave]);
 
   // List management functions that trigger auto-save
@@ -329,6 +341,15 @@ const SettingsPage: React.FC = () => {
     }
   }, []);
 
+  // Handle summarization model change from AI Model Selection section
+  const handleSummarizationModelChange = useCallback((agentAlias: string) => {
+    const newSettings = {
+      ...summarizationSettings,
+      agent_alias: agentAlias
+    };
+    handleSummarizationChange(newSettings);
+  }, [summarizationSettings, handleSummarizationChange]);
+
   // Handle manual reindex trigger
   const handleReindexAll = useCallback(async () => {
     setIsReindexing(true);
@@ -396,17 +417,27 @@ const SettingsPage: React.FC = () => {
         {/* Left Column */}
         <div className="space-y-6">
           <GeneralSettingsSection
-            settings={settings}
-            agents={agents}
+            settings={{ worker_concurrency: settings.worker_concurrency }}
             onSettingChange={(e) =>
               setSettings(prev => ({ ...prev, [e.target.name]: e.target.value }))
             }
             onBlur={triggerAutoSave}
           />
 
+          <AIModelSelectionSection
+            settings={{
+              analysis_model_fast: settings.analysis_model_fast,
+              analysis_model_advanced: settings.analysis_model_advanced,
+              planner_model: settings.planner_model
+            }}
+            summarizationSettings={summarizationSettings}
+            agents={agents}
+            onSettingChange={handleModelSelectionChange}
+            onSummarizationModelChange={handleSummarizationModelChange}
+          />
+
           <KnowledgeBaseSection
             settings={summarizationSettings}
-            agents={agents}
             onSettingsChange={handleSummarizationChange}
             onReindexAll={handleReindexAll}
             isReindexing={isReindexing}

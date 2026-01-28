@@ -15,6 +15,10 @@ import {
   Base64Image, MinimalLogger
 } from './planningHelpers.js';
 import type { Attachment } from './attachmentService.js';
+import { loadSettings } from '../config/configManager.js';
+
+/** Default planner model if none configured */
+const DEFAULT_PLANNER_MODEL = 'opus';
 
 /**
  * Metadata about granularity enforcement actions
@@ -201,6 +205,8 @@ interface CallLLMOptions {
   fileSummaries?: string;
   /** Optional base64-encoded images to include in the prompt */
   images?: Base64Image[];
+  /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
+  model?: string;
 }
 
 interface CallLLMForPlanResult {
@@ -209,13 +215,13 @@ interface CallLLMForPlanResult {
 }
 
 async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
-  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries, images } = opts;
+  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries, images, model = DEFAULT_PLANNER_MODEL } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
 
   // Build prompt with images embedded as base64
   const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity, fileSummaries, images });
-  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0 }, 'Calling LLM for plan generation');
+  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0, model }, 'Calling LLM for plan generation');
 
   // Validate token count before sending to LLM
   const modelLimit = getDefaultModelLimit();
@@ -231,7 +237,7 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResul
   correlatedLogger.info({ tokenCount: validation.tokenCount, source: validation.source }, 'Token validation passed');
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
-  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: 'opus', correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef });
+  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model, correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef });
 
   let plan: Plan;
   try {
@@ -258,7 +264,11 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!db) throw new PlanningFailedError('Database not available');
-  correlatedLogger.info({ draftId }, 'Starting plan generation');
+
+  // Load planner model from settings
+  const settings = await loadSettings();
+  const plannerModel = settings.planner_model || DEFAULT_PLANNER_MODEL;
+  correlatedLogger.info({ draftId, plannerModel }, 'Starting plan generation');
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
@@ -395,6 +405,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     correlationId,
     fileSummaries: filteredSummaries,
     images: base64Images.length > 0 ? base64Images : undefined,
+    model: plannerModel,
   });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
@@ -439,13 +450,17 @@ export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!Array.isArray(currentPlan)) throw new PlanningFailedError('Current plan must be an array');
-  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository }, 'Refining plan');
+
+  // Load planner model from settings
+  const settings = await loadSettings();
+  const plannerModel = settings.planner_model || DEFAULT_PLANNER_MODEL;
+  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, plannerModel }, 'Refining plan');
 
   const userPrompt = `${REFINER_SYSTEM_PROMPT}\n\nCurrent Plan:\n${JSON.stringify(currentPlan, null, 2)}\n\nInstruction:\n"${instruction}"\n\nRemember: Return ONLY the updated JSON array. No markdown, no explanations.`;
   const [repoOwner, repoName] = repository.split('/');
   const issueRef = { number: 0, repoOwner: repoOwner || 'unknown', repoName: repoName || 'unknown' };
 
-  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: 'opus', correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef });
+  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: plannerModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef });
 
   let refinedPlan: Plan;
   try {

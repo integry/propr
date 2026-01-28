@@ -16,6 +16,8 @@ export interface RepoToMonitor {
 interface ConfigSettings {
     worker_concurrency?: number;
     analysis_model_fast?: string;
+    analysis_model_advanced?: string;
+    planner_model?: string;
     [key: string]: unknown;
 }
 
