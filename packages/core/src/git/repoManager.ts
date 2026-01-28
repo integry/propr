@@ -7,6 +7,7 @@ import { handleError } from '../utils/errorHandler.js';
 import {
     cleanupWorktree,
     cleanupExpiredWorktrees,
+    safePruneWorktrees,
     setupWorktreePermissions,
     addToSafeDirectories,
     getWorktreePath
@@ -358,5 +359,5 @@ export async function fetchLatestChanges(options: FetchLatestChangesOptions): Pr
     }
 }
 
-export { cleanupWorktree, cleanupExpiredWorktrees, createWorktreeFromExistingBranch, ensureBranchAndPush, pushBranch, commitChanges, detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations };
+export { cleanupWorktree, cleanupExpiredWorktrees, safePruneWorktrees, createWorktreeFromExistingBranch, ensureBranchAndPush, pushBranch, commitChanges, detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations };
 export type { CommitResult } from './commitOperations.js';

@@ -59,7 +59,7 @@ export { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './git
 export { ensureRepoCloned, createWorktreeForIssue, getRepoUrl, fetchLatestChanges } from './git/repoManager.js';
 export type { WorktreeResult, WorktreeInfo, FetchLatestChangesOptions, FetchLatestChangesResult } from './git/repoManager.js';
 export { cleanupExistingBranch, createWorktreeFromExistingBranch } from './git/worktreeCreation.js';
-export { cleanupWorktree, cleanupExpiredWorktrees, setupWorktreePermissions, addToSafeDirectories, verifyWorktreeCreation, setupWorktreeRemote, getWorktreePath } from './git/worktreeOperations.js';
+export { cleanupWorktree, cleanupExpiredWorktrees, safePruneWorktrees, setupWorktreePermissions, addToSafeDirectories, verifyWorktreeCreation, setupWorktreeRemote, getWorktreePath } from './git/worktreeOperations.js';
 
 export {
     issueQueue,

@@ -83,12 +83,9 @@ export async function cleanupWorktree(localRepoPath: string, worktreePath: strin
         }
     }
 
-    try {
-        await git.raw(['worktree', 'prune']);
-        logger.debug('Git worktree references pruned');
-    } catch (pruneError) {
-        logger.warn({ error: (pruneError as Error).message }, 'Failed to prune worktree references');
-    }
+    // NOTE: Removed `git worktree prune` here - it was causing race conditions by
+    // deleting worktree metadata for other running tasks. Stale worktree references
+    // will be cleaned up by the periodic cleanupExpiredWorktrees job instead.
 }
 
 async function createRetentionMarker(worktreePath: string, retentionHours: number): Promise<void> {
@@ -193,6 +190,79 @@ async function processWorktreeItem(itemPath: string, stats: fs.Stats): Promise<C
     }
 
     return { cleaned, retained };
+}
+
+/**
+ * Safely prunes stale worktree references, but only for entries older than the specified threshold.
+ * This prevents accidentally removing metadata for currently running tasks.
+ *
+ * @param localRepoPath - Path to the main repository
+ * @param minAgeHours - Minimum age in hours before a stale entry can be pruned (default: 1 hour)
+ */
+export async function safePruneWorktrees(localRepoPath: string, minAgeHours: number = 1): Promise<{ pruned: number; skipped: number }> {
+    let pruned = 0;
+    let skipped = 0;
+
+    try {
+        const git = simpleGit(localRepoPath);
+        const worktreeList = await git.raw(['worktree', 'list', '--porcelain']);
+        const lines = worktreeList.split('\n');
+
+        const worktreesDir = path.join(localRepoPath, '.git', 'worktrees');
+        if (!await fs.pathExists(worktreesDir)) {
+            return { pruned: 0, skipped: 0 };
+        }
+
+        const entries = await fs.readdir(worktreesDir);
+        const now = Date.now();
+        const minAgeMs = minAgeHours * 60 * 60 * 1000;
+
+        for (const entry of entries) {
+            const entryPath = path.join(worktreesDir, entry);
+            const gitdirFile = path.join(entryPath, 'gitdir');
+
+            if (!await fs.pathExists(gitdirFile)) {
+                // Entry doesn't have gitdir file, check age before removing
+                const stats = await fs.stat(entryPath);
+                const ageMs = now - stats.mtimeMs;
+
+                if (ageMs > minAgeMs) {
+                    logger.info({ entry, ageHours: Math.round(ageMs / (60 * 60 * 1000)) }, 'Removing stale worktree entry (no gitdir file)');
+                    await fs.remove(entryPath);
+                    pruned++;
+                } else {
+                    logger.debug({ entry, ageHours: Math.round(ageMs / (60 * 60 * 1000)), minAgeHours }, 'Skipping recent worktree entry');
+                    skipped++;
+                }
+                continue;
+            }
+
+            // Check if the worktree directory still exists
+            const gitdirContent = await fs.readFile(gitdirFile, 'utf8');
+            const worktreePath = gitdirContent.trim();
+
+            if (!await fs.pathExists(worktreePath)) {
+                // Worktree directory doesn't exist, check age before removing metadata
+                const stats = await fs.stat(entryPath);
+                const ageMs = now - stats.mtimeMs;
+
+                if (ageMs > minAgeMs) {
+                    logger.info({ entry, worktreePath, ageHours: Math.round(ageMs / (60 * 60 * 1000)) }, 'Removing stale worktree metadata (worktree directory missing)');
+                    await fs.remove(entryPath);
+                    pruned++;
+                } else {
+                    logger.debug({ entry, ageHours: Math.round(ageMs / (60 * 60 * 1000)), minAgeHours }, 'Skipping recent stale worktree entry');
+                    skipped++;
+                }
+            }
+        }
+
+        logger.info({ localRepoPath, pruned, skipped, minAgeHours }, 'Safe worktree prune completed');
+    } catch (error) {
+        logger.warn({ localRepoPath, error: (error as Error).message }, 'Failed to safely prune worktrees');
+    }
+
+    return { pruned, skipped };
 }
 
 export async function setupWorktreePermissions(worktreePath: string, branchName: string, issueId: number | string | null): Promise<void> {
