@@ -1,8 +1,10 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, DraftListItem, IssueSummary } from '../api/gitfixApi';
-import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, Filter } from 'lucide-react';
+import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, Filter, ChevronLeft, ChevronRight } from 'lucide-react';
+
+const DEFAULT_PAGE_SIZE = 10;
 
 const formatRelativeTime = (dateString: string): string => {
   const date = new Date(dateString);
@@ -27,44 +29,71 @@ const PlansPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [repoFilter, setRepoFilter] = useState<string>('all');
 
-  // Extract unique repositories with counts
-  const repositoriesWithCounts = useMemo(() => {
-    const repoCounts: Record<string, number> = {};
-    drafts.forEach(draft => {
-      const repo = draft.repository;
-      repoCounts[repo] = (repoCounts[repo] || 0) + 1;
-    });
-    return Object.entries(repoCounts)
-      .map(([repo, count]) => ({ repo, count }))
-      .sort((a, b) => a.repo.localeCompare(b.repo));
-  }, [drafts]);
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalDrafts, setTotalDrafts] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
 
-  // Filter drafts based on selected repository
-  const filteredDrafts = useMemo(() => {
-    if (repoFilter === 'all') return drafts;
-    return drafts.filter(draft => draft.repository === repoFilter);
-  }, [drafts, repoFilter]);
+  // All repositories for filter dropdown (fetched once without filters)
+  const [allRepositories, setAllRepositories] = useState<{ repo: string; count: number }[]>([]);
+  const [totalAllDrafts, setTotalAllDrafts] = useState(0);
 
-  // Reset filter when selected repo no longer exists
-  useEffect(() => {
-    if (repoFilter !== 'all' && !repositoriesWithCounts.some(r => r.repo === repoFilter)) {
-      setRepoFilter('all');
+  const totalPages = useMemo(() => Math.ceil(totalDrafts / DEFAULT_PAGE_SIZE), [totalDrafts]);
+
+  // Fetch all repositories for the filter dropdown (without any filters applied)
+  const loadAllRepositories = useCallback(async () => {
+    try {
+      // Fetch all drafts to get repository counts (with high limit to get all)
+      const data = await getDrafts({ limit: 1000 });
+      const repoCounts: Record<string, number> = {};
+      data.drafts.forEach(draft => {
+        const repo = draft.repository;
+        repoCounts[repo] = (repoCounts[repo] || 0) + 1;
+      });
+      const repos = Object.entries(repoCounts)
+        .map(([repo, count]) => ({ repo, count }))
+        .sort((a, b) => a.repo.localeCompare(b.repo));
+      setAllRepositories(repos);
+      setTotalAllDrafts(data.total);
+    } catch (err) {
+      console.error('Failed to load repositories:', err);
     }
-  }, [repositoriesWithCounts, repoFilter]);
-
-  useEffect(() => {
-    const loadDrafts = async () => {
-      try {
-        const data = await getDrafts();
-        setDrafts(data);
-      } catch (err) {
-        setError((err as Error).message || 'Failed to load plans');
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadDrafts();
   }, []);
+
+  // Fetch drafts with pagination and filtering
+  const loadDrafts = useCallback(async (page: number, repository: string) => {
+    setLoading(true);
+    try {
+      const data = await getDrafts({
+        page,
+        limit: DEFAULT_PAGE_SIZE,
+        repository: repository === 'all' ? undefined : repository
+      });
+      setDrafts(data.drafts);
+      setTotalDrafts(data.total);
+      setHasMore(data.hasMore);
+    } catch (err) {
+      setError((err as Error).message || 'Failed to load plans');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Initial load of all repositories for filter dropdown
+  useEffect(() => {
+    loadAllRepositories();
+  }, [loadAllRepositories]);
+
+  // Load drafts when page or filter changes
+  useEffect(() => {
+    loadDrafts(currentPage, repoFilter);
+  }, [currentPage, repoFilter, loadDrafts]);
+
+  // Reset to first page when filter changes
+  const handleFilterChange = (newFilter: string) => {
+    setRepoFilter(newFilter);
+    setCurrentPage(1);
+  };
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.preventDefault();
@@ -74,10 +103,12 @@ const PlansPage: React.FC = () => {
     setDrafts(drafts.filter(d => d.draft_id !== id));
     try {
       await deleteDraft(id);
+      // Refresh repository counts and current page
+      await loadAllRepositories();
+      await loadDrafts(currentPage, repoFilter);
     } catch (err) {
       setError((err as Error).message || 'Failed to delete plan');
-      const data = await getDrafts();
-      setDrafts(data);
+      await loadDrafts(currentPage, repoFilter);
     }
   };
 
@@ -165,7 +196,8 @@ const PlansPage: React.FC = () => {
     );
   };
 
-  if (loading) {
+  // Only show full-page loading on initial load (when no data yet)
+  if (loading && drafts.length === 0 && totalAllDrafts === 0) {
     return (
       <div className="p-6">
         <h1 className="text-2xl font-bold text-gray-800 mb-6">Implementation Plans</h1>
@@ -188,16 +220,16 @@ const PlansPage: React.FC = () => {
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
         <div className="flex items-center gap-4">
-          {repositoriesWithCounts.length > 1 && (
+          {allRepositories.length > 1 && (
             <div className="flex items-center gap-2">
               <Filter size={16} className="text-gray-500" />
               <select
                 value={repoFilter}
-                onChange={(e) => setRepoFilter(e.target.value)}
+                onChange={(e) => handleFilterChange(e.target.value)}
                 className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
               >
-                <option value="all">All Repositories ({drafts.length})</option>
-                {repositoriesWithCounts.map(({ repo, count }) => (
+                <option value="all">All Repositories ({totalAllDrafts})</option>
+                {allRepositories.map(({ repo, count }) => (
                   <option key={repo} value={repo}>
                     {repo} ({count})
                   </option>
@@ -214,7 +246,7 @@ const PlansPage: React.FC = () => {
         </div>
       </div>
 
-      {drafts.length === 0 ? (
+      {totalAllDrafts === 0 && !loading ? (
         <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
           <div className="mb-4">
             <svg className="w-16 h-16 mx-auto text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -229,14 +261,14 @@ const PlansPage: React.FC = () => {
             Create Your First Plan
           </Link>
         </div>
-      ) : filteredDrafts.length === 0 ? (
+      ) : drafts.length === 0 && !loading ? (
         <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
           <div className="mb-4">
             <Filter className="w-16 h-16 mx-auto text-gray-400" />
           </div>
           <p className="text-gray-500 mb-4">No plans found for the selected repository.</p>
           <button
-            onClick={() => setRepoFilter('all')}
+            onClick={() => handleFilterChange('all')}
             className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
           >
             Show All Plans
@@ -265,7 +297,7 @@ const PlansPage: React.FC = () => {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {filteredDrafts.map((draft) => (
+              {drafts.map((draft) => (
                 <tr key={draft.draft_id} className="hover:bg-gray-50 group">
                   <td className="px-6 py-4">
                     <Link to={`/tasks/plan/${draft.draft_id}`} className="block">
@@ -305,6 +337,36 @@ const PlansPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+
+          {/* Pagination controls */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-50">
+              <span className="text-sm text-gray-600">
+                Showing {(currentPage - 1) * DEFAULT_PAGE_SIZE + 1}-{Math.min(currentPage * DEFAULT_PAGE_SIZE, totalDrafts)} of {totalDrafts} plans
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1 || loading}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronLeft size={16} />
+                  Previous
+                </button>
+                <span className="text-sm text-gray-600 px-2">
+                  Page {currentPage} of {totalPages}
+                </span>
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={!hasMore || loading}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  Next
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -57,12 +57,29 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     if (!check.valid) { sendCheckError(res, check); return; }
 
     try {
-      const limit = Math.min(Number(req.query.limit) || 10, 100);
-      const drafts = await db!('task_drafts')
-        .where({ user_id: req.user!.id })
+      const page = Math.max(1, Number(req.query.page) || 1);
+      const limit = Math.min(Math.max(1, Number(req.query.limit) || 10), 100);
+      const offset = (page - 1) * limit;
+      const repository = req.query.repository as string | undefined;
+
+      // Build query with optional repository filter
+      let query = db!('task_drafts').where({ user_id: req.user!.id });
+      let countQuery = db!('task_drafts').where({ user_id: req.user!.id });
+
+      if (repository && repository !== 'all') {
+        query = query.andWhere('repository', repository);
+        countQuery = countQuery.andWhere('repository', repository);
+      }
+
+      // Get total count for pagination
+      const [{ count: totalCount }] = await countQuery.count('* as count');
+      const total = Number(totalCount);
+
+      const drafts = await query
         .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt')
         .orderBy('updated_at', 'desc')
-        .limit(limit);
+        .limit(limit)
+        .offset(offset);
 
       // Get issue summaries for each draft
       const draftIds = drafts.map((d: { draft_id: string }) => d.draft_id);
@@ -92,7 +109,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         }
       }
 
-      res.json(drafts);
+      res.json({
+        drafts,
+        total,
+        page,
+        limit,
+        hasMore: offset + drafts.length < total
+      });
     } catch (error) {
       console.error('List drafts error:', error);
       res.status(500).json({ error: 'Failed to fetch drafts' });
