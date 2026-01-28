@@ -57,15 +57,87 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     if (!check.valid) { sendCheckError(res, check); return; }
 
     try {
-      const limit = Math.min(Number(req.query.limit) || 10, 100);
-      const drafts = await db!('task_drafts')
-        .where({ user_id: req.user!.id })
-        .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt')
-        .orderBy('updated_at', 'desc')
-        .limit(limit);
+      const page = Math.max(1, Number(req.query.page) || 1);
+      const limit = Math.min(Math.max(1, Number(req.query.limit) || 10), 100);
+      const offset = (page - 1) * limit;
+      const repository = req.query.repository as string | undefined;
+      const search = req.query.search as string | undefined;
 
-      // Get issue summaries for each draft
-      const draftIds = drafts.map((d: { draft_id: string }) => d.draft_id);
+      // Build query with optional repository filter
+      let query = db!('task_drafts').where({ user_id: req.user!.id });
+
+      if (repository && repository !== 'all') {
+        query = query.andWhere('repository', repository);
+      }
+
+      // Apply search filter to name and initial_prompt with partial word matching
+      const searchWords = search?.trim().split(/\s+/).filter(w => w.length > 0) || [];
+      if (searchWords.length > 0) {
+        // Match any word (partial matching) - results where ANY word matches
+        query = query.andWhere(function() {
+          for (const word of searchWords) {
+            const wordPattern = `%${word}%`;
+            this.orWhere('name', 'like', wordPattern)
+              .orWhere('initial_prompt', 'like', wordPattern);
+          }
+        });
+      }
+
+      let drafts = await query
+        .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt')
+        .orderBy('updated_at', 'desc');
+
+      // Apply relevance scoring and sorting when searching
+      if (searchWords.length > 0) {
+        const exactPhrase = search!.trim().toLowerCase();
+
+        // Score each draft based on search relevance
+        const scoredDrafts = drafts.map((draft: { name?: string; initial_prompt?: string }) => {
+          const nameLC = (draft.name || '').toLowerCase();
+          const promptLC = (draft.initial_prompt || '').toLowerCase();
+          let score = 0;
+
+          // Highest score: exact phrase match in name
+          if (nameLC.includes(exactPhrase)) score += 100;
+          // High score: exact phrase match in prompt
+          if (promptLC.includes(exactPhrase)) score += 80;
+
+          // Medium score: all words match (but not as exact phrase)
+          const allWordsMatchName = searchWords.every(w => nameLC.includes(w.toLowerCase()));
+          const allWordsMatchPrompt = searchWords.every(w => promptLC.includes(w.toLowerCase()));
+          if (allWordsMatchName && !nameLC.includes(exactPhrase)) score += 50;
+          if (allWordsMatchPrompt && !promptLC.includes(exactPhrase)) score += 40;
+
+          // Lower score: partial word matches (some words match)
+          const wordsMatchingName = searchWords.filter(w => nameLC.includes(w.toLowerCase())).length;
+          const wordsMatchingPrompt = searchWords.filter(w => promptLC.includes(w.toLowerCase())).length;
+          score += wordsMatchingName * 10;
+          score += wordsMatchingPrompt * 5;
+
+          return { ...draft, _searchScore: score };
+        });
+
+        // Sort by score (descending), then by updated_at (descending)
+        scoredDrafts.sort((a, b) => {
+          if (b._searchScore !== a._searchScore) return b._searchScore - a._searchScore;
+          const aDate = (a as { updated_at?: string }).updated_at;
+          const bDate = (b as { updated_at?: string }).updated_at;
+          return new Date(bDate || 0).getTime() - new Date(aDate || 0).getTime();
+        });
+
+        // Remove the score property before returning
+        drafts = scoredDrafts.map((d: { _searchScore?: number; [key: string]: unknown }) => {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          const { _searchScore, ...rest } = d;
+          return rest;
+        });
+      }
+
+      // Apply pagination after scoring/sorting
+      const paginatedDrafts = drafts.slice(offset, offset + limit);
+
+      // Get issue summaries for paginated drafts only
+      const draftIds = paginatedDrafts.map((d: { draft_id: string }) => d.draft_id);
       if (draftIds.length > 0) {
         const issueSummaries = await db!('plan_issues')
           .whereIn('draft_id', draftIds)
@@ -85,14 +157,20 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
             return summaryMap;
           });
 
-        // Attach issue summaries to drafts
-        for (const draft of drafts) {
+        // Attach issue summaries to paginated drafts
+        for (const draft of paginatedDrafts) {
           const typedDraft = draft as { draft_id: string; issue_summary?: { total: number; pending: number; processing: number; merged: number; closed: number } };
           typedDraft.issue_summary = issueSummaries[typedDraft.draft_id] || null;
         }
       }
 
-      res.json(drafts);
+      res.json({
+        drafts: paginatedDrafts,
+        total: drafts.length,
+        page,
+        limit,
+        hasMore: offset + paginatedDrafts.length < drafts.length
+      });
     } catch (error) {
       console.error('List drafts error:', error);
       res.status(500).json({ error: 'Failed to fetch drafts' });
