@@ -61,6 +61,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const limit = Math.min(Math.max(1, Number(req.query.limit) || 10), 100);
       const offset = (page - 1) * limit;
       const repository = req.query.repository as string | undefined;
+      const search = req.query.search as string | undefined;
 
       // Build query with optional repository filter
       let query = db!('task_drafts').where({ user_id: req.user!.id });
@@ -69,6 +70,19 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       if (repository && repository !== 'all') {
         query = query.andWhere('repository', repository);
         countQuery = countQuery.andWhere('repository', repository);
+      }
+
+      // Apply search filter to name and initial_prompt
+      if (search && search.trim()) {
+        const searchTerm = `%${search.trim()}%`;
+        query = query.andWhere(function() {
+          this.where('name', 'like', searchTerm)
+            .orWhere('initial_prompt', 'like', searchTerm);
+        });
+        countQuery = countQuery.andWhere(function() {
+          this.where('name', 'like', searchTerm)
+            .orWhere('initial_prompt', 'like', searchTerm);
+        });
       }
 
       // Get total count for pagination

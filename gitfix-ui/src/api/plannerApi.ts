@@ -253,6 +253,7 @@ export interface GetDraftsOptions {
   page?: number;
   limit?: number;
   repository?: string;
+  search?: string;
 }
 
 export interface PaginatedDraftsResponse {
@@ -268,6 +269,7 @@ export const getDrafts = async (options: GetDraftsOptions = {}): Promise<Paginat
   if (options.page !== undefined) params.append('page', options.page.toString());
   if (options.limit !== undefined) params.append('limit', options.limit.toString());
   if (options.repository && options.repository !== 'all') params.append('repository', options.repository);
+  if (options.search && options.search.trim()) params.append('search', options.search.trim());
 
   const queryString = params.toString();
   const url = queryString

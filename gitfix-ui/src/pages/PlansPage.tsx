@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, DraftListItem, IssueSummary } from '../api/gitfixApi';
-import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, Filter, ChevronLeft, ChevronRight } from 'lucide-react';
+import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, Filter, ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
 
 const DEFAULT_PAGE_SIZE = 10;
 
@@ -28,6 +28,8 @@ const PlansPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [repoFilter, setRepoFilter] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [debouncedSearch, setDebouncedSearch] = useState<string>('');
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -60,14 +62,15 @@ const PlansPage: React.FC = () => {
     }
   }, []);
 
-  // Fetch drafts with pagination and filtering
+  // Fetch drafts with pagination, filtering, and search
   const loadDrafts = useCallback(async (page: number, repository: string) => {
     setLoading(true);
     try {
       const data = await getDrafts({
         page,
         limit: DEFAULT_PAGE_SIZE,
-        repository: repository === 'all' ? undefined : repository
+        repository: repository === 'all' ? undefined : repository,
+        search: debouncedSearch || undefined
       });
       setDrafts(data.drafts);
       setTotalDrafts(data.total);
@@ -77,21 +80,36 @@ const PlansPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [debouncedSearch]);
 
   // Initial load of all repositories for filter dropdown
   useEffect(() => {
     loadAllRepositories();
   }, [loadAllRepositories]);
 
-  // Load drafts when page or filter changes
+  // Load drafts when page, filter, or search changes
   useEffect(() => {
     loadDrafts(currentPage, repoFilter);
-  }, [currentPage, repoFilter, loadDrafts]);
+  }, [currentPage, repoFilter, debouncedSearch, loadDrafts]);
+
+  // Debounce search query
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setCurrentPage(1); // Reset to first page when search changes
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // Reset to first page when filter changes
   const handleFilterChange = (newFilter: string) => {
     setRepoFilter(newFilter);
+    setCurrentPage(1);
+  };
+
+  const handleSearchClear = () => {
+    setSearchQuery('');
+    setDebouncedSearch('');
     setCurrentPage(1);
   };
 
@@ -220,6 +238,26 @@ const PlansPage: React.FC = () => {
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
         <div className="flex items-center gap-4">
+          {/* Search input */}
+          <div className="relative">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search plans..."
+              className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            />
+            {searchQuery && (
+              <button
+                onClick={handleSearchClear}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                title="Clear search"
+              >
+                <X size={16} />
+              </button>
+            )}
+          </div>
           {allRepositories.length > 1 && (
             <div className="flex items-center gap-2">
               <Filter size={16} className="text-gray-500" />
@@ -246,7 +284,7 @@ const PlansPage: React.FC = () => {
         </div>
       </div>
 
-      {totalAllDrafts === 0 && !loading ? (
+      {totalAllDrafts === 0 && !loading && !debouncedSearch ? (
         <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
           <div className="mb-4">
             <svg className="w-16 h-16 mx-auto text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -260,6 +298,19 @@ const PlansPage: React.FC = () => {
           >
             Create Your First Plan
           </Link>
+        </div>
+      ) : drafts.length === 0 && !loading && debouncedSearch ? (
+        <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+          <div className="mb-4">
+            <Search className="w-16 h-16 mx-auto text-gray-400" />
+          </div>
+          <p className="text-gray-500 mb-4">No plans found matching "{debouncedSearch}"</p>
+          <button
+            onClick={handleSearchClear}
+            className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+          >
+            Clear Search
+          </button>
         </div>
       ) : drafts.length === 0 && !loading ? (
         <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
