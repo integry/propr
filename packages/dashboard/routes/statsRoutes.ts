@@ -323,5 +323,21 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
     }
   }
 
-  return { getTaskStats, getRepositoryStats, getOverview };
+  async function getGeneratingPlansCount(_req: Request, res: Response): Promise<void> {
+    try {
+      const countResult = await db('task_drafts')
+        .count('* as count')
+        .where('status', 'generating')
+        .first() as unknown as CountRow | undefined;
+
+      res.json({
+        count: Number(countResult?.count || 0)
+      });
+    } catch (error) {
+      console.error('Error in /api/stats/generating-plans:', error);
+      res.status(500).json({ error: 'Failed to fetch generating plans count' });
+    }
+  }
+
+  return { getTaskStats, getRepositoryStats, getOverview, getGeneratingPlansCount };
 }
