@@ -22,7 +22,8 @@ import { GranularitySelector } from './GranularitySelector';
 import { ContextLevelSlider } from './ContextLevelSlider';
 import { BranchSelector } from './BranchSelector';
 import { GenerateButton } from './GenerateButton';
-import { Loader2, Download } from 'lucide-react';
+import { FileSelectionSkeleton } from './SkeletonLoader';
+import { Loader2, Download, GitBranch, Settings2 } from 'lucide-react';
 
 interface SetupWizardProps {
   draft: PlannerDraft;
@@ -66,7 +67,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     compress: false,
     files: draft.attachments || []
   });
-  
+
   const [preview, setPreview] = useState<PreviewState>({
     isLoading: false,
     data: null,
@@ -112,8 +113,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     if (textarea) {
       // Reset height to auto to get the correct scrollHeight
       textarea.style.height = 'auto';
-      // Set height to scrollHeight, with minimum of 120px (approximately 5 rows)
-      const minHeight = 120;
+      // Set height to scrollHeight, with minimum of 160px (approximately 6-7 rows)
+      const minHeight = 160;
       textarea.style.height = `${Math.max(textarea.scrollHeight, minHeight)}px`;
     }
   }, []);
@@ -207,7 +208,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
-    
+
     debounceTimerRef.current = setTimeout(() => {
       fetchPreview();
     }, DEBOUNCE_DELAY);
@@ -243,7 +244,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const handleUpload = async (file: File) => {
     setIsUploading(true);
     setError(null);
-    
+
     try {
       const attachment = await uploadAttachment(draft.draft_id, file);
       setConfig(prev => ({ ...prev, files: [...prev.files, attachment] }));
@@ -293,10 +294,10 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       setError('Please provide a prompt and select a branch before exporting');
       return;
     }
-    
+
     setIsExporting(true);
     setError(null);
-    
+
     try {
       const blob = await downloadContext({
         draftId: draft.draft_id,
@@ -307,7 +308,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         compress: config.compress,
         files: config.files.map(f => f.originalName)
       });
-      
+
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -349,94 +350,137 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const isGenerateDisabled = isGenerating || preview.isLoading || !!branchError || repoInfo.isLoading;
 
   return (
-    <div className="max-w-4xl mx-auto p-6 bg-white rounded-lg shadow">
-      <div className="flex justify-between items-start mb-6">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Configure AI Planner</h2>
-          <p className="text-gray-600">
-            Repository: <span className="font-mono text-gray-900">{draft.repository}</span>
-          </p>
+    <div className="max-w-4xl mx-auto flex flex-col min-h-[calc(100vh-200px)]">
+      {/* Context Header - Repository and Branch */}
+      <div className="bg-slate-800 text-white rounded-t-xl px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <GitBranch className="w-5 h-5 text-slate-400" />
+            <div>
+              <span className="text-slate-400 text-sm">Repository</span>
+              <p className="font-mono text-white">{draft.repository}</p>
+            </div>
+          </div>
+          <BranchSelector
+            value={config.baseBranch}
+            branches={repoInfo.branches}
+            isLoading={repoInfo.isLoading}
+            error={branchError || repoInfo.error}
+            onChange={(branch) => setConfig(prev => ({ ...prev, baseBranch: branch }))}
+          />
         </div>
-        <BranchSelector
-          value={config.baseBranch}
-          branches={repoInfo.branches}
-          isLoading={repoInfo.isLoading}
-          error={branchError || repoInfo.error}
-          onChange={(branch) => setConfig(prev => ({ ...prev, baseBranch: branch }))}
-        />
       </div>
 
-      <div className="mb-6">
-        <label className="block text-sm font-medium text-gray-700 mb-2">Prompt</label>
-        <textarea
-          ref={textareaRef}
-          value={config.prompt}
-          onChange={(e) => setConfig(prev => ({ ...prev, prompt: e.target.value }))}
-          onInput={autoResize}
-          onPaste={handlePaste}
-          placeholder="Describe what you want the AI to do..."
-          className="w-full px-4 py-3 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 resize-none overflow-hidden"
-          style={{ minHeight: '120px' }}
-        />
-        <p className="text-xs text-gray-400 mt-1">Tip: You can paste screenshots directly into this field</p>
-      </div>
+      {/* Main content area */}
+      <div className="flex-1 bg-white rounded-b-xl shadow-lg">
+        <div className="p-6 space-y-6">
+          {/* Hero Prompt Area */}
+          <div className="space-y-3">
+            <label className="block text-lg font-semibold text-gray-900">
+              What would you like to build?
+            </label>
+            <div className="rounded-xl border-2 border-gray-200 focus-within:border-indigo-500 transition-colors overflow-hidden">
+              <textarea
+                ref={textareaRef}
+                value={config.prompt}
+                onChange={(e) => setConfig(prev => ({ ...prev, prompt: e.target.value }))}
+                onInput={autoResize}
+                onPaste={handlePaste}
+                placeholder="Describe the feature, bug fix, or improvement you want to implement..."
+                className="w-full px-5 py-4 text-base border-0 focus:ring-0 resize-none overflow-hidden"
+                style={{ minHeight: '160px' }}
+              />
+              {/* Integrated attachment area */}
+              <div className="px-4 pb-3 border-t border-gray-100 bg-gray-50">
+                <AttachmentUploader
+                  files={config.files}
+                  draftId={draft.draft_id}
+                  isUploading={isUploading}
+                  onUpload={handleUpload}
+                  onRemove={handleRemoveFile}
+                  compact
+                />
+              </div>
+            </div>
+            <p className="text-xs text-gray-400">
+              Tip: Paste screenshots directly, or drag & drop files for additional context
+            </p>
+          </div>
 
-      <GranularitySelector
-        value={config.granularity}
-        onChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
-      />
+          {/* Context Settings Section */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-gray-700">
+              <Settings2 className="w-5 h-5" />
+              <h3 className="font-semibold">Context Settings</h3>
+            </div>
 
-      <ContextLevelSlider
-        value={config.contextLevel}
-        onChange={(contextLevel) => setConfig(prev => ({ ...prev, contextLevel }))}
-        compress={config.compress}
-        onCompressChange={(compress) => setConfig(prev => ({ ...prev, compress }))}
-      />
+            <div className="bg-gray-50 rounded-xl p-5 space-y-5 border border-gray-100">
+              <GranularitySelector
+                value={config.granularity}
+                onChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
+              />
 
-      <CostPreview preview={preview} />
+              <div className="border-t border-gray-200 pt-5">
+                <ContextLevelSlider
+                  value={config.contextLevel}
+                  onChange={(contextLevel) => setConfig(prev => ({ ...prev, contextLevel }))}
+                  compress={config.compress}
+                  onCompressChange={(compress) => setConfig(prev => ({ ...prev, compress }))}
+                />
+              </div>
+            </div>
+          </div>
 
-      <div className="flex justify-end mb-4">
-        <button
-          onClick={handleExportContext}
-          disabled={isExporting || preview.isLoading || !config.prompt.trim() || !config.baseBranch}
-          className="text-sm text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1 disabled:text-gray-400 disabled:cursor-not-allowed"
-        >
-          {isExporting ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Download className="w-4 h-4" />
+          {/* Cost Preview Section */}
+          <div className="space-y-3">
+            <CostPreview preview={preview} />
+
+            <div className="flex justify-end">
+              <button
+                onClick={handleExportContext}
+                disabled={isExporting || preview.isLoading || !config.prompt.trim() || !config.baseBranch}
+                className="text-sm text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1 disabled:text-gray-400 disabled:cursor-not-allowed"
+              >
+                {isExporting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
+                Export Context (XML)
+              </button>
+            </div>
+          </div>
+
+          {/* Smart File Selection - with skeleton during loading */}
+          {preview.isLoading && !preview.data ? (
+            <FileSelectionSkeleton />
+          ) : preview.data && (
+            <SmartFileSelection smartSelection={preview.data.smartSelection} />
           )}
-          Export Context (XML)
-        </button>
-      </div>
 
-      {preview.data && (
-        <SmartFileSelection smartSelection={preview.data.smartSelection} />
-      )}
+          {/* Error display */}
+          {(error || generationError) && (
+            <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-red-700">
+              {error || generationError}
+            </div>
+          )}
 
-      <AttachmentUploader
-        files={config.files}
-        draftId={draft.draft_id}
-        isUploading={isUploading}
-        onUpload={handleUpload}
-        onRemove={handleRemoveFile}
-      />
-
-      {(error || generationError) && (
-        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-md text-red-700">
-          {error || generationError}
+          {/* Generation Progress */}
+          {isGenerating && <GenerationProgress trace={generationTrace} />}
         </div>
-      )}
 
-      {isGenerating && <GenerationProgress trace={generationTrace} />}
-
-      <GenerateButton
-        isGenerating={isGenerating}
-        isPreviewLoading={preview.isLoading}
-        isRepoLoading={repoInfo.isLoading}
-        disabled={isGenerateDisabled}
-        onClick={handleGenerate}
-      />
+        {/* Sticky Footer with Generate Button */}
+        <div className="sticky bottom-0 bg-white border-t border-gray-200 p-4 rounded-b-xl">
+          <GenerateButton
+            isGenerating={isGenerating}
+            isPreviewLoading={preview.isLoading}
+            isRepoLoading={repoInfo.isLoading}
+            disabled={isGenerateDisabled}
+            onClick={handleGenerate}
+            costEstimate={preview.data?.stats.costEstimate}
+          />
+        </div>
+      </div>
     </div>
   );
 };
