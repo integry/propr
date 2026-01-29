@@ -28,6 +28,7 @@ import {
   createUpdateIssueHandler,
   createImplementAllIssuesHandler,
   validatePreviewInput,
+  validateContextRepositories,
   withAuthCheck,
   updateDraftContextConfig,
   runBackgroundGeneration,
@@ -288,15 +289,24 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
   const uploadAttachment = withAuthCheck(db, createUploadAttachmentHandler({ verifyOwnership: ownershipVerifier }));
   const getContextStats = withAuthCheck(db, createGetContextStatsHandler({ verifyOwnership: ownershipVerifier }));
-  const previewContext = withAuthCheck(db, createPreviewContextHandler({ verifyOwnership: ownershipVerifier, validateInput: validatePreviewInput }));
+  const previewContext = withAuthCheck(db, createPreviewContextHandler({ verifyOwnership: ownershipVerifier, validateInput: validatePreviewInput, db }));
   const deleteAttachment = withAuthCheck(db, createDeleteAttachmentHandler({ verifyOwnership: ownershipVerifier }));
 
   async function generate(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    const { draftId, baseBranch, granularity, contextLevel, compress } = req.body as GenerateRequestBody;
+    const { draftId, baseBranch, granularity, contextLevel, compress, contextRepositories } = req.body as GenerateRequestBody;
     if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
+
+    // Validate context repositories if provided
+    if (contextRepositories) {
+      const repoValidation = validateContextRepositories(contextRepositories);
+      if (!repoValidation.valid) {
+        res.status(400).json({ error: repoValidation.error });
+        return;
+      }
+    }
 
     const correlationId = generateCorrelationId();
 
@@ -317,7 +327,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
       const worktreePath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken });
 
-      await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress });
+      await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories });
 
       await db!('task_drafts').where({ draft_id: draftId }).update({
         status: 'generating',
