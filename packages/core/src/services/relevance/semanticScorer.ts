@@ -58,7 +58,7 @@ export async function scoreSemanticRelevance(
   userPrompt: string,
   options: SemanticScoringOptions
 ): Promise<SemanticFileScore[]> {
-  const { agent, correlationId, repoName, branch } = options;
+  const { agent, correlationId, repoName, branch, modelId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   try {
@@ -134,14 +134,15 @@ export async function scoreSemanticRelevance(
       const estimatedOutputTokens = 500;
 
       try {
-        const response = await agent.analyze(prompt);
+        // Pass modelId to use the configured context analysis model
+        const response = await agent.analyze(prompt, undefined, modelId);
         const parsed = parseSemanticResponse(response);
 
         // Log metrics for this chunk
         await logSummarizationCall({
           timestamp: new Date().toISOString(),
           callType: 'semantic_scoring',
-          model: agent.config.defaultModel || 'haiku',
+          model: modelId || agent.config.defaultModel || 'haiku',
           agentAlias: agent.config.alias,
           estimatedInputTokens,
           estimatedOutputTokens,
@@ -161,7 +162,7 @@ export async function scoreSemanticRelevance(
         await logSummarizationCall({
           timestamp: new Date().toISOString(),
           callType: 'semantic_scoring',
-          model: agent.config.defaultModel || 'haiku',
+          model: modelId || agent.config.defaultModel || 'haiku',
           agentAlias: agent.config.alias,
           estimatedInputTokens,
           estimatedOutputTokens,
