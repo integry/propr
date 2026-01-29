@@ -126,22 +126,75 @@ export async function setupRepoContext(
 export const VALID_GRANULARITIES = ['single', 'balanced', 'granular'] as const;
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9._/-]+$/;
 
+export interface ContextRepositoryInput {
+  repository: string;
+  branch?: string;
+  description?: string;
+}
+
+export function validateContextRepositories(
+  repos: unknown
+): { valid: boolean; error?: string; repositories?: ContextRepositoryInput[] } {
+  if (!repos) {
+    return { valid: true, repositories: [] };
+  }
+
+  if (!Array.isArray(repos)) {
+    return { valid: false, error: 'contextRepositories must be an array' };
+  }
+
+  const validated: ContextRepositoryInput[] = [];
+
+  for (const repo of repos) {
+    if (!repo || typeof repo !== 'object') {
+      return { valid: false, error: 'Each context repository must be an object' };
+    }
+
+    if (!repo.repository || typeof repo.repository !== 'string') {
+      return { valid: false, error: 'Each context repository must have a repository field' };
+    }
+
+    // Validate repository format (owner/repo)
+    if (!repo.repository.match(/^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/)) {
+      return { valid: false, error: `Invalid repository format: ${repo.repository}` };
+    }
+
+    validated.push({
+      repository: repo.repository,
+      branch: typeof repo.branch === 'string' ? repo.branch : undefined,
+      description: typeof repo.description === 'string' ? repo.description : undefined
+    });
+  }
+
+  return { valid: true, repositories: validated };
+}
+
 export interface GenerateRequestBody {
   draftId?: string;
   baseBranch?: string;
   granularity?: string;
   contextLevel?: number;
   compress?: boolean;
+  contextRepositories?: ContextRepositoryInput[];
 }
 
 export function validatePreviewInput(body: Record<string, unknown>): { valid: boolean; error?: string } {
-  const { draftId, prompt, baseBranch, granularity, files } = body;
+  const { draftId, prompt, baseBranch, granularity, files, contextRepositories } = body;
   if (!draftId) return { valid: false, error: 'draftId is required' };
   if (!prompt || typeof prompt !== 'string') return { valid: false, error: 'prompt is required' };
   if (!baseBranch || typeof baseBranch !== 'string') return { valid: false, error: 'baseBranch is required' };
   if (!BRANCH_NAME_REGEX.test(baseBranch as string)) return { valid: false, error: 'Invalid branch name format' };
   if (granularity && !VALID_GRANULARITIES.includes(granularity as typeof VALID_GRANULARITIES[number])) return { valid: false, error: `granularity must be one of: ${VALID_GRANULARITIES.join(', ')}` };
   if (files && (!Array.isArray(files) || !files.every(f => typeof f === 'string'))) return { valid: false, error: 'files must be an array of strings' };
+
+  // Validate context repositories if provided
+  if (contextRepositories !== undefined) {
+    const repoValidation = validateContextRepositories(contextRepositories);
+    if (!repoValidation.valid) {
+      return { valid: false, error: repoValidation.error };
+    }
+  }
+
   return { valid: true };
 }
 
@@ -156,6 +209,7 @@ interface DownloadContextDeps {
 interface PreviewContextDeps {
   verifyOwnership: (draftId: string, userId: string, fields: string[]) => Promise<OwnershipResult>;
   validateInput: (body: Record<string, unknown>) => { valid: boolean; error?: string };
+  db?: KnexType;
 }
 
 export function createPreviewContextHandler(deps: PreviewContextDeps) {
@@ -163,11 +217,11 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
     const validation = deps.validateInput(req.body);
     if (!validation.valid) { res.status(400).json({ error: validation.error }); return; }
 
-    const { draftId, prompt, baseBranch, granularity, contextLevel, compress, files } = req.body;
+    const { draftId, prompt, baseBranch, granularity, contextLevel, compress, files, contextRepositories } = req.body;
     const correlationId = generateCorrelationId();
 
     try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
+      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const draft = ownership.draft!;
@@ -179,6 +233,23 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
 
       const authToken = await getRepoAuthToken(accessToken);
       const worktreePath = await ensureRepoCloned({ repoUrl: `https://github.com/${owner}/${repoName}.git`, owner, repoName, authToken });
+
+      // Store context repositories in draft config if provided
+      if (deps.db && contextRepositories && Array.isArray(contextRepositories) && contextRepositories.length > 0) {
+        const existingConfig = (draft.context_config as Record<string, unknown>) || {};
+        const updatedConfig = {
+          ...existingConfig,
+          baseBranch,
+          granularity: granularity || 'balanced',
+          contextLevel,
+          compress,
+          contextRepositories
+        };
+        await deps.db('task_drafts').where({ draft_id: draftId }).update({
+          context_config: JSON.stringify(updatedConfig),
+          updated_at: deps.db.fn.now()
+        });
+      }
 
       const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId });
       res.json(result);
@@ -364,8 +435,9 @@ export async function updateDraftContextConfig(
   draft: Record<string, unknown>,
   body: GenerateRequestBody
 ): Promise<void> {
-  const { baseBranch, granularity, contextLevel, compress } = body;
-  const hasUpdates = baseBranch || granularity || contextLevel !== undefined || compress !== undefined;
+  const { baseBranch, granularity, contextLevel, compress, contextRepositories } = body;
+  const hasUpdates = baseBranch || granularity || contextLevel !== undefined ||
+                     compress !== undefined || contextRepositories !== undefined;
   if (!hasUpdates) return;
 
   const existingConfig = (draft.context_config as Record<string, unknown>) || {};
@@ -374,7 +446,8 @@ export async function updateDraftContextConfig(
     ...(baseBranch && { baseBranch }),
     ...(granularity && VALID_GRANULARITIES.includes(granularity as typeof VALID_GRANULARITIES[number]) && { granularity }),
     ...(contextLevel !== undefined && { contextLevel }),
-    ...(compress !== undefined && { compress })
+    ...(compress !== undefined && { compress }),
+    ...(contextRepositories !== undefined && { contextRepositories })
   };
   await db('task_drafts').where({ draft_id: draftId }).update({
     context_config: JSON.stringify(updatedConfig),
