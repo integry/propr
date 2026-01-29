@@ -10,7 +10,7 @@ import { PathValidationService } from './pathValidationService.js';
 import fs from 'fs-extra';
 import path from 'path';
 import {
-  updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, getDefaultModelLimit, findFilesForPlan,
+  updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, findFilesForPlan,
   GenerationTrace, RELEVANT_SUMMARY_COUNT, RESERVED_OVERHEAD_TOKENS, CHARS_PER_TOKEN,
   parseContextConfig, checkoutBaseBranch, TaskDraftConfig, Granularity, PlanningFailedError, buildFullContext,
   Base64Image, MinimalLogger
@@ -294,6 +294,8 @@ interface CallLLMOptions {
   githubToken: string;
   repository: string;
   correlationId?: string;
+  /** Token limit based on user's context level setting */
+  tokenLimit: number;
   /** Optional file summaries for files not fully included in the context */
   fileSummaries?: string;
   /** Optional smart summaries (directory structure and file overviews) */
@@ -312,21 +314,20 @@ interface CallLLMForPlanResult {
 }
 
 async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
-  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries, smartSummaries, images, model = DEFAULT_GENERATION_MODEL, additionalContext } = opts;
+  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, tokenLimit, fileSummaries, smartSummaries, images, model = DEFAULT_GENERATION_MODEL, additionalContext } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
 
   // Build prompt with images embedded as base64 and additional context from context repositories
   const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity, fileSummaries, smartSummaries, images, additionalContext });
-  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0, model, hasAdditionalContext: !!additionalContext, hasSmartSummaries: !!smartSummaries }, 'Calling LLM for plan generation');
+  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0, model, hasAdditionalContext: !!additionalContext, hasSmartSummaries: !!smartSummaries, tokenLimit }, 'Calling LLM for plan generation');
 
-  // Validate token count before sending to LLM
-  const modelLimit = getDefaultModelLimit();
-  const validation = await validatePromptTokens(userPrompt, modelLimit, correlatedLogger);
+  // Validate token count before sending to LLM (use user's configured token limit)
+  const validation = await validatePromptTokens(userPrompt, tokenLimit, correlatedLogger);
 
   if (!validation.valid) {
     throw new PlanningFailedError(
-      `Prompt exceeds token limit: ${validation.tokenCount} tokens (limit: ${modelLimit - CLAUDE_CODE_OVERHEAD}). ` +
+      `Prompt exceeds token limit: ${validation.tokenCount} tokens (limit: ${tokenLimit - CLAUDE_CODE_OVERHEAD}). ` +
       `Try reducing the context level or selecting fewer files.`
     );
   }
@@ -383,7 +384,13 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   // Parse context_config
   const parsedContextConfig = parseDraftContextConfig(draft.context_config, draftId, correlatedLogger);
   const config = parseContextConfig(parsedContextConfig);
-  correlatedLogger.info({ draftId, granularity: config.granularity }, 'Using granularity setting for plan generation');
+  correlatedLogger.info({
+    draftId,
+    granularity: config.granularity,
+    contextLevel: config.contextLevel,
+    tokenLimit: config.tokenLimit,
+    rawContextLevel: parsedContextConfig?.contextLevel
+  }, 'Parsed context config for plan generation');
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 
   const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId, contextModel });
@@ -555,6 +562,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     githubToken,
     repository: draft.repository,
     correlationId,
+    tokenLimit: config.tokenLimit,
     fileSummaries: filteredSummaries,
     smartSummaries,
     images: base64Images.length > 0 ? base64Images : undefined,
