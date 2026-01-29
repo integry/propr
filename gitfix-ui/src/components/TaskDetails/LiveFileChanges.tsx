@@ -85,9 +85,9 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({
     ? fileChanges?.files.find((f) => f.path === selectedFilePath)
     : null;
 
-  // For finished tasks without file changes data, hide the section entirely
-  // This includes loading, error, and empty states for finished tasks
-  if (!isActive && (!fileChanges || fileChanges.files.length === 0)) {
+  // For finished tasks, hide the section entirely
+  // File changes are only relevant during active execution - users can view the final diff in the PR
+  if (!isActive) {
     return null;
   }
 

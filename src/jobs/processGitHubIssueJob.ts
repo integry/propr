@@ -210,8 +210,8 @@ async function fetchIssueComments(octokit: ExecutionParams['octokit'], issueRef:
         const commentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, per_page: 100,
             mediaType: { format: 'full' }  // Get body_html with signed image URLs
-        });
-        const allComments = commentsResp.data as IssueComment[];
+        }) as { data: IssueComment[] };
+        const allComments = commentsResp.data;
         return allComments.filter(comment => {
             const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type);
             return !filterResult.shouldFilter;

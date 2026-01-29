@@ -13,7 +13,7 @@ import {
   updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, getDefaultModelLimit, findFilesForPlan,
   GenerationTrace, RELEVANT_SUMMARY_COUNT, RESERVED_OVERHEAD_TOKENS, CHARS_PER_TOKEN,
   parseContextConfig, checkoutBaseBranch, TaskDraftConfig, Granularity, PlanningFailedError, buildFullContext,
-  Base64Image, MinimalLogger
+  Base64Image, MinimalLogger, ContextRepository
 } from './planningHelpers.js';
 import type { Attachment } from './attachmentService.js';
 import { loadSettings } from '../config/configManager.js';
@@ -228,6 +228,88 @@ function mergeImplementations(tasks: PlanItem[]): string {
   return implementations.join('\n');
 }
 
+/** Options for fetching additional context */
+interface FetchAdditionalContextOptions {
+  contextRepositories: ContextRepository[];
+  tokenLimit: number;
+  githubToken: string;
+  draftId: string;
+  correlationId: string | undefined;
+  correlatedLogger: MinimalLogger;
+}
+
+/**
+ * Helper to fetch additional context from context repositories
+ */
+async function fetchAdditionalContext(options: FetchAdditionalContextOptions): Promise<string | undefined> {
+  const { contextRepositories, tokenLimit, githubToken, draftId, correlationId, correlatedLogger } = options;
+
+  if (!contextRepositories || contextRepositories.length === 0) {
+    return undefined;
+  }
+
+  correlatedLogger.info({
+    repositoryCount: contextRepositories.length,
+    repositories: contextRepositories.map(r => r.repository)
+  }, 'Generating additional context from context repositories');
+
+  const additionalContextBudget = Math.floor(tokenLimit * 0.2);
+
+  try {
+    const result = await generateAdditionalContext({
+      repositories: contextRepositories,
+      tokenBudget: additionalContextBudget,
+      authToken: githubToken,
+      correlationId
+    });
+
+    if (result.repositoriesIncluded.length > 0) {
+      correlatedLogger.info({
+        repositoriesIncluded: result.repositoriesIncluded,
+        totalTokens: result.totalTokens,
+        errorCount: result.errors.length
+      }, 'Additional context generated successfully');
+
+      await updateTrace(draftId, 'additional_context', 'completed', {
+        repositoriesIncluded: result.repositoriesIncluded,
+        totalTokens: result.totalTokens,
+        errors: result.errors
+      });
+    }
+
+    if (result.errors.length > 0) {
+      correlatedLogger.warn({ errors: result.errors }, 'Some context repositories could not be processed');
+    }
+
+    return result.repositoriesIncluded.length > 0 ? result.context : undefined;
+  } catch (error) {
+    correlatedLogger.warn({ error: (error as Error).message }, 'Failed to generate additional context, continuing without it');
+    return undefined;
+  }
+}
+
+/**
+ * Helper to update trace and log for granularity enforcement
+ */
+async function handleGranularityEnforcement(
+  draftId: string,
+  enforcementMetadata: GranularityEnforcementMetadata,
+  correlatedLogger: MinimalLogger
+): Promise<void> {
+  if (!enforcementMetadata.enforced) return;
+
+  await updateTrace(draftId, 'granularity_enforcement', 'completed', {
+    originalTaskCount: enforcementMetadata.originalTaskCount,
+    finalTaskCount: enforcementMetadata.finalTaskCount,
+    granularity: enforcementMetadata.granularity,
+    message: enforcementMetadata.message
+  });
+  correlatedLogger.info(
+    { originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount },
+    'Granularity enforcement applied - added trace step'
+  );
+}
+
 // Re-export for backwards compatibility
 export { BranchNotFoundError, PlanningFailedError, buildFullContext } from './planningHelpers.js';
 export { SmartFileSelection, PreviewStats, PreviewResult, GenerateContextPreviewOptions, generateContextPreview } from './planningHelpers.js';
@@ -437,51 +519,14 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   }, 'Filtered summaries for context enrichment');
 
   // Generate additional context from context repositories if configured
-  let additionalContext: string | undefined;
-  if (config.contextRepositories && config.contextRepositories.length > 0) {
-    correlatedLogger.info({
-      repositoryCount: config.contextRepositories.length,
-      repositories: config.contextRepositories.map(r => r.repository)
-    }, 'Generating additional context from context repositories');
-
-    // Allocate 20% of the remaining token budget for additional context
-    const additionalContextBudget = Math.floor(config.tokenLimit * 0.2);
-
-    try {
-      const additionalContextResult = await generateAdditionalContext({
-        repositories: config.contextRepositories,
-        tokenBudget: additionalContextBudget,
-        authToken: githubToken,
-        correlationId
-      });
-
-      if (additionalContextResult.repositoriesIncluded.length > 0) {
-        additionalContext = additionalContextResult.context;
-        correlatedLogger.info({
-          repositoriesIncluded: additionalContextResult.repositoriesIncluded,
-          totalTokens: additionalContextResult.totalTokens,
-          errorCount: additionalContextResult.errors.length
-        }, 'Additional context generated successfully');
-
-        // Update trace with additional context info
-        await updateTrace(draftId, 'additional_context', 'completed', {
-          repositoriesIncluded: additionalContextResult.repositoriesIncluded,
-          totalTokens: additionalContextResult.totalTokens,
-          errors: additionalContextResult.errors
-        });
-      }
-
-      if (additionalContextResult.errors.length > 0) {
-        correlatedLogger.warn({
-          errors: additionalContextResult.errors
-        }, 'Some context repositories could not be processed');
-      }
-    } catch (error) {
-      correlatedLogger.warn({
-        error: (error as Error).message
-      }, 'Failed to generate additional context, continuing without it');
-    }
-  }
+  const additionalContext = await fetchAdditionalContext({
+    contextRepositories: config.contextRepositories,
+    tokenLimit: config.tokenLimit,
+    githubToken,
+    draftId,
+    correlationId,
+    correlatedLogger
+  });
 
   const { plan, enforcementMetadata } = await callLLMForPlan({
     draftId,
@@ -503,18 +548,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   correlatedLogger.info({ taskCount: validatedPlan.length }, 'Plan generated successfully');
 
   // Add trace step for granularity enforcement if tasks were merged
-  if (enforcementMetadata.enforced) {
-    await updateTrace(draftId, 'granularity_enforcement', 'completed', {
-      originalTaskCount: enforcementMetadata.originalTaskCount,
-      finalTaskCount: enforcementMetadata.finalTaskCount,
-      granularity: enforcementMetadata.granularity,
-      message: enforcementMetadata.message
-    });
-    correlatedLogger.info(
-      { originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount },
-      'Granularity enforcement applied - added trace step'
-    );
-  }
+  await handleGranularityEnforcement(draftId, enforcementMetadata, correlatedLogger);
 
   await updateTrace(draftId, 'llm', 'completed');
 

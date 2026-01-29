@@ -374,6 +374,56 @@ export interface GenerateContextPreviewOptions {
   contextModel?: string;
 }
 
+/** Helper to get agent based on context model prefix */
+async function getAgentForContextModel(contextModel: string | undefined, correlatedLogger: MinimalLogger) {
+  const registry = getAgentRegistry();
+  await registry.ensureInitialized();
+  let agent = registry.getDefaultAgent();
+  if (contextModel && contextModel.includes(':')) {
+    const agentAlias = contextModel.split(':')[0];
+    const selectedAgent = registry.getAgentByAlias(agentAlias);
+    if (selectedAgent) {
+      agent = selectedAgent;
+      correlatedLogger.info({ agentAlias, contextModel }, 'Using agent from contextModel prefix for preview');
+    }
+  }
+  return agent;
+}
+
+/** Helper to build smart file selection from context result */
+function buildSmartSelection(
+  compress: boolean,
+  includedFiles: string[],
+  manualFiles: string[],
+  relevanceFiles: { path: string; reason: string; score: number }[]
+): SmartFileSelection[] {
+  const includedFilesSet = new Set(includedFiles);
+
+  if (compress) {
+    const relevanceScores = new Map(relevanceFiles.map(f => [f.path, f]));
+    return includedFiles.map(path => {
+      const relevanceInfo = relevanceScores.get(path);
+      if (manualFiles.includes(path)) return { path, reason: 'Explicitly included', source: 'manual' as const };
+      if (relevanceInfo) return { path, reason: `${relevanceInfo.reason} (score: ${relevanceInfo.score})`, source: 'auto' as const, score: relevanceInfo.score };
+      return { path, reason: 'Included via compression', source: 'auto' as const };
+    });
+  }
+
+  return [
+    ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
+    ...relevanceFiles.filter(f => includedFilesSet.has(f.path)).map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
+  ];
+}
+
+/** Helper to calculate score distribution for logging */
+function calculateScoreDistribution(files: { score: number }[]) {
+  return {
+    high: files.filter(f => f.score > 80).length,
+    medium: files.filter(f => f.score > 50 && f.score <= 80).length,
+    low: files.filter(f => f.score <= 50).length
+  };
+}
+
 export interface Base64Image {
   name: string;
   mimeType: string;
@@ -502,17 +552,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   }
 
   // Get agent for semantic scoring based on contextModel prefix (e.g., "claude:model-id" -> use claude agent)
-  const registry = getAgentRegistry();
-  await registry.ensureInitialized();
-  let agent = registry.getDefaultAgent();
-  if (contextModel && contextModel.includes(':')) {
-    const agentAlias = contextModel.split(':')[0];
-    const selectedAgent = registry.getAgentByAlias(agentAlias);
-    if (selectedAgent) {
-      agent = selectedAgent;
-      correlatedLogger.info({ agentAlias, contextModel }, 'Using agent from contextModel prefix for preview');
-    }
-  }
+  const agent = await getAgentForContextModel(contextModel, correlatedLogger);
 
   // Use cleaned prompt (without @references) for relevance search
   // Enable LLM keyword extraction for better alternatives and spelling variants
@@ -535,11 +575,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   correlatedLogger.info({
     manualFiles: { count: manualFiles.length, files: manualFiles.slice(0, 10) },
     autoFiles: { count: autoFilePaths.length, topCandidates: relevanceResult.files.slice(0, 5).map(f => ({ path: f.path, score: f.score, reason: f.reason })) },
-    scoreDistribution: {
-      high: relevanceResult.files.filter(f => f.score > 80).length,
-      medium: relevanceResult.files.filter(f => f.score > 50 && f.score <= 80).length,
-      low: relevanceResult.files.filter(f => f.score <= 50).length
-    },
+    scoreDistribution: calculateScoreDistribution(relevanceResult.files),
     combinedCount: combinedFiles.length,
     overlap: manualFiles.filter(f => autoFilePaths.includes(f)).length
   }, 'Preview file selection breakdown');
@@ -556,23 +592,12 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   const costEstimate = await calculateCostEstimate(contextResult.totalTokens, warnings, correlatedLogger);
 
-  const includedFilesSet = new Set(contextResult.includedFiles);
-
-  let smartSelection: SmartFileSelection[];
-  if (compress) {
-    const relevanceScores = new Map(relevanceResult.files.map(f => [f.path, f]));
-    smartSelection = contextResult.includedFiles.map(path => {
-      const relevanceInfo = relevanceScores.get(path);
-      if (manualFiles.includes(path)) return { path, reason: 'Explicitly included', source: 'manual' as const };
-      else if (relevanceInfo) return { path, reason: `${relevanceInfo.reason} (score: ${relevanceInfo.score})`, source: 'auto' as const, score: relevanceInfo.score };
-      else return { path, reason: 'Included via compression', source: 'auto' as const };
-    });
-  } else {
-    smartSelection = [
-      ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
-      ...relevanceResult.files.filter(f => includedFilesSet.has(f.path)).map(f => ({ path: f.path, reason: `${f.reason} (score: ${f.score})`, source: 'auto' as const, score: f.score }))
-    ];
-  }
+  const smartSelection = buildSmartSelection(
+    compress,
+    contextResult.includedFiles,
+    manualFiles,
+    relevanceResult.files
+  );
 
   const fullContext = buildFullContext({ userRequest: prompt, repomixContext: contextResult.context, granularity });
 
