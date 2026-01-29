@@ -41,15 +41,31 @@ function parseAttachments(draftAttachments: string | Attachment[] | undefined): 
   return [];
 }
 
+interface LoadedImages {
+  images: Base64Image[];
+  totalTokens: number;
+}
+
 /**
- * Load image attachments and convert them to base64
+ * Calculate token estimate for base64 image data.
+ * Base64 is ~4/3 of original size, then ~4 chars per token, plus XML overhead.
+ */
+function calculateBase64Tokens(base64Length: number): number {
+  // base64 string is tokenized as text: ~4 chars per token, plus 10% for XML wrapper
+  return Math.ceil((base64Length / 4) * 1.1);
+}
+
+/**
+ * Load image attachments and convert them to base64.
+ * Returns both the images and accurate token count based on actual base64 size.
  */
 async function loadImageAttachmentsAsBase64(
   attachments: Attachment[],
   correlatedLogger: MinimalLogger
-): Promise<Base64Image[]> {
+): Promise<LoadedImages> {
   const base64Images: Base64Image[] = [];
   const imageAttachments = attachments.filter(a => a.type === 'image');
+  let totalTokens = 0;
 
   for (const img of imageAttachments) {
     try {
@@ -57,18 +73,22 @@ async function loadImageAttachmentsAsBase64(
         ? img.storedPath
         : path.join(process.cwd(), img.storedPath);
       const imageData = await fs.readFile(absolutePath);
+      const base64Data = imageData.toString('base64');
+      const imageTokens = calculateBase64Tokens(base64Data.length);
+      totalTokens += imageTokens;
+
       base64Images.push({
         name: img.originalName,
         mimeType: img.mimeType,
-        base64Data: imageData.toString('base64'),
+        base64Data,
       });
-      correlatedLogger.info({ imageName: img.originalName, size: imageData.length }, 'Loaded image attachment as base64');
+      correlatedLogger.info({ imageName: img.originalName, fileSize: imageData.length, base64Length: base64Data.length, tokens: imageTokens }, 'Loaded image attachment');
     } catch (error) {
       correlatedLogger.warn({ imagePath: img.storedPath, error: (error as Error).message }, 'Failed to load image attachment');
     }
   }
 
-  return base64Images;
+  return { images: base64Images, totalTokens };
 }
 
 /**
@@ -350,11 +370,13 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
   if (!draft.initial_prompt) throw new PlanningFailedError('Draft has no initial prompt');
 
-  // Parse and load attachments
+  // Parse and load attachments - use actual base64 size for accurate token count
   const attachments = parseAttachments(draft.attachments);
-  const base64Images = await loadImageAttachmentsAsBase64(attachments, correlatedLogger);
-  const attachmentTokens = attachments.reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
-  correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length, attachmentTokens }, 'Loaded attachments from draft');
+  const { images: base64Images, totalTokens: imageTokens } = await loadImageAttachmentsAsBase64(attachments, correlatedLogger);
+  // Text attachments use stored estimate, images use calculated from actual base64 size
+  const textAttachmentTokens = attachments.filter(a => a.type === 'text').reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
+  const attachmentTokens = imageTokens + textAttachmentTokens;
+  correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length, imageTokens, textAttachmentTokens, attachmentTokens }, 'Loaded attachments from draft');
 
   // Parse context_config
   const parsedContextConfig = parseDraftContextConfig(draft.context_config, draftId, correlatedLogger);
