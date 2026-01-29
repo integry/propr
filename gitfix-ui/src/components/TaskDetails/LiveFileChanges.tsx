@@ -109,19 +109,23 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({
     );
   }
 
-  // No changes yet
+  // No changes yet - hide completely for finished tasks, show placeholder for active tasks
   if (!fileChanges || fileChanges.files.length === 0) {
+    // For finished tasks with no changes, hide the section entirely
+    if (!isActive) {
+      return null;
+    }
+
+    // For active tasks, show a placeholder indicating we're monitoring
     return (
       <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
         <h4 className="text-gray-700 font-semibold flex items-center gap-2 mb-2">
           <GitBranch className="h-5 w-5 text-gray-500" />
-          {isActive ? 'Live File Changes' : 'File Changes'}
-          {isActive && (
-            <span className="relative flex h-2 w-2 ml-1">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-gray-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-gray-500"></span>
-            </span>
-          )}
+          Live File Changes
+          <span className="relative flex h-2 w-2 ml-1">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-gray-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-gray-500"></span>
+          </span>
         </h4>
         <p className="text-sm text-gray-500 italic">No files changed yet</p>
       </div>
