@@ -47,15 +47,32 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   const { activeIssues, mergedIssues, pendingCount, hasActiveIssues, firstPendingIssueNumber } = useMemo(() => {
     const active: PlanIssue[] = [], merged: PlanIssue[] = [];
     let pending = 0, hasActive = false;
+
+    // Sort issues by issue_number to determine order
+    const sortedIssues = [...issues].sort((a, b) => a.issue_number - b.issue_number);
+
+    // Find the first unmerged issue number (to determine which pending issue can be implemented)
+    let firstUnmergedIssueNumber: number | null = null;
+    for (const issue of sortedIssues) {
+      if (issue.status !== 'merged') {
+        firstUnmergedIssueNumber = issue.issue_number;
+        break;
+      }
+    }
+
+    // The first pending issue that can be safely implemented is only the one
+    // that is both pending AND is the first unmerged issue (all prior issues are merged)
     let firstPending: number | null = null;
+
     issues.forEach(issue => {
       if (issue.status === 'merged') { merged.push(issue); }
       else {
         active.push(issue);
         if (issue.status === 'pending') {
           pending++;
-          // Track the first pending issue (lowest issue_number among pending)
-          if (firstPending === null || issue.issue_number < firstPending) {
+          // Only mark as first pending if this issue is the first unmerged issue
+          // (meaning all prior issues have been merged)
+          if (issue.issue_number === firstUnmergedIssueNumber) {
             firstPending = issue.issue_number;
           }
         }
