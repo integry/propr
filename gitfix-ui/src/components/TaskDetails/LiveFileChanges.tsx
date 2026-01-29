@@ -85,7 +85,13 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({
     ? fileChanges?.files.find((f) => f.path === selectedFilePath)
     : null;
 
-  // Loading state
+  // For finished tasks without file changes data, hide the section entirely
+  // This includes loading, error, and empty states for finished tasks
+  if (!isActive && (!fileChanges || fileChanges.files.length === 0)) {
+    return null;
+  }
+
+  // Loading state (only for active tasks)
   if (isLoading && !fileChanges) {
     return (
       <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
@@ -97,7 +103,7 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({
     );
   }
 
-  // Error state (only show if we never got data)
+  // Error state (only show for active tasks if we never got data)
   if (error && !fileChanges) {
     return (
       <div className="mb-6 p-4 bg-red-50 rounded-lg border border-red-200">
@@ -109,14 +115,8 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({
     );
   }
 
-  // No changes yet - hide completely for finished tasks, show placeholder for active tasks
+  // No changes yet - show placeholder for active tasks (finished tasks already handled above)
   if (!fileChanges || fileChanges.files.length === 0) {
-    // For finished tasks with no changes, hide the section entirely
-    if (!isActive) {
-      return null;
-    }
-
-    // For active tasks, show a placeholder indicating we're monitoring
     return (
       <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
         <h4 className="text-gray-700 font-semibold flex items-center gap-2 mb-2">
