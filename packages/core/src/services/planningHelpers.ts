@@ -386,6 +386,8 @@ interface BuildFullContextOptions {
   repomixContext: string;
   granularity: Granularity;
   fileSummaries?: string;
+  /** Smart context with directory and file summaries (tiered by relevance) */
+  smartSummaries?: string;
   images?: Base64Image[];
   /** Context from additional repositories (marked as example/reference only) */
   additionalContext?: string;
@@ -409,11 +411,15 @@ function getGranularityReminder(granularity: Granularity): string {
 }
 
 export function buildFullContext(options: BuildFullContextOptions): string {
-  const { userRequest, repomixContext, granularity, fileSummaries, images, additionalContext } = options;
+  const { userRequest, repomixContext, granularity, fileSummaries, smartSummaries, images, additionalContext } = options;
   const granularitySpec = GRANULARITY_INSTRUCTIONS[granularity];
   const granularityReminder = getGranularityReminder(granularity);
   const summariesSection = fileSummaries && fileSummaries.trim().length > 0
     ? `\n  <relevant-file-summaries>\n${fileSummaries}\n  </relevant-file-summaries>` : '';
+
+  // Build smart summaries section (directory structure and file summaries)
+  const smartSummariesSection = smartSummaries && smartSummaries.trim().length > 0
+    ? `\n  <codebase-overview>\n${smartSummaries}\n  </codebase-overview>` : '';
 
   // Build images section if images are provided
   let imagesSection = '';
@@ -446,7 +452,7 @@ ${additionalContext}
 <llm-context>
   <system-prompt><![CDATA[${PLANNER_SYSTEM_PROMPT}]]></system-prompt>
   <user-request><![CDATA[${userRequest}]]></user-request>${imagesSection}
-  <granularity-spec><![CDATA[${granularitySpec}]]></granularity-spec>
+  <granularity-spec><![CDATA[${granularitySpec}]]></granularity-spec>${smartSummariesSection}
   <repository-context>
 ${repomixContext}
   </repository-context>${summariesSection}${additionalContextSection}

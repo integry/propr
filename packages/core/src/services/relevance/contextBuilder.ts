@@ -19,8 +19,10 @@ export interface DirectorySummaryRow {
 }
 
 export interface ContextBuildOptions {
-  /** Model to use for token budget calculation */
+  /** Model to use for token budget calculation (ignored if tokenBudget provided) */
   modelId?: string;
+  /** Explicit token budget (overrides modelId-based calculation) */
+  tokenBudget?: number;
   /** Paths already flagged by git/path scoring for Tier 2 inclusion */
   priorityPaths?: string[];
   /** Custom correlation ID for logging */
@@ -39,8 +41,8 @@ export interface SmartContextResult {
 
 // --- Constants ---
 
-/** Reserve 20% of token budget for user prompt and instructions */
-const CONTEXT_BUDGET_RATIO = 0.80;
+/** Default ratio of model token limit to use for summaries (when no explicit budget provided) */
+const CONTEXT_BUDGET_RATIO = 0.95;
 
 /** Chars per token estimate (conservative to avoid overflow) */
 const CHARS_PER_TOKEN = 3;
@@ -204,15 +206,20 @@ function tryAddDirEntry(state: ContextState, budgetChars: number, dir: Directory
  * 4. If budget exceeded, fallback to directory summaries only
  */
 export async function buildSummaryContext(options: ContextBuildOptions = {}): Promise<SmartContextResult> {
-  const { modelId = 'default', priorityPaths = [], correlationId, repoName } = options;
+  const { modelId = 'default', tokenBudget, priorityPaths = [], correlationId, repoName } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
-  // Calculate token budget
-  const maxModelTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const budgetTokens = Math.floor(maxModelTokens * CONTEXT_BUDGET_RATIO / TIKTOKEN_TO_CLAUDE_RATIO);
+  // Calculate token budget - use explicit budget if provided, otherwise calculate from model limits
+  let budgetTokens: number;
+  if (tokenBudget !== undefined) {
+    budgetTokens = tokenBudget;
+  } else {
+    const maxModelTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
+    budgetTokens = Math.floor(maxModelTokens * CONTEXT_BUDGET_RATIO / TIKTOKEN_TO_CLAUDE_RATIO);
+  }
   const budgetChars = budgetTokens * CHARS_PER_TOKEN;
 
-  correlatedLogger.debug({ modelId, budgetTokens, budgetChars, repoName }, 'Calculated context budget');
+  correlatedLogger.debug({ modelId, tokenBudget, budgetTokens, budgetChars, repoName }, 'Calculated context budget');
 
   // Load summaries from database - filter by repo if specified
   let fileSummaries: FileSummaryRow[];

@@ -1,7 +1,7 @@
 /* eslint-disable max-lines */
 import { db } from '../db/connection.js';
 import { generateContext, generateAdditionalContext } from './contextService.js';
-import { loadFileSummaries } from './relevance/contextBuilder.js';
+import { loadFileSummaries, buildSummaryContext } from './relevance/contextBuilder.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { REFINER_SYSTEM_PROMPT, Plan, PlanItem } from '../claude/prompts/plannerPrompts.js';
 import { parseLlmJson, JsonParseError } from '../utils/jsonUtils.js';
@@ -296,6 +296,8 @@ interface CallLLMOptions {
   correlationId?: string;
   /** Optional file summaries for files not fully included in the context */
   fileSummaries?: string;
+  /** Optional smart summaries (directory structure and file overviews) */
+  smartSummaries?: string;
   /** Optional base64-encoded images to include in the prompt */
   images?: Base64Image[];
   /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
@@ -310,13 +312,13 @@ interface CallLLMForPlanResult {
 }
 
 async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
-  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries, images, model = DEFAULT_GENERATION_MODEL, additionalContext } = opts;
+  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries, smartSummaries, images, model = DEFAULT_GENERATION_MODEL, additionalContext } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
 
   // Build prompt with images embedded as base64 and additional context from context repositories
-  const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity, fileSummaries, images, additionalContext });
-  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0, model, hasAdditionalContext: !!additionalContext }, 'Calling LLM for plan generation');
+  const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity, fileSummaries, smartSummaries, images, additionalContext });
+  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0, model, hasAdditionalContext: !!additionalContext, hasSmartSummaries: !!smartSummaries }, 'Calling LLM for plan generation');
 
   // Validate token count before sending to LLM
   const modelLimit = getDefaultModelLimit();
@@ -475,6 +477,26 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     summariesIncluded: candidateSummaries.filter(s => !includedFilesSet.has(s.path)).length
   }, 'Filtered summaries for context enrichment');
 
+  // Build smart summary context (directory structure + tiered file summaries)
+  // Allocate 10% of token budget for codebase overview
+  const smartSummaryBudget = Math.floor(config.tokenLimit * 0.1);
+  const smartSummaryResult = await buildSummaryContext({
+    tokenBudget: smartSummaryBudget,
+    priorityPaths: relevantFilePaths,
+    repoName: draft.repository,
+    correlationId
+  });
+
+  const smartSummaries = smartSummaryResult.context || undefined;
+  if (smartSummaries) {
+    correlatedLogger.info({
+      fileSummaryCount: smartSummaryResult.fileSummaryCount,
+      dirSummaryCount: smartSummaryResult.dirSummaryCount,
+      estimatedTokens: smartSummaryResult.estimatedTokens,
+      truncated: smartSummaryResult.truncated
+    }, 'Built smart summary context');
+  }
+
   // Generate additional context from context repositories if configured
   let additionalContext: string | undefined;
   if (config.contextRepositories && config.contextRepositories.length > 0) {
@@ -532,6 +554,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     repository: draft.repository,
     correlationId,
     fileSummaries: filteredSummaries,
+    smartSummaries,
     images: base64Images.length > 0 ? base64Images : undefined,
     model: generationModel,
     additionalContext,
