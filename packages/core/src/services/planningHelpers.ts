@@ -270,10 +270,18 @@ export async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]
 
   correlatedLogger.info({ repository: draft.repository, contextModel }, 'Finding relevant files');
 
-  // Get agent for semantic scoring
+  // Get agent for semantic scoring based on contextModel prefix (e.g., "claude:model-id" -> use claude agent)
   const registry = getAgentRegistry();
   await registry.ensureInitialized();
-  const agent = registry.getDefaultAgent();
+  let agent = registry.getDefaultAgent();
+  if (contextModel && contextModel.includes(':')) {
+    const agentAlias = contextModel.split(':')[0];
+    const selectedAgent = registry.getAgentByAlias(agentAlias);
+    if (selectedAgent) {
+      agent = selectedAgent;
+      correlatedLogger.info({ agentAlias, contextModel }, 'Using agent from contextModel prefix');
+    }
+  }
 
   // Let semantic scorer default to HEAD branch
   // Pass modelId for context analysis if specified
@@ -455,9 +463,18 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     }, 'Parsed @file references from prompt');
   }
 
+  // Get agent for semantic scoring based on contextModel prefix (e.g., "claude:model-id" -> use claude agent)
   const registry = getAgentRegistry();
   await registry.ensureInitialized();
-  const agent = registry.getDefaultAgent();
+  let agent = registry.getDefaultAgent();
+  if (contextModel && contextModel.includes(':')) {
+    const agentAlias = contextModel.split(':')[0];
+    const selectedAgent = registry.getAgentByAlias(agentAlias);
+    if (selectedAgent) {
+      agent = selectedAgent;
+      correlatedLogger.info({ agentAlias, contextModel }, 'Using agent from contextModel prefix for preview');
+    }
+  }
 
   // Use cleaned prompt (without @references) for relevance search
   // Enable LLM keyword extraction for better alternatives and spelling variants
