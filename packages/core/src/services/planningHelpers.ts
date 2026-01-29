@@ -11,6 +11,7 @@ import logger from '../utils/logger.js';
 import type { LogFn } from 'pino';
 import { simpleGit } from 'simple-git';
 import { Plan, GRANULARITY_INSTRUCTIONS, PLANNER_SYSTEM_PROMPT } from '../claude/prompts/plannerPrompts.js';
+import type { Attachment } from './attachmentService.js';
 
 /** Number of most relevant files to include summaries for */
 export const RELEVANT_SUMMARY_COUNT = 100;
@@ -351,6 +352,7 @@ export interface PreviewStats {
   costEstimate: number;
   contextLength: number;
   fileCount: number;
+  attachmentTokens?: number;
 }
 
 export interface PreviewResult {
@@ -463,6 +465,7 @@ interface TaskDraft {
   plan_json: Plan;
   context_config: TaskDraftConfig;
   generation_trace: GenerationTrace;
+  attachments?: string | Attachment[];
   status: string;
   created_at: Date;
   updated_at: Date;
@@ -479,6 +482,21 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
+
+  // Calculate attachment tokens from stored attachments
+  let attachmentTokens = 0;
+  if (draft.attachments) {
+    let attachments: Attachment[] = [];
+    if (typeof draft.attachments === 'string') {
+      try { attachments = JSON.parse(draft.attachments); } catch { attachments = []; }
+    } else if (Array.isArray(draft.attachments)) {
+      attachments = draft.attachments;
+    }
+    attachmentTokens = attachments.reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
+    if (attachmentTokens > 0) {
+      correlatedLogger.info({ attachmentCount: attachments.length, attachmentTokens }, 'Calculated attachment tokens');
+    }
+  }
 
   try {
     await checkoutBranch(worktreePath, baseBranch);
@@ -584,12 +602,13 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   });
 
   const estimatedActualTokens = Math.ceil(contextResult.totalTokens * TIKTOKEN_TO_CLAUDE_RATIO);
+  const totalWithAttachments = estimatedActualTokens + attachmentTokens;
 
-  correlatedLogger.info({ tiktokenCount: contextResult.totalTokens, estimatedActualTokens, costEstimate, fileCount: contextResult.includedFiles.length }, 'Context preview completed');
+  correlatedLogger.info({ tiktokenCount: contextResult.totalTokens, estimatedActualTokens, attachmentTokens, totalWithAttachments, costEstimate, fileCount: contextResult.includedFiles.length }, 'Context preview completed');
 
   return {
     success: true,
-    stats: { totalTokens: estimatedActualTokens, tiktokenCount: contextResult.totalTokens, costEstimate, contextLength: contextResult.totalCharacters, fileCount: contextResult.includedFiles.length },
+    stats: { totalTokens: totalWithAttachments, tiktokenCount: contextResult.totalTokens, costEstimate, contextLength: contextResult.totalCharacters, fileCount: contextResult.includedFiles.length, attachmentTokens },
     smartSelection,
     warnings
   };
