@@ -10,8 +10,20 @@ const MAX_TEXT_CHARS = 100000;
 const HEAD_CHARS = 5000;
 const TAIL_CHARS = 20000;
 const MAX_IMAGE_DIMENSION = 1024;
-const IMAGE_QUALITY = 80;
-const IMAGE_TOKEN_ESTIMATE = 1000;
+const IMAGE_QUALITY = 80; // WebP quality (0-100)
+
+/**
+ * Calculate token estimate for an image based on file size.
+ * Images are embedded as base64 text, so we calculate:
+ * - Base64 encoding increases size by ~33% (4/3 ratio)
+ * - Text tokenization: ~4 characters per token
+ * - Add 10% buffer for XML wrapper overhead
+ */
+function calculateImageTokenEstimate(fileSizeBytes: number): number {
+  const base64Size = Math.ceil(fileSizeBytes * 4 / 3);
+  const tokenEstimate = Math.ceil(base64Size / 4);
+  return Math.ceil(tokenEstimate * 1.1); // 10% buffer for XML overhead
+}
 
 const ALLOWED_TEXT_MIMETYPES = [
   'text/plain',
@@ -113,7 +125,7 @@ export class AttachmentService {
       throw new Error(`Unsupported file type: ${file.mimetype}. Please upload images or text files.`);
     }
 
-    const finalFilename = `${fileId}${isImage ? '.jpg' : ext || '.txt'}`;
+    const finalFilename = `${fileId}${isImage ? '.webp' : ext || '.txt'}`;
     const finalPath = path.join(draftDir, finalFilename);
     let tokenEstimate = 0;
     let fileSize = 0;
@@ -126,12 +138,12 @@ export class AttachmentService {
           fit: 'inside',
           withoutEnlargement: true
         })
-        .jpeg({ quality: IMAGE_QUALITY, mozjpeg: true })
+        .webp({ quality: IMAGE_QUALITY })
         .toFile(finalPath);
 
       const stats = await fs.stat(finalPath);
       fileSize = stats.size;
-      tokenEstimate = IMAGE_TOKEN_ESTIMATE;
+      tokenEstimate = calculateImageTokenEstimate(fileSize);
     } else {
       let content = await fs.readFile(file.path, 'utf-8');
 
@@ -160,7 +172,7 @@ export class AttachmentService {
       id: fileId,
       originalName: file.originalname,
       storedPath: path.relative(process.cwd(), finalPath),
-      mimeType: isImage ? 'image/jpeg' : 'text/plain',
+      mimeType: isImage ? 'image/webp' : 'text/plain',
       size: fileSize,
       tokenEstimate,
       type: isImage ? 'image' : 'text'
@@ -243,7 +255,7 @@ export class AttachmentService {
 
     // Generate a unique filename with UUID
     const fileId = uuidv4();
-    const finalFilename = `${fileId}.jpg`;
+    const finalFilename = `${fileId}.webp`;
     const finalPath = path.join(targetDir, finalFilename);
 
     try {
@@ -293,7 +305,7 @@ export class AttachmentService {
           fit: 'inside',
           withoutEnlargement: true
         })
-        .jpeg({ quality: IMAGE_QUALITY, mozjpeg: true })
+        .webp({ quality: IMAGE_QUALITY })
         .toFile(finalPath);
 
       logger?.debug?.({ url, savedTo: finalPath }, 'Successfully downloaded and optimized remote image');
