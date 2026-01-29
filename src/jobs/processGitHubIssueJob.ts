@@ -15,21 +15,18 @@ import { safeAddLabel } from '@gitfix/core';
 import { ensureGitRepository } from '@gitfix/core';
 import { UsageLimitError } from '@gitfix/core';
 import type { ClaudeCodeResponse } from '@gitfix/core';
-import type { ClaudeResult } from '@gitfix/core';
-import { recordLLMMetrics } from '@gitfix/core';
 import { validateRepositoryInfo } from '@gitfix/core';
 import type { RepoValidationResult } from '@gitfix/core';
 import { getDefaultModel } from '@gitfix/core';
 import { loadPrLabel, loadPrimaryProcessingLabels } from '@gitfix/core';
 import { filterCommentByAuthor } from '@gitfix/core';
-import { AgentRegistry, generateClaudePrompt, resolveLlmLabel, updateFileChanges } from '@gitfix/core';
-import type { AgentExecutionResult } from '@gitfix/core';
+import { AgentRegistry, resolveLlmLabel, updateFileChanges } from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
-import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult, localizeContentImages } from './issueJobHelpers.js';
+import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
-import { createSessionIdCallback, createContainerIdCallback } from './issueJobCallbacks.js';
 import { performPostProcessing, performFinalValidation } from './issueJobPostProcessing.js';
 import type { IssueJobData, JobResult } from '@gitfix/core';
+import { executeAgentAndRecordMetrics, type ExecutionParams } from './issueJobAgent.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -80,14 +77,6 @@ interface IssueComment {
     user: { login: string; type?: string };
 }
 
-interface ExecutionParams {
-    octokit: ReturnType<typeof getAuthenticatedOctokit> extends Promise<infer T> ? T : never;
-    worktreeInfo: WorktreeInfo;
-    issueRef: IssueJobData;
-    githubToken: GitHubToken;
-    currentIssueData: CurrentIssueData;
-    issueComments: IssueComment[];
-}
 
 interface LabelCheckResult {
     skip: boolean;
@@ -101,6 +90,24 @@ interface TaskCompletionParams {
     postProcessingResult: PostProcessingResult | null;
     commitResult: CommitResult | null;
     correlatedLogger: Logger;
+}
+
+interface WorktreeExecutionParams {
+    job: Job<IssueJobData>;
+    context: JobContext;
+    octokit: ReturnType<typeof getAuthenticatedOctokit> extends Promise<infer T> ? T : never;
+    currentIssueData: CurrentIssueData;
+    repoValidation: RepoValidation;
+    githubToken: GitHubToken;
+    repoUrl: string;
+}
+
+interface WorktreeExecutionResult {
+    localRepoPath: string;
+    worktreeInfo: WorktreeInfo;
+    claudeResult: ClaudeCodeResponse;
+    postProcessingResult: PostProcessingResult | null;
+    commitResult: CommitResult | null;
 }
 
 async function getPrimaryProcessingLabels(): Promise<string[]> {
@@ -215,266 +222,144 @@ async function fetchIssueComments(octokit: ExecutionParams['octokit'], issueRef:
     }
 }
 
-function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
-    return {
-        model: response.modelUsed,
-        success: response.success,
-        executionTime: response.executionTimeMs,
-        sessionId: response.sessionId,
-        conversationId: response.conversationId,
-        finalResult: response.summary ? { type: 'result', result: response.summary } : null,
-        conversationLog: undefined,
-        error: response.error
-    };
-}
-
-/**
- * Converts AgentExecutionResult to ClaudeCodeResponse for backwards compatibility
- * with existing post-processing code.
- */
-function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeResponse {
-    return {
-        success: result.success,
-        model: result.modelUsed,
-        executionTime: result.executionTimeMs,
-        output: null,
-        sessionId: result.sessionId || null,
-        conversationId: result.conversationId,
-        finalResult: result.summary ? { type: 'result', result: result.summary } : null,
-        rawOutput: result.rawOutput,
-        summary: result.summary || null,
-        logs: result.logs,
-        exitCode: result.exitCode ?? null,
-        error: result.error,
-        modifiedFiles: result.modifiedFiles,
-        commitMessage: result.commitMessage || null
-    };
-}
-
-async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, context: JobContext): Promise<ClaudeCodeResponse> {
-    const { worktreeInfo, issueRef, githubToken, currentIssueData, issueComments } = executionParams;
-    const { taskId, agentAlias, modelName, stateManager, correlatedLogger, correlationId } = context;
-
-    // Get the agent from registry
-    const registry = AgentRegistry.getInstance();
-    const agent = registry.getAgentByAlias(agentAlias);
-
-    if (!agent) {
-        throw new Error(`Agent not found: ${agentAlias}`);
-    }
-
-    correlatedLogger.info({
-        agentAlias,
-        agentType: agent.config.type,
-        modelName,
-        issueNumber: issueRef.number
-    }, 'Executing task with agent');
-
-    // Localize remote images in issue body and comments
-    // This downloads images to the worktree so the agent can access them
-    // We pass body_html which contains signed URLs for GitHub user-attachments
-    // Assets are stored in subdirectory identified by issue number for cleanup when issue is closed
-    const issueBodyHtml = (currentIssueData.data as { body_html?: string }).body_html;
-    const localizedBody = currentIssueData.data.body
-        ? await localizeContentImages(currentIssueData.data.body, worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: issueBodyHtml, issueOrPrId: issueRef.number })
-        : undefined;
-
-    const localizedComments = await Promise.all(
-        issueComments.map(async (comment) => ({
-            ...comment,
-            body: comment.body ? await localizeContentImages(comment.body, worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: comment.body_html, issueOrPrId: issueRef.number }) : comment.body
-        }))
-    );
-
-    // Build prompt for the agent
-    const prompt = generateClaudePrompt(
-        { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-        worktreeInfo.branchName,
-        modelName,
-        {
-            title: currentIssueData.data.title,
-            body: localizedBody,
-            comments: localizedComments,
-            labels: currentIssueData.data.labels,
-            created_at: currentIssueData.data.created_at,
-            user: currentIssueData.data.user
-        }
-    );
-
-    // Execute task via agent abstraction
-    const agentResult = await agent.executeTask({
-        worktreePath: worktreeInfo.worktreePath,
-        issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-        prompt,
-        model: modelName,
-        githubToken: githubToken.token,
-        branchName: worktreeInfo.branchName,
-        onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger),
-        taskId
-    });
-
-    // Convert to ClaudeCodeResponse for backwards compatibility
-    const claudeResult = agentResultToClaudeResponse(agentResult);
-
-    // Check if task was cancelled during execution - if so, don't update state and throw immediately
-    const currentState = await stateManager.getTaskState(taskId);
-    const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
-    if (currentState && TERMINAL_STATES.includes(currentState.state)) {
-        correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state after agent execution, skipping state update');
-        if (currentState.state === TaskStates.CANCELLED) {
-            throw new Error('Execution aborted by user request');
-        }
-        throw new Error(`Task already in terminal state: ${currentState.state}`);
-    }
-
-    await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
-        reason: `${agent.config.type} agent execution completed`,
-        claudeResult: { success: claudeResult.success, sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, executionTime: claudeResult.executionTime },
-        historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model }
-    });
-
-    await recordLLMMetrics(toClaudeResult(agentResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId });
-
-    correlatedLogger.info({
-        agentAlias,
-        success: agentResult.success,
-        executionTimeMs: agentResult.executionTimeMs,
-        modelUsed: agentResult.modelUsed
-    }, 'Agent execution completed');
-
-    return claudeResult;
-}
 
 export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
-    logger.debug({ jobId: job.id, isChildJob: job.data.isChildJob, hasModelName: !!job.data.modelName }, 'Checking if job should be dispatched');
-
     if (!job.data.isChildJob) {
         logger.info({ jobId: job.id }, 'Running as matrix dispatcher');
         return await handleDispatch(job);
     }
 
     const context = await initializeJobContext(job);
-    const { jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, agentAlias, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
+    await addModelSpecificDelay(context.modelName);
+    await initializeTaskState(context);
 
-    await addModelSpecificDelay(modelName);
+    const octokit = await getAuthenticatedClient(context);
+    return processChildJob(job, context, octokit);
+}
 
+async function initializeTaskState(context: JobContext): Promise<void> {
+    const { stateManager, taskId, issueRef, correlatedLogger, correlationId } = context;
     try {
         await stateManager.createTaskState(taskId, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName } as IssueRef, correlationId);
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');
     }
+}
 
-    correlatedLogger.info({ jobId, jobName, taskId, issueNumber: issueRef.number, repo: `${issueRef.repoOwner}/${issueRef.repoName}` }, 'Processing job started');
-
-    const octokit = await getAuthenticatedClient(context);
-
-    let localRepoPath: string | undefined;
-    let worktreeInfo: WorktreeInfo | undefined;
-    let claudeResult: ClaudeCodeResponse | null = null;
-    let postProcessingResult: PostProcessingResult | null = null;
-    let commitResult: CommitResult | null = null;
+async function processChildJob(
+    job: Job<IssueJobData>,
+    context: JobContext,
+    octokit: ReturnType<typeof getAuthenticatedOctokit> extends Promise<infer T> ? T : never
+): Promise<JobResult> {
+    const { issueRef, correlationId, correlatedLogger, stateManager, taskId } = context;
+    let executionResult: WorktreeExecutionResult | undefined;
 
     try {
         await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting issue processing' });
 
-        const currentIssueData: CurrentIssueData = issueRef.issuePayload ? { data: issueRef.issuePayload as CurrentIssueData['data'] } :
-            await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-                owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-                mediaType: { format: 'full' }  // Get body_html with signed image URLs
-            }), { ...retryConfigs.githubApi, correlationId }, `get_issue_${issueRef.number}`) as unknown as CurrentIssueData;
-
-        const currentLabels = currentIssueData.data.labels.map(label => label.name);
-        const labelCheck = checkLabelConditions(currentLabels, context);
+        const currentIssueData = await fetchCurrentIssueData(octokit, issueRef, correlationId);
+        const labelCheck = checkLabelConditions(currentIssueData.data.labels.map(label => label.name), context);
         if (labelCheck.skip) return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
 
-        if (!currentLabels.includes(AI_PROCESSING_TAG)) {
-            await safeAddLabel({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, AI_PROCESSING_TAG);
-        }
-
-        const updatedIssueRef: IssueJobData = { ...issueRef, title: `New Issue: ${currentIssueData.data.title}`, subtitle: `Preparing a PR for issue #${issueRef.number}` };
-        await updateTaskTitleInStorage(taskId, updatedIssueRef, stateManager, correlatedLogger);
+        await ensureProcessingLabel(octokit, currentIssueData.data.labels.map(l => l.name), context);
+        await updateTaskTitleInStorage(taskId, { ...issueRef, title: `New Issue: ${currentIssueData.data.title}`, subtitle: `Preparing a PR for issue #${issueRef.number}` }, stateManager, correlatedLogger);
         await job.updateProgress(25);
 
-        const repoValidation: RepoValidation = issueRef.repoPayload ? { isValid: true, repoData: issueRef.repoPayload as unknown as RepoValidation['repoData'] } : await validateRepositoryInfo({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number }, octokit, correlationId);
+        const repoValidation = await getRepoValidation(issueRef, octokit, correlationId);
         const githubToken = await octokit.auth({ type: "installation" }) as GitHubToken;
         const repoUrl = getRepoUrl(issueRef);
 
         try {
-            await ensureGitRepository(correlatedLogger);
-            localRepoPath = await ensureRepoCloned({ repoUrl, owner: issueRef.repoOwner, repoName: issueRef.repoName, authToken: githubToken.token });
-            await job.updateProgress(50);
-
-            worktreeInfo = await createWorktreeForIssue(localRepoPath, { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName }, { baseBranch: issueRef.baseBranch || null, octokit, modelName });
-
-            // Store worktree path in state for file changes monitoring
-            await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
-                reason: 'Worktree created',
-                historyMetadata: { worktreePath: worktreeInfo.worktreePath }
-            });
-            await job.updateProgress(75);
-
-            // Construct the task dashboard URL
-            const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-            const taskUrl = `${frontendUrl}/tasks/${taskId}`;
-
-            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-                body: `🤖 AI processing has started for this issue using **${agentAlias}** agent with **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Agent: \`${agentAlias}\`\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main'}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\`\n\n🔍 [Track Task Execution](${taskUrl})`,
-            });
-
-            await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
-            await job.updateProgress(80);
-
-            const issueComments = await fetchIssueComments(octokit, issueRef, correlatedLogger);
-            claudeResult = await executeAgentAndRecordMetrics({ octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments }, context);
-
-            // Update file changes after agent execution for immediate display
-            try {
-                await updateFileChanges(redisClient, taskId, worktreeInfo.worktreePath, true);
-                correlatedLogger.debug({ taskId }, 'Updated file changes after agent execution');
-            } catch (fileChangesError) {
-                correlatedLogger.warn({ taskId, error: (fileChangesError as Error).message }, 'Failed to update file changes');
-            }
-
-            const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId, correlatedLogger });
-            commitResult = postProcessResult.commitResult;
-            postProcessingResult = postProcessResult.postProcessingResult;
-            await job.updateProgress(95);
-
+            executionResult = await executeWorktreeOperations({ job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl });
         } finally {
-            await performFinalValidation({ claudeResult: claudeResult || undefined, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, githubToken, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath: localRepoPath || '', jobId, correlationId, correlatedLogger, PR_LABEL, repoUrl });
+            await runFinalValidation({ executionResult, context, octokit, repoValidation, githubToken, repoUrl });
         }
 
         await job.updateProgress(100);
+        await storeFinalFileChanges(executionResult, taskId, correlatedLogger);
+        await markTaskComplete({ stateManager, taskId, claudeResult: executionResult?.claudeResult || null, postProcessingResult: executionResult?.postProcessingResult || null, commitResult: executionResult?.commitResult || null, correlatedLogger });
 
-        // Store final file changes state (isActive: false since task is complete)
-        if (worktreeInfo) {
-            try {
-                await updateFileChanges(redisClient, taskId, worktreeInfo.worktreePath, false);
-                correlatedLogger.debug({ taskId }, 'Stored final file changes state');
-            } catch (fileChangesError) {
-                correlatedLogger.warn({ taskId, error: (fileChangesError as Error).message }, 'Failed to store final file changes');
-            }
-        }
-
-        await markTaskComplete({ stateManager, taskId, claudeResult, postProcessingResult, commitResult, correlatedLogger });
-        return buildFinalResult(issueRef, localRepoPath || '', { worktreeInfo, claudeResult, postProcessingResult, commitResult });
-
+        return buildFinalResult(issueRef, executionResult?.localRepoPath || '', { worktreeInfo: executionResult?.worktreeInfo, claudeResult: executionResult?.claudeResult || null, postProcessingResult: executionResult?.postProcessingResult || null, commitResult: executionResult?.commitResult || null });
     } catch (error) {
-        if (error instanceof UsageLimitError) {
-            await handleUsageLimitError(error, job, issueRef, { octokit, correlatedLogger, stateManager, taskId });
-            return { status: 'error', error: (error as Error).message };
-        } else {
-            await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
-            // Don't re-throw for user cancellations (not an error, just cancelled)
-            const isUserCancelled = (error as Error).message?.includes('aborted by user') || (error as Error).name === 'ExecutionAbortedError';
-            if (isUserCancelled) {
-                return { status: 'cancelled', reason: 'user_request' };
-            }
-            throw error;
-        }
+        return handleJobError({ error: error as Error, job, executionResult, context, octokit });
     }
+}
+
+async function fetchCurrentIssueData(octokit: ReturnType<typeof getAuthenticatedOctokit> extends Promise<infer T> ? T : never, issueRef: IssueJobData, correlationId: string): Promise<CurrentIssueData> {
+    if (issueRef.issuePayload) {
+        return { data: issueRef.issuePayload as CurrentIssueData['data'] };
+    }
+    return await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+        owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
+        mediaType: { format: 'full' }
+    }), { ...retryConfigs.githubApi, correlationId }, `get_issue_${issueRef.number}`) as unknown as CurrentIssueData;
+}
+
+async function ensureProcessingLabel(octokit: ReturnType<typeof getAuthenticatedOctokit> extends Promise<infer T> ? T : never, currentLabels: string[], context: JobContext): Promise<void> {
+    const { issueRef, correlatedLogger, AI_PROCESSING_TAG } = context;
+    if (!currentLabels.includes(AI_PROCESSING_TAG)) {
+        await safeAddLabel({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, AI_PROCESSING_TAG);
+    }
+}
+
+async function getRepoValidation(issueRef: IssueJobData, octokit: ReturnType<typeof getAuthenticatedOctokit> extends Promise<infer T> ? T : never, correlationId: string): Promise<RepoValidation> {
+    if (issueRef.repoPayload) {
+        return { isValid: true, repoData: issueRef.repoPayload as unknown as RepoValidation['repoData'] };
+    }
+    return await validateRepositoryInfo({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number }, octokit, correlationId);
+}
+
+interface FinalValidationParams {
+    executionResult: WorktreeExecutionResult | undefined;
+    context: JobContext;
+    octokit: ReturnType<typeof getAuthenticatedOctokit> extends Promise<infer T> ? T : never;
+    repoValidation: RepoValidation;
+    githubToken: GitHubToken;
+    repoUrl: string;
+}
+
+async function runFinalValidation(params: FinalValidationParams): Promise<void> {
+    const { executionResult, context, octokit, repoValidation, githubToken, repoUrl } = params;
+    const { issueRef, jobId, correlationId, correlatedLogger, modelName } = context;
+    await performFinalValidation({
+        claudeResult: executionResult?.claudeResult, worktreeInfo: executionResult?.worktreeInfo, issueRef, octokit,
+        postProcessingResult: executionResult?.postProcessingResult || null, repoValidation, githubToken, modelName,
+        AI_PROCESSING_TAG: context.AI_PROCESSING_TAG, AI_DONE_TAG: context.AI_DONE_TAG,
+        localRepoPath: executionResult?.localRepoPath || '', jobId, correlationId, correlatedLogger, PR_LABEL: context.PR_LABEL, repoUrl
+    });
+}
+
+async function storeFinalFileChanges(executionResult: WorktreeExecutionResult | undefined, taskId: string, correlatedLogger: Logger): Promise<void> {
+    if (!executionResult?.worktreeInfo) return;
+    try {
+        await updateFileChanges(redisClient, taskId, executionResult.worktreeInfo.worktreePath, false);
+        correlatedLogger.debug({ taskId }, 'Stored final file changes state');
+    } catch (fileChangesError) {
+        correlatedLogger.warn({ taskId, error: (fileChangesError as Error).message }, 'Failed to store final file changes');
+    }
+}
+
+interface JobErrorParams {
+    error: Error;
+    job: Job<IssueJobData>;
+    executionResult: WorktreeExecutionResult | undefined;
+    context: JobContext;
+    octokit: ReturnType<typeof getAuthenticatedOctokit> extends Promise<infer T> ? T : never;
+}
+
+async function handleJobError(params: JobErrorParams): Promise<JobResult> {
+    const { error, job, executionResult, context, octokit } = params;
+    const { issueRef, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG } = context;
+    if (error instanceof UsageLimitError) {
+        await handleUsageLimitError(error, job, issueRef, { octokit, correlatedLogger, stateManager, taskId });
+        return { status: 'error', error: error.message };
+    }
+    await handleGenericError(error, job, issueRef, { octokit, claudeResult: executionResult?.claudeResult || null, worktreeInfo: executionResult?.worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
+    const isUserCancelled = error.message?.includes('aborted by user') || error.name === 'ExecutionAbortedError';
+    if (isUserCancelled) {
+        return { status: 'cancelled', reason: 'user_request' };
+    }
+    throw error;
 }
 
 async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Promise<void> {
@@ -489,6 +374,59 @@ async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Pro
     } catch (stateError) {
         correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state to completed');
     }
+}
+
+async function executeWorktreeOperations(params: WorktreeExecutionParams): Promise<WorktreeExecutionResult> {
+    const { job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl } = params;
+    const { issueRef, correlatedLogger, stateManager, agentAlias, modelName, taskId } = context;
+
+    await ensureGitRepository(correlatedLogger);
+    const localRepoPath = await ensureRepoCloned({ repoUrl, owner: issueRef.repoOwner, repoName: issueRef.repoName, authToken: githubToken.token });
+    await job.updateProgress(50);
+
+    const worktreeInfo = await createWorktreeForIssue(localRepoPath, { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName }, { baseBranch: issueRef.baseBranch || null, octokit, modelName });
+
+    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
+        reason: 'Worktree created',
+        historyMetadata: { worktreePath: worktreeInfo.worktreePath }
+    });
+    await job.updateProgress(75);
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const taskUrl = `${frontendUrl}/tasks/${taskId}`;
+
+    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
+        body: `🤖 AI processing has started for this issue using **${agentAlias}** agent with **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Agent: \`${agentAlias}\`\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main'}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\`\n\n🔍 [Track Task Execution](${taskUrl})`,
+    });
+
+    await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
+    await job.updateProgress(80);
+
+    const issueComments = await fetchIssueComments(octokit, issueRef, correlatedLogger);
+    const claudeResult = await executeAgentAndRecordMetrics(
+        { octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments },
+        { taskId, agentAlias, modelName, stateManager, correlatedLogger, correlationId: context.correlationId },
+        redisClient
+    );
+
+    try {
+        await updateFileChanges(redisClient, taskId, worktreeInfo.worktreePath, true);
+        correlatedLogger.debug({ taskId }, 'Updated file changes after agent execution');
+    } catch (fileChangesError) {
+        correlatedLogger.warn({ taskId, error: (fileChangesError as Error).message }, 'Failed to update file changes');
+    }
+
+    const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL: context.PR_LABEL, AI_PROCESSING_TAG: context.AI_PROCESSING_TAG, AI_DONE_TAG: context.AI_DONE_TAG, jobId: context.jobId, correlatedLogger });
+    await job.updateProgress(95);
+
+    return {
+        localRepoPath,
+        worktreeInfo,
+        claudeResult,
+        postProcessingResult: postProcessResult.postProcessingResult,
+        commitResult: postProcessResult.commitResult
+    };
 }
 
 export { processGitHubIssueJob as default };

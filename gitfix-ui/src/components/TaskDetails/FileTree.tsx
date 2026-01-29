@@ -123,6 +123,100 @@ interface TreeNodeComponentProps {
   defaultExpanded?: boolean;
 }
 
+// Renders the line change stats (+N / -N)
+const LineChangeStats: React.FC<{ linesAdded: number; linesRemoved: number }> = ({ linesAdded, linesRemoved }) => (
+  <span className="flex items-center gap-1 text-xs">
+    {linesAdded > 0 && (
+      <span className="flex items-center text-green-600">
+        <Plus className="h-3 w-3" />
+        {linesAdded}
+      </span>
+    )}
+    {linesRemoved > 0 && (
+      <span className="flex items-center text-red-600">
+        <Minus className="h-3 w-3" />
+        {linesRemoved}
+      </span>
+    )}
+  </span>
+);
+
+// Renders a directory node in the tree
+const DirectoryNode: React.FC<TreeNodeComponentProps & { isExpanded: boolean; onToggle: () => void }> = ({
+  node,
+  depth,
+  selectedFile,
+  onSelectFile,
+  defaultExpanded,
+  isExpanded,
+  onToggle
+}) => {
+  const hasChanges = node.linesAdded > 0 || node.linesRemoved > 0;
+  const sortedChildren = getSortedChildren(node);
+
+  return (
+    <div>
+      <div
+        className={`flex items-center gap-1 py-1 px-2 cursor-pointer hover:bg-gray-100 rounded ${
+          depth === 0 ? '' : 'ml-' + Math.min(depth * 4, 12)
+        }`}
+        style={{ marginLeft: depth > 0 ? `${depth * 16}px` : 0 }}
+        onClick={onToggle}
+      >
+        <span className="flex-shrink-0 text-gray-400">
+          {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        </span>
+        <span className="flex-shrink-0">
+          {isExpanded ? <FolderOpen className="h-4 w-4 text-yellow-600" /> : <Folder className="h-4 w-4 text-yellow-600" />}
+        </span>
+        <span className="text-sm text-gray-700 truncate flex-1">{node.name || '/'}</span>
+        {hasChanges && <LineChangeStats linesAdded={node.linesAdded} linesRemoved={node.linesRemoved} />}
+      </div>
+      {isExpanded && (
+        <div>
+          {sortedChildren.map((child) => (
+            <TreeNodeComponent
+              key={child.path}
+              node={child}
+              depth={depth + 1}
+              selectedFile={selectedFile}
+              onSelectFile={onSelectFile}
+              defaultExpanded={defaultExpanded}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Renders a file node in the tree
+const FileNode: React.FC<{ node: TreeNode; depth: number; isSelected: boolean; onSelect: () => void }> = ({
+  node,
+  depth,
+  isSelected,
+  onSelect
+}) => {
+  const fileStatus = node.fileChange?.status;
+  const statusClasses = fileStatus === 'added' ? 'bg-green-50' : fileStatus === 'deleted' ? 'bg-red-50' : '';
+  const textClasses = fileStatus === 'deleted' ? 'line-through text-red-600' : fileStatus === 'added' ? 'text-green-700' : 'text-gray-700';
+
+  return (
+    <div
+      className={`flex items-center gap-1 py-1 px-2 cursor-pointer rounded transition-colors ${
+        isSelected ? 'bg-blue-100 border-l-2 border-blue-500' : 'hover:bg-gray-100'
+      } ${statusClasses}`}
+      style={{ marginLeft: `${depth * 16}px` }}
+      onClick={onSelect}
+    >
+      <span className="flex-shrink-0 w-4" />
+      <span className="flex-shrink-0">{getFileIcon(node.name, fileStatus)}</span>
+      <span className={`text-sm truncate flex-1 ${textClasses}`}>{node.name}</span>
+      <LineChangeStats linesAdded={node.linesAdded} linesRemoved={node.linesRemoved} />
+    </div>
+  );
+};
+
 const TreeNodeComponent: React.FC<TreeNodeComponentProps> = ({
   node,
   depth,
@@ -131,110 +225,28 @@ const TreeNodeComponent: React.FC<TreeNodeComponentProps> = ({
   defaultExpanded = true
 }) => {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
-  const hasChanges = node.linesAdded > 0 || node.linesRemoved > 0;
 
   if (node.isDirectory) {
-    const sortedChildren = getSortedChildren(node);
-
     return (
-      <div>
-        <div
-          className={`flex items-center gap-1 py-1 px-2 cursor-pointer hover:bg-gray-100 rounded ${
-            depth === 0 ? '' : 'ml-' + Math.min(depth * 4, 12)
-          }`}
-          style={{ marginLeft: depth > 0 ? `${depth * 16}px` : 0 }}
-          onClick={() => setIsExpanded(!isExpanded)}
-        >
-          <span className="flex-shrink-0 text-gray-400">
-            {isExpanded ? (
-              <ChevronDown className="h-4 w-4" />
-            ) : (
-              <ChevronRight className="h-4 w-4" />
-            )}
-          </span>
-          <span className="flex-shrink-0">
-            {isExpanded ? (
-              <FolderOpen className="h-4 w-4 text-yellow-600" />
-            ) : (
-              <Folder className="h-4 w-4 text-yellow-600" />
-            )}
-          </span>
-          <span className="text-sm text-gray-700 truncate flex-1">{node.name || '/'}</span>
-          {hasChanges && (
-            <span className="flex items-center gap-1 text-xs">
-              {node.linesAdded > 0 && (
-                <span className="flex items-center text-green-600">
-                  <Plus className="h-3 w-3" />
-                  {node.linesAdded}
-                </span>
-              )}
-              {node.linesRemoved > 0 && (
-                <span className="flex items-center text-red-600">
-                  <Minus className="h-3 w-3" />
-                  {node.linesRemoved}
-                </span>
-              )}
-            </span>
-          )}
-        </div>
-        {isExpanded && (
-          <div>
-            {sortedChildren.map((child) => (
-              <TreeNodeComponent
-                key={child.path}
-                node={child}
-                depth={depth + 1}
-                selectedFile={selectedFile}
-                onSelectFile={onSelectFile}
-                defaultExpanded={defaultExpanded}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      <DirectoryNode
+        node={node}
+        depth={depth}
+        selectedFile={selectedFile}
+        onSelectFile={onSelectFile}
+        defaultExpanded={defaultExpanded}
+        isExpanded={isExpanded}
+        onToggle={() => setIsExpanded(!isExpanded)}
+      />
     );
   }
 
-  // File node
-  const isSelected = selectedFile === node.path;
-  const fileStatus = node.fileChange?.status;
-
   return (
-    <div
-      className={`flex items-center gap-1 py-1 px-2 cursor-pointer rounded transition-colors ${
-        isSelected
-          ? 'bg-blue-100 border-l-2 border-blue-500'
-          : 'hover:bg-gray-100'
-      } ${fileStatus === 'added' ? 'bg-green-50' : ''} ${
-        fileStatus === 'deleted' ? 'bg-red-50' : ''
-      }`}
-      style={{ marginLeft: `${depth * 16}px` }}
-      onClick={() => onSelectFile(node.path)}
-    >
-      <span className="flex-shrink-0 w-4" /> {/* Spacing for alignment with folders */}
-      <span className="flex-shrink-0">{getFileIcon(node.name, fileStatus)}</span>
-      <span
-        className={`text-sm truncate flex-1 ${
-          fileStatus === 'deleted' ? 'line-through text-red-600' : 'text-gray-700'
-        } ${fileStatus === 'added' ? 'text-green-700' : ''}`}
-      >
-        {node.name}
-      </span>
-      <span className="flex items-center gap-1 text-xs">
-        {node.linesAdded > 0 && (
-          <span className="flex items-center text-green-600">
-            <Plus className="h-3 w-3" />
-            {node.linesAdded}
-          </span>
-        )}
-        {node.linesRemoved > 0 && (
-          <span className="flex items-center text-red-600">
-            <Minus className="h-3 w-3" />
-            {node.linesRemoved}
-          </span>
-        )}
-      </span>
-    </div>
+    <FileNode
+      node={node}
+      depth={depth}
+      isSelected={selectedFile === node.path}
+      onSelect={() => onSelectFile(node.path)}
+    />
   );
 };
 

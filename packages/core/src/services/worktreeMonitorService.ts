@@ -40,163 +40,159 @@ export interface FileChangesData {
 const REDIS_KEY_PREFIX = 'file-changes:';
 const REDIS_EXPIRY_SECONDS = 3600; // 1 hour - keep data available after task completes
 
+function createEmptyResult(worktreePath: string): Omit<FileChangesData, 'isActive'> {
+  return {
+    files: [],
+    lastUpdated: new Date().toISOString(),
+    totalLinesAdded: 0,
+    totalLinesRemoved: 0,
+    worktreePath
+  };
+}
+
+function resolveBaseBranch(worktreePath: string): string {
+  // Try to find merge-base with origin/main
+  try {
+    const mergeBase = execSync('git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || echo ""', {
+      cwd: worktreePath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    }).trim();
+
+    if (mergeBase) return mergeBase;
+  } catch {
+    // Continue to fallbacks
+  }
+
+  // Fall back to origin/main or origin/master
+  try {
+    execSync('git rev-parse --verify origin/main', { cwd: worktreePath, stdio: ['pipe', 'pipe', 'pipe'] });
+    return 'origin/main';
+  } catch {
+    // Continue to next fallback
+  }
+
+  try {
+    execSync('git rev-parse --verify origin/master', { cwd: worktreePath, stdio: ['pipe', 'pipe', 'pipe'] });
+    return 'origin/master';
+  } catch {
+    return 'HEAD~1';
+  }
+}
+
+function getDiffStatOutput(worktreePath: string, baseBranch: string): string {
+  // First try diff against base branch
+  let output = execSync(`git diff --numstat ${baseBranch} HEAD 2>/dev/null || echo ""`, {
+    cwd: worktreePath,
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    maxBuffer: 10 * 1024 * 1024
+  }).trim();
+
+  if (output) return output;
+
+  // Check for uncommitted changes
+  output = execSync('git diff --numstat HEAD 2>/dev/null || echo ""', {
+    cwd: worktreePath,
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    maxBuffer: 10 * 1024 * 1024
+  }).trim();
+
+  if (output) return output;
+
+  // Check for staged changes
+  return execSync('git diff --numstat --cached 2>/dev/null || echo ""', {
+    cwd: worktreePath,
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    maxBuffer: 10 * 1024 * 1024
+  }).trim();
+}
+
+function getFileStatus(worktreePath: string, baseBranch: string, filePath: string): FileChange['status'] {
+  try {
+    const statusOutput = execSync(`git diff --name-status ${baseBranch} HEAD -- "${filePath}" 2>/dev/null || echo "M"`, {
+      cwd: worktreePath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    }).trim();
+
+    if (statusOutput.startsWith('A')) return 'added';
+    if (statusOutput.startsWith('D')) return 'deleted';
+    if (statusOutput.startsWith('R')) return 'renamed';
+  } catch {
+    // Default to modified
+  }
+  return 'modified';
+}
+
+function getFileDiff(worktreePath: string, baseBranch: string, filePath: string): string {
+  try {
+    return execSync(`git diff ${baseBranch} HEAD -- "${filePath}" 2>/dev/null || git diff HEAD -- "${filePath}" 2>/dev/null || echo ""`, {
+      cwd: worktreePath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: 5 * 1024 * 1024
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Gets the current file changes from a git worktree
  * @param worktreePath Path to the git worktree
  * @returns FileChangesData with all file changes
  */
 export async function getWorktreeChanges(worktreePath: string): Promise<Omit<FileChangesData, 'isActive'>> {
-  const files: FileChange[] = [];
-  let totalLinesAdded = 0;
-  let totalLinesRemoved = 0;
-
   try {
-    // Check if the path exists and is a git repository
     const gitPath = path.join(worktreePath, '.git');
     const gitExists = await fs.pathExists(gitPath);
 
     if (!gitExists) {
       console.log(`[worktree-monitor] Not a git repository: ${worktreePath}`);
-      return {
-        files: [],
-        lastUpdated: new Date().toISOString(),
-        totalLinesAdded: 0,
-        totalLinesRemoved: 0,
-        worktreePath
-      };
+      return createEmptyResult(worktreePath);
     }
 
-    // Get the base to compare against
-    // For worktrees, we want to compare against the branch point (merge-base with origin/main)
-    let baseBranch = 'origin/main';
+    const baseBranch = resolveBaseBranch(worktreePath);
+
+    let diffStatOutput: string;
     try {
-      // Try to find merge-base with origin/main
-      const mergeBase = execSync('git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || echo ""', {
-        cwd: worktreePath,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe']
-      }).trim();
-
-      if (mergeBase) {
-        baseBranch = mergeBase;
-      }
-    } catch {
-      // Fall back to origin/main or origin/master
-      try {
-        execSync('git rev-parse --verify origin/main', { cwd: worktreePath, stdio: ['pipe', 'pipe', 'pipe'] });
-        baseBranch = 'origin/main';
-      } catch {
-        try {
-          execSync('git rev-parse --verify origin/master', { cwd: worktreePath, stdio: ['pipe', 'pipe', 'pipe'] });
-          baseBranch = 'origin/master';
-        } catch {
-          // If we can't find a remote branch, try HEAD~1 or just use HEAD for unstaged changes
-          baseBranch = 'HEAD~1';
-        }
-      }
-    }
-
-    // Get list of changed files with stats using git diff --numstat
-    let diffStatOutput = '';
-    try {
-      // First try diff against base branch
-      diffStatOutput = execSync(`git diff --numstat ${baseBranch} HEAD 2>/dev/null || echo ""`, {
-        cwd: worktreePath,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        maxBuffer: 10 * 1024 * 1024 // 10MB buffer
-      }).trim();
-
-      // If no diff against base, check for uncommitted changes
-      if (!diffStatOutput) {
-        diffStatOutput = execSync('git diff --numstat HEAD 2>/dev/null || echo ""', {
-          cwd: worktreePath,
-          encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-          maxBuffer: 10 * 1024 * 1024
-        }).trim();
-      }
-
-      // Also check for staged changes
-      if (!diffStatOutput) {
-        diffStatOutput = execSync('git diff --numstat --cached 2>/dev/null || echo ""', {
-          cwd: worktreePath,
-          encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-          maxBuffer: 10 * 1024 * 1024
-        }).trim();
-      }
+      diffStatOutput = getDiffStatOutput(worktreePath, baseBranch);
     } catch (error) {
       console.log('[worktree-monitor] Error running git diff --numstat:', error);
-      return {
-        files: [],
-        lastUpdated: new Date().toISOString(),
-        totalLinesAdded: 0,
-        totalLinesRemoved: 0,
-        worktreePath
-      };
+      return createEmptyResult(worktreePath);
     }
 
     if (!diffStatOutput) {
-      return {
-        files: [],
-        lastUpdated: new Date().toISOString(),
-        totalLinesAdded: 0,
-        totalLinesRemoved: 0,
-        worktreePath
-      };
+      return createEmptyResult(worktreePath);
     }
 
-    // Parse the numstat output (format: added\tremoved\tfilepath)
+    const files: FileChange[] = [];
+    let totalLinesAdded = 0;
+    let totalLinesRemoved = 0;
+
     const lines = diffStatOutput.split('\n').filter(line => line.trim());
 
     for (const line of lines) {
       const parts = line.split('\t');
-      if (parts.length >= 3) {
-        const added = parts[0] === '-' ? 0 : parseInt(parts[0], 10) || 0;
-        const removed = parts[1] === '-' ? 0 : parseInt(parts[1], 10) || 0;
-        const filePath = parts.slice(2).join('\t'); // Handle paths with tabs
+      if (parts.length < 3) continue;
 
-        totalLinesAdded += added;
-        totalLinesRemoved += removed;
+      const added = parts[0] === '-' ? 0 : parseInt(parts[0], 10) || 0;
+      const removed = parts[1] === '-' ? 0 : parseInt(parts[1], 10) || 0;
+      const filePath = parts.slice(2).join('\t');
 
-        // Get unified diff for this specific file
-        let diff = '';
-        try {
-          diff = execSync(`git diff ${baseBranch} HEAD -- "${filePath}" 2>/dev/null || git diff HEAD -- "${filePath}" 2>/dev/null || echo ""`, {
-            cwd: worktreePath,
-            encoding: 'utf8',
-            stdio: ['pipe', 'pipe', 'pipe'],
-            maxBuffer: 5 * 1024 * 1024 // 5MB buffer per file
-          }).trim();
-        } catch {
-          // Unable to get diff for this file - might be binary or too large
-        }
+      totalLinesAdded += added;
+      totalLinesRemoved += removed;
 
-        // Determine file status using git diff --name-status
-        let status: FileChange['status'] = 'modified';
-        try {
-          const statusOutput = execSync(`git diff --name-status ${baseBranch} HEAD -- "${filePath}" 2>/dev/null || echo "M"`, {
-            cwd: worktreePath,
-            encoding: 'utf8',
-            stdio: ['pipe', 'pipe', 'pipe']
-          }).trim();
-
-          if (statusOutput.startsWith('A')) status = 'added';
-          else if (statusOutput.startsWith('D')) status = 'deleted';
-          else if (statusOutput.startsWith('R')) status = 'renamed';
-        } catch {
-          // Default to modified
-        }
-
-        files.push({
-          path: filePath,
-          linesAdded: added,
-          linesRemoved: removed,
-          diff,
-          status
-        });
-      }
+      files.push({
+        path: filePath,
+        linesAdded: added,
+        linesRemoved: removed,
+        diff: getFileDiff(worktreePath, baseBranch, filePath),
+        status: getFileStatus(worktreePath, baseBranch, filePath)
+      });
     }
 
     return {
@@ -208,13 +204,7 @@ export async function getWorktreeChanges(worktreePath: string): Promise<Omit<Fil
     };
   } catch (error) {
     console.error('[worktree-monitor] Error getting worktree changes:', error);
-    return {
-      files: [],
-      lastUpdated: new Date().toISOString(),
-      totalLinesAdded: 0,
-      totalLinesRemoved: 0,
-      worktreePath
-    };
+    return createEmptyResult(worktreePath);
   }
 }
 
