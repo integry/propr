@@ -26,6 +26,19 @@ export type MinimalLogger = { info: LogFn; warn: LogFn };
 
 export type Granularity = 'single' | 'balanced' | 'granular';
 
+/**
+ * Configuration for an additional context repository.
+ * These repositories provide examples and documentation only - no code changes will be made to them.
+ */
+export interface ContextRepository {
+  /** Repository identifier in format "owner/repo" */
+  repository: string;
+  /** Optional branch, defaults to the repository's default branch */
+  branch?: string;
+  /** Optional description of what this repository provides (e.g., "UI component examples") */
+  description?: string;
+}
+
 export interface TaskDraftConfig {
   baseBranch: string;
   granularity: Granularity;
@@ -33,6 +46,8 @@ export interface TaskDraftConfig {
   compress?: boolean;
   manualFiles: string[];
   autoFiles: string[];
+  /** Additional repositories to include as reference context only (no code changes) */
+  contextRepositories?: ContextRepository[];
 }
 
 export interface ParsedContextConfig {
@@ -43,6 +58,8 @@ export interface ParsedContextConfig {
   tokenLimit: number;
   manualFiles: string[];
   autoFiles: string[];
+  /** Additional repositories to include as reference context only */
+  contextRepositories: ContextRepository[];
 }
 
 export function parseContextConfig(contextConfig: TaskDraftConfig | null): ParsedContextConfig {
@@ -53,7 +70,8 @@ export function parseContextConfig(contextConfig: TaskDraftConfig | null): Parse
     compress: contextConfig?.compress ?? false,
     tokenLimit: getEffectiveTokenLimit(undefined, contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL),
     manualFiles: contextConfig?.manualFiles || [],
-    autoFiles: contextConfig?.autoFiles || []
+    autoFiles: contextConfig?.autoFiles || [],
+    contextRepositories: contextConfig?.contextRepositories || []
   };
 }
 
@@ -368,6 +386,8 @@ interface BuildFullContextOptions {
   granularity: Granularity;
   fileSummaries?: string;
   images?: Base64Image[];
+  /** Context from additional repositories (marked as example/reference only) */
+  additionalContext?: string;
 }
 
 /**
@@ -388,7 +408,7 @@ function getGranularityReminder(granularity: Granularity): string {
 }
 
 export function buildFullContext(options: BuildFullContextOptions): string {
-  const { userRequest, repomixContext, granularity, fileSummaries, images } = options;
+  const { userRequest, repomixContext, granularity, fileSummaries, images, additionalContext } = options;
   const granularitySpec = GRANULARITY_INSTRUCTIONS[granularity];
   const granularityReminder = getGranularityReminder(granularity);
   const summariesSection = fileSummaries && fileSummaries.trim().length > 0
@@ -403,6 +423,24 @@ export function buildFullContext(options: BuildFullContextOptions): string {
     imagesSection = `\n  <attachments>\n${imageEntries}\n  </attachments>`;
   }
 
+  // Build additional context section if provided (from context repositories)
+  let additionalContextSection = '';
+  if (additionalContext && additionalContext.trim().length > 0) {
+    additionalContextSection = `
+  <example-context>
+<![CDATA[
+=== REFERENCE MATERIAL ONLY - DO NOT IMPLEMENT IN THESE LOCATIONS ===
+The following content is provided as examples and documentation reference.
+Do NOT create or modify files based on paths shown here.
+All implementation must be done in the target repository only.
+
+${additionalContext}
+
+=== END REFERENCE MATERIAL ===
+]]>
+  </example-context>`;
+  }
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <llm-context>
   <system-prompt><![CDATA[${PLANNER_SYSTEM_PROMPT}]]></system-prompt>
@@ -410,7 +448,7 @@ export function buildFullContext(options: BuildFullContextOptions): string {
   <granularity-spec><![CDATA[${granularitySpec}]]></granularity-spec>
   <repository-context>
 ${repomixContext}
-  </repository-context>${summariesSection}
+  </repository-context>${summariesSection}${additionalContextSection}
   <output-guidelines><![CDATA[Output ONLY a valid JSON array. No markdown, no explanations.]]></output-guidelines>
   <granularity-reminder><![CDATA[${granularityReminder}]]></granularity-reminder>
 </llm-context>`;

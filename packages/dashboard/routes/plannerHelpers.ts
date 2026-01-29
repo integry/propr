@@ -424,3 +424,97 @@ export async function getRefineRepoContext(
   if (!draft) return { worktreePath: process.cwd(), authToken: fallbackToken, repository: 'unknown/unknown' };
   return setupRepoContext(draft, fallbackToken);
 }
+
+/**
+ * Validate context repository response structure
+ */
+export interface ValidateContextRepositoryResponse {
+  valid: boolean;
+  repository: string;
+  defaultBranch?: string;
+  description?: string;
+  error?: string;
+}
+
+/**
+ * Create handler for validating context repositories
+ */
+export function createValidateContextRepositoryHandler() {
+  return async function validateContextRepository(req: Request, res: Response): Promise<void> {
+    const { repository, branch } = req.body;
+
+    if (!repository || typeof repository !== 'string') {
+      res.status(400).json({ valid: false, error: 'Repository is required (format: owner/repo)' });
+      return;
+    }
+
+    const [owner, repoName] = repository.split('/');
+    if (!owner || !repoName) {
+      res.status(400).json({ valid: false, error: 'Invalid repository format. Expected: owner/repo' });
+      return;
+    }
+
+    const accessToken = req.user?.accessToken;
+    if (!accessToken) {
+      res.status(401).json({ valid: false, error: 'GitHub access token not available' });
+      return;
+    }
+
+    try {
+      const authToken = await getRepoAuthToken(accessToken);
+      const { Octokit } = await import('@octokit/core');
+      const octokit = new Octokit({ auth: authToken });
+
+      // Check if the repository exists and is accessible
+      const repoInfo = await octokit.request('GET /repos/{owner}/{repo}', {
+        owner,
+        repo: repoName
+      });
+
+      // Verify the branch exists if specified
+      if (branch) {
+        try {
+          await octokit.request('GET /repos/{owner}/{repo}/branches/{branch}', {
+            owner,
+            repo: repoName,
+            branch
+          });
+        } catch (branchError) {
+          res.status(400).json({
+            valid: false,
+            repository,
+            error: `Branch '${branch}' not found in repository`
+          });
+          return;
+        }
+      }
+
+      const response: ValidateContextRepositoryResponse = {
+        valid: true,
+        repository,
+        defaultBranch: repoInfo.data.default_branch,
+        description: repoInfo.data.description || undefined
+      };
+
+      res.json(response);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      // Check for specific GitHub API errors
+      if (errorMessage.includes('Not Found')) {
+        res.status(404).json({
+          valid: false,
+          repository,
+          error: 'Repository not found or not accessible'
+        });
+        return;
+      }
+
+      res.status(500).json({
+        valid: false,
+        repository,
+        error: `Failed to validate repository: ${errorMessage}`
+      });
+    }
+  };
+}

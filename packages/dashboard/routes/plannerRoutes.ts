@@ -32,6 +32,7 @@ import {
   updateDraftContextConfig,
   runBackgroundGeneration,
   getRefineRepoContext,
+  createValidateContextRepositoryHandler,
   GenerateRequestBody
 } from './plannerHelpers.js';
 
@@ -417,6 +418,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const implementIssue = withAuthCheck(db, createImplementIssueHandler({ verifyOwnership: ownershipVerifier }));
   const updateIssue = withAuthCheck(db, createUpdateIssueHandler({ verifyOwnership: ownershipVerifier }));
   const implementAllIssues = withAuthCheck(db, createImplementAllIssuesHandler({ verifyOwnership: ownershipVerifier }));
+  const validateContextRepository = withAuthCheck(db, createValidateContextRepositoryHandler());
 
   return {
     listDrafts,
@@ -437,6 +439,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     getIssues,
     implementIssue,
     updateIssue,
-    implementAllIssues
+    implementAllIssues,
+    validateContextRepository
   };
 }

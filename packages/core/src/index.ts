@@ -100,13 +100,13 @@ export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isRevi
 
 export { getExecutionAnalysis } from './services/analysisService.js';
 export { getModelPricing } from './services/pricingService.js';
-export { generateContext, SecurityException } from './services/contextService.js';
-export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile } from './services/contextService.js';
+export { generateContext, generateAdditionalContext, SecurityException } from './services/contextService.js';
+export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile, AdditionalContextOptions, AdditionalContextResult } from './services/contextService.js';
 export { findRelevantFiles } from './services/relevanceService.js';
 export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';
 export { generatePlan, refinePlan, generateContextPreview, checkoutBranch, PlanningFailedError, BranchNotFoundError, buildFullContext } from './services/taskPlanningService.js';
 export type { GeneratePlanOptions, RefinePlanOptions, GenerateContextPreviewOptions, PreviewResult, PreviewStats, SmartFileSelection, TaskDraftConfig, Granularity } from './services/taskPlanningService.js';
-export type { Base64Image } from './services/planningHelpers.js';
+export type { Base64Image, ContextRepository } from './services/planningHelpers.js';
 export { executeDraft } from './services/taskExecutionService.js';
 export type { IssueLink, ExecutionResult } from './services/taskExecutionService.js';
 export { AttachmentService } from './services/attachmentService.js';

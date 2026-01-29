@@ -44,6 +44,19 @@ export interface ContextStats {
 export type Granularity = 'single' | 'balanced' | 'granular';
 
 /**
+ * Configuration for an additional context repository.
+ * These repositories provide examples and documentation only - no code changes will be made to them.
+ */
+export interface ContextRepository {
+  /** Repository identifier in format "owner/repo" */
+  repository: string;
+  /** Optional branch, defaults to the repository's default branch */
+  branch?: string;
+  /** Optional description of what this repository provides (e.g., "UI component examples") */
+  description?: string;
+}
+
+/**
  * Metadata about granularity enforcement actions applied during plan generation
  */
 export interface GranularityEnforcementMetadata {
@@ -196,6 +209,8 @@ export interface DraftContextConfig {
   compress?: boolean;
   manualFiles?: string[];
   autoFiles?: string[];
+  /** Additional repositories to include as reference context only (no code changes) */
+  contextRepositories?: ContextRepository[];
   /** Granularity enforcement metadata (populated after plan generation) */
   granularityEnforcement?: GranularityEnforcementMetadata;
 }
@@ -348,4 +363,39 @@ export const downloadContext = async (options: PreviewOptions): Promise<Blob> =>
   });
   await handleApiResponse(response);
   return response.blob();
+};
+
+/**
+ * Response from validating a context repository
+ */
+export interface ValidateContextRepositoryResponse {
+  /** Whether the repository is valid and accessible */
+  valid: boolean;
+  /** The repository identifier that was validated */
+  repository: string;
+  /** Default branch of the repository (if valid) */
+  defaultBranch?: string;
+  /** Description of the repository (if available) */
+  description?: string;
+  /** Error message if validation failed */
+  error?: string;
+}
+
+/**
+ * Validate that a context repository exists and is accessible.
+ * Use this before adding a repository to the context repositories list.
+ */
+export const validateContextRepository = async (
+  repository: string,
+  branch?: string
+): Promise<ValidateContextRepositoryResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/validate-context-repository`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repository, branch }),
+    credentials: 'include'
+  });
+  // Don't use handleApiResponse here since we want to return the error details
+  const data = await response.json();
+  return data;
 };
