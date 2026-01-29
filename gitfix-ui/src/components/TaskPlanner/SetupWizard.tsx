@@ -5,13 +5,13 @@ import {
   generatePlan,
   previewContext,
   getRepositoryInfo,
-  getAvailableGithubRepos,
   PlannerDraft,
   PlannerAttachment,
   Granularity,
   PreviewResult,
   ContextRepository
 } from '../../api/gitfixApi';
+import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { getPlannerSettings, savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
@@ -24,7 +24,7 @@ import { ContextHeader } from './ContextHeader';
 import { HeroPromptArea } from './HeroPromptArea';
 import { TaskGranularitySection } from './TaskGranularitySection';
 import { ContextSettingsSection } from './ContextSettingsSection';
-import { ContextRepositoriesSection } from './ContextRepositoriesSection';
+import { ContextRepositoriesSection, IndexedRepository } from './ContextRepositoriesSection';
 import { CostPreview } from './CostPreview';
 import { ExportContextButton } from './ExportContextButton';
 
@@ -73,7 +73,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     contextRepositories: []
   });
 
-  const [availableRepos, setAvailableRepos] = useState<string[]>([]);
+  const [availableRepos, setAvailableRepos] = useState<IndexedRepository[]>([]);
 
   const [preview, setPreview] = useState<PreviewState>({
     isLoading: false,
@@ -132,18 +132,23 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     loadRepoInfo();
   }, [draft.draft_id]);
 
-  // Load available repositories for context repositories section
+  // Load available indexed repositories for context repositories section
   useEffect(() => {
     const loadAvailableRepos = async () => {
       try {
-        const data = await getAvailableGithubRepos() as { repos?: string[] };
-        // Filter out the target repository
-        const repos = (data.repos || []).filter(
-          (repo: string) => repo !== draft.repository
-        );
-        setAvailableRepos(repos);
+        const data = await getRepositoriesIndexingStatus();
+        // Filter to only completed indexed repos and exclude the target repository
+        const indexedRepos: IndexedRepository[] = (data.repositories || [])
+          .filter((repo: RepositoryIndexingStatus) =>
+            repo.indexing_status === 'completed' && repo.full_name !== draft.repository
+          )
+          .map((repo: RepositoryIndexingStatus) => ({
+            full_name: repo.full_name,
+            branch: repo.branch
+          }));
+        setAvailableRepos(indexedRepos);
       } catch (error) {
-        console.error('Failed to load available repos:', error);
+        console.error('Failed to load indexed repos:', error);
       }
     };
     loadAvailableRepos();

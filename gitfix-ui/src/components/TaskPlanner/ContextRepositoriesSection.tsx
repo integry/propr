@@ -1,10 +1,15 @@
-import React, { useState } from 'react';
-import { BookOpen, Plus, X, Info, GitBranch } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { BookOpen, X, Info, ChevronDown, Check } from 'lucide-react';
 import { ContextRepository } from '../../api/plannerApi';
+
+export interface IndexedRepository {
+  full_name: string;
+  branch: string;
+}
 
 interface ContextRepositoriesSectionProps {
   repositories: ContextRepository[];
-  availableRepos: string[];
+  availableRepos: IndexedRepository[];
   onAdd: (repo: ContextRepository) => void;
   onRemove: (repository: string) => void;
   isLoading?: boolean;
@@ -17,147 +22,127 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
   onRemove,
   isLoading = false
 }) => {
-  const [newRepo, setNewRepo] = useState('');
-  const [newBranch, setNewBranch] = useState('');
-  const [newDescription, setNewDescription] = useState('');
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const handleAdd = () => {
-    if (!newRepo.trim()) return;
-    onAdd({
-      repository: newRepo.trim(),
-      branch: newBranch.trim() || undefined,
-      description: newDescription.trim() || undefined
-    });
-    setNewRepo('');
-    setNewBranch('');
-    setNewDescription('');
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleToggleRepo = (repo: IndexedRepository) => {
+    const isSelected = repositories.some(r => r.repository === repo.full_name);
+    if (isSelected) {
+      onRemove(repo.full_name);
+    } else {
+      onAdd({
+        repository: repo.full_name,
+        branch: repo.branch
+      });
+    }
   };
 
-  // Filter out already added repos
-  const filteredRepos = availableRepos.filter(
-    repo => !repositories.some(r => r.repository === repo)
-  );
+  const selectedCount = repositories.length;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <BookOpen className="w-4 h-4 text-gray-500" />
-          <label className="text-sm font-medium text-gray-700">
-            Additional Context Repositories
-          </label>
-          <span className="text-xs text-gray-400">(optional)</span>
-        </div>
-        <button
-          onClick={() => setIsExpanded(!isExpanded)}
-          className="text-sm text-indigo-600 hover:text-indigo-700"
-        >
-          {isExpanded ? 'Collapse' : 'Add repositories'}
-        </button>
+      <div className="flex items-center gap-2">
+        <BookOpen className="w-4 h-4 text-gray-500" />
+        <label className="text-sm font-medium text-gray-700">
+          Additional Context Repositories
+        </label>
+        <span className="text-xs text-gray-400">(optional)</span>
       </div>
 
       {/* Info banner */}
       <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
         <Info className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
         <p className="text-xs text-blue-700">
-          Add repositories containing examples, documentation, or reference code.
-          Content from these repos will be included as <strong>reference only</strong> —
+          Include indexed repositories as reference context.
+          Content from these repos will be used as <strong>reference only</strong> —
           all implementation will be done in the target repository.
         </p>
       </div>
 
-      {/* Added repositories list */}
-      {repositories.length > 0 && (
-        <div className="space-y-2">
-          {repositories.map((repo, index) => (
-            <div
-              key={`${repo.repository}-${index}`}
-              className="flex items-center justify-between p-3 bg-gray-50 border border-gray-200 rounded-lg"
-            >
-              <div className="flex items-center gap-3">
-                <BookOpen className="w-4 h-4 text-gray-400" />
-                <div>
-                  <span className="font-mono text-sm text-gray-900">
-                    {repo.repository}
-                  </span>
-                  {repo.branch && (
-                    <span className="ml-2 text-xs text-gray-500">
-                      <GitBranch className="w-3 h-3 inline mr-1" />
-                      {repo.branch}
+      {/* Multiselect dropdown */}
+      <div className="relative" ref={dropdownRef}>
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          disabled={isLoading || availableRepos.length === 0}
+          className="w-full flex items-center justify-between px-3 py-2 text-sm border border-gray-300 rounded-md bg-white hover:bg-gray-50 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+        >
+          <span className={selectedCount > 0 ? 'text-gray-900' : 'text-gray-500'}>
+            {isLoading ? 'Loading repositories...' :
+             availableRepos.length === 0 ? 'No indexed repositories available' :
+             selectedCount > 0 ? `${selectedCount} repositor${selectedCount === 1 ? 'y' : 'ies'} selected` :
+             'Select repositories...'}
+          </span>
+          <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        </button>
+
+        {/* Dropdown menu */}
+        {isOpen && availableRepos.length > 0 && (
+          <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto">
+            {availableRepos.map((repo) => {
+              const isSelected = repositories.some(r => r.repository === repo.full_name);
+              return (
+                <button
+                  key={`${repo.full_name}:${repo.branch}`}
+                  type="button"
+                  onClick={() => handleToggleRepo(repo)}
+                  className={`w-full flex items-center gap-3 px-3 py-2 text-sm text-left hover:bg-gray-50 ${
+                    isSelected ? 'bg-indigo-50' : ''
+                  }`}
+                >
+                  <div className={`w-4 h-4 flex items-center justify-center rounded border ${
+                    isSelected ? 'bg-indigo-600 border-indigo-600' : 'border-gray-300'
+                  }`}>
+                    {isSelected && <Check className="w-3 h-3 text-white" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className="font-mono text-gray-900 truncate block">
+                      {repo.full_name}
                     </span>
-                  )}
-                  {repo.description && (
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      {repo.description}
-                    </p>
-                  )}
-                </div>
-              </div>
+                    <span className="text-xs text-gray-500">
+                      branch: {repo.branch}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Selected repositories chips */}
+      {repositories.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {repositories.map((repo) => (
+            <div
+              key={repo.repository}
+              className="inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-50 border border-indigo-200 rounded-full text-sm"
+            >
+              <BookOpen className="w-3 h-3 text-indigo-500" />
+              <span className="font-mono text-indigo-700">{repo.repository}</span>
+              {repo.branch && (
+                <span className="text-xs text-indigo-500">({repo.branch})</span>
+              )}
               <button
                 onClick={() => onRemove(repo.repository)}
-                className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded"
+                className="p-0.5 text-indigo-400 hover:text-red-500 hover:bg-red-50 rounded-full"
                 title="Remove"
               >
-                <X className="w-4 h-4" />
+                <X className="w-3 h-3" />
               </button>
             </div>
           ))}
-        </div>
-      )}
-
-      {/* Add new repository form */}
-      {isExpanded && (
-        <div className="p-4 border border-gray-200 rounded-lg bg-gray-50 space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">
-                Repository
-              </label>
-              <input
-                list="context-repos"
-                value={newRepo}
-                onChange={(e) => setNewRepo(e.target.value)}
-                placeholder="owner/repo"
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-              />
-              <datalist id="context-repos">
-                {filteredRepos.map(repo => (
-                  <option key={repo} value={repo} />
-                ))}
-              </datalist>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">
-                Branch (optional)
-              </label>
-              <input
-                value={newBranch}
-                onChange={(e) => setNewBranch(e.target.value)}
-                placeholder="main"
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">
-              Description (optional)
-            </label>
-            <input
-              value={newDescription}
-              onChange={(e) => setNewDescription(e.target.value)}
-              placeholder="e.g., UI component examples"
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-            />
-          </div>
-          <button
-            onClick={handleAdd}
-            disabled={!newRepo.trim() || isLoading}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-          >
-            <Plus className="w-4 h-4" />
-            Add Repository
-          </button>
         </div>
       )}
     </div>
