@@ -420,8 +420,11 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     .join('\n');
   const summaryTokenCost = Math.ceil(fullSummaryText.length / CHARS_PER_TOKEN);
 
-  // Calculate reduced token limit for repomix context (subtract attachments, summaries, overhead)
-  const availableForContext = config.tokenLimit - attachmentTokens - summaryTokenCost - RESERVED_OVERHEAD_TOKENS;
+  // Reserve 10% of budget for smart summaries (directory structure + file overviews)
+  const smartSummaryBudget = Math.floor(config.tokenLimit * 0.1);
+
+  // Calculate reduced token limit for repomix context (subtract attachments, summaries, smart summaries, overhead)
+  const availableForContext = config.tokenLimit - attachmentTokens - summaryTokenCost - smartSummaryBudget - RESERVED_OVERHEAD_TOKENS;
   const repomixTokenLimit = Math.max(5000, availableForContext);
 
   // Warn if attachments consume more than 50% of token budget
@@ -445,6 +448,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     totalLimit: config.tokenLimit,
     attachmentTokens,
     summaryCost: summaryTokenCost,
+    smartSummaryBudget,
     repomixLimit: repomixTokenLimit,
     candidateSummaryCount: candidateSummaries.length
   }, 'Calculated token budgets');
@@ -478,8 +482,6 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   }, 'Filtered summaries for context enrichment');
 
   // Build smart summary context (directory structure + tiered file summaries)
-  // Allocate 10% of token budget for codebase overview
-  const smartSummaryBudget = Math.floor(config.tokenLimit * 0.1);
   const smartSummaryResult = await buildSummaryContext({
     tokenBudget: smartSummaryBudget,
     priorityPaths: relevantFilePaths,
