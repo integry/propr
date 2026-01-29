@@ -15,9 +15,9 @@ interface ContextRepositoriesSectionProps {
   isLoading?: boolean;
 }
 
-// Helper to check if branch is a default branch (main, master)
+// Helper to check if branch is a default branch (main, master, HEAD)
 const isDefaultBranch = (branch: string): boolean => {
-  return ['main', 'master'].includes(branch.toLowerCase());
+  return ['main', 'master', 'head'].includes(branch.toLowerCase());
 };
 
 export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProps> = ({
