@@ -108,6 +108,7 @@ export interface PlanGenerationOptions {
   granularity?: Granularity;
   contextLevel?: number;
   compress?: boolean;
+  contextRepositories?: ContextRepository[];
 }
 
 export const createDraft = async (repository: string, prompt: string): Promise<PlannerDraft> => {

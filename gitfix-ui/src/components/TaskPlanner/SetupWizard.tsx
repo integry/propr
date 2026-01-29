@@ -5,10 +5,12 @@ import {
   generatePlan,
   previewContext,
   getRepositoryInfo,
+  getAvailableGithubRepos,
   PlannerDraft,
   PlannerAttachment,
   Granularity,
-  PreviewResult
+  PreviewResult,
+  ContextRepository
 } from '../../api/gitfixApi';
 import { getPlannerSettings, savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
@@ -22,6 +24,7 @@ import { ContextHeader } from './ContextHeader';
 import { HeroPromptArea } from './HeroPromptArea';
 import { TaskGranularitySection } from './TaskGranularitySection';
 import { ContextSettingsSection } from './ContextSettingsSection';
+import { ContextRepositoriesSection } from './ContextRepositoriesSection';
 import { CostPreview } from './CostPreview';
 import { ExportContextButton } from './ExportContextButton';
 
@@ -40,6 +43,7 @@ interface PlannerConfig {
   contextLevel: number;
   compress: boolean;
   files: PlannerAttachment[];
+  contextRepositories: ContextRepository[];
 }
 
 interface PreviewState {
@@ -65,8 +69,11 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     granularity: savedSettings.lastGranularity,
     contextLevel: savedSettings.lastContextLevel,
     compress: false,
-    files: draft.attachments || []
+    files: draft.attachments || [],
+    contextRepositories: []
   });
+
+  const [availableRepos, setAvailableRepos] = useState<string[]>([]);
 
   const [preview, setPreview] = useState<PreviewState>({
     isLoading: false,
@@ -124,6 +131,23 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     };
     loadRepoInfo();
   }, [draft.draft_id]);
+
+  // Load available repositories for context repositories section
+  useEffect(() => {
+    const loadAvailableRepos = async () => {
+      try {
+        const data = await getAvailableGithubRepos() as { repos?: string[] };
+        // Filter out the target repository
+        const repos = (data.repos || []).filter(
+          (repo: string) => repo !== draft.repository
+        );
+        setAvailableRepos(repos);
+      } catch (error) {
+        console.error('Failed to load available repos:', error);
+      }
+    };
+    loadAvailableRepos();
+  }, [draft.repository]);
 
   const fetchPreview = useCallback(async () => {
     const currentConfig = configRef.current;
@@ -251,6 +275,20 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
   };
 
+  const handleAddContextRepo = (repo: ContextRepository) => {
+    setConfig(prev => ({
+      ...prev,
+      contextRepositories: [...prev.contextRepositories, repo]
+    }));
+  };
+
+  const handleRemoveContextRepo = (repository: string) => {
+    setConfig(prev => ({
+      ...prev,
+      contextRepositories: prev.contextRepositories.filter(r => r.repository !== repository)
+    }));
+  };
+
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -303,7 +341,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         baseBranch: config.baseBranch,
         granularity: config.granularity,
         contextLevel: config.contextLevel,
-        compress: config.compress
+        compress: config.compress,
+        contextRepositories: config.contextRepositories
       });
       startPolling();
     } catch (err) {
@@ -356,8 +395,19 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
             onCompressChange={(compress) => setConfig(prev => ({ ...prev, compress }))}
           />
 
+          {/* Context Repositories Section */}
+          <ContextRepositoriesSection
+            repositories={config.contextRepositories}
+            availableRepos={availableRepos}
+            onAdd={handleAddContextRepo}
+            onRemove={handleRemoveContextRepo}
+          />
+
           {/* Cost Preview */}
-          <CostPreview preview={preview} />
+          <CostPreview
+            preview={preview}
+            contextRepositories={config.contextRepositories}
+          />
 
           {/* Smart File Selection - with skeleton during loading */}
           {preview.isLoading && !preview.data ? (

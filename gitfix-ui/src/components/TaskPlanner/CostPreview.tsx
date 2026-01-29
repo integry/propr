@@ -1,6 +1,6 @@
 import React from 'react';
-import { Loader2, DollarSign, Zap, Info } from 'lucide-react';
-import { PreviewResult } from '../../api/gitfixApi';
+import { Loader2, DollarSign, Zap, Info, BookOpen } from 'lucide-react';
+import { PreviewResult, ContextRepository } from '../../api/gitfixApi';
 
 interface PreviewState {
   isLoading: boolean;
@@ -11,6 +11,7 @@ interface PreviewState {
 
 interface CostPreviewProps {
   preview: PreviewState;
+  contextRepositories?: ContextRepository[];
 }
 
 // Calculate context window usage percentage (assuming 200k context window)
@@ -26,7 +27,7 @@ const getUsageColor = (percentage: number): string => {
   return 'bg-green-500';
 };
 
-export const CostPreview: React.FC<CostPreviewProps> = ({ preview }) => {
+export const CostPreview: React.FC<CostPreviewProps> = ({ preview, contextRepositories }) => {
   if (preview.isLoading) {
     return (
       <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -100,6 +101,17 @@ export const CostPreview: React.FC<CostPreviewProps> = ({ preview }) => {
           />
         </div>
       </div>
+
+      {/* Context repositories indicator */}
+      {contextRepositories && contextRepositories.length > 0 && (
+        <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
+          <BookOpen className="w-4 h-4 text-blue-500" />
+          <span className="text-sm text-gray-600">
+            Including context from {contextRepositories.length} additional
+            {contextRepositories.length === 1 ? ' repository' : ' repositories'}
+          </span>
+        </div>
+      )}
 
       {/* Warnings - styled as neutral info tips */}
       {warnings.length > 0 && (
