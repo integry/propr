@@ -12,6 +12,9 @@ import type { LogFn } from 'pino';
 import { simpleGit } from 'simple-git';
 import { Plan, GRANULARITY_INSTRUCTIONS, PLANNER_SYSTEM_PROMPT } from '../claude/prompts/plannerPrompts.js';
 import type { Attachment } from './attachmentService.js';
+import { buildSummaryContext } from './relevance/contextBuilder.js';
+import fs from 'fs-extra';
+import path from 'path';
 
 /** Number of most relevant files to include summaries for */
 export const RELEVANT_SUMMARY_COUNT = 100;
@@ -488,19 +491,44 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
 
-  // Calculate attachment tokens from stored attachments
-  let attachmentTokens = 0;
+  // Parse and load attachments
+  let attachments: Attachment[] = [];
   if (draft.attachments) {
-    let attachments: Attachment[] = [];
     if (typeof draft.attachments === 'string') {
       try { attachments = JSON.parse(draft.attachments); } catch { attachments = []; }
     } else if (Array.isArray(draft.attachments)) {
       attachments = draft.attachments;
     }
-    attachmentTokens = attachments.reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
-    if (attachmentTokens > 0) {
-      correlatedLogger.info({ attachmentCount: attachments.length, attachmentTokens }, 'Calculated attachment tokens');
+  }
+
+  // Load image attachments as base64
+  const base64Images: Base64Image[] = [];
+  let imageTokens = 0;
+  for (const img of attachments.filter(a => a.type === 'image')) {
+    try {
+      const absolutePath = path.isAbsolute(img.storedPath)
+        ? img.storedPath
+        : path.join(process.cwd(), img.storedPath);
+      const imageData = await fs.readFile(absolutePath);
+      const base64Data = imageData.toString('base64');
+      // Calculate tokens from actual base64 size
+      imageTokens += Math.ceil((base64Data.length / 4) * 1.1);
+      base64Images.push({
+        name: img.originalName,
+        mimeType: img.mimeType,
+        base64Data,
+      });
+    } catch (error) {
+      correlatedLogger.warn({ imagePath: img.storedPath, error: (error as Error).message }, 'Failed to load image for preview');
     }
+  }
+
+  // Text attachment tokens use stored estimate
+  const textAttachmentTokens = attachments.filter(a => a.type === 'text').reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
+  const attachmentTokens = imageTokens + textAttachmentTokens;
+
+  if (attachmentTokens > 0) {
+    correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length, imageTokens, textAttachmentTokens, attachmentTokens }, 'Loaded attachments for preview');
   }
 
   try {
@@ -597,7 +625,32 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     ];
   }
 
-  const fullContext = buildFullContext({ userRequest: prompt, repomixContext: contextResult.context, granularity });
+  // Build smart summary context (directory structure + tiered file summaries)
+  const smartSummaryBudget = Math.floor(previewTokenLimit * 0.1);
+  const smartSummaryResult = await buildSummaryContext({
+    tokenBudget: smartSummaryBudget,
+    priorityPaths: [...manualFiles, ...autoFilePaths],
+    repoName: draft.repository as string,
+    correlationId
+  });
+  const smartSummaries = smartSummaryResult.context || undefined;
+
+  if (smartSummaries) {
+    correlatedLogger.info({
+      fileSummaryCount: smartSummaryResult.fileSummaryCount,
+      dirSummaryCount: smartSummaryResult.dirSummaryCount,
+      estimatedTokens: smartSummaryResult.estimatedTokens
+    }, 'Built smart summary context for preview');
+  }
+
+  // Build full context with all enrichments
+  const fullContext = buildFullContext({
+    userRequest: prompt,
+    repomixContext: contextResult.context,
+    granularity,
+    smartSummaries,
+    images: base64Images.length > 0 ? base64Images : undefined
+  });
 
   await db('task_drafts').where({ draft_id: draftId }).update({
     initial_prompt: prompt,
@@ -607,13 +660,22 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   });
 
   const estimatedActualTokens = Math.ceil(contextResult.totalTokens * TIKTOKEN_TO_CLAUDE_RATIO);
-  const totalWithAttachments = estimatedActualTokens + attachmentTokens;
+  const smartSummaryTokens = smartSummaryResult.estimatedTokens || 0;
+  const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens;
 
-  correlatedLogger.info({ tiktokenCount: contextResult.totalTokens, estimatedActualTokens, attachmentTokens, totalWithAttachments, costEstimate, fileCount: contextResult.includedFiles.length }, 'Context preview completed');
+  correlatedLogger.info({
+    tiktokenCount: contextResult.totalTokens,
+    estimatedActualTokens,
+    attachmentTokens,
+    smartSummaryTokens,
+    totalTokens,
+    costEstimate,
+    fileCount: contextResult.includedFiles.length
+  }, 'Context preview completed');
 
   return {
     success: true,
-    stats: { totalTokens: totalWithAttachments, tiktokenCount: contextResult.totalTokens, costEstimate, contextLength: contextResult.totalCharacters, fileCount: contextResult.includedFiles.length, attachmentTokens },
+    stats: { totalTokens, tiktokenCount: contextResult.totalTokens, costEstimate, contextLength: contextResult.totalCharacters, fileCount: contextResult.includedFiles.length, attachmentTokens },
     smartSelection,
     warnings
   };
