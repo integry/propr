@@ -22,7 +22,7 @@ import type { RepoValidationResult } from '@gitfix/core';
 import { getDefaultModel } from '@gitfix/core';
 import { loadPrLabel, loadPrimaryProcessingLabels } from '@gitfix/core';
 import { filterCommentByAuthor } from '@gitfix/core';
-import { AgentRegistry, generateClaudePrompt, resolveLlmLabel } from '@gitfix/core';
+import { AgentRegistry, generateClaudePrompt, resolveLlmLabel, updateFileChanges } from '@gitfix/core';
 import type { AgentExecutionResult } from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult, localizeContentImages } from './issueJobHelpers.js';
@@ -406,6 +406,12 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
             await job.updateProgress(50);
 
             worktreeInfo = await createWorktreeForIssue(localRepoPath, { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName }, { baseBranch: issueRef.baseBranch || null, octokit, modelName });
+
+            // Store worktree path in state for file changes monitoring
+            await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
+                reason: 'Worktree created',
+                historyMetadata: { worktreePath: worktreeInfo.worktreePath }
+            });
             await job.updateProgress(75);
 
             // Construct the task dashboard URL
@@ -423,6 +429,14 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
             const issueComments = await fetchIssueComments(octokit, issueRef, correlatedLogger);
             claudeResult = await executeAgentAndRecordMetrics({ octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments }, context);
 
+            // Update file changes after agent execution for immediate display
+            try {
+                await updateFileChanges(redisClient, taskId, worktreeInfo.worktreePath, true);
+                correlatedLogger.debug({ taskId }, 'Updated file changes after agent execution');
+            } catch (fileChangesError) {
+                correlatedLogger.warn({ taskId, error: (fileChangesError as Error).message }, 'Failed to update file changes');
+            }
+
             const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId, correlatedLogger });
             commitResult = postProcessResult.commitResult;
             postProcessingResult = postProcessResult.postProcessingResult;
@@ -433,6 +447,17 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
         }
 
         await job.updateProgress(100);
+
+        // Store final file changes state (isActive: false since task is complete)
+        if (worktreeInfo) {
+            try {
+                await updateFileChanges(redisClient, taskId, worktreeInfo.worktreePath, false);
+                correlatedLogger.debug({ taskId }, 'Stored final file changes state');
+            } catch (fileChangesError) {
+                correlatedLogger.warn({ taskId, error: (fileChangesError as Error).message }, 'Failed to store final file changes');
+            }
+        }
+
         await markTaskComplete({ stateManager, taskId, claudeResult, postProcessingResult, commitResult, correlatedLogger });
         return buildFinalResult(issueRef, localRepoPath || '', { worktreeInfo, claudeResult, postProcessingResult, commitResult });
 

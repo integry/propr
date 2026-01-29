@@ -111,6 +111,8 @@ export { executeDraft } from './services/taskExecutionService.js';
 export type { IssueLink, ExecutionResult } from './services/taskExecutionService.js';
 export { AttachmentService } from './services/attachmentService.js';
 export type { Attachment, MulterFile } from './services/attachmentService.js';
+export { getWorktreeChanges, storeFileChanges, getStoredFileChanges, clearFileChanges, updateFileChanges } from './services/worktreeMonitorService.js';
+export type { FileChange, FileChangesData } from './services/worktreeMonitorService.js';
 export { PLANNER_SYSTEM_PROMPT, GRANULARITY_INSTRUCTIONS, getPlannerPrompt, REFINER_SYSTEM_PROMPT } from './claude/prompts/plannerPrompts.js';
 export type { Plan, PlanItem } from './claude/prompts/plannerPrompts.js';
 export { parseLlmJson, JsonParseError } from './utils/jsonUtils.js';

@@ -12,6 +12,7 @@ import LogFilesModal from './LogFilesModal';
 import MetadataBar from './MetadataBar';
 import TaskHeader from './TaskHeader';
 import ProgressBar from './ProgressBar';
+import LiveFileChanges from './LiveFileChanges';
 import { useTaskData, usePromptData, useLogFilesData } from './hooks';
 import { useThinkingLog } from './useThinkingLog';
 import { getHistoryDerivedData } from './useHistoryData';
@@ -95,6 +96,14 @@ const TaskDetails: React.FC = () => {
               history={taskData.history}
               onTodoHover={setHighlightedTodoId}
             />
+
+            {/* Live File Changes */}
+            {taskId && (
+              <LiveFileChanges
+                taskId={taskId}
+                isActive={derivedData.isTaskActive}
+              />
+            )}
           </div>
 
           {/* RIGHT COLUMN: The Execution (65% - 8/12 cols) */}
