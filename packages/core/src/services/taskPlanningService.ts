@@ -353,7 +353,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   // Parse and load attachments
   const attachments = parseAttachments(draft.attachments);
   const base64Images = await loadImageAttachmentsAsBase64(attachments, correlatedLogger);
-  correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length }, 'Loaded attachments from draft');
+  const attachmentTokens = attachments.reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
+  correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length, attachmentTokens }, 'Loaded attachments from draft');
 
   // Parse context_config
   const parsedContextConfig = parseDraftContextConfig(draft.context_config, draftId, correlatedLogger);
@@ -395,18 +396,34 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     .join('\n');
   const summaryTokenCost = Math.ceil(fullSummaryText.length / CHARS_PER_TOKEN);
 
-  // Calculate reduced token limit for repomix context
-  const repomixTokenLimit = Math.max(
-    5000, // Minimum budget for context
-    config.tokenLimit - summaryTokenCost - RESERVED_OVERHEAD_TOKENS
-  );
+  // Calculate reduced token limit for repomix context (subtract attachments, summaries, overhead)
+  const availableForContext = config.tokenLimit - attachmentTokens - summaryTokenCost - RESERVED_OVERHEAD_TOKENS;
+  const repomixTokenLimit = Math.max(5000, availableForContext);
+
+  // Warn if attachments consume more than 50% of token budget
+  if (attachmentTokens > config.tokenLimit * 0.5) {
+    correlatedLogger.warn({
+      attachmentTokens,
+      tokenLimit: config.tokenLimit,
+      percentUsed: Math.round((attachmentTokens / config.tokenLimit) * 100)
+    }, 'Attachments consuming significant portion of token budget');
+  }
+
+  // Error if there's not enough room for context
+  if (availableForContext < 5000) {
+    throw new PlanningFailedError(
+      `Attachments use ${attachmentTokens} tokens, leaving insufficient room for code context. ` +
+      `Try removing large images or increasing the context level.`
+    );
+  }
 
   correlatedLogger.info({
     totalLimit: config.tokenLimit,
+    attachmentTokens,
     summaryCost: summaryTokenCost,
     repomixLimit: repomixTokenLimit,
     candidateSummaryCount: candidateSummaries.length
-  }, 'Calculated token budgets for summaries');
+  }, 'Calculated token budgets');
 
   // When compression is enabled, include all files but prioritize relevant ones
   const filesToInclude = config.compress ? undefined : (relevantFilePaths.length > 0 ? relevantFilePaths : undefined);
