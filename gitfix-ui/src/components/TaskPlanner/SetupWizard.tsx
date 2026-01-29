@@ -8,8 +8,10 @@ import {
   PlannerDraft,
   PlannerAttachment,
   Granularity,
-  PreviewResult
+  PreviewResult,
+  ContextRepository
 } from '../../api/gitfixApi';
+import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { getPlannerSettings, savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
@@ -22,6 +24,7 @@ import { ContextHeader } from './ContextHeader';
 import { HeroPromptArea } from './HeroPromptArea';
 import { TaskGranularitySection } from './TaskGranularitySection';
 import { ContextSettingsSection } from './ContextSettingsSection';
+import { ContextRepositoriesSection, IndexedRepository } from './ContextRepositoriesSection';
 import { CostPreview } from './CostPreview';
 import { ExportContextButton } from './ExportContextButton';
 
@@ -40,6 +43,7 @@ interface PlannerConfig {
   contextLevel: number;
   compress: boolean;
   files: PlannerAttachment[];
+  contextRepositories: ContextRepository[];
 }
 
 interface PreviewState {
@@ -65,8 +69,11 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     granularity: savedSettings.lastGranularity,
     contextLevel: savedSettings.lastContextLevel,
     compress: false,
-    files: draft.attachments || []
+    files: draft.attachments || [],
+    contextRepositories: []
   });
+
+  const [availableRepos, setAvailableRepos] = useState<IndexedRepository[]>([]);
 
   const [preview, setPreview] = useState<PreviewState>({
     isLoading: false,
@@ -124,6 +131,28 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     };
     loadRepoInfo();
   }, [draft.draft_id]);
+
+  // Load available indexed repositories for context repositories section
+  useEffect(() => {
+    const loadAvailableRepos = async () => {
+      try {
+        const data = await getRepositoriesIndexingStatus();
+        // Filter to only completed indexed repos and exclude the target repository
+        const indexedRepos: IndexedRepository[] = (data.repositories || [])
+          .filter((repo: RepositoryIndexingStatus) =>
+            repo.indexing_status === 'completed' && repo.full_name !== draft.repository
+          )
+          .map((repo: RepositoryIndexingStatus) => ({
+            full_name: repo.full_name,
+            branch: repo.branch
+          }));
+        setAvailableRepos(indexedRepos);
+      } catch (error) {
+        console.error('Failed to load indexed repos:', error);
+      }
+    };
+    loadAvailableRepos();
+  }, [draft.repository]);
 
   const fetchPreview = useCallback(async () => {
     const currentConfig = configRef.current;
@@ -251,6 +280,20 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
   };
 
+  const handleAddContextRepo = (repo: ContextRepository) => {
+    setConfig(prev => ({
+      ...prev,
+      contextRepositories: [...prev.contextRepositories, repo]
+    }));
+  };
+
+  const handleRemoveContextRepo = (repository: string) => {
+    setConfig(prev => ({
+      ...prev,
+      contextRepositories: prev.contextRepositories.filter(r => r.repository !== repository)
+    }));
+  };
+
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -303,7 +346,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         baseBranch: config.baseBranch,
         granularity: config.granularity,
         contextLevel: config.contextLevel,
-        compress: config.compress
+        compress: config.compress,
+        contextRepositories: config.contextRepositories
       });
       startPolling();
     } catch (err) {
@@ -356,8 +400,19 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
             onCompressChange={(compress) => setConfig(prev => ({ ...prev, compress }))}
           />
 
+          {/* Context Repositories Section */}
+          <ContextRepositoriesSection
+            repositories={config.contextRepositories}
+            availableRepos={availableRepos}
+            onAdd={handleAddContextRepo}
+            onRemove={handleRemoveContextRepo}
+          />
+
           {/* Cost Preview */}
-          <CostPreview preview={preview} />
+          <CostPreview
+            preview={preview}
+            contextRepositories={config.contextRepositories}
+          />
 
           {/* Smart File Selection - with skeleton during loading */}
           {preview.isLoading && !preview.data ? (
