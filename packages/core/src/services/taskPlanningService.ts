@@ -1,5 +1,6 @@
+/* eslint-disable max-lines */
 import { db } from '../db/connection.js';
-import { generateContext } from './contextService.js';
+import { generateContext, generateAdditionalContext } from './contextService.js';
 import { loadFileSummaries } from './relevance/contextBuilder.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { REFINER_SYSTEM_PROMPT, Plan, PlanItem } from '../claude/prompts/plannerPrompts.js';
@@ -262,7 +263,7 @@ interface TaskDraft {
   updated_at: Date;
 }
 
-export type { Granularity, TaskDraftConfig } from './planningHelpers.js';
+export type { Granularity, TaskDraftConfig, ContextRepository } from './planningHelpers.js';
 
 interface CallLLMOptions {
   draftId: string;
@@ -279,6 +280,8 @@ interface CallLLMOptions {
   images?: Base64Image[];
   /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
   model?: string;
+  /** Optional context from additional repositories (marked as example/reference only) */
+  additionalContext?: string;
 }
 
 interface CallLLMForPlanResult {
@@ -287,13 +290,13 @@ interface CallLLMForPlanResult {
 }
 
 async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
-  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries, images, model = DEFAULT_GENERATION_MODEL } = opts;
+  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, fileSummaries, images, model = DEFAULT_GENERATION_MODEL, additionalContext } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
 
-  // Build prompt with images embedded as base64
-  const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity, fileSummaries, images });
-  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0, model }, 'Calling LLM for plan generation');
+  // Build prompt with images embedded as base64 and additional context from context repositories
+  const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity, fileSummaries, images, additionalContext });
+  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0, model, hasAdditionalContext: !!additionalContext }, 'Calling LLM for plan generation');
 
   // Validate token count before sending to LLM
   const modelLimit = getDefaultModelLimit();
@@ -433,6 +436,53 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     summariesIncluded: candidateSummaries.filter(s => !includedFilesSet.has(s.path)).length
   }, 'Filtered summaries for context enrichment');
 
+  // Generate additional context from context repositories if configured
+  let additionalContext: string | undefined;
+  if (config.contextRepositories && config.contextRepositories.length > 0) {
+    correlatedLogger.info({
+      repositoryCount: config.contextRepositories.length,
+      repositories: config.contextRepositories.map(r => r.repository)
+    }, 'Generating additional context from context repositories');
+
+    // Allocate 20% of the remaining token budget for additional context
+    const additionalContextBudget = Math.floor(config.tokenLimit * 0.2);
+
+    try {
+      const additionalContextResult = await generateAdditionalContext({
+        repositories: config.contextRepositories,
+        tokenBudget: additionalContextBudget,
+        authToken: githubToken,
+        correlationId
+      });
+
+      if (additionalContextResult.repositoriesIncluded.length > 0) {
+        additionalContext = additionalContextResult.context;
+        correlatedLogger.info({
+          repositoriesIncluded: additionalContextResult.repositoriesIncluded,
+          totalTokens: additionalContextResult.totalTokens,
+          errorCount: additionalContextResult.errors.length
+        }, 'Additional context generated successfully');
+
+        // Update trace with additional context info
+        await updateTrace(draftId, 'additional_context', 'completed', {
+          repositoriesIncluded: additionalContextResult.repositoriesIncluded,
+          totalTokens: additionalContextResult.totalTokens,
+          errors: additionalContextResult.errors
+        });
+      }
+
+      if (additionalContextResult.errors.length > 0) {
+        correlatedLogger.warn({
+          errors: additionalContextResult.errors
+        }, 'Some context repositories could not be processed');
+      }
+    } catch (error) {
+      correlatedLogger.warn({
+        error: (error as Error).message
+      }, 'Failed to generate additional context, continuing without it');
+    }
+  }
+
   const { plan, enforcementMetadata } = await callLLMForPlan({
     draftId,
     context: contextResult.context,
@@ -445,6 +495,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     fileSummaries: filteredSummaries,
     images: base64Images.length > 0 ? base64Images : undefined,
     model: generationModel,
+    additionalContext,
   });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
