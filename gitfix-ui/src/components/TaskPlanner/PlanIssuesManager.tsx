@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
 import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue } from '../../api/planIssuesApi';
@@ -6,6 +6,7 @@ import { AgentConfig, getAgents } from '../../api/gitfixApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
 import AgentModelSelector from './AgentModelSelector';
+import SequentialWarningDialog from './SequentialWarningDialog';
 
 interface PlanIssuesManagerProps {
   draftId: string;
@@ -33,7 +34,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   const [globalAgent, setGlobalAgent] = useState<string | null>(null);
   const [globalModel, setGlobalModel] = useState<string | null>(null);
-  const pollIntervalRef = useRef<number | null>(null);
+  const [showSequenceWarning, setShowSequenceWarning] = useState(false);
+  const [pendingImplementIssue, setPendingImplementIssue] = useState<number | null>(null);
+  const pollIntervalRef = React.useRef<number | null>(null);
 
   const issueTitles = React.useMemo(() => {
     const map: Record<number, string> = {};
@@ -41,18 +44,42 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     return map;
   }, [tasks]);
 
-  const { activeIssues, mergedIssues, pendingCount, hasActiveIssues } = useMemo(() => {
+  const { activeIssues, mergedIssues, pendingCount, hasActiveIssues, firstPendingIssueNumber } = useMemo(() => {
     const active: PlanIssue[] = [], merged: PlanIssue[] = [];
     let pending = 0, hasActive = false;
+
+    // Sort issues by issue_number to determine order
+    const sortedIssues = [...issues].sort((a, b) => a.issue_number - b.issue_number);
+
+    // Find the first unmerged issue number (to determine which pending issue can be implemented)
+    let firstUnmergedIssueNumber: number | null = null;
+    for (const issue of sortedIssues) {
+      if (issue.status !== 'merged') {
+        firstUnmergedIssueNumber = issue.issue_number;
+        break;
+      }
+    }
+
+    // The first pending issue that can be safely implemented is only the one
+    // that is both pending AND is the first unmerged issue (all prior issues are merged)
+    let firstPending: number | null = null;
+
     issues.forEach(issue => {
       if (issue.status === 'merged') { merged.push(issue); }
       else {
         active.push(issue);
-        if (issue.status === 'pending') pending++;
+        if (issue.status === 'pending') {
+          pending++;
+          // Only mark as first pending if this issue is the first unmerged issue
+          // (meaning all prior issues have been merged)
+          if (issue.issue_number === firstUnmergedIssueNumber) {
+            firstPending = issue.issue_number;
+          }
+        }
         if (STATUS_CONFIG[issue.status]?.isActive) hasActive = true;
       }
     });
-    return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive };
+    return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive, firstPendingIssueNumber: firstPending };
   }, [issues]);
 
   const fetchIssues = useCallback(async () => {
@@ -70,16 +97,10 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     try {
       const { agents: fetchedAgents } = await getAgents();
       setAgents(fetchedAgents);
-
-      // Set default global agent/model from first enabled agent
       const enabledAgent = fetchedAgents.find(a => a.enabled);
       if (enabledAgent && !globalAgent) {
         setGlobalAgent(enabledAgent.alias);
-        if (enabledAgent.defaultModel) {
-          setGlobalModel(enabledAgent.defaultModel);
-        } else if (enabledAgent.supportedModels?.length) {
-          setGlobalModel(enabledAgent.supportedModels[0]);
-        }
+        setGlobalModel(enabledAgent.defaultModel ?? enabledAgent.supportedModels?.[0] ?? null);
       }
     } catch (err) {
       console.error('Failed to fetch agents:', err);
@@ -105,7 +126,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     return () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); };
   }, [hasActiveIssues, fetchIssues]);
 
-  const handleImplementIssue = async (issueNumber: number) => {
+  const handleImplementIssue = useCallback(async (issueNumber: number) => {
     setImplementingIssue(issueNumber);
     try {
       await implementIssue(draftId, issueNumber);
@@ -117,24 +138,19 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     } finally {
       setImplementingIssue(null);
     }
-  };
+  }, [draftId, fetchIssues, onRefresh]);
 
   const [applyingGlobal, setApplyingGlobal] = useState(false);
 
+  const getDefaultModelForAgent = (agentAlias: string | null): string | null => {
+    if (!agentAlias) return null;
+    const agent = agents.find(a => a.alias === agentAlias);
+    return agent?.defaultModel ?? agent?.supportedModels?.[0] ?? null;
+  };
+
   const handleGlobalAgentChange = (agentAlias: string | null) => {
     setGlobalAgent(agentAlias);
-
-    // Get default model for the agent
-    if (agentAlias) {
-      const agent = agents.find(a => a.alias === agentAlias);
-      if (agent?.defaultModel) {
-        setGlobalModel(agent.defaultModel);
-      } else if (agent?.supportedModels?.length) {
-        setGlobalModel(agent.supportedModels[0]);
-      }
-    } else {
-      setGlobalModel(null);
-    }
+    setGlobalModel(getDefaultModelForAgent(agentAlias));
   };
 
   const handleGlobalModelChange = (modelName: string | null) => setGlobalModel(modelName);
@@ -173,16 +189,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   const handleAgentChange = async (issueNumber: number, agentAlias: string | null) => {
     try {
-      let modelName: string | null = null;
-      if (agentAlias) {
-        const agent = agents.find(a => a.alias === agentAlias);
-        if (agent?.defaultModel) {
-          modelName = agent.defaultModel;
-        } else if (agent?.supportedModels?.length) {
-          modelName = agent.supportedModels[0];
-        }
-      }
-
+      const modelName = getDefaultModelForAgent(agentAlias);
       await updatePlanIssue(draftId, issueNumber, { agent_alias: agentAlias, model_name: modelName });
       setIssues(prev => prev.map(issue =>
         issue.issue_number === issueNumber ? { ...issue, agent_alias: agentAlias, model_name: modelName } : issue
@@ -205,10 +212,23 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     }
   };
 
-  const handleRefresh = async () => {
-    await fetchIssues();
-    onRefresh?.();
-  };
+  const handleRefresh = async () => { await fetchIssues(); onRefresh?.(); };
+
+  const handleImplementWithWarning = useCallback((issueNumber: number) => {
+    setPendingImplementIssue(issueNumber); setShowSequenceWarning(true);
+  }, []);
+
+  const handleCloseWarning = useCallback(() => {
+    setShowSequenceWarning(false); setPendingImplementIssue(null);
+  }, []);
+
+  const handleProceedAnyway = useCallback(async () => {
+    if (pendingImplementIssue !== null) {
+      setShowSequenceWarning(false);
+      await handleImplementIssue(pendingImplementIssue);
+      setPendingImplementIssue(null);
+    }
+  }, [pendingImplementIssue, handleImplementIssue]);
 
   if (loading) {
     return (
@@ -336,6 +356,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             onAgentChange={handleAgentChange}
             onModelChange={handleModelChange}
             implementing={implementingIssue === issue.issue_number}
+            isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
+            onImplementWithWarning={handleImplementWithWarning}
           />
         ))}
       </div>
@@ -380,6 +402,12 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           </AnimatePresence>
         </div>
       )}
+
+      <SequentialWarningDialog
+        isOpen={showSequenceWarning}
+        onClose={handleCloseWarning}
+        onProceed={handleProceedAnyway}
+      />
     </div>
   );
 };

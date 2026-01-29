@@ -21,6 +21,8 @@ interface PlanIssueRowProps {
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
   implementing?: boolean;
+  isFirstPending?: boolean;
+  onImplementWithWarning?: (issueNumber: number) => void;
 }
 
 const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) => {
@@ -53,9 +55,12 @@ const getModelName = (modelId: string | null): string => {
   return modelInfo?.name || modelId;
 };
 
-const getImplementButtonClassName = (implementing: boolean, hasAgent: boolean): string => {
+const getImplementButtonClassName = (implementing: boolean, hasAgent: boolean, isFirstPending: boolean): string => {
   if (implementing || !hasAgent) {
     return 'bg-gray-100 text-gray-400 cursor-not-allowed';
+  }
+  if (!isFirstPending) {
+    return 'bg-gray-200 text-gray-500 hover:bg-gray-300 border border-gray-300';
   }
   return 'bg-primary-600 text-white hover:bg-primary-700';
 };
@@ -63,10 +68,17 @@ const getImplementButtonClassName = (implementing: boolean, hasAgent: boolean): 
 interface ImplementButtonProps {
   implementing: boolean;
   hasAgent: boolean;
+  isFirstPending: boolean;
   onClick: () => void;
 }
 
-const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, hasAgent, onClick }) => (
+const getImplementButtonTitle = (hasAgent: boolean, isFirstPending: boolean): string => {
+  if (!hasAgent) return 'Select an agent first';
+  if (!isFirstPending) return 'Previous tasks not yet merged - click to implement anyway';
+  return 'Start AI implementation';
+};
+
+const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, hasAgent, isFirstPending, onClick }) => (
   <button
     onClick={onClick}
     disabled={implementing || !hasAgent}
@@ -76,9 +88,9 @@ const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, hasAgen
       text-sm font-medium
       rounded-md
       transition-colors
-      ${getImplementButtonClassName(implementing, hasAgent)}
+      ${getImplementButtonClassName(implementing, hasAgent, isFirstPending)}
     `}
-    title={!hasAgent ? 'Select an agent first' : 'Start AI implementation'}
+    title={getImplementButtonTitle(hasAgent, isFirstPending)}
   >
     {implementing ? (
       <>
@@ -87,7 +99,7 @@ const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, hasAgen
       </>
     ) : (
       <>
-        <Play size={14} />
+        <Play size={14} className={!isFirstPending && hasAgent ? 'opacity-60' : ''} />
         <span>Implement</span>
       </>
     )}
@@ -148,7 +160,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   onImplement,
   onAgentChange,
   onModelChange,
-  implementing = false
+  implementing = false,
+  isFirstPending = true,
+  onImplementWithWarning
 }) => {
   const isPending = issue.status === 'pending';
   const isActive = STATUS_CONFIG[issue.status]?.isActive || false;
@@ -220,7 +234,14 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               <ImplementButton
                 implementing={implementing}
                 hasAgent={!!issue.agent_alias}
-                onClick={() => onImplement(issue.issue_number)}
+                isFirstPending={isFirstPending}
+                onClick={() => {
+                  if (isFirstPending || !onImplementWithWarning) {
+                    onImplement(issue.issue_number);
+                  } else {
+                    onImplementWithWarning(issue.issue_number);
+                  }
+                }}
               />
             )}
 
