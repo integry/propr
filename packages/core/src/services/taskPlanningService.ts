@@ -299,6 +299,8 @@ interface CallLLMOptions {
   model?: string;
   /** Optional context from additional repositories (marked as example/reference only) */
   additionalContext?: string;
+  /** Granularity setting for task enforcement */
+  granularity: Granularity;
 }
 
 interface CallLLMForPlanResult {
@@ -307,7 +309,7 @@ interface CallLLMForPlanResult {
 }
 
 async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
-  const { draftId, fullContext, worktreePath, githubToken, repository, correlationId, tokenLimit, model = DEFAULT_GENERATION_MODEL } = opts;
+  const { draftId, fullContext, worktreePath, githubToken, repository, correlationId, tokenLimit, model = DEFAULT_GENERATION_MODEL, granularity } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
 
@@ -421,8 +423,13 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   // Reserve 10% of budget for smart summaries (directory structure + file overviews)
   const smartSummaryBudget = Math.floor(config.tokenLimit * 0.1);
 
-  // Calculate reduced token limit for repomix context (subtract attachments, summaries, smart summaries, overhead)
-  const availableForContext = config.tokenLimit - attachmentTokens - summaryTokenCost - smartSummaryBudget - RESERVED_OVERHEAD_TOKENS;
+  // Reserve 20% for additional context repositories if configured
+  const additionalContextBudget = (config.contextRepositories && config.contextRepositories.length > 0)
+    ? Math.floor(config.tokenLimit * 0.2)
+    : 0;
+
+  // Calculate reduced token limit for repomix context (subtract attachments, summaries, smart summaries, additional context, overhead)
+  const availableForContext = config.tokenLimit - attachmentTokens - summaryTokenCost - smartSummaryBudget - additionalContextBudget - RESERVED_OVERHEAD_TOKENS;
   const repomixTokenLimit = Math.max(5000, availableForContext);
 
   // Warn if attachments consume more than 50% of token budget
@@ -447,6 +454,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     attachmentTokens,
     summaryCost: summaryTokenCost,
     smartSummaryBudget,
+    additionalContextBudget,
     repomixLimit: repomixTokenLimit,
     candidateSummaryCount: candidateSummaries.length
   }, 'Calculated token budgets');
@@ -502,11 +510,9 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   if (config.contextRepositories && config.contextRepositories.length > 0) {
     correlatedLogger.info({
       repositoryCount: config.contextRepositories.length,
-      repositories: config.contextRepositories.map(r => r.repository)
+      repositories: config.contextRepositories.map(r => r.repository),
+      budgetTokens: additionalContextBudget
     }, 'Generating additional context from context repositories');
-
-    // Allocate 20% of the remaining token budget for additional context
-    const additionalContextBudget = Math.floor(config.tokenLimit * 0.2);
 
     try {
       const additionalContextResult = await generateAdditionalContext({
@@ -564,6 +570,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     correlationId,
     tokenLimit: config.tokenLimit,
     model: generationModel,
+    granularity: config.granularity,
   });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
