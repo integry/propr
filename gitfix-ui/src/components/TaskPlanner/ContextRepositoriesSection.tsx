@@ -15,6 +15,11 @@ interface ContextRepositoriesSectionProps {
   isLoading?: boolean;
 }
 
+// Helper to check if branch is a default branch (main, master)
+const isDefaultBranch = (branch: string): boolean => {
+  return ['main', 'master'].includes(branch.toLowerCase());
+};
+
 export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProps> = ({
   repositories,
   availableRepos,
@@ -23,18 +28,34 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
   isLoading = false
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [filterText, setFilterText] = useState('');
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const filterInputRef = useRef<HTMLInputElement>(null);
 
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsOpen(false);
+        setFilterText('');
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // Focus filter input when dropdown opens
+  useEffect(() => {
+    if (isOpen && filterInputRef.current) {
+      filterInputRef.current.focus();
+    }
+  }, [isOpen]);
+
+  // Filter repos based on search text
+  const filteredRepos = availableRepos.filter(repo =>
+    repo.full_name.toLowerCase().includes(filterText.toLowerCase()) ||
+    repo.branch.toLowerCase().includes(filterText.toLowerCase())
+  );
 
   const handleToggleRepo = (repo: IndexedRepository) => {
     const isSelected = repositories.some(r => r.repository === repo.full_name);
@@ -89,34 +110,55 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
 
         {/* Dropdown menu */}
         {isOpen && availableRepos.length > 0 && (
-          <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto">
-            {availableRepos.map((repo) => {
-              const isSelected = repositories.some(r => r.repository === repo.full_name);
-              return (
-                <button
-                  key={`${repo.full_name}:${repo.branch}`}
-                  type="button"
-                  onClick={() => handleToggleRepo(repo)}
-                  className={`w-full flex items-center gap-3 px-3 py-2 text-sm text-left hover:bg-gray-50 ${
-                    isSelected ? 'bg-indigo-50' : ''
-                  }`}
-                >
-                  <div className={`w-4 h-4 flex items-center justify-center rounded border ${
-                    isSelected ? 'bg-indigo-600 border-indigo-600' : 'border-gray-300'
-                  }`}>
-                    {isSelected && <Check className="w-3 h-3 text-white" />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <span className="font-mono text-gray-900 truncate block">
-                      {repo.full_name}
-                    </span>
-                    <span className="text-xs text-gray-500">
-                      branch: {repo.branch}
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
+          <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg">
+            {/* Search filter input */}
+            <div className="p-2 border-b border-gray-200">
+              <input
+                ref={filterInputRef}
+                type="text"
+                value={filterText}
+                onChange={(e) => setFilterText(e.target.value)}
+                placeholder="Filter repositories..."
+                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+              />
+            </div>
+            {/* Repository list */}
+            <div className="max-h-80 overflow-auto">
+              {filteredRepos.length === 0 ? (
+                <div className="px-3 py-2 text-sm text-gray-500">
+                  No repositories match your filter
+                </div>
+              ) : (
+                filteredRepos.map((repo) => {
+                  const isSelected = repositories.some(r => r.repository === repo.full_name);
+                  const showBranch = !isDefaultBranch(repo.branch);
+                  return (
+                    <button
+                      key={`${repo.full_name}:${repo.branch}`}
+                      type="button"
+                      onClick={() => handleToggleRepo(repo)}
+                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-gray-50 ${
+                        isSelected ? 'bg-indigo-50' : ''
+                      }`}
+                    >
+                      <div className={`w-4 h-4 flex-shrink-0 flex items-center justify-center rounded border ${
+                        isSelected ? 'bg-indigo-600 border-indigo-600' : 'border-gray-300'
+                      }`}>
+                        {isSelected && <Check className="w-3 h-3 text-white" />}
+                      </div>
+                      <span className="font-mono text-gray-900 truncate">
+                        {repo.full_name}
+                      </span>
+                      {showBranch && (
+                        <span className="text-xs text-gray-500 flex-shrink-0">
+                          @{repo.branch}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -124,25 +166,30 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
       {/* Selected repositories chips */}
       {repositories.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {repositories.map((repo) => (
-            <div
-              key={repo.repository}
-              className="inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-50 border border-indigo-200 rounded-full text-sm"
-            >
-              <BookOpen className="w-3 h-3 text-indigo-500" />
-              <span className="font-mono text-indigo-700">{repo.repository}</span>
-              {repo.branch && (
-                <span className="text-xs text-indigo-500">({repo.branch})</span>
-              )}
-              <button
-                onClick={() => onRemove(repo.repository)}
-                className="p-0.5 text-indigo-400 hover:text-red-500 hover:bg-red-50 rounded-full"
-                title="Remove"
+          {repositories.map((repo) => {
+            const showBranch = repo.branch && !isDefaultBranch(repo.branch);
+            return (
+              <div
+                key={repo.repository}
+                className="inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-50 border border-indigo-200 rounded-full text-sm"
               >
-                <X className="w-3 h-3" />
-              </button>
-            </div>
-          ))}
+                <BookOpen className="w-3 h-3 text-indigo-500" />
+                <span className="font-mono text-indigo-700">
+                  {repo.repository}
+                  {showBranch && (
+                    <span className="text-indigo-500 ml-1">@{repo.branch}</span>
+                  )}
+                </span>
+                <button
+                  onClick={() => onRemove(repo.repository)}
+                  className="p-0.5 text-indigo-400 hover:text-red-500 hover:bg-red-50 rounded-full"
+                  title="Remove"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
