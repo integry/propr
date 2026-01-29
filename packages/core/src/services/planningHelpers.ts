@@ -151,13 +151,22 @@ export async function validatePromptTokens(
   correlatedLogger: any
 ): Promise<TokenValidationResult> {
   const tiktokenEstimate = estimateTokens(prompt);
+  // Apply ratio to get conservative Claude token estimate
+  const conservativeEstimate = Math.ceil(tiktokenEstimate * TIKTOKEN_TO_CLAUDE_RATIO);
   const effectiveLimit = modelLimit - CLAUDE_CODE_OVERHEAD;
 
-  correlatedLogger.info({ tiktokenEstimate, effectiveLimit, modelLimit }, 'Initial token estimate');
+  correlatedLogger.info({ tiktokenEstimate, conservativeEstimate, effectiveLimit, modelLimit }, 'Initial token estimate');
 
-  // If well under the threshold, tiktoken is good enough
-  if (tiktokenEstimate < effectiveLimit * API_VALIDATION_THRESHOLD) {
-    return { valid: true, tokenCount: tiktokenEstimate, source: 'tiktoken' };
+  // Check conservative estimate against limit
+  if (conservativeEstimate > effectiveLimit) {
+    correlatedLogger.warn({ conservativeEstimate, effectiveLimit, overage: conservativeEstimate - effectiveLimit },
+      'Prompt exceeds token limit (conservative estimate)');
+    return { valid: false, tokenCount: conservativeEstimate, source: 'tiktoken' };
+  }
+
+  // If well under the threshold with conservative estimate, tiktoken is good enough
+  if (conservativeEstimate < effectiveLimit * API_VALIDATION_THRESHOLD) {
+    return { valid: true, tokenCount: conservativeEstimate, source: 'tiktoken' };
   }
 
   // Close to limit - try to validate with API if available
@@ -175,19 +184,9 @@ export async function validatePromptTokens(
 
     return { valid: true, tokenCount: apiTokenCount, source: 'api' };
   } catch (error) {
-    // API not available (no key or error) - fall back to tiktoken with conservative estimate
-    correlatedLogger.warn({ error: (error as Error).message }, 'API token counting failed, using tiktoken estimate');
-
-    // Apply conservative ratio since tiktoken underestimates
-    const conservativeEstimate = Math.ceil(tiktokenEstimate * TIKTOKEN_TO_CLAUDE_RATIO);
-    const valid = conservativeEstimate < effectiveLimit;
-
-    if (!valid) {
-      correlatedLogger.warn({ conservativeEstimate, effectiveLimit },
-        'Prompt likely exceeds token limit (conservative tiktoken estimate)');
-    }
-
-    return { valid, tokenCount: conservativeEstimate, source: 'tiktoken' };
+    // API not available (no key or error) - use conservative estimate already calculated
+    correlatedLogger.warn({ error: (error as Error).message }, 'API token counting failed, using conservative tiktoken estimate');
+    return { valid: true, tokenCount: conservativeEstimate, source: 'tiktoken' };
   }
 }
 
