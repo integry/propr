@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { db } from '../db/connection.js';
 import { generateContext, generateAdditionalContext } from './contextService.js';
 import { loadFileSummaries } from './relevance/contextBuilder.js';

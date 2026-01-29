@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import {
@@ -479,7 +480,7 @@ export function createValidateContextRepositoryHandler() {
             repo: repoName,
             branch
           });
-        } catch (branchError) {
+        } catch {
           res.status(400).json({
             valid: false,
             repository,

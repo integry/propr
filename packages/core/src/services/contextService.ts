@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { pack } from 'repomix';
 import logger from '../utils/logger.js';
 import { TIKTOKEN_TO_CLAUDE_RATIO } from '../config/modelLimits.js';
