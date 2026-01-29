@@ -287,21 +287,14 @@ export type { Granularity, TaskDraftConfig, ContextRepository } from './planning
 
 interface CallLLMOptions {
   draftId: string;
-  context: string;
-  prompt: string;
-  granularity: Granularity;
+  /** Full context XML including all enrichments (repomix, summaries, images, etc.) */
+  fullContext: string;
   worktreePath: string;
   githubToken: string;
   repository: string;
   correlationId?: string;
   /** Token limit based on user's context level setting */
   tokenLimit: number;
-  /** Optional file summaries for files not fully included in the context */
-  fileSummaries?: string;
-  /** Optional smart summaries (directory structure and file overviews) */
-  smartSummaries?: string;
-  /** Optional base64-encoded images to include in the prompt */
-  images?: Base64Image[];
   /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
   model?: string;
   /** Optional context from additional repositories (marked as example/reference only) */
@@ -314,16 +307,14 @@ interface CallLLMForPlanResult {
 }
 
 async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
-  const { draftId, context, prompt, granularity, worktreePath, githubToken, repository, correlationId, tokenLimit, fileSummaries, smartSummaries, images, model = DEFAULT_GENERATION_MODEL, additionalContext } = opts;
+  const { draftId, fullContext, worktreePath, githubToken, repository, correlationId, tokenLimit, model = DEFAULT_GENERATION_MODEL } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   await updateTrace(draftId, 'llm', 'pending');
 
-  // Build prompt with images embedded as base64 and additional context from context repositories
-  const userPrompt = buildFullContext({ userRequest: prompt, repomixContext: context, granularity, fileSummaries, smartSummaries, images, additionalContext });
-  correlatedLogger.info({ hasImages: !!(images && images.length > 0), imageCount: images?.length || 0, model, hasAdditionalContext: !!additionalContext, hasSmartSummaries: !!smartSummaries, tokenLimit }, 'Calling LLM for plan generation');
+  correlatedLogger.info({ model, tokenLimit, contextLength: fullContext.length }, 'Calling LLM for plan generation');
 
   // Validate token count before sending to LLM (use user's configured token limit)
-  const validation = await validatePromptTokens(userPrompt, tokenLimit, correlatedLogger);
+  const validation = await validatePromptTokens(fullContext, tokenLimit, correlatedLogger);
 
   if (!validation.valid) {
     throw new PlanningFailedError(
@@ -335,7 +326,7 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResul
   correlatedLogger.info({ tokenCount: validation.tokenCount, source: validation.source }, 'Token validation passed');
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
-  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model, correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef });
+  const response = await runLightweightLLMAnalysis({ prompt: fullContext, model, correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef });
 
   let plan: Plan;
   try {
@@ -553,21 +544,26 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     }
   }
 
+  // Build full context with all enrichments (images, smart summaries, etc.)
+  const fullContext = buildFullContext({
+    userRequest: draft.initial_prompt,
+    repomixContext: contextResult.context,
+    granularity: config.granularity,
+    fileSummaries: filteredSummaries,
+    smartSummaries,
+    images: base64Images.length > 0 ? base64Images : undefined,
+    additionalContext,
+  });
+
   const { plan, enforcementMetadata } = await callLLMForPlan({
     draftId,
-    context: contextResult.context,
-    prompt: draft.initial_prompt,
-    granularity: config.granularity,
+    fullContext,
     worktreePath,
     githubToken,
     repository: draft.repository,
     correlationId,
     tokenLimit: config.tokenLimit,
-    fileSummaries: filteredSummaries,
-    smartSummaries,
-    images: base64Images.length > 0 ? base64Images : undefined,
     model: generationModel,
-    additionalContext,
   });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
@@ -600,6 +596,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   await db('task_drafts').where({ draft_id: draftId }).update({
     plan_json: JSON.stringify(validatedPlan),
     context_config: JSON.stringify(updatedContextConfig),
+    generated_context: fullContext,
     status: 'review',
     updated_at: db.fn.now()
   });
