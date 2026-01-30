@@ -1,3 +1,5 @@
+import { MODEL_INFO_MAP } from './modelDefinitions.js';
+
 export type ContextLevel = number;
 
 export const MIN_CONTEXT_LEVEL = 10;
@@ -22,7 +24,20 @@ export const MODEL_LIMITS: Record<string, number> = {
 };
 
 export function getEffectiveTokenLimit(modelId: string | undefined, level: ContextLevel): number {
-  const limit = MODEL_LIMITS[modelId || 'default'] || MODEL_LIMITS['default'];
+  let limit = MODEL_LIMITS['default'];
+
+  if (modelId) {
+    // Handle agent:model format if present
+    const effectiveModelId = modelId.includes(':') ? modelId.split(':')[1] : modelId;
+    const modelInfo = MODEL_INFO_MAP[effectiveModelId];
+    
+    if (modelInfo?.contextWindow) {
+      limit = modelInfo.contextWindow;
+    } else if (MODEL_LIMITS[effectiveModelId]) {
+      limit = MODEL_LIMITS[effectiveModelId];
+    }
+  }
+
   const clampedLevel = Math.max(MIN_CONTEXT_LEVEL, Math.min(MAX_CONTEXT_LEVEL, level));
   const ratio = (clampedLevel / 100) * EFFECTIVE_MAX_RATIO;
   return Math.floor(limit * ratio);

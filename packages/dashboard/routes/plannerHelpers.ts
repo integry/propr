@@ -235,9 +235,10 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
       const authToken = await getRepoAuthToken(accessToken);
       const worktreePath = await ensureRepoCloned({ repoUrl: `https://github.com/${owner}/${repoName}.git`, owner, repoName, authToken });
 
-      // Load settings to get the configured context model for semantic scoring
+      // Load settings to get the configured context model for semantic scoring and generation model for limits
       const settings = await loadSettings();
       const contextModel = settings.planner_context_model;
+      const generationModel = settings.planner_generation_model;
 
       // Store context repositories in draft config if provided
       if (deps.db && contextRepositories && Array.isArray(contextRepositories) && contextRepositories.length > 0) {
@@ -256,7 +257,7 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
         });
       }
 
-      const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId, contextModel });
+      const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId, contextModel, generationModel });
       res.json(result);
     } catch (error) {
       console.error('Preview context error:', error);

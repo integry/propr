@@ -107,13 +107,13 @@ export interface ParsedContextConfig {
   contextRepositories: ContextRepository[];
 }
 
-export function parseContextConfig(contextConfig: TaskDraftConfig | null): ParsedContextConfig {
+export function parseContextConfig(contextConfig: TaskDraftConfig | null, modelId?: string): ParsedContextConfig {
   return {
     baseBranch: contextConfig?.baseBranch,
     granularity: contextConfig?.granularity || 'balanced',
     contextLevel: contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL,
     compress: contextConfig?.compress ?? false,
-    tokenLimit: getEffectiveTokenLimit(undefined, contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL),
+    tokenLimit: getEffectiveTokenLimit(modelId, contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL),
     manualFiles: contextConfig?.manualFiles || [],
     autoFiles: contextConfig?.autoFiles || [],
     contextRepositories: contextConfig?.contextRepositories || []
@@ -396,6 +396,7 @@ export interface PreviewStats {
   contextLength: number;
   fileCount: number;
   attachmentTokens?: number;
+  maxTokens: number;
 }
 
 export interface PreviewResult {
@@ -417,6 +418,8 @@ export interface GenerateContextPreviewOptions {
   correlationId?: string;
   /** Model to use for context analysis (e.g., 'haiku', 'claude:claude-haiku-4-5-20251001') */
   contextModel?: string;
+  /** Model to use for generation, determining the max context window */
+  generationModel?: string;
 }
 
 export interface Base64Image {
@@ -660,13 +663,13 @@ async function regenerateContext(params: RegenerateContextParams): Promise<Regen
 }
 
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
-  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel } = options;
-  const previewTokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
+  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel, generationModel } = options;
+  const previewTokenLimit = getEffectiveTokenLimit(generationModel, contextLevel);
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   const warnings: string[] = [];
 
   if (!db) throw new PlanningFailedError('Database not available');
-  correlatedLogger.info({ draftId, baseBranch, granularity, contextModel }, 'Starting context preview generation');
+  correlatedLogger.info({ draftId, baseBranch, granularity, contextModel, generationModel, previewTokenLimit }, 'Starting context preview generation');
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
@@ -752,7 +755,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   return {
     success: true,
-    stats: { totalTokens, tiktokenCount: repomixTokens, costEstimate, contextLength: repomixContext.length, fileCount: includedFiles.length, attachmentTokens },
+    stats: { totalTokens, tiktokenCount: repomixTokens, costEstimate, contextLength: repomixContext.length, fileCount: includedFiles.length, attachmentTokens, maxTokens: previewTokenLimit },
     smartSelection,
     warnings
   };

@@ -84,6 +84,7 @@ export interface PreviewStats {
   costEstimate: number;
   contextLength: number;
   fileCount: number;
+  maxTokens?: number;
 }
 
 export interface PreviewResult {
