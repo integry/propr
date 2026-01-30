@@ -5,6 +5,7 @@ import DeepDiveAnalysis from '../DeepDiveAnalysis';
 import { renderMarkdown } from './renderMarkdown';
 import TaskStatusTable from './TaskStatusTable';
 import TodoList from './TodoList';
+import LiveFileChanges from './LiveFileChanges';
 import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
 import PromptModal from './PromptModal';
@@ -95,6 +96,14 @@ const TaskDetails: React.FC = () => {
               history={taskData.history}
               onTodoHover={setHighlightedTodoId}
             />
+
+            {/* Live File Changes - show for tasks that have history */}
+            {taskId && taskData.history.length > 0 && (
+              <LiveFileChanges
+                taskId={taskId}
+                isActive={derivedData.isTaskActive}
+              />
+            )}
           </div>
 
           {/* RIGHT COLUMN: The Execution (65% - 8/12 cols) */}

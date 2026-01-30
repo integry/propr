@@ -24,6 +24,7 @@ import { loadPrLabel, loadPrimaryProcessingLabels } from '@gitfix/core';
 import { filterCommentByAuthor } from '@gitfix/core';
 import { AgentRegistry, generateClaudePrompt, resolveLlmLabel } from '@gitfix/core';
 import type { AgentExecutionResult } from '@gitfix/core';
+import { updateFileChangesFromWorktree } from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult, localizeContentImages } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
@@ -343,6 +344,15 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
         modelUsed: agentResult.modelUsed
     }, 'Agent execution completed');
 
+    // Capture file changes after execution for the live file changes panel
+    try {
+        const fileChanges = await updateFileChangesFromWorktree(taskId, worktreeInfo.worktreePath);
+        correlatedLogger.debug({ taskId, fileCount: fileChanges.length }, 'Captured file changes after agent execution');
+    } catch (fileChangesError) {
+        // Non-critical - don't fail the task if file changes capture fails
+        correlatedLogger.warn({ error: (fileChangesError as Error).message }, 'Failed to capture file changes');
+    }
+
     return claudeResult;
 }
 
@@ -426,6 +436,14 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
             const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId, correlatedLogger });
             commitResult = postProcessResult.commitResult;
             postProcessingResult = postProcessResult.postProcessingResult;
+
+            // Update file changes after post-processing to capture final state
+            try {
+                await updateFileChangesFromWorktree(taskId, worktreeInfo.worktreePath);
+            } catch (fileChangesError) {
+                correlatedLogger.warn({ error: (fileChangesError as Error).message }, 'Failed to update file changes after post-processing');
+            }
+
             await job.updateProgress(95);
 
         } finally {
