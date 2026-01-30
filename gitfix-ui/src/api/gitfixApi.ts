@@ -252,12 +252,6 @@ export const stopTaskExecution = async (taskId: string): Promise<StopExecutionRe
   return response.json();
 };
 
-export const generateDeepDiveAnalysis = async (taskId: string): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/task/${taskId}/deep-dive-analysis`, { method: 'POST', credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
 export const getCurrentUser = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/auth/user`, { credentials: 'include' });
   await handleApiResponse(response);
