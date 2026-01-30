@@ -13,7 +13,7 @@ import {
   updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, findFilesForPlan,
   GenerationTrace, RELEVANT_SUMMARY_COUNT, RESERVED_OVERHEAD_TOKENS, CHARS_PER_TOKEN,
   parseContextConfig, checkoutBaseBranch, TaskDraftConfig, Granularity, PlanningFailedError, buildFullContext,
-  Base64Image, MinimalLogger
+  Base64Image, MinimalLogger, ContextRepository
 } from './planningHelpers.js';
 import type { Attachment } from './attachmentService.js';
 import { loadSettings } from '../config/configManager.js';
@@ -259,6 +259,117 @@ export interface GeneratePlanOptions {
   correlationId?: string;
 }
 
+interface TokenBudgetResult {
+  summaryTokenCost: number;
+  smartSummaryBudget: number;
+  additionalContextBudget: number;
+  repomixTokenLimit: number;
+}
+
+interface TokenBudgetOptions {
+  tokenLimit: number;
+  attachmentTokens: number;
+  fullSummaryText: string;
+  hasContextRepositories: boolean;
+  correlatedLogger: MinimalLogger;
+}
+
+/**
+ * Calculate token budgets for different context components
+ */
+function calculateTokenBudgets(options: TokenBudgetOptions): TokenBudgetResult {
+  const { tokenLimit, attachmentTokens, fullSummaryText, hasContextRepositories, correlatedLogger } = options;
+  const summaryTokenCost = Math.ceil(fullSummaryText.length / CHARS_PER_TOKEN);
+  const smartSummaryBudget = Math.floor(tokenLimit * 0.1);
+  const additionalContextBudget = hasContextRepositories ? Math.floor(tokenLimit * 0.2) : 0;
+  const availableForContext = tokenLimit - attachmentTokens - summaryTokenCost - smartSummaryBudget - additionalContextBudget - RESERVED_OVERHEAD_TOKENS;
+  const repomixTokenLimit = Math.max(5000, availableForContext);
+
+  // Warn if attachments consume more than 50% of token budget
+  if (attachmentTokens > tokenLimit * 0.5) {
+    correlatedLogger.warn({
+      attachmentTokens, tokenLimit,
+      percentUsed: Math.round((attachmentTokens / tokenLimit) * 100)
+    }, 'Attachments consuming significant portion of token budget');
+  }
+
+  // Error if there's not enough room for context
+  if (availableForContext < 5000) {
+    throw new PlanningFailedError(
+      `Attachments use ${attachmentTokens} tokens, leaving insufficient room for code context. ` +
+      `Try removing large images or increasing the context level.`
+    );
+  }
+
+  correlatedLogger.info({
+    totalLimit: tokenLimit, attachmentTokens, summaryCost: summaryTokenCost,
+    smartSummaryBudget, additionalContextBudget, repomixLimit: repomixTokenLimit
+  }, 'Calculated token budgets');
+
+  return { summaryTokenCost, smartSummaryBudget, additionalContextBudget, repomixTokenLimit };
+}
+
+interface AdditionalContextResult {
+  context?: string;
+}
+
+interface AdditionalContextOptions {
+  contextRepositories: ContextRepository[] | undefined;
+  additionalContextBudget: number;
+  githubToken: string;
+  draftId: string;
+  correlationId: string | undefined;
+  correlatedLogger: MinimalLogger;
+}
+
+/**
+ * Generate additional context from context repositories if configured
+ */
+async function generateAdditionalContextIfNeeded(options: AdditionalContextOptions): Promise<AdditionalContextResult> {
+  const { contextRepositories, additionalContextBudget, githubToken, draftId, correlationId, correlatedLogger } = options;
+  if (!contextRepositories || contextRepositories.length === 0) {
+    return {};
+  }
+
+  correlatedLogger.info({
+    repositoryCount: contextRepositories.length,
+    repositories: contextRepositories.map(r => r.repository),
+    budgetTokens: additionalContextBudget
+  }, 'Generating additional context from context repositories');
+
+  try {
+    const additionalContextResult = await generateAdditionalContext({
+      repositories: contextRepositories,
+      tokenBudget: additionalContextBudget,
+      authToken: githubToken,
+      correlationId
+    });
+
+    if (additionalContextResult.repositoriesIncluded.length > 0) {
+      correlatedLogger.info({
+        repositoriesIncluded: additionalContextResult.repositoriesIncluded,
+        totalTokens: additionalContextResult.totalTokens,
+        errorCount: additionalContextResult.errors.length
+      }, 'Additional context generated successfully');
+
+      await updateTrace(draftId, 'additional_context', 'completed', {
+        repositoriesIncluded: additionalContextResult.repositoriesIncluded,
+        totalTokens: additionalContextResult.totalTokens,
+        errors: additionalContextResult.errors
+      });
+    }
+
+    if (additionalContextResult.errors.length > 0) {
+      correlatedLogger.warn({ errors: additionalContextResult.errors }, 'Some context repositories could not be processed');
+    }
+
+    return { context: additionalContextResult.context };
+  } catch (error) {
+    correlatedLogger.warn({ error: (error as Error).message }, 'Failed to generate additional context, continuing without it');
+    return {};
+  }
+}
+
 export interface RefinePlanOptions {
   currentPlan: Plan;
   instruction: string;
@@ -369,7 +480,6 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   // Parse and load attachments - use actual base64 size for accurate token count
   const attachments = parseAttachments(draft.attachments);
   const { images: base64Images, totalTokens: imageTokens } = await loadImageAttachmentsAsBase64(attachments, correlatedLogger);
-  // Text attachments use stored estimate, images use calculated from actual base64 size
   const textAttachmentTokens = attachments.filter(a => a.type === 'text').reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
   const attachmentTokens = imageTokens + textAttachmentTokens;
   correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length, imageTokens, textAttachmentTokens, attachmentTokens }, 'Loaded attachments from draft');
@@ -377,13 +487,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   // Parse context_config
   const parsedContextConfig = parseDraftContextConfig(draft.context_config, draftId, correlatedLogger);
   const config = parseContextConfig(parsedContextConfig);
-  correlatedLogger.info({
-    draftId,
-    granularity: config.granularity,
-    contextLevel: config.contextLevel,
-    tokenLimit: config.tokenLimit,
-    rawContextLevel: parsedContextConfig?.contextLevel
-  }, 'Parsed context config for plan generation');
+  correlatedLogger.info({ draftId, granularity: config.granularity, contextLevel: config.contextLevel, tokenLimit: config.tokenLimit, rawContextLevel: parsedContextConfig?.contextLevel }, 'Parsed context config for plan generation');
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 
   const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId, contextModel });
@@ -391,186 +495,55 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   await updateTrace(draftId, 'context', 'pending');
   correlatedLogger.info({ fileCount: relevantFilePaths.length, compress: config.compress }, 'Generating context');
 
-  // Load all file summaries and prepare the top relevant ones
+  // Load and prepare file summaries
   const allSummaries = await loadFileSummaries();
   const repoPrefix = draft.repository + '/';
-
-  // Filter summaries to this repository and strip the prefix
-  const repoSummaries = allSummaries
-    .filter(s => s.path.startsWith(repoPrefix))
-    .map(s => ({ ...s, path: s.path.slice(repoPrefix.length) }));
-
-  // Create a map for quick lookup
+  const repoSummaries = allSummaries.filter(s => s.path.startsWith(repoPrefix)).map(s => ({ ...s, path: s.path.slice(repoPrefix.length) }));
   const summaryMap = new Map(repoSummaries.map(s => [s.path, s.summary]));
-
-  // Get the top N most relevant files for summary inclusion
   const topRelevantFiles = relevantFilePaths.slice(0, RELEVANT_SUMMARY_COUNT);
+  const candidateSummaries = topRelevantFiles.map(p => { const summary = summaryMap.get(p); return summary ? { path: p, summary } : null; }).filter((item): item is { path: string; summary: string } => item !== null);
+  const fullSummaryText = candidateSummaries.map(s => `FILE ${s.path}: ${s.summary}`).join('\n');
 
-  // Prepare candidate summaries for the relevant files
-  const candidateSummaries = topRelevantFiles
-    .map(path => {
-      const summary = summaryMap.get(path);
-      return summary ? { path, summary } : null;
-    })
-    .filter((item): item is { path: string; summary: string } => item !== null);
+  // Calculate token budgets
+  const budgets = calculateTokenBudgets({
+    tokenLimit: config.tokenLimit, attachmentTokens, fullSummaryText,
+    hasContextRepositories: !!(config.contextRepositories && config.contextRepositories.length > 0), correlatedLogger
+  });
 
-  // Calculate token cost for summaries (3 chars per token estimate)
-  const fullSummaryText = candidateSummaries
-    .map(s => `FILE ${s.path}: ${s.summary}`)
-    .join('\n');
-  const summaryTokenCost = Math.ceil(fullSummaryText.length / CHARS_PER_TOKEN);
-
-  // Reserve 10% of budget for smart summaries (directory structure + file overviews)
-  const smartSummaryBudget = Math.floor(config.tokenLimit * 0.1);
-
-  // Reserve 20% for additional context repositories if configured
-  const additionalContextBudget = (config.contextRepositories && config.contextRepositories.length > 0)
-    ? Math.floor(config.tokenLimit * 0.2)
-    : 0;
-
-  // Calculate reduced token limit for repomix context (subtract attachments, summaries, smart summaries, additional context, overhead)
-  const availableForContext = config.tokenLimit - attachmentTokens - summaryTokenCost - smartSummaryBudget - additionalContextBudget - RESERVED_OVERHEAD_TOKENS;
-  const repomixTokenLimit = Math.max(5000, availableForContext);
-
-  // Warn if attachments consume more than 50% of token budget
-  if (attachmentTokens > config.tokenLimit * 0.5) {
-    correlatedLogger.warn({
-      attachmentTokens,
-      tokenLimit: config.tokenLimit,
-      percentUsed: Math.round((attachmentTokens / config.tokenLimit) * 100)
-    }, 'Attachments consuming significant portion of token budget');
-  }
-
-  // Error if there's not enough room for context
-  if (availableForContext < 5000) {
-    throw new PlanningFailedError(
-      `Attachments use ${attachmentTokens} tokens, leaving insufficient room for code context. ` +
-      `Try removing large images or increasing the context level.`
-    );
-  }
-
-  correlatedLogger.info({
-    totalLimit: config.tokenLimit,
-    attachmentTokens,
-    summaryCost: summaryTokenCost,
-    smartSummaryBudget,
-    additionalContextBudget,
-    repomixLimit: repomixTokenLimit,
-    candidateSummaryCount: candidateSummaries.length
-  }, 'Calculated token budgets');
-
-  // When compression is enabled, include all files but prioritize relevant ones
+  // Generate repomix context
   const filesToInclude = config.compress ? undefined : (relevantFilePaths.length > 0 ? relevantFilePaths : undefined);
   const priorityFiles = config.compress ? relevantFilePaths : undefined;
-
-  // Generate context with reduced token limit to make room for summaries
-  const contextResult = await generateContext({
-    repoPath: worktreePath,
-    filesToInclude,
-    priorityFiles,
-    tokenLimit: repomixTokenLimit,
-    compress: config.compress,
-    correlationId
-  });
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: budgets.repomixTokenLimit, compress: config.compress, correlationId });
   await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
 
-  // Filter summaries: Only include descriptions for files NOT fully included in repomix context
+  // Filter summaries to exclude files already fully in context
   const includedFilesSet = new Set(contextResult.includedFiles);
-  const filteredSummaries = candidateSummaries
-    .filter(s => !includedFilesSet.has(s.path))
-    .map(s => `FILE ${s.path}: ${s.summary}`)
-    .join('\n');
+  const filteredSummaries = candidateSummaries.filter(s => !includedFilesSet.has(s.path)).map(s => `FILE ${s.path}: ${s.summary}`).join('\n');
+  correlatedLogger.info({ totalCandidates: candidateSummaries.length, includedInContext: contextResult.includedFiles.length, summariesIncluded: candidateSummaries.filter(s => !includedFilesSet.has(s.path)).length }, 'Filtered summaries for context enrichment');
 
-  correlatedLogger.info({
-    totalCandidates: candidateSummaries.length,
-    includedInContext: contextResult.includedFiles.length,
-    summariesIncluded: candidateSummaries.filter(s => !includedFilesSet.has(s.path)).length
-  }, 'Filtered summaries for context enrichment');
-
-  // Build smart summary context (directory structure + tiered file summaries)
-  const smartSummaryResult = await buildSummaryContext({
-    tokenBudget: smartSummaryBudget,
-    priorityPaths: relevantFilePaths,
-    repoName: draft.repository,
-    correlationId
-  });
-
+  // Build smart summary context
+  const smartSummaryResult = await buildSummaryContext({ tokenBudget: budgets.smartSummaryBudget, priorityPaths: relevantFilePaths, repoName: draft.repository, correlationId });
   const smartSummaries = smartSummaryResult.context || undefined;
   if (smartSummaries) {
-    correlatedLogger.info({
-      fileSummaryCount: smartSummaryResult.fileSummaryCount,
-      dirSummaryCount: smartSummaryResult.dirSummaryCount,
-      estimatedTokens: smartSummaryResult.estimatedTokens,
-      truncated: smartSummaryResult.truncated
-    }, 'Built smart summary context');
+    correlatedLogger.info({ fileSummaryCount: smartSummaryResult.fileSummaryCount, dirSummaryCount: smartSummaryResult.dirSummaryCount, estimatedTokens: smartSummaryResult.estimatedTokens, truncated: smartSummaryResult.truncated }, 'Built smart summary context');
   }
 
   // Generate additional context from context repositories if configured
-  let additionalContext: string | undefined;
-  if (config.contextRepositories && config.contextRepositories.length > 0) {
-    correlatedLogger.info({
-      repositoryCount: config.contextRepositories.length,
-      repositories: config.contextRepositories.map(r => r.repository),
-      budgetTokens: additionalContextBudget
-    }, 'Generating additional context from context repositories');
+  const additionalContextResult = await generateAdditionalContextIfNeeded({
+    contextRepositories: config.contextRepositories, additionalContextBudget: budgets.additionalContextBudget,
+    githubToken, draftId, correlationId, correlatedLogger
+  });
+  const additionalContext = additionalContextResult.context;
 
-    try {
-      const additionalContextResult = await generateAdditionalContext({
-        repositories: config.contextRepositories,
-        tokenBudget: additionalContextBudget,
-        authToken: githubToken,
-        correlationId
-      });
-
-      if (additionalContextResult.repositoriesIncluded.length > 0) {
-        additionalContext = additionalContextResult.context;
-        correlatedLogger.info({
-          repositoriesIncluded: additionalContextResult.repositoriesIncluded,
-          totalTokens: additionalContextResult.totalTokens,
-          errorCount: additionalContextResult.errors.length
-        }, 'Additional context generated successfully');
-
-        // Update trace with additional context info
-        await updateTrace(draftId, 'additional_context', 'completed', {
-          repositoriesIncluded: additionalContextResult.repositoriesIncluded,
-          totalTokens: additionalContextResult.totalTokens,
-          errors: additionalContextResult.errors
-        });
-      }
-
-      if (additionalContextResult.errors.length > 0) {
-        correlatedLogger.warn({
-          errors: additionalContextResult.errors
-        }, 'Some context repositories could not be processed');
-      }
-    } catch (error) {
-      correlatedLogger.warn({
-        error: (error as Error).message
-      }, 'Failed to generate additional context, continuing without it');
-    }
-  }
-
-  // Build full context with all enrichments (images, smart summaries, etc.)
+  // Build full context with all enrichments
   const fullContext = buildFullContext({
-    userRequest: draft.initial_prompt,
-    repomixContext: contextResult.context,
-    granularity: config.granularity,
-    fileSummaries: filteredSummaries,
-    smartSummaries,
-    images: base64Images.length > 0 ? base64Images : undefined,
-    additionalContext,
+    userRequest: draft.initial_prompt, repomixContext: contextResult.context, granularity: config.granularity,
+    fileSummaries: filteredSummaries, smartSummaries, images: base64Images.length > 0 ? base64Images : undefined, additionalContext
   });
 
   const { plan, enforcementMetadata } = await callLLMForPlan({
-    draftId,
-    fullContext,
-    worktreePath,
-    githubToken,
-    repository: draft.repository,
-    correlationId,
-    tokenLimit: config.tokenLimit,
-    model: generationModel,
-    granularity: config.granularity,
+    draftId, fullContext, worktreePath, githubToken, repository: draft.repository,
+    correlationId, tokenLimit: config.tokenLimit, model: generationModel, granularity: config.granularity
   });
 
   correlatedLogger.info({ taskCount: plan.length }, 'Validating and repairing file paths');
@@ -580,32 +553,19 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   // Add trace step for granularity enforcement if tasks were merged
   if (enforcementMetadata.enforced) {
     await updateTrace(draftId, 'granularity_enforcement', 'completed', {
-      originalTaskCount: enforcementMetadata.originalTaskCount,
-      finalTaskCount: enforcementMetadata.finalTaskCount,
-      granularity: enforcementMetadata.granularity,
-      message: enforcementMetadata.message
+      originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount,
+      granularity: enforcementMetadata.granularity, message: enforcementMetadata.message
     });
-    correlatedLogger.info(
-      { originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount },
-      'Granularity enforcement applied - added trace step'
-    );
+    correlatedLogger.info({ originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount }, 'Granularity enforcement applied - added trace step');
   }
 
   await updateTrace(draftId, 'llm', 'completed');
 
-  // Merge enforcement metadata into context_config for UI display
-  // Use the already-parsed config (parsedContextConfig) instead of raw string
-  const updatedContextConfig = {
-    ...parsedContextConfig,
-    granularityEnforcement: enforcementMetadata
-  };
+  const updatedContextConfig = { ...parsedContextConfig, granularityEnforcement: enforcementMetadata };
 
   await db('task_drafts').where({ draft_id: draftId }).update({
-    plan_json: JSON.stringify(validatedPlan),
-    context_config: JSON.stringify(updatedContextConfig),
-    generated_context: fullContext,
-    status: 'review',
-    updated_at: db.fn.now()
+    plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
+    generated_context: fullContext, status: 'review', updated_at: db.fn.now()
   });
 
   return validatedPlan;

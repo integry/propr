@@ -101,6 +101,8 @@ export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isRevi
 
 export { getExecutionAnalysis } from './services/analysisService.js';
 export { getModelPricing } from './services/pricingService.js';
+export { getWorktreeChanges, storeFileChanges, getStoredFileChanges, clearFileChanges, updateFileChangesFromWorktree } from './services/worktreeMonitorService.js';
+export type { FileChange, FileChangesData } from './services/worktreeMonitorService.js';
 export { generateContext, generateAdditionalContext, SecurityException } from './services/contextService.js';
 export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile, AdditionalContextOptions, AdditionalContextResult } from './services/contextService.js';
 export { findRelevantFiles } from './services/relevanceService.js';

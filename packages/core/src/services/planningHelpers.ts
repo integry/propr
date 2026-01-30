@@ -520,6 +520,145 @@ interface TaskDraft {
   updated_at: Date;
 }
 
+/**
+ * Parse attachments from draft (JSON string from SQLite or array)
+ */
+function parseDraftAttachments(attachments: string | Attachment[] | undefined): Attachment[] {
+  if (!attachments) return [];
+  if (typeof attachments === 'string') {
+    try { return JSON.parse(attachments); } catch { return []; }
+  }
+  return Array.isArray(attachments) ? attachments : [];
+}
+
+/**
+ * Parse existing context_config from draft
+ */
+function parseExistingContextConfig(contextConfig: TaskDraftConfig | string | null | undefined): TaskDraftConfig | null {
+  if (!contextConfig) return null;
+  if (typeof contextConfig === 'string') {
+    try { return JSON.parse(contextConfig); } catch { return null; }
+  }
+  return contextConfig as TaskDraftConfig;
+}
+
+/**
+ * Load images from attachments and calculate tokens
+ */
+async function loadImagesFromAttachments(
+  attachments: Attachment[],
+  correlatedLogger: MinimalLogger
+): Promise<{ base64Images: Base64Image[]; imageTokens: number }> {
+  const base64Images: Base64Image[] = [];
+  let imageTokens = 0;
+  for (const img of attachments.filter(a => a.type === 'image')) {
+    try {
+      const absolutePath = path.isAbsolute(img.storedPath)
+        ? img.storedPath
+        : path.join(process.cwd(), img.storedPath);
+      const imageData = await fs.readFile(absolutePath);
+      const base64Data = imageData.toString('base64');
+      imageTokens += Math.ceil((base64Data.length / 4) * 1.1);
+      base64Images.push({ name: img.originalName, mimeType: img.mimeType, base64Data });
+    } catch (error) {
+      correlatedLogger.warn({ imagePath: img.storedPath, error: (error as Error).message }, 'Failed to load image for preview');
+    }
+  }
+  return { base64Images, imageTokens };
+}
+
+interface RegenerateContextParams {
+  baseBranch: string;
+  worktreePath: string;
+  prompt: string;
+  manualFiles: string[];
+  draft: TaskDraft;
+  contextModel: string | undefined;
+  compress: boolean;
+  previewTokenLimit: number;
+  correlationId: string | undefined;
+  correlatedLogger: MinimalLogger;
+}
+
+interface RegenerateContextResult {
+  repomixContext: string;
+  smartSummaries: string | undefined;
+  autoFilePaths: string[];
+  includedFiles: string[];
+  repomixTokens: number;
+  smartSummaryTokens: number;
+  securityWarnings: string[];
+}
+
+/**
+ * Regenerate context when content has changed
+ */
+async function regenerateContext(params: RegenerateContextParams): Promise<RegenerateContextResult> {
+  const { baseBranch, worktreePath, prompt, manualFiles, draft, contextModel, compress, previewTokenLimit, correlationId, correlatedLogger } = params;
+  const securityWarnings: string[] = [];
+
+  try {
+    await checkoutBranch(worktreePath, baseBranch);
+    correlatedLogger.info({ baseBranch, worktreePath }, 'Checked out branch for preview');
+  } catch (error) {
+    if (error instanceof BranchNotFoundError) throw error;
+    throw new PlanningFailedError(`Failed to checkout branch '${baseBranch}': ${(error as Error).message}`);
+  }
+
+  // Parse @file references from the prompt
+  const fileRefResult = await parseFileReferences(prompt, worktreePath, { correlationId });
+  const referencedFiles = getResolvedPaths(fileRefResult);
+  const allManualFiles = [...manualFiles];
+  if (referencedFiles.length > 0) {
+    allManualFiles.push(...referencedFiles);
+  }
+
+  // Get agent for semantic scoring
+  const registry = getAgentRegistry();
+  await registry.ensureInitialized();
+  let agent = registry.getDefaultAgent();
+  if (contextModel && contextModel.includes(':')) {
+    const agentAlias = contextModel.split(':')[0];
+    const selectedAgent = registry.getAgentByAlias(agentAlias);
+    if (selectedAgent) agent = selectedAgent;
+  }
+
+  // Find relevant files
+  const relevanceResult = await findRelevantFiles(worktreePath, fileRefResult.cleanedPrompt || prompt, {
+    correlationId, useSummaryScoring: !!agent, useLLMKeywords: true, agent,
+    repoName: draft.repository, branch: baseBranch, modelId: contextModel
+  });
+
+  const autoFilePaths = relevanceResult.files.map(f => f.path);
+  const combinedFiles = [...new Set([...allManualFiles, ...autoFilePaths])];
+
+  correlatedLogger.info({ manualFiles: { count: allManualFiles.length }, autoFiles: { count: autoFilePaths.length }, combinedCount: combinedFiles.length }, 'Preview file selection');
+
+  const filesToInclude = compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined);
+  const priorityFiles = compress ? combinedFiles : undefined;
+  const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: previewTokenLimit, compress, correlationId });
+
+  // Build smart summary context
+  const smartSummaryBudget = Math.floor(previewTokenLimit * 0.1);
+  const smartSummaryResult = await buildSummaryContext({ tokenBudget: smartSummaryBudget, priorityPaths: combinedFiles, repoName: draft.repository as string, correlationId });
+
+  // Add warning if files were skipped due to security concerns
+  if (contextResult.skippedSecurityFiles && contextResult.skippedSecurityFiles.length > 0) {
+    const skippedPaths = contextResult.skippedSecurityFiles.map(f => f.filePath).join(', ');
+    securityWarnings.push(`${contextResult.skippedSecurityFiles.length} file(s) skipped due to potential secrets: ${skippedPaths}`);
+  }
+
+  return {
+    repomixContext: contextResult.context,
+    smartSummaries: smartSummaryResult.context || undefined,
+    autoFilePaths,
+    includedFiles: contextResult.includedFiles,
+    repomixTokens: contextResult.totalTokens,
+    smartSummaryTokens: smartSummaryResult.estimatedTokens || 0,
+    securityWarnings
+  };
+}
+
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
   const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel } = options;
   const previewTokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
@@ -532,33 +671,13 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
 
-  // Parse attachments
-  let attachments: Attachment[] = [];
-  if (draft.attachments) {
-    if (typeof draft.attachments === 'string') {
-      try { attachments = JSON.parse(draft.attachments); } catch { attachments = []; }
-    } else if (Array.isArray(draft.attachments)) {
-      attachments = draft.attachments;
-    }
-  }
-
-  // Parse existing context_config for cache
-  let existingConfig: TaskDraftConfig | null = null;
-  if (draft.context_config) {
-    if (typeof draft.context_config === 'string') {
-      try { existingConfig = JSON.parse(draft.context_config); } catch { /* ignore */ }
-    } else {
-      existingConfig = draft.context_config as TaskDraftConfig;
-    }
-  }
+  const attachments = parseDraftAttachments(draft.attachments);
+  const existingConfig = parseExistingContextConfig(draft.context_config);
 
   // Compute content hash (content-affecting params only, not granularity/contextLevel)
   const manualFiles = [...new Set([...(files || [])])];
   const contentHash = computeContentHash({
-    prompt,
-    baseBranch,
-    compress,
-    manualFiles,
+    prompt, baseBranch, compress, manualFiles,
     attachmentsJson: JSON.stringify(attachments.map(a => ({ id: a.id, storedPath: a.storedPath })))
   });
 
@@ -567,26 +686,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const canUseCache = cache && cache.contentHash === contentHash;
 
   // Always load images (needed for final context)
-  const base64Images: Base64Image[] = [];
-  let imageTokens = 0;
-  for (const img of attachments.filter(a => a.type === 'image')) {
-    try {
-      const absolutePath = path.isAbsolute(img.storedPath)
-        ? img.storedPath
-        : path.join(process.cwd(), img.storedPath);
-      const imageData = await fs.readFile(absolutePath);
-      const base64Data = imageData.toString('base64');
-      imageTokens += Math.ceil((base64Data.length / 4) * 1.1);
-      base64Images.push({
-        name: img.originalName,
-        mimeType: img.mimeType,
-        base64Data,
-      });
-    } catch (error) {
-      correlatedLogger.warn({ imagePath: img.storedPath, error: (error as Error).message }, 'Failed to load image for preview');
-    }
-  }
-
+  const { base64Images, imageTokens } = await loadImagesFromAttachments(attachments, correlatedLogger);
   const textAttachmentTokens = attachments.filter(a => a.type === 'text').reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
   const attachmentTokens = imageTokens + textAttachmentTokens;
 
@@ -598,7 +698,6 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   let smartSummaryTokens: number;
 
   if (canUseCache) {
-    // Use cached context - only granularity/contextLevel changed
     correlatedLogger.info({ contentHash }, 'Using cached context (only settings changed)');
     repomixContext = cache.repomixContext;
     smartSummaries = cache.smartSummaries;
@@ -607,82 +706,21 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     repomixTokens = cache.repomixTokens;
     smartSummaryTokens = cache.smartSummaryTokens;
   } else {
-    // Regenerate context - content changed
     correlatedLogger.info({ contentHash, hadCache: !!cache }, 'Regenerating context (content changed)');
-
-    try {
-      await checkoutBranch(worktreePath, baseBranch);
-      correlatedLogger.info({ baseBranch, worktreePath }, 'Checked out branch for preview');
-    } catch (error) {
-      if (error instanceof BranchNotFoundError) throw error;
-      throw new PlanningFailedError(`Failed to checkout branch '${baseBranch}': ${(error as Error).message}`);
-    }
-
-    // Parse @file references from the prompt
-    const fileRefResult = await parseFileReferences(prompt, worktreePath, { correlationId });
-    const referencedFiles = getResolvedPaths(fileRefResult);
-    if (referencedFiles.length > 0) {
-      manualFiles.push(...referencedFiles);
-    }
-
-    // Get agent for semantic scoring
-    const registry = getAgentRegistry();
-    await registry.ensureInitialized();
-    let agent = registry.getDefaultAgent();
-    if (contextModel && contextModel.includes(':')) {
-      const agentAlias = contextModel.split(':')[0];
-      const selectedAgent = registry.getAgentByAlias(agentAlias);
-      if (selectedAgent) agent = selectedAgent;
-    }
-
-    // Find relevant files
-    const relevanceResult = await findRelevantFiles(worktreePath, fileRefResult.cleanedPrompt || prompt, {
-      correlationId,
-      useSummaryScoring: !!agent,
-      useLLMKeywords: true,
-      agent,
-      repoName: draft.repository,
-      branch: baseBranch,
-      modelId: contextModel
+    const result = await regenerateContext({
+      baseBranch, worktreePath, prompt, manualFiles, draft, contextModel,
+      compress, previewTokenLimit, correlationId, correlatedLogger
     });
-
-    autoFilePaths = relevanceResult.files.map(f => f.path);
-    const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
-
-    correlatedLogger.info({
-      manualFiles: { count: manualFiles.length },
-      autoFiles: { count: autoFilePaths.length },
-      combinedCount: combinedFiles.length
-    }, 'Preview file selection');
-
-    const filesToInclude = compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined);
-    const priorityFiles = compress ? combinedFiles : undefined;
-    const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: previewTokenLimit, compress, correlationId });
-
-    repomixContext = contextResult.context;
-    includedFiles = contextResult.includedFiles;
-    repomixTokens = contextResult.totalTokens;
-
-    // Build smart summary context
-    const smartSummaryBudget = Math.floor(previewTokenLimit * 0.1);
-    const smartSummaryResult = await buildSummaryContext({
-      tokenBudget: smartSummaryBudget,
-      priorityPaths: combinedFiles,
-      repoName: draft.repository as string,
-      correlationId
-    });
-    smartSummaries = smartSummaryResult.context || undefined;
-    smartSummaryTokens = smartSummaryResult.estimatedTokens || 0;
-
-    // Add warning if files were skipped due to security concerns
-    if (contextResult.skippedSecurityFiles && contextResult.skippedSecurityFiles.length > 0) {
-      const skippedPaths = contextResult.skippedSecurityFiles.map(f => f.filePath).join(', ');
-      warnings.push(`${contextResult.skippedSecurityFiles.length} file(s) skipped due to potential secrets: ${skippedPaths}`);
-    }
+    repomixContext = result.repomixContext;
+    smartSummaries = result.smartSummaries;
+    autoFilePaths = result.autoFilePaths;
+    includedFiles = result.includedFiles;
+    repomixTokens = result.repomixTokens;
+    smartSummaryTokens = result.smartSummaryTokens;
+    warnings.push(...result.securityWarnings);
   }
 
   const costEstimate = await calculateCostEstimate(repomixTokens, warnings, correlatedLogger);
-
   const includedFilesSet = new Set(includedFiles);
 
   // Build smart selection from included files
@@ -693,35 +731,16 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   // Build full context with current granularity setting
   const fullContext = buildFullContext({
-    userRequest: prompt,
-    repomixContext,
-    granularity,
-    smartSummaries,
+    userRequest: prompt, repomixContext, granularity, smartSummaries,
     images: base64Images.length > 0 ? base64Images : undefined
   });
 
   // Save with updated cache
-  const newCache: ContextCache = {
-    contentHash,
-    repomixContext,
-    smartSummaries,
-    autoFilePaths,
-    includedFiles,
-    repomixTokens,
-    smartSummaryTokens
-  };
+  const newCache: ContextCache = { contentHash, repomixContext, smartSummaries, autoFilePaths, includedFiles, repomixTokens, smartSummaryTokens };
 
   await db('task_drafts').where({ draft_id: draftId }).update({
     initial_prompt: prompt,
-    context_config: JSON.stringify({
-      baseBranch,
-      granularity,
-      contextLevel,
-      compress,
-      manualFiles,
-      autoFiles: autoFilePaths,
-      contextCache: newCache
-    }),
+    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, compress, manualFiles, autoFiles: autoFilePaths, contextCache: newCache }),
     generated_context: fullContext,
     updated_at: db.fn.now()
   });
@@ -729,16 +748,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const estimatedActualTokens = Math.ceil(repomixTokens * TIKTOKEN_TO_CLAUDE_RATIO);
   const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens;
 
-  correlatedLogger.info({
-    usedCache: canUseCache,
-    tiktokenCount: repomixTokens,
-    estimatedActualTokens,
-    attachmentTokens,
-    smartSummaryTokens,
-    totalTokens,
-    costEstimate,
-    fileCount: includedFiles.length
-  }, 'Context preview completed');
+  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: repomixTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, totalTokens, costEstimate, fileCount: includedFiles.length }, 'Context preview completed');
 
   return {
     success: true,

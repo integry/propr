@@ -80,7 +80,8 @@ export function createSessionIdCallback(
 export function createContainerIdCallback(
     taskId: string,
     stateManager: WorkerStateManager,
-    correlatedLogger: Logger
+    correlatedLogger: Logger,
+    worktreePath?: string
 ): ContainerIdCallback {
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     return async (containerId: string, containerName: string): Promise<void> => {
@@ -97,17 +98,19 @@ export function createContainerIdCallback(
                 return;
             }
 
+            const metadata = { containerId, containerName, ...(worktreePath && { worktreePath }) };
+
             if (currentState.state === TaskStates.CLAUDE_EXECUTION) {
                 // Already in claude_execution, just update the history metadata
-                await stateManager.updateHistoryMetadata(taskId, 'claude_execution', { containerId, containerName });
+                await stateManager.updateHistoryMetadata(taskId, 'claude_execution', metadata);
             } else {
                 // Not yet in claude_execution state - transition to it with container info
                 // This happens when container starts before session_id is received
                 await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
                     reason: 'Docker container started',
-                    historyMetadata: { containerId, containerName }
+                    historyMetadata: metadata
                 });
-                correlatedLogger.info({ taskId, containerId, containerName }, 'Transitioned to claude_execution state with container info');
+                correlatedLogger.info({ taskId, containerId, containerName, worktreePath }, 'Transitioned to claude_execution state with container info');
             }
         } catch (err) {
             correlatedLogger.warn({ taskId, error: (err as Error).message }, 'Failed to update state with container info');

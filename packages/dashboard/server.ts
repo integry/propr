@@ -11,6 +11,7 @@ import {
   createTaskRoutes,
   createTaskHistoryRoutes,
   createLiveDetailsRoutes,
+  createFileChangesRoutes,
   createConfigRoutes,
   createQueueRoutes,
   createExecutionRoutes,
@@ -151,6 +152,7 @@ function setupRoutes(): void {
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
+  const fileChangesRoutes = createFileChangesRoutes({ redisClient, db });
   const configRoutes = createConfigRoutes({ redisClient });
   const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   const executionRoutes = createExecutionRoutes({ redisClient, db });
@@ -169,6 +171,7 @@ function setupRoutes(): void {
   app.post('/api/tasks/revert', ensureAuthenticated, taskRoutes.revertChanges);
   app.get('/api/task/:taskId/history', ensureAuthenticated, taskHistoryRoutes.getTaskHistory);
   app.get('/api/task/:taskId/live-details', ensureAuthenticated, liveDetailsRoutes.getLiveDetails);
+  app.get('/api/task/:taskId/file-changes', ensureAuthenticated, fileChangesRoutes.getFileChanges);
 
   app.get('/api/config/followup-keywords', ensureAuthenticated, configRoutes.getFollowupKeywords);
   app.post('/api/config/followup-keywords', ensureAuthenticated, configRoutes.postFollowupKeywords);
