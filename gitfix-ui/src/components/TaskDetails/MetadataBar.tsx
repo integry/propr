@@ -1,6 +1,6 @@
 import React from 'react';
 import { TaskInfo, HistoryItem } from './types';
-import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban } from 'lucide-react';
+import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban, GitCommit } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { ProviderLogo } from '../ui/ProviderLogo';
 
@@ -110,11 +110,33 @@ const PRInfoLink: React.FC<{ prInfo: { url?: string; number?: number } | undefin
   );
 };
 
+// Commit info link component
+const CommitInfoLink: React.FC<{ commitInfo: { shortHash: string; url: string } | undefined }> = ({ commitInfo }) => {
+  if (!commitInfo?.shortHash || !commitInfo?.url) return null;
+  return (
+    <>
+      <Divider />
+      <a
+        href={commitInfo.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-1 text-gray-600 hover:text-gray-800 font-medium text-xs sm:text-sm font-mono"
+        title="View commit on GitHub"
+      >
+        <GitCommit size={14} aria-hidden="true" />
+        {commitInfo.shortHash}
+        <ExternalLink size={12} aria-hidden="true" className="hidden sm:block" />
+      </a>
+    </>
+  );
+};
+
 interface MetadataBarProps {
   taskInfo: TaskInfo | null;
   currentStatus: string;
   modelName: string;
   prInfo: { url?: string; number?: number } | undefined;
+  commitInfo?: { shortHash: string; url: string };
   historyItemWithPaths: HistoryItem | undefined;
   stoppingExecution: boolean;
   onStopExecution: () => void;
@@ -132,6 +154,7 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   currentStatus,
   modelName,
   prInfo,
+  commitInfo,
   historyItemWithPaths,
   stoppingExecution,
   onStopExecution,
@@ -171,6 +194,9 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
 
         {/* PR info if available */}
         <PRInfoLink prInfo={prInfo} />
+
+        {/* Commit info if available */}
+        <CommitInfoLink commitInfo={commitInfo} />
 
         {/* Duration/Timestamps */}
         {hasDuration && (

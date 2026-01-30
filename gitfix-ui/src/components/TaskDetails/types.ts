@@ -3,6 +3,7 @@ export interface HistoryItemMetadata {
   pr?: { url?: string; number?: number };
   pullRequest?: { url?: string; number?: number };
   description?: string;
+  commitResult?: { commitHash?: string; commitMessage?: string };
 }
 
 export interface HistoryItem {
