@@ -206,7 +206,7 @@ export async function executeDraft(draftId: string, userId: string, correlationI
 
     // Post implementation as a separate comment if it exists
     if (task.implementation) {
-      const commentBody = '**Suggested Implementation:**\n```\n' + task.implementation + '\n```';
+      const commentBody = '**Suggested Implementation:**\n\n' + task.implementation;
 
       await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner,

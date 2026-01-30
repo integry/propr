@@ -18,9 +18,55 @@ Use this context to understand the codebase architecture and identify which file
 You MUST output a strict JSON array with objects containing exactly these fields:
 - "title": A clear, descriptive issue title
 - "body": Comprehensive issue description with context, requirements, implementation details, and acceptance criteria
-- "implementation": The suggested code changes (diffs for existing files, full content for new files)
+- "implementation": The suggested code changes with proper markdown formatting (see below)
 
-Do not include markdown formatting or explanations outside the JSON.`;
+Do not include markdown formatting or explanations outside the JSON.
+
+**Implementation Field Formatting:**
+The "implementation" field MUST use proper markdown structure for GitHub rendering:
+
+1. File headers should be markdown headings, NOT inside code blocks:
+   ### File: \`path/to/file.ts\`
+
+2. For existing files, use fenced code blocks with \`diff\` language identifier:
+   \`\`\`diff
+   --- a/path/to/file.ts
+   +++ b/path/to/file.ts
+   @@ -10,6 +10,8 @@
+    existing code
+   +new code
+   \`\`\`
+
+3. For new files, use fenced code blocks with the appropriate language identifier:
+   \`\`\`typescript
+   // Complete file content here
+   export function newFunction() {
+     // implementation
+   }
+   \`\`\`
+
+4. Explanatory text between code blocks should be regular markdown (not in code blocks).
+
+Example implementation field structure:
+### File: \`src/utils/helper.ts\`
+
+\`\`\`diff
+--- a/src/utils/helper.ts
++++ b/src/utils/helper.ts
+@@ -5,6 +5,8 @@
+ export function existingFunc() {
++  // Add new logic here
++  return newValue;
+ }
+\`\`\`
+
+### File: \`src/utils/newFile.ts\` (new file)
+
+\`\`\`typescript
+export function newHelper() {
+  return 'hello';
+}
+\`\`\``;
 
 export const GRANULARITY_INSTRUCTIONS: Record<Granularity, string> = {
   single: `
