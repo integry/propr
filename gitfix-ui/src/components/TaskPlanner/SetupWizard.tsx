@@ -355,7 +355,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
   };
 
-  const isGenerateDisabled = isGenerating || preview.isLoading || !!branchError || repoInfo.isLoading;
+  const isGenerateDisabled = isGenerating || !!branchError || repoInfo.isLoading;
 
   return (
     <div className="max-w-4xl mx-auto flex flex-col min-h-[calc(100vh-200px)]">
@@ -436,7 +436,6 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         <div className="sticky bottom-0 bg-white border-t border-gray-200 p-4 rounded-b-xl space-y-3">
           <GenerateButton
             isGenerating={isGenerating}
-            isPreviewLoading={preview.isLoading}
             isRepoLoading={repoInfo.isLoading}
             disabled={isGenerateDisabled}
             onClick={handleGenerate}
