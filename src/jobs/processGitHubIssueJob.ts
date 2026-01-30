@@ -1,35 +1,23 @@
+/* eslint-disable max-lines */
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import { Redis } from 'ioredis';
-import { logger } from '@gitfix/core';
-import { generateCorrelationId } from '@gitfix/core';
-import { handleError } from '@gitfix/core';
-import { getAuthenticatedOctokit } from '@gitfix/core';
-import { withRetry, retryConfigs } from '@gitfix/core';
-import { getStateManager, TaskStates } from '@gitfix/core';
-import type { WorkerStateManager, IssueRef } from '@gitfix/core';
-import { ensureRepoCloned, createWorktreeForIssue, getRepoUrl, pushBranch } from '@gitfix/core';
-import type { WorktreeInfo, CommitResult } from '@gitfix/core';
-import { addModelSpecificDelay } from '@gitfix/core';
-import { safeAddLabel } from '@gitfix/core';
-import { ensureGitRepository } from '@gitfix/core';
-import { UsageLimitError } from '@gitfix/core';
-import type { ClaudeCodeResponse } from '@gitfix/core';
-import type { ClaudeResult } from '@gitfix/core';
-import { recordLLMMetrics } from '@gitfix/core';
-import { validateRepositoryInfo } from '@gitfix/core';
-import type { RepoValidationResult } from '@gitfix/core';
-import { getDefaultModel } from '@gitfix/core';
-import { loadPrLabel, loadPrimaryProcessingLabels } from '@gitfix/core';
-import { filterCommentByAuthor } from '@gitfix/core';
-import { AgentRegistry, generateClaudePrompt, resolveLlmLabel } from '@gitfix/core';
-import type { AgentExecutionResult } from '@gitfix/core';
+import {
+    logger, generateCorrelationId, handleError, getAuthenticatedOctokit, withRetry, retryConfigs,
+    getStateManager, TaskStates, ensureRepoCloned, createWorktreeForIssue, getRepoUrl, pushBranch,
+    addModelSpecificDelay, safeAddLabel, ensureGitRepository, UsageLimitError, recordLLMMetrics,
+    validateRepositoryInfo, getDefaultModel, loadPrLabel, loadPrimaryProcessingLabels,
+    filterCommentByAuthor, AgentRegistry, generateClaudePrompt, resolveLlmLabel, updateFileChangesFromWorktree
+} from '@gitfix/core';
+import type {
+    WorkerStateManager, IssueRef, WorktreeInfo, CommitResult, ClaudeCodeResponse, ClaudeResult,
+    RepoValidationResult, AgentExecutionResult, IssueJobData, JobResult
+} from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult, localizeContentImages } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from './issueJobCallbacks.js';
 import { performPostProcessing, performFinalValidation } from './issueJobPostProcessing.js';
-import type { IssueJobData, JobResult } from '@gitfix/core';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -301,18 +289,33 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
         }
     );
 
+    // Start periodic file changes updates during agent execution
+    const FILE_CHANGES_INTERVAL_MS = 10000; // Update every 10 seconds
+    const fileChangesInterval = setInterval(async () => {
+        try {
+            await updateFileChangesFromWorktree(taskId, worktreeInfo.worktreePath);
+        } catch (err) {
+            correlatedLogger.debug({ error: (err as Error).message }, 'Periodic file changes update failed');
+        }
+    }, FILE_CHANGES_INTERVAL_MS);
+
     // Execute task via agent abstraction
-    const agentResult = await agent.executeTask({
-        worktreePath: worktreeInfo.worktreePath,
-        issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-        prompt,
-        model: modelName,
-        githubToken: githubToken.token,
-        branchName: worktreeInfo.branchName,
-        onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger),
-        taskId
-    });
+    let agentResult;
+    try {
+        agentResult = await agent.executeTask({
+            worktreePath: worktreeInfo.worktreePath,
+            issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
+            prompt,
+            model: modelName,
+            githubToken: githubToken.token,
+            branchName: worktreeInfo.branchName,
+            onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
+            onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
+            taskId
+        });
+    } finally {
+        clearInterval(fileChangesInterval);
+    }
 
     // Convert to ClaudeCodeResponse for backwards compatibility
     const claudeResult = agentResultToClaudeResponse(agentResult);
@@ -343,6 +346,15 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
         modelUsed: agentResult.modelUsed
     }, 'Agent execution completed');
 
+    // Capture file changes after execution for the live file changes panel
+    try {
+        const fileChanges = await updateFileChangesFromWorktree(taskId, worktreeInfo.worktreePath);
+        correlatedLogger.debug({ taskId, fileCount: fileChanges.length }, 'Captured file changes after agent execution');
+    } catch (fileChangesError) {
+        // Non-critical - don't fail the task if file changes capture fails
+        correlatedLogger.warn({ error: (fileChangesError as Error).message }, 'Failed to capture file changes');
+    }
+
     return claudeResult;
 }
 
@@ -355,7 +367,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     }
 
     const context = await initializeJobContext(job);
-    const { jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, agentAlias, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
+    const { jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
 
     await addModelSpecificDelay(modelName);
 
@@ -405,28 +417,13 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
             localRepoPath = await ensureRepoCloned({ repoUrl, owner: issueRef.repoOwner, repoName: issueRef.repoName, authToken: githubToken.token });
             await job.updateProgress(50);
 
-            worktreeInfo = await createWorktreeForIssue(localRepoPath, { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName }, { baseBranch: issueRef.baseBranch || null, octokit, modelName });
-            await job.updateProgress(75);
-
-            // Construct the task dashboard URL
-            const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-            const taskUrl = `${frontendUrl}/tasks/${taskId}`;
-
-            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-                body: `🤖 AI processing has started for this issue using **${agentAlias}** agent with **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Agent: \`${agentAlias}\`\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main'}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\`\n\n🔍 [Track Task Execution](${taskUrl})`,
+            const worktreeResult = await executeWorktreeOperations({
+                job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl, localRepoPath
             });
-
-            await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
-            await job.updateProgress(80);
-
-            const issueComments = await fetchIssueComments(octokit, issueRef, correlatedLogger);
-            claudeResult = await executeAgentAndRecordMetrics({ octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments }, context);
-
-            const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId, correlatedLogger });
-            commitResult = postProcessResult.commitResult;
-            postProcessingResult = postProcessResult.postProcessingResult;
-            await job.updateProgress(95);
+            worktreeInfo = worktreeResult.worktreeInfo;
+            claudeResult = worktreeResult.claudeResult;
+            postProcessingResult = worktreeResult.postProcessingResult;
+            commitResult = worktreeResult.commitResult;
 
         } finally {
             await performFinalValidation({ claudeResult: claudeResult || undefined, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, githubToken, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath: localRepoPath || '', jobId, correlationId, correlatedLogger, PR_LABEL, repoUrl });
@@ -464,6 +461,62 @@ async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Pro
     } catch (stateError) {
         correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state to completed');
     }
+}
+
+interface ExecuteWorktreeParams {
+    job: Job<IssueJobData>;
+    context: JobContext;
+    octokit: ReturnType<typeof getAuthenticatedOctokit> extends Promise<infer T> ? T : never;
+    currentIssueData: CurrentIssueData;
+    repoValidation: RepoValidation;
+    githubToken: GitHubToken;
+    repoUrl: string;
+    localRepoPath: string;
+}
+
+interface ExecuteWorktreeResult {
+    worktreeInfo: WorktreeInfo;
+    claudeResult: ClaudeCodeResponse;
+    postProcessingResult: PostProcessingResult | null;
+    commitResult: CommitResult | null;
+}
+
+async function executeWorktreeOperations(params: ExecuteWorktreeParams): Promise<ExecuteWorktreeResult> {
+    const { job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl, localRepoPath } = params;
+    const { issueRef, agentAlias, modelName, taskId, correlatedLogger, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
+
+    const worktreeInfo = await createWorktreeForIssue(localRepoPath, { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName }, { baseBranch: issueRef.baseBranch || null, octokit, modelName });
+    await job.updateProgress(75);
+
+    // Construct the task dashboard URL
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const taskUrl = `${frontendUrl}/tasks/${taskId}`;
+
+    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
+        body: `🤖 AI processing has started for this issue using **${agentAlias}** agent with **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Agent: \`${agentAlias}\`\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main'}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\`\n\n🔍 [Track Task Execution](${taskUrl})`,
+    });
+
+    await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
+    await job.updateProgress(80);
+
+    const issueComments = await fetchIssueComments(octokit, issueRef, correlatedLogger);
+    const claudeResult = await executeAgentAndRecordMetrics({ octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments }, context);
+
+    const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId: context.jobId, correlatedLogger });
+    const commitResult = postProcessResult.commitResult;
+    const postProcessingResult = postProcessResult.postProcessingResult;
+
+    // Update file changes after post-processing to capture final state
+    try {
+        await updateFileChangesFromWorktree(taskId, worktreeInfo.worktreePath);
+    } catch (fileChangesError) {
+        correlatedLogger.warn({ error: (fileChangesError as Error).message }, 'Failed to update file changes after post-processing');
+    }
+
+    await job.updateProgress(95);
+
+    return { worktreeInfo, claudeResult, postProcessingResult, commitResult };
 }
 
 export { processGitHubIssueJob as default };
