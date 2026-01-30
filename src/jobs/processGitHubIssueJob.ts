@@ -289,18 +289,33 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
         }
     );
 
+    // Start periodic file changes updates during agent execution
+    const FILE_CHANGES_INTERVAL_MS = 10000; // Update every 10 seconds
+    const fileChangesInterval = setInterval(async () => {
+        try {
+            await updateFileChangesFromWorktree(taskId, worktreeInfo.worktreePath);
+        } catch (err) {
+            correlatedLogger.debug({ error: (err as Error).message }, 'Periodic file changes update failed');
+        }
+    }, FILE_CHANGES_INTERVAL_MS);
+
     // Execute task via agent abstraction
-    const agentResult = await agent.executeTask({
-        worktreePath: worktreeInfo.worktreePath,
-        issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-        prompt,
-        model: modelName,
-        githubToken: githubToken.token,
-        branchName: worktreeInfo.branchName,
-        onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
-        taskId
-    });
+    let agentResult;
+    try {
+        agentResult = await agent.executeTask({
+            worktreePath: worktreeInfo.worktreePath,
+            issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
+            prompt,
+            model: modelName,
+            githubToken: githubToken.token,
+            branchName: worktreeInfo.branchName,
+            onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
+            onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
+            taskId
+        });
+    } finally {
+        clearInterval(fileChangesInterval);
+    }
 
     // Convert to ClaudeCodeResponse for backwards compatibility
     const claudeResult = agentResultToClaudeResponse(agentResult);
