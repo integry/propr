@@ -25,35 +25,32 @@ Do not include markdown formatting or explanations outside the JSON.
 **Implementation Field Formatting — CRITICAL:**
 The "implementation" field MUST use proper markdown with fenced code blocks for GitHub rendering.
 
-⚠️ MANDATORY: ALL code MUST be wrapped in triple backtick fences. The opening fence MUST include the language identifier on the SAME LINE as the backticks.
+⚠️ MANDATORY: ALL code MUST be wrapped in triple tilde fences (~~~). The opening fence MUST include the language identifier on the SAME LINE.
 
-🚫 WRONG - "diff" on its own line (MISSING backticks):
-   diff
-   --- a/file.ts
-   +++ b/file.ts
-
-🚫 WRONG - backticks on separate line from language:
-   \`\`\`
+🚫 WRONG - language on its own line without fence:
    diff
    --- a/file.ts
 
-✅ CORRECT - backticks and language on same line:
-   \`\`\`diff
+🚫 WRONG - fence and language on separate lines:
+   ~~~
+   diff
+
+✅ CORRECT - fence and language together on one line:
+   ~~~diff
    --- a/file.ts
-   +++ b/file.ts
-   \`\`\`
+   ~~~
 
 Format rules:
 1. File headers: Markdown headings OUTSIDE code blocks: ### File: \`path/to/file.ts\`
-2. Existing files: \`\`\`diff on ONE line, then unified diff content, then closing \`\`\`
-3. New files: \`\`\`typescript (or language) on ONE line, then code, then closing \`\`\`
+2. Existing files: ~~~diff on ONE line, then unified diff content, then closing ~~~
+3. New files: ~~~typescript (or language) on ONE line, then code, then closing ~~~
 4. Explanatory text: Regular markdown between code blocks
 
 Complete example:
 
 ### File: \`src/utils/helper.ts\`
 
-\`\`\`diff
+~~~diff
 --- a/src/utils/helper.ts
 +++ b/src/utils/helper.ts
 @@ -5,6 +5,8 @@
@@ -61,17 +58,17 @@ Complete example:
 +  // Add new logic here
 +  return newValue;
  }
-\`\`\`
+~~~
 
 ### File: \`src/utils/newFile.ts\` (new file)
 
-\`\`\`typescript
+~~~typescript
 export function newHelper() {
   return 'hello';
 }
-\`\`\`
+~~~
 
-CRITICAL: Write \`\`\`diff or \`\`\`typescript as a SINGLE token with NO space or newline between \`\`\` and the language name.`;
+CRITICAL: Always write ~~~diff or ~~~typescript as a SINGLE unit with NO space or newline between ~~~ and the language.`;
 
 export const GRANULARITY_INSTRUCTIONS: Record<Granularity, string> = {
   single: `
