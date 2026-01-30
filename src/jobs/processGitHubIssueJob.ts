@@ -1,36 +1,23 @@
+/* eslint-disable max-lines */
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import { Redis } from 'ioredis';
-import { logger } from '@gitfix/core';
-import { generateCorrelationId } from '@gitfix/core';
-import { handleError } from '@gitfix/core';
-import { getAuthenticatedOctokit } from '@gitfix/core';
-import { withRetry, retryConfigs } from '@gitfix/core';
-import { getStateManager, TaskStates } from '@gitfix/core';
-import type { WorkerStateManager, IssueRef } from '@gitfix/core';
-import { ensureRepoCloned, createWorktreeForIssue, getRepoUrl, pushBranch } from '@gitfix/core';
-import type { WorktreeInfo, CommitResult } from '@gitfix/core';
-import { addModelSpecificDelay } from '@gitfix/core';
-import { safeAddLabel } from '@gitfix/core';
-import { ensureGitRepository } from '@gitfix/core';
-import { UsageLimitError } from '@gitfix/core';
-import type { ClaudeCodeResponse } from '@gitfix/core';
-import type { ClaudeResult } from '@gitfix/core';
-import { recordLLMMetrics } from '@gitfix/core';
-import { validateRepositoryInfo } from '@gitfix/core';
-import type { RepoValidationResult } from '@gitfix/core';
-import { getDefaultModel } from '@gitfix/core';
-import { loadPrLabel, loadPrimaryProcessingLabels } from '@gitfix/core';
-import { filterCommentByAuthor } from '@gitfix/core';
-import { AgentRegistry, generateClaudePrompt, resolveLlmLabel } from '@gitfix/core';
-import type { AgentExecutionResult } from '@gitfix/core';
-import { updateFileChangesFromWorktree } from '@gitfix/core';
+import {
+    logger, generateCorrelationId, handleError, getAuthenticatedOctokit, withRetry, retryConfigs,
+    getStateManager, TaskStates, ensureRepoCloned, createWorktreeForIssue, getRepoUrl, pushBranch,
+    addModelSpecificDelay, safeAddLabel, ensureGitRepository, UsageLimitError, recordLLMMetrics,
+    validateRepositoryInfo, getDefaultModel, loadPrLabel, loadPrimaryProcessingLabels,
+    filterCommentByAuthor, AgentRegistry, generateClaudePrompt, resolveLlmLabel, updateFileChangesFromWorktree
+} from '@gitfix/core';
+import type {
+    WorkerStateManager, IssueRef, WorktreeInfo, CommitResult, ClaudeCodeResponse, ClaudeResult,
+    RepoValidationResult, AgentExecutionResult, IssueJobData, JobResult
+} from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult, localizeContentImages } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from './issueJobCallbacks.js';
 import { performPostProcessing, performFinalValidation } from './issueJobPostProcessing.js';
-import type { IssueJobData, JobResult } from '@gitfix/core';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -365,7 +352,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     }
 
     const context = await initializeJobContext(job);
-    const { jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, agentAlias, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
+    const { jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
 
     await addModelSpecificDelay(modelName);
 
@@ -475,13 +462,13 @@ interface ExecuteWorktreeParams {
 interface ExecuteWorktreeResult {
     worktreeInfo: WorktreeInfo;
     claudeResult: ClaudeCodeResponse;
-    postProcessingResult: PostProcessingResult;
+    postProcessingResult: PostProcessingResult | null;
     commitResult: CommitResult | null;
 }
 
 async function executeWorktreeOperations(params: ExecuteWorktreeParams): Promise<ExecuteWorktreeResult> {
     const { job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl, localRepoPath } = params;
-    const { issueRef, agentAlias, modelName, stateManager, taskId, correlatedLogger, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
+    const { issueRef, agentAlias, modelName, taskId, correlatedLogger, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
 
     const worktreeInfo = await createWorktreeForIssue(localRepoPath, { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName }, { baseBranch: issueRef.baseBranch || null, octokit, modelName });
     await job.updateProgress(75);

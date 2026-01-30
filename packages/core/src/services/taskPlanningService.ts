@@ -266,16 +266,19 @@ interface TokenBudgetResult {
   repomixTokenLimit: number;
 }
 
+interface TokenBudgetOptions {
+  tokenLimit: number;
+  attachmentTokens: number;
+  fullSummaryText: string;
+  hasContextRepositories: boolean;
+  correlatedLogger: MinimalLogger;
+}
+
 /**
  * Calculate token budgets for different context components
  */
-function calculateTokenBudgets(
-  tokenLimit: number,
-  attachmentTokens: number,
-  fullSummaryText: string,
-  hasContextRepositories: boolean,
-  correlatedLogger: MinimalLogger
-): TokenBudgetResult {
+function calculateTokenBudgets(options: TokenBudgetOptions): TokenBudgetResult {
+  const { tokenLimit, attachmentTokens, fullSummaryText, hasContextRepositories, correlatedLogger } = options;
   const summaryTokenCost = Math.ceil(fullSummaryText.length / CHARS_PER_TOKEN);
   const smartSummaryBudget = Math.floor(tokenLimit * 0.1);
   const additionalContextBudget = hasContextRepositories ? Math.floor(tokenLimit * 0.2) : 0;
@@ -310,17 +313,20 @@ interface AdditionalContextResult {
   context?: string;
 }
 
+interface AdditionalContextOptions {
+  contextRepositories: ContextRepository[] | undefined;
+  additionalContextBudget: number;
+  githubToken: string;
+  draftId: string;
+  correlationId: string | undefined;
+  correlatedLogger: MinimalLogger;
+}
+
 /**
  * Generate additional context from context repositories if configured
  */
-async function generateAdditionalContextIfNeeded(
-  contextRepositories: ContextRepository[] | undefined,
-  additionalContextBudget: number,
-  githubToken: string,
-  draftId: string,
-  correlationId: string | undefined,
-  correlatedLogger: MinimalLogger
-): Promise<AdditionalContextResult> {
+async function generateAdditionalContextIfNeeded(options: AdditionalContextOptions): Promise<AdditionalContextResult> {
+  const { contextRepositories, additionalContextBudget, githubToken, draftId, correlationId, correlatedLogger } = options;
   if (!contextRepositories || contextRepositories.length === 0) {
     return {};
   }
@@ -499,7 +505,10 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const fullSummaryText = candidateSummaries.map(s => `FILE ${s.path}: ${s.summary}`).join('\n');
 
   // Calculate token budgets
-  const budgets = calculateTokenBudgets(config.tokenLimit, attachmentTokens, fullSummaryText, !!(config.contextRepositories && config.contextRepositories.length > 0), correlatedLogger);
+  const budgets = calculateTokenBudgets({
+    tokenLimit: config.tokenLimit, attachmentTokens, fullSummaryText,
+    hasContextRepositories: !!(config.contextRepositories && config.contextRepositories.length > 0), correlatedLogger
+  });
 
   // Generate repomix context
   const filesToInclude = config.compress ? undefined : (relevantFilePaths.length > 0 ? relevantFilePaths : undefined);
@@ -520,7 +529,10 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   }
 
   // Generate additional context from context repositories if configured
-  const additionalContextResult = await generateAdditionalContextIfNeeded(config.contextRepositories, budgets.additionalContextBudget, githubToken, draftId, correlationId, correlatedLogger);
+  const additionalContextResult = await generateAdditionalContextIfNeeded({
+    contextRepositories: config.contextRepositories, additionalContextBudget: budgets.additionalContextBudget,
+    githubToken, draftId, correlationId, correlatedLogger
+  });
   const additionalContext = additionalContextResult.context;
 
   // Build full context with all enrichments
