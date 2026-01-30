@@ -22,32 +22,31 @@ You MUST output a strict JSON array with objects containing exactly these fields
 
 Do not include markdown formatting or explanations outside the JSON.
 
-**Implementation Field Formatting:**
-The "implementation" field MUST use proper markdown structure for GitHub rendering:
+**Implementation Field Formatting — CRITICAL:**
+The "implementation" field MUST use proper markdown with fenced code blocks for GitHub rendering.
 
-1. File headers should be markdown headings, NOT inside code blocks:
+⚠️ MANDATORY: ALL code MUST be wrapped in triple backtick fences (\`\`\`). Never output raw code without fences.
+
+Format rules:
+1. File headers: Use markdown headings OUTSIDE code blocks
    ### File: \`path/to/file.ts\`
 
-2. For existing files, use fenced code blocks with \`diff\` language identifier:
-   \`\`\`diff
-   --- a/path/to/file.ts
-   +++ b/path/to/file.ts
-   @@ -10,6 +10,8 @@
-    existing code
-   +new code
-   \`\`\`
+2. Existing file changes: Use \`\`\`diff fenced blocks with unified diff format
+3. New files: Use \`\`\`typescript (or appropriate language) fenced blocks
+4. Explanatory text: Regular markdown between code blocks
 
-3. For new files, use fenced code blocks with the appropriate language identifier:
+🚫 WRONG - code without fences:
+   ### File: \`src/example.ts\`
+   export function broken() { return 1; }
+
+✅ CORRECT - code inside triple backtick fences:
+   ### File: \`src/example.ts\`
    \`\`\`typescript
-   // Complete file content here
-   export function newFunction() {
-     // implementation
-   }
+   export function correct() { return 1; }
    \`\`\`
 
-4. Explanatory text between code blocks should be regular markdown (not in code blocks).
+Complete example of properly formatted implementation field:
 
-Example implementation field structure:
 ### File: \`src/utils/helper.ts\`
 
 \`\`\`diff
@@ -66,7 +65,9 @@ Example implementation field structure:
 export function newHelper() {
   return 'hello';
 }
-\`\`\``;
+\`\`\`
+
+Remember: Every single code snippet MUST have opening \`\`\` and closing \`\`\` fences.`;
 
 export const GRANULARITY_INSTRUCTIONS: Record<Granularity, string> = {
   single: `
