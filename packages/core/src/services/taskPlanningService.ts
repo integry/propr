@@ -274,15 +274,37 @@ interface TokenBudgetOptions {
   correlatedLogger: MinimalLogger;
 }
 
+/** Maximum percentage of token budget that attachments can consume */
+const MAX_ATTACHMENT_PERCENT = 0.25;
+
+/** Safety factor to account for tiktoken-to-Claude estimation variance */
+const BUDGET_SAFETY_FACTOR = 0.85;
+
 /**
  * Calculate token budgets for different context components.
  * Allocates fixed percentages to ensure repomix always gets at least 50% of available space.
+ * Applies a safety factor to account for tiktoken estimation variance.
  */
 function calculateTokenBudgets(options: TokenBudgetOptions): TokenBudgetResult {
   const { tokenLimit, attachmentTokens, fullSummaryText, hasContextRepositories, correlatedLogger } = options;
 
+  // Apply safety factor to total budget to account for tiktoken-to-Claude variance
+  const safeTokenLimit = Math.floor(tokenLimit * BUDGET_SAFETY_FACTOR);
+
+  // Cap attachments at 25% of budget
+  const attachmentBudget = Math.floor(safeTokenLimit * MAX_ATTACHMENT_PERCENT);
+  const effectiveAttachmentTokens = Math.min(attachmentTokens, attachmentBudget);
+  const attachmentsCapped = attachmentTokens > attachmentBudget;
+
+  if (attachmentsCapped) {
+    correlatedLogger.warn({
+      attachmentTokens, attachmentBudget, tokenLimit,
+      percentUsed: Math.round((attachmentTokens / tokenLimit) * 100)
+    }, 'Attachments exceed budget - images may be excluded or context reduced');
+  }
+
   // Calculate available space after attachments and overhead
-  const availableAfterFixed = tokenLimit - attachmentTokens - RESERVED_OVERHEAD_TOKENS;
+  const availableAfterFixed = safeTokenLimit - effectiveAttachmentTokens - RESERVED_OVERHEAD_TOKENS;
 
   // Allocate fixed percentages of the available space:
   // - 10% for file summaries (capped)
@@ -301,14 +323,6 @@ function calculateTokenBudgets(options: TokenBudgetOptions): TokenBudgetResult {
   // Repomix gets the rest
   const repomixTokenLimit = Math.max(5000, availableAfterFixed - summaryTokenCost - smartSummaryBudget - additionalContextBudget);
 
-  // Warn if attachments consume more than 50% of token budget
-  if (attachmentTokens > tokenLimit * 0.5) {
-    correlatedLogger.warn({
-      attachmentTokens, tokenLimit,
-      percentUsed: Math.round((attachmentTokens / tokenLimit) * 100)
-    }, 'Attachments consuming significant portion of token budget');
-  }
-
   // Error if there's not enough room for context
   if (repomixTokenLimit < 5000) {
     throw new PlanningFailedError(
@@ -318,7 +332,7 @@ function calculateTokenBudgets(options: TokenBudgetOptions): TokenBudgetResult {
   }
 
   correlatedLogger.info({
-    totalLimit: tokenLimit, attachmentTokens,
+    totalLimit: tokenLimit, safeTokenLimit, attachmentTokens, effectiveAttachmentTokens, attachmentsCapped,
     rawSummaryCost, summaryCost: summaryTokenCost, summaryTruncated, fileSummaryBudget,
     smartSummaryBudget, additionalContextBudget, repomixLimit: repomixTokenLimit
   }, 'Calculated token budgets');
