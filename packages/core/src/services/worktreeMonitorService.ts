@@ -36,163 +36,174 @@ export interface FileChangesData {
 }
 
 /**
+ * Get git status output (porcelain format)
+ */
+function getGitStatusOutput(worktreePath: string): string {
+    try {
+        return execSync('git status --porcelain', {
+            cwd: worktreePath,
+            encoding: 'utf-8',
+            timeout: 10000
+        }).trim();
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * Get git diff stat output for uncommitted or committed changes
+ */
+function getGitDiffStatOutput(worktreePath: string, hasUncommittedChanges: boolean): string {
+    if (hasUncommittedChanges) {
+        try {
+            return execSync('git diff --stat HEAD', {
+                cwd: worktreePath,
+                encoding: 'utf-8',
+                timeout: 30000
+            }).trim();
+        } catch {
+            try {
+                return execSync('git diff --stat --cached', {
+                    cwd: worktreePath,
+                    encoding: 'utf-8',
+                    timeout: 30000
+                }).trim();
+            } catch {
+                return '';
+            }
+        }
+    }
+
+    // No uncommitted changes, check against tracking branch
+    try {
+        const trackingBranch = execSync('git rev-parse --abbrev-ref @{upstream} 2>/dev/null || echo "HEAD~1"', {
+            cwd: worktreePath,
+            encoding: 'utf-8',
+            timeout: 5000
+        }).trim() || 'HEAD~1';
+
+        return execSync(`git diff --stat ${trackingBranch}...HEAD`, {
+            cwd: worktreePath,
+            encoding: 'utf-8',
+            timeout: 30000
+        }).trim();
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * Determine file status from porcelain output
+ */
+function determineFileStatus(statusOutput: string, filePath: string): FileChange['status'] {
+    const statusLine = statusOutput.split('\n').find(l => l.includes(filePath));
+    if (!statusLine) return 'modified';
+
+    const statusCode = statusLine.substring(0, 2);
+    if (statusCode.includes('A') || statusCode === '??') return 'added';
+    if (statusCode.includes('D')) return 'deleted';
+    if (statusCode.includes('R')) return 'renamed';
+    return 'modified';
+}
+
+/**
+ * Get diff content for a file
+ */
+function getFileDiff(worktreePath: string, filePath: string, status: FileChange['status']): string {
+    try {
+        let diff = execSync(`git diff HEAD -- "${filePath}"`, {
+            cwd: worktreePath,
+            encoding: 'utf-8',
+            timeout: 10000,
+            maxBuffer: 1024 * 1024 * 5
+        }).trim();
+
+        if (!diff) {
+            diff = execSync(`git diff --cached -- "${filePath}"`, {
+                cwd: worktreePath,
+                encoding: 'utf-8',
+                timeout: 10000,
+                maxBuffer: 1024 * 1024 * 5
+            }).trim();
+        }
+
+        if (!diff && status === 'added') {
+            const content = execSync(`git show :${filePath} 2>/dev/null || cat "${filePath}"`, {
+                cwd: worktreePath,
+                encoding: 'utf-8',
+                timeout: 10000,
+                maxBuffer: 1024 * 1024 * 5
+            }).trim();
+
+            if (content) {
+                diff = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${content.split('\n').length} @@\n` +
+                    content.split('\n').map(l => `+${l}`).join('\n');
+            }
+        }
+        return diff;
+    } catch (error) {
+        logger.debug({ filePath, error: (error as Error).message }, 'Failed to get diff for file');
+        return '';
+    }
+}
+
+/**
+ * Count added and removed lines from diff output
+ */
+function countDiffLines(diff: string): { linesAdded: number; linesRemoved: number } {
+    let linesAdded = 0;
+    let linesRemoved = 0;
+
+    if (diff) {
+        const diffLines = diff.split('\n');
+        for (const diffLine of diffLines) {
+            if (diffLine.startsWith('+') && !diffLine.startsWith('+++')) {
+                linesAdded++;
+            } else if (diffLine.startsWith('-') && !diffLine.startsWith('---')) {
+                linesRemoved++;
+            }
+        }
+    }
+
+    return { linesAdded, linesRemoved };
+}
+
+/**
+ * Parse a single stat line and create a FileChange object
+ */
+function parseStatLine(line: string, statusOutput: string, worktreePath: string): FileChange | null {
+    const match = line.match(/^\s*(.+?)\s*\|\s*(\d+|Bin)/);
+    if (!match) return null;
+
+    const filePath = match[1].trim();
+    if (filePath.includes('file') && filePath.includes('changed')) return null;
+
+    const status = determineFileStatus(statusOutput, filePath);
+    const diff = getFileDiff(worktreePath, filePath, status);
+    const { linesAdded, linesRemoved } = countDiffLines(diff);
+
+    return { path: filePath, linesAdded, linesRemoved, diff, status };
+}
+
+/**
  * Get the current file changes from a git worktree
  * Uses git diff --stat and git diff to get change information
  */
 export async function getWorktreeChanges(worktreePath: string): Promise<FileChange[]> {
-    const files: FileChange[] = [];
-
     try {
-        // Get list of changed files with stats (staged and unstaged)
-        // First check for staged changes
-        let statOutput = '';
-        let statusOutput = '';
-
-        try {
-            // Get file status first to understand what's modified/added/deleted
-            statusOutput = execSync('git status --porcelain', {
-                cwd: worktreePath,
-                encoding: 'utf-8',
-                timeout: 10000
-            }).trim();
-        } catch {
-            // No changes or git error
-            return [];
-        }
-
-        if (!statusOutput) {
-            // No uncommitted changes, check against the base branch
-            try {
-                // Get the tracking branch or default to HEAD~1
-                const trackingBranch = execSync('git rev-parse --abbrev-ref @{upstream} 2>/dev/null || echo "HEAD~1"', {
-                    cwd: worktreePath,
-                    encoding: 'utf-8',
-                    timeout: 5000
-                }).trim() || 'HEAD~1';
-
-                statOutput = execSync(`git diff --stat ${trackingBranch}...HEAD`, {
-                    cwd: worktreePath,
-                    encoding: 'utf-8',
-                    timeout: 30000
-                }).trim();
-
-                if (!statOutput) return [];
-
-            } catch {
-                return [];
-            }
-        } else {
-            // There are uncommitted changes, get diff including staged
-            try {
-                statOutput = execSync('git diff --stat HEAD', {
-                    cwd: worktreePath,
-                    encoding: 'utf-8',
-                    timeout: 30000
-                }).trim();
-            } catch {
-                // Might fail if no commits yet, try without HEAD
-                try {
-                    statOutput = execSync('git diff --stat --cached', {
-                        cwd: worktreePath,
-                        encoding: 'utf-8',
-                        timeout: 30000
-                    }).trim();
-                } catch {
-                    return [];
-                }
-            }
-        }
+        const statusOutput = getGitStatusOutput(worktreePath);
+        const statOutput = getGitDiffStatOutput(worktreePath, !!statusOutput);
 
         if (!statOutput) return [];
 
-        // Parse stat output to get file list
-        // Example line: " src/file.ts | 10 ++++----"
         const statLines = statOutput.split('\n').filter(line => line.includes('|'));
+        const files: FileChange[] = [];
 
         for (const line of statLines) {
-            const match = line.match(/^\s*(.+?)\s*\|\s*(\d+|Bin)/);
-            if (!match) continue;
-
-            const filePath = match[1].trim();
-
-            // Skip summary line
-            if (filePath.includes('file') && filePath.includes('changed')) continue;
-
-            // Determine file status from porcelain output
-            let status: FileChange['status'] = 'modified';
-            const statusLine = statusOutput.split('\n').find(l => l.includes(filePath));
-            if (statusLine) {
-                const statusCode = statusLine.substring(0, 2);
-                if (statusCode.includes('A') || statusCode === '??') {
-                    status = 'added';
-                } else if (statusCode.includes('D')) {
-                    status = 'deleted';
-                } else if (statusCode.includes('R')) {
-                    status = 'renamed';
-                }
+            const fileChange = parseStatLine(line, statusOutput, worktreePath);
+            if (fileChange) {
+                files.push(fileChange);
             }
-
-            // Get detailed diff for this file
-            let diff = '';
-            let linesAdded = 0;
-            let linesRemoved = 0;
-
-            try {
-                // Try to get diff against HEAD first
-                diff = execSync(`git diff HEAD -- "${filePath}"`, {
-                    cwd: worktreePath,
-                    encoding: 'utf-8',
-                    timeout: 10000,
-                    maxBuffer: 1024 * 1024 * 5 // 5MB max
-                }).trim();
-
-                if (!diff) {
-                    // Try staged diff
-                    diff = execSync(`git diff --cached -- "${filePath}"`, {
-                        cwd: worktreePath,
-                        encoding: 'utf-8',
-                        timeout: 10000,
-                        maxBuffer: 1024 * 1024 * 5
-                    }).trim();
-                }
-
-                if (!diff && status === 'added') {
-                    // For new files, show the entire content as added
-                    const content = execSync(`git show :${filePath} 2>/dev/null || cat "${filePath}"`, {
-                        cwd: worktreePath,
-                        encoding: 'utf-8',
-                        timeout: 10000,
-                        maxBuffer: 1024 * 1024 * 5
-                    }).trim();
-
-                    if (content) {
-                        diff = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${content.split('\n').length} @@\n` +
-                            content.split('\n').map(l => `+${l}`).join('\n');
-                    }
-                }
-            } catch (error) {
-                logger.debug({ filePath, error: (error as Error).message }, 'Failed to get diff for file');
-            }
-
-            // Count added and removed lines
-            if (diff) {
-                const diffLines = diff.split('\n');
-                for (const diffLine of diffLines) {
-                    if (diffLine.startsWith('+') && !diffLine.startsWith('+++')) {
-                        linesAdded++;
-                    } else if (diffLine.startsWith('-') && !diffLine.startsWith('---')) {
-                        linesRemoved++;
-                    }
-                }
-            }
-
-            files.push({
-                path: filePath,
-                linesAdded,
-                linesRemoved,
-                diff,
-                status
-            });
         }
 
         return files;
