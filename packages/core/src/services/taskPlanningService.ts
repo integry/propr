@@ -275,15 +275,31 @@ interface TokenBudgetOptions {
 }
 
 /**
- * Calculate token budgets for different context components
+ * Calculate token budgets for different context components.
+ * Allocates fixed percentages to ensure repomix always gets at least 50% of available space.
  */
 function calculateTokenBudgets(options: TokenBudgetOptions): TokenBudgetResult {
   const { tokenLimit, attachmentTokens, fullSummaryText, hasContextRepositories, correlatedLogger } = options;
-  const summaryTokenCost = Math.ceil(fullSummaryText.length / CHARS_PER_TOKEN);
-  const smartSummaryBudget = Math.floor(tokenLimit * 0.1);
-  const additionalContextBudget = hasContextRepositories ? Math.floor(tokenLimit * 0.2) : 0;
-  const availableForContext = tokenLimit - attachmentTokens - summaryTokenCost - smartSummaryBudget - additionalContextBudget - RESERVED_OVERHEAD_TOKENS;
-  const repomixTokenLimit = Math.max(5000, availableForContext);
+
+  // Calculate available space after attachments and overhead
+  const availableAfterFixed = tokenLimit - attachmentTokens - RESERVED_OVERHEAD_TOKENS;
+
+  // Allocate fixed percentages of the available space:
+  // - 10% for file summaries (capped)
+  // - 10% for smart summaries
+  // - 20% for additional context repos (if any)
+  // - Remaining 60-80% for repomix code context
+  const fileSummaryBudget = Math.floor(availableAfterFixed * 0.10);
+  const smartSummaryBudget = Math.floor(availableAfterFixed * 0.10);
+  const additionalContextBudget = hasContextRepositories ? Math.floor(availableAfterFixed * 0.20) : 0;
+
+  // Calculate actual summary cost and cap it
+  const rawSummaryCost = Math.ceil(fullSummaryText.length / CHARS_PER_TOKEN);
+  const summaryTokenCost = Math.min(rawSummaryCost, fileSummaryBudget);
+  const summaryTruncated = rawSummaryCost > fileSummaryBudget;
+
+  // Repomix gets the rest
+  const repomixTokenLimit = Math.max(5000, availableAfterFixed - summaryTokenCost - smartSummaryBudget - additionalContextBudget);
 
   // Warn if attachments consume more than 50% of token budget
   if (attachmentTokens > tokenLimit * 0.5) {
@@ -294,7 +310,7 @@ function calculateTokenBudgets(options: TokenBudgetOptions): TokenBudgetResult {
   }
 
   // Error if there's not enough room for context
-  if (availableForContext < 5000) {
+  if (repomixTokenLimit < 5000) {
     throw new PlanningFailedError(
       `Attachments use ${attachmentTokens} tokens, leaving insufficient room for code context. ` +
       `Try removing large images or increasing the context level.`
@@ -302,7 +318,8 @@ function calculateTokenBudgets(options: TokenBudgetOptions): TokenBudgetResult {
   }
 
   correlatedLogger.info({
-    totalLimit: tokenLimit, attachmentTokens, summaryCost: summaryTokenCost,
+    totalLimit: tokenLimit, attachmentTokens,
+    rawSummaryCost, summaryCost: summaryTokenCost, summaryTruncated, fileSummaryBudget,
     smartSummaryBudget, additionalContextBudget, repomixLimit: repomixTokenLimit
   }, 'Calculated token budgets');
 
@@ -516,10 +533,29 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: budgets.repomixTokenLimit, compress: config.compress, correlationId });
   await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
 
-  // Filter summaries to exclude files already fully in context
+  // Filter summaries to exclude files already fully in context, and truncate to budget
   const includedFilesSet = new Set(contextResult.includedFiles);
-  const filteredSummaries = candidateSummaries.filter(s => !includedFilesSet.has(s.path)).map(s => `FILE ${s.path}: ${s.summary}`).join('\n');
-  correlatedLogger.info({ totalCandidates: candidateSummaries.length, includedInContext: contextResult.includedFiles.length, summariesIncluded: candidateSummaries.filter(s => !includedFilesSet.has(s.path)).length }, 'Filtered summaries for context enrichment');
+  const filteredCandidates = candidateSummaries.filter(s => !includedFilesSet.has(s.path));
+
+  // Truncate summaries to fit within the allocated budget
+  const summaryBudgetChars = budgets.summaryTokenCost * CHARS_PER_TOKEN;
+  let filteredSummaries = '';
+  let summariesIncludedCount = 0;
+  for (const s of filteredCandidates) {
+    const entry = `FILE ${s.path}: ${s.summary}\n`;
+    if (filteredSummaries.length + entry.length > summaryBudgetChars) break;
+    filteredSummaries += entry;
+    summariesIncludedCount++;
+  }
+  filteredSummaries = filteredSummaries.trim();
+
+  correlatedLogger.info({
+    totalCandidates: candidateSummaries.length,
+    includedInContext: contextResult.includedFiles.length,
+    summariesIncluded: summariesIncludedCount,
+    summariesTruncated: summariesIncludedCount < filteredCandidates.length,
+    summaryBudgetChars
+  }, 'Filtered summaries for context enrichment');
 
   // Build smart summary context
   const smartSummaryResult = await buildSummaryContext({ tokenBudget: budgets.smartSummaryBudget, priorityPaths: relevantFilePaths, repoName: draft.repository, correlationId });
