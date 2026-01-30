@@ -7,10 +7,9 @@ import { FileChange, FileChangesResponse, getFileChanges } from '../../api/fileC
 interface LiveFileChangesProps {
   taskId: string;
   isActive: boolean;
-  className?: string;
 }
 
-const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive, className }) => {
+const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) => {
   const [fileChanges, setFileChanges] = useState<FileChange[]>([]);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
