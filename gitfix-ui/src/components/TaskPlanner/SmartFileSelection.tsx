@@ -80,7 +80,7 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
             </span>
           )}
           {manualCount > 0 && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">
               {manualCount} manual
             </span>
           )}
@@ -102,7 +102,10 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
 
       {/* Expandable file list */}
       {isExpanded && (
-        <div className="max-h-80 overflow-y-auto divide-y divide-gray-100">
+        <div className="max-h-80 overflow-y-auto divide-y divide-gray-100 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-400" style={{
+          scrollbarWidth: 'thin',
+          scrollbarColor: '#d1d5db #f3f4f6'
+        }}>
           {displayFiles.map((file, idx) => {
             const relevance = getRelevancePercentage(file.score ? (file.score / maxScore) * 100 : 50);
             const relevanceColor = getRelevanceColor(relevance);
@@ -129,10 +132,10 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
                 <div className="flex items-center gap-3 flex-shrink-0 ml-4">
                   <span className={`text-xs px-1.5 py-0.5 rounded ${
                     file.source === 'manual'
-                      ? 'bg-blue-100 text-blue-700'
+                      ? 'bg-gray-200 text-gray-600'
                       : 'bg-green-100 text-green-700'
                   }`}>
-                    {file.source}
+                    {file.source === 'auto' ? 'auto' : 'manual'}
                   </span>
 
                   {/* Relevance bar */}

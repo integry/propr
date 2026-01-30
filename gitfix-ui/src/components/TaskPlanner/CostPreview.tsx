@@ -21,10 +21,13 @@ const getContextUsagePercentage = (tokens: number): number => {
   return Math.min(100, (tokens / MAX_CONTEXT_TOKENS) * 100);
 };
 
-const getUsageColor = (percentage: number): string => {
-  if (percentage > 80) return 'bg-red-500';
-  if (percentage > 60) return 'bg-yellow-500';
-  return 'bg-green-500';
+const getUsageColor = (percentage: number, actualPercentage: number): string => {
+  // Only use red when context actually exceeds the limit
+  if (actualPercentage > 100) return 'bg-red-500';
+  // Use purple/indigo for normal usage (including high usage for "Deep Dive" mode)
+  if (percentage > 80) return 'bg-indigo-600';
+  if (percentage > 60) return 'bg-indigo-500';
+  return 'bg-indigo-400';
 };
 
 export const CostPreview: React.FC<CostPreviewProps> = ({ preview, contextRepositories }) => {
@@ -60,7 +63,8 @@ export const CostPreview: React.FC<CostPreviewProps> = ({ preview, contextReposi
 
   const { stats, smartSelection, warnings } = preview.data;
   const usagePercentage = getContextUsagePercentage(stats.totalTokens);
-  const usageColor = getUsageColor(usagePercentage);
+  const actualPercentage = (stats.totalTokens / MAX_CONTEXT_TOKENS) * 100;
+  const usageColor = getUsageColor(usagePercentage, actualPercentage);
 
   return (
     <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm space-y-4">

@@ -29,7 +29,7 @@ export const HeroPromptArea: React.FC<HeroPromptAreaProps> = ({
 }) => {
   return (
     <div className="space-y-3">
-      <label className="block text-lg font-semibold text-gray-900">
+      <label className="block text-lg font-semibold text-gray-900 mb-3">
         What would you like to build?
       </label>
       <div className="rounded-xl border-2 border-gray-200 focus-within:border-indigo-500 transition-colors overflow-hidden">
