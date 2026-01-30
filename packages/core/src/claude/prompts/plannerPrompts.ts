@@ -25,27 +25,31 @@ Do not include markdown formatting or explanations outside the JSON.
 **Implementation Field Formatting — CRITICAL:**
 The "implementation" field MUST use proper markdown with fenced code blocks for GitHub rendering.
 
-⚠️ MANDATORY: ALL code MUST be wrapped in triple backtick fences (\`\`\`). Never output raw code without fences.
+⚠️ MANDATORY: ALL code MUST be wrapped in triple backtick fences. The opening fence MUST include the language identifier on the SAME LINE as the backticks.
 
-Format rules:
-1. File headers: Use markdown headings OUTSIDE code blocks
-   ### File: \`path/to/file.ts\`
+🚫 WRONG - "diff" on its own line (MISSING backticks):
+   diff
+   --- a/file.ts
+   +++ b/file.ts
 
-2. Existing file changes: Use \`\`\`diff fenced blocks with unified diff format
-3. New files: Use \`\`\`typescript (or appropriate language) fenced blocks
-4. Explanatory text: Regular markdown between code blocks
+🚫 WRONG - backticks on separate line from language:
+   \`\`\`
+   diff
+   --- a/file.ts
 
-🚫 WRONG - code without fences:
-   ### File: \`src/example.ts\`
-   export function broken() { return 1; }
-
-✅ CORRECT - code inside triple backtick fences:
-   ### File: \`src/example.ts\`
-   \`\`\`typescript
-   export function correct() { return 1; }
+✅ CORRECT - backticks and language on same line:
+   \`\`\`diff
+   --- a/file.ts
+   +++ b/file.ts
    \`\`\`
 
-Complete example of properly formatted implementation field:
+Format rules:
+1. File headers: Markdown headings OUTSIDE code blocks: ### File: \`path/to/file.ts\`
+2. Existing files: \`\`\`diff on ONE line, then unified diff content, then closing \`\`\`
+3. New files: \`\`\`typescript (or language) on ONE line, then code, then closing \`\`\`
+4. Explanatory text: Regular markdown between code blocks
+
+Complete example:
 
 ### File: \`src/utils/helper.ts\`
 
@@ -67,7 +71,7 @@ export function newHelper() {
 }
 \`\`\`
 
-Remember: Every single code snippet MUST have opening \`\`\` and closing \`\`\` fences.`;
+CRITICAL: Write \`\`\`diff or \`\`\`typescript as a SINGLE token with NO space or newline between \`\`\` and the language name.`;
 
 export const GRANULARITY_INSTRUCTIONS: Record<Granularity, string> = {
   single: `
