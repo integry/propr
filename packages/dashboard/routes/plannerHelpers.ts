@@ -8,7 +8,8 @@ import {
   generateContextPreview,
   generatePlan,
   BranchNotFoundError,
-  AttachmentService
+  AttachmentService,
+  loadSettings
 } from '@gitfix/core';
 import { Knex as KnexType } from 'knex';
 import type { Granularity, MulterFile } from '@gitfix/core';
@@ -234,6 +235,10 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
       const authToken = await getRepoAuthToken(accessToken);
       const worktreePath = await ensureRepoCloned({ repoUrl: `https://github.com/${owner}/${repoName}.git`, owner, repoName, authToken });
 
+      // Load settings to get the configured context model for semantic scoring
+      const settings = await loadSettings();
+      const contextModel = settings.planner_context_model;
+
       // Store context repositories in draft config if provided
       if (deps.db && contextRepositories && Array.isArray(contextRepositories) && contextRepositories.length > 0) {
         const existingConfig = (draft.context_config as Record<string, unknown>) || {};
@@ -251,7 +256,7 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
         });
       }
 
-      const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId });
+      const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId, contextModel });
       res.json(result);
     } catch (error) {
       console.error('Preview context error:', error);
