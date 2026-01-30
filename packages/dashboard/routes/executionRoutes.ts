@@ -2,8 +2,6 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
 import path from 'path';
-import * as configManager from '@gitfix/core';
-import { getExecutionAnalysis } from '@gitfix/core';
 
 interface ExecutionRoutesDeps {
   redisClient: RedisClientType;
@@ -89,31 +87,7 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
     }
   }
 
-  async function runDeepDiveAnalysis(req: Request, res: Response): Promise<void> {
-    try {
-      const { taskId } = req.params;
-      const latestExecution = await db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'desc').first('execution_id', 'session_id', 'analysis_report');
-      if (!latestExecution) {
-        res.status(404).json({ error: 'No execution data found.' });
-        return;
-      }
-      if (latestExecution.analysis_report && (latestExecution.analysis_report as Record<string, unknown>).modelUsed !== 'claude-haiku-4-5') {
-        res.status(400).json({ error: 'Deep-dive analysis has already been run for this task.' });
-        return;
-      }
-      const task = await db('tasks').where({ task_id: taskId }).first('correlation_id');
-      const settings = await configManager.loadSettings();
-      const advancedModel = (settings.analysis_model_advanced as string) || process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514';
-      const analysisReport = await getExecutionAnalysis({ executionId: latestExecution.execution_id, sessionId: latestExecution.session_id, correlationId: task?.correlation_id || `deep-dive-${Date.now()}`, model: advancedModel });
-      await db('llm_executions').where({ execution_id: latestExecution.execution_id }).update({ analysis_report: analysisReport });
-      res.json({ analysis: analysisReport });
-    } catch (error) {
-      console.error('Error in /api/task/:taskId/deep-dive-analysis:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-
-  return { getPrompt, getLogs, getLogByType, getAnalysis, runDeepDiveAnalysis };
+  return { getPrompt, getLogs, getLogByType, getAnalysis };
 }
 
 async function getPromptData(redisClient: RedisClientType, sessionId: string, conversationId?: string): Promise<Record<string, unknown> | null> {

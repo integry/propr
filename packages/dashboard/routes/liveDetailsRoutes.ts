@@ -66,9 +66,13 @@ async function findSessionId(
   db: Knex,
   taskId: string
 ): Promise<string | null> {
-  const sessionId = await findSessionIdFromDb(db, taskId);
-  if (sessionId) return sessionId;
-  return findSessionIdFromRedis(redisClient, taskId);
+  // Check Redis FIRST - it has the live/current execution state
+  // This is important for reprocessing: Redis has the new session, DB might have the old one
+  const redisSessionId = await findSessionIdFromRedis(redisClient, taskId);
+  if (redisSessionId) return redisSessionId;
+
+  // Fall back to DB for completed/historical executions
+  return findSessionIdFromDb(db, taskId);
 }
 
 async function findSessionIdFromDb(db: Knex, taskId: string): Promise<string | null> {
