@@ -1,11 +1,13 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   ExternalLink,
   GitPullRequest,
   MessageSquare,
   Play,
-  Loader2
+  Loader2,
+  Eye
 } from 'lucide-react';
 import { PlanIssue, PlanIssueStatus, STATUS_CONFIG } from '../../api/planIssuesApi';
 import { AgentConfig } from '../../api/gitfixApi';
@@ -153,6 +155,20 @@ const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
   </span>
 );
 
+interface ViewProgressLinkProps {
+  taskId: string;
+}
+
+const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (
+  <Link
+    to={`/tasks/${taskId}`}
+    className="flex items-center gap-1 text-blue-600 hover:text-blue-800"
+  >
+    <Eye size={12} />
+    View Progress
+  </Link>
+);
+
 export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   issue,
   issueTitle,
@@ -167,6 +183,8 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   const isPending = issue.status === 'pending';
   const isActive = STATUS_CONFIG[issue.status]?.isActive || false;
   const isMerged = issue.status === 'merged';
+  const isProcessing = issue.status === 'processing' || issue.status === 'refinement_processing';
+  const showProgressLink = isProcessing && issue.task_id;
 
   const issueUrl = `https://github.com/${issue.repository}/issues/${issue.issue_number}`;
   const prUrl = issue.pr_number
@@ -210,6 +228,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
 
             <div className="flex items-center gap-4 mt-2 text-xs">
               {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
+              {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
               {issue.followup_count > 0 && <FollowupCount count={issue.followup_count} />}
               {showAgentInfo && (
                 <AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} />

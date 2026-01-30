@@ -7,7 +7,8 @@ import {
     getStateManager, TaskStates, ensureRepoCloned, createWorktreeForIssue, getRepoUrl, pushBranch,
     addModelSpecificDelay, safeAddLabel, ensureGitRepository, UsageLimitError, recordLLMMetrics,
     validateRepositoryInfo, getDefaultModel, loadPrLabel, loadPrimaryProcessingLabels,
-    filterCommentByAuthor, AgentRegistry, generateClaudePrompt, resolveLlmLabel, updateFileChangesFromWorktree
+    filterCommentByAuthor, AgentRegistry, generateClaudePrompt, resolveLlmLabel, updateFileChangesFromWorktree,
+    updatePlanIssueTaskId
 } from '@gitfix/core';
 import type {
     WorkerStateManager, IssueRef, WorktreeInfo, CommitResult, ClaudeCodeResponse, ClaudeResult,
@@ -375,6 +376,16 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
         await stateManager.createTaskState(taskId, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName } as IssueRef, correlationId);
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');
+    }
+
+    // Update plan issue with task_id for progress tracking
+    const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+    try {
+        await updatePlanIssueTaskId(repository, issueRef.number, taskId);
+        correlatedLogger.debug({ repository, issueNumber: issueRef.number, taskId }, 'Updated plan issue with task_id');
+    } catch (planIssueError) {
+        // Non-blocking - plan issue may not exist for non-plan tasks
+        correlatedLogger.debug({ taskId, error: (planIssueError as Error).message }, 'Could not update plan issue task_id (may not be a plan issue)');
     }
 
     correlatedLogger.info({ jobId, jobName, taskId, issueNumber: issueRef.number, repo: `${issueRef.repoOwner}/${issueRef.repoName}` }, 'Processing job started');
