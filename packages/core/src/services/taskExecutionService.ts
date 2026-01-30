@@ -42,6 +42,107 @@ interface PlanTask {
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Formats implementation content for proper markdown rendering on GitHub.
+ *
+ * New format: Already contains proper markdown with file headers as headings
+ * and code in fenced blocks - returns as-is.
+ *
+ * Old format: Plain text that was wrapped in a single code block - attempts
+ * to detect and reformat for backwards compatibility.
+ *
+ * @param implementation - The implementation content from the plan task
+ * @returns Properly formatted markdown for the implementation
+ */
+function formatImplementation(implementation: string): string {
+  // Check if implementation already has proper markdown formatting
+  // (contains markdown headings or fenced code blocks)
+  const hasMarkdownHeadings = /^###\s+File:/m.test(implementation);
+  const hasFencedCodeBlocks = /```(?:diff|typescript|javascript|ts|js|json|python|go|rust|java|c|cpp|csharp|ruby|php|swift|kotlin|scala|shell|bash|sh|yaml|yml|xml|html|css|scss|sql|graphql|markdown|md|plaintext|text)/m.test(implementation);
+
+  if (hasMarkdownHeadings || hasFencedCodeBlocks) {
+    // Already properly formatted, return as-is
+    return implementation;
+  }
+
+  // Old format detected - attempt to reformat for backwards compatibility
+  // Look for file path patterns and diff-like content
+  const lines = implementation.split('\n');
+  const formattedLines: string[] = [];
+  let inCodeBlock = false;
+  let currentLanguage = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
+
+    // Detect file headers (various patterns)
+    const fileHeaderMatch = trimmedLine.match(/^(?:File:|In file|Modify|Create|Update|Edit)\s*[`']?([^\s`']+\.[a-zA-Z]+)[`']?:?\s*$/i) ||
+                           trimmedLine.match(/^([^\s]+\.[a-zA-Z]+):?\s*$/);
+
+    if (fileHeaderMatch) {
+      // Close any open code block
+      if (inCodeBlock) {
+        formattedLines.push('```');
+        inCodeBlock = false;
+      }
+
+      const filePath = fileHeaderMatch[1];
+      formattedLines.push(`\n### File: \`${filePath}\`\n`);
+      continue;
+    }
+
+    // Detect start of diff content
+    if (trimmedLine.startsWith('---') && lines[i + 1]?.trim().startsWith('+++')) {
+      if (inCodeBlock) {
+        formattedLines.push('```');
+      }
+      formattedLines.push('```diff');
+      inCodeBlock = true;
+      currentLanguage = 'diff';
+      formattedLines.push(line);
+      continue;
+    }
+
+    // Detect unified diff hunk headers
+    if (trimmedLine.startsWith('@@') && trimmedLine.includes('@@')) {
+      if (!inCodeBlock) {
+        formattedLines.push('```diff');
+        inCodeBlock = true;
+        currentLanguage = 'diff';
+      }
+      formattedLines.push(line);
+      continue;
+    }
+
+    // If we're in a diff block and hit a non-diff line, close the block
+    if (inCodeBlock && currentLanguage === 'diff') {
+      const isDiffLine = trimmedLine === '' ||
+                         trimmedLine.startsWith('+') ||
+                         trimmedLine.startsWith('-') ||
+                         trimmedLine.startsWith(' ') ||
+                         trimmedLine.startsWith('@@') ||
+                         trimmedLine.startsWith('---') ||
+                         trimmedLine.startsWith('+++');
+
+      if (!isDiffLine && trimmedLine !== '') {
+        formattedLines.push('```');
+        inCodeBlock = false;
+        currentLanguage = '';
+      }
+    }
+
+    formattedLines.push(line);
+  }
+
+  // Close any open code block at the end
+  if (inCodeBlock) {
+    formattedLines.push('```');
+  }
+
+  return formattedLines.join('\n');
+}
+
 interface GenerateTitleOptions {
   draftId: string;
   planJson: PlanTask[];
@@ -206,7 +307,8 @@ export async function executeDraft(draftId: string, userId: string, correlationI
 
     // Post implementation as a separate comment if it exists
     if (task.implementation) {
-      const commentBody = '**Suggested Implementation:**\n```\n' + task.implementation + '\n```';
+      const formattedImplementation = formatImplementation(task.implementation);
+      const commentBody = '**Suggested Implementation:**\n\n' + formattedImplementation;
 
       await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner,
