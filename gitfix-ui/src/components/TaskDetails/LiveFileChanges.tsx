@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { GitBranch, RefreshCw, AlertCircle, Plus, Minus } from 'lucide-react';
 import FileTree from './FileTree';
 import DiffViewer from './DiffViewer';
@@ -14,18 +14,12 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) =
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
-  const [secondsAgo, setSecondsAgo] = useState<number>(0);
-  const lastUpdatedRef = useRef<string | null>(null);
 
   // Fetch file changes
   const fetchFileChanges = useCallback(async () => {
     try {
       const response: FileChangesResponse = await getFileChanges(taskId);
       setFileChanges(response.files);
-      setLastUpdated(response.lastUpdated);
-      lastUpdatedRef.current = response.lastUpdated;
-      setSecondsAgo(0);
       setError(null);
     } catch (err) {
       // Don't show error for 404 (no changes yet) during active tasks
@@ -49,22 +43,6 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) =
       return () => clearInterval(interval);
     }
   }, [fetchFileChanges, isActive]);
-
-  // Update seconds ago counter for live tasks
-  useEffect(() => {
-    if (!isActive || !lastUpdatedRef.current) return;
-
-    const updateSecondsAgo = () => {
-      if (lastUpdatedRef.current) {
-        const diff = Math.floor((Date.now() - new Date(lastUpdatedRef.current).getTime()) / 1000);
-        setSecondsAgo(Math.max(0, diff));
-      }
-    };
-
-    updateSecondsAgo();
-    const interval = setInterval(updateSecondsAgo, 1000);
-    return () => clearInterval(interval);
-  }, [isActive, lastUpdated]);
 
   // Get selected file object
   const selectedFile = useMemo(() => {
@@ -149,12 +127,6 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) =
           </div>
         )}
 
-        {/* Last updated timestamp - only show for live tasks */}
-        {isActive && lastUpdated && fileChanges.length > 0 && (
-          <div className="mt-2 text-xs text-purple-500">
-            Updated {secondsAgo} second{secondsAgo !== 1 ? 's' : ''} ago
-          </div>
-        )}
       </div>
 
       {/* Diff Viewer Panel - shown to the right when a file is selected */}
