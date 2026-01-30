@@ -25,6 +25,7 @@ export interface PlanIssue {
   agent_alias: string | null;
   model_name: string | null;
   followup_count: number;
+  task_id: string | null;
   created_at: string;
   updated_at: string;
 }

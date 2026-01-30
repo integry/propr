@@ -33,6 +33,7 @@ export interface PlanIssue {
     agent_alias: string | null;
     model_name: string | null;
     followup_count: number;
+    task_id: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -57,6 +58,7 @@ export interface UpdatePlanIssueInput {
     agent_alias?: string | null;
     model_name?: string | null;
     followup_count?: number;
+    task_id?: string | null;
 }
 
 /**
@@ -203,6 +205,7 @@ export async function updatePlanIssue(
         if (updates.agent_alias !== undefined) updateData.agent_alias = updates.agent_alias;
         if (updates.model_name !== undefined) updateData.model_name = updates.model_name;
         if (updates.followup_count !== undefined) updateData.followup_count = updates.followup_count;
+        if (updates.task_id !== undefined) updateData.task_id = updates.task_id;
 
         await db('plan_issues')
             .where({ draft_id: draftId, issue_number: issueNumber })
@@ -296,6 +299,30 @@ export async function updatePlanIssueStatus(
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message, repository, issueNumber, status }, 'Failed to update plan issue status');
+    }
+}
+
+/**
+ * Updates the task_id for a plan issue by repository and issue number.
+ * Used when a task execution starts for a plan issue.
+ */
+export async function updatePlanIssueTaskId(
+    repository: string,
+    issueNumber: number,
+    taskId: string
+): Promise<void> {
+    try {
+        await db('plan_issues')
+            .where({ repository, issue_number: issueNumber })
+            .update({
+                task_id: taskId,
+                updated_at: db.fn.now()
+            });
+
+        logger.info({ repository, issueNumber, taskId }, 'Updated plan issue task_id');
+    } catch (error) {
+        const err = error as Error;
+        logger.error({ error: err.message, repository, issueNumber, taskId }, 'Failed to update plan issue task_id');
     }
 }
 

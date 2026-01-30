@@ -32,6 +32,7 @@ export {
     findPlanIssueByRepoAndNumber,
     findPlanIssueByRepoAndPR,
     updatePlanIssueStatus,
+    updatePlanIssueTaskId,
     linkPRToPlanIssue,
     updatePlanIssueByPR,
     batchUpdatePlanIssueConfig,
