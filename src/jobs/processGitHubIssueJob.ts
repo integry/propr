@@ -298,7 +298,7 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
         githubToken: githubToken.token,
         branchName: worktreeInfo.branchName,
         onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger),
+        onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
         taskId
     });
 
