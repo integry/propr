@@ -112,9 +112,10 @@ const TaskPlannerPage: React.FC = () => {
   if (draft.status === 'review') {
     return (
       <div className="h-[calc(100vh-120px)] p-4">
-        <PlanEditor 
-          draft={draft as DraftWithPlan} 
+        <PlanEditor
+          draft={draft as DraftWithPlan}
           onFinalize={() => refetch()}
+          onBackToSetup={() => refetch()}
         />
       </div>
     );
