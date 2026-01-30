@@ -96,14 +96,6 @@ const TaskDetails: React.FC = () => {
               history={taskData.history}
               onTodoHover={setHighlightedTodoId}
             />
-
-            {/* Live File Changes - show for tasks that have history */}
-            {taskId && taskData.history.length > 0 && (
-              <LiveFileChanges
-                taskId={taskId}
-                isActive={derivedData.isTaskActive}
-              />
-            )}
           </div>
 
           {/* RIGHT COLUMN: The Execution (65% - 8/12 cols) */}
@@ -138,6 +130,14 @@ const TaskDetails: React.FC = () => {
             />
           </div>
         </div>
+
+        {/* Live File Changes - full width component below the split layout */}
+        {taskId && taskData.history.length > 0 && (
+          <LiveFileChanges
+            taskId={taskId}
+            isActive={derivedData.isTaskActive}
+          />
+        )}
       </div>
 
       {/* Modals */}

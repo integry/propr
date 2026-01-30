@@ -291,7 +291,7 @@ async function executeAgentAndRecordMetrics(executionParams: ExecutionParams, co
     );
 
     // Start periodic file changes updates during agent execution
-    const FILE_CHANGES_INTERVAL_MS = 10000; // Update every 10 seconds
+    const FILE_CHANGES_INTERVAL_MS = 2000; // Update every 2 seconds
     const fileChangesInterval = setInterval(async () => {
         try {
             await updateFileChangesFromWorktree(taskId, worktreeInfo.worktreePath);
