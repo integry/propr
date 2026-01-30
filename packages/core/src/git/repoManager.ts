@@ -36,6 +36,24 @@ export async function ensureRepoCloned(options: EnsureRepoClonedOptions): Promis
     return ensureRepoClonedInternal(options);
 }
 
+/**
+ * Configure git gc globally to not prune worktree metadata younger than 24 hours.
+ * This prevents race conditions where concurrent operations might cause
+ * gc to prune metadata for actively running tasks.
+ * Uses --global so it applies to all repos including existing ones.
+ */
+let gcWorktreePruneConfigured = false;
+async function configureGcWorktreePrune(git: SimpleGit): Promise<void> {
+    if (gcWorktreePruneConfigured) return;
+    try {
+        await git.raw(['config', '--global', 'gc.worktreePruneExpire', '24.hours.ago']);
+        gcWorktreePruneConfigured = true;
+        logger.info('Set global gc.worktreePruneExpire to 24 hours');
+    } catch (configError) {
+        logger.warn({ error: (configError as Error).message }, 'Failed to set gc.worktreePruneExpire');
+    }
+}
+
 async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<string> {
     const { repoUrl, owner, repoName, authToken, baseBranch } = opts;
     const localRepoPath = await getRepoPath(owner, repoName);
@@ -50,6 +68,7 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
 
                 if (!isRepo) throw new Error('Directory exists but is not a valid git repository');
 
+                await configureGcWorktreePrune(git);
                 await setupAuthenticatedRemote(git, repoUrl, authToken);
                 await git.fetch(['origin', '--prune']);
             } catch (gitError) {
@@ -90,6 +109,7 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
             await git.clone(authenticatedUrl, localRepoPath, cloneOptions);
 
             const repoGit: SimpleGit = simpleGit(localRepoPath);
+            await configureGcWorktreePrune(repoGit);
             try {
                 await repoGit.raw(['remote', 'set-head', 'origin', '--auto']);
                 logger.debug({ repo: `${owner}/${repoName}` }, 'Set remote HEAD to auto-detect default branch');
