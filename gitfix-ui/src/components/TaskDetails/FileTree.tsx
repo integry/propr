@@ -209,7 +209,7 @@ const TreeNodeItem: React.FC<TreeNodeItemProps> = ({
         <span className={`flex-1 text-sm truncate ${isSelected ? 'font-medium text-blue-900' : 'text-gray-700'}`}>
           {node.name}
         </span>
-        <div className="flex items-center gap-1 text-xs font-mono">
+        <div className={`flex items-center gap-1 text-xs font-mono ${node.isDirectory ? 'opacity-50' : ''}`}>
           {node.linesAdded > 0 && (
             <span className="flex items-center text-green-600">
               <Plus className="h-3 w-3" />
