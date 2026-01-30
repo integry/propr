@@ -50,7 +50,7 @@ export { resolveModelAlias, getDefaultModel, getModelShortName, MODEL_ALIASES, M
 export type { LlmLabelResolution } from './config/modelAliases.js';
 export { CLAUDE_MODELS, CODEX_MODELS, GEMINI_MODELS, ALL_MODELS, AGENT_MODELS, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
 export type { AgentType as ModelAgentType, ModelInfo } from './config/modelDefinitions.js';
-export { getEffectiveTokenLimit, DEFAULT_CONTEXT_LEVEL } from './config/modelLimits.js';
+export { getEffectiveTokenLimit, getModelHardLimit, DEFAULT_CONTEXT_LEVEL } from './config/modelLimits.js';
 export type { ContextLevel } from './config/modelLimits.js';
 
 export { db, closeConnection, createKnexConfigForMigrations, runMigrations } from './db/connection.js';

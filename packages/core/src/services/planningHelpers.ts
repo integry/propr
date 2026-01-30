@@ -1,6 +1,6 @@
 /* eslint-disable max-lines */
 import { db } from '../db/connection.js';
-import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO, getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL } from '../config/modelLimits.js';
+import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO, getEffectiveTokenLimit, getModelHardLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL } from '../config/modelLimits.js';
 import { countTokens, estimateTokens } from '../utils/tokenCalculation.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { getModelPricing } from './pricingService.js';
@@ -270,6 +270,9 @@ export async function checkoutBranch(repoPath: string, branch: string): Promise<
 export function getDefaultModelLimit(): number {
   return MODEL_LIMITS['default'];
 }
+
+// Re-export for use by taskPlanningService
+export { getModelHardLimit };
 
 const DEFAULT_OUTPUT_TOKENS = 4000;
 const SONNET_MODEL_ID = 'anthropic/claude-sonnet-4-20250514';

@@ -27,3 +27,13 @@ export function getEffectiveTokenLimit(modelId: string | undefined, level: Conte
   const ratio = (clampedLevel / 100) * EFFECTIVE_MAX_RATIO;
   return Math.floor(limit * ratio);
 }
+
+/**
+ * Get the model's absolute maximum token limit (hard limit).
+ * This is used for validation - prompts must fit within this limit.
+ */
+export function getModelHardLimit(modelId: string | undefined): number {
+  const limit = MODEL_LIMITS[modelId || 'default'] || MODEL_LIMITS['default'];
+  // Use 98% of model limit to leave some buffer for response
+  return Math.floor(limit * EFFECTIVE_MAX_RATIO);
+}
