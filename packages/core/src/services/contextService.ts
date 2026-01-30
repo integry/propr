@@ -239,7 +239,9 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       );
 
       const fileTokenCounts = result.fileTokenCounts as Record<string, number>;
-      const effectiveLimit = Math.floor(tiktokenLimit * 0.8);
+      // Use 70% of limit to leave room for repomix overhead (XML structure, directory listing, etc.)
+      // The iterative truncation loop will adjust further if needed
+      const effectiveLimit = Math.floor(tiktokenLimit * 0.7);
       const selection = selectFilesWithinLimit(fileTokenCounts, effectiveLimit, filesToInclude, priorityFiles);
 
       const strategyMessages: Record<string, string> = {
@@ -280,25 +282,75 @@ export async function generateContext(options: ContextGenerationOptions): Promis
         'Re-generating context with limited file set'
       );
 
-      // Re-generate with selected files only
-      const limitedConfig = { ...config, include: selection.selectedFiles };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const limitedResult = await (pack as any)([repoPath], limitedConfig, () => {}, {
-        writeOutputToDisk: captureWriteOutput,
-        copyToClipboardIfEnabled: noopCopyToClipboard,
-      });
+      // Re-generate with selected files only, iteratively removing files if still over limit
+      let currentFiles = [...selection.selectedFiles];
+      let limitedResult;
+      let iterations = 0;
+      const maxIterations = 10; // Prevent infinite loops
 
-      // Final safety check - warn if we still exceed the limit
-      if (limitedResult.totalTokens > tiktokenLimit) {
+      while (iterations < maxIterations) {
+        iterations++;
+        const limitedConfig = { ...config, include: currentFiles };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        limitedResult = await (pack as any)([repoPath], limitedConfig, () => {}, {
+          writeOutputToDisk: captureWriteOutput,
+          copyToClipboardIfEnabled: noopCopyToClipboard,
+        });
+
+        // Check if within limit
+        if (limitedResult.totalTokens <= tiktokenLimit) {
+          correlatedLogger.info(
+            { iterations, totalTokens: limitedResult.totalTokens, tiktokenLimit, fileCount: currentFiles.length },
+            'Context within token limit after truncation'
+          );
+          break;
+        }
+
+        // Still over limit - need to remove more files
+        const overage = limitedResult.totalTokens - tiktokenLimit;
         correlatedLogger.warn(
-          {
-            totalTokens: limitedResult.totalTokens,
-            tiktokenLimit,
-            tokenLimit,
-            overage: limitedResult.totalTokens - tiktokenLimit,
-          },
-          'Context still exceeds token limit after truncation - repomix overhead larger than expected'
+          { iteration: iterations, totalTokens: limitedResult.totalTokens, tiktokenLimit, overage, fileCount: currentFiles.length },
+          'Context still exceeds token limit, removing largest files'
         );
+
+        // Remove the largest files (by token count) until we have enough headroom
+        const fileTokensInResult = limitedResult.fileTokenCounts as Record<string, number>;
+        const sortedBySize = currentFiles
+          .map(f => ({ path: f, tokens: fileTokensInResult[f] || 0 }))
+          .sort((a, b) => b.tokens - a.tokens); // Largest first
+
+        // Remove files until we've freed enough tokens (with 10% buffer for overhead)
+        let tokensToFree = overage * 1.1;
+        let tokensFreed = 0;
+        const filesToRemove: string[] = [];
+
+        for (const file of sortedBySize) {
+          if (tokensFreed >= tokensToFree) break;
+          filesToRemove.push(file.path);
+          tokensFreed += file.tokens;
+        }
+
+        if (filesToRemove.length === 0) {
+          correlatedLogger.warn({ currentFiles: currentFiles.length }, 'Cannot remove any more files, accepting current result');
+          break;
+        }
+
+        correlatedLogger.info(
+          { removingFiles: filesToRemove.length, tokensFreed, filesToRemove: filesToRemove.slice(0, 5) },
+          'Removing files to fit within token limit'
+        );
+
+        const removeSet = new Set(filesToRemove);
+        currentFiles = currentFiles.filter(f => !removeSet.has(f));
+
+        if (currentFiles.length === 0) {
+          correlatedLogger.warn('All files removed, cannot generate context within limit');
+          break;
+        }
+      }
+
+      if (iterations >= maxIterations) {
+        correlatedLogger.warn({ maxIterations }, 'Max iterations reached while trying to fit within token limit');
       }
 
       correlatedLogger.info(
@@ -307,6 +359,9 @@ export async function generateContext(options: ContextGenerationOptions): Promis
           totalCharacters: limitedResult.totalCharacters,
           totalTokens: limitedResult.totalTokens,
           truncated: true,
+          finalFileCount: currentFiles.length,
+          originalFileCount: selection.selectedFiles.length,
+          filesRemoved: selection.selectedFiles.length - currentFiles.length,
         },
         'Context generation completed with truncation'
       );
@@ -318,7 +373,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
         totalTokens: limitedResult.totalTokens,
         fileCharCounts: limitedResult.fileCharCounts,
         fileTokenCounts: limitedResult.fileTokenCounts,
-        includedFiles: selection.selectedFiles,
+        includedFiles: currentFiles,
         skippedSecurityFiles,
       };
     }
