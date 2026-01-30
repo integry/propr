@@ -802,6 +802,118 @@ function getLanguageFromFilePath(filePath: string): string {
 }
 
 /**
+ * Checks if a line contains diff markers
+ */
+function hasDiffMarker(line: string): boolean {
+  return /^[-+@]{1,3}/.test(line) || /^---\s+[ab]\//.test(line) || /^\+\+\+\s+[ab]\//.test(line);
+}
+
+/**
+ * Determines the language identifier for a code fence
+ */
+function determineFenceLanguage(hasDiffMarkers: boolean, isNewFile: boolean, filePath: string): string {
+  if (hasDiffMarkers) {
+    return 'diff';
+  }
+  if (isNewFile) {
+    return getLanguageFromFilePath(filePath);
+  }
+  // Existing file without clear diff markers - use diff to be safe
+  return 'diff';
+}
+
+/**
+ * Collects unfenced code lines until the next file header or end of content
+ */
+function collectUnfencedCode(lines: string[], startIndex: number): { codeLines: string[]; hasDiffMarkers: boolean; endIndex: number } {
+  const codeLines: string[] = [];
+  let hasDiffMarkers = false;
+  let i = startIndex;
+
+  while (i < lines.length) {
+    const codeLine = lines[i];
+    if (codeLine.match(/^###\s*File:\s*`[^`]+`/)) {
+      break;
+    }
+    if (hasDiffMarker(codeLine)) {
+      hasDiffMarkers = true;
+    }
+    codeLines.push(codeLine);
+    i++;
+  }
+
+  // Trim trailing empty lines
+  while (codeLines.length > 0 && codeLines[codeLines.length - 1].trim() === '') {
+    codeLines.pop();
+  }
+  // Trim leading empty lines
+  while (codeLines.length > 0 && codeLines[0].trim() === '') {
+    codeLines.shift();
+  }
+
+  return { codeLines, hasDiffMarkers, endIndex: i };
+}
+
+/**
+ * Copies an already-fenced code block to the result
+ */
+function copyFencedBlock(lines: string[], startIndex: number, result: string[]): number {
+  result.push(lines[startIndex]);
+  let i = startIndex + 1;
+  while (i < lines.length && !lines[i].trim().startsWith('```')) {
+    result.push(lines[i]);
+    i++;
+  }
+  if (i < lines.length) {
+    result.push(lines[i]); // closing fence
+    i++;
+  }
+  return i;
+}
+
+interface FileHeaderContext {
+  lines: string[];
+  startIndex: number;
+  headerLine: string;
+  filePath: string;
+  isNewFile: boolean;
+  result: string[];
+}
+
+/**
+ * Processes a file header section, ensuring its code block is properly fenced
+ */
+function processFileHeader(ctx: FileHeaderContext): number {
+  const { lines, startIndex, headerLine, filePath, isNewFile, result } = ctx;
+  result.push(headerLine);
+  let i = startIndex + 1;
+
+  // Skip empty lines after header
+  while (i < lines.length && lines[i].trim() === '') {
+    result.push(lines[i]);
+    i++;
+  }
+
+  if (i >= lines.length) return i;
+
+  const isAlreadyFenced = lines[i].trim().startsWith('```');
+  if (isAlreadyFenced) {
+    return copyFencedBlock(lines, i, result);
+  }
+
+  // Code is not fenced - collect and fence it
+  const { codeLines, hasDiffMarkers, endIndex } = collectUnfencedCode(lines, i);
+  if (codeLines.length > 0) {
+    const language = determineFenceLanguage(hasDiffMarkers, isNewFile, filePath);
+    result.push('```' + language);
+    result.push(...codeLines);
+    result.push('```');
+    result.push(''); // Add empty line after code block
+  }
+  return endIndex;
+}
+
+/**
  * Repairs implementation markdown to ensure code blocks are properly fenced.
  *
  * The LLM is instructed to use this format:
@@ -819,7 +931,6 @@ export function repairImplementationMarkdown(implementation: string): string {
     return implementation;
   }
 
-  // Pattern to match file headers: ### File: `path/to/file` or ### File: `path/to/file` (new file)
   const lines = implementation.split('\n');
   const result: string[] = [];
   let i = 0;
@@ -831,87 +942,8 @@ export function repairImplementationMarkdown(implementation: string): string {
     if (headerMatch) {
       const filePath = headerMatch[1];
       const isNewFile = !!headerMatch[2];
-
-      // Add the header line
-      result.push(line);
-      i++;
-
-      // Skip any empty lines after header
-      while (i < lines.length && lines[i].trim() === '') {
-        result.push(lines[i]);
-        i++;
-      }
-
-      if (i >= lines.length) break;
-
-      // Check if the next non-empty line is a code fence
-      const nextLine = lines[i];
-      const isAlreadyFenced = nextLine.trim().startsWith('```');
-
-      if (isAlreadyFenced) {
-        // Already properly fenced, just copy through until closing fence
-        result.push(nextLine);
-        i++;
-        while (i < lines.length && !lines[i].trim().startsWith('```')) {
-          result.push(lines[i]);
-          i++;
-        }
-        if (i < lines.length) {
-          result.push(lines[i]); // closing fence
-          i++;
-        }
-      } else {
-        // Code is not fenced - we need to add fencing
-        // Determine if it looks like a diff or regular code
-        const codeLines: string[] = [];
-        let hasDiffMarkers = false;
-
-        // Collect code lines until we hit another file header or end
-        while (i < lines.length) {
-          const codeLine = lines[i];
-          // Check if this is another file header
-          if (codeLine.match(/^###\s*File:\s*`[^`]+`/)) {
-            break;
-          }
-          // Check for diff markers
-          if (codeLine.match(/^[-+@]{1,3}/) || codeLine.match(/^---\s+[ab]\//) || codeLine.match(/^\+\+\+\s+[ab]\//)) {
-            hasDiffMarkers = true;
-          }
-          codeLines.push(codeLine);
-          i++;
-        }
-
-        // Trim trailing empty lines from code block
-        while (codeLines.length > 0 && codeLines[codeLines.length - 1].trim() === '') {
-          codeLines.pop();
-        }
-
-        // Trim leading empty lines from code block
-        while (codeLines.length > 0 && codeLines[0].trim() === '') {
-          codeLines.shift();
-        }
-
-        if (codeLines.length > 0) {
-          // Determine the language for the fence
-          let language: string;
-          if (hasDiffMarkers) {
-            language = 'diff';
-          } else if (isNewFile) {
-            language = getLanguageFromFilePath(filePath);
-          } else {
-            // Existing file without clear diff markers - use diff to be safe
-            language = 'diff';
-          }
-
-          // Add the fenced code block
-          result.push('```' + language);
-          result.push(...codeLines);
-          result.push('```');
-          result.push(''); // Add empty line after code block
-        }
-      }
+      i = processFileHeader({ lines, startIndex: i, headerLine: line, filePath, isNewFile, result });
     } else {
-      // Not a file header, just copy the line
       result.push(line);
       i++;
     }

@@ -320,7 +320,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
           .sort((a, b) => b.tokens - a.tokens); // Largest first
 
         // Remove files until we've freed enough tokens (with 10% buffer for overhead)
-        let tokensToFree = overage * 1.1;
+        const tokensToFree = overage * 1.1;
         let tokensFreed = 0;
         const filesToRemove: string[] = [];
 
