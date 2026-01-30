@@ -4,6 +4,7 @@ import logger from '../utils/logger.js';
 import { ensureRepoCloned } from '../git/repoManager.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { createPlanIssue } from '../config/planIssueManager.js';
+import { repairImplementationMarkdown } from './planningHelpers.js';
 
 export interface IssueLink {
   number: number;
@@ -206,7 +207,9 @@ export async function executeDraft(draftId: string, userId: string, correlationI
 
     // Post implementation as a separate comment if it exists
     if (task.implementation) {
-      const commentBody = '**Suggested Implementation:**\n\n' + task.implementation;
+      // Repair markdown code fencing to ensure proper GitHub rendering
+      const repairedImplementation = repairImplementationMarkdown(task.implementation);
+      const commentBody = '**Suggested Implementation:**\n\n' + repairedImplementation;
 
       await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner,

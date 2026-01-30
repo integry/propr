@@ -757,3 +757,165 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     warnings
   };
 }
+
+/**
+ * Detects the language identifier for a file based on its extension
+ */
+function getLanguageFromFilePath(filePath: string): string {
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+  const languageMap: Record<string, string> = {
+    'ts': 'typescript',
+    'tsx': 'typescript',
+    'js': 'javascript',
+    'jsx': 'javascript',
+    'py': 'python',
+    'rb': 'ruby',
+    'go': 'go',
+    'rs': 'rust',
+    'java': 'java',
+    'kt': 'kotlin',
+    'cs': 'csharp',
+    'cpp': 'cpp',
+    'c': 'c',
+    'h': 'c',
+    'hpp': 'cpp',
+    'json': 'json',
+    'yaml': 'yaml',
+    'yml': 'yaml',
+    'md': 'markdown',
+    'sql': 'sql',
+    'sh': 'bash',
+    'bash': 'bash',
+    'zsh': 'bash',
+    'css': 'css',
+    'scss': 'scss',
+    'less': 'less',
+    'html': 'html',
+    'xml': 'xml',
+    'vue': 'vue',
+    'svelte': 'svelte',
+    'php': 'php',
+    'swift': 'swift',
+    'dart': 'dart'
+  };
+  return languageMap[ext] || 'text';
+}
+
+/**
+ * Repairs implementation markdown to ensure code blocks are properly fenced.
+ *
+ * The LLM is instructed to use this format:
+ * ### File: `path/to/file.ts`
+ *
+ * ```diff (for existing files)
+ * or
+ * ```typescript (for new files)
+ *
+ * But sometimes the LLM omits the triple backticks. This function detects
+ * and repairs such cases.
+ */
+export function repairImplementationMarkdown(implementation: string): string {
+  if (!implementation || typeof implementation !== 'string') {
+    return implementation;
+  }
+
+  // Pattern to match file headers: ### File: `path/to/file` or ### File: `path/to/file` (new file)
+  const lines = implementation.split('\n');
+  const result: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const headerMatch = line.match(/^###\s*File:\s*`([^`]+)`(?:\s*\((new file)\))?/);
+
+    if (headerMatch) {
+      const filePath = headerMatch[1];
+      const isNewFile = !!headerMatch[2];
+
+      // Add the header line
+      result.push(line);
+      i++;
+
+      // Skip any empty lines after header
+      while (i < lines.length && lines[i].trim() === '') {
+        result.push(lines[i]);
+        i++;
+      }
+
+      if (i >= lines.length) break;
+
+      // Check if the next non-empty line is a code fence
+      const nextLine = lines[i];
+      const isAlreadyFenced = nextLine.trim().startsWith('```');
+
+      if (isAlreadyFenced) {
+        // Already properly fenced, just copy through until closing fence
+        result.push(nextLine);
+        i++;
+        while (i < lines.length && !lines[i].trim().startsWith('```')) {
+          result.push(lines[i]);
+          i++;
+        }
+        if (i < lines.length) {
+          result.push(lines[i]); // closing fence
+          i++;
+        }
+      } else {
+        // Code is not fenced - we need to add fencing
+        // Determine if it looks like a diff or regular code
+        const codeLines: string[] = [];
+        let hasDiffMarkers = false;
+
+        // Collect code lines until we hit another file header or end
+        while (i < lines.length) {
+          const codeLine = lines[i];
+          // Check if this is another file header
+          if (codeLine.match(/^###\s*File:\s*`[^`]+`/)) {
+            break;
+          }
+          // Check for diff markers
+          if (codeLine.match(/^[-+@]{1,3}/) || codeLine.match(/^---\s+[ab]\//) || codeLine.match(/^\+\+\+\s+[ab]\//)) {
+            hasDiffMarkers = true;
+          }
+          codeLines.push(codeLine);
+          i++;
+        }
+
+        // Trim trailing empty lines from code block
+        while (codeLines.length > 0 && codeLines[codeLines.length - 1].trim() === '') {
+          codeLines.pop();
+        }
+
+        // Trim leading empty lines from code block
+        while (codeLines.length > 0 && codeLines[0].trim() === '') {
+          codeLines.shift();
+        }
+
+        if (codeLines.length > 0) {
+          // Determine the language for the fence
+          let language: string;
+          if (hasDiffMarkers) {
+            language = 'diff';
+          } else if (isNewFile) {
+            language = getLanguageFromFilePath(filePath);
+          } else {
+            // Existing file without clear diff markers - use diff to be safe
+            language = 'diff';
+          }
+
+          // Add the fenced code block
+          result.push('```' + language);
+          result.push(...codeLines);
+          result.push('```');
+          result.push(''); // Add empty line after code block
+        }
+      }
+    } else {
+      // Not a file header, just copy the line
+      result.push(line);
+      i++;
+    }
+  }
+
+  return result.join('\n');
+}
