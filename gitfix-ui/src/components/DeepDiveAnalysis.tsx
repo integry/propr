@@ -22,12 +22,9 @@ interface DeepDiveAnalysisData {
 interface DeepDiveAnalysisProps {
   analysis: DeepDiveAnalysisData | string | null;
   loading: boolean;
-  onRunAnalysis?: () => void;
   renderMarkdown?: (text: string) => React.ReactNode;
   title?: string;
-  buttonText?: string;
   colorScheme?: 'purple' | 'gray';
-  showButton?: boolean;
   emptyStateText?: string;
 }
 
@@ -272,15 +269,10 @@ const AnalysisContent: React.FC<AnalysisContentProps> = ({ actualAnalysis, hasSt
 interface HeaderProps {
   title: string;
   parsedAnalysis: DeepDiveAnalysisData | string | null;
-  showButton: boolean;
-  onRunAnalysis?: () => void;
-  loading: boolean;
-  isAdvancedModel: boolean | "" | undefined;
-  buttonText: string;
   scheme: ColorScheme;
 }
 
-const Header: React.FC<HeaderProps> = ({ title, parsedAnalysis, showButton, onRunAnalysis, loading, isAdvancedModel, buttonText, scheme }) => (
+const Header: React.FC<HeaderProps> = ({ title, parsedAnalysis }) => (
   <div className="flex items-center justify-between mb-4">
     <div className="flex items-center gap-3">
       <h4 className="text-lg font-semibold text-gray-900">{title}</h4>
@@ -290,47 +282,27 @@ const Header: React.FC<HeaderProps> = ({ title, parsedAnalysis, showButton, onRu
         </span>
       )}
     </div>
-    {showButton && onRunAnalysis && (
-      <button
-        onClick={onRunAnalysis}
-        disabled={loading || Boolean(isAdvancedModel)}
-        className={`px-3 py-1.5 text-white text-sm rounded-md transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed ${scheme.button}`}
-        title={isAdvancedModel ? 'Deep-dive analysis has already been run' : ''}
-      >
-        {loading ? 'Analyzing...' : buttonText}
-      </button>
-    )}
   </div>
 );
 
 const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
   analysis,
   loading,
-  onRunAnalysis,
   renderMarkdown = (text) => text,
-  title = 'Deep-Dive Analysis (Advanced Model)',
-  buttonText = 'Run Deep-Dive Analysis',
+  title = 'Execution Analysis',
   colorScheme = 'purple',
-  showButton = true,
-  emptyStateText = 'Click "Run Deep-Dive Analysis" to generate an in-depth analysis using the advanced model.',
+  emptyStateText = 'Automated analysis is pending...',
 }) => {
   const scheme = COLOR_SCHEMES[colorScheme];
   const parsedAnalysis = parseAnalysis(analysis);
   const actualAnalysis = extractReportAnalysis(parsedAnalysis);
   const hasStructuredData = hasStructuredContent(actualAnalysis);
-  const isAdvancedModel = parsedAnalysis && typeof parsedAnalysis === 'object' && 
-    parsedAnalysis.modelUsed && parsedAnalysis.modelUsed !== 'claude-haiku-4-5';
 
   return (
     <div className="mb-6">
       <Header
         title={title}
         parsedAnalysis={parsedAnalysis}
-        showButton={showButton}
-        onRunAnalysis={onRunAnalysis}
-        loading={loading}
-        isAdvancedModel={isAdvancedModel}
-        buttonText={buttonText}
         scheme={scheme}
       />
       {loading && (

@@ -4,14 +4,13 @@ import {
   getTaskLiveDetails,
   getTaskAnalysis,
   stopTaskExecution,
-  StopExecutionResponse,
-  generateDeepDiveAnalysis
+  StopExecutionResponse
 } from '../../api/gitfixApi';
-import { 
-  HistoryItem, 
-  TaskInfo, 
-  LiveDetails, 
-  AnalysisData 
+import {
+  HistoryItem,
+  TaskInfo,
+  LiveDetails,
+  AnalysisData
 } from './types';
 
 export const useTaskData = (taskId: string | undefined) => {
@@ -22,7 +21,6 @@ export const useTaskData = (taskId: string | undefined) => {
   const [liveDetails, setLiveDetails] = useState<LiveDetails>({ events: [], todos: [], currentTask: null });
   const [analysis, setAnalysis] = useState<AnalysisData | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState<boolean>(true);
-  const [deepDiveLoading, setDeepDiveLoading] = useState<boolean>(false);
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
 
   useEffect(() => {
@@ -167,24 +165,6 @@ export const useTaskData = (taskId: string | undefined) => {
     }
   };
 
-  const handleDeepDive = async () => {
-    if (!taskId) return;
-    setDeepDiveLoading(true);
-    try {
-      const data = await generateDeepDiveAnalysis(taskId);
-      setAnalysis(data.analysis);
-    } catch (err) {
-      const errMessage = (err as Error).message;
-      if (errMessage && errMessage.includes('already been run')) {
-        alert('Deep-dive analysis has already been run for this task.');
-      } else {
-        setAnalysis({ error: errMessage || 'Failed to run deep-dive analysis.' });
-      }
-    } finally {
-      setDeepDiveLoading(false);
-    }
-  };
-
   return {
     history,
     taskInfo,
@@ -193,9 +173,7 @@ export const useTaskData = (taskId: string | undefined) => {
     liveDetails,
     analysis,
     analysisLoading,
-    deepDiveLoading,
     stoppingExecution,
-    handleStopExecution,
-    handleDeepDive
+    handleStopExecution
   };
 };

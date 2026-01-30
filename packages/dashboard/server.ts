@@ -204,7 +204,6 @@ function setupRoutes(): void {
   app.get('/api/execution/:sessionId/logs', ensureAuthenticated, executionRoutes.getLogs);
   app.get('/api/execution/:sessionId/logs/:type', ensureAuthenticated, executionRoutes.getLogByType);
   app.get('/api/task/:taskId/analysis', ensureAuthenticated, executionRoutes.getAnalysis);
-  app.post('/api/task/:taskId/deep-dive-analysis', ensureAuthenticated, executionRoutes.runDeepDiveAnalysis);
 
   app.get('/api/task/:taskId/docker-info', ensureAuthenticated, dockerRoutes.getDockerInfo);
   app.get('/api/task/:taskId/docker-logs', ensureAuthenticated, dockerRoutes.getDockerLogs);

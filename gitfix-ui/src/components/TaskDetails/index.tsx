@@ -99,17 +99,14 @@ const TaskDetails: React.FC = () => {
 
           {/* RIGHT COLUMN: The Execution (65% - 8/12 cols) */}
           <div className="lg:col-span-8 space-y-4 sm:space-y-6">
-            {/* Deep Dive Analysis - only show when we have data or are loading */}
-            {(taskData.analysis || taskData.analysisLoading || taskData.deepDiveLoading) && (
+            {/* Execution Analysis - only show when we have data or are loading */}
+            {(taskData.analysis || taskData.analysisLoading) && (
               <DeepDiveAnalysis
                 analysis={taskData.analysis}
-                loading={taskData.analysisLoading || taskData.deepDiveLoading}
+                loading={taskData.analysisLoading}
                 renderMarkdown={renderMarkdown}
                 title="Execution Analysis"
                 colorScheme="gray"
-                showButton={true}
-                buttonText="Run Deep-Dive Analysis"
-                onRunAnalysis={taskData.handleDeepDive}
                 emptyStateText="Automated analysis is pending..."
               />
             )}
