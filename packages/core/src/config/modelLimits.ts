@@ -31,8 +31,8 @@ export function getEffectiveTokenLimit(modelId: string | undefined, level: Conte
     const effectiveModelId = modelId.includes(':') ? modelId.split(':')[1] : modelId;
     const modelInfo = MODEL_INFO_MAP[effectiveModelId];
     
-    if (modelInfo?.contextWindow) {
-      limit = modelInfo.contextWindow;
+    if (modelInfo?.maxTokens) {
+      limit = modelInfo.maxTokens;
     } else if (MODEL_LIMITS[effectiveModelId]) {
       limit = MODEL_LIMITS[effectiveModelId];
     }
