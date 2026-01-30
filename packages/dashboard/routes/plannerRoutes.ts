@@ -421,6 +421,48 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
+  async function resetDraftToSetup(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    try {
+      const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'status', 'context_config']);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const draft = ownership.draft!;
+      if (draft.status !== 'review') {
+        res.status(400).json({ error: 'Can only reset drafts that are in review status' });
+        return;
+      }
+
+      // Reset status to 'draft' and clear plan_json, but preserve context_config
+      await db!('task_drafts').where({ draft_id: req.params.id }).update({
+        status: 'draft',
+        plan_json: null,
+        chat_history: null,
+        updated_at: db!.fn.now()
+      });
+
+      // Fetch the updated draft
+      const updated = await db!('task_drafts').where({ draft_id: req.params.id }).first();
+
+      // Parse JSON fields and add task_title
+      const parsedDraft: Record<string, unknown> & { task_title?: string } = { ...updated };
+      if (typeof parsedDraft.context_config === 'string') {
+        try { parsedDraft.context_config = JSON.parse(parsedDraft.context_config); } catch { parsedDraft.context_config = {}; }
+      }
+      if (typeof parsedDraft.attachments === 'string') {
+        try { parsedDraft.attachments = JSON.parse(parsedDraft.attachments); } catch { parsedDraft.attachments = []; }
+      }
+      parsedDraft.task_title = updated.name;
+
+      res.json(parsedDraft);
+    } catch (error) {
+      console.error('Reset draft to setup error:', error);
+      res.status(500).json({ error: 'Failed to reset draft' });
+    }
+  }
+
   const getAttachmentContent = withAuthCheck(db, createGetAttachmentContentHandler({ verifyOwnership: ownershipVerifier }));
   const getRepositoryInfo = withAuthCheck(db, createGetRepositoryInfoHandler({ verifyOwnership: ownershipVerifier }));
   const downloadContext = withAuthCheck(db, createDownloadContextHandler({ verifyOwnership: ownershipVerifier }));
@@ -446,6 +488,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     generate,
     refine,
     finalize,
+    resetDraftToSetup,
     getIssues,
     implementIssue,
     updateIssue,

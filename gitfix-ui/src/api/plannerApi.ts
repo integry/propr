@@ -338,6 +338,20 @@ export const deleteDraft = async (draftId: string): Promise<void> => {
   await handleApiResponse(response);
 };
 
+/**
+ * Reset a draft from 'review' status back to 'draft' status.
+ * This allows the user to return to the setup wizard and modify their configuration.
+ * The plan_json is cleared but context_config (settings) are preserved.
+ */
+export const resetDraftToSetup = async (draftId: string): Promise<PlannerDraft> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/reset-to-setup`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export interface RepositoryInfo {
   defaultBranch: string;
   branches: string[];
