@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, DraftListItem, IssueSummary } from '../api/gitfixApi';
-import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, Filter, ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
+import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, Filter, ChevronLeft, ChevronRight, Search, X, GitMerge } from 'lucide-react';
 
 const DEFAULT_PAGE_SIZE = 10;
 
@@ -132,6 +132,8 @@ const PlansPage: React.FC = () => {
 
   const getStatusBadge = (status: string) => {
     switch (status) {
+      case 'merged':
+        return 'bg-purple-100 text-purple-800';
       case 'executed':
         return 'bg-green-100 text-green-800';
       case 'review':
@@ -146,8 +148,10 @@ const PlansPage: React.FC = () => {
 
   const getStatusLabel = (status: string) => {
     switch (status) {
+      case 'merged':
+        return 'Merged';
       case 'executed':
-        return 'Finalized';
+        return 'Issues created';
       case 'review':
         return 'Ready for Review';
       case 'generating':
@@ -163,6 +167,8 @@ const PlansPage: React.FC = () => {
 
   const getStatusIcon = (status: string) => {
     switch (status) {
+      case 'merged':
+        return <GitMerge size={12} className="text-purple-600" />;
       case 'executed':
         return <CheckCircle size={12} className="text-green-600" />;
       case 'review':
