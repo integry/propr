@@ -112,17 +112,20 @@ function selectFilesWithinLimit(
   return { selectedFiles, droppedFiles, currentTokens, strategy: priorityFiles?.length ? 'priority-then-size' : 'size-order' };
 }
 
-async function generateOptimizedContext(
-  repoPath: string,
-  initialFiles: string[],
+interface GenerateOptimizedContextOptions {
+  repoPath: string;
+  initialFiles: string[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  baseConfig: any,
-  tiktokenLimit: number,
+  baseConfig: any;
+  tiktokenLimit: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  logger: any,
-  writeOutput: (output: string) => Promise<undefined>,
-  noopClipboard: () => Promise<void>
-) {
+  contextLogger: any;
+  writeOutput: (output: string) => Promise<undefined>;
+  noopClipboard: () => Promise<void>;
+}
+
+async function generateOptimizedContext(options: GenerateOptimizedContextOptions) {
+  const { repoPath, initialFiles, baseConfig, tiktokenLimit, contextLogger, writeOutput, noopClipboard } = options;
   let currentFiles = [...initialFiles];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let result: any;
@@ -139,7 +142,7 @@ async function generateOptimizedContext(
     });
 
     if (result.totalTokens <= tiktokenLimit) {
-      logger.info(
+      contextLogger.info(
         { iterations, totalTokens: result.totalTokens, tiktokenLimit, fileCount: currentFiles.length },
         'Context within token limit after truncation'
       );
@@ -148,7 +151,7 @@ async function generateOptimizedContext(
 
     // Still over limit - need to remove more files
     const overage = result.totalTokens - tiktokenLimit;
-    logger.warn(
+    contextLogger.warn(
       { iteration: iterations, totalTokens: result.totalTokens, tiktokenLimit, overage, fileCount: currentFiles.length },
       'Context still exceeds token limit, removing largest files'
     );
@@ -171,11 +174,11 @@ async function generateOptimizedContext(
     }
 
     if (filesToRemove.length === 0) {
-      logger.warn({ currentFiles: currentFiles.length }, 'Cannot remove any more files, accepting current result');
+      contextLogger.warn({ currentFiles: currentFiles.length }, 'Cannot remove any more files, accepting current result');
       break;
     }
 
-    logger.info(
+    contextLogger.info(
       { removingFiles: filesToRemove.length, tokensFreed, filesToRemove: filesToRemove.slice(0, 5) },
       'Removing files to fit within token limit'
     );
@@ -184,13 +187,13 @@ async function generateOptimizedContext(
     currentFiles = currentFiles.filter(f => !removeSet.has(f));
 
     if (currentFiles.length === 0) {
-      logger.warn('All files removed, cannot generate context within limit');
+      contextLogger.warn('All files removed, cannot generate context within limit');
       break;
     }
   }
 
   if (iterations >= maxIterations) {
-    logger.warn({ maxIterations }, 'Max iterations reached while trying to fit within token limit');
+    contextLogger.warn({ maxIterations }, 'Max iterations reached while trying to fit within token limit');
   }
 
   return { result, currentFiles };
@@ -367,15 +370,15 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       );
 
       // Re-generate with selected files only, iteratively removing files if still over limit
-      const optimizationResult = await generateOptimizedContext(
+      const optimizationResult = await generateOptimizedContext({
         repoPath,
-        selection.selectedFiles,
-        config,
+        initialFiles: selection.selectedFiles,
+        baseConfig: config,
         tiktokenLimit,
-        correlatedLogger,
-        captureWriteOutput,
-        noopCopyToClipboard
-      );
+        contextLogger: correlatedLogger,
+        writeOutput: captureWriteOutput,
+        noopClipboard: noopCopyToClipboard
+      });
 
       const limitedResult = optimizationResult.result;
       const currentFiles = optimizationResult.currentFiles;
