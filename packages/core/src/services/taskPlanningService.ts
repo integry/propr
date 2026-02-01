@@ -517,7 +517,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   // Parse context_config
   const parsedContextConfig = parseDraftContextConfig(draft.context_config, draftId, correlatedLogger);
-  const config = parseContextConfig(parsedContextConfig);
+  const config = parseContextConfig(parsedContextConfig, generationModel);
   correlatedLogger.info({ draftId, granularity: config.granularity, contextLevel: config.contextLevel, tokenLimit: config.tokenLimit, rawContextLevel: parsedContextConfig?.contextLevel }, 'Parsed context config for plan generation');
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 

@@ -112,6 +112,93 @@ function selectFilesWithinLimit(
   return { selectedFiles, droppedFiles, currentTokens, strategy: priorityFiles?.length ? 'priority-then-size' : 'size-order' };
 }
 
+interface GenerateOptimizedContextOptions {
+  repoPath: string;
+  initialFiles: string[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  baseConfig: any;
+  tiktokenLimit: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  contextLogger: any;
+  writeOutput: (output: string) => Promise<undefined>;
+  noopClipboard: () => Promise<void>;
+}
+
+async function generateOptimizedContext(options: GenerateOptimizedContextOptions) {
+  const { repoPath, initialFiles, baseConfig, tiktokenLimit, contextLogger, writeOutput, noopClipboard } = options;
+  let currentFiles = [...initialFiles];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let result: any;
+  let iterations = 0;
+  const maxIterations = 10;
+
+  while (iterations < maxIterations) {
+    iterations++;
+    const limitedConfig = { ...baseConfig, include: currentFiles };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    result = await (pack as any)([repoPath], limitedConfig, () => {}, {
+      writeOutputToDisk: writeOutput,
+      copyToClipboardIfEnabled: noopClipboard,
+    });
+
+    if (result.totalTokens <= tiktokenLimit) {
+      contextLogger.info(
+        { iterations, totalTokens: result.totalTokens, tiktokenLimit, fileCount: currentFiles.length },
+        'Context within token limit after truncation'
+      );
+      break;
+    }
+
+    // Still over limit - need to remove more files
+    const overage = result.totalTokens - tiktokenLimit;
+    contextLogger.warn(
+      { iteration: iterations, totalTokens: result.totalTokens, tiktokenLimit, overage, fileCount: currentFiles.length },
+      'Context still exceeds token limit, removing largest files'
+    );
+
+    // Remove the largest files (by token count) until we have enough headroom
+    const fileTokensInResult = result.fileTokenCounts as Record<string, number>;
+    const sortedBySize = currentFiles
+      .map(f => ({ path: f, tokens: fileTokensInResult[f] || 0 }))
+      .sort((a, b) => b.tokens - a.tokens); // Largest first
+
+    // Remove files until we've freed enough tokens (with 10% buffer for overhead)
+    const tokensToFree = overage * 1.1;
+    let tokensFreed = 0;
+    const filesToRemove: string[] = [];
+
+    for (const file of sortedBySize) {
+      if (tokensFreed >= tokensToFree) break;
+      filesToRemove.push(file.path);
+      tokensFreed += file.tokens;
+    }
+
+    if (filesToRemove.length === 0) {
+      contextLogger.warn({ currentFiles: currentFiles.length }, 'Cannot remove any more files, accepting current result');
+      break;
+    }
+
+    contextLogger.info(
+      { removingFiles: filesToRemove.length, tokensFreed, filesToRemove: filesToRemove.slice(0, 5) },
+      'Removing files to fit within token limit'
+    );
+
+    const removeSet = new Set(filesToRemove);
+    currentFiles = currentFiles.filter(f => !removeSet.has(f));
+
+    if (currentFiles.length === 0) {
+      contextLogger.warn('All files removed, cannot generate context within limit');
+      break;
+    }
+  }
+
+  if (iterations >= maxIterations) {
+    contextLogger.warn({ maxIterations }, 'Max iterations reached while trying to fit within token limit');
+  }
+
+  return { result, currentFiles };
+}
+
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
   const { repoPath, filesToInclude, priorityFiles, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId, includeFullDirectoryStructure = true, compress = false } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -283,75 +370,18 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       );
 
       // Re-generate with selected files only, iteratively removing files if still over limit
-      let currentFiles = [...selection.selectedFiles];
-      let limitedResult;
-      let iterations = 0;
-      const maxIterations = 10; // Prevent infinite loops
+      const optimizationResult = await generateOptimizedContext({
+        repoPath,
+        initialFiles: selection.selectedFiles,
+        baseConfig: config,
+        tiktokenLimit,
+        contextLogger: correlatedLogger,
+        writeOutput: captureWriteOutput,
+        noopClipboard: noopCopyToClipboard
+      });
 
-      while (iterations < maxIterations) {
-        iterations++;
-        const limitedConfig = { ...config, include: currentFiles };
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        limitedResult = await (pack as any)([repoPath], limitedConfig, () => {}, {
-          writeOutputToDisk: captureWriteOutput,
-          copyToClipboardIfEnabled: noopCopyToClipboard,
-        });
-
-        // Check if within limit
-        if (limitedResult.totalTokens <= tiktokenLimit) {
-          correlatedLogger.info(
-            { iterations, totalTokens: limitedResult.totalTokens, tiktokenLimit, fileCount: currentFiles.length },
-            'Context within token limit after truncation'
-          );
-          break;
-        }
-
-        // Still over limit - need to remove more files
-        const overage = limitedResult.totalTokens - tiktokenLimit;
-        correlatedLogger.warn(
-          { iteration: iterations, totalTokens: limitedResult.totalTokens, tiktokenLimit, overage, fileCount: currentFiles.length },
-          'Context still exceeds token limit, removing largest files'
-        );
-
-        // Remove the largest files (by token count) until we have enough headroom
-        const fileTokensInResult = limitedResult.fileTokenCounts as Record<string, number>;
-        const sortedBySize = currentFiles
-          .map(f => ({ path: f, tokens: fileTokensInResult[f] || 0 }))
-          .sort((a, b) => b.tokens - a.tokens); // Largest first
-
-        // Remove files until we've freed enough tokens (with 10% buffer for overhead)
-        let tokensToFree = overage * 1.1;
-        let tokensFreed = 0;
-        const filesToRemove: string[] = [];
-
-        for (const file of sortedBySize) {
-          if (tokensFreed >= tokensToFree) break;
-          filesToRemove.push(file.path);
-          tokensFreed += file.tokens;
-        }
-
-        if (filesToRemove.length === 0) {
-          correlatedLogger.warn({ currentFiles: currentFiles.length }, 'Cannot remove any more files, accepting current result');
-          break;
-        }
-
-        correlatedLogger.info(
-          { removingFiles: filesToRemove.length, tokensFreed, filesToRemove: filesToRemove.slice(0, 5) },
-          'Removing files to fit within token limit'
-        );
-
-        const removeSet = new Set(filesToRemove);
-        currentFiles = currentFiles.filter(f => !removeSet.has(f));
-
-        if (currentFiles.length === 0) {
-          correlatedLogger.warn('All files removed, cannot generate context within limit');
-          break;
-        }
-      }
-
-      if (iterations >= maxIterations) {
-        correlatedLogger.warn({ maxIterations }, 'Max iterations reached while trying to fit within token limit');
-      }
+      const limitedResult = optimizationResult.result;
+      const currentFiles = optimizationResult.currentFiles;
 
       correlatedLogger.info(
         {

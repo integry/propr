@@ -1,11 +1,15 @@
 import React from 'react';
-import { Layers, Minimize2, Zap, Clock } from 'lucide-react';
+import { Layers, Minimize2, Zap, Clock, Cpu } from 'lucide-react';
 
 interface ContextLevelSliderProps {
   value: number;
   onChange: (level: number) => void;
   compress?: boolean;
   onCompressChange?: (compress: boolean) => void;
+  /** Name of the model used for context limits */
+  modelName?: string;
+  /** Full context window size of the model in tokens */
+  modelMaxContextTokens?: number;
 }
 
 const MIN_LEVEL = 10;
@@ -35,7 +39,7 @@ const getSpeedColor = (value: number): string => {
   return 'text-orange-600';
 };
 
-export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange, compress = false, onCompressChange }) => {
+export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange, compress = false, onCompressChange, modelName, modelMaxContextTokens }) => {
   const semantic = getSemanticLabel(value);
   const labelColor = getLabelColor(value);
   const speedColor = getSpeedColor(value);
@@ -84,6 +88,15 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
       <p className="text-xs text-gray-500">
         {semantic.description} ({value}% context window)
       </p>
+
+      {modelName && modelMaxContextTokens && (
+        <div className="flex items-center gap-2 text-xs text-gray-400">
+          <Cpu className="w-3.5 h-3.5" />
+          <span>
+            {modelName} ({(modelMaxContextTokens / 1000).toFixed(0)}K max context)
+          </span>
+        </div>
+      )}
 
       {onCompressChange && (
         <label className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors">

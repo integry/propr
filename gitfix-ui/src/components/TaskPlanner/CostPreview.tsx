@@ -14,13 +14,6 @@ interface CostPreviewProps {
   contextRepositories?: ContextRepository[];
 }
 
-// Calculate context window usage percentage (assuming 200k context window)
-const MAX_CONTEXT_TOKENS = 200000;
-
-const getContextUsagePercentage = (tokens: number): number => {
-  return Math.min(100, (tokens / MAX_CONTEXT_TOKENS) * 100);
-};
-
 const getUsageColor = (percentage: number, actualPercentage: number): string => {
   // Only use red when context actually exceeds the limit
   if (actualPercentage > 100) return 'bg-red-500';
@@ -62,8 +55,12 @@ export const CostPreview: React.FC<CostPreviewProps> = ({ preview, contextReposi
   }
 
   const { stats, smartSelection, warnings } = preview.data;
-  const usagePercentage = getContextUsagePercentage(stats.totalTokens);
-  const actualPercentage = (stats.totalTokens / MAX_CONTEXT_TOKENS) * 100;
+  
+  // Use dynamic maxTokens from stats, fallback to 200k if not available (legacy support)
+  const maxTokens = stats.maxTokens || 200000;
+  
+  const usagePercentage = Math.min(100, (stats.totalTokens / maxTokens) * 100);
+  const actualPercentage = (stats.totalTokens / maxTokens) * 100;
   const usageColor = getUsageColor(usagePercentage, actualPercentage);
 
   return (
@@ -96,7 +93,7 @@ export const CostPreview: React.FC<CostPreviewProps> = ({ preview, contextReposi
       <div className="space-y-2">
         <div className="flex items-center justify-between text-xs text-gray-500">
           <span>Context window usage</span>
-          <span>{usagePercentage.toFixed(1)}% of {(MAX_CONTEXT_TOKENS / 1000).toFixed(0)}k</span>
+          <span>{usagePercentage.toFixed(1)}% of {(maxTokens / 1000).toFixed(0)}k</span>
         </div>
         <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
           <div
