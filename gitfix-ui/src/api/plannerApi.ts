@@ -21,7 +21,7 @@ export interface PlannerDraft {
   draft_id: string;
   repository: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed';
+  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed' | 'merged';
   attachments: PlannerAttachment[];
   created_at: string;
   generation_trace?: GenerationTrace;
