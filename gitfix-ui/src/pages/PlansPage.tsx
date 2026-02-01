@@ -1,6 +1,8 @@
+// CI trigger: 2026-02-01
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { useNewPlanForm } from '../hooks/useNewPlanForm';
 import { getDrafts, deleteDraft, DraftListItem } from '../api/gitfixApi';
 import { Filter, ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
 import {
@@ -11,6 +13,7 @@ import {
   getStatusIcon,
   renderIssueSummary
 } from './PlansPageUtils';
+import { NewPlanForm } from '../components/Dashboard/index';
 
 const DEFAULT_PAGE_SIZE = 10;
 
@@ -31,6 +34,9 @@ const PlansPage: React.FC = () => {
   // All repositories for filter dropdown (fetched once without filters)
   const [allRepositories, setAllRepositories] = useState<{ repo: string; count: number }[]>([]);
   const [totalAllDrafts, setTotalAllDrafts] = useState(0);
+
+  // NewPlanForm hook
+  const newPlanForm = useNewPlanForm();
 
   const totalPages = useMemo(() => Math.ceil(totalDrafts / DEFAULT_PAGE_SIZE), [totalDrafts]);
 
@@ -183,14 +189,38 @@ const PlansPage: React.FC = () => {
               </select>
             </div>
           )}
-          <Link
-            to="/"
+          <button
+            onClick={newPlanForm.toggleFormExpanded}
             className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
           >
             + New Plan
-          </Link>
+          </button>
         </div>
       </div>
+
+      {/* NewPlanForm - shown when expanded */}
+      {newPlanForm.isFormExpanded && (
+        <div className="mb-6">
+          <NewPlanForm
+            repos={newPlanForm.repos}
+            selectedRepo={newPlanForm.selectedRepo}
+            onRepoChange={newPlanForm.setSelectedRepo}
+            prompt={newPlanForm.prompt}
+            onPromptChange={newPlanForm.setPrompt}
+            onPaste={newPlanForm.handlePaste}
+            selectedFiles={newPlanForm.selectedFiles}
+            onRemoveFile={newPlanForm.handleRemoveFile}
+            onFileSelect={newPlanForm.handleFileSelect}
+            fileInputRef={newPlanForm.fileInputRef}
+            isPastingImage={newPlanForm.isPastingImage}
+            error={newPlanForm.formError}
+            isCreating={newPlanForm.isCreating}
+            onStartPlanning={newPlanForm.handleStartPlanning}
+            isExpanded={newPlanForm.isFormExpanded}
+            onExpandChange={newPlanForm.setIsFormExpanded}
+          />
+        </div>
+      )}
 
       {totalAllDrafts === 0 && !loading && !debouncedSearch ? (
         <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
@@ -200,12 +230,12 @@ const PlansPage: React.FC = () => {
             </svg>
           </div>
           <p className="text-gray-500 mb-4">No plans found. Create your first plan!</p>
-          <Link
-            to="/"
+          <button
+            onClick={() => newPlanForm.setIsFormExpanded(true)}
             className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
           >
             Create Your First Plan
-          </Link>
+          </button>
         </div>
       ) : drafts.length === 0 && !loading && debouncedSearch ? (
         <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
