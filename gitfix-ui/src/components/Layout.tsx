@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { getQueueStats, getCurrentUser, logout, getSystemStatus } from '../api/gitfixApi';
 import { getGeneratingPlansCount } from '../api/taskStatsApi';
+import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
 
 interface SystemStatusData {
   daemon: string;
@@ -33,6 +34,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatusData | null>(null);
+
+  // Update favicon to show active task count
+  useDynamicFavicon(activeTaskCount);
 
   const navigation: NavItem[] = [
     { name: 'Dashboard', href: '/', icon: HomeIcon },

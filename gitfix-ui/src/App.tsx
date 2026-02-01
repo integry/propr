@@ -13,7 +13,7 @@ import LoginPage from './pages/LoginPage'
 import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
 import './App.css'
-import { getSystemStatus, getCurrentUser } from './api/gitfixApi'
+import { getCurrentUser } from './api/gitfixApi'
 
 const App: React.FC = () => {
   // Auth check state - start loading unless already on login page
@@ -45,37 +45,6 @@ const App: React.FC = () => {
     checkSession();
   }, []);
 
-  useEffect(() => {
-    const favicon = document.getElementById('favicon') as HTMLLinkElement | null;
-    const defaultFavicon = '/logo.png';
-    const loadingFavicon = '/logo-loading.png';
-
-    const updateFavicon = async () => {
-      if (window.location.pathname === '/login') {
-        if (favicon) {
-          favicon.href = defaultFavicon;
-        }
-        return;
-      }
-      try {
-        const status = await getSystemStatus();
-        const isTaskRunning = status.workers.some((w: { status: string }) => w.status === 'active');
-        if (favicon) {
-          favicon.href = isTaskRunning ? loadingFavicon : defaultFavicon;
-        }
-      } catch (error) {
-        console.error('Failed to update favicon:', error);
-        if (favicon) {
-          favicon.href = defaultFavicon;
-        }
-      }
-    };
-
-    updateFavicon();
-    const interval = setInterval(updateFavicon, 5000);
-
-    return () => clearInterval(interval);
-  }, []);
 
   // Render spinner while checking auth
   if (isLoading) {
