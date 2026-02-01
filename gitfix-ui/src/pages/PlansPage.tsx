@@ -6,6 +6,21 @@ import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play
 
 const DEFAULT_PAGE_SIZE = 10;
 
+/**
+ * Computes the effective display status for a draft based on its status and issue summary.
+ * If a draft has status 'executed' (issues created) but all issues are merged,
+ * the effective status should be 'merged'.
+ */
+const getEffectiveStatus = (status: string, issueSummary: IssueSummary | null | undefined): string => {
+  if (status === 'executed' && issueSummary && issueSummary.total > 0) {
+    // Check if all issues are merged (merged count equals total)
+    if (issueSummary.merged === issueSummary.total) {
+      return 'merged';
+    }
+  }
+  return status;
+};
+
 const formatRelativeTime = (dateString: string): string => {
   const date = new Date(dateString);
   const now = new Date();
@@ -365,10 +380,15 @@ const PlansPage: React.FC = () => {
                     </Link>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`px-2 inline-flex items-center gap-1 text-xs leading-5 font-semibold rounded-full ${getStatusBadge(draft.status)}`}>
-                      {getStatusIcon(draft.status)}
-                      {getStatusLabel(draft.status)}
-                    </span>
+                    {(() => {
+                      const effectiveStatus = getEffectiveStatus(draft.status, draft.issue_summary);
+                      return (
+                        <span className={`px-2 inline-flex items-center gap-1 text-xs leading-5 font-semibold rounded-full ${getStatusBadge(effectiveStatus)}`}>
+                          {getStatusIcon(effectiveStatus)}
+                          {getStatusLabel(effectiveStatus)}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     {renderIssueSummary(draft.issue_summary)}
@@ -381,7 +401,7 @@ const PlansPage: React.FC = () => {
                       to={`/tasks/plan/${draft.draft_id}`}
                       className="text-indigo-600 hover:text-indigo-900 mr-4"
                     >
-                      {draft.status === 'executed' ? 'Manage' : 'Resume'}
+                      {draft.status === 'executed' || draft.status === 'merged' || getEffectiveStatus(draft.status, draft.issue_summary) === 'merged' ? 'Manage' : 'Resume'}
                     </Link>
                     <button
                       onClick={(e) => handleDelete(draft.draft_id, e)}
