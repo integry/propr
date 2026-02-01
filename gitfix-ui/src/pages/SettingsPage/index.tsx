@@ -104,7 +104,6 @@ const SettingsPage: React.FC = () => {
           <AIModelSelectionSection
             settings={{
               analysis_model_fast: settings.analysis_model_fast,
-              analysis_model_advanced: settings.analysis_model_advanced,
               planner_context_model: settings.planner_context_model,
               planner_generation_model: settings.planner_generation_model
             }}

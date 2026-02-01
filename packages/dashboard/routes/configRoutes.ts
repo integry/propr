@@ -164,7 +164,6 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
         github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()),
         analysis_model_fast: process.env.ANALYSIS_MODEL_FAST || 'claude-3-5-haiku-20241022',
-        analysis_model_advanced: process.env.ANALYSIS_MODEL_ADVANCED || 'claude-opus-4-20250514',
         planner_context_model: process.env.PLANNER_CONTEXT_MODEL || '',
         planner_generation_model: process.env.PLANNER_GENERATION_MODEL || ''
       };
@@ -172,7 +171,6 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         worker_concurrency: settings.worker_concurrency || envDefaults.worker_concurrency,
         github_user_whitelist: settings.github_user_whitelist || envDefaults.github_user_whitelist,
         analysis_model_fast: settings.analysis_model_fast || envDefaults.analysis_model_fast,
-        analysis_model_advanced: settings.analysis_model_advanced || envDefaults.analysis_model_advanced,
         planner_context_model: settings.planner_context_model || envDefaults.planner_context_model,
         planner_generation_model: settings.planner_generation_model || envDefaults.planner_generation_model
       };

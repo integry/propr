@@ -4,7 +4,6 @@ import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 
 interface AIModelSelectionSettings {
   analysis_model_fast: string;
-  analysis_model_advanced: string;
   planner_context_model: string;
   planner_generation_model: string;
 }
@@ -178,53 +177,6 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
           )}
           <p className="mt-1 text-sm text-gray-500">
             Used for initial triage and quick tasks.
-          </p>
-        </div>
-
-        {/* Advanced Analysis Model */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="analysis_model_advanced">
-            Advanced Analysis Model
-          </label>
-          {hasAgents ? (
-            <select
-              id="analysis_model_advanced"
-              name="analysis_model_advanced"
-              value={settings.analysis_model_advanced}
-              onChange={onSettingChange}
-              className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
-            >
-              <option value="">Select a model...</option>
-              {enabledOptions.length > 0 && (
-                <optgroup label="Enabled Agents">
-                  {enabledOptions.map(opt => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {disabledOptions.length > 0 && (
-                <optgroup label="Disabled Agents">
-                  {disabledOptions.map(opt => (
-                    <option key={opt.value} value={opt.value} disabled>
-                      {opt.label}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
-          ) : (
-            <div className="text-sm text-gray-500 p-3 bg-gray-50 rounded-md border border-gray-200">
-              No agents configured. Please add an agent in the{' '}
-              <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
-                AI Agents
-              </a>{' '}
-              page first.
-            </div>
-          )}
-          <p className="mt-1 text-sm text-gray-500">
-            Used for deep-dive analysis and complex planning.
           </p>
         </div>
 
