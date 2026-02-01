@@ -68,9 +68,9 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) =
   };
 
   return (
-    <div className="mb-6 flex gap-4">
-      {/* File Tree Panel */}
-      <div className={`p-4 bg-purple-50 rounded-lg border border-purple-200 ${selectedFile ? 'w-1/3 flex-shrink-0' : 'flex-1'}`}>
+    <div className="relative">
+      {/* File Tree Panel - takes full width of left column */}
+      <div className="p-4 bg-purple-50 rounded-lg border border-purple-200">
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
           <h4 className="text-purple-900 flex items-center gap-2 m-0">
@@ -85,7 +85,7 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) =
               )}
             </span>
           </h4>
-          {fileChanges.length > 0 && !selectedFile && (
+          {fileChanges.length > 0 && (
             <div className="flex items-center gap-4 text-sm">
               <span className="text-gray-600">
                 {totals.files} file{totals.files !== 1 ? 's' : ''}
@@ -126,17 +126,24 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) =
             />
           </div>
         )}
-
       </div>
 
-      {/* Diff Viewer Panel - shown to the right when a file is selected */}
+      {/* Diff Viewer Overlay - absolutely positioned to the right of the file tree */}
       {selectedFile && (
-        <div className="flex-1 min-w-0">
-          <DiffViewer
-            file={selectedFile}
-            onClose={() => setSelectedFilePath(null)}
+        <>
+          {/* Semi-transparent backdrop */}
+          <div
+            className="fixed inset-0 bg-black/20 z-40"
+            onClick={() => setSelectedFilePath(null)}
           />
-        </div>
+          {/* Diff viewer overlay */}
+          <div className="fixed top-20 left-[calc(33.333%+2rem)] right-4 bottom-4 z-50 bg-white rounded-lg shadow-2xl border border-gray-200 overflow-hidden">
+            <DiffViewer
+              file={selectedFile}
+              onClose={() => setSelectedFilePath(null)}
+            />
+          </div>
+        </>
       )}
     </div>
   );

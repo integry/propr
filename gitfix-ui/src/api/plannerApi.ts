@@ -21,7 +21,7 @@ export interface PlannerDraft {
   draft_id: string;
   repository: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed';
+  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed' | 'merged';
   attachments: PlannerAttachment[];
   created_at: string;
   generation_trace?: GenerationTrace;
@@ -84,6 +84,11 @@ export interface PreviewStats {
   costEstimate: number;
   contextLength: number;
   fileCount: number;
+  maxTokens?: number;
+  /** Name of the model used for context limits (e.g., "Claude Sonnet 4.5") */
+  modelName?: string;
+  /** Full context window size of the model in tokens (e.g., 200000, 1000000) */
+  modelMaxContextTokens?: number;
 }
 
 export interface PreviewResult {

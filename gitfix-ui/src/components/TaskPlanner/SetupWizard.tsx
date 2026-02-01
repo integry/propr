@@ -398,6 +398,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
             compress={config.compress}
             onContextLevelChange={(contextLevel) => setConfig(prev => ({ ...prev, contextLevel }))}
             onCompressChange={(compress) => setConfig(prev => ({ ...prev, compress }))}
+            modelName={preview.data?.stats.modelName}
+            modelMaxContextTokens={preview.data?.stats.modelMaxContextTokens}
           />
 
           {/* Context Repositories Section */}

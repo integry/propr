@@ -7,13 +7,19 @@ interface ContextSettingsSectionProps {
   compress: boolean;
   onContextLevelChange: (level: number) => void;
   onCompressChange: (compress: boolean) => void;
+  /** Name of the model used for context limits */
+  modelName?: string;
+  /** Full context window size of the model in tokens */
+  modelMaxContextTokens?: number;
 }
 
 export const ContextSettingsSection: React.FC<ContextSettingsSectionProps> = ({
   contextLevel,
   compress,
   onContextLevelChange,
-  onCompressChange
+  onCompressChange,
+  modelName,
+  modelMaxContextTokens
 }) => {
   return (
     <div className="space-y-4">
@@ -28,6 +34,8 @@ export const ContextSettingsSection: React.FC<ContextSettingsSectionProps> = ({
           onChange={onContextLevelChange}
           compress={compress}
           onCompressChange={onCompressChange}
+          modelName={modelName}
+          modelMaxContextTokens={modelMaxContextTokens}
         />
       </div>
     </div>

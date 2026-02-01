@@ -1,6 +1,7 @@
 /* eslint-disable max-lines */
 import { db } from '../db/connection.js';
 import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO, getEffectiveTokenLimit, getModelHardLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL } from '../config/modelLimits.js';
+import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { countTokens, estimateTokens } from '../utils/tokenCalculation.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { getModelPricing } from './pricingService.js';
@@ -107,13 +108,13 @@ export interface ParsedContextConfig {
   contextRepositories: ContextRepository[];
 }
 
-export function parseContextConfig(contextConfig: TaskDraftConfig | null): ParsedContextConfig {
+export function parseContextConfig(contextConfig: TaskDraftConfig | null, modelId?: string): ParsedContextConfig {
   return {
     baseBranch: contextConfig?.baseBranch,
     granularity: contextConfig?.granularity || 'balanced',
     contextLevel: contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL,
     compress: contextConfig?.compress ?? false,
-    tokenLimit: getEffectiveTokenLimit(undefined, contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL),
+    tokenLimit: getEffectiveTokenLimit(modelId, contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL),
     manualFiles: contextConfig?.manualFiles || [],
     autoFiles: contextConfig?.autoFiles || [],
     contextRepositories: contextConfig?.contextRepositories || []
@@ -399,6 +400,11 @@ export interface PreviewStats {
   contextLength: number;
   fileCount: number;
   attachmentTokens?: number;
+  maxTokens: number;
+  /** Name of the model used for context limits (e.g., "Claude Sonnet 4.5") */
+  modelName?: string;
+  /** Full context window size of the model in tokens (e.g., 200000, 1000000) */
+  modelMaxContextTokens?: number;
 }
 
 export interface PreviewResult {
@@ -420,6 +426,8 @@ export interface GenerateContextPreviewOptions {
   correlationId?: string;
   /** Model to use for context analysis (e.g., 'haiku', 'claude:claude-haiku-4-5-20251001') */
   contextModel?: string;
+  /** Model to use for generation, determining the max context window */
+  generationModel?: string;
 }
 
 export interface Base64Image {
@@ -663,13 +671,13 @@ async function regenerateContext(params: RegenerateContextParams): Promise<Regen
 }
 
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
-  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel } = options;
-  const previewTokenLimit = getEffectiveTokenLimit(undefined, contextLevel);
+  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel, generationModel } = options;
+  const previewTokenLimit = getEffectiveTokenLimit(generationModel, contextLevel);
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   const warnings: string[] = [];
 
   if (!db) throw new PlanningFailedError('Database not available');
-  correlatedLogger.info({ draftId, baseBranch, granularity, contextModel }, 'Starting context preview generation');
+  correlatedLogger.info({ draftId, baseBranch, granularity, contextModel, generationModel, previewTokenLimit }, 'Starting context preview generation');
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
@@ -751,11 +759,23 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const estimatedActualTokens = Math.ceil(repomixTokens * TIKTOKEN_TO_CLAUDE_RATIO);
   const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens;
 
-  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: repomixTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, totalTokens, costEstimate, fileCount: includedFiles.length }, 'Context preview completed');
+  // Get model info for display
+  let modelName: string | undefined;
+  let modelMaxContextTokens: number | undefined;
+  if (generationModel) {
+    const effectiveModelId = generationModel.includes(':') ? generationModel.split(':')[1] : generationModel;
+    const modelInfo = MODEL_INFO_MAP[effectiveModelId];
+    if (modelInfo) {
+      modelName = modelInfo.name;
+      modelMaxContextTokens = modelInfo.maxTokens;
+    }
+  }
+
+  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: repomixTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, totalTokens, costEstimate, fileCount: includedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
 
   return {
     success: true,
-    stats: { totalTokens, tiktokenCount: repomixTokens, costEstimate, contextLength: repomixContext.length, fileCount: includedFiles.length, attachmentTokens },
+    stats: { totalTokens, tiktokenCount: repomixTokens, costEstimate, contextLength: repomixContext.length, fileCount: includedFiles.length, attachmentTokens, maxTokens: previewTokenLimit, modelName, modelMaxContextTokens },
     smartSelection,
     warnings
   };

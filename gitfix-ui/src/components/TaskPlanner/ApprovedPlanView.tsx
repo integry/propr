@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, CheckCircle, MessageSquare, StickyNote, Github, ChevronDown, Settings2 } from 'lucide-react';
+import { ExternalLink, CheckCircle, MessageSquare, StickyNote, Github, ChevronDown, Settings2, GitMerge } from 'lucide-react';
 import { DraftWithPlan, PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 import PlanIssuesManager from './PlanIssuesManager';
@@ -188,10 +188,17 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
       <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
         <div className="flex items-center gap-4">
           <div className="text-sm text-gray-500 truncate max-w-md">{draft.task_title || draft.title || 'Untitled Task'}</div>
-          <span className="px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-700 flex items-center gap-1">
-            <CheckCircle size={12} />
-            Approved
-          </span>
+          {draft.status === 'merged' ? (
+            <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1">
+              <GitMerge size={12} />
+              Merged
+            </span>
+          ) : (
+            <span className="px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-700 flex items-center gap-1">
+              <CheckCircle size={12} />
+              Issues created
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2">

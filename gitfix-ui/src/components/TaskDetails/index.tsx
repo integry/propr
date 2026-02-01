@@ -43,6 +43,28 @@ const TaskDetails: React.FC = () => {
     return new Date(lastTimestamp).getTime() - new Date(firstTimestamp).getTime();
   }, [taskData.history]);
 
+  // Extract commit info from history metadata
+  const commitInfo = useMemo(() => {
+    if (!taskData.history || taskData.history.length === 0 || !taskData.taskInfo) return undefined;
+
+    // Find history item with commitResult
+    const historyWithCommit = taskData.history.find(
+      item => item.metadata?.commitResult?.commitHash
+    );
+
+    if (!historyWithCommit?.metadata?.commitResult?.commitHash) return undefined;
+
+    const commitHash = historyWithCommit.metadata.commitResult.commitHash;
+    const shortHash = commitHash.substring(0, 7);
+    const { repoOwner, repoName } = taskData.taskInfo;
+
+    if (!repoOwner || !repoName) return undefined;
+
+    const url = `https://github.com/${repoOwner}/${repoName}/commit/${commitHash}`;
+
+    return { shortHash, url };
+  }, [taskData.history, taskData.taskInfo]);
+
   if (taskData.loading) {
     return <div className="text-gray-600">Loading task details...</div>;
   }
@@ -65,6 +87,7 @@ const TaskDetails: React.FC = () => {
         currentStatus={derivedData.currentStatus}
         modelName={derivedData.modelName}
         prInfo={derivedData.prInfo}
+        commitInfo={commitInfo}
         historyItemWithPaths={derivedData.historyItemWithPaths}
         stoppingExecution={taskData.stoppingExecution}
         onStopExecution={taskData.handleStopExecution}
@@ -96,6 +119,14 @@ const TaskDetails: React.FC = () => {
               history={taskData.history}
               onTodoHover={setHighlightedTodoId}
             />
+
+            {/* Live File Changes - in left column under todo list */}
+            {taskId && taskData.history.length > 0 && (
+              <LiveFileChanges
+                taskId={taskId}
+                isActive={derivedData.isTaskActive}
+              />
+            )}
           </div>
 
           {/* RIGHT COLUMN: The Execution (65% - 8/12 cols) */}
@@ -131,13 +162,6 @@ const TaskDetails: React.FC = () => {
           </div>
         </div>
 
-        {/* Live File Changes - full width component below the split layout */}
-        {taskId && taskData.history.length > 0 && (
-          <LiveFileChanges
-            taskId={taskId}
-            isActive={derivedData.isTaskActive}
-          />
-        )}
       </div>
 
       {/* Modals */}
