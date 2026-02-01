@@ -54,10 +54,43 @@ export const getSystemStatus = async (): Promise<SystemStatus> => {
   };
 };
 
-export const getQueueStats = async (): Promise<unknown> => {
-  const response = await fetch(`${API_BASE_URL}/api/queue/stats`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
+interface QueueStats {
+  active: number;
+  waiting: number;
+  completed: number;
+  failed: number;
+  delayed: number;
+  paused: number;
+}
+
+interface GeneratingPlansResponse {
+  count: number;
+}
+
+export const getQueueStats = async (): Promise<QueueStats> => {
+  const [queueResponse, generatingPlansResponse] = await Promise.all([
+    fetch(`${API_BASE_URL}/api/queue/stats`, { credentials: 'include' }),
+    fetch(`${API_BASE_URL}/api/stats/generating-plans`, { credentials: 'include' }).catch(() => null)
+  ]);
+
+  await handleApiResponse(queueResponse);
+  const queueStats: QueueStats = await queueResponse.json();
+
+  // Add generating plans count to active tasks if fetch succeeded
+  let generatingCount = 0;
+  if (generatingPlansResponse && generatingPlansResponse.ok) {
+    try {
+      const generatingPlans: GeneratingPlansResponse = await generatingPlansResponse.json();
+      generatingCount = generatingPlans.count || 0;
+    } catch {
+      // Ignore JSON parsing errors
+    }
+  }
+
+  return {
+    ...queueStats,
+    active: queueStats.active + generatingCount
+  };
 };
 
 export const getTasks = async (status = 'all', limit = 50, offset = 0, repository = 'all', search = ''): Promise<unknown> => {
