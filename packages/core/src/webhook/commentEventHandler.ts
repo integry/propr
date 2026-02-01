@@ -5,7 +5,7 @@ import { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from '
 import { loadFollowupIgnoreKeywords } from '../config/configManager.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPendingPrCommentsKey } from '../utils/constants.js';
-import { withRetry, retryConfigs } from '../utils/retryHandler.js';
+import { withRetry } from '../utils/retryHandler.js';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
