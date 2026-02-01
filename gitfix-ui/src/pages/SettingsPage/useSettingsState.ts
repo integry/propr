@@ -40,7 +40,6 @@ export function useSettingsState() {
   const [settings, setSettings] = useState<Settings>({
     worker_concurrency: '',
     analysis_model_fast: '',
-    analysis_model_advanced: '',
     planner_context_model: '',
     planner_generation_model: ''
   });
@@ -87,7 +86,6 @@ export function useSettingsState() {
         const settingsData = sData as {
           worker_concurrency?: string;
           analysis_model_fast?: string;
-          analysis_model_advanced?: string;
           planner_context_model?: string;
           planner_generation_model?: string;
           github_user_whitelist?: string[];
@@ -103,7 +101,6 @@ export function useSettingsState() {
         setSettings({
           worker_concurrency: settingsData.worker_concurrency || '',
           analysis_model_fast: settingsData.analysis_model_fast || '',
-          analysis_model_advanced: settingsData.analysis_model_advanced || '',
           planner_context_model: settingsData.planner_context_model || '',
           planner_generation_model: settingsData.planner_generation_model || ''
         });
@@ -180,7 +177,6 @@ export function useSettingsState() {
           worker_concurrency: settingsToSave.worker_concurrency ? concurrency : undefined,
           github_user_whitelist: whitelistToSave,
           analysis_model_fast: settingsToSave.analysis_model_fast,
-          analysis_model_advanced: settingsToSave.analysis_model_advanced,
           planner_context_model: settingsToSave.planner_context_model,
           planner_generation_model: settingsToSave.planner_generation_model
         }),
