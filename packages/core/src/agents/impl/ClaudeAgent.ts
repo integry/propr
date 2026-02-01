@@ -224,7 +224,7 @@ export class ClaudeAgent implements Agent {
             });
 
             const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: 300000, // 5 minute timeout for analysis (batch summarization needs more time)
+                timeout: 1800000, // 30 minute timeout for analysis (planning tasks can take longer)
                 stdinData: analysisPrompt
             });
 

@@ -286,7 +286,10 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
             }
         } catch (agentError) {
             const err = agentError as Error;
-            correlatedLogger.warn({ error: err.message, agentAlias }, 'Failed to use agent, falling back to default execution');
+            // Don't fall back to Claude when a specific non-Claude agent was requested but failed
+            // This prevents trying to run non-Claude models through the Claude docker container
+            correlatedLogger.error({ error: err.message, agentAlias }, 'Agent execution failed');
+            throw new Error(`Agent '${agentAlias}' failed: ${err.message}`);
         }
     }
 
