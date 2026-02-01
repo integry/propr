@@ -1,6 +1,7 @@
 /* eslint-disable max-lines */
 import { db } from '../db/connection.js';
 import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO, getEffectiveTokenLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL } from '../config/modelLimits.js';
+import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { countTokens, estimateTokens } from '../utils/tokenCalculation.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { getModelPricing } from './pricingService.js';
@@ -397,6 +398,10 @@ export interface PreviewStats {
   fileCount: number;
   attachmentTokens?: number;
   maxTokens: number;
+  /** Name of the model used for context limits (e.g., "Claude Sonnet 4.5") */
+  modelName?: string;
+  /** Full context window size of the model in tokens (e.g., 200000, 1000000) */
+  modelMaxContextTokens?: number;
 }
 
 export interface PreviewResult {
@@ -751,11 +756,23 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const estimatedActualTokens = Math.ceil(repomixTokens * TIKTOKEN_TO_CLAUDE_RATIO);
   const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens;
 
-  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: repomixTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, totalTokens, costEstimate, fileCount: includedFiles.length }, 'Context preview completed');
+  // Get model info for display
+  let modelName: string | undefined;
+  let modelMaxContextTokens: number | undefined;
+  if (generationModel) {
+    const effectiveModelId = generationModel.includes(':') ? generationModel.split(':')[1] : generationModel;
+    const modelInfo = MODEL_INFO_MAP[effectiveModelId];
+    if (modelInfo) {
+      modelName = modelInfo.name;
+      modelMaxContextTokens = modelInfo.maxTokens;
+    }
+  }
+
+  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: repomixTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, totalTokens, costEstimate, fileCount: includedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
 
   return {
     success: true,
-    stats: { totalTokens, tiktokenCount: repomixTokens, costEstimate, contextLength: repomixContext.length, fileCount: includedFiles.length, attachmentTokens, maxTokens: previewTokenLimit },
+    stats: { totalTokens, tiktokenCount: repomixTokens, costEstimate, contextLength: repomixContext.length, fileCount: includedFiles.length, attachmentTokens, maxTokens: previewTokenLimit, modelName, modelMaxContextTokens },
     smartSelection,
     warnings
   };
