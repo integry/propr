@@ -214,6 +214,10 @@ export function executeDockerCommand(
 
         // Write stdin data if provided (for large prompts)
         if (stdinData && child.stdin) {
+            // Handle stdin errors (e.g., EPIPE if container exits before we finish writing)
+            child.stdin.on('error', (err) => {
+                logger.warn({ error: err.message, code: (err as NodeJS.ErrnoException).code }, 'Stdin write error (container may have exited early)');
+            });
             child.stdin.write(stdinData);
             child.stdin.end();
             logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');

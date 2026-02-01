@@ -478,11 +478,26 @@ export function runBackgroundGeneration(options: BackgroundGenerationOptions): v
     .catch(async (error) => {
       console.error(`[generate] Plan generation failed for draft ${draftId}:`, error);
       try {
+        // Get current trace to preserve any completed steps
+        const draft = await db('task_drafts').where({ draft_id: draftId }).first();
+        let existingTrace = { steps: [] as { name: string; status: string; completedAt?: string }[] };
+        try {
+          if (draft?.generation_trace) {
+            existingTrace = JSON.parse(draft.generation_trace);
+          }
+        } catch { /* ignore parse errors */ }
+
+        // Mark any pending steps as failed and add error info
+        const updatedSteps = existingTrace.steps.map((step: { name: string; status: string; completedAt?: string }) =>
+          step.status === 'pending' ? { ...step, status: 'failed' } : step
+        );
+
         await db('task_drafts').where({ draft_id: draftId }).update({
-          status: 'draft',
+          status: 'failed',
           generation_trace: JSON.stringify({
-            steps: [],
-            error: error instanceof Error ? error.message : 'Plan generation failed'
+            steps: updatedSteps,
+            error: error instanceof Error ? error.message : 'Plan generation failed',
+            failedAt: new Date().toISOString()
           }),
           updated_at: db.fn.now()
         });
