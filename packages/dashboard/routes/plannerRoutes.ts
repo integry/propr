@@ -476,6 +476,49 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const implementAllIssues = withAuthCheck(db, createImplementAllIssuesHandler({ verifyOwnership: ownershipVerifier }));
   const validateContextRepository = withAuthCheck(db, createValidateContextRepositoryHandler());
 
+  async function abortGeneration(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    const { draftId } = req.body;
+    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
+
+    try {
+      const draft = await db!('task_drafts').where({ draft_id: draftId, user_id: req.user!.id }).first();
+      if (!draft) { res.status(404).json({ error: 'Draft not found' }); return; }
+      if (draft.status !== 'generating') {
+        res.status(400).json({ error: 'Can only abort drafts that are currently generating' });
+        return;
+      }
+
+      // Set abort signal in Redis
+      const Redis = (await import('ioredis')).default;
+      const redis = new Redis({
+        host: process.env.REDIS_HOST || 'redis',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10)
+      });
+      await redis.setex(`planner:abort:${draftId}`, 300, '1'); // Expires in 5 minutes
+      await redis.quit();
+
+      // Update draft status back to draft (ready for review/edit)
+      await db!('task_drafts').where({ draft_id: draftId }).update({
+        status: 'draft',
+        generation_trace: JSON.stringify({
+          steps: [],
+          error: 'Generation aborted by user',
+          abortedAt: new Date().toISOString()
+        }),
+        updated_at: db!.fn.now()
+      });
+
+      console.log(`[abort] Plan generation aborted for draft ${draftId}`);
+      res.json({ success: true, message: 'Generation aborted' });
+    } catch (error) {
+      console.error('Abort generation error:', error);
+      res.status(500).json({ error: 'Failed to abort generation' });
+    }
+  }
+
   return {
     listDrafts,
     createDraft,
@@ -497,6 +540,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     implementIssue,
     updateIssue,
     implementAllIssues,
-    validateContextRepository
+    validateContextRepository,
+    abortGeneration
   };
 }

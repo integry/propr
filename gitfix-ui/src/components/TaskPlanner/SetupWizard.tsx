@@ -5,6 +5,7 @@ import {
   generatePlan,
   previewContext,
   getRepositoryInfo,
+  abortGeneration,
   PlannerDraft,
   PlannerAttachment,
   Granularity,
@@ -355,6 +356,15 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
   };
 
+  const handleAbortGeneration = async () => {
+    try {
+      await abortGeneration(draft.draft_id);
+      // The polling will detect the status change and update UI
+    } catch (err) {
+      setError((err as Error).message || 'Failed to abort generation');
+    }
+  };
+
   const isGenerateDisabled = isGenerating || !!branchError || repoInfo.isLoading;
 
   return (
@@ -431,7 +441,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           )}
 
           {/* Generation Progress */}
-          {isGenerating && <GenerationProgress trace={generationTrace} />}
+          {isGenerating && <GenerationProgress trace={generationTrace} onAbort={handleAbortGeneration} />}
         </div>
 
         {/* Sticky Footer with Generate and Export Buttons */}

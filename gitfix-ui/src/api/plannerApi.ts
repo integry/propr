@@ -421,3 +421,17 @@ export const validateContextRepository = async (
   const data = await response.json();
   return data;
 };
+
+/**
+ * Abort an in-progress plan generation.
+ * Sets an abort signal in Redis and resets the draft status to 'draft'.
+ */
+export const abortGeneration = async (draftId: string): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/abort`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draftId }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+};

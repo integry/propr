@@ -472,7 +472,7 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResul
   correlatedLogger.info({ tokenCount: validation.tokenCount, source: validation.source, modelHardLimit }, 'Token validation passed');
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
-  const response = await runLightweightLLMAnalysis({ prompt: fullContext, model, correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef });
+  const response = await runLightweightLLMAnalysis({ prompt: fullContext, model, correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef, taskId: draftId });
 
   let plan: Plan;
   try {
