@@ -65,10 +65,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const repository = req.query.repository as string | undefined;
       const search = req.query.search as string | undefined;
       const status = req.query.status as string | undefined;
-
-      // Valid status values for filtering
       const validStatuses = ['draft', 'review', 'generating', 'refining', 'executed', 'approved', 'merged'];
-
       // Build query with optional repository filter
       let query = db!('task_drafts').where({ user_id: req.user!.id });
 
@@ -103,8 +100,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
         // Score each draft based on search relevance
         const scoredDrafts = drafts.map((draft: { name?: string; initial_prompt?: string }) => {
-          const nameLC = (draft.name || '').toLowerCase();
-          const promptLC = (draft.initial_prompt || '').toLowerCase();
+          const nameLC = (draft.name || '').toLowerCase(), promptLC = (draft.initial_prompt || '').toLowerCase();
           let score = 0;
 
           // Highest score: exact phrase match in name
