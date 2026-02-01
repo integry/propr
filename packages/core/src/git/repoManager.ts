@@ -72,6 +72,30 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
                 await setupAuthenticatedRemote(git, repoUrl, authToken);
                 await git.fetch(['origin', '--prune']);
             } catch (gitError) {
+                // Check if there are active worktrees before removing the clone
+                // Removing the clone would delete .git/worktrees and break any running tasks
+                const worktreesDir = path.join(localRepoPath, '.git', 'worktrees');
+                let hasActiveWorktrees = false;
+                try {
+                    if (await fs.pathExists(worktreesDir)) {
+                        const entries = await fs.readdir(worktreesDir);
+                        hasActiveWorktrees = entries.length > 0;
+                    }
+                } catch {
+                    // If we can't check, assume there might be active worktrees
+                    hasActiveWorktrees = true;
+                }
+
+                if (hasActiveWorktrees) {
+                    logger.error({
+                        repo: `${owner}/${repoName}`,
+                        path: localRepoPath,
+                        error: (gitError as Error).message,
+                        worktreesDir
+                    }, 'Git repository has issues but has active worktrees - cannot remove and re-clone. Throwing error instead.');
+                    throw new Error(`Repository ${owner}/${repoName} is corrupted but has active worktrees: ${(gitError as Error).message}`);
+                }
+
                 logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath, error: (gitError as Error).message }, 'Git repository is corrupted or invalid. Removing and re-cloning...');
                 await fs.remove(localRepoPath);
                 return ensureRepoClonedInternal(opts);
