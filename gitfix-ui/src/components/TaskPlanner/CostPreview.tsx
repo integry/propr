@@ -139,7 +139,7 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
 
           {/* Compact Refresh Indicator */}
           {(isContextStale || timeUntilRefresh !== null) && onManualRefresh && (
-            <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+            <div className="flex items-center gap-2 ml-4 flex-shrink-0 relative group/refresh">
               {timeUntilRefresh !== null && (
                 <span className="text-xs text-gray-400 flex items-center gap-1">
                   <Clock className="w-3 h-3" />
@@ -150,10 +150,19 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
                 onClick={onManualRefresh}
                 disabled={preview.isLoading}
                 className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                title={timeUntilRefresh !== null ? `Refreshing in ${timeUntilRefresh}s - click to refresh now` : 'Refresh context'}
               >
                 <RefreshCw className={`w-4 h-4 ${preview.isLoading ? 'animate-spin' : ''}`} />
               </button>
+              {/* Tooltip explaining the refresh logic */}
+              <div className="absolute bottom-full right-0 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 group-hover/refresh:opacity-100 transition-opacity pointer-events-none w-64 z-50">
+                <div className="font-medium mb-1">Context Refresh</div>
+                <div className="text-gray-300 leading-relaxed">
+                  {timeUntilRefresh !== null
+                    ? 'Changes detected. Waiting before refresh to avoid rapid regeneration while you type. Click to refresh immediately.'
+                    : 'Context is outdated. Click to regenerate based on your current prompt and settings.'}
+                </div>
+                <div className="absolute bottom-0 right-4 transform translate-y-1/2 rotate-45 w-2 h-2 bg-gray-900"></div>
+              </div>
             </div>
           )}
         </div>
