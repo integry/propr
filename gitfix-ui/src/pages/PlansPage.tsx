@@ -23,6 +23,7 @@ const PlansPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [repoFilter, setRepoFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [debouncedSearch, setDebouncedSearch] = useState<string>('');
 
@@ -61,14 +62,15 @@ const PlansPage: React.FC = () => {
   }, []);
 
   // Fetch drafts with pagination, filtering, and search
-  const loadDrafts = useCallback(async (page: number, repository: string) => {
+  const loadDrafts = useCallback(async (page: number, repository: string, status: string) => {
     setLoading(true);
     try {
       const data = await getDrafts({
         page,
         limit: DEFAULT_PAGE_SIZE,
         repository: repository === 'all' ? undefined : repository,
-        search: debouncedSearch || undefined
+        search: debouncedSearch || undefined,
+        status: status === 'all' ? undefined : status
       });
       setDrafts(data.drafts);
       setTotalDrafts(data.total);
@@ -87,8 +89,8 @@ const PlansPage: React.FC = () => {
 
   // Load drafts when page, filter, or search changes
   useEffect(() => {
-    loadDrafts(currentPage, repoFilter);
-  }, [currentPage, repoFilter, debouncedSearch, loadDrafts]);
+    loadDrafts(currentPage, repoFilter, statusFilter);
+  }, [currentPage, repoFilter, statusFilter, debouncedSearch, loadDrafts]);
 
   // Debounce search query
   useEffect(() => {
@@ -102,6 +104,11 @@ const PlansPage: React.FC = () => {
   // Reset to first page when filter changes
   const handleFilterChange = (newFilter: string) => {
     setRepoFilter(newFilter);
+    setCurrentPage(1);
+  };
+
+  const handleStatusFilterChange = (newStatus: string) => {
+    setStatusFilter(newStatus);
     setCurrentPage(1);
   };
 
@@ -121,10 +128,10 @@ const PlansPage: React.FC = () => {
       await deleteDraft(id);
       // Refresh repository counts and current page
       await loadAllRepositories();
-      await loadDrafts(currentPage, repoFilter);
+      await loadDrafts(currentPage, repoFilter, statusFilter);
     } catch (err) {
       setError((err as Error).message || 'Failed to delete plan');
-      await loadDrafts(currentPage, repoFilter);
+      await loadDrafts(currentPage, repoFilter, statusFilter);
     }
   };
 
@@ -172,9 +179,24 @@ const PlansPage: React.FC = () => {
               </button>
             )}
           </div>
+          <div className="flex items-center gap-2">
+            <Filter size={16} className="text-gray-500" />
+            <select
+              value={statusFilter}
+              onChange={(e) => handleStatusFilterChange(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            >
+              <option value="all">All Statuses</option>
+              <option value="draft">Draft</option>
+              <option value="review">Ready for Review</option>
+              <option value="generating">Generating</option>
+              <option value="refining">Refining</option>
+              <option value="executed">Issues Created</option>
+              <option value="merged">Merged</option>
+            </select>
+          </div>
           {allRepositories.length > 1 && (
             <div className="flex items-center gap-2">
-              <Filter size={16} className="text-gray-500" />
               <select
                 value={repoFilter}
                 onChange={(e) => handleFilterChange(e.target.value)}
