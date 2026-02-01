@@ -59,7 +59,8 @@ function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeRe
         exitCode: result.exitCode ?? null,
         error: result.error,
         modifiedFiles: result.modifiedFiles,
-        commitMessage: result.commitMessage || null
+        commitMessage: result.commitMessage || null,
+        conversationLog: result.conversationLog
     };
 }
 

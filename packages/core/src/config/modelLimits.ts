@@ -48,7 +48,20 @@ export function getEffectiveTokenLimit(modelId: string | undefined, level: Conte
  * This is used for validation - prompts must fit within this limit.
  */
 export function getModelHardLimit(modelId: string | undefined): number {
-  const limit = MODEL_LIMITS[modelId || 'default'] || MODEL_LIMITS['default'];
+  let limit = MODEL_LIMITS['default'];
+
+  if (modelId) {
+    // Handle agent:model format if present
+    const effectiveModelId = modelId.includes(':') ? modelId.split(':')[1] : modelId;
+    const modelInfo = MODEL_INFO_MAP[effectiveModelId];
+
+    if (modelInfo?.maxTokens) {
+      limit = modelInfo.maxTokens;
+    } else if (MODEL_LIMITS[effectiveModelId]) {
+      limit = MODEL_LIMITS[effectiveModelId];
+    }
+  }
+
   // Use 98% of model limit to leave some buffer for response
   return Math.floor(limit * EFFECTIVE_MAX_RATIO);
 }
