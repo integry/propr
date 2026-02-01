@@ -5,6 +5,7 @@ import { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from '
 import { loadFollowupIgnoreKeywords } from '../config/configManager.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPendingPrCommentsKey } from '../utils/constants.js';
+import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
@@ -186,7 +187,12 @@ async function getPRBranchAndLabels(eventType: CommentEventType, payload: IssueC
     const { owner, repo, prNumber } = repoContext;
     if (eventType === 'issue_comment') {
         const octokit = await getAuthenticatedOctokit();
-        const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber });
+        // Retry up to ~1 minute: 3s + 6s + 12s + 20s + 20s = 61s total
+        const { data: pr } = await withRetry(
+            () => octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber }),
+            { maxAttempts: 6, baseDelay: 3000, maxDelay: 20000, exponentialBase: 2 },
+            `get_pr_details_${owner}_${repo}_${prNumber}`
+        );
         return { branchName: pr.head.ref, prLabels: pr.labels || [] };
     }
     const prPayload = payload as PullRequestReviewCommentEvent;

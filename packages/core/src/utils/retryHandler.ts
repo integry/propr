@@ -79,7 +79,11 @@ function isRetryableError(error: Error | unknown, config: RetryConfig): boolean 
         /try again/i,
         /authentication failed/i,
         /invalid username or token/i,
-        /credentials/i
+        /credentials/i,
+        /server.*unavailable/i,
+        /no server.*available/i,
+        /service unavailable/i,
+        /bad gateway/i
     ];
 
     const errorMessage = err.message ?? '';
