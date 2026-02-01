@@ -8,7 +8,6 @@ import { TaskGranularitySection } from './TaskGranularitySection';
 import { ContextSettingsSection } from './ContextSettingsSection';
 import { ContextRepositoriesSection, IndexedRepository } from './ContextRepositoriesSection';
 import { CostPreview } from './CostPreview';
-import { ContextRefreshIndicator } from './ContextRefreshIndicator';
 
 interface PreviewState {
   isLoading: boolean;
@@ -129,20 +128,14 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
         onRemove={onRemoveContextRepo}
       />
 
-      {/* Cost Preview with Refresh Indicator */}
-      <div className="relative">
-        <CostPreview
-          preview={preview}
-          contextRepositories={contextRepositories}
-        />
-        {/* Context Refresh Indicator */}
-        <ContextRefreshIndicator
-          isContextStale={isContextStale}
-          timeUntilRefresh={timeUntilRefresh}
-          isLoading={preview.isLoading}
-          onManualRefresh={onManualRefresh}
-        />
-      </div>
+      {/* Cost Preview with integrated Refresh Indicator */}
+      <CostPreview
+        preview={preview}
+        contextRepositories={contextRepositories}
+        isContextStale={isContextStale}
+        timeUntilRefresh={timeUntilRefresh}
+        onManualRefresh={onManualRefresh}
+      />
 
       {/* Smart File Selection - with skeleton during loading */}
       {preview.isLoading && !preview.data ? (

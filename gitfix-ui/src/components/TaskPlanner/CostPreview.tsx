@@ -1,5 +1,5 @@
 import React from 'react';
-import { Loader2, DollarSign, Zap, Info, BookOpen } from 'lucide-react';
+import { Loader2, DollarSign, Zap, Info, BookOpen, RefreshCw, Clock } from 'lucide-react';
 import { PreviewResult, ContextRepository } from '../../api/gitfixApi';
 
 interface PreviewState {
@@ -12,6 +12,10 @@ interface PreviewState {
 interface CostPreviewProps {
   preview: PreviewState;
   contextRepositories?: ContextRepository[];
+  // Optional refresh indicator props
+  isContextStale?: boolean;
+  timeUntilRefresh?: number | null;
+  onManualRefresh?: () => void;
 }
 
 const getUsageColor = (percentage: number, actualPercentage: number): string => {
@@ -23,7 +27,13 @@ const getUsageColor = (percentage: number, actualPercentage: number): string => 
   return 'bg-indigo-400';
 };
 
-export const CostPreview: React.FC<CostPreviewProps> = ({ preview, contextRepositories }) => {
+export const CostPreview: React.FC<CostPreviewProps> = ({
+  preview,
+  contextRepositories,
+  isContextStale,
+  timeUntilRefresh,
+  onManualRefresh
+}) => {
   if (preview.isLoading) {
     return (
       <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -114,15 +124,38 @@ export const CostPreview: React.FC<CostPreviewProps> = ({ preview, contextReposi
         </div>
       )}
 
-      {/* Warnings - styled as neutral info tips */}
-      {warnings.length > 0 && (
-        <div className="space-y-2 pt-2 border-t border-gray-100">
-          {warnings.map((warning, idx) => (
-            <div key={idx} className="flex items-start gap-2 text-sm text-gray-600">
-              <Info className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
-              <span>{warning}</span>
+      {/* Warnings and Refresh Indicator - styled as neutral info tips */}
+      {(warnings.length > 0 || ((isContextStale || timeUntilRefresh !== null) && onManualRefresh)) && (
+        <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+          {/* Warnings */}
+          <div className="space-y-1 flex-1">
+            {warnings.map((warning, idx) => (
+              <div key={idx} className="flex items-start gap-2 text-sm text-gray-600">
+                <Info className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
+                <span>{warning}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Compact Refresh Indicator */}
+          {(isContextStale || timeUntilRefresh !== null) && onManualRefresh && (
+            <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+              {timeUntilRefresh !== null && (
+                <span className="text-xs text-gray-400 flex items-center gap-1">
+                  <Clock className="w-3 h-3" />
+                  {timeUntilRefresh}s
+                </span>
+              )}
+              <button
+                onClick={onManualRefresh}
+                disabled={preview.isLoading}
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title={timeUntilRefresh !== null ? `Refreshing in ${timeUntilRefresh}s - click to refresh now` : 'Refresh context'}
+              >
+                <RefreshCw className={`w-4 h-4 ${preview.isLoading ? 'animate-spin' : ''}`} />
+              </button>
             </div>
-          ))}
+          )}
         </div>
       )}
     </div>
