@@ -295,7 +295,7 @@ export interface DraftListItem {
   repository: string;
   name?: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'executed' | 'generating' | 'refining' | 'approved';
+  status: 'draft' | 'review' | 'executed' | 'generating' | 'refining' | 'approved' | 'merged';
   updated_at: string;
   created_at: string;
   issue_summary?: IssueSummary | null;
@@ -306,6 +306,7 @@ export interface GetDraftsOptions {
   limit?: number;
   repository?: string;
   search?: string;
+  status?: string;
 }
 
 export interface PaginatedDraftsResponse {
@@ -322,6 +323,7 @@ export const getDrafts = async (options: GetDraftsOptions = {}): Promise<Paginat
   if (options.limit !== undefined) params.append('limit', options.limit.toString());
   if (options.repository && options.repository !== 'all') params.append('repository', options.repository);
   if (options.search && options.search.trim()) params.append('search', options.search.trim());
+  if (options.status && options.status !== 'all') params.append('status', options.status);
 
   const queryString = params.toString();
   const url = queryString

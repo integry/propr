@@ -64,12 +64,20 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const offset = (page - 1) * limit;
       const repository = req.query.repository as string | undefined;
       const search = req.query.search as string | undefined;
+      const status = req.query.status as string | undefined;
+
+      // Valid status values for filtering
+      const validStatuses = ['draft', 'review', 'generating', 'refining', 'executed', 'approved', 'merged'];
 
       // Build query with optional repository filter
       let query = db!('task_drafts').where({ user_id: req.user!.id });
 
       if (repository && repository !== 'all') {
         query = query.andWhere('repository', repository);
+      }
+
+      if (status && status !== 'all' && validStatuses.includes(status)) {
+        query = query.andWhere('status', status);
       }
 
       // Apply search filter to name and initial_prompt with partial word matching
