@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { getDrafts, deleteDraft, DraftListItem, getRepoConfig, createDraft, uploadAttachment } from '../api/gitfixApi';
+import { useNewPlanForm } from '../hooks/useNewPlanForm';
+import { getDrafts, deleteDraft, DraftListItem } from '../api/gitfixApi';
 import { Filter, ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
 import {
   getEffectiveStatus,
@@ -11,14 +12,12 @@ import {
   getStatusIcon,
   renderIssueSummary
 } from './PlansPageUtils';
-import { NewPlanForm, transformRepoData, getInitialSelectedRepo, Repo } from '../components/Dashboard/index';
-import { resizeImage } from '../components/TaskPlanner/imageUtils';
+import { NewPlanForm } from '../components/Dashboard/index';
 
 const DEFAULT_PAGE_SIZE = 10;
 
 const PlansPage: React.FC = () => {
   useDocumentTitle('Plans');
-  const navigate = useNavigate();
   const [drafts, setDrafts] = useState<DraftListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -35,16 +34,8 @@ const PlansPage: React.FC = () => {
   const [allRepositories, setAllRepositories] = useState<{ repo: string; count: number }[]>([]);
   const [totalAllDrafts, setTotalAllDrafts] = useState(0);
 
-  // NewPlanForm state
-  const [repos, setRepos] = useState<Repo[]>([]);
-  const [selectedRepo, setSelectedRepo] = useState<string>('');
-  const [prompt, setPrompt] = useState<string>('');
-  const [isCreating, setIsCreating] = useState<boolean>(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [isPastingImage, setIsPastingImage] = useState<boolean>(false);
-  const [isFormExpanded, setIsFormExpanded] = useState<boolean>(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // NewPlanForm hook
+  const newPlanForm = useNewPlanForm();
 
   const totalPages = useMemo(() => Math.ceil(totalDrafts / DEFAULT_PAGE_SIZE), [totalDrafts]);
 
@@ -136,96 +127,6 @@ const PlansPage: React.FC = () => {
     }
   };
 
-  // Load repositories for NewPlanForm
-  useEffect(() => {
-    const loadRepos = async () => {
-      try {
-        const data = await getRepoConfig() as { repos_to_monitor?: unknown[] };
-        const rawRepos = data.repos_to_monitor || [];
-        const validRepos = transformRepoData(rawRepos);
-        const enabledRepos = validRepos.filter((r: Repo) => r.enabled);
-        setRepos(enabledRepos);
-        setSelectedRepo(getInitialSelectedRepo(enabledRepos));
-      } catch (err) {
-        console.error('Failed to load repositories:', err);
-      }
-    };
-    loadRepos();
-  }, []);
-
-  // NewPlanForm handlers
-  const handleStartPlanning = async () => {
-    if (!selectedRepo || !prompt.trim()) return;
-
-    setIsCreating(true);
-    setFormError(null);
-    try {
-      const draft = await createDraft(selectedRepo, prompt.trim());
-
-      // Upload any selected files to the draft
-      for (const file of selectedFiles) {
-        try {
-          await uploadAttachment(draft.draft_id, file);
-        } catch (uploadErr) {
-          console.error('Failed to upload attachment:', uploadErr);
-        }
-      }
-
-      navigate(`/tasks/plan/${draft.draft_id}`);
-    } catch (err) {
-      setFormError((err as Error).message || 'Failed to create draft');
-    } finally {
-      setIsCreating(false);
-    }
-  };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      setSelectedFiles(prev => [...prev, ...Array.from(files)]);
-    }
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const handleRemoveFile = (index: number) => {
-    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-
-    for (const item of Array.from(items)) {
-      if (item.type.startsWith('image/')) {
-        e.preventDefault();
-        const blob = item.getAsFile();
-        if (!blob) continue;
-
-        const filename = `pasted-image-${Date.now()}.png`;
-        const file = new File([blob], filename, { type: blob.type });
-
-        setIsPastingImage(true);
-        setFormError(null);
-        try {
-          const processedFile = await resizeImage(file);
-          setSelectedFiles(prev => [...prev, processedFile]);
-        } catch (err) {
-          setFormError('Failed to process pasted image');
-          console.error('Paste error:', err);
-        } finally {
-          setIsPastingImage(false);
-        }
-        return;
-      }
-    }
-  };
-
-  const toggleFormExpanded = () => {
-    setIsFormExpanded(prev => !prev);
-  };
-
   // Only show full-page loading on initial load (when no data yet)
   if (loading && drafts.length === 0 && totalAllDrafts === 0) {
     return (
@@ -288,7 +189,7 @@ const PlansPage: React.FC = () => {
             </div>
           )}
           <button
-            onClick={toggleFormExpanded}
+            onClick={newPlanForm.toggleFormExpanded}
             className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
           >
             + New Plan
@@ -297,25 +198,25 @@ const PlansPage: React.FC = () => {
       </div>
 
       {/* NewPlanForm - shown when expanded */}
-      {isFormExpanded && (
+      {newPlanForm.isFormExpanded && (
         <div className="mb-6">
           <NewPlanForm
-            repos={repos}
-            selectedRepo={selectedRepo}
-            onRepoChange={setSelectedRepo}
-            prompt={prompt}
-            onPromptChange={setPrompt}
-            onPaste={handlePaste}
-            selectedFiles={selectedFiles}
-            onRemoveFile={handleRemoveFile}
-            onFileSelect={handleFileSelect}
-            fileInputRef={fileInputRef}
-            isPastingImage={isPastingImage}
-            error={formError}
-            isCreating={isCreating}
-            onStartPlanning={handleStartPlanning}
-            isExpanded={isFormExpanded}
-            onExpandChange={setIsFormExpanded}
+            repos={newPlanForm.repos}
+            selectedRepo={newPlanForm.selectedRepo}
+            onRepoChange={newPlanForm.setSelectedRepo}
+            prompt={newPlanForm.prompt}
+            onPromptChange={newPlanForm.setPrompt}
+            onPaste={newPlanForm.handlePaste}
+            selectedFiles={newPlanForm.selectedFiles}
+            onRemoveFile={newPlanForm.handleRemoveFile}
+            onFileSelect={newPlanForm.handleFileSelect}
+            fileInputRef={newPlanForm.fileInputRef}
+            isPastingImage={newPlanForm.isPastingImage}
+            error={newPlanForm.formError}
+            isCreating={newPlanForm.isCreating}
+            onStartPlanning={newPlanForm.handleStartPlanning}
+            isExpanded={newPlanForm.isFormExpanded}
+            onExpandChange={newPlanForm.setIsFormExpanded}
           />
         </div>
       )}
@@ -329,7 +230,7 @@ const PlansPage: React.FC = () => {
           </div>
           <p className="text-gray-500 mb-4">No plans found. Create your first plan!</p>
           <button
-            onClick={() => setIsFormExpanded(true)}
+            onClick={() => newPlanForm.setIsFormExpanded(true)}
             className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
           >
             Create Your First Plan
