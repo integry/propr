@@ -456,7 +456,7 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResul
   await updateTrace(draftId, 'llm', 'pending');
 
   // Use model's hard limit for validation (context level is a guideline, not a hard limit)
-  const modelHardLimit = getModelHardLimit(undefined);
+  const modelHardLimit = getModelHardLimit(model);
   correlatedLogger.info({ model, tokenLimit, modelHardLimit, contextLength: fullContext.length }, 'Calling LLM for plan generation');
 
   // Validate token count before sending to LLM (use model's hard limit, not user's context level)
@@ -544,7 +544,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   });
 
   // Generate context with retry logic - if exceeds model limit, reduce files and retry
-  const modelHardLimit = getModelHardLimit(undefined);
+  const modelHardLimit = getModelHardLimit(generationModel);
   let currentRepomixLimit = budgets.repomixTokenLimit;
   let contextResult: Awaited<ReturnType<typeof generateContext>> | undefined;
   let fullContext = '';

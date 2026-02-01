@@ -70,6 +70,10 @@ export interface AgentExecutionResult {
     error?: string;
     commitMessage?: string | null;
     prompt?: string;
+
+    // Conversation log for execution analysis
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    conversationLog?: any[];
 }
 
 export interface Agent {

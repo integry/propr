@@ -212,7 +212,7 @@ function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
         sessionId: response.sessionId,
         conversationId: response.conversationId,
         finalResult: response.summary ? { type: 'result', result: response.summary } : null,
-        conversationLog: undefined,
+        conversationLog: response.conversationLog,
         error: response.error
     };
 }
