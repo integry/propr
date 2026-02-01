@@ -46,20 +46,20 @@ export class SecurityException extends Error {
 // Default max tokens - Claude's context is ~200K but we need room for the prompt and response
 const DEFAULT_MAX_CONTEXT_TOKENS = 150000;
 
-interface DroppedFile {
+export interface DroppedFile {
   path: string;
   tokens: number;
   reason: string;
 }
 
-interface FileSelectionResult {
+export interface FileSelectionResult {
   selectedFiles: string[];
   droppedFiles: DroppedFile[];
   currentTokens: number;
   strategy: 'relevance-order' | 'size-order' | 'priority-then-size';
 }
 
-function selectFilesWithinLimit(
+export function selectFilesWithinLimit(
   fileTokenCounts: Record<string, number>,
   effectiveLimit: number,
   filesToInclude?: string[],

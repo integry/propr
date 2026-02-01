@@ -35,6 +35,10 @@ interface SetupWizardProps {
 
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
 const DEBOUNCE_DELAY = 800;
+/** Delay before auto-refreshing context after source changes (ms) */
+const SOURCE_REFRESH_DELAY = 60000;
+/** Slider debounce delay for context level changes (ms) */
+const SLIDER_DEBOUNCE_DELAY = 300;
 
 interface PlannerConfig {
   prompt: string;
@@ -92,6 +96,10 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const [error, setError] = useState<string | null>(null);
   const [branchError, setBranchError] = useState<string | null>(null);
   const [initialSyncDone, setInitialSyncDone] = useState<boolean>(false);
+  /** Time remaining until auto-refresh (in seconds), null if no countdown active */
+  const [timeUntilRefresh, setTimeUntilRefresh] = useState<number | null>(null);
+  /** Whether the context is stale (source changed but not yet refreshed) */
+  const [isContextStale, setIsContextStale] = useState<boolean>(false);
 
   const { isGenerating, generationTrace, generationError, startPolling, setGenerationError } =
     useGenerationPolling({ draftId: draft.draft_id, onComplete: onGenerateComplete });
@@ -101,11 +109,25 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const abortControllerRef = useRef<AbortController | null>(null);
   const configRef = useRef(config);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /** Timer for the source refresh countdown */
+  const sourceRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Interval for updating the countdown display */
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Track previous source values to detect changes */
+  const prevSourceRef = useRef<{ prompt: string; baseBranch: string; filesLength: number; compress: boolean } | null>(null);
 
   useEffect(() => { configRef.current = config; }, [config]);
 
   useEffect(() => {
-    return () => { abortControllerRef.current?.abort(); };
+    return () => {
+      abortControllerRef.current?.abort();
+      if (sourceRefreshTimerRef.current) {
+        clearTimeout(sourceRefreshTimerRef.current);
+      }
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+    };
   }, []);
 
   const autoResize = useCallback(() => {
@@ -154,6 +176,43 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     loadAvailableRepos();
   }, [draft.repository]);
 
+  /** Clear the countdown timer and stale state */
+  const clearCountdown = useCallback(() => {
+    if (sourceRefreshTimerRef.current) {
+      clearTimeout(sourceRefreshTimerRef.current);
+      sourceRefreshTimerRef.current = null;
+    }
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    setTimeUntilRefresh(null);
+  }, []);
+
+  /** Start the countdown timer for source refresh */
+  const startCountdown = useCallback(() => {
+    clearCountdown();
+    setIsContextStale(true);
+    setTimeUntilRefresh(SOURCE_REFRESH_DELAY / 1000);
+
+    // Start interval to update countdown every second
+    countdownIntervalRef.current = setInterval(() => {
+      setTimeUntilRefresh(prev => {
+        if (prev === null || prev <= 1) {
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // Set timer to trigger refresh after delay
+    sourceRefreshTimerRef.current = setTimeout(() => {
+      clearCountdown();
+      setIsContextStale(false);
+      // fetchPreview will be called by the effect
+    }, SOURCE_REFRESH_DELAY);
+  }, [clearCountdown]);
+
   const fetchPreview = useCallback(async () => {
     const currentConfig = configRef.current;
     if (!currentConfig.prompt.trim() || !currentConfig.baseBranch) {
@@ -165,6 +224,10 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       return;
     }
     setBranchError(null);
+
+    // Clear countdown and stale state when fetching
+    clearCountdown();
+    setIsContextStale(false);
 
     // Abort any previous request
     if (abortControllerRef.current) {
@@ -209,38 +272,88 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
         setBranchError(errorMessage);
       }
     }
-  }, [draft.draft_id]);
+  }, [draft.draft_id, clearCountdown]);
 
+  // Initial sync - fetch preview when we first have valid config
   useEffect(() => {
     if (!initialSyncDone && config.baseBranch && config.prompt.trim()) {
       setInitialSyncDone(true);
+      prevSourceRef.current = {
+        prompt: config.prompt,
+        baseBranch: config.baseBranch,
+        filesLength: config.files.length,
+        compress: config.compress
+      };
       fetchPreview();
     }
-  }, [config.baseBranch, config.prompt, initialSyncDone, fetchPreview]);
+  }, [config.baseBranch, config.prompt, config.files.length, config.compress, initialSyncDone, fetchPreview]);
 
+  // SOURCE CHANGES: prompt, baseBranch, files, compress - start countdown
   useEffect(() => {
     if (!initialSyncDone) return;
 
+    const prev = prevSourceRef.current;
+    const sourceChanged = prev && (
+      prev.prompt !== config.prompt ||
+      prev.baseBranch !== config.baseBranch ||
+      prev.filesLength !== config.files.length ||
+      prev.compress !== config.compress
+    );
+
+    // Update the ref for next comparison
+    prevSourceRef.current = {
+      prompt: config.prompt,
+      baseBranch: config.baseBranch,
+      filesLength: config.files.length,
+      compress: config.compress
+    };
+
+    if (sourceChanged) {
+      // Debounce the countdown start to avoid flickering while typing
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+
+      debounceTimerRef.current = setTimeout(() => {
+        startCountdown();
+      }, DEBOUNCE_DELAY);
+
+      return () => {
+        if (debounceTimerRef.current) {
+          clearTimeout(debounceTimerRef.current);
+        }
+      };
+    }
+  }, [config.prompt, config.baseBranch, config.files.length, config.compress, initialSyncDone, startCountdown]);
+
+  // VIEW CHANGES: granularity, contextLevel - fetch immediately (uses cached context)
+  useEffect(() => {
+    if (!initialSyncDone || isContextStale) return;
+
+    // Debounce slider changes to avoid rapid-fire requests
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
 
     debounceTimerRef.current = setTimeout(() => {
       fetchPreview();
-    }, DEBOUNCE_DELAY);
+    }, SLIDER_DEBOUNCE_DELAY);
 
     return () => {
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [config.prompt, config.baseBranch, config.granularity, config.contextLevel, config.compress, fetchPreview, initialSyncDone]);
+  }, [config.granularity, config.contextLevel, initialSyncDone, isContextStale, fetchPreview]);
 
+  // Timer expiry - fetch preview when countdown reaches 0
   useEffect(() => {
-    if (initialSyncDone && config.files.length > 0) {
+    if (timeUntilRefresh === null && isContextStale && initialSyncDone) {
+      // Timer expired, fetch preview
+      setIsContextStale(false);
       fetchPreview();
     }
-  }, [config.files.length, fetchPreview, initialSyncDone]);
+  }, [timeUntilRefresh, isContextStale, initialSyncDone, fetchPreview]);
 
   // Save granularity and context level to localStorage when they change
   useEffect(() => {
@@ -331,6 +444,13 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     });
   }, [exportContext, draft.draft_id, config]);
 
+  /** Manual refresh handler - force immediate context refresh */
+  const handleManualRefresh = useCallback(() => {
+    clearCountdown();
+    setIsContextStale(false);
+    fetchPreview();
+  }, [clearCountdown, fetchPreview]);
+
   const handleGenerate = async () => {
     if (branchError) {
       setError('Please fix the branch name before generating');
@@ -341,6 +461,13 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     setGenerationError(null);
 
     try {
+      // If context is stale, force refresh first to ensure latest prompt is saved
+      if (isContextStale) {
+        clearCountdown();
+        setIsContextStale(false);
+        await fetchPreview();
+      }
+
       // Start generation - returns immediately with 202
       await generatePlan(draft.draft_id, {
         baseBranch: config.baseBranch,
@@ -410,11 +537,38 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
             onRemove={handleRemoveContextRepo}
           />
 
-          {/* Cost Preview */}
-          <CostPreview
-            preview={preview}
-            contextRepositories={config.contextRepositories}
-          />
+          {/* Cost Preview with Refresh Indicator */}
+          <div className="relative">
+            <CostPreview
+              preview={preview}
+              contextRepositories={config.contextRepositories}
+            />
+            {/* Context Refresh Indicator */}
+            {(isContextStale || timeUntilRefresh !== null) && (
+              <div className="mt-2 flex items-center justify-between p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <div className="flex items-center gap-2 text-amber-700">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span className="text-sm">
+                    {timeUntilRefresh !== null
+                      ? `Context will refresh in ${timeUntilRefresh}s`
+                      : 'Context is stale'}
+                  </span>
+                </div>
+                <button
+                  onClick={handleManualRefresh}
+                  disabled={preview.isLoading}
+                  className="px-3 py-1 text-sm font-medium text-amber-700 bg-amber-100 hover:bg-amber-200 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                >
+                  <svg className={`w-4 h-4 ${preview.isLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Refresh Now
+                </button>
+              </div>
+            )}
+          </div>
 
           {/* Smart File Selection - with skeleton during loading */}
           {preview.isLoading && !preview.data ? (
