@@ -36,7 +36,7 @@ const RECOMMENDED_CONTEXT_ANALYSIS_ALIASES = ['haiku', 'flash', 'flash-lite', 'g
 const RECOMMENDED_PLAN_GENERATION_ALIASES = ['opus', 'sonnet', 'gpt-5.2', 'gemini-3-pro'];
 
 // Models recommended for implementation (high capability options)
-const RECOMMENDED_IMPLEMENTATION_ALIASES = ['claude', 'opus', 'sonnet', 'gpt-5.2', 'gemini-3-pro', 'codex'];
+const RECOMMENDED_IMPLEMENTATION_ALIASES = ['claude'];
 
 const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   settings,
