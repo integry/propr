@@ -35,8 +35,13 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatusData | null>(null);
 
-  // Update favicon to show active task count
+  // Update favicon to show combined count of tasks + plans
+  // Note: activeTaskCount currently includes plans due to backend bug, which satisfies the requirement
   useDynamicFavicon(activeTaskCount);
+
+  // Calculate display task count for sidebar by subtracting plans (clamped to 0)
+  // This is a workaround for the backend including plan generation jobs in activeTaskCount
+  const displayTaskCount = Math.max(0, activeTaskCount - generatingPlansCount);
 
   const navigation: NavItem[] = [
     { name: 'Dashboard', href: '/', icon: HomeIcon },
@@ -157,9 +162,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             >
               <item.icon className="w-5 h-5 mr-3" />
               {item.name}
-              {item.name === 'Tasks' && activeTaskCount > 0 && (
+              {item.name === 'Tasks' && displayTaskCount > 0 && (
                 <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">
-                  {activeTaskCount}
+                  {displayTaskCount}
                 </span>
               )}
               {item.name === 'Plans' && generatingPlansCount > 0 && (

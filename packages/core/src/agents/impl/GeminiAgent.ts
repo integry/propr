@@ -170,12 +170,13 @@ export class GeminiAgent implements Agent {
         }
     }
 
-    async analyze(prompt: string, context?: string, model?: string): Promise<string> {
+    async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<string> {
         logger.info({
             agentAlias: this.config.alias,
             promptLength: prompt.length,
             hasContext: !!context,
-            requestedModel: model
+            requestedModel: model,
+            taskId
         }, 'Running lightweight analysis via Gemini agent...');
 
         // Use provided model or fallback to gemini-2.5-flash for lightweight analysis
@@ -198,7 +199,8 @@ export class GeminiAgent implements Agent {
 
             const result = await executeDockerCommand('docker', dockerArgs, {
                 timeout: 1800000, // 30 minute timeout for analysis (planning tasks can take longer)
-                stdinData
+                stdinData,
+                taskId // Pass taskId for abort signal checking
             });
 
             const cleanedOutput = this.stripAnsiCodes(result.stdout);

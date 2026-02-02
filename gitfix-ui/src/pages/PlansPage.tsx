@@ -3,7 +3,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useNewPlanForm } from '../hooks/useNewPlanForm';
-import { getDrafts, deleteDraft, DraftListItem } from '../api/gitfixApi';
+import { getDrafts, deleteDraft, abortGeneration, DraftListItem } from '../api/gitfixApi';
 import { Filter, ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
 import {
   getEffectiveStatus,
@@ -118,6 +118,8 @@ const PlansPage: React.FC = () => {
     setCurrentPage(1);
   };
 
+  const [abortingId, setAbortingId] = useState<string | null>(null);
+
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -132,6 +134,21 @@ const PlansPage: React.FC = () => {
     } catch (err) {
       setError((err as Error).message || 'Failed to delete plan');
       await loadDrafts(currentPage, repoFilter, statusFilter);
+    }
+  };
+
+  const handleAbort = async (id: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setAbortingId(id);
+    try {
+      await abortGeneration(id);
+      // Refresh the list to show updated status
+      await loadDrafts(currentPage, repoFilter);
+    } catch (err) {
+      setError((err as Error).message || 'Failed to stop generation');
+    } finally {
+      setAbortingId(null);
     }
   };
 
@@ -342,6 +359,15 @@ const PlansPage: React.FC = () => {
                     >
                       {draft.status === 'executed' || draft.status === 'merged' || getEffectiveStatus(draft.status, draft.issue_summary) === 'merged' ? 'Manage' : 'Resume'}
                     </Link>
+                    {draft.status === 'generating' && (
+                      <button
+                        onClick={(e) => handleAbort(draft.draft_id, e)}
+                        disabled={abortingId === draft.draft_id}
+                        className="text-orange-600 hover:text-orange-900 mr-4 disabled:opacity-50"
+                      >
+                        {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
+                      </button>
+                    )}
                     <button
                       onClick={(e) => handleDelete(draft.draft_id, e)}
                       className="text-red-600 hover:text-red-900 opacity-0 group-hover:opacity-100 transition-opacity"

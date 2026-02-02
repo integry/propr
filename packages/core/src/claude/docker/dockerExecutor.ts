@@ -58,9 +58,13 @@ async function checkAbortSignal(taskId: string): Promise<boolean> {
             host: process.env.REDIS_HOST || 'redis',
             port: parseInt(process.env.REDIS_PORT || '6379', 10)
         });
-        const abortSignal = await redis.get(`worker:abort:${taskId}`);
+        // Check both worker abort signal (for task execution) and planner abort signal (for plan generation)
+        const [workerAbort, plannerAbort] = await Promise.all([
+            redis.get(`worker:abort:${taskId}`),
+            redis.get(`planner:abort:${taskId}`)
+        ]);
         await redis.quit();
-        return abortSignal !== null;
+        return workerAbort !== null || plannerAbort !== null;
     } catch {
         return false;
     }

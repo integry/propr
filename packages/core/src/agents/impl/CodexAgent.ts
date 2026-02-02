@@ -196,12 +196,13 @@ export class CodexAgent implements Agent {
         }
     }
 
-    async analyze(prompt: string, context?: string, model?: string): Promise<string> {
+    async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<string> {
         logger.info({
             agentAlias: this.config.alias,
             promptLength: prompt.length,
             hasContext: !!context,
-            requestedModel: model
+            requestedModel: model,
+            taskId
         }, 'Running lightweight analysis via Codex agent...');
 
         // Use provided model or Codex's default model (null = use Codex's config default)
@@ -239,7 +240,8 @@ export class CodexAgent implements Agent {
 
             const result = await executeDockerCommand('docker', dockerArgs, {
                 timeout: 1800000, // 30 minute timeout for analysis (planning tasks can take longer)
-                stdinData: analysisPrompt
+                stdinData: analysisPrompt,
+                taskId // Pass taskId for abort signal checking
             });
 
             const parsedOutput = parseCodexStreamOutput(result.stdout);

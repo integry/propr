@@ -82,6 +82,7 @@ export interface RunLightweightLLMAnalysisOptions {
     worktreePath: string;
     githubToken: string;
     issueRef: IssueRef;
+    taskId?: string; // For abort signal checking (e.g., draftId for planning)
 }
 
 
@@ -252,7 +253,7 @@ export const buildClaudeDockerImage = buildDockerImageInternal;
 export { generateTaskImportPrompt };
 
 export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, worktreePath, githubToken, issueRef } = options;
+    const { prompt, model, correlationId, worktreePath, githubToken, issueRef, taskId } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     // Parse model which may be in format "agent_alias:model" or just "model"
@@ -277,10 +278,10 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
             const agent = registry.getAgentByAlias(agentAlias);
             if (agent) {
                 const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
-                correlatedLogger.info({ agentAlias, resolvedModel }, 'Using agent-specific lightweight LLM analysis');
+                correlatedLogger.info({ agentAlias, resolvedModel, taskId }, 'Using agent-specific lightweight LLM analysis');
 
-                // Use the agent's analyze method
-                return await agent.analyze(prompt, undefined, resolvedModel);
+                // Use the agent's analyze method with taskId for abort checking
+                return await agent.analyze(prompt, undefined, resolvedModel, taskId);
             } else {
                 correlatedLogger.warn({ agentAlias }, 'Agent not found, falling back to default execution');
             }

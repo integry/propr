@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  uploadAttachment, removeAttachment, generatePlan, getRepositoryInfo,
-  PlannerDraft, PlannerAttachment, Granularity, ContextRepository
+  uploadAttachment,
+  removeAttachment,
+  generatePlan,
+  getRepositoryInfo,
+  abortGeneration,
+  PlannerDraft,
+  PlannerAttachment,
+  Granularity,
+  ContextRepository
 } from '../../api/gitfixApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { getPlannerSettings, savePlannerSettings } from '../../hooks/usePlannerSettings';
@@ -187,6 +194,15 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
   };
 
+  const handleAbortGeneration = async () => {
+    try {
+      await abortGeneration(draft.draft_id);
+      // The polling will detect the status change and update UI
+    } catch (err) {
+      setError((err as Error).message || 'Failed to abort generation');
+    }
+  };
+
   const isGenerateDisabled = isGenerating || !!branchError || repoInfo.isLoading;
 
   return (
@@ -211,6 +227,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           isPaused={isPaused} onTogglePause={togglePause}
           onManualRefresh={handleManualRefresh} error={error} generationError={generationError}
           isGenerating={isGenerating} generationTrace={generationTrace}
+          onAbort={handleAbortGeneration}
         />
         <div className="sticky bottom-0 bg-white border-t border-gray-200 p-4 rounded-b-xl space-y-3">
           <GenerateButton isGenerating={isGenerating} isRepoLoading={repoInfo.isLoading} disabled={isGenerateDisabled} onClick={handleGenerate} />

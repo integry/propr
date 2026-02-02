@@ -446,7 +446,17 @@ export async function updateDraftContextConfig(
                      compress !== undefined || contextRepositories !== undefined;
   if (!hasUpdates) return;
 
-  const existingConfig = (draft.context_config as Record<string, unknown>) || {};
+  // Parse context_config if it's a JSON string (stored as text in SQLite)
+  let existingConfig: Record<string, unknown> = {};
+  if (draft.context_config) {
+    try {
+      existingConfig = typeof draft.context_config === 'string'
+        ? JSON.parse(draft.context_config)
+        : (draft.context_config as Record<string, unknown>);
+    } catch {
+      existingConfig = {};
+    }
+  }
   const updatedConfig = {
     ...existingConfig,
     ...(baseBranch && { baseBranch }),
