@@ -41,7 +41,8 @@ export function useSettingsState() {
     worker_concurrency: '',
     analysis_model_fast: '',
     planner_context_model: '',
-    planner_generation_model: ''
+    planner_generation_model: '',
+    default_agent_alias: ''
   });
   const [prLabel, setPrLabel] = useState('');
 
@@ -88,6 +89,7 @@ export function useSettingsState() {
           analysis_model_fast?: string;
           planner_context_model?: string;
           planner_generation_model?: string;
+          default_agent_alias?: string;
           github_user_whitelist?: string[];
         };
         const keywordsData = kData as { followup_keywords?: string[] };
@@ -102,7 +104,8 @@ export function useSettingsState() {
           worker_concurrency: settingsData.worker_concurrency || '',
           analysis_model_fast: settingsData.analysis_model_fast || '',
           planner_context_model: settingsData.planner_context_model || '',
-          planner_generation_model: settingsData.planner_generation_model || ''
+          planner_generation_model: settingsData.planner_generation_model || '',
+          default_agent_alias: settingsData.default_agent_alias || ''
         });
 
         // Parse Whitelist
@@ -178,7 +181,8 @@ export function useSettingsState() {
           github_user_whitelist: whitelistToSave,
           analysis_model_fast: settingsToSave.analysis_model_fast,
           planner_context_model: settingsToSave.planner_context_model,
-          planner_generation_model: settingsToSave.planner_generation_model
+          planner_generation_model: settingsToSave.planner_generation_model,
+          default_agent_alias: settingsToSave.default_agent_alias
         }),
         updatePrLabel(prLabelToSave.trim()),
         updatePrimaryProcessingLabels(primaryLabelsToSave),
@@ -342,6 +346,13 @@ export function useSettingsState() {
     handleSummarizationChange(newSettings);
   }, [summarizationSettings, handleSummarizationChange]);
 
+  // Handle default agent change from AI Model Selection section
+  const handleDefaultAgentChange = useCallback((agentAlias: string) => {
+    const newSettings = { ...settings, default_agent_alias: agentAlias };
+    setSettings(newSettings);
+    performAutoSave({ settings: newSettings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords });
+  }, [settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords, performAutoSave]);
+
   // Handle manual reindex trigger
   const handleReindexAll = useCallback(async () => {
     setIsReindexing(true);
@@ -401,6 +412,7 @@ export function useSettingsState() {
     removeIgnoreKeyword,
     handleSummarizationChange,
     handleSummarizationModelChange,
+    handleDefaultAgentChange,
     handleReindexAll
   };
 }

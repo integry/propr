@@ -45,6 +45,7 @@ const SettingsPage: React.FC = () => {
     removeIgnoreKeyword,
     handleSummarizationChange,
     handleSummarizationModelChange,
+    handleDefaultAgentChange,
     handleReindexAll
   } = useSettingsState();
 
@@ -105,12 +106,14 @@ const SettingsPage: React.FC = () => {
             settings={{
               analysis_model_fast: settings.analysis_model_fast,
               planner_context_model: settings.planner_context_model,
-              planner_generation_model: settings.planner_generation_model
+              planner_generation_model: settings.planner_generation_model,
+              default_agent_alias: settings.default_agent_alias
             }}
             summarizationSettings={summarizationSettings}
             agents={agents}
             onSettingChange={handleModelSelectionChange}
             onSummarizationModelChange={handleSummarizationModelChange}
+            onDefaultAgentChange={handleDefaultAgentChange}
           />
 
           <KnowledgeBaseSection

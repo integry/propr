@@ -6,7 +6,7 @@ import {
     logger, generateCorrelationId, handleError, getAuthenticatedOctokit, withRetry, retryConfigs,
     getStateManager, TaskStates, ensureRepoCloned, createWorktreeForIssue, getRepoUrl, pushBranch,
     addModelSpecificDelay, safeAddLabel, ensureGitRepository, UsageLimitError, recordLLMMetrics,
-    validateRepositoryInfo, getDefaultModel, loadPrLabel, loadPrimaryProcessingLabels,
+    validateRepositoryInfo, getDefaultModel, loadPrLabel, loadPrimaryProcessingLabels, loadSettings,
     filterCommentByAuthor, AgentRegistry, generateClaudePrompt, resolveLlmLabel, updateFileChangesFromWorktree,
     updatePlanIssueTaskId
 } from '@gitfix/core';
@@ -139,8 +139,25 @@ async function initializeJobContext(job: Job<IssueJobData>): Promise<JobContext>
 
     // Fallback to default agent if still missing
     if (!agentAlias) {
-        const defaultAgent = registry.getDefaultAgent();
-        agentAlias = defaultAgent?.config.alias || 'default';
+        // First, try to use the configured default agent from settings
+        try {
+            const settings = await loadSettings();
+            if (settings.default_agent_alias) {
+                const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
+                if (configuredAgent && configuredAgent.config.enabled) {
+                    agentAlias = settings.default_agent_alias as string;
+                    correlatedLogger.debug({ configuredDefaultAgent: agentAlias }, 'Using default agent from settings');
+                }
+            }
+        } catch (settingsError) {
+            correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings, using registry default');
+        }
+
+        // If still no agent, fall back to registry default
+        if (!agentAlias) {
+            const defaultAgent = registry.getDefaultAgent();
+            agentAlias = defaultAgent?.config.alias || 'default';
+        }
     }
 
     // Get model if still missing (use agent's default model)
