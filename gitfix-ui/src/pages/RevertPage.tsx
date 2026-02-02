@@ -90,16 +90,22 @@ const LoadingView: React.FC = () => (
   </PageWrapper>
 );
 
-const SuccessView: React.FC = () => (
+const SuccessView: React.FC<{ prUrl: string }> = ({ prUrl }) => (
   <PageWrapper>
     <div className="text-center">
       <div className="text-green-600 mb-4">
         <CheckCircle className="w-12 h-12 mx-auto" />
       </div>
       <h1 className="text-xl font-bold text-gray-900 mb-4">Revert Initiated</h1>
-      <p className="text-gray-600">
-        You can close this tab and check the PR.
+      <p className="text-gray-600 mb-6">
+        The revert has been initiated successfully. You can return to the Pull Request to verify the changes.
       </p>
+      <a
+        href={prUrl}
+        className="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-md transition-colors"
+      >
+        Return to Pull Request
+      </a>
     </div>
   </PageWrapper>
 );
@@ -319,7 +325,8 @@ const RevertPage: React.FC = () => {
   }
 
   if (state === 'success') {
-    return <SuccessView />;
+    const prUrl = `https://github.com/${owner}/${repo}/pull/${pr}`;
+    return <SuccessView prUrl={prUrl} />;
   }
 
   return (
