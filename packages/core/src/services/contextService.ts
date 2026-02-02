@@ -10,7 +10,8 @@ export interface ContextGenerationOptions {
   repoPath: string;
   filesToInclude?: string[];
   priorityFiles?: string[];  // Files to prioritize (include first) when truncating
-  tokenLimit?: number;
+  /** Token limit from model configuration - required, no default fallback */
+  tokenLimit: number;
   correlationId?: string;
   includeFullDirectoryStructure?: boolean;
   compress?: boolean;
@@ -43,23 +44,20 @@ export class SecurityException extends Error {
   }
 }
 
-// Default max tokens - Claude's context is ~200K but we need room for the prompt and response
-const DEFAULT_MAX_CONTEXT_TOKENS = 150000;
-
-interface DroppedFile {
+export interface DroppedFile {
   path: string;
   tokens: number;
   reason: string;
 }
 
-interface FileSelectionResult {
+export interface FileSelectionResult {
   selectedFiles: string[];
   droppedFiles: DroppedFile[];
   currentTokens: number;
   strategy: 'relevance-order' | 'size-order' | 'priority-then-size';
 }
 
-function selectFilesWithinLimit(
+export function selectFilesWithinLimit(
   fileTokenCounts: Record<string, number>,
   effectiveLimit: number,
   filesToInclude?: string[],
@@ -200,7 +198,7 @@ async function generateOptimizedContext(options: GenerateOptimizedContextOptions
 }
 
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
-  const { repoPath, filesToInclude, priorityFiles, tokenLimit = DEFAULT_MAX_CONTEXT_TOKENS, correlationId, includeFullDirectoryStructure = true, compress = false } = options;
+  const { repoPath, filesToInclude, priorityFiles, tokenLimit, correlationId, includeFullDirectoryStructure = true, compress = false } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   // Convert Claude token limit to tiktoken limit (tiktoken underestimates by ~36%)

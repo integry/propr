@@ -1,12 +1,12 @@
 /* eslint-disable max-lines */
 import { db } from '../db/connection.js';
-import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO, getEffectiveTokenLimit, getModelHardLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL } from '../config/modelLimits.js';
+import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO, getEffectiveTokenLimit, getModelHardLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, MAX_CONTEXT_LEVEL } from '../config/modelLimits.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { countTokens, estimateTokens } from '../utils/tokenCalculation.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { getModelPricing } from './pricingService.js';
 import { getAgentRegistry } from '../agents/AgentRegistry.js';
-import { generateContext } from './contextService.js';
+import { generateContext, selectFilesWithinLimit } from './contextService.js';
 import { parseFileReferences, getResolvedPaths } from './relevance/fileReferenceParser.js';
 import logger from '../utils/logger.js';
 import type { LogFn } from 'pino';
@@ -81,6 +81,10 @@ export interface ContextCache {
   /** Token counts */
   repomixTokens: number;
   smartSummaryTokens: number;
+  /** Per-file token counts for simulated truncation */
+  fileTokenCounts: Record<string, number>;
+  /** The token limit used when generating this cache (for validation) */
+  cachedMaxTokenLimit?: number;
 }
 
 export interface TaskDraftConfig {
@@ -591,6 +595,82 @@ interface RegenerateContextParams {
   correlatedLogger: MinimalLogger;
 }
 
+interface ContextData {
+  repomixContext: string;
+  smartSummaries: string | undefined;
+  autoFilePaths: string[];
+  includedFiles: string[];
+  repomixTokens: number;
+  smartSummaryTokens: number;
+  fileTokenCounts: Record<string, number>;
+}
+
+/**
+ * Extract context data from cache
+ */
+function extractContextFromCache(cache: ContextCache): ContextData {
+  return {
+    repomixContext: cache.repomixContext,
+    smartSummaries: cache.smartSummaries,
+    autoFilePaths: cache.autoFilePaths,
+    includedFiles: cache.includedFiles,
+    repomixTokens: cache.repomixTokens,
+    smartSummaryTokens: cache.smartSummaryTokens,
+    fileTokenCounts: cache.fileTokenCounts
+  };
+}
+
+/**
+ * Get cache invalidation reason for logging
+ */
+function getCacheInvalidationReason(
+  cache: ContextCache | undefined,
+  contentHash: string,
+  cacheHasSufficientLimit: boolean,
+  maxTokenLimit: number
+): string {
+  if (!cache) return 'no cache';
+  if (cache.contentHash !== contentHash) return 'content changed';
+  if (!cache.fileTokenCounts) return 'missing fileTokenCounts';
+  if (!cacheHasSufficientLimit) return `cached limit (${cache.cachedMaxTokenLimit}) < required (${maxTokenLimit})`;
+  return 'unknown';
+}
+
+/**
+ * Calculate attachment tokens from loaded attachments
+ */
+function calculateAttachmentTokens(attachments: Attachment[], imageTokens: number): number {
+  const textAttachmentTokens = attachments
+    .filter(a => a.type === 'text')
+    .reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
+  return imageTokens + textAttachmentTokens;
+}
+
+/**
+ * Build smart selection array from included files
+ */
+function buildSmartSelection(
+  manualFiles: string[],
+  autoFilePaths: string[],
+  includedFilesSet: Set<string>
+): SmartFileSelection[] {
+  return [
+    ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
+    ...autoFilePaths.filter(p => includedFilesSet.has(p) && !manualFiles.includes(p)).map(p => ({ path: p, reason: 'Auto-detected', source: 'auto' as const }))
+  ];
+}
+
+/**
+ * Get model display info from model ID
+ */
+function getModelDisplayInfo(generationModel: string | undefined): { modelName?: string; modelMaxContextTokens?: number } {
+  if (!generationModel) return {};
+  const effectiveModelId = generationModel.includes(':') ? generationModel.split(':')[1] : generationModel;
+  const modelInfo = MODEL_INFO_MAP[effectiveModelId];
+  if (!modelInfo) return {};
+  return { modelName: modelInfo.name, modelMaxContextTokens: modelInfo.maxTokens };
+}
+
 interface RegenerateContextResult {
   repomixContext: string;
   smartSummaries: string | undefined;
@@ -599,6 +679,7 @@ interface RegenerateContextResult {
   repomixTokens: number;
   smartSummaryTokens: number;
   securityWarnings: string[];
+  fileTokenCounts: Record<string, number>;
 }
 
 /**
@@ -666,88 +747,90 @@ async function regenerateContext(params: RegenerateContextParams): Promise<Regen
     includedFiles: contextResult.includedFiles,
     repomixTokens: contextResult.totalTokens,
     smartSummaryTokens: smartSummaryResult.estimatedTokens || 0,
-    securityWarnings
+    securityWarnings,
+    fileTokenCounts: contextResult.fileTokenCounts
   };
 }
 
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
   const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel, generationModel } = options;
-  const previewTokenLimit = getEffectiveTokenLimit(generationModel, contextLevel);
+  const targetTokenLimit = getEffectiveTokenLimit(generationModel, contextLevel);
+  const maxTokenLimit = getEffectiveTokenLimit(generationModel, MAX_CONTEXT_LEVEL);
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   const warnings: string[] = [];
 
   if (!db) throw new PlanningFailedError('Database not available');
-  correlatedLogger.info({ draftId, baseBranch, granularity, contextModel, generationModel, previewTokenLimit }, 'Starting context preview generation');
+  correlatedLogger.info({ draftId, baseBranch, granularity, contextModel, generationModel, targetTokenLimit, maxTokenLimit }, 'Starting context preview generation');
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
 
   const attachments = parseDraftAttachments(draft.attachments);
   const existingConfig = parseExistingContextConfig(draft.context_config);
-
-  // Compute content hash (content-affecting params only, not granularity/contextLevel)
   const manualFiles = [...new Set([...(files || [])])];
   const contentHash = computeContentHash({
     prompt, baseBranch, compress, manualFiles,
     attachmentsJson: JSON.stringify(attachments.map(a => ({ id: a.id, storedPath: a.storedPath })))
   });
 
-  // Check if we can use cached context
   const cache = existingConfig?.contextCache;
-  const canUseCache = cache && cache.contentHash === contentHash;
+  const cacheHasSufficientLimit = !cache?.cachedMaxTokenLimit || cache.cachedMaxTokenLimit >= maxTokenLimit;
+  const canUseCache = cache && cache.contentHash === contentHash && cache.fileTokenCounts && cacheHasSufficientLimit;
 
-  // Always load images (needed for final context)
   const { base64Images, imageTokens } = await loadImagesFromAttachments(attachments, correlatedLogger);
-  const textAttachmentTokens = attachments.filter(a => a.type === 'text').reduce((sum, a) => sum + (a.tokenEstimate || 0), 0);
-  const attachmentTokens = imageTokens + textAttachmentTokens;
+  const attachmentTokens = calculateAttachmentTokens(attachments, imageTokens);
 
-  let repomixContext: string;
-  let smartSummaries: string | undefined;
-  let autoFilePaths: string[];
-  let includedFiles: string[];
-  let repomixTokens: number;
-  let smartSummaryTokens: number;
-
+  let contextData: ContextData;
   if (canUseCache) {
     correlatedLogger.info({ contentHash }, 'Using cached context (only settings changed)');
-    repomixContext = cache.repomixContext;
-    smartSummaries = cache.smartSummaries;
-    autoFilePaths = cache.autoFilePaths;
-    includedFiles = cache.includedFiles;
-    repomixTokens = cache.repomixTokens;
-    smartSummaryTokens = cache.smartSummaryTokens;
+    contextData = extractContextFromCache(cache);
   } else {
-    correlatedLogger.info({ contentHash, hadCache: !!cache }, 'Regenerating context (content changed)');
+    const reason = getCacheInvalidationReason(cache, contentHash, cacheHasSufficientLimit, maxTokenLimit);
+    correlatedLogger.info({ contentHash, hadCache: !!cache, reason }, 'Regenerating context at MAX_CONTEXT_LEVEL');
     const result = await regenerateContext({
       baseBranch, worktreePath, prompt, manualFiles, draft, contextModel,
-      compress, previewTokenLimit, correlationId, correlatedLogger
+      compress, previewTokenLimit: maxTokenLimit, correlationId, correlatedLogger
     });
-    repomixContext = result.repomixContext;
-    smartSummaries = result.smartSummaries;
-    autoFilePaths = result.autoFilePaths;
-    includedFiles = result.includedFiles;
-    repomixTokens = result.repomixTokens;
-    smartSummaryTokens = result.smartSummaryTokens;
+    contextData = {
+      repomixContext: result.repomixContext,
+      smartSummaries: result.smartSummaries,
+      autoFilePaths: result.autoFilePaths,
+      includedFiles: result.includedFiles,
+      repomixTokens: result.repomixTokens,
+      smartSummaryTokens: result.smartSummaryTokens,
+      fileTokenCounts: result.fileTokenCounts
+    };
     warnings.push(...result.securityWarnings);
   }
 
-  const costEstimate = await calculateCostEstimate(repomixTokens, warnings, correlatedLogger);
-  const includedFilesSet = new Set(includedFiles);
+  const { repomixContext, smartSummaries, autoFilePaths, includedFiles, smartSummaryTokens, fileTokenCounts } = contextData;
+  const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
+  const simulatedSelection = selectFilesWithinLimit(
+    fileTokenCounts, targetTokenLimit,
+    compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined),
+    compress ? combinedFiles : undefined
+  );
 
-  // Build smart selection from included files
-  const smartSelection: SmartFileSelection[] = [
-    ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
-    ...autoFilePaths.filter(p => includedFilesSet.has(p) && !manualFiles.includes(p)).map(p => ({ path: p, reason: 'Auto-detected', source: 'auto' as const }))
-  ];
+  const simulatedIncludedFiles = simulatedSelection.selectedFiles;
+  const simulatedTokens = simulatedSelection.currentTokens;
+  const includedFilesSet = new Set(simulatedIncludedFiles);
 
-  // Build full context with current granularity setting
+  correlatedLogger.info({
+    cachedFiles: includedFiles.length, cachedTokens: contextData.repomixTokens,
+    simulatedFiles: simulatedIncludedFiles.length, simulatedTokens, targetTokenLimit, strategy: simulatedSelection.strategy
+  }, 'Simulated file selection for context level');
+
+  const costEstimate = await calculateCostEstimate(simulatedTokens, warnings, correlatedLogger);
+  const smartSelection = buildSmartSelection(manualFiles, autoFilePaths, includedFilesSet);
   const fullContext = buildFullContext({
     userRequest: prompt, repomixContext, granularity, smartSummaries,
     images: base64Images.length > 0 ? base64Images : undefined
   });
 
-  // Save with updated cache
-  const newCache: ContextCache = { contentHash, repomixContext, smartSummaries, autoFilePaths, includedFiles, repomixTokens, smartSummaryTokens };
+  const newCache: ContextCache = {
+    contentHash, repomixContext, smartSummaries, autoFilePaths, includedFiles,
+    repomixTokens: contextData.repomixTokens, smartSummaryTokens, fileTokenCounts, cachedMaxTokenLimit: maxTokenLimit
+  };
 
   await db('task_drafts').where({ draft_id: draftId }).update({
     initial_prompt: prompt,
@@ -756,26 +839,15 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     updated_at: db.fn.now()
   });
 
-  const estimatedActualTokens = Math.ceil(repomixTokens * TIKTOKEN_TO_CLAUDE_RATIO);
+  const estimatedActualTokens = Math.ceil(simulatedTokens * TIKTOKEN_TO_CLAUDE_RATIO);
   const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens;
+  const { modelName, modelMaxContextTokens } = getModelDisplayInfo(generationModel);
 
-  // Get model info for display
-  let modelName: string | undefined;
-  let modelMaxContextTokens: number | undefined;
-  if (generationModel) {
-    const effectiveModelId = generationModel.includes(':') ? generationModel.split(':')[1] : generationModel;
-    const modelInfo = MODEL_INFO_MAP[effectiveModelId];
-    if (modelInfo) {
-      modelName = modelInfo.name;
-      modelMaxContextTokens = modelInfo.maxTokens;
-    }
-  }
-
-  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: repomixTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, totalTokens, costEstimate, fileCount: includedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
+  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, totalTokens, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
 
   return {
     success: true,
-    stats: { totalTokens, tiktokenCount: repomixTokens, costEstimate, contextLength: repomixContext.length, fileCount: includedFiles.length, attachmentTokens, maxTokens: previewTokenLimit, modelName, modelMaxContextTokens },
+    stats: { totalTokens, tiktokenCount: simulatedTokens, costEstimate, contextLength: repomixContext.length, fileCount: simulatedIncludedFiles.length, attachmentTokens, maxTokens: targetTokenLimit, modelName, modelMaxContextTokens },
     smartSelection,
     warnings
   };
