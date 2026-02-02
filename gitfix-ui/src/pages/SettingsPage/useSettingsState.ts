@@ -100,12 +100,25 @@ export function useSettingsState() {
         const summarizationData = sumData as SummarizationSettings;
 
         // Parse Settings
+        // Determine default agent alias: use saved value, or default to 'claude' if available, or first enabled agent
+        const agentsList = agentsData.agents || [];
+        const enabledAgents = agentsList.filter((a: AgentConfig) => a.enabled);
+        let defaultAgentAlias = settingsData.default_agent_alias || '';
+
+        // If no default is set, find the best default (prefer 'claude', then first enabled agent)
+        if (!defaultAgentAlias && enabledAgents.length > 0) {
+          const claudeAgent = enabledAgents.find((a: AgentConfig) =>
+            a.alias.toLowerCase() === 'claude' || a.alias.toLowerCase().includes('claude')
+          );
+          defaultAgentAlias = claudeAgent ? claudeAgent.alias : enabledAgents[0].alias;
+        }
+
         setSettings({
           worker_concurrency: settingsData.worker_concurrency || '',
           analysis_model_fast: settingsData.analysis_model_fast || '',
           planner_context_model: settingsData.planner_context_model || '',
           planner_generation_model: settingsData.planner_generation_model || '',
-          default_agent_alias: settingsData.default_agent_alias || ''
+          default_agent_alias: defaultAgentAlias
         });
 
         // Parse Whitelist

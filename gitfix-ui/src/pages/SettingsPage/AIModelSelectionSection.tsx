@@ -162,6 +162,47 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
       </p>
 
       <div className="space-y-4">
+        {/* Default Implementation Agent - First in list */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="default_agent_alias">
+            Default Implementation Agent
+          </label>
+          {hasEnabledAgents ? (
+            <select
+              id="default_agent_alias"
+              value={settings.default_agent_alias}
+              onChange={(e) => onDefaultAgentChange(e.target.value)}
+              className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+            >
+              {implementationAgentOptions.map(opt => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                  {opt.isRecommended ? ' (Recommended)' : ''}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="text-sm text-gray-500 p-3 bg-gray-50 rounded-md border border-gray-200">
+              No enabled agents available. Please enable an agent in the{' '}
+              <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
+                AI Agents
+              </a>{' '}
+              page first.
+            </div>
+          )}
+          <p className="mt-1 text-sm text-gray-500">
+            The agent used for code implementation tasks when no specific agent is specified.
+            {hasEnabledAgents && (
+              <span className="block mt-1">
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
+                  Recommended
+                </span>
+                {' '}agents are optimized for code implementation tasks.
+              </span>
+            )}
+          </p>
+        </div>
+
         {/* Fast Analysis Model */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="analysis_model_fast">
@@ -290,48 +331,6 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   Recommended
                 </span>
                 {' '}models are high-capability models best suited for complex planning tasks.
-              </span>
-            )}
-          </p>
-        </div>
-
-        {/* Default Implementation Agent */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="default_agent_alias">
-            Default Implementation Agent
-          </label>
-          {hasEnabledAgents ? (
-            <select
-              id="default_agent_alias"
-              value={settings.default_agent_alias}
-              onChange={(e) => onDefaultAgentChange(e.target.value)}
-              className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
-            >
-              <option value="">Use registry default</option>
-              {implementationAgentOptions.map(opt => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                  {opt.isRecommended ? ' (Recommended)' : ''}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <div className="text-sm text-gray-500 p-3 bg-gray-50 rounded-md border border-gray-200">
-              No enabled agents available. Please enable an agent in the{' '}
-              <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
-                AI Agents
-              </a>{' '}
-              page first.
-            </div>
-          )}
-          <p className="mt-1 text-sm text-gray-500">
-            The agent used for code implementation tasks when no specific agent is specified.
-            {hasEnabledAgents && (
-              <span className="block mt-1">
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
-                  Recommended
-                </span>
-                {' '}agents are optimized for code implementation tasks.
               </span>
             )}
           </p>

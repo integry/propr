@@ -12,7 +12,7 @@ import {
 } from '@gitfix/core';
 import type {
     WorkerStateManager, IssueRef, WorktreeInfo, CommitResult, ClaudeCodeResponse, ClaudeResult,
-    RepoValidationResult, AgentExecutionResult, IssueJobData, JobResult
+    RepoValidationResult, AgentExecutionResult, IssueJobData, JobResult, Agent
 } from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult, localizeContentImages } from './issueJobHelpers.js';
@@ -150,13 +150,22 @@ async function initializeJobContext(job: Job<IssueJobData>): Promise<JobContext>
                 }
             }
         } catch (settingsError) {
-            correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings, using registry default');
+            correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings, using first available agent');
         }
 
-        // If still no agent, fall back to registry default
+        // If still no agent, fall back to the first valid enabled agent
         if (!agentAlias) {
-            const defaultAgent = registry.getDefaultAgent();
-            agentAlias = defaultAgent?.config.alias || 'default';
+            const allAgents = registry.getAllAgents();
+            const firstValidAgent = allAgents.find((agent: Agent) => agent.config.enabled);
+            if (firstValidAgent) {
+                agentAlias = firstValidAgent.config.alias;
+                correlatedLogger.debug({ firstValidAgent: agentAlias }, 'Using first valid enabled agent');
+            } else {
+                // Last resort: try the default agent from registry
+                const defaultAgent = registry.getDefaultAgent();
+                agentAlias = defaultAgent?.config.alias || 'claude';
+                correlatedLogger.debug({ fallbackAgent: agentAlias }, 'No enabled agents found, using fallback');
+            }
         }
     }
 
