@@ -6,6 +6,7 @@ interface AIModelSelectionSettings {
   analysis_model_fast: string;
   planner_context_model: string;
   planner_generation_model: string;
+  default_agent_alias: string;
 }
 
 interface AIModelSelectionSectionProps {
@@ -14,6 +15,7 @@ interface AIModelSelectionSectionProps {
   agents: AgentConfig[];
   onSettingChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   onSummarizationModelChange: (agentAlias: string) => void;
+  onDefaultAgentChange: (agentAlias: string) => void;
   className?: string;
 }
 
@@ -33,12 +35,16 @@ const RECOMMENDED_CONTEXT_ANALYSIS_ALIASES = ['haiku', 'flash', 'flash-lite', 'g
 // Models recommended for plan generation (high capability options)
 const RECOMMENDED_PLAN_GENERATION_ALIASES = ['opus', 'sonnet', 'gpt-5.2', 'gemini-3-pro'];
 
+// Models recommended for implementation (high capability options)
+const RECOMMENDED_IMPLEMENTATION_ALIASES = ['claude'];
+
 const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   settings,
   summarizationSettings,
   agents,
   onSettingChange,
   onSummarizationModelChange,
+  onDefaultAgentChange,
   className
 }) => {
   // Helper to get pretty name from MODEL_INFO_MAP
@@ -63,6 +69,13 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   const isRecommendedForPlanGeneration = (modelId: string) => {
     const info = MODEL_INFO_MAP[modelId];
     return info && RECOMMENDED_PLAN_GENERATION_ALIASES.includes(info.shortAlias);
+  };
+
+  // Check if an agent is recommended for implementation
+  const isAgentRecommendedForImplementation = (agentAlias: string) => {
+    return RECOMMENDED_IMPLEMENTATION_ALIASES.some(alias =>
+      agentAlias.toLowerCase().includes(alias.toLowerCase())
+    );
   };
 
   // Generate model options from agents with human-readable names
@@ -122,6 +135,22 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
     return 0;
   });
 
+  // Agent options for default implementation agent (only enabled agents, sorted by recommendation)
+  interface AgentOption {
+    value: string;
+    label: string;
+    isRecommended: boolean;
+  }
+  const implementationAgentOptions: AgentOption[] = enabledAgents.map(agent => ({
+    value: agent.alias,
+    label: agent.alias,
+    isRecommended: isAgentRecommendedForImplementation(agent.alias)
+  })).sort((a, b) => {
+    if (a.isRecommended && !b.isRecommended) return -1;
+    if (!a.isRecommended && b.isRecommended) return 1;
+    return 0;
+  });
+
   const hasAgents = agents.length > 0;
   const hasEnabledAgents = enabledAgents.length > 0;
 
@@ -133,6 +162,47 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
       </p>
 
       <div className="space-y-4">
+        {/* Default Implementation Agent - First in list */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="default_agent_alias">
+            Default Implementation Agent
+          </label>
+          {hasEnabledAgents ? (
+            <select
+              id="default_agent_alias"
+              value={settings.default_agent_alias}
+              onChange={(e) => onDefaultAgentChange(e.target.value)}
+              className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+            >
+              {implementationAgentOptions.map(opt => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                  {opt.isRecommended ? ' (Recommended)' : ''}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="text-sm text-gray-500 p-3 bg-gray-50 rounded-md border border-gray-200">
+              No enabled agents available. Please enable an agent in the{' '}
+              <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
+                AI Agents
+              </a>{' '}
+              page first.
+            </div>
+          )}
+          <p className="mt-1 text-sm text-gray-500">
+            The agent used for code implementation tasks when no specific agent is specified.
+            {hasEnabledAgents && (
+              <span className="block mt-1">
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
+                  Recommended
+                </span>
+                {' '}agents are optimized for code implementation tasks.
+              </span>
+            )}
+          </p>
+        </div>
+
         {/* Fast Analysis Model */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="analysis_model_fast">

@@ -24,6 +24,24 @@ const PROMPT_DEBOUNCE_DELAY = 800;
 // Timeout for waiting on in-flight save operations (in milliseconds)
 const SAVE_WAIT_TIMEOUT = 5000;
 
+// Helper function to determine default agent alias
+function resolveDefaultAgentAlias(
+  savedAlias: string | undefined,
+  enabledAgents: AgentConfig[]
+): string {
+  if (savedAlias) {
+    return savedAlias;
+  }
+  if (enabledAgents.length === 0) {
+    return '';
+  }
+  // Prefer Claude agent if available
+  const claudeAgent = enabledAgents.find((a: AgentConfig) =>
+    a.alias.toLowerCase() === 'claude' || a.alias.toLowerCase().includes('claude')
+  );
+  return claudeAgent ? claudeAgent.alias : enabledAgents[0].alias;
+}
+
 export function useSettingsState() {
   // Global state
   const [loading, setLoading] = useState(true);
@@ -41,7 +59,8 @@ export function useSettingsState() {
     worker_concurrency: '',
     analysis_model_fast: '',
     planner_context_model: '',
-    planner_generation_model: ''
+    planner_generation_model: '',
+    default_agent_alias: ''
   });
   const [prLabel, setPrLabel] = useState('');
 
@@ -88,6 +107,7 @@ export function useSettingsState() {
           analysis_model_fast?: string;
           planner_context_model?: string;
           planner_generation_model?: string;
+          default_agent_alias?: string;
           github_user_whitelist?: string[];
         };
         const keywordsData = kData as { followup_keywords?: string[] };
@@ -98,11 +118,19 @@ export function useSettingsState() {
         const summarizationData = sumData as SummarizationSettings;
 
         // Parse Settings
+        const agentsList = agentsData.agents || [];
+        const enabledAgents = agentsList.filter((a: AgentConfig) => a.enabled);
+        const defaultAgentAlias = resolveDefaultAgentAlias(
+          settingsData.default_agent_alias,
+          enabledAgents
+        );
+
         setSettings({
           worker_concurrency: settingsData.worker_concurrency || '',
           analysis_model_fast: settingsData.analysis_model_fast || '',
           planner_context_model: settingsData.planner_context_model || '',
-          planner_generation_model: settingsData.planner_generation_model || ''
+          planner_generation_model: settingsData.planner_generation_model || '',
+          default_agent_alias: defaultAgentAlias
         });
 
         // Parse Whitelist
@@ -178,7 +206,8 @@ export function useSettingsState() {
           github_user_whitelist: whitelistToSave,
           analysis_model_fast: settingsToSave.analysis_model_fast,
           planner_context_model: settingsToSave.planner_context_model,
-          planner_generation_model: settingsToSave.planner_generation_model
+          planner_generation_model: settingsToSave.planner_generation_model,
+          default_agent_alias: settingsToSave.default_agent_alias
         }),
         updatePrLabel(prLabelToSave.trim()),
         updatePrimaryProcessingLabels(primaryLabelsToSave),
@@ -342,6 +371,13 @@ export function useSettingsState() {
     handleSummarizationChange(newSettings);
   }, [summarizationSettings, handleSummarizationChange]);
 
+  // Handle default agent change from AI Model Selection section
+  const handleDefaultAgentChange = useCallback((agentAlias: string) => {
+    const newSettings = { ...settings, default_agent_alias: agentAlias };
+    setSettings(newSettings);
+    performAutoSave({ settings: newSettings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords });
+  }, [settings, whitelist, prLabel, primaryLabels, keywords, ignoreKeywords, performAutoSave]);
+
   // Handle manual reindex trigger
   const handleReindexAll = useCallback(async () => {
     setIsReindexing(true);
@@ -401,6 +437,7 @@ export function useSettingsState() {
     removeIgnoreKeyword,
     handleSummarizationChange,
     handleSummarizationModelChange,
+    handleDefaultAgentChange,
     handleReindexAll
   };
 }

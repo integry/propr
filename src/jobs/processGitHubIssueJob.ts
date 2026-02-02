@@ -6,13 +6,13 @@ import {
     logger, generateCorrelationId, handleError, getAuthenticatedOctokit, withRetry, retryConfigs,
     getStateManager, TaskStates, ensureRepoCloned, createWorktreeForIssue, getRepoUrl, pushBranch,
     addModelSpecificDelay, safeAddLabel, ensureGitRepository, UsageLimitError, recordLLMMetrics,
-    validateRepositoryInfo, getDefaultModel, loadPrLabel, loadPrimaryProcessingLabels,
+    validateRepositoryInfo, getDefaultModel, loadPrLabel, loadPrimaryProcessingLabels, loadSettings,
     filterCommentByAuthor, AgentRegistry, generateClaudePrompt, resolveLlmLabel, updateFileChangesFromWorktree,
     updatePlanIssueTaskId
 } from '@gitfix/core';
 import type {
     WorkerStateManager, IssueRef, WorktreeInfo, CommitResult, ClaudeCodeResponse, ClaudeResult,
-    RepoValidationResult, AgentExecutionResult, IssueJobData, JobResult
+    RepoValidationResult, AgentExecutionResult, IssueJobData, JobResult, Agent
 } from '@gitfix/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult, localizeContentImages } from './issueJobHelpers.js';
@@ -139,8 +139,34 @@ async function initializeJobContext(job: Job<IssueJobData>): Promise<JobContext>
 
     // Fallback to default agent if still missing
     if (!agentAlias) {
-        const defaultAgent = registry.getDefaultAgent();
-        agentAlias = defaultAgent?.config.alias || 'default';
+        // First, try to use the configured default agent from settings
+        try {
+            const settings = await loadSettings();
+            if (settings.default_agent_alias) {
+                const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
+                if (configuredAgent && configuredAgent.config.enabled) {
+                    agentAlias = settings.default_agent_alias as string;
+                    correlatedLogger.debug({ configuredDefaultAgent: agentAlias }, 'Using default agent from settings');
+                }
+            }
+        } catch (settingsError) {
+            correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings, using first available agent');
+        }
+
+        // If still no agent, fall back to the first valid enabled agent
+        if (!agentAlias) {
+            const allAgents = registry.getAllAgents();
+            const firstValidAgent = allAgents.find((agent: Agent) => agent.config.enabled);
+            if (firstValidAgent) {
+                agentAlias = firstValidAgent.config.alias;
+                correlatedLogger.debug({ firstValidAgent: agentAlias }, 'Using first valid enabled agent');
+            } else {
+                // Last resort: try the default agent from registry
+                const defaultAgent = registry.getDefaultAgent();
+                agentAlias = defaultAgent?.config.alias || 'claude';
+                correlatedLogger.debug({ fallbackAgent: agentAlias }, 'No enabled agents found, using fallback');
+            }
+        }
     }
 
     // Get model if still missing (use agent's default model)
