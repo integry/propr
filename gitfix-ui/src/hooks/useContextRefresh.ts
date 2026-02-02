@@ -48,6 +48,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const [initialSyncDone, setInitialSyncDone] = useState<boolean>(false);
   const [timeUntilRefresh, setTimeUntilRefresh] = useState<number | null>(null);
   const [isContextStale, setIsContextStale] = useState<boolean>(false);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -55,6 +56,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const sourceRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevSourceRef = useRef<SourceConfig | null>(null);
+  const pausedTimeRemainingRef = useRef<number | null>(null);
 
   // Keep config ref up to date
   useEffect(() => { configRef.current = config; }, [config]);
@@ -149,7 +151,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     }
   }, [config.baseBranch, config.prompt, config.files.length, config.compress, initialSyncDone, fetchPreview]);
 
-  // Source changes - start countdown
+  // Source changes - start countdown (unless paused)
   useEffect(() => {
     if (!initialSyncDone) return;
 
@@ -169,11 +171,17 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     };
 
     if (sourceChanged) {
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = setTimeout(() => startCountdown(), DEBOUNCE_DELAY);
-      return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
+      // Mark context as stale even when paused
+      setIsContextStale(true);
+
+      // Only start countdown if not paused
+      if (!isPaused) {
+        if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = setTimeout(() => startCountdown(), DEBOUNCE_DELAY);
+        return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
+      }
     }
-  }, [config.prompt, config.baseBranch, config.files.length, config.compress, initialSyncDone, startCountdown]);
+  }, [config.prompt, config.baseBranch, config.files.length, config.compress, initialSyncDone, isPaused, startCountdown]);
 
   // View changes - fetch immediately
   useEffect(() => {
@@ -184,26 +192,64 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   }, [config.granularity, config.contextLevel, initialSyncDone, isContextStale, fetchPreview]);
 
-  // Timer expiry
+  // Timer expiry - auto-fetch when countdown ends (only if not paused)
   useEffect(() => {
-    if (timeUntilRefresh === null && isContextStale && initialSyncDone) {
+    if (timeUntilRefresh === null && isContextStale && initialSyncDone && !isPaused) {
       setIsContextStale(false);
       fetchPreview();
     }
-  }, [timeUntilRefresh, isContextStale, initialSyncDone, fetchPreview]);
+  }, [timeUntilRefresh, isContextStale, initialSyncDone, isPaused, fetchPreview]);
 
   const handleManualRefresh = useCallback(() => {
     clearCountdown();
     setIsContextStale(false);
+    pausedTimeRemainingRef.current = null;
     fetchPreview();
   }, [clearCountdown, fetchPreview]);
+
+  const togglePause = useCallback(() => {
+    setIsPaused(prev => {
+      const newPaused = !prev;
+      if (newPaused) {
+        // Pausing: save current time remaining and clear the countdown
+        pausedTimeRemainingRef.current = timeUntilRefresh;
+        if (sourceRefreshTimerRef.current) {
+          clearTimeout(sourceRefreshTimerRef.current);
+          sourceRefreshTimerRef.current = null;
+        }
+        if (countdownIntervalRef.current) {
+          clearInterval(countdownIntervalRef.current);
+          countdownIntervalRef.current = null;
+        }
+      } else {
+        // Resuming: restart countdown from where we left off
+        const remaining = pausedTimeRemainingRef.current;
+        if (remaining !== null && remaining > 0 && isContextStale) {
+          setTimeUntilRefresh(remaining);
+
+          countdownIntervalRef.current = setInterval(() => {
+            setTimeUntilRefresh(p => (p === null || p <= 1) ? null : p - 1);
+          }, 1000);
+
+          sourceRefreshTimerRef.current = setTimeout(() => {
+            clearCountdown();
+            setIsContextStale(false);
+          }, remaining * 1000);
+        }
+        pausedTimeRemainingRef.current = null;
+      }
+      return newPaused;
+    });
+  }, [timeUntilRefresh, isContextStale, clearCountdown]);
 
   return {
     preview,
     isContextStale,
     timeUntilRefresh,
+    isPaused,
     fetchPreview,
     handleManualRefresh,
-    clearCountdown
+    clearCountdown,
+    togglePause
   };
 }

@@ -49,6 +49,8 @@ interface SetupWizardContentProps {
   preview: PreviewState;
   isContextStale: boolean;
   timeUntilRefresh: number | null;
+  isPaused?: boolean;
+  onTogglePause?: () => void;
   onManualRefresh: () => void;
 
   // Error and generation props
@@ -82,6 +84,8 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
   preview,
   isContextStale,
   timeUntilRefresh,
+  isPaused,
+  onTogglePause,
   onManualRefresh,
   error,
   generationError,
@@ -134,6 +138,8 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
         contextRepositories={contextRepositories}
         isContextStale={isContextStale}
         timeUntilRefresh={timeUntilRefresh}
+        isPaused={isPaused}
+        onTogglePause={onTogglePause}
         onManualRefresh={onManualRefresh}
       />
 

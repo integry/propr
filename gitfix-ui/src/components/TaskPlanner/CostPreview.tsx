@@ -1,5 +1,5 @@
 import React from 'react';
-import { Loader2, DollarSign, Zap, Info, BookOpen, RefreshCw, Clock } from 'lucide-react';
+import { Loader2, DollarSign, Zap, Info, BookOpen, RefreshCw, Clock, Pause, Play } from 'lucide-react';
 import { PreviewResult, ContextRepository } from '../../api/gitfixApi';
 
 interface PreviewState {
@@ -16,6 +16,8 @@ interface CostPreviewProps {
   isContextStale?: boolean;
   timeUntilRefresh?: number | null;
   onManualRefresh?: () => void;
+  isPaused?: boolean;
+  onTogglePause?: () => void;
 }
 
 const getUsageColor = (percentage: number, actualPercentage: number): string => {
@@ -32,7 +34,9 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   contextRepositories,
   isContextStale,
   timeUntilRefresh,
-  onManualRefresh
+  onManualRefresh,
+  isPaused,
+  onTogglePause
 }) => {
   if (preview.isLoading) {
     return (
@@ -125,7 +129,7 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
       )}
 
       {/* Warnings and Refresh Indicator - styled as neutral info tips */}
-      {(warnings.length > 0 || ((isContextStale || timeUntilRefresh !== null) && onManualRefresh)) && (
+      {(warnings.length > 0 || ((isContextStale || timeUntilRefresh !== null || isPaused) && onManualRefresh)) && (
         <div className="flex items-center justify-between pt-2 border-t border-gray-100">
           {/* Warnings */}
           <div className="space-y-1 flex-1">
@@ -137,15 +141,38 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
             ))}
           </div>
 
-          {/* Compact Refresh Indicator */}
-          {(isContextStale || timeUntilRefresh !== null) && onManualRefresh && (
+          {/* Compact Refresh Indicator with Pause Control */}
+          {(isContextStale || timeUntilRefresh !== null || isPaused) && onManualRefresh && (
             <div className="flex items-center gap-2 ml-4 flex-shrink-0 relative group/refresh">
-              {timeUntilRefresh !== null && (
+              {/* Countdown timer - show when not paused and countdown active */}
+              {timeUntilRefresh !== null && !isPaused && (
                 <span className="text-xs text-gray-400 flex items-center gap-1">
                   <Clock className="w-3 h-3" />
                   {timeUntilRefresh}s
                 </span>
               )}
+              {/* Paused indicator */}
+              {isPaused && isContextStale && (
+                <span className="text-xs text-amber-500 flex items-center gap-1">
+                  <Pause className="w-3 h-3" />
+                  paused
+                </span>
+              )}
+              {/* Pause/Resume button */}
+              {onTogglePause && (
+                <button
+                  onClick={onTogglePause}
+                  className={`p-1.5 rounded transition-colors ${
+                    isPaused
+                      ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50'
+                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+                  }`}
+                  title={isPaused ? 'Resume auto-refresh' : 'Pause auto-refresh'}
+                >
+                  {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                </button>
+              )}
+              {/* Manual refresh button */}
               <button
                 onClick={onManualRefresh}
                 disabled={preview.isLoading}
@@ -157,9 +184,11 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
               <div className="absolute bottom-full right-0 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 group-hover/refresh:opacity-100 transition-opacity pointer-events-none w-64 z-50">
                 <div className="font-medium mb-1">Context Refresh</div>
                 <div className="text-gray-300 leading-relaxed">
-                  {timeUntilRefresh !== null
-                    ? 'Changes detected. Waiting before refresh to avoid rapid regeneration while you type. Click to refresh immediately.'
-                    : 'Context is outdated. Click to regenerate based on your current prompt and settings.'}
+                  {isPaused
+                    ? 'Auto-refresh is paused. Context will not update automatically when you make changes. Click the play button to resume.'
+                    : timeUntilRefresh !== null
+                      ? 'Changes detected. Waiting before refresh to avoid rapid regeneration while you type. Click to refresh immediately.'
+                      : 'Context is outdated. Click to regenerate based on your current prompt and settings.'}
                 </div>
                 <div className="absolute bottom-0 right-4 transform translate-y-1/2 rotate-45 w-2 h-2 bg-gray-900"></div>
               </div>

@@ -59,7 +59,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     useGenerationPolling({ draftId: draft.draft_id, onComplete: onGenerateComplete });
   const { isExporting, exportContext } = useContextExport(setError);
 
-  const { preview, isContextStale, timeUntilRefresh, fetchPreview, handleManualRefresh, clearCountdown } =
+  const { preview, isContextStale, timeUntilRefresh, isPaused, fetchPreview, handleManualRefresh, clearCountdown, togglePause } =
     useContextRefresh({ draftId: draft.draft_id, config, onBranchError: setBranchError });
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -208,6 +208,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           contextRepositories={config.contextRepositories} availableRepos={availableRepos}
           onAddContextRepo={handleAddContextRepo} onRemoveContextRepo={handleRemoveContextRepo}
           preview={preview} isContextStale={isContextStale} timeUntilRefresh={timeUntilRefresh}
+          isPaused={isPaused} onTogglePause={togglePause}
           onManualRefresh={handleManualRefresh} error={error} generationError={generationError}
           isGenerating={isGenerating} generationTrace={generationTrace}
         />
