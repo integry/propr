@@ -24,6 +24,24 @@ const PROMPT_DEBOUNCE_DELAY = 800;
 // Timeout for waiting on in-flight save operations (in milliseconds)
 const SAVE_WAIT_TIMEOUT = 5000;
 
+// Helper function to determine default agent alias
+function resolveDefaultAgentAlias(
+  savedAlias: string | undefined,
+  enabledAgents: AgentConfig[]
+): string {
+  if (savedAlias) {
+    return savedAlias;
+  }
+  if (enabledAgents.length === 0) {
+    return '';
+  }
+  // Prefer Claude agent if available
+  const claudeAgent = enabledAgents.find((a: AgentConfig) =>
+    a.alias.toLowerCase() === 'claude' || a.alias.toLowerCase().includes('claude')
+  );
+  return claudeAgent ? claudeAgent.alias : enabledAgents[0].alias;
+}
+
 export function useSettingsState() {
   // Global state
   const [loading, setLoading] = useState(true);
@@ -100,18 +118,12 @@ export function useSettingsState() {
         const summarizationData = sumData as SummarizationSettings;
 
         // Parse Settings
-        // Determine default agent alias: use saved value, or default to 'claude' if available, or first enabled agent
         const agentsList = agentsData.agents || [];
         const enabledAgents = agentsList.filter((a: AgentConfig) => a.enabled);
-        let defaultAgentAlias = settingsData.default_agent_alias || '';
-
-        // If no default is set, find the best default (prefer 'claude', then first enabled agent)
-        if (!defaultAgentAlias && enabledAgents.length > 0) {
-          const claudeAgent = enabledAgents.find((a: AgentConfig) =>
-            a.alias.toLowerCase() === 'claude' || a.alias.toLowerCase().includes('claude')
-          );
-          defaultAgentAlias = claudeAgent ? claudeAgent.alias : enabledAgents[0].alias;
-        }
+        const defaultAgentAlias = resolveDefaultAgentAlias(
+          settingsData.default_agent_alias,
+          enabledAgents
+        );
 
         setSettings({
           worker_concurrency: settingsData.worker_concurrency || '',
