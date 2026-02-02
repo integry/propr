@@ -83,6 +83,8 @@ export interface ContextCache {
   smartSummaryTokens: number;
   /** Per-file token counts for simulated truncation */
   fileTokenCounts: Record<string, number>;
+  /** The token limit used when generating this cache (for validation) */
+  cachedMaxTokenLimit?: number;
 }
 
 export interface TaskDraftConfig {
@@ -700,8 +702,10 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   });
 
   // Check if we can use cached context (requires fileTokenCounts for simulation)
+  // Also verify that the cache was generated at a sufficient token limit
   const cache = existingConfig?.contextCache;
-  const canUseCache = cache && cache.contentHash === contentHash && cache.fileTokenCounts;
+  const cacheHasSufficientLimit = !cache?.cachedMaxTokenLimit || cache.cachedMaxTokenLimit >= maxTokenLimit;
+  const canUseCache = cache && cache.contentHash === contentHash && cache.fileTokenCounts && cacheHasSufficientLimit;
 
   // Always load images (needed for final context)
   const { base64Images, imageTokens } = await loadImagesFromAttachments(attachments, correlatedLogger);
@@ -726,7 +730,8 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     smartSummaryTokens = cache.smartSummaryTokens;
     fileTokenCounts = cache.fileTokenCounts;
   } else {
-    correlatedLogger.info({ contentHash, hadCache: !!cache }, 'Regenerating context at MAX_CONTEXT_LEVEL (content changed)');
+    const reason = !cache ? 'no cache' : cache.contentHash !== contentHash ? 'content changed' : !cache.fileTokenCounts ? 'missing fileTokenCounts' : !cacheHasSufficientLimit ? `cached limit (${cache.cachedMaxTokenLimit}) < required (${maxTokenLimit})` : 'unknown';
+    correlatedLogger.info({ contentHash, hadCache: !!cache, reason }, 'Regenerating context at MAX_CONTEXT_LEVEL');
     const result = await regenerateContext({
       baseBranch, worktreePath, prompt, manualFiles, draft, contextModel,
       compress, previewTokenLimit: maxTokenLimit, correlationId, correlatedLogger
@@ -788,7 +793,8 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     includedFiles,
     repomixTokens,
     smartSummaryTokens,
-    fileTokenCounts
+    fileTokenCounts,
+    cachedMaxTokenLimit: maxTokenLimit
   };
 
   await db('task_drafts').where({ draft_id: draftId }).update({
