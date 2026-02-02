@@ -62,8 +62,10 @@ const PlansPage: React.FC = () => {
   }, []);
 
   // Fetch drafts with pagination, filtering, and search
-  const loadDrafts = useCallback(async (page: number, repository: string, status: string) => {
-    setLoading(true);
+  const loadDrafts = useCallback(async (page: number, repository: string, status: string, showLoading = true) => {
+    if (showLoading) {
+      setLoading(true);
+    }
     try {
       const data = await getDrafts({
         page,
@@ -76,9 +78,15 @@ const PlansPage: React.FC = () => {
       setTotalDrafts(data.total);
       setHasMore(data.hasMore);
     } catch (err) {
-      setError((err as Error).message || 'Failed to load plans');
+      if (showLoading) {
+        setError((err as Error).message || 'Failed to load plans');
+      } else {
+        console.error('Silent refresh failed:', err);
+      }
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   }, [debouncedSearch]);
 
@@ -100,6 +108,14 @@ const PlansPage: React.FC = () => {
     }, 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  // Auto-polling every 5 seconds for silent refresh
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      loadDrafts(currentPage, repoFilter, statusFilter, false);
+    }, 5000);
+    return () => clearInterval(intervalId);
+  }, [currentPage, repoFilter, statusFilter, loadDrafts]);
 
   // Reset to first page when filter changes
   const handleFilterChange = (newFilter: string) => {
@@ -144,7 +160,7 @@ const PlansPage: React.FC = () => {
     try {
       await abortGeneration(id);
       // Refresh the list to show updated status
-      await loadDrafts(currentPage, repoFilter);
+      await loadDrafts(currentPage, repoFilter, statusFilter);
     } catch (err) {
       setError((err as Error).message || 'Failed to stop generation');
     } finally {
