@@ -44,12 +44,29 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     return map;
   }, [tasks]);
 
+  // Apply default agent/model to pending issues that don't have one assigned
+  // This is UI-only state - no database update until user takes action
+  const issuesWithDefaults = useMemo(() => {
+    const defaultAgent = agents.find(a => a.enabled);
+    if (!defaultAgent) return issues;
+
+    const defaultAlias = defaultAgent.alias;
+    const defaultModel = defaultAgent.defaultModel ?? defaultAgent.supportedModels?.[0] ?? null;
+
+    return issues.map(issue => {
+      if (issue.status === 'pending' && !issue.agent_alias) {
+        return { ...issue, agent_alias: defaultAlias, model_name: defaultModel };
+      }
+      return issue;
+    });
+  }, [issues, agents]);
+
   const { activeIssues, mergedIssues, pendingCount, hasActiveIssues, firstPendingIssueNumber } = useMemo(() => {
     const active: PlanIssue[] = [], merged: PlanIssue[] = [];
     let pending = 0, hasActive = false;
 
     // Sort issues by issue_number to determine order
-    const sortedIssues = [...issues].sort((a, b) => a.issue_number - b.issue_number);
+    const sortedIssues = [...issuesWithDefaults].sort((a, b) => a.issue_number - b.issue_number);
 
     // Find the first unmerged issue number (to determine which pending issue can be implemented)
     let firstUnmergedIssueNumber: number | null = null;
@@ -64,7 +81,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     // that is both pending AND is the first unmerged issue (all prior issues are merged)
     let firstPending: number | null = null;
 
-    issues.forEach(issue => {
+    issuesWithDefaults.forEach(issue => {
       if (issue.status === 'merged') { merged.push(issue); }
       else {
         active.push(issue);
@@ -80,7 +97,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
       }
     });
     return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive, firstPendingIssueNumber: firstPending };
-  }, [issues]);
+  }, [issuesWithDefaults]);
 
   const fetchIssues = useCallback(async () => {
     try {
