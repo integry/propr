@@ -29,6 +29,107 @@ const getUsageColor = (percentage: number, actualPercentage: number): string => 
   return 'bg-indigo-400';
 };
 
+const LoadingState: React.FC = () => (
+  <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm">
+    <div className="flex items-center gap-3 text-gray-500">
+      <Loader2 className="w-5 h-5 animate-spin" />
+      <div>
+        <span className="font-medium text-gray-700">Analyzing source code and gathering context...</span>
+        <p className="text-sm text-gray-500 mt-0.5">This may take a couple of minutes.</p>
+      </div>
+    </div>
+  </div>
+);
+
+const ErrorState: React.FC<{ error: string }> = ({ error }) => (
+  <div className="p-5 rounded-xl border border-red-200 bg-red-50">
+    <span className="text-red-600">{error}</span>
+  </div>
+);
+
+const EmptyState: React.FC = () => (
+  <div className="p-5 rounded-xl border border-gray-200 bg-gray-50">
+    <span className="text-gray-500">Enter a prompt to see cost estimate</span>
+  </div>
+);
+
+interface RefreshIndicatorProps {
+  isContextStale?: boolean;
+  timeUntilRefresh?: number | null;
+  isPaused?: boolean;
+  onTogglePause?: () => void;
+  onManualRefresh: () => void;
+  isLoading: boolean;
+}
+
+const RefreshIndicator: React.FC<RefreshIndicatorProps> = ({
+  timeUntilRefresh,
+  isPaused,
+  isContextStale,
+  onTogglePause,
+  onManualRefresh,
+  isLoading
+}) => {
+  const getTooltipText = (): string => {
+    if (isPaused) {
+      return 'Auto-refresh is paused. Context will not update automatically when you make changes. Click the play button to resume.';
+    }
+    if (timeUntilRefresh !== null) {
+      return 'Changes detected. Waiting before refresh to avoid rapid regeneration while you type. Click to refresh immediately.';
+    }
+    return 'Context is outdated. Click to regenerate based on your current prompt and settings.';
+  };
+
+  return (
+    <div className="flex items-center gap-2 ml-4 flex-shrink-0 relative group/refresh">
+      {/* Countdown timer - show when not paused and countdown active */}
+      {timeUntilRefresh !== null && !isPaused && (
+        <span className="text-xs text-gray-400 flex items-center gap-1">
+          <Clock className="w-3 h-3" />
+          {timeUntilRefresh}s
+        </span>
+      )}
+      {/* Paused indicator */}
+      {isPaused && isContextStale && (
+        <span className="text-xs text-amber-500 flex items-center gap-1">
+          <Pause className="w-3 h-3" />
+          paused
+        </span>
+      )}
+      {/* Pause/Resume button */}
+      {onTogglePause && (
+        <button
+          onClick={onTogglePause}
+          className={`p-1.5 rounded transition-colors ${
+            isPaused
+              ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50'
+              : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+          }`}
+          title={isPaused ? 'Resume auto-refresh' : 'Pause auto-refresh'}
+        >
+          {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+        </button>
+      )}
+      {/* Manual refresh button */}
+      <button
+        onClick={onManualRefresh}
+        disabled={isLoading}
+        className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+      </button>
+      {/* Tooltip explaining the refresh logic */}
+      <div className="absolute bottom-full right-0 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 group-hover/refresh:opacity-100 transition-opacity pointer-events-none w-64 z-50">
+        <div className="font-medium mb-1">Context Refresh</div>
+        <div className="text-gray-300 leading-relaxed">
+          {getTooltipText()}
+        </div>
+        <div className="absolute bottom-0 right-4 transform translate-y-1/2 rotate-45 w-2 h-2 bg-gray-900"></div>
+      </div>
+    </div>
+  );
+};
+
 export const CostPreview: React.FC<CostPreviewProps> = ({
   preview,
   contextRepositories,
@@ -38,44 +139,19 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   isPaused,
   onTogglePause
 }) => {
-  if (preview.isLoading) {
-    return (
-      <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm">
-        <div className="flex items-center gap-3 text-gray-500">
-          <Loader2 className="w-5 h-5 animate-spin" />
-          <div>
-            <span className="font-medium text-gray-700">Analyzing source code and gathering context...</span>
-            <p className="text-sm text-gray-500 mt-0.5">This may take a couple of minutes.</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (preview.error) {
-    return (
-      <div className="p-5 rounded-xl border border-red-200 bg-red-50">
-        <span className="text-red-600">{preview.error}</span>
-      </div>
-    );
-  }
-
-  if (!preview.data) {
-    return (
-      <div className="p-5 rounded-xl border border-gray-200 bg-gray-50">
-        <span className="text-gray-500">Enter a prompt to see cost estimate</span>
-      </div>
-    );
-  }
+  if (preview.isLoading) return <LoadingState />;
+  if (preview.error) return <ErrorState error={preview.error} />;
+  if (!preview.data) return <EmptyState />;
 
   const { stats, smartSelection, warnings } = preview.data;
-  
+
   // Use dynamic maxTokens from stats, fallback to 200k if not available (legacy support)
   const maxTokens = stats.maxTokens || 200000;
-  
+
   const usagePercentage = Math.min(100, (stats.totalTokens / maxTokens) * 100);
   const actualPercentage = (stats.totalTokens / maxTokens) * 100;
   const usageColor = getUsageColor(usagePercentage, actualPercentage);
+  const showRefreshIndicator = (isContextStale || timeUntilRefresh !== null || isPaused) && onManualRefresh;
 
   return (
     <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm space-y-4">
@@ -129,7 +205,7 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
       )}
 
       {/* Warnings and Refresh Indicator - styled as neutral info tips */}
-      {(warnings.length > 0 || ((isContextStale || timeUntilRefresh !== null || isPaused) && onManualRefresh)) && (
+      {(warnings.length > 0 || showRefreshIndicator) && (
         <div className="flex items-center justify-between pt-2 border-t border-gray-100">
           {/* Warnings */}
           <div className="space-y-1 flex-1">
@@ -142,57 +218,15 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
           </div>
 
           {/* Compact Refresh Indicator with Pause Control */}
-          {(isContextStale || timeUntilRefresh !== null || isPaused) && onManualRefresh && (
-            <div className="flex items-center gap-2 ml-4 flex-shrink-0 relative group/refresh">
-              {/* Countdown timer - show when not paused and countdown active */}
-              {timeUntilRefresh !== null && !isPaused && (
-                <span className="text-xs text-gray-400 flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
-                  {timeUntilRefresh}s
-                </span>
-              )}
-              {/* Paused indicator */}
-              {isPaused && isContextStale && (
-                <span className="text-xs text-amber-500 flex items-center gap-1">
-                  <Pause className="w-3 h-3" />
-                  paused
-                </span>
-              )}
-              {/* Pause/Resume button */}
-              {onTogglePause && (
-                <button
-                  onClick={onTogglePause}
-                  className={`p-1.5 rounded transition-colors ${
-                    isPaused
-                      ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50'
-                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
-                  }`}
-                  title={isPaused ? 'Resume auto-refresh' : 'Pause auto-refresh'}
-                >
-                  {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
-                </button>
-              )}
-              {/* Manual refresh button */}
-              <button
-                onClick={onManualRefresh}
-                disabled={preview.isLoading}
-                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <RefreshCw className={`w-4 h-4 ${preview.isLoading ? 'animate-spin' : ''}`} />
-              </button>
-              {/* Tooltip explaining the refresh logic */}
-              <div className="absolute bottom-full right-0 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 group-hover/refresh:opacity-100 transition-opacity pointer-events-none w-64 z-50">
-                <div className="font-medium mb-1">Context Refresh</div>
-                <div className="text-gray-300 leading-relaxed">
-                  {isPaused
-                    ? 'Auto-refresh is paused. Context will not update automatically when you make changes. Click the play button to resume.'
-                    : timeUntilRefresh !== null
-                      ? 'Changes detected. Waiting before refresh to avoid rapid regeneration while you type. Click to refresh immediately.'
-                      : 'Context is outdated. Click to regenerate based on your current prompt and settings.'}
-                </div>
-                <div className="absolute bottom-0 right-4 transform translate-y-1/2 rotate-45 w-2 h-2 bg-gray-900"></div>
-              </div>
-            </div>
+          {showRefreshIndicator && (
+            <RefreshIndicator
+              isContextStale={isContextStale}
+              timeUntilRefresh={timeUntilRefresh}
+              isPaused={isPaused}
+              onTogglePause={onTogglePause}
+              onManualRefresh={onManualRefresh}
+              isLoading={preview.isLoading}
+            />
           )}
         </div>
       )}

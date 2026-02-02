@@ -24,6 +24,23 @@ async function getRepoPath(owner: string, repoName: string): Promise<string> {
     return path.join(CLONES_BASE_PATH, owner, repoName);
 }
 
+/**
+ * Check if a repository has active worktrees that would prevent re-cloning.
+ */
+async function hasActiveWorktrees(localRepoPath: string): Promise<boolean> {
+    const worktreesDir = path.join(localRepoPath, '.git', 'worktrees');
+    try {
+        if (await fs.pathExists(worktreesDir)) {
+            const entries = await fs.readdir(worktreesDir);
+            return entries.length > 0;
+        }
+        return false;
+    } catch {
+        // If we can't check, assume there might be active worktrees
+        return true;
+    }
+}
+
 export interface EnsureRepoClonedOptions {
     repoUrl: string;
     owner: string;
@@ -74,19 +91,8 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
             } catch (gitError) {
                 // Check if there are active worktrees before removing the clone
                 // Removing the clone would delete .git/worktrees and break any running tasks
-                const worktreesDir = path.join(localRepoPath, '.git', 'worktrees');
-                let hasActiveWorktrees = false;
-                try {
-                    if (await fs.pathExists(worktreesDir)) {
-                        const entries = await fs.readdir(worktreesDir);
-                        hasActiveWorktrees = entries.length > 0;
-                    }
-                } catch {
-                    // If we can't check, assume there might be active worktrees
-                    hasActiveWorktrees = true;
-                }
-
-                if (hasActiveWorktrees) {
+                if (await hasActiveWorktrees(localRepoPath)) {
+                    const worktreesDir = path.join(localRepoPath, '.git', 'worktrees');
                     logger.error({
                         repo: `${owner}/${repoName}`,
                         path: localRepoPath,
