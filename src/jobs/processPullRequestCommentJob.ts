@@ -36,7 +36,8 @@ function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
         conversationId: response.conversationId,
         finalResult: response.finalResult,
         conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
-        error: response.error
+        error: response.error,
+        tokenUsage: response.tokenUsage
     };
 }
 
@@ -60,7 +61,8 @@ function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeRe
         error: result.error,
         modifiedFiles: result.modifiedFiles,
         commitMessage: result.commitMessage || null,
-        conversationLog: result.conversationLog
+        conversationLog: result.conversationLog,
+        tokenUsage: result.tokenUsage
     };
 }
 

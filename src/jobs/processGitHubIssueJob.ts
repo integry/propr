@@ -264,7 +264,8 @@ function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeRe
         error: result.error,
         modifiedFiles: result.modifiedFiles,
         commitMessage: result.commitMessage || null,
-        conversationLog: result.conversationLog
+        conversationLog: result.conversationLog,
+        tokenUsage: result.tokenUsage
     };
 }
 
