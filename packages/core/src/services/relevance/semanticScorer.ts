@@ -2,6 +2,7 @@ import logger from '../../utils/logger.js';
 import { Agent } from '../../agents/types.js';
 import { loadFileSummaries, loadDirectorySummaries, FileSummaryRow, DirectorySummaryRow } from './contextBuilder.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
+import { MODEL_INFO_MAP } from '../../config/modelDefinitions.js';
 
 // --- Types ---
 
@@ -40,8 +41,36 @@ export interface SemanticLLMResponse {
 
 const CHARS_PER_TOKEN_ESTIMATE = 3;
 
-/** Maximum tokens per chunk to avoid context window limits and truncation */
-const MAX_CHUNK_TOKENS = 30000;
+/** Default maximum tokens per chunk (conservative fallback) */
+const DEFAULT_MAX_CHUNK_TOKENS = 30000;
+
+/**
+ * Percentage of model context window to use for chunks.
+ * We use 60% to leave room for the prompt template and output.
+ */
+const CHUNK_CONTEXT_RATIO = 0.6;
+
+/**
+ * Gets the maximum tokens per chunk based on the model's context window.
+ * For models with large context windows (e.g., Gemini 1M), this allows
+ * fitting the entire codebase summary in a single chunk.
+ */
+function getMaxChunkTokens(modelId?: string): number {
+  if (!modelId) {
+    return DEFAULT_MAX_CHUNK_TOKENS;
+  }
+
+  // Handle agent:model format (e.g., 'gemini:gemini-2.5-flash')
+  const effectiveModelId = modelId.includes(':') ? modelId.split(':')[1] : modelId;
+  const modelInfo = MODEL_INFO_MAP[effectiveModelId];
+
+  if (modelInfo?.maxTokens) {
+    // Use 60% of the model's context window for chunks
+    return Math.floor(modelInfo.maxTokens * CHUNK_CONTEXT_RATIO);
+  }
+
+  return DEFAULT_MAX_CHUNK_TOKENS;
+}
 
 // --- Main Export ---
 
@@ -103,10 +132,11 @@ export async function scoreSemanticRelevance(
       ...fileSummaries.map((f: FileSummaryRow) => `FILE ${f.path}: ${f.summary}`)
     ];
 
-    // 3. Split into chunks that fit within token budget
+    // 3. Split into chunks that fit within model's token budget
     const chunks: string[] = [];
     let currentChunk = '';
-    const maxChunkChars = MAX_CHUNK_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
+    const maxChunkTokens = getMaxChunkTokens(modelId);
+    const maxChunkChars = maxChunkTokens * CHARS_PER_TOKEN_ESTIMATE;
 
     for (const item of allItems) {
       if ((currentChunk.length + item.length + 1) > maxChunkChars && currentChunk.length > 0) {
@@ -123,7 +153,9 @@ export async function scoreSemanticRelevance(
       chunkCount: chunks.length,
       totalItems: allItems.length,
       fileSummaryCount: fileSummaries.length,
-      dirSummaryCount: dirSummaries.length
+      dirSummaryCount: dirSummaries.length,
+      maxChunkTokens,
+      modelId: modelId || 'default'
     }, 'Processing semantic scoring in chunks');
 
     // 4. Process each chunk in parallel
