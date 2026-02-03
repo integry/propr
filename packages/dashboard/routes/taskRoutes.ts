@@ -170,7 +170,69 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
     }
   }
 
-  return { getTasks, revertChanges, getRevertPreview };
+  async function deleteTask(req: Request, res: Response): Promise<void> {
+    try {
+      const { taskId } = req.params;
+      const { force } = req.query;
+
+      if (!taskId) {
+        res.status(400).json({ error: 'Task ID is required' });
+        return;
+      }
+
+      // Get the latest task state from task_history
+      const latestState = await db('task_history')
+        .where({ task_id: taskId })
+        .orderBy('timestamp', 'desc')
+        .first();
+
+      if (!latestState) {
+        res.status(404).json({ error: 'Task not found' });
+        return;
+      }
+
+      // Define active states that prevent deletion (unless force=true)
+      const activeStates = ['pending', 'queued', 'processing', 'claude_execution', 'post_processing'];
+
+      // Allow force deletion when the stop operation failed (e.g., task is stuck in pending but not actually running)
+      const forceDelete = force === 'true';
+
+      if (activeStates.includes(latestState.state?.toLowerCase()) && !forceDelete) {
+        res.status(400).json({
+          error: 'Cannot delete task in active state',
+          message: `Task is currently in "${latestState.state}" state. Please stop the task before deleting.`,
+          currentState: latestState.state
+        });
+        return;
+      }
+
+      // Use a transaction to delete from all related tables
+      await db.transaction(async (trx) => {
+        // Delete from llm_execution_details first (foreign key dependency)
+        await trx('llm_execution_details')
+          .whereIn('execution_id', function() {
+            this.select('execution_id').from('llm_executions').where({ task_id: taskId });
+          })
+          .delete();
+
+        // Delete from llm_executions
+        await trx('llm_executions').where({ task_id: taskId }).delete();
+
+        // Delete from task_history
+        await trx('task_history').where({ task_id: taskId }).delete();
+
+        // Delete the task itself
+        await trx('tasks').where({ task_id: taskId }).delete();
+      });
+
+      res.status(204).send();
+    } catch (error) {
+      console.error('Error deleting task:', error);
+      res.status(500).json({ error: 'Failed to delete task' });
+    }
+  }
+
+  return { getTasks, revertChanges, getRevertPreview, deleteTask };
 }
 
 interface TaskQuery {
