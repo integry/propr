@@ -2,7 +2,7 @@
 import { Queue, Worker, Job, QueueOptions, WorkerOptions } from 'bullmq';
 import { Redis, RedisOptions } from 'ioredis';
 import logger from '../utils/logger.js';
-import type { ConversationStep } from '../utils/llmMetrics.types.js';
+import type { ConversationStep, TokenUsage } from '../utils/llmMetrics.types.js';
 import 'dotenv/config';
 
 export interface IssueJobData {
@@ -112,6 +112,7 @@ export interface ClaudeResult {
     };
     rawOutput?: string;
     error?: string;
+    tokenUsage?: TokenUsage;
 }
 
 export interface JobResult {

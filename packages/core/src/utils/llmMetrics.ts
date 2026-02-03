@@ -8,8 +8,7 @@ import type {
     RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing,
     ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics,
     ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent,
-    LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData,
-    TokenUsage
+    LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData
 } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
@@ -133,6 +132,73 @@ function buildConversationDetail(params: ConversationDetailParams): Conversation
     };
 }
 
+interface ProcessConversationLogParams {
+    claudeResult: ClaudeResult;
+    executionId: string;
+    costUsd: number;
+    correlationId?: string;
+    taskId?: string | null;
+}
+
+async function processConversationLog(params: ProcessConversationLogParams): Promise<void> {
+    const { claudeResult, executionId, costUsd, correlationId, taskId } = params;
+    if (!claudeResult.conversationLog || !Array.isArray(claudeResult.conversationLog)) return;
+
+    if (claudeResult.conversationLog.length > 0) {
+        logger.debug({
+            correlationId, taskId,
+            sampleKeys: Object.keys(claudeResult.conversationLog[0]),
+            sampleItem: JSON.stringify(claudeResult.conversationLog[0]).substring(0, 200)
+        }, 'ConversationLog sample structure');
+    }
+
+    let totalTokens = 0;
+    claudeResult.conversationLog.forEach((step) => {
+        totalTokens += (step.message?.usage?.input_tokens ?? 0) + (step.message?.usage?.output_tokens ?? 0);
+    });
+
+    const detailsArray = claudeResult.conversationLog.map((step, index) =>
+        buildConversationDetail({ step, index, executionId, conversationLog: claudeResult.conversationLog!, totalTokens, costUsd })
+    );
+
+    if (detailsArray.length > 0) {
+        logger.info({
+            correlationId, taskId,
+            sampleDetail: {
+                sequence: detailsArray[0].sequence_number, type: detailsArray[0].event_type,
+                hasContent: !!detailsArray[0].content, contentPreview: detailsArray[0].content?.substring(0, 100),
+                inputTokens: detailsArray[0].token_count_input, outputTokens: detailsArray[0].token_count_output,
+                toolName: detailsArray[0].tool_name
+            }
+        }, 'DEBUG: Sample detail before insert');
+        await db('llm_execution_details').insert(detailsArray);
+    }
+}
+
+async function enqueueAnalysisTask(
+    taskId: string,
+    executionId: string,
+    sessionId: string,
+    correlationId?: string
+): Promise<void> {
+    try {
+        await analysisQueue.add('analyzeExecution', {
+            taskId,
+            executionId,
+            sessionId: sessionId || 'unknown',
+            correlationId: correlationId || 'unknown'
+        }, {
+            jobId: `analysis-${executionId}`,
+            removeOnComplete: true,
+            removeOnFail: true,
+            delay: 10000
+        });
+        logger.debug({ correlationId, taskId, executionId }, 'Enqueued task for execution analysis (with 10s delay)');
+    } catch (queueError) {
+        logger.error({ error: (queueError as Error).message, correlationId, taskId }, 'Failed to enqueue task for analysis');
+    }
+}
+
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics, correlationId?: string): Promise<void> {
     if (!taskId) return;
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage } = metrics;
@@ -152,43 +218,9 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
         const executionId = (insertedExecution as { execution_id: string }).execution_id;
 
-        if (claudeResult.conversationLog && Array.isArray(claudeResult.conversationLog)) {
-            if (claudeResult.conversationLog.length > 0) {
-                logger.debug({
-                    correlationId, taskId,
-                    sampleKeys: Object.keys(claudeResult.conversationLog[0]),
-                    sampleItem: JSON.stringify(claudeResult.conversationLog[0]).substring(0, 200)
-                }, 'ConversationLog sample structure');
-            }
-            let totalTokens = 0;
-            claudeResult.conversationLog.forEach((step) => {
-                totalTokens += (step.message?.usage?.input_tokens ?? 0) + (step.message?.usage?.output_tokens ?? 0);
-            });
-            const detailsArray = claudeResult.conversationLog.map((step, index) =>
-                buildConversationDetail({ step, index, executionId, conversationLog: claudeResult.conversationLog!, totalTokens, costUsd })
-            );
-            if (detailsArray.length > 0) {
-                logger.info({
-                    correlationId, taskId,
-                    sampleDetail: {
-                        sequence: detailsArray[0].sequence_number, type: detailsArray[0].event_type,
-                        hasContent: !!detailsArray[0].content, contentPreview: detailsArray[0].content?.substring(0, 100),
-                        inputTokens: detailsArray[0].token_count_input, outputTokens: detailsArray[0].token_count_output,
-                        toolName: detailsArray[0].tool_name
-                    }
-                }, 'DEBUG: Sample detail before insert');
-                await db('llm_execution_details').insert(detailsArray);
-            }
-        }
+        await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId });
         logger.debug({ correlationId, taskId, executionId }, 'LLM metrics persisted to database');
-        try {
-            await analysisQueue.add('analyzeExecution', { taskId, executionId, sessionId: sessionId || 'unknown', correlationId: correlationId || 'unknown' }, {
-                jobId: `analysis-${executionId}`, removeOnComplete: true, removeOnFail: true, delay: 10000,
-            });
-            logger.debug({ correlationId, taskId, executionId }, 'Enqueued task for execution analysis (with 10s delay)');
-        } catch (queueError) {
-            logger.error({ error: (queueError as Error).message, correlationId, taskId }, 'Failed to enqueue task for analysis');
-        }
+        await enqueueAnalysisTask(taskId, executionId, sessionId, correlationId);
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
     }
