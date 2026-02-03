@@ -148,6 +148,11 @@ async function initRedis(): Promise<void> {
 }
 
 function setupRoutes(): void {
+  // Apply authentication middleware globally to all /api routes
+  // Note: /api/auth/* routes are set up before setupRoutes via setupAuth and remain accessible
+  // The /webhook endpoint is set up separately and uses signature verification instead
+  app.use('/api', ensureAuthenticated);
+
   const statusRoutes = createStatusRoutes({ redisClient });
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
@@ -165,96 +170,96 @@ function setupRoutes(): void {
   const statsRoutes = createStatsRoutes({ db });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
 
-  app.get('/api/status', ensureAuthenticated, statusRoutes.getStatus);
-  app.get('/api/tasks', ensureAuthenticated, taskRoutes.getTasks);
-  app.get('/api/tasks/revert-preview', ensureAuthenticated, taskRoutes.getRevertPreview);
-  app.post('/api/tasks/revert', ensureAuthenticated, taskRoutes.revertChanges);
-  app.get('/api/task/:taskId/history', ensureAuthenticated, taskHistoryRoutes.getTaskHistory);
-  app.get('/api/task/:taskId/live-details', ensureAuthenticated, liveDetailsRoutes.getLiveDetails);
-  app.get('/api/task/:taskId/file-changes', ensureAuthenticated, fileChangesRoutes.getFileChanges);
+  app.get('/api/status', statusRoutes.getStatus);
+  app.get('/api/tasks', taskRoutes.getTasks);
+  app.get('/api/tasks/revert-preview', taskRoutes.getRevertPreview);
+  app.post('/api/tasks/revert', taskRoutes.revertChanges);
+  app.get('/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory);
+  app.get('/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails);
+  app.get('/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges);
 
-  app.get('/api/config/followup-keywords', ensureAuthenticated, configRoutes.getFollowupKeywords);
-  app.post('/api/config/followup-keywords', ensureAuthenticated, configRoutes.postFollowupKeywords);
-  app.get('/api/config/followup-ignore-keywords', ensureAuthenticated, configRoutes.getFollowupIgnoreKeywords);
-  app.post('/api/config/followup-ignore-keywords', ensureAuthenticated, configRoutes.postFollowupIgnoreKeywords);
-  app.get('/api/config/repos', ensureAuthenticated, configRoutes.getRepos);
-  app.post('/api/config/repos', ensureAuthenticated, configRoutes.postRepos);
-  app.get('/api/config/settings', ensureAuthenticated, configRoutes.getSettings);
-  app.post('/api/config/settings', ensureAuthenticated, configRoutes.postSettings);
-  app.get('/api/config/pr-label', ensureAuthenticated, configRoutes.getPrLabel);
-  app.post('/api/config/pr-label', ensureAuthenticated, configRoutes.postPrLabel);
-  app.get('/api/config/ai-primary-tag', ensureAuthenticated, configRoutes.getAiPrimaryTag);
-  app.post('/api/config/ai-primary-tag', ensureAuthenticated, configRoutes.postAiPrimaryTag);
-  app.get('/api/config/primary-processing-labels', ensureAuthenticated, configRoutes.getPrimaryProcessingLabels);
-  app.post('/api/config/primary-processing-labels', ensureAuthenticated, configRoutes.postPrimaryProcessingLabels);
-  app.get('/api/config/agents', ensureAuthenticated, configRoutes.getAgents);
-  app.post('/api/config/agents', ensureAuthenticated, configRoutes.postAgents);
-  app.get('/api/config/summarization', ensureAuthenticated, configRoutes.getSummarizationSettings);
-  app.post('/api/config/summarization', ensureAuthenticated, configRoutes.postSummarizationSettings);
-  app.get('/api/config/repos/indexing-status', ensureAuthenticated, configRoutes.getRepositoriesIndexingStatus);
-  app.post('/api/config/repos/trigger-indexing', ensureAuthenticated, configRoutes.triggerIndexing);
-  app.post('/api/config/repos/stop-indexing', ensureAuthenticated, configRoutes.stopIndexing);
-  app.post('/api/config/summarization/reindex-all', ensureAuthenticated, configRoutes.triggerReindexAll);
+  app.get('/api/config/followup-keywords', configRoutes.getFollowupKeywords);
+  app.post('/api/config/followup-keywords', configRoutes.postFollowupKeywords);
+  app.get('/api/config/followup-ignore-keywords', configRoutes.getFollowupIgnoreKeywords);
+  app.post('/api/config/followup-ignore-keywords', configRoutes.postFollowupIgnoreKeywords);
+  app.get('/api/config/repos', configRoutes.getRepos);
+  app.post('/api/config/repos', configRoutes.postRepos);
+  app.get('/api/config/settings', configRoutes.getSettings);
+  app.post('/api/config/settings', configRoutes.postSettings);
+  app.get('/api/config/pr-label', configRoutes.getPrLabel);
+  app.post('/api/config/pr-label', configRoutes.postPrLabel);
+  app.get('/api/config/ai-primary-tag', configRoutes.getAiPrimaryTag);
+  app.post('/api/config/ai-primary-tag', configRoutes.postAiPrimaryTag);
+  app.get('/api/config/primary-processing-labels', configRoutes.getPrimaryProcessingLabels);
+  app.post('/api/config/primary-processing-labels', configRoutes.postPrimaryProcessingLabels);
+  app.get('/api/config/agents', configRoutes.getAgents);
+  app.post('/api/config/agents', configRoutes.postAgents);
+  app.get('/api/config/summarization', configRoutes.getSummarizationSettings);
+  app.post('/api/config/summarization', configRoutes.postSummarizationSettings);
+  app.get('/api/config/repos/indexing-status', configRoutes.getRepositoriesIndexingStatus);
+  app.post('/api/config/repos/trigger-indexing', configRoutes.triggerIndexing);
+  app.post('/api/config/repos/stop-indexing', configRoutes.stopIndexing);
+  app.post('/api/config/summarization/reindex-all', configRoutes.triggerReindexAll);
 
-  app.get('/api/queue/stats', ensureAuthenticated, queueRoutes.getQueueStats);
-  app.get('/api/activity', ensureAuthenticated, queueRoutes.getActivity);
-  app.get('/api/metrics', ensureAuthenticated, queueRoutes.getMetrics);
+  app.get('/api/queue/stats', queueRoutes.getQueueStats);
+  app.get('/api/activity', queueRoutes.getActivity);
+  app.get('/api/metrics', queueRoutes.getMetrics);
 
-  app.get('/api/llm-metrics', ensureAuthenticated, llmMetricsRoutes.getSummary);
-  app.get('/api/llm-metrics/:correlationId', ensureAuthenticated, llmMetricsRoutes.getByCorrelationId);
+  app.get('/api/llm-metrics', llmMetricsRoutes.getSummary);
+  app.get('/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId);
 
-  app.get('/api/execution/:sessionId/prompt', ensureAuthenticated, executionRoutes.getPrompt);
-  app.get('/api/execution/:sessionId/logs', ensureAuthenticated, executionRoutes.getLogs);
-  app.get('/api/execution/:sessionId/logs/:type', ensureAuthenticated, executionRoutes.getLogByType);
-  app.get('/api/task/:taskId/analysis', ensureAuthenticated, executionRoutes.getAnalysis);
+  app.get('/api/execution/:sessionId/prompt', executionRoutes.getPrompt);
+  app.get('/api/execution/:sessionId/logs', executionRoutes.getLogs);
+  app.get('/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType);
+  app.get('/api/task/:taskId/analysis', executionRoutes.getAnalysis);
 
-  app.get('/api/task/:taskId/docker-info', ensureAuthenticated, dockerRoutes.getDockerInfo);
-  app.get('/api/task/:taskId/docker-logs', ensureAuthenticated, dockerRoutes.getDockerLogs);
-  app.post('/api/task/:taskId/stop', ensureAuthenticated, dockerRoutes.stopTask);
+  app.get('/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo);
+  app.get('/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs);
+  app.post('/api/task/:taskId/stop', dockerRoutes.stopTask);
 
-  app.post('/api/import-tasks', ensureAuthenticated, githubRoutes.importTasks);
-  app.get('/api/github/repos', ensureAuthenticated, githubRoutes.getRepos);
-  app.get('/api/github/repos/:owner/:repo/branches', ensureAuthenticated, githubRoutes.getBranches);
+  app.post('/api/import-tasks', githubRoutes.importTasks);
+  app.get('/api/github/repos', githubRoutes.getRepos);
+  app.get('/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches);
 
-  app.get('/api/planner/drafts', ensureAuthenticated, plannerRoutes.listDrafts);
-  app.post('/api/planner/drafts', ensureAuthenticated, plannerRoutes.createDraft);
-  app.get('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.getDraft);
-  app.put('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.updateDraft);
-  app.delete('/api/planner/drafts/:id', ensureAuthenticated, plannerRoutes.deleteDraft);
-  app.post('/api/planner/drafts/:id/attachments', ensureAuthenticated, attachmentUpload, plannerRoutes.uploadAttachment);
-  app.get('/api/planner/drafts/:id/attachments/:attachmentId', ensureAuthenticated, plannerRoutes.getAttachmentContent);
-  app.delete('/api/planner/drafts/:id/attachments/:attachmentId', ensureAuthenticated, plannerRoutes.deleteAttachment);
-  app.get('/api/planner/drafts/:id/repository-info', ensureAuthenticated, plannerRoutes.getRepositoryInfo);
+  app.get('/api/planner/drafts', plannerRoutes.listDrafts);
+  app.post('/api/planner/drafts', plannerRoutes.createDraft);
+  app.get('/api/planner/drafts/:id', plannerRoutes.getDraft);
+  app.put('/api/planner/drafts/:id', plannerRoutes.updateDraft);
+  app.delete('/api/planner/drafts/:id', plannerRoutes.deleteDraft);
+  app.post('/api/planner/drafts/:id/attachments', attachmentUpload, plannerRoutes.uploadAttachment);
+  app.get('/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.getAttachmentContent);
+  app.delete('/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.deleteAttachment);
+  app.get('/api/planner/drafts/:id/repository-info', plannerRoutes.getRepositoryInfo);
   // Plan issue management endpoints
-  app.get('/api/planner/drafts/:id/issues', ensureAuthenticated, plannerRoutes.getIssues);
-  app.post('/api/planner/drafts/:id/issues/:issueNumber/implement', ensureAuthenticated, plannerRoutes.implementIssue);
-  app.patch('/api/planner/drafts/:id/issues/:issueNumber', ensureAuthenticated, plannerRoutes.updateIssue);
-  app.post('/api/planner/drafts/:id/implement-all', ensureAuthenticated, plannerRoutes.implementAllIssues);
-  app.post('/api/planner/context/stats', ensureAuthenticated, plannerRoutes.getContextStats);
-  app.post('/api/planner/preview', ensureAuthenticated, plannerRoutes.previewContext);
-  app.post('/api/planner/preview/context', ensureAuthenticated, plannerRoutes.downloadContext);
-  app.post('/api/planner/generate', ensureAuthenticated, plannerRoutes.generate);
-  app.post('/api/planner/abort', ensureAuthenticated, plannerRoutes.abortGeneration);
-  app.post('/api/planner/refine', ensureAuthenticated, plannerRoutes.refine);
-  app.post('/api/planner/finalize', ensureAuthenticated, plannerRoutes.finalize);
-  app.post('/api/planner/drafts/:id/reset-to-setup', ensureAuthenticated, plannerRoutes.resetDraftToSetup);
-  app.post('/api/planner/validate-context-repository', ensureAuthenticated, plannerRoutes.validateContextRepository);
+  app.get('/api/planner/drafts/:id/issues', plannerRoutes.getIssues);
+  app.post('/api/planner/drafts/:id/issues/:issueNumber/implement', plannerRoutes.implementIssue);
+  app.patch('/api/planner/drafts/:id/issues/:issueNumber', plannerRoutes.updateIssue);
+  app.post('/api/planner/drafts/:id/implement-all', plannerRoutes.implementAllIssues);
+  app.post('/api/planner/context/stats', plannerRoutes.getContextStats);
+  app.post('/api/planner/preview', plannerRoutes.previewContext);
+  app.post('/api/planner/preview/context', plannerRoutes.downloadContext);
+  app.post('/api/planner/generate', plannerRoutes.generate);
+  app.post('/api/planner/abort', plannerRoutes.abortGeneration);
+  app.post('/api/planner/refine', plannerRoutes.refine);
+  app.post('/api/planner/finalize', plannerRoutes.finalize);
+  app.post('/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup);
+  app.post('/api/planner/validate-context-repository', plannerRoutes.validateContextRepository);
 
-  app.post('/api/planner/relevance', ensureAuthenticated, relevanceRoutes.analyzeRelevance);
+  app.post('/api/planner/relevance', relevanceRoutes.analyzeRelevance);
 
   // Agent chat API routes
-  app.use('/api/agents', ensureAuthenticated, agentRoutes.router);
+  app.use('/api/agents', agentRoutes.router);
 
   // Stats routes
-  app.get('/api/stats/tasks', ensureAuthenticated, statsRoutes.getTaskStats);
-  app.get('/api/stats/repositories', ensureAuthenticated, statsRoutes.getRepositoryStats);
-  app.get('/api/stats/overview', ensureAuthenticated, statsRoutes.getOverview);
-  app.get('/api/stats/generating-plans', ensureAuthenticated, statsRoutes.getGeneratingPlansCount);
+  app.get('/api/stats/tasks', statsRoutes.getTaskStats);
+  app.get('/api/stats/repositories', statsRoutes.getRepositoryStats);
+  app.get('/api/stats/overview', statsRoutes.getOverview);
+  app.get('/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount);
   // Summary browser routes for exploring repository file summaries
-  app.get('/api/summaries/:owner/:repo/status', ensureAuthenticated, summaryBrowserRoutes.getIndexingStatus);
-  app.get('/api/summaries/:owner/:repo/tree', ensureAuthenticated, summaryBrowserRoutes.getDirectoryTree);
-  app.get('/api/summaries/:owner/:repo/tree/*', ensureAuthenticated, summaryBrowserRoutes.getDirectoryTree);
-  app.get('/api/summaries/:owner/:repo/summary/*', ensureAuthenticated, summaryBrowserRoutes.getPathSummary);
+  app.get('/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus);
+  app.get('/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree);
+  app.get('/api/summaries/:owner/:repo/tree/*', summaryBrowserRoutes.getDirectoryTree);
+  app.get('/api/summaries/:owner/:repo/summary/*', summaryBrowserRoutes.getPathSummary);
 
   setupWebhookRoute();
 }

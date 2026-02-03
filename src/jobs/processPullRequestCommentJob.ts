@@ -15,7 +15,7 @@ import type { ClaudeResult } from '@gitfix/core';
 import { recordLLMMetrics } from '@gitfix/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@gitfix/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel } from '@gitfix/core';
+import { getDefaultModel, loadSettings } from '@gitfix/core';
 import { loadPrLabel } from '@gitfix/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
@@ -138,14 +138,29 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
 
 async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
     const { lockKey, correlationId, correlatedLogger, job } = lockParams;
-    const currentLock = await redisClient.get(lockKey);
-    if (currentLock && currentLock !== correlationId) {
-        correlatedLogger.info({ lockOwner: currentLock }, 'PR is currently being processed by another job. Rescheduling...');
-        await issueQueue.add(job.name, job.data, { delay: 10000 });
-        return false;
+
+    // Use atomic SET NX to avoid race condition where two jobs both check,
+    // see no lock, and both set - causing the second to overwrite the first
+    const result = await redisClient.set(lockKey, correlationId, 'EX', 3600, 'NX');
+
+    if (result === 'OK') {
+        correlatedLogger.debug({ lockKey }, 'PR lock acquired');
+        return true;
     }
-    await redisClient.set(lockKey, correlationId, 'EX', 3600);
-    return true;
+
+    // Lock exists - check if it's ours (re-entry case)
+    const currentLock = await redisClient.get(lockKey);
+    if (currentLock === correlationId) {
+        correlatedLogger.debug({ lockKey }, 'Already holding PR lock');
+        // Refresh the TTL
+        await redisClient.expire(lockKey, 3600);
+        return true;
+    }
+
+    // Lock held by another job - reschedule
+    correlatedLogger.info({ lockOwner: currentLock }, 'PR is currently being processed by another job. Rescheduling...');
+    await issueQueue.add(job.name, job.data, { delay: 10000 });
+    return false;
 }
 
 async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, context: PRJobContext & { llm: string | null | undefined }): Promise<ValidationResult> {
@@ -205,6 +220,37 @@ async function generateSummaryTitle(options: SummaryTitleOptions): Promise<strin
     }
 }
 
+/**
+ * Resolves the default agent and model from settings, with fallback to registry default.
+ */
+async function resolveDefaultAgentAndModel(
+    registry: AgentRegistry,
+    correlatedLogger: Logger
+): Promise<{ resolvedAlias: string; resolvedModel: string }> {
+    // First, try to use the configured default agent from settings
+    try {
+        const settings = await loadSettings();
+        if (settings.default_agent_alias) {
+            const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
+            if (configuredAgent && configuredAgent.config.enabled) {
+                const resolvedAlias = settings.default_agent_alias as string;
+                const resolvedModel = configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME;
+                correlatedLogger.debug({ configuredDefaultAgent: resolvedAlias, defaultModel: resolvedModel }, 'Using default agent from settings');
+                return { resolvedAlias, resolvedModel };
+            }
+        }
+    } catch (settingsError) {
+        correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
+    }
+
+    // Fallback to registry default
+    const defaultAgent = registry.getDefaultAgent();
+    const resolvedAlias = defaultAgent?.config.alias || 'claude';
+    const resolvedModel = defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME;
+    correlatedLogger.debug({ fallbackAgent: resolvedAlias, fallbackModel: resolvedModel }, 'Using fallback default agent');
+    return { resolvedAlias, resolvedModel };
+}
+
 interface AgentExecutionParams {
     llm: string | null | undefined;
     worktreePath: string;
@@ -225,18 +271,31 @@ async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ c
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
-    const modelToUse = llm || DEFAULT_MODEL_NAME;
-    const resolution = await resolveLlmLabel(modelToUse);
-    const agent = registry.getAgentByAlias(resolution.agentAlias);
+    let agentAlias: string;
+    let modelToUse: string;
+
+    if (llm) {
+        // LLM was specified (from PR label or job data) - resolve it
+        const resolution = await resolveLlmLabel(llm);
+        agentAlias = resolution.agentAlias;
+        modelToUse = resolution.model;
+    } else {
+        // No LLM specified - use default agent from settings, with fallback
+        const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
+        agentAlias = resolvedAlias;
+        modelToUse = resolvedModel;
+    }
+
+    const agent = registry.getAgentByAlias(agentAlias);
 
     if (!agent) {
-        throw new Error(`Agent not found for alias: ${resolution.agentAlias}`);
+        throw new Error(`Agent not found for alias: ${agentAlias}`);
     }
 
     correlatedLogger.info({
-        agentAlias: resolution.agentAlias,
+        agentAlias,
         agentType: agent.config.type,
-        model: resolution.model,
+        model: modelToUse,
         pullRequestNumber
     }, 'Executing PR comment task with agent');
 
@@ -244,10 +303,10 @@ async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ c
         worktreePath,
         issueRef: { number: pullRequestNumber, repoOwner, repoName },
         prompt,
-        model: resolution.model,
+        model: modelToUse,
         githubToken,
         branchName,
-        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolution.model, stateManager, correlatedLogger, redisClient }),
+        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: modelToUse, stateManager, correlatedLogger, redisClient }),
         onContainerId: createContainerIdCallbackForPR(taskId, stateManager)
     });
 

@@ -9,7 +9,7 @@ import type { RepoValidationResult } from '@gitfix/core';
 
 type RepoValidation = RepoValidationResult;
 import { issueQueue, type IssueJobData, type JobResult } from '@gitfix/core';
-import { getDefaultModel, resolveLlmLabel } from '@gitfix/core';
+import { getDefaultModel, resolveLlmLabel, loadSettings } from '@gitfix/core';
 import { AgentRegistry } from '@gitfix/core';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
@@ -91,13 +91,39 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
                 }, 'Resolved LLM label');
             }
         } else {
-            // No LLM labels - use default agent
+            // No LLM labels - use default agent from settings
             const registry = AgentRegistry.getInstance();
             await registry.ensureInitialized();
-            const defaultAgent = registry.getDefaultAgent();
+
+            let agentAlias: string | undefined;
+            let modelToUse: string | undefined;
+
+            // First, try to use the configured default agent from settings
+            try {
+                const settings = await loadSettings();
+                if (settings.default_agent_alias) {
+                    const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
+                    if (configuredAgent && configuredAgent.config.enabled) {
+                        agentAlias = settings.default_agent_alias as string;
+                        modelToUse = configuredAgent.config.defaultModel;
+                        correlatedLogger.debug({ configuredDefaultAgent: agentAlias, defaultModel: modelToUse }, 'Using default agent from settings');
+                    }
+                }
+            } catch (settingsError) {
+                correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
+            }
+
+            // Fallback to registry default if settings didn't provide an agent
+            if (!agentAlias) {
+                const defaultAgent = registry.getDefaultAgent();
+                agentAlias = defaultAgent?.config.alias || 'default';
+                modelToUse = defaultAgent?.config.defaultModel;
+                correlatedLogger.debug({ fallbackAgent: agentAlias, fallbackModel: modelToUse }, 'Using fallback default agent');
+            }
+
             agentModelsToProcess.push({
-                agentAlias: defaultAgent?.config.alias || 'default',
-                model: defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME,
+                agentAlias,
+                model: modelToUse || DEFAULT_MODEL_NAME,
                 label: null
             });
         }

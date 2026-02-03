@@ -230,7 +230,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const previewContext = withAuthCheck(db, createPreviewContextHandler({ verifyOwnership: ownershipVerifier, validateInput: validatePreviewInput, db }));
   const deleteAttachment = withAuthCheck(db, createDeleteAttachmentHandler({ verifyOwnership: ownershipVerifier }));
 
-
   async function resetDraftToSetup(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
@@ -238,22 +237,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     try {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'status', 'context_config']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-
-      const draft = ownership.draft!;
-      if (draft.status !== 'review') {
+      if (ownership.draft!.status !== 'review') {
         res.status(400).json({ error: 'Can only reset drafts that are in review status' });
         return;
       }
-
-      // Reset status to 'draft' and clear plan_json, but preserve context_config
       await db!('task_drafts').where({ draft_id: req.params.id }).update({
-        status: 'draft',
-        plan_json: null,
-        chat_history: null,
-        updated_at: db!.fn.now()
+        status: 'draft', plan_json: null, chat_history: null, updated_at: db!.fn.now()
       });
-
-      // Fetch the updated draft
       const updated = await db!('task_drafts').where({ draft_id: req.params.id }).first();
 
       // Parse JSON fields and add task_title

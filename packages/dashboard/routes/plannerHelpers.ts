@@ -623,3 +623,187 @@ export function createValidateContextRepositoryHandler() {
     }
   };
 }
+
+/**
+ * Score and sort drafts based on search relevance
+ */
+export function scoreDraftsBySearch<T extends { name?: string; initial_prompt?: string; updated_at?: string }>(
+  drafts: T[],
+  searchWords: string[],
+  exactPhrase: string
+): Omit<T, '_searchScore'>[] {
+  const scoredDrafts = drafts.map((draft) => {
+    const nameLC = (draft.name || '').toLowerCase(), promptLC = (draft.initial_prompt || '').toLowerCase();
+    let score = 0;
+    if (nameLC.includes(exactPhrase)) score += 100;
+    if (promptLC.includes(exactPhrase)) score += 80;
+    const allWordsMatchName = searchWords.every(w => nameLC.includes(w.toLowerCase()));
+    const allWordsMatchPrompt = searchWords.every(w => promptLC.includes(w.toLowerCase()));
+    if (allWordsMatchName && !nameLC.includes(exactPhrase)) score += 50;
+    if (allWordsMatchPrompt && !promptLC.includes(exactPhrase)) score += 40;
+    const wordsMatchingName = searchWords.filter(w => nameLC.includes(w.toLowerCase())).length;
+    const wordsMatchingPrompt = searchWords.filter(w => promptLC.includes(w.toLowerCase())).length;
+    score += wordsMatchingName * 10;
+    score += wordsMatchingPrompt * 5;
+    return { ...draft, _searchScore: score };
+  });
+
+  scoredDrafts.sort((a, b) => {
+    if (b._searchScore !== a._searchScore) return b._searchScore - a._searchScore;
+    return new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
+  });
+
+  return scoredDrafts.map((d) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { _searchScore, ...rest } = d;
+    return rest as Omit<T, '_searchScore'>;
+  });
+}
+
+interface AbortGenerationDeps {
+  db: KnexType;
+  verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
+}
+
+/**
+ * Create handler for aborting plan generation
+ */
+export function createAbortGenerationHandler(deps: AbortGenerationDeps) {
+  return async function abortGeneration(req: Request, res: Response): Promise<void> {
+    const { draftId } = req.body;
+    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
+
+    try {
+      const draft = await deps.db('task_drafts').where({ draft_id: draftId, user_id: req.user!.id }).first();
+      if (!draft) { res.status(404).json({ error: 'Draft not found' }); return; }
+      if (draft.status !== 'generating') {
+        res.status(400).json({ error: 'Can only abort drafts that are currently generating' });
+        return;
+      }
+
+      // Set abort signal in Redis
+      const { Redis } = await import('ioredis');
+      const redis = new Redis({
+        host: process.env.REDIS_HOST || 'redis',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10)
+      });
+      await redis.setex(`planner:abort:${draftId}`, 300, '1');
+      await redis.quit();
+
+      await deps.db('task_drafts').where({ draft_id: draftId }).update({
+        status: 'draft',
+        generation_trace: JSON.stringify({
+          steps: [],
+          error: 'Generation aborted by user',
+          abortedAt: new Date().toISOString()
+        }),
+        updated_at: deps.db.fn.now()
+      });
+
+      console.log(`[abort] Plan generation aborted for draft ${draftId}`);
+      res.json({ success: true, message: 'Generation aborted' });
+    } catch (error) {
+      console.error('Abort generation error:', error);
+      res.status(500).json({ error: 'Failed to abort generation' });
+    }
+  };
+}
+
+/**
+ * Build issue summaries from plan issues
+ */
+export async function buildIssueSummaries(
+  db: KnexType,
+  draftIds: string[]
+): Promise<Record<string, { total: number; pending: number; processing: number; merged: number; closed: number }>> {
+  const issues = await db('plan_issues')
+    .whereIn('draft_id', draftIds)
+    .select('draft_id', 'status');
+
+  const summaryMap: Record<string, { total: number; pending: number; processing: number; merged: number; closed: number }> = {};
+  for (const issue of issues as Array<{ draft_id: string; status: string }>) {
+    if (!summaryMap[issue.draft_id]) {
+      summaryMap[issue.draft_id] = { total: 0, pending: 0, processing: 0, merged: 0, closed: 0 };
+    }
+    summaryMap[issue.draft_id].total++;
+    if (issue.status === 'pending') summaryMap[issue.draft_id].pending++;
+    else if (issue.status === 'processing' || issue.status === 'under_review' || issue.status === 'in_refinement' || issue.status === 'refinement_processing') summaryMap[issue.draft_id].processing++;
+    else if (issue.status === 'merged') summaryMap[issue.draft_id].merged++;
+    else if (issue.status === 'closed') summaryMap[issue.draft_id].closed++;
+  }
+  return summaryMap;
+}
+
+/**
+ * Parse JSON fields in a draft object
+ */
+export function parseDraftJsonFields(draft: Record<string, unknown>): Record<string, unknown> & { task_title?: string } {
+  const parsedDraft: Record<string, unknown> & { task_title?: string } = { ...draft };
+  if (typeof parsedDraft.plan_json === 'string') {
+    try { parsedDraft.plan_json = JSON.parse(parsedDraft.plan_json); } catch { parsedDraft.plan_json = []; }
+  }
+  if (typeof parsedDraft.chat_history === 'string') {
+    try { parsedDraft.chat_history = JSON.parse(parsedDraft.chat_history); } catch { parsedDraft.chat_history = []; }
+  }
+  if (typeof parsedDraft.context_config === 'string') {
+    try { parsedDraft.context_config = JSON.parse(parsedDraft.context_config); } catch { parsedDraft.context_config = {}; }
+  }
+  if (typeof parsedDraft.attachments === 'string') {
+    try { parsedDraft.attachments = JSON.parse(parsedDraft.attachments); } catch { parsedDraft.attachments = []; }
+  }
+  if (typeof parsedDraft.generation_trace === 'string') {
+    try { parsedDraft.generation_trace = JSON.parse(parsedDraft.generation_trace); } catch { parsedDraft.generation_trace = null; }
+  }
+  parsedDraft.task_title = draft.name as string | undefined;
+  return parsedDraft;
+}
+
+interface RefineDeps {
+  db: KnexType;
+  verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  refinePlan: (opts: { currentPlan: any; instruction: string; worktreePath: string; repository: string; githubToken: string; correlationId: string }) => Promise<any>;
+  generateCorrelationId: () => string;
+}
+
+export function createRefineHandler(deps: RefineDeps) {
+  return async function refine(req: Request, res: Response): Promise<void> {
+    const { draftId, plan: currentPlan, instruction } = req.body;
+    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
+    if (!currentPlan || !Array.isArray(currentPlan)) { res.status(400).json({ error: 'currentPlan array is required' }); return; }
+    if (!instruction || typeof instruction !== 'string') { res.status(400).json({ error: 'instruction is required' }); return; }
+
+    const correlationId = deps.generateCorrelationId();
+    try {
+      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id']);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      await deps.db('task_drafts').where({ draft_id: draftId }).update({
+        status: 'refining', updated_at: deps.db.fn.now()
+      });
+      res.status(202).json({ success: true, status: 'refining', message: 'Plan refinement started' });
+
+      (async () => {
+        try {
+          const repoContext = await getRefineRepoContext(deps.db, draftId, req.user?.accessToken || '');
+          const plan = await deps.refinePlan({
+            currentPlan, instruction, worktreePath: repoContext.worktreePath,
+            repository: repoContext.repository, githubToken: repoContext.authToken, correlationId
+          });
+          await deps.db('task_drafts').where({ draft_id: draftId }).update({
+            plan_json: JSON.stringify(plan), status: 'review', updated_at: deps.db.fn.now()
+          });
+          console.log(`[refine] Plan refinement completed for draft ${draftId}`);
+        } catch (error) {
+          console.error(`[refine] Plan refinement failed for draft ${draftId}:`, error);
+          await deps.db('task_drafts').where({ draft_id: draftId }).update({
+            status: 'review', updated_at: deps.db.fn.now()
+          });
+        }
+      })();
+    } catch (error) {
+      console.error('Refine plan error:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to refine plan' });
+    }
+  };
+}
