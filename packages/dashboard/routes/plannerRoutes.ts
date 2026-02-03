@@ -492,7 +492,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       }
 
       // Set abort signal in Redis
-      const Redis = (await import('ioredis')).default;
+      const { Redis } = await import('ioredis');
       const redis = new Redis({
         host: process.env.REDIS_HOST || 'redis',
         port: parseInt(process.env.REDIS_PORT || '6379', 10)
