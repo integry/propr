@@ -1,6 +1,17 @@
 import { Redis } from 'ioredis';
-import { execSync } from 'child_process';
+import { simpleGit, SimpleGit } from 'simple-git';
 import logger from '../utils/logger.js';
+
+/**
+ * Validate that a string is a valid git commit hash (SHA-1 or SHA-256)
+ * @param hash - The hash to validate
+ * @returns true if valid, false otherwise
+ */
+export function isValidCommitHash(hash: string): boolean {
+    // SHA-1 hashes are 40 hex characters, SHA-256 are 64
+    // Also accept short hashes (minimum 7 characters)
+    return /^[0-9a-f]{7,64}$/i.test(hash);
+}
 
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
@@ -38,13 +49,17 @@ export interface FileChangesData {
 /**
  * Get git status output (porcelain format)
  */
-function getGitStatusOutput(worktreePath: string): string {
+async function getGitStatusOutput(git: SimpleGit): Promise<string> {
     try {
-        return execSync('git status --porcelain', {
-            cwd: worktreePath,
-            encoding: 'utf-8',
-            timeout: 10000
-        }).trim();
+        const status = await git.status();
+        // Build porcelain-like output for status determination
+        const lines: string[] = [];
+        for (const file of status.modified) lines.push(` M ${file}`);
+        for (const file of status.created) lines.push(`A  ${file}`);
+        for (const file of status.deleted) lines.push(` D ${file}`);
+        for (const file of status.renamed) lines.push(`R  ${file.from} -> ${file.to}`);
+        for (const file of status.not_added) lines.push(`?? ${file}`);
+        return lines.join('\n');
     } catch {
         return '';
     }
@@ -53,21 +68,13 @@ function getGitStatusOutput(worktreePath: string): string {
 /**
  * Get git diff stat output for uncommitted or committed changes
  */
-function getGitDiffStatOutput(worktreePath: string, hasUncommittedChanges: boolean): string {
+async function getGitDiffStatOutput(git: SimpleGit, hasUncommittedChanges: boolean): Promise<string> {
     if (hasUncommittedChanges) {
         try {
-            return execSync('git diff --stat HEAD', {
-                cwd: worktreePath,
-                encoding: 'utf-8',
-                timeout: 30000
-            }).trim();
+            return (await git.diff(['--stat', 'HEAD'])).trim();
         } catch {
             try {
-                return execSync('git diff --stat --cached', {
-                    cwd: worktreePath,
-                    encoding: 'utf-8',
-                    timeout: 30000
-                }).trim();
+                return (await git.diff(['--stat', '--cached'])).trim();
             } catch {
                 return '';
             }
@@ -76,17 +83,14 @@ function getGitDiffStatOutput(worktreePath: string, hasUncommittedChanges: boole
 
     // No uncommitted changes, check against tracking branch
     try {
-        const trackingBranch = execSync('git rev-parse --abbrev-ref @{upstream} 2>/dev/null || echo "HEAD~1"', {
-            cwd: worktreePath,
-            encoding: 'utf-8',
-            timeout: 5000
-        }).trim() || 'HEAD~1';
+        let trackingBranch: string;
+        try {
+            trackingBranch = (await git.revparse(['--abbrev-ref', '@{upstream}'])).trim();
+        } catch {
+            trackingBranch = 'HEAD~1';
+        }
 
-        return execSync(`git diff --stat ${trackingBranch}...HEAD`, {
-            cwd: worktreePath,
-            encoding: 'utf-8',
-            timeout: 30000
-        }).trim();
+        return (await git.diff(['--stat', `${trackingBranch}...HEAD`])).trim();
     } catch {
         return '';
     }
@@ -109,35 +113,33 @@ function determineFileStatus(statusOutput: string, filePath: string): FileChange
 /**
  * Get diff content for a file
  */
-function getFileDiff(worktreePath: string, filePath: string, status: FileChange['status']): string {
+async function getFileDiff(git: SimpleGit, filePath: string, status: FileChange['status']): Promise<string> {
     try {
-        let diff = execSync(`git diff HEAD -- "${filePath}"`, {
-            cwd: worktreePath,
-            encoding: 'utf-8',
-            timeout: 10000,
-            maxBuffer: 1024 * 1024 * 5
-        }).trim();
+        let diff = (await git.diff(['HEAD', '--', filePath])).trim();
 
         if (!diff) {
-            diff = execSync(`git diff --cached -- "${filePath}"`, {
-                cwd: worktreePath,
-                encoding: 'utf-8',
-                timeout: 10000,
-                maxBuffer: 1024 * 1024 * 5
-            }).trim();
+            diff = (await git.diff(['--cached', '--', filePath])).trim();
         }
 
         if (!diff && status === 'added') {
-            const content = execSync(`git show :${filePath} 2>/dev/null || cat "${filePath}"`, {
-                cwd: worktreePath,
-                encoding: 'utf-8',
-                timeout: 10000,
-                maxBuffer: 1024 * 1024 * 5
-            }).trim();
-
-            if (content) {
-                diff = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${content.split('\n').length} @@\n` +
-                    content.split('\n').map(l => `+${l}`).join('\n');
+            try {
+                const content = (await git.show([`:${filePath}`])).trim();
+                if (content) {
+                    diff = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${content.split('\n').length} @@\n` +
+                        content.split('\n').map(l => `+${l}`).join('\n');
+                }
+            } catch {
+                // File not in index, try reading from working directory
+                const fs = await import('fs-extra');
+                const baseDir = (await git.revparse(['--show-toplevel'])).trim();
+                const fullPath = `${baseDir}/${filePath}`;
+                if (await fs.pathExists(fullPath)) {
+                    const content = (await fs.readFile(fullPath, 'utf-8')).trim();
+                    if (content) {
+                        diff = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${content.split('\n').length} @@\n` +
+                            content.split('\n').map(l => `+${l}`).join('\n');
+                    }
+                }
             }
         }
         return diff;
@@ -171,15 +173,18 @@ function countDiffLines(diff: string): { linesAdded: number; linesRemoved: numbe
 /**
  * Parse a single stat line and create a FileChange object
  */
-function parseStatLine(line: string, statusOutput: string, worktreePath: string): FileChange | null {
+async function parseStatLine(line: string, statusOutput: string, git: SimpleGit): Promise<FileChange | null> {
     const match = line.match(/^\s*(.+?)\s*\|\s*(\d+|Bin)/);
-    if (!match) return null;
+    if (!match) {
+        logger.debug({ line }, 'Failed to parse stat line: regex did not match');
+        return null;
+    }
 
     const filePath = match[1].trim();
     if (filePath.includes('file') && filePath.includes('changed')) return null;
 
     const status = determineFileStatus(statusOutput, filePath);
-    const diff = getFileDiff(worktreePath, filePath, status);
+    const diff = await getFileDiff(git, filePath, status);
     const { linesAdded, linesRemoved } = countDiffLines(diff);
 
     return { path: filePath, linesAdded, linesRemoved, diff, status };
@@ -191,8 +196,9 @@ function parseStatLine(line: string, statusOutput: string, worktreePath: string)
  */
 export async function getWorktreeChanges(worktreePath: string): Promise<FileChange[]> {
     try {
-        const statusOutput = getGitStatusOutput(worktreePath);
-        const statOutput = getGitDiffStatOutput(worktreePath, !!statusOutput);
+        const git: SimpleGit = simpleGit({ baseDir: worktreePath });
+        const statusOutput = await getGitStatusOutput(git);
+        const statOutput = await getGitDiffStatOutput(git, !!statusOutput);
 
         if (!statOutput) return [];
 
@@ -200,7 +206,7 @@ export async function getWorktreeChanges(worktreePath: string): Promise<FileChan
         const files: FileChange[] = [];
 
         for (const line of statLines) {
-            const fileChange = parseStatLine(line, statusOutput, worktreePath);
+            const fileChange = await parseStatLine(line, statusOutput, git);
             if (fileChange) {
                 files.push(fileChange);
             }
@@ -287,63 +293,64 @@ export async function updateFileChangesFromWorktree(taskId: string, worktreePath
 }
 
 /**
- * Get diff stat output for a specific commit using git show
+ * Get full diff output for a specific commit using simple-git
+ * Returns both the stat summary and the full diff content in one call
  */
-function getCommitDiffStatOutput(repoPath: string, commitHash: string): string {
+async function getCommitFullDiff(git: SimpleGit, commitHash: string): Promise<string> {
     try {
-        return execSync(`git show --stat --format="" ${commitHash}`, {
-            cwd: repoPath,
-            encoding: 'utf-8',
-            timeout: 30000
-        }).trim();
-    } catch {
-        return '';
-    }
-}
-
-/**
- * Get the diff content for a specific file in a commit
- */
-function getCommitFileDiff(repoPath: string, commitHash: string, filePath: string): string {
-    try {
-        return execSync(`git show ${commitHash} -- "${filePath}"`, {
-            cwd: repoPath,
-            encoding: 'utf-8',
-            timeout: 10000,
-            maxBuffer: 1024 * 1024 * 5
-        }).trim();
+        // Use git show with --format="" to skip commit message, -p for patch
+        return (await git.show(['--format=', '-p', '--stat', commitHash])).trim();
     } catch (error) {
-        logger.debug({ filePath, commitHash, error: (error as Error).message }, 'Failed to get commit diff for file');
+        logger.debug({ commitHash, error: (error as Error).message }, 'Failed to get commit diff');
         return '';
     }
 }
 
 /**
- * Parse commit stat line and create a FileChange object
+ * Parse the full commit diff output into individual file changes
+ * This is more efficient as it processes all files from a single git call
  */
-function parseCommitStatLine(line: string, repoPath: string, commitHash: string): FileChange | null {
-    const match = line.match(/^\s*(.+?)\s*\|\s*(\d+|Bin)/);
-    if (!match) return null;
+function parseCommitDiffOutput(fullDiff: string): FileChange[] {
+    const files: FileChange[] = [];
 
-    const filePath = match[1].trim();
-    if (filePath.includes('file') && filePath.includes('changed')) return null;
+    // Split by diff headers to get individual file diffs
+    const diffSections = fullDiff.split(/(?=^diff --git)/m);
 
-    // Determine status from the diff
-    const diff = getCommitFileDiff(repoPath, commitHash, filePath);
-    let status: FileChange['status'] = 'modified';
+    for (const section of diffSections) {
+        if (!section.startsWith('diff --git')) continue;
 
-    // Check for new file or deleted file indicators in the diff
-    if (diff.includes('new file mode')) {
-        status = 'added';
-    } else if (diff.includes('deleted file mode')) {
-        status = 'deleted';
-    } else if (diff.includes('rename from') || diff.includes('rename to')) {
-        status = 'renamed';
+        // Extract file path from diff header
+        // Format: "diff --git a/path/to/file b/path/to/file"
+        const headerMatch = section.match(/^diff --git a\/(.+?) b\/(.+?)$/m);
+        if (!headerMatch) {
+            logger.debug({ section: section.substring(0, 100) }, 'Failed to parse diff header');
+            continue;
+        }
+
+        const filePath = headerMatch[2]; // Use the "b" path (destination)
+
+        // Determine status from the diff content
+        let status: FileChange['status'] = 'modified';
+        if (section.includes('new file mode')) {
+            status = 'added';
+        } else if (section.includes('deleted file mode')) {
+            status = 'deleted';
+        } else if (section.includes('rename from') || section.includes('rename to')) {
+            status = 'renamed';
+        }
+
+        const { linesAdded, linesRemoved } = countDiffLines(section);
+
+        files.push({
+            path: filePath,
+            linesAdded,
+            linesRemoved,
+            diff: section,
+            status
+        });
     }
 
-    const { linesAdded, linesRemoved } = countDiffLines(diff);
-
-    return { path: filePath, linesAdded, linesRemoved, diff, status };
+    return files;
 }
 
 /**
@@ -352,19 +359,21 @@ function parseCommitStatLine(line: string, repoPath: string, commitHash: string)
  */
 export async function getCommitChanges(repoPath: string, commitHash: string): Promise<FileChange[]> {
     try {
-        const statOutput = getCommitDiffStatOutput(repoPath, commitHash);
-
-        if (!statOutput) return [];
-
-        const statLines = statOutput.split('\n').filter(line => line.includes('|'));
-        const files: FileChange[] = [];
-
-        for (const line of statLines) {
-            const fileChange = parseCommitStatLine(line, repoPath, commitHash);
-            if (fileChange) {
-                files.push(fileChange);
-            }
+        // Validate commit hash to prevent injection
+        if (!isValidCommitHash(commitHash)) {
+            logger.error({ commitHash }, 'Invalid commit hash format');
+            return [];
         }
+
+        const git: SimpleGit = simpleGit({ baseDir: repoPath });
+
+        // Get full diff in one call (optimized - no per-file git processes)
+        const fullDiff = await getCommitFullDiff(git, commitHash);
+
+        if (!fullDiff) return [];
+
+        // Parse the diff output to extract individual file changes
+        const files = parseCommitDiffOutput(fullDiff);
 
         return files;
     } catch (error) {

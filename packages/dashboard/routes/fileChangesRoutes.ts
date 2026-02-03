@@ -7,7 +7,8 @@ import {
   storeFileChanges,
   getCommitChanges,
   ensureRepoCloned,
-  getAuthenticatedOctokit,
+  getGitHubInstallationToken,
+  isValidCommitHash,
   FileChangesData
 } from '@gitfix/core';
 
@@ -177,6 +178,12 @@ async function getHistoricCommitChanges(
     const { commit_hash: commitHash, repository } = task;
     console.log(`[file-changes] Found commit hash ${commitHash} for taskId: ${taskId}`);
 
+    // Validate commit hash format before using
+    if (!isValidCommitHash(commitHash)) {
+      console.error(`[file-changes] Invalid commit hash format: ${commitHash}`);
+      return null;
+    }
+
     // Parse repository format: "owner/repo"
     const [owner, repoName] = repository.split('/');
     if (!owner || !repoName) {
@@ -187,8 +194,7 @@ async function getHistoricCommitChanges(
     // Get authenticated token to clone/access the repo
     let repoPath: string;
     try {
-      const octokit = await getAuthenticatedOctokit();
-      const { token } = await octokit.auth({ type: "installation" }) as { token: string };
+      const token = await getGitHubInstallationToken();
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
 
       // Ensure the repo is cloned/accessible
