@@ -8,7 +8,8 @@ import type {
     RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing,
     ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics,
     ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent,
-    LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData
+    LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData,
+    TokenUsage
 } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
@@ -44,13 +45,24 @@ function calculateTokens(conversationLog: ConversationStep[] | undefined): { tot
     return { totalInputTokens, totalOutputTokens };
 }
 
-async function calculateCost(model: string, totalInputTokens: number, totalOutputTokens: number, claudeResult: ClaudeResult | null): Promise<number> {
+async function calculateCost(model: string, tokenUsage: TokenUsage | undefined, conversationLogTokens: { totalInputTokens: number; totalOutputTokens: number }, claudeResult: ClaudeResult | null): Promise<number> {
     let calculatedCostUsd = 0;
     const openRouterId = getOpenRouterId(model);
     const pricing = await getModelPricing(openRouterId) as ModelPricing | null;
-    if (pricing) {
-        calculatedCostUsd = (totalInputTokens * pricing.prompt) + (totalOutputTokens * pricing.completion);
-        logger.debug({ model, openRouterId, pricing, totalInputTokens, totalOutputTokens, calculatedCostUsd }, 'Calculated dynamic cost from OpenRouter pricing');
+
+    // Prefer tokenUsage from final result (cumulative totals), fall back to conversation log tokens
+    const inputTokens = tokenUsage?.input_tokens ?? conversationLogTokens.totalInputTokens;
+    const outputTokens = tokenUsage?.output_tokens ?? conversationLogTokens.totalOutputTokens;
+
+    logger.info({ model, openRouterId, pricingFound: !!pricing, pricing, inputTokens, outputTokens, tokenUsageSource: tokenUsage ? 'finalResult' : 'conversationLog' }, 'Cost calculation: looking up pricing');
+
+    if (pricing && (inputTokens > 0 || outputTokens > 0)) {
+        calculatedCostUsd = (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
+        logger.info({ model, openRouterId, pricing, inputTokens, outputTokens, calculatedCostUsd }, 'Calculated dynamic cost from OpenRouter pricing');
+    } else if (!pricing) {
+        logger.warn({ model, openRouterId }, 'No pricing found for model - cost will be 0 or fallback');
+    } else {
+        logger.warn({ model, inputTokens, outputTokens }, 'No token data available - cost will be 0 or fallback');
     }
     return calculatedCostUsd > 0 ? calculatedCostUsd : (claudeResult?.finalResult?.cost_usd ?? claudeResult?.finalResult?.total_cost_usd ?? 0);
 }
@@ -267,8 +279,8 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         const dateKey = timestamp.split('T')[0];
         const extracted = extractMetricsFromClaudeResult(claudeResult);
         const { model, success, executionTimeMs, executionTimeSec, numTurns, sessionId, conversationId } = extracted;
-        const { totalInputTokens, totalOutputTokens } = calculateTokens(claudeResult?.conversationLog);
-        const costUsd = await calculateCost(model, totalInputTokens, totalOutputTokens, claudeResult);
+        const conversationLogTokens = calculateTokens(claudeResult?.conversationLog);
+        const costUsd = await calculateCost(model, claudeResult?.tokenUsage, conversationLogTokens, claudeResult);
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
 
         const llmMetrics: LLMMetricsData = {
