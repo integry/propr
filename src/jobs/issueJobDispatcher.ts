@@ -31,6 +31,34 @@ interface AgentModelToProcess {
     label: string | null;
 }
 
+async function resolveDefaultAgentForDispatcher(correlatedLogger: Logger): Promise<{ agentAlias: string; modelToUse: string | undefined }> {
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+
+    // First, try to use the configured default agent from settings
+    try {
+        const settings = await loadSettings();
+        if (settings.default_agent_alias) {
+            const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
+            if (configuredAgent && configuredAgent.config.enabled) {
+                const agentAlias = settings.default_agent_alias as string;
+                const modelToUse = configuredAgent.config.defaultModel;
+                correlatedLogger.debug({ configuredDefaultAgent: agentAlias, defaultModel: modelToUse }, 'Using default agent from settings');
+                return { agentAlias, modelToUse };
+            }
+        }
+    } catch (settingsError) {
+        correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
+    }
+
+    // Fallback to registry default if settings didn't provide an agent
+    const defaultAgent = registry.getDefaultAgent();
+    const agentAlias = defaultAgent?.config.alias || 'default';
+    const modelToUse = defaultAgent?.config.defaultModel;
+    correlatedLogger.debug({ fallbackAgent: agentAlias, fallbackModel: modelToUse }, 'Using fallback default agent');
+    return { agentAlias, modelToUse };
+}
+
 export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult> {
     const { id: jobId, name: jobName, data: issueRef } = job;
     const correlationId = issueRef.correlationId || generateCorrelationId();
@@ -92,34 +120,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
             }
         } else {
             // No LLM labels - use default agent from settings
-            const registry = AgentRegistry.getInstance();
-            await registry.ensureInitialized();
-
-            let agentAlias: string | undefined;
-            let modelToUse: string | undefined;
-
-            // First, try to use the configured default agent from settings
-            try {
-                const settings = await loadSettings();
-                if (settings.default_agent_alias) {
-                    const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
-                    if (configuredAgent && configuredAgent.config.enabled) {
-                        agentAlias = settings.default_agent_alias as string;
-                        modelToUse = configuredAgent.config.defaultModel;
-                        correlatedLogger.debug({ configuredDefaultAgent: agentAlias, defaultModel: modelToUse }, 'Using default agent from settings');
-                    }
-                }
-            } catch (settingsError) {
-                correlatedLogger.debug({ error: (settingsError as Error).message }, 'Failed to load default agent from settings');
-            }
-
-            // Fallback to registry default if settings didn't provide an agent
-            if (!agentAlias) {
-                const defaultAgent = registry.getDefaultAgent();
-                agentAlias = defaultAgent?.config.alias || 'default';
-                modelToUse = defaultAgent?.config.defaultModel;
-                correlatedLogger.debug({ fallbackAgent: agentAlias, fallbackModel: modelToUse }, 'Using fallback default agent');
-            }
+            const { agentAlias, modelToUse } = await resolveDefaultAgentForDispatcher(correlatedLogger);
 
             agentModelsToProcess.push({
                 agentAlias,

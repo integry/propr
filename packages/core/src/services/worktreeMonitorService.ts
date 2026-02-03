@@ -111,6 +111,38 @@ function determineFileStatus(statusOutput: string, filePath: string): FileChange
 }
 
 /**
+ * Format content as a new file diff
+ */
+function formatAsNewFileDiff(filePath: string, content: string): string {
+    return `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${content.split('\n').length} @@\n` +
+        content.split('\n').map(l => `+${l}`).join('\n');
+}
+
+/**
+ * Try to get diff for a newly added file from index or working directory
+ */
+async function getAddedFileDiff(git: SimpleGit, filePath: string): Promise<string> {
+    // Try getting from git index first
+    try {
+        const content = (await git.show([`:${filePath}`])).trim();
+        if (content) return formatAsNewFileDiff(filePath, content);
+    } catch {
+        // File not in index, continue to working directory
+    }
+
+    // Try reading from working directory
+    const fs = await import('fs-extra');
+    const baseDir = (await git.revparse(['--show-toplevel'])).trim();
+    const fullPath = `${baseDir}/${filePath}`;
+    if (await fs.pathExists(fullPath)) {
+        const content = (await fs.readFile(fullPath, 'utf-8')).trim();
+        if (content) return formatAsNewFileDiff(filePath, content);
+    }
+
+    return '';
+}
+
+/**
  * Get diff content for a file
  */
 async function getFileDiff(git: SimpleGit, filePath: string, status: FileChange['status']): Promise<string> {
@@ -122,25 +154,7 @@ async function getFileDiff(git: SimpleGit, filePath: string, status: FileChange[
         }
 
         if (!diff && status === 'added') {
-            try {
-                const content = (await git.show([`:${filePath}`])).trim();
-                if (content) {
-                    diff = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${content.split('\n').length} @@\n` +
-                        content.split('\n').map(l => `+${l}`).join('\n');
-                }
-            } catch {
-                // File not in index, try reading from working directory
-                const fs = await import('fs-extra');
-                const baseDir = (await git.revparse(['--show-toplevel'])).trim();
-                const fullPath = `${baseDir}/${filePath}`;
-                if (await fs.pathExists(fullPath)) {
-                    const content = (await fs.readFile(fullPath, 'utf-8')).trim();
-                    if (content) {
-                        diff = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${content.split('\n').length} @@\n` +
-                            content.split('\n').map(l => `+${l}`).join('\n');
-                    }
-                }
-            }
+            diff = await getAddedFileDiff(git, filePath);
         }
         return diff;
     } catch (error) {

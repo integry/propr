@@ -478,5 +478,3 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         await cleanupJob({ stateManager, lockKey, correlationId, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, correlatedLogger, redisClient });
     }
 }
-
-export { processPullRequestCommentJob as default };
