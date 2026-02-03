@@ -8,7 +8,8 @@ import type {
     RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing,
     ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics,
     ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent,
-    LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData
+    LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData,
+    TokenUsage
 } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
@@ -134,7 +135,7 @@ function buildConversationDetail(params: ConversationDetailParams): Conversation
 
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics, correlationId?: string): Promise<void> {
     if (!taskId) return;
-    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd } = metrics;
+    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage } = metrics;
     try {
         const executionData = {
             task_id: taskId, session_id: sessionId, conversation_id: conversationId,
@@ -142,7 +143,11 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
             end_time: new Date().toISOString(), duration_ms: executionTimeMs,
             model_name: model, success: success, num_turns: numTurns, cost_usd: costUsd,
             error_message: !success ? (claudeResult?.error ?? 'Unknown error') : null,
-            prompt_length: null, output_length: null
+            prompt_length: null, output_length: null,
+            input_tokens: tokenUsage?.input_tokens ?? null,
+            output_tokens: tokenUsage?.output_tokens ?? null,
+            cache_creation_input_tokens: tokenUsage?.cache_creation_input_tokens ?? null,
+            cache_read_input_tokens: tokenUsage?.cache_read_input_tokens ?? null
         };
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
         const executionId = (insertedExecution as { execution_id: string }).execution_id;
@@ -248,7 +253,7 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         logger.info({ correlationId, issueNumber: issueRef.number, model, success, costUsd, executionTimeSec, numTurns }, 'LLM metrics recorded');
         logConversationDebug(claudeResult, correlationId, taskId);
         if (claudeResult) {
-            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd }, correlationId);
+            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: claudeResult.tokenUsage }, correlationId);
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');

@@ -51,6 +51,13 @@ export interface AgentTaskOptions {
     taskId?: string;
 }
 
+export interface TokenUsage {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+}
+
 export interface AgentExecutionResult {
     success: boolean;
     logs: string;           // Full stderr/stdout logs
@@ -63,6 +70,9 @@ export interface AgentExecutionResult {
     sessionId?: string;
     conversationId?: string;
     executionTimeMs: number;
+
+    // Token usage metrics
+    tokenUsage?: TokenUsage;
 
     // Additional fields for compatibility with existing ClaudeCodeResponse
     rawOutput?: string;

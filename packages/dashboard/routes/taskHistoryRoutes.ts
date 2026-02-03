@@ -223,7 +223,13 @@ function enrichMetadataWithExecution(
     model: execution.model_name,
     duration: execution.duration_ms,
     success: execution.success,
-    conversationTurns: execution.num_turns
+    conversationTurns: execution.num_turns,
+    tokenUsage: {
+      input_tokens: execution.input_tokens ?? null,
+      output_tokens: execution.output_tokens ?? null,
+      cache_creation_input_tokens: execution.cache_creation_input_tokens ?? null,
+      cache_read_input_tokens: execution.cache_read_input_tokens ?? null
+    }
   };
 }
 

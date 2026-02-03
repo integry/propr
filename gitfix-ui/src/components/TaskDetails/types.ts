@@ -1,9 +1,17 @@
+export interface TokenUsage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+}
+
 export interface HistoryItemMetadata {
   model?: string;
   pr?: { url?: string; number?: number };
   pullRequest?: { url?: string; number?: number };
   description?: string;
   commitResult?: { commitHash?: string; commitMessage?: string };
+  tokenUsage?: TokenUsage;
 }
 
 export interface HistoryItem {
@@ -82,6 +90,7 @@ export interface LiveDetails {
   events: LiveEvent[];
   todos: TodoItem[];
   currentTask: string | null;
+  tokenUsage?: TokenUsage | null;
 }
 
 export interface AnalysisData {

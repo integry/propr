@@ -51,6 +51,13 @@ export interface ConversationLogEntry {
     [key: string]: unknown;
 }
 
+export interface TokenUsage {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+}
+
 export interface ClaudeOutputResult {
     type: string;
     is_error?: boolean;
@@ -59,6 +66,7 @@ export interface ClaudeOutputResult {
     cost_usd?: number;
     model?: string;
     conversation_id?: string;
+    usage?: TokenUsage;
 }
 
 export interface ClaudeOutput {
@@ -70,6 +78,7 @@ export interface ClaudeOutput {
     conversationId?: string;
     finalResult: ClaudeOutputResult | null;
     model?: string;
+    tokenUsage?: TokenUsage;
 }
 
 export interface StorePromptOptions {
@@ -94,6 +103,7 @@ interface JsonLineMessage {
     is_error?: boolean;
     total_cost_usd?: number;
     cost_usd?: number;
+    usage?: TokenUsage;
 }
 
 export function buildClaudePrompt(options: BuildClaudePromptOptions): string {
@@ -312,9 +322,20 @@ function processResultLine(jsonLine: JsonLineMessage, claudeOutput: ClaudeOutput
         total_cost_usd: jsonLine.total_cost_usd,
         cost_usd: jsonLine.cost_usd,
         model: jsonLine.model,
-        conversation_id: jsonLine.conversation_id
+        conversation_id: jsonLine.conversation_id,
+        usage: jsonLine.usage
     };
     claudeOutput.success = !jsonLine.is_error;
+
+    // Extract token usage from result line
+    if (jsonLine.usage) {
+        claudeOutput.tokenUsage = {
+            input_tokens: jsonLine.usage.input_tokens,
+            output_tokens: jsonLine.usage.output_tokens,
+            cache_creation_input_tokens: jsonLine.usage.cache_creation_input_tokens,
+            cache_read_input_tokens: jsonLine.usage.cache_read_input_tokens
+        };
+    }
 
     if (jsonLine.result) {
         const limitMatch = jsonLine.result.match(/Claude AI usage limit reached\|(\d+)/);

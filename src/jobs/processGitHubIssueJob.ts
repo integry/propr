@@ -239,7 +239,8 @@ function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
         conversationId: response.conversationId,
         finalResult: response.summary ? { type: 'result', result: response.summary } : null,
         conversationLog: response.conversationLog,
-        error: response.error
+        error: response.error,
+        tokenUsage: response.tokenUsage
     };
 }
 

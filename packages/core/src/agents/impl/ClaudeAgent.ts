@@ -133,7 +133,8 @@ export class ClaudeAgent implements Agent {
                 commitMessage: null,
                 summary: claudeOutput.finalResult?.result ?? undefined,
                 prompt,
-                conversationLog: claudeOutput.conversationLog
+                conversationLog: claudeOutput.conversationLog,
+                tokenUsage: claudeOutput.tokenUsage
             };
 
             // Store prompt in Redis for audit trail
