@@ -173,6 +173,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
   async function deleteTask(req: Request, res: Response): Promise<void> {
     try {
       const { taskId } = req.params;
+      const { force } = req.query;
 
       if (!taskId) {
         res.status(400).json({ error: 'Task ID is required' });
@@ -190,10 +191,13 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      // Define active states that prevent deletion
+      // Define active states that prevent deletion (unless force=true)
       const activeStates = ['pending', 'queued', 'processing', 'claude_execution', 'post_processing'];
 
-      if (activeStates.includes(latestState.state?.toLowerCase())) {
+      // Allow force deletion when the stop operation failed (e.g., task is stuck in pending but not actually running)
+      const forceDelete = force === 'true';
+
+      if (activeStates.includes(latestState.state?.toLowerCase()) && !forceDelete) {
         res.status(400).json({
           error: 'Cannot delete task in active state',
           message: `Task is currently in "${latestState.state}" state. Please stop the task before deleting.`,

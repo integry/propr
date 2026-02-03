@@ -291,8 +291,11 @@ export interface DeleteTaskResponse {
   currentState?: string;
 }
 
-export const deleteTask = async (taskId: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}`, { method: 'DELETE', credentials: 'include' });
+export const deleteTask = async (taskId: string, force?: boolean): Promise<void> => {
+  const url = force
+    ? `${API_BASE_URL}/api/tasks/${taskId}?force=true`
+    : `${API_BASE_URL}/api/tasks/${taskId}`;
+  const response = await fetch(url, { method: 'DELETE', credentials: 'include' });
   if (response.status === 204) {
     return; // Success, no content
   }

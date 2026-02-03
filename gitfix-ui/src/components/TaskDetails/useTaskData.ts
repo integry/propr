@@ -177,7 +177,8 @@ export const useTaskData = (taskId: string | undefined) => {
 
     try {
       setDeletingTask(true);
-      await deleteTask(taskId);
+      // Use force=true if stop operation previously failed (task may be stuck but not running)
+      await deleteTask(taskId, stopFailed);
       return true; // Indicates successful deletion
     } catch (err) {
       console.error('Error deleting task:', err);
