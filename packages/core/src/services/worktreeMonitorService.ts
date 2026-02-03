@@ -285,3 +285,90 @@ export async function updateFileChangesFromWorktree(taskId: string, worktreePath
     await storeFileChanges(taskId, changes);
     return changes;
 }
+
+/**
+ * Get diff stat output for a specific commit using git show
+ */
+function getCommitDiffStatOutput(repoPath: string, commitHash: string): string {
+    try {
+        return execSync(`git show --stat --format="" ${commitHash}`, {
+            cwd: repoPath,
+            encoding: 'utf-8',
+            timeout: 30000
+        }).trim();
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * Get the diff content for a specific file in a commit
+ */
+function getCommitFileDiff(repoPath: string, commitHash: string, filePath: string): string {
+    try {
+        return execSync(`git show ${commitHash} -- "${filePath}"`, {
+            cwd: repoPath,
+            encoding: 'utf-8',
+            timeout: 10000,
+            maxBuffer: 1024 * 1024 * 5
+        }).trim();
+    } catch (error) {
+        logger.debug({ filePath, commitHash, error: (error as Error).message }, 'Failed to get commit diff for file');
+        return '';
+    }
+}
+
+/**
+ * Parse commit stat line and create a FileChange object
+ */
+function parseCommitStatLine(line: string, repoPath: string, commitHash: string): FileChange | null {
+    const match = line.match(/^\s*(.+?)\s*\|\s*(\d+|Bin)/);
+    if (!match) return null;
+
+    const filePath = match[1].trim();
+    if (filePath.includes('file') && filePath.includes('changed')) return null;
+
+    // Determine status from the diff
+    const diff = getCommitFileDiff(repoPath, commitHash, filePath);
+    let status: FileChange['status'] = 'modified';
+
+    // Check for new file or deleted file indicators in the diff
+    if (diff.includes('new file mode')) {
+        status = 'added';
+    } else if (diff.includes('deleted file mode')) {
+        status = 'deleted';
+    } else if (diff.includes('rename from') || diff.includes('rename to')) {
+        status = 'renamed';
+    }
+
+    const { linesAdded, linesRemoved } = countDiffLines(diff);
+
+    return { path: filePath, linesAdded, linesRemoved, diff, status };
+}
+
+/**
+ * Get file changes from a specific commit hash
+ * This is used for viewing historic changes after the worktree has been deleted
+ */
+export async function getCommitChanges(repoPath: string, commitHash: string): Promise<FileChange[]> {
+    try {
+        const statOutput = getCommitDiffStatOutput(repoPath, commitHash);
+
+        if (!statOutput) return [];
+
+        const statLines = statOutput.split('\n').filter(line => line.includes('|'));
+        const files: FileChange[] = [];
+
+        for (const line of statLines) {
+            const fileChange = parseCommitStatLine(line, repoPath, commitHash);
+            if (fileChange) {
+                files.push(fileChange);
+            }
+        }
+
+        return files;
+    } catch (error) {
+        logger.error({ repoPath, commitHash, error: (error as Error).message }, 'Error getting commit changes');
+        return [];
+    }
+}

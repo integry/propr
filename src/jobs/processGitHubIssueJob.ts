@@ -8,7 +8,7 @@ import {
     addModelSpecificDelay, safeAddLabel, ensureGitRepository, UsageLimitError, recordLLMMetrics,
     validateRepositoryInfo, getDefaultModel, loadPrLabel, loadPrimaryProcessingLabels, loadSettings,
     filterCommentByAuthor, AgentRegistry, generateClaudePrompt, resolveLlmLabel, updateFileChangesFromWorktree,
-    updatePlanIssueTaskId
+    updatePlanIssueTaskId, db
 } from '@gitfix/core';
 import type {
     WorkerStateManager, IssueRef, WorktreeInfo, CommitResult, ClaudeCodeResponse, ClaudeResult,
@@ -496,6 +496,18 @@ async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Pro
             prNumber: postProcessingResult?.pr?.number ?? undefined, prUrl: postProcessingResult?.pr?.url ?? undefined,
             commitResult: commitResult ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage } : null
         });
+
+        // Persist commit hash to database for historic diff exploration
+        if (commitResult?.commitHash) {
+            try {
+                await db('tasks')
+                    .where({ task_id: taskId })
+                    .update({ commit_hash: commitResult.commitHash });
+                correlatedLogger.debug({ taskId, commitHash: commitResult.commitHash }, 'Saved commit hash to tasks table');
+            } catch (dbError) {
+                correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
+            }
+        }
     } catch (stateError) {
         correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state to completed');
     }

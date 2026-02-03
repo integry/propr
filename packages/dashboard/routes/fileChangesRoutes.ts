@@ -5,6 +5,9 @@ import {
   getStoredFileChanges,
   getWorktreeChanges,
   storeFileChanges,
+  getCommitChanges,
+  ensureRepoCloned,
+  getAuthenticatedOctokit,
   FileChangesData
 } from '@gitfix/core';
 
@@ -48,6 +51,14 @@ export function createFileChangesRoutes(deps: FileChangesRoutesDeps) {
 
         console.log(`[file-changes] Retrieved ${changes.length} file changes from worktree`);
         res.json(fileChangesData);
+        return;
+      }
+
+      // Try to get historic changes from stored commit hash
+      const commitChanges = await getHistoricCommitChanges(db, taskId);
+      if (commitChanges) {
+        console.log(`[file-changes] Retrieved ${commitChanges.files.length} file changes from commit hash`);
+        res.json(commitChanges);
         return;
       }
 
@@ -139,6 +150,72 @@ async function findActiveWorktreePath(
     return null;
   } catch (error) {
     console.error('[file-changes] Error finding worktree path:', error);
+    return null;
+  }
+}
+
+/**
+ * Get file changes from a stored commit hash for completed tasks.
+ * This enables viewing historic changes even after the worktree is deleted.
+ */
+async function getHistoricCommitChanges(
+  db: Knex,
+  taskId: string
+): Promise<FileChangesData | null> {
+  try {
+    // Look up the task to get the commit hash and repository
+    const task = await db('tasks')
+      .where({ task_id: taskId })
+      .select('commit_hash', 'repository')
+      .first();
+
+    if (!task?.commit_hash || !task?.repository) {
+      console.log(`[file-changes] No commit hash found for taskId: ${taskId}`);
+      return null;
+    }
+
+    const { commit_hash: commitHash, repository } = task;
+    console.log(`[file-changes] Found commit hash ${commitHash} for taskId: ${taskId}`);
+
+    // Parse repository format: "owner/repo"
+    const [owner, repoName] = repository.split('/');
+    if (!owner || !repoName) {
+      console.error(`[file-changes] Invalid repository format: ${repository}`);
+      return null;
+    }
+
+    // Get authenticated token to clone/access the repo
+    let repoPath: string;
+    try {
+      const octokit = await getAuthenticatedOctokit();
+      const { token } = await octokit.auth({ type: "installation" }) as { token: string };
+      const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+
+      // Ensure the repo is cloned/accessible
+      repoPath = await ensureRepoCloned({
+        repoUrl,
+        owner,
+        repoName,
+        authToken: token
+      });
+    } catch (authError) {
+      console.error(`[file-changes] Failed to authenticate or clone repo: ${(authError as Error).message}`);
+      return null;
+    }
+
+    // Get changes from the commit
+    const changes = await getCommitChanges(repoPath, commitHash);
+
+    // Cache the result in Redis for future requests
+    await storeFileChanges(taskId, changes);
+
+    return {
+      files: changes,
+      lastUpdated: new Date().toISOString(),
+      taskId
+    };
+  } catch (error) {
+    console.error('[file-changes] Error getting historic commit changes:', error);
     return null;
   }
 }
