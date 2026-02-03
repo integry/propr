@@ -4,6 +4,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs-extra';
 import crypto from 'crypto';
+import { Redis } from 'ioredis';
 import {
   refinePlan,
   executeDraft,
@@ -492,7 +493,6 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       }
 
       // Set abort signal in Redis
-      const Redis = (await import('ioredis')).default;
       const redis = new Redis({
         host: process.env.REDIS_HOST || 'redis',
         port: parseInt(process.env.REDIS_PORT || '6379', 10)
