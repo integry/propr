@@ -98,6 +98,7 @@ const TaskDetails: React.FC = () => {
         commitInfo={commitInfo}
         historyItemWithPaths={derivedData.historyItemWithPaths}
         stoppingExecution={taskData.stoppingExecution}
+        stopFailed={taskData.stopFailed}
         onStopExecution={taskData.handleStopExecution}
         onViewPrompt={promptData.fetchPrompt}
         onViewLogs={logFilesData.fetchLogFilesData}

@@ -134,16 +134,28 @@ const CommitInfoLink: React.FC<{ commitInfo: { shortHash: string; url: string } 
 // Delete button component
 const DeleteButton: React.FC<{
   isActive: boolean;
+  stopFailed: boolean;
   deletingTask: boolean;
   onDeleteTask: () => void;
-}> = ({ isActive, deletingTask, onDeleteTask }) => {
+}> = ({ isActive, stopFailed, deletingTask, onDeleteTask }) => {
+  // Enable delete if task is not active, or if stop failed (meaning task is likely not running)
+  const canDelete = !isActive || stopFailed;
+  const isDisabled = !canDelete || deletingTask;
+
+  const getTitle = () => {
+    if (deletingTask) return 'Deleting...';
+    if (stopFailed) return 'Delete task (stop failed, task may have already stopped)';
+    if (isActive) return 'Stop the task before deleting';
+    return 'Delete task';
+  };
+
   return (
     <button
       onClick={onDeleteTask}
-      disabled={isActive || deletingTask}
-      title={isActive ? 'Stop the task before deleting' : deletingTask ? 'Deleting...' : 'Delete task'}
+      disabled={isDisabled}
+      title={getTitle()}
       className={`flex items-center gap-1.5 p-1.5 sm:p-2 rounded transition-colors ${
-        isActive || deletingTask
+        isDisabled
           ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
           : 'hover:bg-red-50 text-red-500 hover:text-red-600 border border-transparent hover:border-red-200'
       }`}
@@ -165,6 +177,7 @@ interface MetadataBarProps {
   commitInfo?: { shortHash: string; url: string };
   historyItemWithPaths: HistoryItem | undefined;
   stoppingExecution: boolean;
+  stopFailed?: boolean;
   onStopExecution: () => void;
   onViewPrompt: (promptPath: string) => void;
   onViewLogs: (logsPath: string) => void;
@@ -185,6 +198,7 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   commitInfo,
   historyItemWithPaths,
   stoppingExecution,
+  stopFailed = false,
   onStopExecution,
   onViewPrompt,
   onViewLogs,
@@ -313,6 +327,7 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
         {onDeleteTask && (
           <DeleteButton
             isActive={isActive}
+            stopFailed={stopFailed}
             deletingTask={deletingTask}
             onDeleteTask={onDeleteTask}
           />

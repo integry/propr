@@ -23,6 +23,7 @@ export const useTaskData = (taskId: string | undefined) => {
   const [analysis, setAnalysis] = useState<AnalysisData | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState<boolean>(true);
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
+  const [stopFailed, setStopFailed] = useState<boolean>(false);
   const [deletingTask, setDeletingTask] = useState<boolean>(false);
 
   useEffect(() => {
@@ -162,8 +163,9 @@ export const useTaskData = (taskId: string | undefined) => {
       }
     } catch (err) {
       console.error('Error stopping execution:', err);
-      alert(`Failed to stop execution: ${(err as Error).message || 'Unknown error'}. Please try again.`);
+      alert(`Failed to stop execution: ${(err as Error).message || 'Unknown error'}. The task may have already stopped. You can now delete it.`);
       setStoppingExecution(false);
+      setStopFailed(true);
     }
   };
 
@@ -195,6 +197,7 @@ export const useTaskData = (taskId: string | undefined) => {
     analysis,
     analysisLoading,
     stoppingExecution,
+    stopFailed,
     handleStopExecution,
     deletingTask,
     handleDeleteTask
