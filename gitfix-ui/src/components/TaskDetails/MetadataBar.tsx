@@ -131,6 +131,32 @@ const CommitInfoLink: React.FC<{ commitInfo: { shortHash: string; url: string } 
   );
 };
 
+// Delete button component
+const DeleteButton: React.FC<{
+  isActive: boolean;
+  deletingTask: boolean;
+  onDeleteTask: () => void;
+}> = ({ isActive, deletingTask, onDeleteTask }) => {
+  return (
+    <button
+      onClick={onDeleteTask}
+      disabled={isActive || deletingTask}
+      title={isActive ? 'Stop the task before deleting' : deletingTask ? 'Deleting...' : 'Delete task'}
+      className={`flex items-center gap-1.5 p-1.5 sm:p-2 rounded transition-colors ${
+        isActive || deletingTask
+          ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
+          : 'hover:bg-red-50 text-red-500 hover:text-red-600 border border-transparent hover:border-red-200'
+      }`}
+    >
+      {deletingTask ? (
+        <Loader2 size={16} className="sm:w-[18px] sm:h-[18px] animate-spin" />
+      ) : (
+        <Trash2 size={16} className="sm:w-[18px] sm:h-[18px]" />
+      )}
+    </button>
+  );
+};
+
 interface MetadataBarProps {
   taskInfo: TaskInfo | null;
   currentStatus: string;
@@ -170,7 +196,6 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   const isActive = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
   const isCancelled = currentStatus === 'CANCELLED';
   const hasDuration = duration !== null && duration !== undefined;
-  const canDelete = !isActive && onDeleteTask;
 
   return (
     <div className="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm px-3 sm:px-4 py-2 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-3">
@@ -286,22 +311,11 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
 
         {/* Delete Button */}
         {onDeleteTask && (
-          <button
-            onClick={onDeleteTask}
-            disabled={isActive || deletingTask}
-            title={isActive ? 'Stop the task before deleting' : deletingTask ? 'Deleting...' : 'Delete task'}
-            className={`flex items-center gap-1.5 p-1.5 sm:p-2 rounded transition-colors ${
-              isActive || deletingTask
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
-                : 'hover:bg-red-50 text-red-500 hover:text-red-600 border border-transparent hover:border-red-200'
-            }`}
-          >
-            {deletingTask ? (
-              <Loader2 size={16} className="sm:w-[18px] sm:h-[18px] animate-spin" />
-            ) : (
-              <Trash2 size={16} className="sm:w-[18px] sm:h-[18px]" />
-            )}
-          </button>
+          <DeleteButton
+            isActive={isActive}
+            deletingTask={deletingTask}
+            onDeleteTask={onDeleteTask}
+          />
         )}
       </div>
     </div>
