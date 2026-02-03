@@ -17,10 +17,12 @@ import { useTaskData, usePromptData, useLogFilesData } from './hooks';
 import { useThinkingLog } from './useThinkingLog';
 import { getHistoryDerivedData } from './useHistoryData';
 import { getCleanDocumentTitle } from '../TaskList/utils';
+import { useToast } from '../ui/useToast';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
   const navigate = useNavigate();
+  const { addToast } = useToast();
   const taskData = useTaskData(taskId);
   const promptData = usePromptData();
   const logFilesData = useLogFilesData();
@@ -29,9 +31,13 @@ const TaskDetails: React.FC = () => {
   const handleDeleteTask = useCallback(async () => {
     const success = await taskData.handleDeleteTask();
     if (success) {
+      addToast({
+        type: 'success',
+        message: 'Task deleted successfully',
+      });
       navigate('/tasks');
     }
-  }, [taskData, navigate]);
+  }, [taskData, navigate, addToast]);
 
   // Set document title with task info - use clean title format (e.g., "870: Title here")
   const documentTitle = taskData.taskInfo?.title
