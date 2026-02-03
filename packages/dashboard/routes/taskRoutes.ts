@@ -211,7 +211,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         // Delete from llm_execution_details first (foreign key dependency)
         await trx('llm_execution_details')
           .whereIn('execution_id', function() {
-            this.select('id').from('llm_executions').where({ task_id: taskId });
+            this.select('execution_id').from('llm_executions').where({ task_id: taskId });
           })
           .delete();
 
