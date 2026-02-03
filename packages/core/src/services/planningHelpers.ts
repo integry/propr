@@ -85,6 +85,8 @@ export interface ContextCache {
   fileTokenCounts: Record<string, number>;
   /** The token limit used when generating this cache (for validation) */
   cachedMaxTokenLimit?: number;
+  /** Relevance scores for auto-detected files (path -> score 0-100) */
+  fileScores?: Record<string, number>;
 }
 
 export interface TaskDraftConfig {
@@ -603,6 +605,8 @@ interface ContextData {
   repomixTokens: number;
   smartSummaryTokens: number;
   fileTokenCounts: Record<string, number>;
+  /** Relevance scores for auto-detected files (path -> score 0-100) */
+  fileScores: Record<string, number>;
 }
 
 /**
@@ -616,7 +620,8 @@ function extractContextFromCache(cache: ContextCache): ContextData {
     includedFiles: cache.includedFiles,
     repomixTokens: cache.repomixTokens,
     smartSummaryTokens: cache.smartSummaryTokens,
-    fileTokenCounts: cache.fileTokenCounts
+    fileTokenCounts: cache.fileTokenCounts,
+    fileScores: cache.fileScores || {}
   };
 }
 
@@ -652,11 +657,22 @@ function calculateAttachmentTokens(attachments: Attachment[], imageTokens: numbe
 function buildSmartSelection(
   manualFiles: string[],
   autoFilePaths: string[],
-  includedFilesSet: Set<string>
+  includedFilesSet: Set<string>,
+  fileScores: Record<string, number>
 ): SmartFileSelection[] {
   return [
-    ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({ path: p, reason: 'Explicitly included', source: 'manual' as const })),
-    ...autoFilePaths.filter(p => includedFilesSet.has(p) && !manualFiles.includes(p)).map(p => ({ path: p, reason: 'Auto-detected', source: 'auto' as const }))
+    ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({
+      path: p,
+      reason: 'Explicitly included',
+      source: 'manual' as const,
+      score: fileScores[p] ?? 100  // Manual files get 100 if no score
+    })),
+    ...autoFilePaths.filter(p => includedFilesSet.has(p) && !manualFiles.includes(p)).map(p => ({
+      path: p,
+      reason: 'Auto-detected',
+      source: 'auto' as const,
+      score: fileScores[p] ?? 0
+    }))
   ];
 }
 
@@ -680,6 +696,8 @@ interface RegenerateContextResult {
   smartSummaryTokens: number;
   securityWarnings: string[];
   fileTokenCounts: Record<string, number>;
+  /** Relevance scores for auto-detected files (path -> score 0-100) */
+  fileScores: Record<string, number>;
 }
 
 /**
@@ -722,6 +740,11 @@ async function regenerateContext(params: RegenerateContextParams): Promise<Regen
   });
 
   const autoFilePaths = relevanceResult.files.map(f => f.path);
+  // Build a map of file paths to their relevance scores
+  const fileScores: Record<string, number> = {};
+  for (const file of relevanceResult.files) {
+    fileScores[file.path] = file.score;
+  }
   const combinedFiles = [...new Set([...allManualFiles, ...autoFilePaths])];
 
   correlatedLogger.info({ manualFiles: { count: allManualFiles.length }, autoFiles: { count: autoFilePaths.length }, combinedCount: combinedFiles.length }, 'Preview file selection');
@@ -748,7 +771,8 @@ async function regenerateContext(params: RegenerateContextParams): Promise<Regen
     repomixTokens: contextResult.totalTokens,
     smartSummaryTokens: smartSummaryResult.estimatedTokens || 0,
     securityWarnings,
-    fileTokenCounts: contextResult.fileTokenCounts
+    fileTokenCounts: contextResult.fileTokenCounts,
+    fileScores
   };
 }
 
@@ -798,12 +822,13 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
       includedFiles: result.includedFiles,
       repomixTokens: result.repomixTokens,
       smartSummaryTokens: result.smartSummaryTokens,
-      fileTokenCounts: result.fileTokenCounts
+      fileTokenCounts: result.fileTokenCounts,
+      fileScores: result.fileScores
     };
     warnings.push(...result.securityWarnings);
   }
 
-  const { repomixContext, smartSummaries, autoFilePaths, includedFiles, smartSummaryTokens, fileTokenCounts } = contextData;
+  const { repomixContext, smartSummaries, autoFilePaths, includedFiles, smartSummaryTokens, fileTokenCounts, fileScores } = contextData;
   const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
   const simulatedSelection = selectFilesWithinLimit(
     fileTokenCounts, targetTokenLimit,
@@ -821,7 +846,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   }, 'Simulated file selection for context level');
 
   const costEstimate = await calculateCostEstimate(simulatedTokens, warnings, correlatedLogger);
-  const smartSelection = buildSmartSelection(manualFiles, autoFilePaths, includedFilesSet);
+  const smartSelection = buildSmartSelection(manualFiles, autoFilePaths, includedFilesSet, fileScores);
   const fullContext = buildFullContext({
     userRequest: prompt, repomixContext, granularity, smartSummaries,
     images: base64Images.length > 0 ? base64Images : undefined
@@ -829,7 +854,8 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   const newCache: ContextCache = {
     contentHash, repomixContext, smartSummaries, autoFilePaths, includedFiles,
-    repomixTokens: contextData.repomixTokens, smartSummaryTokens, fileTokenCounts, cachedMaxTokenLimit: maxTokenLimit
+    repomixTokens: contextData.repomixTokens, smartSummaryTokens, fileTokenCounts, cachedMaxTokenLimit: maxTokenLimit,
+    fileScores
   };
 
   await db('task_drafts').where({ draft_id: draftId }).update({
