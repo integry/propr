@@ -1,5 +1,6 @@
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
+import { checkAndUpdateDraftStatus } from '../services/taskPlanningService.js';
 
 /**
  * Status enum for plan issues.
@@ -216,6 +217,12 @@ export async function updatePlanIssue(
             .first();
 
         logger.info({ draftId, issueNumber, updates }, 'Updated plan issue');
+
+        // Check and update draft status if issue status was changed
+        if (updates.status !== undefined) {
+            await checkAndUpdateDraftStatus(draftId);
+        }
+
         return issue || null;
     } catch (error) {
         const err = error as Error;
@@ -288,6 +295,12 @@ export async function updatePlanIssueStatus(
     status: PlanIssueStatus
 ): Promise<void> {
     try {
+        // Fetch the plan issue to get the draft_id for status sync
+        const planIssue = await db('plan_issues')
+            .where({ repository, issue_number: issueNumber })
+            .select('draft_id')
+            .first();
+
         await db('plan_issues')
             .where({ repository, issue_number: issueNumber })
             .update({
@@ -296,6 +309,11 @@ export async function updatePlanIssueStatus(
             });
 
         logger.info({ repository, issueNumber, status }, 'Updated plan issue status');
+
+        // Check and update draft status after updating issue status
+        if (planIssue?.draft_id) {
+            await checkAndUpdateDraftStatus(planIssue.draft_id);
+        }
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message, repository, issueNumber, status }, 'Failed to update plan issue status');
@@ -359,6 +377,14 @@ export async function updatePlanIssueByPR(
     updates: UpdatePlanIssueInput
 ): Promise<void> {
     try {
+        // Fetch the plan issue to get the draft_id for status sync
+        const planIssue = updates.status !== undefined
+            ? await db('plan_issues')
+                .where({ repository, pr_number: prNumber })
+                .select('draft_id')
+                .first()
+            : null;
+
         const updateData: Record<string, unknown> = {
             updated_at: db.fn.now()
         };
@@ -371,6 +397,11 @@ export async function updatePlanIssueByPR(
             .update(updateData);
 
         logger.info({ repository, prNumber, updates }, 'Updated plan issue by PR');
+
+        // Check and update draft status after updating issue status
+        if (planIssue?.draft_id) {
+            await checkAndUpdateDraftStatus(planIssue.draft_id);
+        }
     } catch (error) {
         const err = error as Error;
         logger.error({ error: err.message, repository, prNumber, updates }, 'Failed to update plan issue by PR');

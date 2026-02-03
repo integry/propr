@@ -694,3 +694,70 @@ export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
 
 // Re-export checkoutBranch for backwards compatibility
 export { checkoutBranch } from './planningHelpers.js';
+
+/**
+ * Checks if all plan issues for a draft are merged and updates the draft status accordingly.
+ * - If all issues are merged, sets draft status to 'merged'
+ * - If not all issues are merged (e.g., one is reopened), reverts draft status to 'executed'
+ *
+ * @param draftId - The ID of the draft to check and update
+ */
+export async function checkAndUpdateDraftStatus(draftId: string): Promise<void> {
+  if (!db) {
+    logger.warn({ draftId }, 'Database not available, cannot check draft status');
+    return;
+  }
+
+  try {
+    // Get all plan issues for this draft
+    const planIssues = await db('plan_issues')
+      .where({ draft_id: draftId })
+      .select('status');
+
+    if (planIssues.length === 0) {
+      logger.debug({ draftId }, 'No plan issues found for draft, skipping status check');
+      return;
+    }
+
+    // Check if all issues are merged
+    const allMerged = planIssues.every(issue => issue.status === 'merged');
+
+    // Get current draft status
+    const draft = await db('task_drafts')
+      .where({ draft_id: draftId })
+      .select('status')
+      .first();
+
+    if (!draft) {
+      logger.warn({ draftId }, 'Draft not found, cannot update status');
+      return;
+    }
+
+    // Determine the new status
+    let newStatus: string | null = null;
+
+    if (allMerged && draft.status !== 'merged') {
+      newStatus = 'merged';
+    } else if (!allMerged && draft.status === 'merged') {
+      // Revert to 'executed' if not all issues are merged (e.g., one was reopened)
+      newStatus = 'executed';
+    }
+
+    if (newStatus) {
+      await db('task_drafts')
+        .where({ draft_id: draftId })
+        .update({
+          status: newStatus,
+          updated_at: db.fn.now()
+        });
+
+      logger.info(
+        { draftId, oldStatus: draft.status, newStatus, totalIssues: planIssues.length, allMerged },
+        'Updated draft status based on plan issue statuses'
+      );
+    }
+  } catch (error) {
+    const err = error as Error;
+    logger.error({ draftId, error: err.message }, 'Failed to check and update draft status');
+  }
+}
