@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import React, { useMemo, useState, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import DeepDiveAnalysis from '../DeepDiveAnalysis';
 import { renderMarkdown } from './renderMarkdown';
@@ -20,10 +20,18 @@ import { getCleanDocumentTitle } from '../TaskList/utils';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
+  const navigate = useNavigate();
   const taskData = useTaskData(taskId);
   const promptData = usePromptData();
   const logFilesData = useLogFilesData();
   const thinkingLog = useThinkingLog(taskData.liveDetails, taskData.history);
+
+  const handleDeleteTask = useCallback(async () => {
+    const success = await taskData.handleDeleteTask();
+    if (success) {
+      navigate('/tasks');
+    }
+  }, [taskData, navigate]);
 
   // Set document title with task info - use clean title format (e.g., "870: Title here")
   const documentTitle = taskData.taskInfo?.title
@@ -94,6 +102,8 @@ const TaskDetails: React.FC = () => {
         onViewPrompt={promptData.fetchPrompt}
         onViewLogs={logFilesData.fetchLogFilesData}
         duration={totalDuration}
+        deletingTask={taskData.deletingTask}
+        onDeleteTask={handleDeleteTask}
       />
 
       {/* Progress Bar */}

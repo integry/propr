@@ -285,6 +285,24 @@ export const stopTaskExecution = async (taskId: string): Promise<StopExecutionRe
   return response.json();
 };
 
+export interface DeleteTaskResponse {
+  error?: string;
+  message?: string;
+  currentState?: string;
+}
+
+export const deleteTask = async (taskId: string): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}`, { method: 'DELETE', credentials: 'include' });
+  if (response.status === 204) {
+    return; // Success, no content
+  }
+  if (response.status === 400) {
+    const data: DeleteTaskResponse = await response.json();
+    throw new Error(data.message || data.error || 'Cannot delete task in active state');
+  }
+  await handleApiResponse(response);
+};
+
 export const getCurrentUser = async (): Promise<unknown> => {
   const response = await fetch(`${API_BASE_URL}/api/auth/user`, { credentials: 'include' });
   await handleApiResponse(response);

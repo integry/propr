@@ -1,6 +1,6 @@
 import React from 'react';
 import { TaskInfo, HistoryItem } from './types';
-import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban, GitCommit } from 'lucide-react';
+import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban, GitCommit, Trash2 } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { ProviderLogo } from '../ui/ProviderLogo';
 
@@ -147,6 +147,8 @@ interface MetadataBarProps {
     filesChanged?: number;
     linesChanged?: number;
   };
+  deletingTask?: boolean;
+  onDeleteTask?: () => void;
 }
 
 const MetadataBar: React.FC<MetadataBarProps> = ({
@@ -161,11 +163,14 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   onViewPrompt,
   onViewLogs,
   duration,
-  stats
+  stats,
+  deletingTask = false,
+  onDeleteTask
 }) => {
-  const isActive = ['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
+  const isActive = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
   const isCancelled = currentStatus === 'CANCELLED';
   const hasDuration = duration !== null && duration !== undefined;
+  const canDelete = !isActive && onDeleteTask;
 
   return (
     <div className="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm px-3 sm:px-4 py-2 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-3">
@@ -276,6 +281,26 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
             className="p-1.5 sm:p-2 hover:bg-green-50 rounded text-green-600 hover:text-green-700 transition-colors"
           >
             <Terminal size={16} className="sm:w-[18px] sm:h-[18px]" />
+          </button>
+        )}
+
+        {/* Delete Button */}
+        {onDeleteTask && (
+          <button
+            onClick={onDeleteTask}
+            disabled={isActive || deletingTask}
+            title={isActive ? 'Stop the task before deleting' : deletingTask ? 'Deleting...' : 'Delete task'}
+            className={`flex items-center gap-1.5 p-1.5 sm:p-2 rounded transition-colors ${
+              isActive || deletingTask
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
+                : 'hover:bg-red-50 text-red-500 hover:text-red-600 border border-transparent hover:border-red-200'
+            }`}
+          >
+            {deletingTask ? (
+              <Loader2 size={16} className="sm:w-[18px] sm:h-[18px] animate-spin" />
+            ) : (
+              <Trash2 size={16} className="sm:w-[18px] sm:h-[18px]" />
+            )}
           </button>
         )}
       </div>

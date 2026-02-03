@@ -4,7 +4,8 @@ import {
   getTaskLiveDetails,
   getTaskAnalysis,
   stopTaskExecution,
-  StopExecutionResponse
+  StopExecutionResponse,
+  deleteTask
 } from '../../api/gitfixApi';
 import {
   HistoryItem,
@@ -22,6 +23,7 @@ export const useTaskData = (taskId: string | undefined) => {
   const [analysis, setAnalysis] = useState<AnalysisData | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState<boolean>(true);
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
+  const [deletingTask, setDeletingTask] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchHistory = async () => {
@@ -165,6 +167,25 @@ export const useTaskData = (taskId: string | undefined) => {
     }
   };
 
+  const handleDeleteTask = async (): Promise<boolean> => {
+    if (!taskId) return false;
+
+    const confirmed = window.confirm('Are you sure you want to delete this task? This action cannot be undone.');
+    if (!confirmed) return false;
+
+    try {
+      setDeletingTask(true);
+      await deleteTask(taskId);
+      return true; // Indicates successful deletion
+    } catch (err) {
+      console.error('Error deleting task:', err);
+      alert(`Failed to delete task: ${(err as Error).message || 'Unknown error'}`);
+      return false;
+    } finally {
+      setDeletingTask(false);
+    }
+  };
+
   return {
     history,
     taskInfo,
@@ -174,6 +195,8 @@ export const useTaskData = (taskId: string | undefined) => {
     analysis,
     analysisLoading,
     stoppingExecution,
-    handleStopExecution
+    handleStopExecution,
+    deletingTask,
+    handleDeleteTask
   };
 };

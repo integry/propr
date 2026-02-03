@@ -174,6 +174,7 @@ function setupRoutes(): void {
   app.get('/api/tasks', taskRoutes.getTasks);
   app.get('/api/tasks/revert-preview', taskRoutes.getRevertPreview);
   app.post('/api/tasks/revert', taskRoutes.revertChanges);
+  app.delete('/api/tasks/:taskId', taskRoutes.deleteTask);
   app.get('/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory);
   app.get('/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails);
   app.get('/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges);
