@@ -52,14 +52,13 @@ const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
     'claude-4-5-haiku': 'claude-haiku-4-5'
 };
 
-const OPENROUTER_MODEL_MAP: Record<ModelId, string> = {
-    'claude-opus-4-5': 'anthropic/claude-opus-4.5',
-    'claude-sonnet-4-5': 'anthropic/claude-sonnet-4.5',
-    'claude-haiku-4-5': 'anthropic/claude-haiku-4.5',
-};
-
+/**
+ * Gets the OpenRouter model ID for pricing lookups.
+ * Uses the openRouterId field from ModelInfo (modelDefinitions.ts).
+ */
 function getOpenRouterId(internalModelId: ModelId): string {
-    return OPENROUTER_MODEL_MAP[internalModelId] ?? internalModelId;
+    const modelInfo = MODEL_INFO_MAP[internalModelId];
+    return modelInfo?.openRouterId ?? internalModelId;
 }
 
 // Default model to use when none specified
