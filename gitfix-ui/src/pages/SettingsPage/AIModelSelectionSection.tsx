@@ -1,4 +1,5 @@
 import React from 'react';
+// CI trigger
 import { Brain, ClipboardCheck, Cpu } from 'lucide-react';
 import { AgentConfig, SummarizationSettings } from '../../api/gitfixApi';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
