@@ -42,7 +42,7 @@ export class GeminiAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, taskId } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
 
@@ -60,7 +60,8 @@ export class GeminiAgent implements Agent {
             const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number });
 
             const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData
+                timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData,
+                taskId, streamToRedis: true
             });
 
             const executionTime = Date.now() - startTime;

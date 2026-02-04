@@ -49,7 +49,8 @@ export class CodexAgent implements Agent {
             issueDetails,
             onSessionId,
             onContainerId,
-            githubToken
+            githubToken,
+            taskId
         } = options;
 
         const startTime = Date.now();
@@ -99,7 +100,9 @@ export class CodexAgent implements Agent {
                 onSessionId,
                 onContainerId,
                 worktreePath,
-                stdinData: prompt
+                stdinData: prompt,
+                taskId,
+                streamToRedis: true
             });
 
             const executionTime = Date.now() - startTime;
