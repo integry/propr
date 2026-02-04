@@ -16,7 +16,8 @@ import {
     UsageLimitError,
     ClaudeOutput,
     ConversationLogEntry,
-    ClaudeOutputResult
+    ClaudeOutputResult,
+    TokenUsage
 } from './claudeHelpers.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
@@ -64,6 +65,7 @@ export interface ClaudeCodeResponse {
     summary: string | null;
     prompt?: string;
     error?: string;
+    tokenUsage?: TokenUsage;
 }
 
 export interface GenerateTaskSummaryOptions {
@@ -165,7 +167,8 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             modifiedFiles: [],
             commitMessage: null,
             summary: claudeOutput.finalResult?.result || null,
-            prompt: prompt
+            prompt: prompt,
+            tokenUsage: claudeOutput.tokenUsage
         };
 
         await storePromptInRedis({ claudeOutput, prompt, issueRef, model: response.model!, isRetry, retryReason });

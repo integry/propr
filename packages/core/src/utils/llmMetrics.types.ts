@@ -1,6 +1,15 @@
 export interface Usage {
     input_tokens?: number;
     output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+}
+
+export interface TokenUsage {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
 }
 
 export interface Message {
@@ -38,6 +47,7 @@ export interface ClaudeResult {
     finalResult?: FinalResult | null;
     conversationLog?: ConversationStep[];
     error?: string;
+    tokenUsage?: TokenUsage;
 }
 
 export interface IssueRef {
@@ -92,6 +102,7 @@ export interface PersistMetrics {
     success: boolean;
     numTurns: number;
     costUsd: number;
+    tokenUsage?: TokenUsage;
 }
 
 export interface ConversationDetailParams {

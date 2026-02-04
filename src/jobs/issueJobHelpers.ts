@@ -22,7 +22,8 @@ function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
         conversationId: response.conversationId,
         finalResult: response.finalResult,
         conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
-        error: response.error
+        error: response.error,
+        tokenUsage: response.tokenUsage
     };
 }
 
@@ -280,7 +281,7 @@ export async function createPullRequest(
 
 ${commitResult ? `Closes #${issueRef.number}` : `Addresses #${issueRef.number}`}
 
-**Model Used:** ${modelName}
+**Model Used:** ${modelShortName}
 **Status:** ${claudeResult?.success ? '✅ Implementation Completed' : '⚠️ Analysis Completed'}
 **Branch:** \`${worktreeInfo.branchName}\`
 **Commits:** ${commitResult ? `✅ Changes committed (${commitResult.commitHash.substring(0, 7)})` : '❌ No changes made'}

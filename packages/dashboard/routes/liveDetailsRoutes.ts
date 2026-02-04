@@ -121,10 +121,18 @@ async function findSessionIdFromRedis(redisClient: RedisClientType, taskId: stri
   return entry.metadata!.sessionId!;
 }
 
+interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+}
+
 interface ConversationResult {
   events: Array<Record<string, unknown>>;
   todos: Array<{ status: string; content: string }>;
   currentTask: string | null;
+  tokenUsage: TokenUsage | null;
 }
 
 async function parseConversationFile(conversationPath: string): Promise<ConversationResult> {
@@ -133,22 +141,27 @@ async function parseConversationFile(conversationPath: string): Promise<Conversa
 
   const events: Array<Record<string, unknown>> = [];
   let todos: Array<{ status: string; content: string }> = [];
+  let tokenUsage: TokenUsage | null = null;
 
   for (const line of lines) {
     const parsed = parseLine(line, events);
     if (parsed.newTodos) {
       todos = parsed.newTodos;
     }
+    if (parsed.tokenUsage) {
+      tokenUsage = parsed.tokenUsage;
+    }
   }
 
   const inProgressTask = todos.find(t => t.status === 'in_progress');
   const currentTask = inProgressTask ? inProgressTask.content : null;
 
-  return { events, todos, currentTask };
+  return { events, todos, currentTask, tokenUsage };
 }
 
 interface ParseLineResult {
   newTodos?: Array<{ status: string; content: string }>;
+  tokenUsage?: TokenUsage;
 }
 
 interface MessageContent {
@@ -165,7 +178,8 @@ interface MessageContent {
 interface Message {
   type?: string;
   timestamp?: string;
-  message?: { content?: MessageContent[] };
+  message?: { content?: MessageContent[]; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
+  usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
 }
 
 function parseLine(
@@ -181,6 +195,18 @@ function parseLine(
     }
     if (message.type === 'user' && message.message?.content) {
       parseUserContent(message.message.content, events, timestamp);
+    }
+    // Extract token usage from result message or message.usage
+    const usage = message.usage || message.message?.usage;
+    if (usage) {
+      return {
+        tokenUsage: {
+          input_tokens: usage.input_tokens ?? 0,
+          output_tokens: usage.output_tokens ?? 0,
+          cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
+          cache_read_input_tokens: usage.cache_read_input_tokens ?? 0
+        }
+      };
     }
   } catch (parseError) {
     console.error(`[live-details] Error parsing line:`, parseError);

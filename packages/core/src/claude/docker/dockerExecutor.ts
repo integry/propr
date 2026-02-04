@@ -2,36 +2,24 @@ import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
 import logger from '../../utils/logger.js';
 
-export interface ExecutionResult {
-    stdout: string;
-    stderr: string;
-    exitCode: number | null;
-    messageTimestamps: Map<string, string>;
-}
+export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
 
 export interface DockerCommandOptions {
-    timeout?: number;
-    cwd?: string;
-    onSessionId?: (sessionId: string, conversationId?: string) => void;
-    onContainerId?: (containerId: string, containerName: string) => void;
-    worktreePath?: string;
-    stdinData?: string; // Data to pipe to stdin
-    extraMounts?: string[]; // Additional volume mounts (e.g., ['/host/path:/container/path:rw'])
-    extraEnvVars?: Record<string, string>; // Additional environment variables
-    taskId?: string; // Task ID for abort signal checking
+    timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; stripAnsi?: boolean;
+    onSessionId?: (sessionId: string, conversationId?: string) => void; onContainerId?: (containerId: string, containerName: string) => void;
+    extraMounts?: string[]; extraEnvVars?: Record<string, string>;
 }
 
-interface JsonLineMessage {
-    type?: string;
-    message?: {
-        id?: string;
-        model?: string;
-    };
-    session_id?: string;
-    conversation_id?: string;
-}
+interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
 
 const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
+
+// ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
+const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
+
+function stripAnsiCodes(text: string): string {
+    return text.replace(ANSI_REGEX, '');
+}
 
 /**
  * Custom error class for when task execution is aborted by user request.
@@ -154,10 +142,7 @@ export async function stopDockerContainer(
 async function clearAbortSignal(taskId: string): Promise<void> {
     try {
         const Redis = await import('ioredis');
-        const redis = new Redis.default({
-            host: process.env.REDIS_HOST || 'redis',
-            port: parseInt(process.env.REDIS_PORT || '6379', 10)
-        });
+        const redis = new Redis.default({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
         await redis.del(`worker:abort:${taskId}`);
         await redis.quit();
         logger.debug({ taskId }, 'Cleared abort signal from Redis');
@@ -166,214 +151,126 @@ async function clearAbortSignal(taskId: string): Promise<void> {
     }
 }
 
-export function executeDockerCommand(
-    command: string,
-    args: string[],
-    options: DockerCommandOptions = {}
-): Promise<ExecutionResult> {
+function resolveDockerPath(command: string): string {
+    if (command !== 'docker') return command;
+    const paths = ['/usr/bin/docker', '/usr/local/bin/docker', '/bin/docker'];
+    for (const p of paths) {
+        try { if (fs.existsSync(p)) { fs.accessSync(p, fs.constants.X_OK); logger.debug({ dockerPath: p }, 'Found docker executable'); return p; } } catch { /* continue */ }
+    }
+    logger.debug('Using docker from PATH');
+    return 'docker';
+}
+
+function setupAbortChecker(taskId: string, abortedRef: { value: boolean }, child: ChildProcess, containerIdRef: { value: string | null }): ReturnType<typeof setInterval> {
+    return setInterval(async () => {
+        const shouldAbort = await checkAbortSignal(taskId);
+        if (shouldAbort && !abortedRef.value && !child.killed) {
+            abortedRef.value = true;
+            logger.info({ taskId, containerId: containerIdRef.value }, 'Abort signal detected, terminating execution');
+            if (containerIdRef.value) {
+                const stopResult = await stopDockerContainer(containerIdRef.value, 10);
+                if (stopResult.success) logger.info({ taskId, containerId: containerIdRef.value }, 'Docker container stopped successfully on abort');
+                else logger.warn({ taskId, containerId: containerIdRef.value, error: stopResult.error }, 'Failed to stop Docker container on abort');
+            }
+            child.kill('SIGTERM');
+            setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
+            await clearAbortSignal(taskId);
+        }
+    }, 2000);
+}
+
+export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId } = options;
-
-        let executablePath: string = command;
-        if (command === 'docker') {
-            const possiblePaths: string[] = [
-                '/usr/bin/docker',
-                '/usr/local/bin/docker',
-                '/bin/docker'
-            ];
-
-            let found = false;
-            for (const dockerPath of possiblePaths) {
-                try {
-                    if (fs.existsSync(dockerPath)) {
-                        fs.accessSync(dockerPath, fs.constants.X_OK);
-                        executablePath = dockerPath;
-                        found = true;
-                        logger.debug({ dockerPath }, 'Found docker executable');
-                        break;
-                    }
-                } catch {
-                    // Continue to next path
-                }
-            }
-
-            if (!found) {
-                executablePath = 'docker';
-                logger.debug('Using docker from PATH');
-            }
-        }
-
-        const spawnOptions: SpawnOptions = {
-            stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'],
-            env: process.env
-        };
-
-        if (cwd && fs.existsSync(cwd)) {
-            spawnOptions.cwd = cwd;
-        } else if (cwd) {
-            logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
-        }
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, stripAnsi } = options;
+        const executablePath = resolveDockerPath(command);
+        const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env };
+        if (cwd && fs.existsSync(cwd)) spawnOptions.cwd = cwd;
+        else if (cwd) logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
 
         const child: ChildProcess = spawn(executablePath, args, spawnOptions);
-
-        // Write stdin data if provided (for large prompts)
         if (stdinData && child.stdin) {
-            // Handle stdin errors (e.g., EPIPE if container exits before we finish writing)
-            child.stdin.on('error', (err) => {
-                logger.warn({ error: err.message, code: (err as NodeJS.ErrnoException).code }, 'Stdin write error (container may have exited early)');
-            });
+            child.stdin.on('error', (err) => { logger.warn({ error: err.message, code: (err as NodeJS.ErrnoException).code }, 'Stdin write error'); });
             child.stdin.write(stdinData);
             child.stdin.end();
             logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');
         }
 
-        let stdout = '';
-        let stderr = '';
-        let timedOut = false;
-        let aborted = false;
-        let sessionIdDetected = false;
-        let containerIdDetected = false;
-        let currentContainerId: string | null = null; // Track container ID for abort handling
+        let stdout = '', stderr = '';
+        const state = { timedOut: false, aborted: { value: false }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };
         const messageTimestamps = new Map<string, string>();
+        const timeoutHandle = setTimeout(() => { state.timedOut = true; child.kill('SIGTERM'); setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000); }, timeout);
+        const abortCheckInterval = taskId ? setupAbortChecker(taskId, state.aborted, child, state.containerId) : null;
 
-        const timeoutHandle = setTimeout(() => {
-            timedOut = true;
-            child.kill('SIGTERM');
-
-            setTimeout(() => {
-                if (!child.killed) {
-                    child.kill('SIGKILL');
-                }
-            }, 5000);
-        }, timeout);
-
-        // Poll for abort signal if taskId is provided
-        let abortCheckInterval: ReturnType<typeof setInterval> | null = null;
-        if (taskId) {
-            abortCheckInterval = setInterval(async () => {
-                const shouldAbort = await checkAbortSignal(taskId);
-                if (shouldAbort && !aborted && !child.killed) {
-                    aborted = true;
-                    logger.info({ taskId, containerId: currentContainerId }, 'Abort signal detected, terminating execution');
-
-                    // Stop the Docker container if we have its ID
-                    if (currentContainerId) {
-                        const stopResult = await stopDockerContainer(currentContainerId, 10);
-                        if (stopResult.success) {
-                            logger.info({ taskId, containerId: currentContainerId }, 'Docker container stopped successfully on abort');
-                        } else {
-                            logger.warn({ taskId, containerId: currentContainerId, error: stopResult.error }, 'Failed to stop Docker container on abort');
-                        }
-                    }
-
-                    // Also kill the child process (docker run command)
-                    child.kill('SIGTERM');
-                    setTimeout(() => {
-                        if (!child.killed) {
-                            child.kill('SIGKILL');
-                        }
-                    }, 5000);
-
-                    // Clear the abort signal from Redis
-                    await clearAbortSignal(taskId);
-                }
-            }, 2000); // Check every 2 seconds
-        }
-
-        if (command === 'docker' && args[0] === 'run' && worktreePath) {
-            setTimeout(async () => {
-                if (!containerIdDetected) {
-                    try {
-                        const containersOutput = execSync(
-                            `/usr/bin/docker ps --filter "volume=${worktreePath}" --format "{{.ID}}:{{.Names}}" --latest`,
-                            { encoding: 'utf8', timeout: 5000 }
-                        ).trim();
-
-                        if (containersOutput) {
-                            const [containerId, containerName] = containersOutput.split(':');
-                            containerIdDetected = true;
-                            currentContainerId = containerId; // Store for abort handling
-                            if (onContainerId) {
-                                onContainerId(containerId, containerName);
-                            }
-                            logger.debug({
-                                containerId,
-                                containerName,
-                                worktreePath
-                            }, 'Detected Docker container ID for Claude execution');
-                        }
-                    } catch (err) {
-                        const error = err as Error;
-                        logger.debug({ error: error.message }, 'Failed to detect container ID');
-                    }
-                }
-            }, 2000);
-        }
+        const redisState = { client: null as InstanceType<typeof import('ioredis').default> | null, interval: null as ReturnType<typeof setInterval> | null, lastLen: 0 };
+        if (streamToRedis && taskId) initRedisStreaming(taskId, stripAnsi, () => stdout, redisState);
+        if (command === 'docker' && args[0] === 'run' && worktreePath) detectContainerId(worktreePath, state, onContainerId);
 
         child.stdout?.on('data', (data: Buffer) => {
-            const chunk = data.toString();
-            const receiveTimestamp = new Date().toISOString();
+            const chunk = data.toString(), ts = new Date().toISOString();
             stdout += chunk;
-
-            const lines = chunk.split('\n');
-            for (const line of lines) {
-                if (line.trim()) {
-                    try {
-                        const jsonLine: JsonLineMessage = JSON.parse(line);
-
-                        if (jsonLine.type === 'assistant' || jsonLine.type === 'user') {
-                            const messageKey = jsonLine.message?.id ||
-                                `${jsonLine.type}-${JSON.stringify(jsonLine).substring(0, 100)}`;
-                            messageTimestamps.set(messageKey, receiveTimestamp);
-                        }
-
-                        if (!sessionIdDetected && onSessionId && jsonLine.session_id) {
-                            sessionIdDetected = true;
-                            onSessionId(jsonLine.session_id, jsonLine.conversation_id);
-                        }
-                    } catch {
-                        // Not JSON, skip
-                    }
-                }
+            for (const line of chunk.split('\n')) {
+                if (!line.trim()) continue;
+                try {
+                    const j: JsonLineMessage = JSON.parse(line);
+                    if (j.type === 'assistant' || j.type === 'user') messageTimestamps.set(j.message?.id || `${j.type}-${JSON.stringify(j).substring(0, 100)}`, ts);
+                    if (!state.sessionIdDetected && onSessionId && j.session_id) { state.sessionIdDetected = true; onSessionId(j.session_id, j.conversation_id); }
+                } catch { /* skip */ }
             }
         });
+        child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
 
-        child.stderr?.on('data', (data: Buffer) => {
-            stderr += data.toString();
-        });
-
-        child.on('close', (exitCode: number | null) => {
+        child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
-            if (abortCheckInterval) {
-                clearInterval(abortCheckInterval);
-            }
-
-            if (timedOut) {
-                reject(new Error(`Command timed out after ${timeout}ms`));
-                return;
-            }
-
-            if (aborted) {
-                reject(new ExecutionAbortedError());
-                return;
-            }
-
-            resolve({
-                exitCode,
-                stdout,
-                stderr,
-                messageTimestamps
-            });
+            if (abortCheckInterval) clearInterval(abortCheckInterval);
+            await cleanupRedisStreaming(redisState, taskId, stripAnsi, stdout);
+            if (state.timedOut) { reject(new Error(`Command timed out after ${timeout}ms`)); return; }
+            if (state.aborted.value) { reject(new ExecutionAbortedError()); return; }
+            resolve({ exitCode, stdout, stderr, messageTimestamps });
         });
-
         child.on('error', (error: Error) => {
             clearTimeout(timeoutHandle);
-            if (abortCheckInterval) {
-                clearInterval(abortCheckInterval);
-            }
+            if (abortCheckInterval) clearInterval(abortCheckInterval);
+            if (redisState.interval) clearInterval(redisState.interval);
+            if (redisState.client) redisState.client.quit().catch(() => {});
             reject(error);
         });
     });
+}
+
+function initRedisStreaming(taskId: string, stripAnsi: boolean | undefined, getStdout: () => string, state: { client: InstanceType<typeof import('ioredis').default> | null; interval: ReturnType<typeof setInterval> | null; lastLen: number }): void {
+    (async () => {
+        try {
+            const Redis = await import('ioredis');
+            state.client = new Redis.default({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
+            const redisKey = `agent:output:${taskId}`;
+            state.interval = setInterval(async () => {
+                const stdout = getStdout();
+                if (stdout.length > state.lastLen && state.client) {
+                    try { await state.client.setex(redisKey, 3600, stripAnsi ? stripAnsiCodes(stdout) : stdout); state.lastLen = stdout.length; }
+                    catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to stream output to Redis'); }
+                }
+            }, 2000);
+            logger.debug({ taskId, redisKey }, 'Started streaming output to Redis');
+        } catch (err) { logger.warn({ error: (err as Error).message }, 'Failed to initialize Redis streaming'); }
+    })();
+}
+
+async function cleanupRedisStreaming(state: { client: InstanceType<typeof import('ioredis').default> | null; interval: ReturnType<typeof setInterval> | null }, taskId: string | undefined, stripAnsi: boolean | undefined, stdout: string): Promise<void> {
+    if (state.interval) clearInterval(state.interval);
+    if (state.client && taskId) {
+        try { await state.client.setex(`agent:output:${taskId}`, 3600, stripAnsi ? stripAnsiCodes(stdout) : stdout); await state.client.quit(); }
+        catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to cleanup Redis streaming'); }
+    }
+}
+
+function detectContainerId(worktreePath: string, state: { containerIdDetected: boolean; containerId: { value: string | null } }, onContainerId?: (containerId: string, containerName: string) => void): void {
+    setTimeout(() => {
+        if (state.containerIdDetected) return;
+        try {
+            const out = execSync(`/usr/bin/docker ps --filter "volume=${worktreePath}" --format "{{.ID}}:{{.Names}}" --latest`, { encoding: 'utf8', timeout: 5000 }).trim();
+            if (out) { const [id, name] = out.split(':'); state.containerIdDetected = true; state.containerId.value = id; if (onContainerId) onContainerId(id, name); logger.debug({ containerId: id, containerName: name, worktreePath }, 'Detected Docker container ID'); }
+        } catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to detect container ID'); }
+    }, 2000);
 }
 
 export async function buildClaudeDockerImage(): Promise<boolean> {

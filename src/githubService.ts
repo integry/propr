@@ -81,7 +81,7 @@ async function createNewPRForIssue(prContext: PRContext, claudeResult: ClaudeRes
             owner, repoName, branchName, baseBranch, issueNumber,
             // Format: [412 by Claude Opus] Title
             prTitle: `[${issueNumber} by ${modelShortName}] ${issueTitle}`,
-            prBody: generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult),
+            prBody: await generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult),
             worktreePath, repoUrl, authToken
         });
         return handlePrResult(prResult, { owner, repoName, branchName, issueNumber });

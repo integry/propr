@@ -3,6 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import logger from '../logger.js';
+import { getModelPricing } from '../../services/pricingService.js';
+import { getOpenRouterId, getModelShortName } from '../../config/modelAliases.js';
 interface MessageUsage {
     input_tokens?: number;
     cache_creation_input_tokens?: number;
@@ -74,6 +76,29 @@ interface ClaudeResult {
 interface LogFiles {
     conversation?: string;
     output?: string;
+}
+
+async function calculateExecutionCost(
+    claudeResult: ClaudeResult,
+    inputTokens: number,
+    outputTokens: number,
+    totalTokens: number
+): Promise<number> {
+    const baseCost = claudeResult?.finalResult?.cost_usd || 0;
+    if (baseCost > 0 || totalTokens === 0 || !claudeResult?.model) {
+        return baseCost;
+    }
+
+    try {
+        const openRouterId = getOpenRouterId(claudeResult.model);
+        const pricing = await getModelPricing(openRouterId);
+        if (pricing) {
+            return (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
+        }
+    } catch {
+        // Fall back to base cost if pricing lookup fails
+    }
+    return baseCost;
 }
 
 export async function createLogFiles(claudeResultInput: unknown, issueRef: IssueRef): Promise<LogFiles> {
@@ -158,24 +183,45 @@ export async function createLogFiles(claudeResultInput: unknown, issueRef: Issue
     return files;
 }
 
-function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, timestamp: string): string {
+function buildStatusText(isSuccess: boolean): { header: string; status: string } {
+    return {
+        header: isSuccess ? 'Completed' : 'Failed',
+        status: isSuccess ? 'Success' : 'Failed'
+    };
+}
+
+function buildOptionalDetails(claudeResult: ClaudeResult): string[] {
+    const lines: string[] = [];
+    if (claudeResult?.conversationId) {
+        lines.push(`- Conversation ID: \`${claudeResult.conversationId}\``);
+    }
+    if (claudeResult?.model) {
+        const modelDisplayName = getModelShortName(claudeResult.model);
+        lines.push(`- LLM Model: ${modelDisplayName}`);
+    }
+    return lines;
+}
+
+async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, timestamp: string): Promise<string> {
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
     const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
-    const cost = claudeResult?.finalResult?.cost_usd || 0;
+    const cost = await calculateExecutionCost(claudeResult, inputTokens, outputTokens, totalTokens);
+    const { header, status } = buildStatusText(isSuccess);
+
     const lines = [
-        `**AI Processing ${isSuccess ? 'Completed' : 'Failed'}**\n`,
+        `**AI Processing ${header}**\n`,
         `**Execution Details:**`,
         `- Issue: #${issueRef.number}`,
         `- Repository: ${issueRef.repoOwner}/${issueRef.repoName}`,
-        `- Status: ${isSuccess ? 'Success' : 'Failed'}`,
+        `- Status: ${status}`,
         `- Execution Time: ${executionTime}s`,
         `- Tokens used: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]`,
-        `- API cost: $${cost}`,
+        `- API cost: $${cost.toFixed(2)}`,
         `- Timestamp: ${timestamp}`,
+        ...buildOptionalDetails(claudeResult)
     ];
-    if (claudeResult?.conversationId) lines.push(`- Conversation ID: \`${claudeResult.conversationId}\``);
-    if (claudeResult?.model) lines.push(`- LLM Model: ${claudeResult.model}`);
+
     return lines.join('\n') + '\n\n';
 }
 
@@ -216,7 +262,7 @@ function buildLogFilesSection(logFiles: LogFiles, claudeResult: ClaudeResult): s
 export async function generateCompletionComment(claudeResultInput: unknown, issueRef: IssueRef): Promise<string> {
     const timestamp = new Date().toISOString();
     const result: ClaudeResult = (claudeResultInput as ClaudeResult) || { success: false };
-    let comment = buildExecutionDetails(result, issueRef, timestamp);
+    let comment = await buildExecutionDetails(result, issueRef, timestamp);
     comment += buildSummarySection(result);
     try {
         const logFiles = await createLogFiles(result, issueRef);

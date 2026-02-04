@@ -124,16 +124,20 @@ async function getHistoryFromDb(
     const llmExecutions = await db('llm_executions')
       .where({ task_id: taskId })
       .orderBy('start_time', 'asc');
-    
+
     const executionsByHistoryId = new Map<number, Record<string, unknown>>();
+    const executionsBySessionId = new Map<string, Record<string, unknown>>();
     llmExecutions.forEach((exec: Record<string, unknown>) => {
       if (exec.history_id) {
         executionsByHistoryId.set(exec.history_id as number, exec);
       }
+      if (exec.session_id) {
+        executionsBySessionId.set(exec.session_id as string, exec);
+      }
     });
-    
-    const history = historyRecords.map((record: Record<string, unknown>) => 
-      mapDbHistoryRecord(record, executionsByHistoryId)
+
+    const history = historyRecords.map((record: Record<string, unknown>) =>
+      mapDbHistoryRecord(record, executionsByHistoryId, executionsBySessionId)
     );
     
     console.log(`Fetched ${history.length} history records from SQLite for task ${taskId}`);
@@ -178,22 +182,28 @@ function parseJobData(initialJobData: unknown): { title: string | null; subtitle
 
 function mapDbHistoryRecord(
   record: Record<string, unknown>,
-  executionsByHistoryId: Map<number, Record<string, unknown>>
+  executionsByHistoryId: Map<number, Record<string, unknown>>,
+  executionsBySessionId: Map<string, Record<string, unknown>>
 ): Record<string, unknown> {
   const historyItem: Record<string, unknown> = {
     state: record.state,
     timestamp: record.timestamp,
     reason: record.reason
   };
-  
+
   let metadata: Record<string, unknown> | null = null;
   if (record.metadata) {
-    metadata = typeof record.metadata === 'string' 
-      ? JSON.parse(record.metadata) 
+    metadata = typeof record.metadata === 'string'
+      ? JSON.parse(record.metadata)
       : record.metadata as Record<string, unknown>;
   }
-  
-  const execution = executionsByHistoryId.get(record.history_id as number);
+
+  // Try to find execution by history_id first, then by sessionId from metadata
+  let execution = executionsByHistoryId.get(record.history_id as number);
+  if (!execution && metadata?.sessionId) {
+    execution = executionsBySessionId.get(metadata.sessionId as string);
+  }
+
   if (execution) {
     metadata = enrichMetadataWithExecution(metadata || {}, execution);
     if (execution.session_id) {
@@ -204,11 +214,11 @@ function mapDbHistoryRecord(
     historyItem.promptPath = `/api/execution/${metadata.sessionId}/prompt`;
     historyItem.logsPath = `/api/execution/${metadata.sessionId}/logs`;
   }
-  
+
   if (metadata) {
     historyItem.metadata = metadata;
   }
-  
+
   return historyItem;
 }
 
@@ -223,7 +233,13 @@ function enrichMetadataWithExecution(
     model: execution.model_name,
     duration: execution.duration_ms,
     success: execution.success,
-    conversationTurns: execution.num_turns
+    conversationTurns: execution.num_turns,
+    tokenUsage: {
+      input_tokens: execution.input_tokens ?? null,
+      output_tokens: execution.output_tokens ?? null,
+      cache_creation_input_tokens: execution.cache_creation_input_tokens ?? null,
+      cache_read_input_tokens: execution.cache_read_input_tokens ?? null
+    }
   };
 }
 

@@ -10,8 +10,7 @@ import type { WorktreeInfo } from '@gitfix/core';
 import { ensureGitRepository } from '@gitfix/core';
 import { createLogFiles } from '@gitfix/core';
 import { UsageLimitError, generateTaskSummary, AgentRegistry, resolveLlmLabel } from '@gitfix/core';
-import type { ClaudeCodeResponse, AgentExecutionResult } from '@gitfix/core';
-import type { ClaudeResult } from '@gitfix/core';
+import type { ClaudeCodeResponse } from '@gitfix/core';
 import { recordLLMMetrics } from '@gitfix/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@gitfix/core';
 import { Redis } from 'ioredis';
@@ -24,45 +23,8 @@ import {
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
-    handleJobError, cleanupJob, pickUpPendingComments
+    handleJobError, cleanupJob, pickUpPendingComments, toClaudeResult, agentResultToClaudeResponse
 } from './prCommentJobUtils.js';
-
-function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
-    return {
-        model: response.model,
-        success: response.success,
-        executionTime: response.executionTime,
-        sessionId: response.sessionId,
-        conversationId: response.conversationId,
-        finalResult: response.finalResult,
-        conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
-        error: response.error
-    };
-}
-
-/**
- * Converts AgentExecutionResult to ClaudeCodeResponse for backwards compatibility
- * with existing post-processing code.
- */
-function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeResponse {
-    return {
-        success: result.success,
-        model: result.modelUsed,
-        executionTime: result.executionTimeMs,
-        output: null,
-        sessionId: result.sessionId || null,
-        conversationId: result.conversationId,
-        finalResult: result.summary ? { type: 'result', result: result.summary } : null,
-        rawOutput: result.rawOutput,
-        summary: result.summary || null,
-        logs: result.logs,
-        exitCode: result.exitCode ?? null,
-        error: result.error,
-        modifiedFiles: result.modifiedFiles,
-        commitMessage: result.commitMessage || null,
-        conversationLog: result.conversationLog
-    };
-}
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
@@ -448,6 +410,17 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
 
+    // Resolve model name early for task state tracking
+    let modelName = DEFAULT_MODEL_NAME;
+    if (llm) {
+        try {
+            const resolution = await resolveLlmLabel(llm);
+            modelName = resolution.model;
+        } catch {
+            // Keep default if resolution fails
+        }
+    }
+
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
     const stateManager = getStateManager();
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
@@ -456,7 +429,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
 
     try {
-        await stateManager.createTaskState(taskId, { number: pullRequestNumber, repoOwner, repoName, comments: job.data.comments } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
+        await stateManager.createTaskState(taskId, { number: pullRequestNumber, repoOwner, repoName, comments: job.data.comments, modelName } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state, continuing anyway');
     }
