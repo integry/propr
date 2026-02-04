@@ -48,6 +48,7 @@ export interface CodexOutput {
     sessionId?: string;
     conversationId?: string;
     model?: string;
+    tokenUsage?: { input_tokens?: number; output_tokens?: number };
 }
 
 export interface StoreCodexPromptOptions {
@@ -118,6 +119,7 @@ interface ParseState {
     sessionId: string | undefined;
     conversationId: string | undefined;
     model: string | undefined;
+    tokenUsage: { input_tokens: number; output_tokens: number };
 }
 
 function handleItemCompleted(event: CodexEvent, state: ParseState): void {
@@ -174,8 +176,15 @@ function processEvent(event: CodexEvent, state: ParseState): void {
             handleResultEvent(event, state);
             break;
         case 'turn.started':
+            state.logs += `[${event.type}]\n`;
+            break;
         case 'turn.completed':
             state.logs += `[${event.type}]\n`;
+            // Accumulate token usage from turn.completed events
+            if (event.usage) {
+                state.tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
+                state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
+            }
             break;
         case 'item.started':
             // Skip item.started as it's just a progress indicator
@@ -194,7 +203,8 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
         errorMessage: undefined,
         sessionId: undefined,
         conversationId: undefined,
-        model: undefined
+        model: undefined,
+        tokenUsage: { input_tokens: 0, output_tokens: 0 }
     };
     const conversationLog: CodexEvent[] = [];
 
@@ -220,7 +230,8 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
         conversationLog,
         sessionId: state.sessionId,
         conversationId: state.conversationId,
-        model: state.model
+        model: state.model,
+        tokenUsage: (state.tokenUsage.input_tokens || state.tokenUsage.output_tokens) ? state.tokenUsage : undefined
     };
 }
 

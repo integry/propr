@@ -133,7 +133,8 @@ export class CodexAgent implements Agent {
                 commitMessage: null,
                 summary: parsedOutput.result ?? undefined,
                 prompt,
-                error: parsedOutput.error
+                error: parsedOutput.error,
+                tokenUsage: parsedOutput.tokenUsage
             };
 
             // Store prompt in Redis for audit trail
