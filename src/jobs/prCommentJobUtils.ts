@@ -375,6 +375,36 @@ export async function pickUpPendingComments(commentsToProcess: UnprocessedCommen
     return commentsToProcess;
 }
 
+function formatDuration(ms: number): string {
+    const seconds = Math.floor(ms / 1000);
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    if (m === 0) return `${s}s`;
+    return `${m}m ${s}s`;
+}
+
+async function calculateCost(
+    claudeResult: ClaudeCodeResponse,
+    tokens: { total: number; input: number; output: number },
+    modelId: string | null | undefined
+): Promise<number | undefined | null> {
+    // Calculate cost using OpenRouter pricing (same as DB metrics)
+    const cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
+    
+    if ((cost === 0 || cost == null) && tokens.total > 0 && modelId) {
+        try {
+            const openRouterId = getOpenRouterId(modelId);
+            const pricing = await getModelPricing(openRouterId);
+            if (pricing) {
+                return (tokens.input * pricing.prompt) + (tokens.output * pricing.completion);
+            }
+        } catch {
+            // Fall back to finalResult.cost_usd if pricing lookup fails
+        }
+    }
+    return cost;
+}
+
 export async function buildMetricsSection(
     claudeResult: ClaudeCodeResponse,
     llm: string | null | undefined,
@@ -384,24 +414,12 @@ export async function buildMetricsSection(
     const defaultModel = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
     const modelId = claudeResult.model || llm || defaultModel;
     const modelDisplayName = getModelName(modelId);
-    const executionTime = claudeResult.executionTime ? `${Math.round(claudeResult.executionTime / 1000)}s` : null;
+    const executionTime = claudeResult.executionTime ? formatDuration(claudeResult.executionTime) : null;
     const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
 
     const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as ClaudeResult['conversationLog'] });
 
-    // Calculate cost using OpenRouter pricing (same as DB metrics)
-    let cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
-    if ((cost === 0 || cost == null) && totalTokens > 0 && modelId) {
-        try {
-            const openRouterId = getOpenRouterId(modelId);
-            const pricing = await getModelPricing(openRouterId);
-            if (pricing) {
-                cost = (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
-            }
-        } catch {
-            // Fall back to finalResult.cost_usd if pricing lookup fails
-        }
-    }
+    const cost = await calculateCost(claudeResult, { total: totalTokens, input: inputTokens, output: outputTokens }, modelId);
 
     let section = `\n---\n`;
     section += `### 🤖 ${isAnalysis ? 'Analysis' : 'Implementation'} Details\n\n`;

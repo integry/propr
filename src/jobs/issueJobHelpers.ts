@@ -8,8 +8,7 @@ import {
     formatResetTime,
     issueQueue,
     db,
-    getModelShortName,
-    getModelName
+    getModelShortName
 } from '@gitfix/core';
 export { localizeContentImages, cleanupIssueAssets, type LocalizeContentImagesOptions } from './contentUtils.js';
 import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, CommitResult, RepoValidationResult } from '@gitfix/core';
@@ -274,7 +273,6 @@ export async function createPullRequest(
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
     const modelShortName = getModelShortName(modelName);
-    const modelFullName = getModelName(modelName);
     // New format: [412 by Claude Opus] Title
     const prTitle = '[' + issueRef.number + ' by ' + modelShortName + '] ' + issueTitle;
 
@@ -283,8 +281,6 @@ export async function createPullRequest(
 
 ${commitResult ? `Closes #${issueRef.number}` : `Addresses #${issueRef.number}`}
 
-**Model Used:** ${modelFullName}
-**Status:** ${claudeResult?.success ? '✅ Implementation Completed' : '⚠️ Analysis Completed'}
 **Branch:** \`${worktreeInfo.branchName}\`
 **Commits:** ${commitResult ? `✅ Changes committed (${commitResult.commitHash.substring(0, 7)})` : '❌ No changes made'}
 
