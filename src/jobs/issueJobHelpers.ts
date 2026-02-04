@@ -283,8 +283,6 @@ export async function createPullRequest(
 
 ${commitResult ? `Closes #${issueRef.number}` : `Addresses #${issueRef.number}`}
 
-**Model Used:** ${modelFullName}
-**Status:** ${claudeResult?.success ? '✅ Implementation Completed' : '⚠️ Analysis Completed'}
 **Branch:** \`${worktreeInfo.branchName}\`
 **Commits:** ${commitResult ? `✅ Changes committed (${commitResult.commitHash.substring(0, 7)})` : '❌ No changes made'}
 

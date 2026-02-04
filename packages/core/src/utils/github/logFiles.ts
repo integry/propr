@@ -190,6 +190,18 @@ function buildStatusText(isSuccess: boolean): { header: string; status: string }
     };
 }
 
+function formatDuration(ms: number): string {
+    const seconds = Math.floor(ms / 1000);
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    if (m === 0) return `${s}s`;
+    return `${m}m ${s}s`;
+}
+
+function formatTokens(count: number): string {
+    return count.toLocaleString();
+}
+
 function buildOptionalDetails(claudeResult: ClaudeResult): string[] {
     const lines: string[] = [];
     if (claudeResult?.conversationId) {
@@ -204,10 +216,20 @@ function buildOptionalDetails(claudeResult: ClaudeResult): string[] {
 
 async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, timestamp: string): Promise<string> {
     const isSuccess = claudeResult?.success || false;
-    const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
+    const executionTimeStr = formatDuration(claudeResult?.executionTime || 0);
     const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
     const cost = await calculateExecutionCost(claudeResult, inputTokens, outputTokens, totalTokens);
     const { header, status } = buildStatusText(isSuccess);
+
+    const date = new Date(timestamp);
+    const formattedTimestamp = date.toLocaleString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: 'numeric',
+        timeZoneName: 'short'
+    });
 
     const lines = [
         `**AI Processing ${header}**\n`,
@@ -215,10 +237,10 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
         `- Issue: #${issueRef.number}`,
         `- Repository: ${issueRef.repoOwner}/${issueRef.repoName}`,
         `- Status: ${status}`,
-        `- Execution Time: ${executionTime}s`,
-        `- Tokens used: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]`,
+        `- Execution Time: ${executionTimeStr}`,
+        `- Tokens used: ${formatTokens(totalTokens)} tokens [${formatTokens(inputTokens)} input + ${formatTokens(outputTokens)} output]`,
         `- API cost: $${cost.toFixed(2)}`,
-        `- Timestamp: ${timestamp}`,
+        `- Timestamp: ${formattedTimestamp}`,
         ...buildOptionalDetails(claudeResult)
     ];
 

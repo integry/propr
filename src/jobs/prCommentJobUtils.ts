@@ -375,6 +375,14 @@ export async function pickUpPendingComments(commentsToProcess: UnprocessedCommen
     return commentsToProcess;
 }
 
+function formatDuration(ms: number): string {
+    const seconds = Math.floor(ms / 1000);
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    if (m === 0) return `${s}s`;
+    return `${m}m ${s}s`;
+}
+
 export async function buildMetricsSection(
     claudeResult: ClaudeCodeResponse,
     llm: string | null | undefined,
@@ -384,7 +392,7 @@ export async function buildMetricsSection(
     const defaultModel = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
     const modelId = claudeResult.model || llm || defaultModel;
     const modelDisplayName = getModelName(modelId);
-    const executionTime = claudeResult.executionTime ? `${Math.round(claudeResult.executionTime / 1000)}s` : null;
+    const executionTime = claudeResult.executionTime ? formatDuration(claudeResult.executionTime) : null;
     const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
 
     const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as ClaudeResult['conversationLog'] });
