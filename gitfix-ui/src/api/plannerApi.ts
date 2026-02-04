@@ -106,6 +106,8 @@ export interface PreviewOptions {
   contextLevel?: number;
   compress?: boolean;
   files?: string[];
+  /** Model to use for plan generation (determines context limits) */
+  generationModel?: string;
 }
 
 export interface PlanGenerationOptions {
@@ -114,6 +116,8 @@ export interface PlanGenerationOptions {
   contextLevel?: number;
   compress?: boolean;
   contextRepositories?: ContextRepository[];
+  /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
+  generationModel?: string;
 }
 
 export const createDraft = async (repository: string, prompt: string): Promise<PlannerDraft> => {
@@ -219,6 +223,8 @@ export interface DraftContextConfig {
   contextRepositories?: ContextRepository[];
   /** Granularity enforcement metadata (populated after plan generation) */
   granularityEnforcement?: GranularityEnforcementMetadata;
+  /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
+  generationModel?: string;
 }
 
 export interface DraftWithPlan extends PlannerDraft {
