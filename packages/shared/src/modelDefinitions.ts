@@ -27,17 +27,18 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 // These are the models shown for ChatGPT Plus accounts as of Jan 2026
 export const CODEX_MODELS: ModelInfo[] = [
   { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', shortName: 'GPT-5.2 Codex', shortAlias: 'gpt52-codex', githubLabel: 'llm-codex-gpt52-codex', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.2-codex' },
+  { id: 'gpt-5.2', name: 'GPT-5.2', shortName: 'GPT-5.2', shortAlias: 'gpt52', githubLabel: 'llm-codex-gpt52', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.2' },
   { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max', shortName: 'Codex Max', shortAlias: 'codex-max', githubLabel: 'llm-codex-max', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.1-codex-max' },
   { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini', shortName: 'Codex Mini', shortAlias: 'codex-mini', githubLabel: 'llm-codex-mini', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.1-codex-mini' },
-  { id: 'gpt-5.2', name: 'GPT-5.2', shortName: 'GPT-5.2', shortAlias: 'gpt52', githubLabel: 'llm-codex-gpt52', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.2' },
 ];
 
 // Gemini models
 export const GEMINI_MODELS: ModelInfo[] = [
   { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview', shortName: 'Gemini 3 Preview', shortAlias: 'pro-preview', githubLabel: 'llm-gemini-pro-preview', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3-pro-preview' },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', shortName: 'Gemini Pro', shortAlias: 'pro', githubLabel: 'llm-gemini-pro', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-pro-preview' },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', shortName: 'Gemini Flash', shortAlias: 'flash', githubLabel: 'llm-gemini-flash', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-flash-preview' },
-  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', shortName: 'Flash Lite', shortAlias: 'flash-lite', githubLabel: 'llm-gemini-flash-lite', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-flash-lite-preview' },
+  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview', shortName: 'Gemini 3 Flash', shortAlias: 'g3-flash-preview', githubLabel: 'llm-gemini-g3-flash-preview', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3-flash-preview' },
+  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', shortName: 'Gemini Pro', shortAlias: 'pro', githubLabel: 'llm-gemini-pro', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-pro' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', shortName: 'Gemini Flash', shortAlias: 'flash', githubLabel: 'llm-gemini-flash', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-flash' },
+  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', shortName: 'Flash Lite', shortAlias: 'flash-lite', githubLabel: 'llm-gemini-flash-lite', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-2.5-flash-lite' },
 ];
 
 // All models combined
