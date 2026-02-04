@@ -1,4 +1,3 @@
-// CI retrigger
 import React, { useMemo, useCallback } from 'react';
 import { Layers, Minimize2, Zap, Clock, Cpu, ChevronDown } from 'lucide-react';
 import { AgentConfig } from '../../api/gitfixApi';
