@@ -33,28 +33,51 @@ function extractMetricsFromClaudeResult(claudeResult: ClaudeResult | null): Extr
     return { model, success, executionTimeMs, executionTimeSec, numTurns, sessionId, conversationId };
 }
 
-function calculateTokens(conversationLog: ConversationStep[] | undefined): { totalInputTokens: number; totalOutputTokens: number } {
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
-    if (conversationLog && Array.isArray(conversationLog)) {
-        conversationLog.forEach(step => {
-            totalInputTokens += step.message?.usage?.input_tokens ?? 0;
-            totalOutputTokens += step.message?.usage?.output_tokens ?? 0;
-        });
-    }
-    return { totalInputTokens, totalOutputTokens };
+interface CumulativeTokenUsage {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+    totalInputWithCache: number;  // input + cache_creation + cache_read (for cost calc and display)
 }
 
-async function calculateCost(model: string, tokenUsage: TokenUsage | undefined, conversationLogTokens: { totalInputTokens: number; totalOutputTokens: number }, claudeResult: ClaudeResult | null): Promise<number> {
+function calculateTokens(conversationLog: ConversationStep[] | undefined): CumulativeTokenUsage {
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheCreationTokens = 0;
+    let cacheReadTokens = 0;
+
+    if (conversationLog && Array.isArray(conversationLog)) {
+        conversationLog.forEach(step => {
+            const usage = step.message?.usage;
+            if (usage) {
+                inputTokens += usage.input_tokens ?? 0;
+                outputTokens += usage.output_tokens ?? 0;
+                cacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
+                cacheReadTokens += usage.cache_read_input_tokens ?? 0;
+            }
+        });
+    }
+
+    return {
+        inputTokens,
+        outputTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
+        totalInputWithCache: inputTokens + cacheCreationTokens + cacheReadTokens
+    };
+}
+
+async function calculateCost(model: string, conversationLogTokens: CumulativeTokenUsage, claudeResult: ClaudeResult | null): Promise<number> {
     let calculatedCostUsd = 0;
     const openRouterId = getOpenRouterId(model);
     const pricing = await getModelPricing(openRouterId) as ModelPricing | null;
 
-    // Prefer tokenUsage from final result (cumulative totals), fall back to conversation log tokens
-    const inputTokens = tokenUsage?.input_tokens ?? conversationLogTokens.totalInputTokens;
-    const outputTokens = tokenUsage?.output_tokens ?? conversationLogTokens.totalOutputTokens;
+    // Use cumulative totals from conversation log (includes cache tokens for input)
+    const inputTokens = conversationLogTokens.totalInputWithCache;
+    const outputTokens = conversationLogTokens.outputTokens;
 
-    logger.info({ model, openRouterId, pricingFound: !!pricing, pricing, inputTokens, outputTokens, tokenUsageSource: tokenUsage ? 'finalResult' : 'conversationLog' }, 'Cost calculation: looking up pricing');
+    logger.info({ model, openRouterId, pricingFound: !!pricing, pricing, inputTokens, outputTokens }, 'Cost calculation: looking up pricing');
 
     if (pricing && (inputTokens > 0 || outputTokens > 0)) {
         calculatedCostUsd = (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
@@ -279,8 +302,8 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         const dateKey = timestamp.split('T')[0];
         const extracted = extractMetricsFromClaudeResult(claudeResult);
         const { model, success, executionTimeMs, executionTimeSec, numTurns, sessionId, conversationId } = extracted;
-        const conversationLogTokens = calculateTokens(claudeResult?.conversationLog);
-        const costUsd = await calculateCost(model, claudeResult?.tokenUsage, conversationLogTokens, claudeResult);
+        const cumulativeTokens = calculateTokens(claudeResult?.conversationLog);
+        const costUsd = await calculateCost(model, cumulativeTokens, claudeResult);
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
 
         const llmMetrics: LLMMetricsData = {
@@ -297,7 +320,14 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         logger.info({ correlationId, issueNumber: issueRef.number, model, success, costUsd, executionTimeSec, numTurns }, 'LLM metrics recorded');
         logConversationDebug(claudeResult, correlationId, taskId);
         if (claudeResult) {
-            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: claudeResult.tokenUsage }, correlationId);
+            // Build cumulative token usage from conversation log (same as PR comment)
+            const cumulativeTokenUsage: TokenUsage = {
+                input_tokens: cumulativeTokens.totalInputWithCache,
+                output_tokens: cumulativeTokens.outputTokens,
+                cache_creation_input_tokens: cumulativeTokens.cacheCreationTokens,
+                cache_read_input_tokens: cumulativeTokens.cacheReadTokens
+            };
+            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: cumulativeTokenUsage }, correlationId);
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');
