@@ -8,8 +8,7 @@ import {
     formatResetTime,
     issueQueue,
     db,
-    getModelShortName,
-    getModelName
+    getModelShortName
 } from '@gitfix/core';
 export { localizeContentImages, cleanupIssueAssets, type LocalizeContentImagesOptions } from './contentUtils.js';
 import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, CommitResult, RepoValidationResult } from '@gitfix/core';

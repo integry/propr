@@ -385,20 +385,18 @@ function formatDuration(ms: number): string {
 
 async function calculateCost(
     claudeResult: ClaudeCodeResponse,
-    totalTokens: number,
-    inputTokens: number,
-    outputTokens: number,
+    tokens: { total: number; input: number; output: number },
     modelId: string | null | undefined
 ): Promise<number | undefined | null> {
     // Calculate cost using OpenRouter pricing (same as DB metrics)
-    let cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
+    const cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
     
-    if ((cost === 0 || cost == null) && totalTokens > 0 && modelId) {
+    if ((cost === 0 || cost == null) && tokens.total > 0 && modelId) {
         try {
             const openRouterId = getOpenRouterId(modelId);
             const pricing = await getModelPricing(openRouterId);
             if (pricing) {
-                return (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
+                return (tokens.input * pricing.prompt) + (tokens.output * pricing.completion);
             }
         } catch {
             // Fall back to finalResult.cost_usd if pricing lookup fails
@@ -421,7 +419,7 @@ export async function buildMetricsSection(
 
     const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as ClaudeResult['conversationLog'] });
 
-    const cost = await calculateCost(claudeResult, totalTokens, inputTokens, outputTokens, modelId);
+    const cost = await calculateCost(claudeResult, { total: totalTokens, input: inputTokens, output: outputTokens }, modelId);
 
     let section = `\n---\n`;
     section += `### 🤖 ${isAnalysis ? 'Analysis' : 'Implementation'} Details\n\n`;
