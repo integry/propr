@@ -94,14 +94,6 @@ const SettingsPage: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Left Column */}
         <div className="space-y-6">
-          <GeneralSettingsSection
-            settings={{ worker_concurrency: settings.worker_concurrency }}
-            onSettingChange={(e) =>
-              setSettings(prev => ({ ...prev, [e.target.name]: e.target.value }))
-            }
-            onBlur={triggerAutoSave}
-          />
-
           <AIModelSelectionSection
             settings={{
               analysis_model_fast: settings.analysis_model_fast,
@@ -123,65 +115,90 @@ const SettingsPage: React.FC = () => {
             isReindexing={isReindexing}
           />
 
-          <TagListSection
-            title="GitHub User Whitelist"
-            description="Only process issues/comments from these users."
-            items={whitelist}
-            newItem={newWhitelistItem}
-            onNewItemChange={setNewWhitelistItem}
-            onAddItem={addWhitelistItem}
-            onRemoveItem={removeWhitelistItem}
-            placeholder="e.g., octocat"
-            emptyMessage="Allowed for all users (Empty whitelist)."
+          <GeneralSettingsSection
+            settings={{ worker_concurrency: settings.worker_concurrency }}
+            onSettingChange={(e) =>
+              setSettings(prev => ({ ...prev, [e.target.name]: e.target.value }))
+            }
+            onBlur={triggerAutoSave}
           />
         </div>
 
         {/* Right Column */}
         <div className="space-y-6">
-          <TagListSection
-            title="Primary Processing Labels"
-            description="Issues with these labels will be auto-processed."
-            items={primaryLabels}
-            newItem={newPrimaryLabel}
-            onNewItemChange={setNewPrimaryLabel}
-            onAddItem={addPrimaryLabel}
-            onRemoveItem={removePrimaryLabel}
-            placeholder="e.g., AI"
-            emptyMessage="No labels configured."
-            helperText="State labels (-processing, -done) are generated automatically."
-          />
+          <div className="bg-white shadow rounded-lg p-6">
+            <h3 className="text-gray-900 text-lg font-medium mb-6">GitHub Processing Rules</h3>
 
-          <PrLabelSection
-            prLabel={prLabel}
-            onLabelChange={(e) => setPrLabel(e.target.value)}
-            onBlur={triggerAutoSave}
-          />
+            <TagListSection
+              title="GitHub User Whitelist"
+              description="Only process issues/comments from these users."
+              items={whitelist}
+              newItem={newWhitelistItem}
+              onNewItemChange={setNewWhitelistItem}
+              onAddItem={addWhitelistItem}
+              onRemoveItem={removeWhitelistItem}
+              placeholder="e.g., octocat"
+              emptyMessage="Allowed for all users (Empty whitelist)."
+              className="shadow-none p-0 border-0"
+            />
 
-          <TagListSection
-            title="Follow-up Keywords"
-            description="Triggers processing when found in comments."
-            items={keywords}
-            newItem={newKeyword}
-            onNewItemChange={setNewKeyword}
-            onAddItem={addKeyword}
-            onRemoveItem={removeKeyword}
-            placeholder="e.g., GITFIX"
-            emptyMessage="No keywords configured."
-            showEmptyIcon={true}
-          />
+            <hr className="my-6 border-gray-200" />
 
-          <TagListSection
-            title="PR Follow-up Ignore Keywords"
-            description="Ignore comments containing these phrases (prevents loops)."
-            items={ignoreKeywords}
-            newItem={newIgnoreKeyword}
-            onNewItemChange={setNewIgnoreKeyword}
-            onAddItem={addIgnoreKeyword}
-            onRemoveItem={removeIgnoreKeyword}
-            placeholder="e.g., Deployment In Progress"
-            emptyMessage="No ignore keywords configured."
-            showEmptyIcon={true}
-          />
+            <TagListSection
+              title="Primary Processing Labels"
+              description="Issues with these labels will be auto-processed."
+              items={primaryLabels}
+              newItem={newPrimaryLabel}
+              onNewItemChange={setNewPrimaryLabel}
+              onAddItem={addPrimaryLabel}
+              onRemoveItem={removePrimaryLabel}
+              placeholder="e.g., AI"
+              emptyMessage="No labels configured."
+              helperText="State labels (-processing, -done) are generated automatically."
+              className="shadow-none p-0 border-0"
+            />
+
+            <hr className="my-6 border-gray-200" />
+
+            <PrLabelSection
+              prLabel={prLabel}
+              onLabelChange={(e) => setPrLabel(e.target.value)}
+              onBlur={triggerAutoSave}
+              className="shadow-none p-0 border-0"
+            />
+
+            <hr className="my-6 border-gray-200" />
+
+            <TagListSection
+              title="Follow-up Keywords"
+              description="Triggers processing when found in comments."
+              items={keywords}
+              newItem={newKeyword}
+              onNewItemChange={setNewKeyword}
+              onAddItem={addKeyword}
+              onRemoveItem={removeKeyword}
+              placeholder="e.g., GITFIX"
+              emptyMessage="No keywords configured."
+              showEmptyIcon={true}
+              className="shadow-none p-0 border-0"
+            />
+
+            <hr className="my-6 border-gray-200" />
+
+            <TagListSection
+              title="PR Follow-up Ignore Keywords"
+              description="Ignore comments containing these phrases (prevents loops)."
+              items={ignoreKeywords}
+              newItem={newIgnoreKeyword}
+              onNewItemChange={setNewIgnoreKeyword}
+              onAddItem={addIgnoreKeyword}
+              onRemoveItem={removeIgnoreKeyword}
+              placeholder="e.g., Deployment In Progress"
+              emptyMessage="No ignore keywords configured."
+              showEmptyIcon={true}
+              className="shadow-none p-0 border-0"
+            />
+          </div>
         </div>
       </div>
     </div>
