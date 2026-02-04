@@ -383,6 +383,30 @@ function formatDuration(ms: number): string {
     return `${m}m ${s}s`;
 }
 
+async function calculateCost(
+    claudeResult: ClaudeCodeResponse,
+    totalTokens: number,
+    inputTokens: number,
+    outputTokens: number,
+    modelId: string | null | undefined
+): Promise<number | undefined | null> {
+    // Calculate cost using OpenRouter pricing (same as DB metrics)
+    let cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
+    
+    if ((cost === 0 || cost == null) && totalTokens > 0 && modelId) {
+        try {
+            const openRouterId = getOpenRouterId(modelId);
+            const pricing = await getModelPricing(openRouterId);
+            if (pricing) {
+                return (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
+            }
+        } catch {
+            // Fall back to finalResult.cost_usd if pricing lookup fails
+        }
+    }
+    return cost;
+}
+
 export async function buildMetricsSection(
     claudeResult: ClaudeCodeResponse,
     llm: string | null | undefined,
@@ -397,19 +421,7 @@ export async function buildMetricsSection(
 
     const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as ClaudeResult['conversationLog'] });
 
-    // Calculate cost using OpenRouter pricing (same as DB metrics)
-    let cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
-    if ((cost === 0 || cost == null) && totalTokens > 0 && modelId) {
-        try {
-            const openRouterId = getOpenRouterId(modelId);
-            const pricing = await getModelPricing(openRouterId);
-            if (pricing) {
-                cost = (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
-            }
-        } catch {
-            // Fall back to finalResult.cost_usd if pricing lookup fails
-        }
-    }
+    const cost = await calculateCost(claudeResult, totalTokens, inputTokens, outputTokens, modelId);
 
     let section = `\n---\n`;
     section += `### 🤖 ${isAnalysis ? 'Analysis' : 'Implementation'} Details\n\n`;

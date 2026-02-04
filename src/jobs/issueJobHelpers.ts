@@ -274,7 +274,6 @@ export async function createPullRequest(
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
     const modelShortName = getModelShortName(modelName);
-    const modelFullName = getModelName(modelName);
     // New format: [412 by Claude Opus] Title
     const prTitle = '[' + issueRef.number + ' by ' + modelShortName + '] ' + issueTitle;
 
