@@ -398,12 +398,72 @@ export class GeminiAgent implements Agent {
             const projectDir = path.join(os.homedir(), '.claude', 'projects', '-home-node-workspace');
             await fs.promises.mkdir(projectDir, { recursive: true });
             const conversationPath = path.join(projectDir, `${sessionId}.jsonl`);
-            const claudeFormatEvents = events.map(event => this.convertEventToClaudeFormat(event));
+
+            // Aggregate consecutive delta messages before converting to Claude format
+            const aggregatedEvents = this.aggregateDeltaMessages(events);
+            const claudeFormatEvents = aggregatedEvents.map(event => this.convertEventToClaudeFormat(event));
             await fs.promises.writeFile(conversationPath, claudeFormatEvents.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
-            logger.info({ sessionId, path: conversationPath, eventCount: events.length }, 'Wrote Gemini conversation file');
+            logger.info({ sessionId, path: conversationPath, eventCount: aggregatedEvents.length, originalCount: events.length }, 'Wrote Gemini conversation file');
         } catch (error) {
             logger.warn({ sessionId, error: (error as Error).message }, 'Failed to write Gemini conversation file');
         }
+    }
+
+    /**
+     * Aggregates consecutive delta messages into single messages.
+     * Gemini streams assistant responses as multiple delta events that need to be combined.
+     */
+    private aggregateDeltaMessages(events: GeminiEvent[]): GeminiEvent[] {
+        const result: GeminiEvent[] = [];
+        let pendingMessage: { content: string; timestamp: string; role: 'user' | 'assistant' } | null = null;
+
+        for (const event of events) {
+            if (event.type === 'message') {
+                const msgEvent = event as GeminiMessageEvent;
+                if (msgEvent.role === 'assistant') {
+                    if (msgEvent.delta) {
+                        // Delta message - accumulate content
+                        if (pendingMessage && pendingMessage.role === 'assistant') {
+                            pendingMessage.content += msgEvent.content;
+                        } else {
+                            // Flush any pending message first
+                            if (pendingMessage) {
+                                result.push({ type: 'message', role: pendingMessage.role, content: pendingMessage.content, timestamp: pendingMessage.timestamp } as GeminiMessageEvent);
+                            }
+                            pendingMessage = { content: msgEvent.content, timestamp: msgEvent.timestamp, role: 'assistant' };
+                        }
+                    } else {
+                        // Non-delta message - flush pending and add this one
+                        if (pendingMessage) {
+                            result.push({ type: 'message', role: pendingMessage.role, content: pendingMessage.content, timestamp: pendingMessage.timestamp } as GeminiMessageEvent);
+                            pendingMessage = null;
+                        }
+                        result.push(event);
+                    }
+                } else {
+                    // User message - flush pending and add
+                    if (pendingMessage) {
+                        result.push({ type: 'message', role: pendingMessage.role, content: pendingMessage.content, timestamp: pendingMessage.timestamp } as GeminiMessageEvent);
+                        pendingMessage = null;
+                    }
+                    result.push(event);
+                }
+            } else {
+                // Non-message event - flush pending and add
+                if (pendingMessage) {
+                    result.push({ type: 'message', role: pendingMessage.role, content: pendingMessage.content, timestamp: pendingMessage.timestamp } as GeminiMessageEvent);
+                    pendingMessage = null;
+                }
+                result.push(event);
+            }
+        }
+
+        // Flush any remaining pending message
+        if (pendingMessage) {
+            result.push({ type: 'message', role: pendingMessage.role, content: pendingMessage.content, timestamp: pendingMessage.timestamp } as GeminiMessageEvent);
+        }
+
+        return result;
     }
 
     private convertEventToClaudeFormat(event: GeminiEvent): unknown {
