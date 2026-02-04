@@ -84,11 +84,11 @@ export class GeminiAgent implements Agent {
     }): Promise<AgentExecutionResult> {
         const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId } = opts;
         logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Gemini agent execution completed');
-        const { sessionId, modelUsed: parsedModel, summary, conversationLog } = this.parseGeminiJsonl(result.stdout);
+        const { sessionId, modelUsed: parsedModel, summary, conversationLog, tokenUsage } = this.parseGeminiJsonl(result.stdout);
         if (sessionId && onSessionId) onSessionId(sessionId);
         if (sessionId && conversationLog.length > 0) await this.writeConversationFile(sessionId, conversationLog);
         const modelUsed = parsedModel || effectiveModel || 'unknown';
-        const response: AgentExecutionResult = { success: result.exitCode === 0, executionTimeMs: executionTime, logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''), exitCode: result.exitCode, rawOutput: result.stdout, modelUsed, modifiedFiles: [], commitMessage: null, summary: summary ?? undefined, prompt, sessionId, conversationLog };
+        const response: AgentExecutionResult = { success: result.exitCode === 0, executionTimeMs: executionTime, logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''), exitCode: result.exitCode, rawOutput: result.stdout, modelUsed, modifiedFiles: [], commitMessage: null, summary: summary ?? undefined, prompt, sessionId, conversationLog, tokenUsage: (tokenUsage.input_tokens || tokenUsage.output_tokens) ? tokenUsage : undefined };
         if (!response.success) logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias }, 'Gemini agent execution failed');
         else { logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Gemini agent execution succeeded'); verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent); }
         return response;
@@ -320,11 +320,16 @@ export class GeminiAgent implements Agent {
         modelUsed: string | undefined;
         summary: string | undefined;
         conversationLog: GeminiEvent[];
+        tokenUsage: { input_tokens?: number; output_tokens?: number };
     } {
         const events: GeminiEvent[] = [];
         let sessionId: string | undefined;
         let modelUsed: string | undefined;
-        let summary: string | undefined;
+        let tokenUsage: { input_tokens?: number; output_tokens?: number } = {};
+
+        // Track assistant messages - aggregate delta chunks, keep last complete message
+        let currentAssistantMessage = '';
+        let lastCompleteAssistantMessage = '';
 
         const lines = output.split('\n');
         for (const line of lines) {
@@ -341,9 +346,37 @@ export class GeminiAgent implements Agent {
                     logger.debug({ sessionId, model: modelUsed }, 'Parsed Gemini init event');
                 }
 
-                // Extract final assistant response as summary
+                // Handle assistant messages - aggregate deltas
                 if (event.type === 'message' && (event as GeminiMessageEvent).role === 'assistant') {
-                    summary = (event as GeminiMessageEvent).content;
+                    const msgEvent = event as GeminiMessageEvent;
+                    if (msgEvent.delta) {
+                        // Delta message - append to current
+                        currentAssistantMessage += msgEvent.content;
+                    } else {
+                        // Non-delta message - this is a complete message
+                        // Save any accumulated delta content first
+                        if (currentAssistantMessage) {
+                            lastCompleteAssistantMessage = currentAssistantMessage;
+                            currentAssistantMessage = '';
+                        }
+                        lastCompleteAssistantMessage = msgEvent.content;
+                    }
+                }
+
+                // Extract token usage from result event
+                if (event.type === 'result') {
+                    const resultEvent = event as GeminiResultEvent;
+                    tokenUsage = {
+                        input_tokens: resultEvent.stats.input_tokens,
+                        output_tokens: resultEvent.stats.output_tokens
+                    };
+                    logger.debug({ tokenUsage }, 'Parsed Gemini result event with token usage');
+                }
+
+                // When we see a non-assistant event after deltas, finalize the message
+                if (event.type !== 'message' && currentAssistantMessage) {
+                    lastCompleteAssistantMessage = currentAssistantMessage;
+                    currentAssistantMessage = '';
                 }
             } catch {
                 // Not JSON, might be non-JSONL output - log for debugging
@@ -351,7 +384,12 @@ export class GeminiAgent implements Agent {
             }
         }
 
-        return { sessionId, modelUsed, summary, conversationLog: events };
+        // Finalize any remaining delta content
+        if (currentAssistantMessage) {
+            lastCompleteAssistantMessage = currentAssistantMessage;
+        }
+
+        return { sessionId, modelUsed, summary: lastCompleteAssistantMessage || undefined, conversationLog: events, tokenUsage };
     }
 
     private async writeConversationFile(sessionId: string, events: GeminiEvent[]): Promise<void> {
