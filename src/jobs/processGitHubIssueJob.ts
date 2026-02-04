@@ -402,7 +402,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     await addModelSpecificDelay(modelName);
 
     try {
-        await stateManager.createTaskState(taskId, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName } as IssueRef, correlationId);
+        await stateManager.createTaskState(taskId, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as IssueRef, correlationId);
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');
     }

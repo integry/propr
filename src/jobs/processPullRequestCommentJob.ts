@@ -410,6 +410,17 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
 
+    // Resolve model name early for task state tracking
+    let modelName = DEFAULT_MODEL_NAME;
+    if (llm) {
+        try {
+            const resolution = await resolveLlmLabel(llm);
+            modelName = resolution.model;
+        } catch {
+            // Keep default if resolution fails
+        }
+    }
+
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
     const stateManager = getStateManager();
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
@@ -418,7 +429,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
 
     try {
-        await stateManager.createTaskState(taskId, { number: pullRequestNumber, repoOwner, repoName, comments: job.data.comments } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
+        await stateManager.createTaskState(taskId, { number: pullRequestNumber, repoOwner, repoName, comments: job.data.comments, modelName } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state, continuing anyway');
     }
