@@ -314,7 +314,7 @@ export async function createPullRequest(options: CreatePullRequestOptions): Prom
         const modelShortName = getModelShortName(modelName);
         // Format: [412 by Claude Opus] Title
         const prTitle = `[${issueNumber} by ${modelShortName}] ${issueTitle}`;
-        const prBody = generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult);
+        const prBody = await generatePRBody(issueNumber, issueTitle, commitMessage, claudeResult);
 
         logger.info({
             owner,

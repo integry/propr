@@ -46,7 +46,7 @@ export type {
     GetPlanIssuesOptions,
     PaginatedPlanIssuesResult
 } from './config/planIssueManager.js';
-export { resolveModelAlias, getDefaultModel, getModelShortName, MODEL_ALIASES, MODEL_SHORT_NAMES, DEFAULT_MODEL_ALIAS, resolveLlmLabel } from './config/modelAliases.js';
+export { resolveModelAlias, getDefaultModel, getModelShortName, MODEL_ALIASES, MODEL_SHORT_NAMES, DEFAULT_MODEL_ALIAS, resolveLlmLabel, getOpenRouterId } from './config/modelAliases.js';
 export type { LlmLabelResolution } from './config/modelAliases.js';
 export { CLAUDE_MODELS, CODEX_MODELS, GEMINI_MODELS, ALL_MODELS, AGENT_MODELS, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
 export type { AgentType as ModelAgentType, ModelInfo } from './config/modelDefinitions.js';
