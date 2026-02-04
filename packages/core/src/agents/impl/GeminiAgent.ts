@@ -352,13 +352,13 @@ export class GeminiAgent implements Agent {
                     if (msgEvent.delta) {
                         // Delta message - append to current
                         currentAssistantMessage += msgEvent.content;
+                    } else if (currentAssistantMessage) {
+                        // Non-delta message - save accumulated delta content first
+                        lastCompleteAssistantMessage = currentAssistantMessage;
+                        currentAssistantMessage = '';
+                        lastCompleteAssistantMessage = msgEvent.content;
                     } else {
-                        // Non-delta message - this is a complete message
-                        // Save any accumulated delta content first
-                        if (currentAssistantMessage) {
-                            lastCompleteAssistantMessage = currentAssistantMessage;
-                            currentAssistantMessage = '';
-                        }
+                        // Non-delta message - complete message, no prior delta
                         lastCompleteAssistantMessage = msgEvent.content;
                     }
                 }
