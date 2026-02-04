@@ -12,7 +12,7 @@ import { recordLLMMetrics, getUsageStats } from '@gitfix/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment } from '@gitfix/core';
 import { TaskStates } from '@gitfix/core';
 import type { WorkerStateManager } from '@gitfix/core';
-import { getDefaultModel, resolveModelAlias, getModelShortName, getModelPricing, getOpenRouterId } from '@gitfix/core';
+import { getDefaultModel, resolveModelAlias, getModelName, getModelPricing, getOpenRouterId } from '@gitfix/core';
 import { getPendingPrCommentsKey } from '@gitfix/core';
 import type { Redis } from 'ioredis';
 
@@ -383,7 +383,7 @@ export async function buildMetricsSection(
 ): Promise<string> {
     const defaultModel = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
     const modelId = claudeResult.model || llm || defaultModel;
-    const modelDisplayName = getModelShortName(modelId);
+    const modelDisplayName = getModelName(modelId);
     const executionTime = claudeResult.executionTime ? `${Math.round(claudeResult.executionTime / 1000)}s` : null;
     const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
 

@@ -4,7 +4,7 @@ import path from 'path';
 import os from 'os';
 import logger from '../logger.js';
 import { getModelPricing } from '../../services/pricingService.js';
-import { getOpenRouterId, getModelShortName } from '../../config/modelAliases.js';
+import { getOpenRouterId, getModelName } from '../../config/modelAliases.js';
 interface MessageUsage {
     input_tokens?: number;
     cache_creation_input_tokens?: number;
@@ -196,7 +196,7 @@ function buildOptionalDetails(claudeResult: ClaudeResult): string[] {
         lines.push(`- Conversation ID: \`${claudeResult.conversationId}\``);
     }
     if (claudeResult?.model) {
-        const modelDisplayName = getModelShortName(claudeResult.model);
+        const modelDisplayName = getModelName(claudeResult.model);
         lines.push(`- LLM Model: ${modelDisplayName}`);
     }
     return lines;
