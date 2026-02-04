@@ -10,8 +10,7 @@ import type { WorktreeInfo } from '@gitfix/core';
 import { ensureGitRepository } from '@gitfix/core';
 import { createLogFiles } from '@gitfix/core';
 import { UsageLimitError, generateTaskSummary, AgentRegistry, resolveLlmLabel } from '@gitfix/core';
-import type { ClaudeCodeResponse, AgentExecutionResult } from '@gitfix/core';
-import type { ClaudeResult } from '@gitfix/core';
+import type { ClaudeCodeResponse } from '@gitfix/core';
 import { recordLLMMetrics } from '@gitfix/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@gitfix/core';
 import { Redis } from 'ioredis';
@@ -24,47 +23,8 @@ import {
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildCommitMessage, buildPrompt,
-    handleJobError, cleanupJob, pickUpPendingComments
+    handleJobError, cleanupJob, pickUpPendingComments, toClaudeResult, agentResultToClaudeResponse
 } from './prCommentJobUtils.js';
-
-function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
-    return {
-        model: response.model,
-        success: response.success,
-        executionTime: response.executionTime,
-        sessionId: response.sessionId,
-        conversationId: response.conversationId,
-        finalResult: response.finalResult,
-        conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
-        error: response.error,
-        tokenUsage: response.tokenUsage
-    };
-}
-
-/**
- * Converts AgentExecutionResult to ClaudeCodeResponse for backwards compatibility
- * with existing post-processing code.
- */
-function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeResponse {
-    return {
-        success: result.success,
-        model: result.modelUsed,
-        executionTime: result.executionTimeMs,
-        output: null,
-        sessionId: result.sessionId || null,
-        conversationId: result.conversationId,
-        finalResult: result.summary ? { type: 'result', result: result.summary } : null,
-        rawOutput: result.rawOutput,
-        summary: result.summary || null,
-        logs: result.logs,
-        exitCode: result.exitCode ?? null,
-        error: result.error,
-        modifiedFiles: result.modifiedFiles,
-        commitMessage: result.commitMessage || null,
-        conversationLog: result.conversationLog,
-        tokenUsage: result.tokenUsage
-    };
-}
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 

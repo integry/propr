@@ -6,7 +6,7 @@ import { getAuthenticatedOctokit } from '@gitfix/core';
 import { cleanupWorktree } from '@gitfix/core';
 import type { WorktreeInfo } from '@gitfix/core';
 import { formatResetTime } from '@gitfix/core';
-import type { ClaudeCodeResponse } from '@gitfix/core';
+import type { ClaudeCodeResponse, AgentExecutionResult } from '@gitfix/core';
 import type { ClaudeResult } from '@gitfix/core';
 import { recordLLMMetrics, getUsageStats } from '@gitfix/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment } from '@gitfix/core';
@@ -16,7 +16,7 @@ import { getDefaultModel, resolveModelAlias } from '@gitfix/core';
 import { getPendingPrCommentsKey } from '@gitfix/core';
 import type { Redis } from 'ioredis';
 
-function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
+export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
         model: response.model,
         success: response.success,
@@ -401,4 +401,29 @@ export function buildMetricsSection(
     if (cost != null) section += `* **Cost:** $${cost.toFixed(2)}\n`;
 
     return section;
+}
+
+/**
+ * Converts AgentExecutionResult to ClaudeCodeResponse for backwards compatibility
+ * with existing post-processing code.
+ */
+export function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeResponse {
+    return {
+        success: result.success,
+        model: result.modelUsed,
+        executionTime: result.executionTimeMs,
+        output: null,
+        sessionId: result.sessionId || null,
+        conversationId: result.conversationId,
+        finalResult: result.summary ? { type: 'result', result: result.summary } : null,
+        rawOutput: result.rawOutput,
+        summary: result.summary || null,
+        logs: result.logs,
+        exitCode: result.exitCode ?? null,
+        error: result.error,
+        modifiedFiles: result.modifiedFiles,
+        commitMessage: result.commitMessage || null,
+        conversationLog: result.conversationLog,
+        tokenUsage: result.tokenUsage
+    };
 }
