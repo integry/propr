@@ -102,7 +102,7 @@ export async function generatePRBody(issueNumber: number, issueTitle: string, co
     return body;
 }
 
-export function generateClaudeLogsComment(claudeResult: ClaudeResult | null, issueNumber: number): string {
+export async function generateClaudeLogsComment(claudeResult: ClaudeResult | null, issueNumber: number): Promise<string> {
     let comment = `## 🔍 ProPR Execution Logs\n\n`;
     comment += `**Issue**: #${issueNumber}\n`;
     comment += `**Session ID**: \`${claudeResult?.sessionId || 'unknown'}\`\n`;
@@ -112,10 +112,13 @@ export function generateClaudeLogsComment(claudeResult: ClaudeResult | null, iss
         const result = claudeResult.finalResult;
         const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as { conversationLog?: Array<{ message?: { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }> } | null);
 
+        // Calculate cost using OpenRouter pricing
+        const cost = await calculateApiCost(claudeResult, inputTokens, outputTokens, totalTokens);
+
         comment += `### 📊 Execution Statistics\n\n`;
         comment += `- **Success**: ${claudeResult.success ? 'Yes' : 'No'}\n`;
         comment += `- **Tokens used**: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
-        comment += `- **API cost**: $${result.cost_usd || 'unknown'}\n`;
+        comment += `- **API cost**: $${cost.toFixed(2)}\n`;
         comment += `- **Execution Time**: ${Math.round((claudeResult.executionTime || 0) / 1000)}s\n`;
         comment += `- **Exit Code**: ${claudeResult.exitCode || 'unknown'}\n\n`;
 

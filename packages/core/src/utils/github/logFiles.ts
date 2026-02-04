@@ -3,6 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import logger from '../logger.js';
+import { getModelPricing } from '../../services/pricingService.js';
+import { getOpenRouterId, getModelShortName } from '../../config/modelAliases.js';
 interface MessageUsage {
     input_tokens?: number;
     cache_creation_input_tokens?: number;
@@ -158,11 +160,28 @@ export async function createLogFiles(claudeResultInput: unknown, issueRef: Issue
     return files;
 }
 
-function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, timestamp: string): string {
+async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, timestamp: string): Promise<string> {
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
     const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
-    const cost = claudeResult?.finalResult?.cost_usd || 0;
+
+    // Calculate cost using OpenRouter pricing (same as DB metrics)
+    let cost = claudeResult?.finalResult?.cost_usd || 0;
+    if (cost === 0 && totalTokens > 0 && claudeResult?.model) {
+        try {
+            const openRouterId = getOpenRouterId(claudeResult.model);
+            const pricing = await getModelPricing(openRouterId);
+            if (pricing) {
+                cost = (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
+            }
+        } catch {
+            // Fall back to finalResult.cost_usd if pricing lookup fails
+        }
+    }
+
+    // Get human-readable model name
+    const modelDisplayName = getModelShortName(claudeResult?.model ?? undefined);
+
     const lines = [
         `**AI Processing ${isSuccess ? 'Completed' : 'Failed'}**\n`,
         `**Execution Details:**`,
@@ -171,11 +190,11 @@ function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, t
         `- Status: ${isSuccess ? 'Success' : 'Failed'}`,
         `- Execution Time: ${executionTime}s`,
         `- Tokens used: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]`,
-        `- API cost: $${cost}`,
+        `- API cost: $${cost.toFixed(2)}`,
         `- Timestamp: ${timestamp}`,
     ];
     if (claudeResult?.conversationId) lines.push(`- Conversation ID: \`${claudeResult.conversationId}\``);
-    if (claudeResult?.model) lines.push(`- LLM Model: ${claudeResult.model}`);
+    if (claudeResult?.model) lines.push(`- LLM Model: ${modelDisplayName}`);
     return lines.join('\n') + '\n\n';
 }
 
@@ -216,7 +235,7 @@ function buildLogFilesSection(logFiles: LogFiles, claudeResult: ClaudeResult): s
 export async function generateCompletionComment(claudeResultInput: unknown, issueRef: IssueRef): Promise<string> {
     const timestamp = new Date().toISOString();
     const result: ClaudeResult = (claudeResultInput as ClaudeResult) || { success: false };
-    let comment = buildExecutionDetails(result, issueRef, timestamp);
+    let comment = await buildExecutionDetails(result, issueRef, timestamp);
     comment += buildSummarySection(result);
     try {
         const logFiles = await createLogFiles(result, issueRef);

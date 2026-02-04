@@ -370,7 +370,7 @@ export async function addClaudeLogsComment(options: AddClaudeLogsCommentOptions)
     try {
         const octokit = await getAuthenticatedOctokit();
 
-        const commentBody = generateClaudeLogsComment(claudeResult, issueNumber);
+        const commentBody = await generateClaudeLogsComment(claudeResult, issueNumber);
 
         logger.info({
             owner,
