@@ -53,7 +53,7 @@ export class GeminiAgent implements Agent {
 
         try {
             const prompt = this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
-            const stdinData = `${prompt}\n\n/quit`;
+            const stdinData = prompt;
 
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
@@ -121,15 +121,15 @@ export class GeminiAgent implements Agent {
             ? `${prompt}\n\nContext:\n${context}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`
             : `${prompt}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`;
 
-        // Append /quit to terminate the session
-        const stdinData = `${analysisPrompt}\n\n/quit`;
+        const stdinData = analysisPrompt;
 
         try {
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: '/tmp/gemini-analysis',
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel,
-                issueNumber: 0
+                issueNumber: 0,
+                outputFormat: 'text'
             });
 
             const result = await executeDockerCommand('docker', dockerArgs, {
@@ -243,12 +243,14 @@ export class GeminiAgent implements Agent {
         githubToken: string;
         modelName?: string;
         issueNumber: number;
+        outputFormat?: 'stream-json' | 'text';
     }): string[] {
         const {
             worktreePath,
             githubToken,
             modelName,
-            issueNumber
+            issueNumber,
+            outputFormat = 'stream-json'
         } = params;
 
         const dockerImage = this.config.dockerImage;
@@ -279,11 +281,11 @@ export class GeminiAgent implements Agent {
             ...envVars,
             '-w', '/home/node/workspace',
             dockerImage,
-            // Gemini CLI - runs in headless mode with streaming JSON output
+            // Gemini CLI - runs in headless mode
+            // Input is provided via stdin (no --prompt flag needed - stdin triggers non-interactive mode)
             'gemini',
-            '--prompt', // Headless mode
             '--yolo', // Auto-approve tool calls
-            '--output-format', 'stream-json' // JSONL output for live tracking
+            '--output-format', outputFormat
         ];
 
         // Add model selection via -m flag
