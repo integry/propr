@@ -199,7 +199,13 @@ function formatDuration(ms: number): string {
 }
 
 function formatTokens(count: number): string {
-    return count.toLocaleString();
+    if (count >= 1000000) {
+        return parseFloat((count / 1000000).toFixed(2)) + 'M';
+    }
+    if (count >= 1000) {
+        return parseFloat((count / 1000).toFixed(2)) + 'K';
+    }
+    return count.toString();
 }
 
 function buildOptionalDetails(claudeResult: ClaudeResult): string[] {
