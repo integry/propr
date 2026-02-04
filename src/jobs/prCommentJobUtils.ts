@@ -12,7 +12,7 @@ import { recordLLMMetrics, getUsageStats } from '@gitfix/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment } from '@gitfix/core';
 import { TaskStates } from '@gitfix/core';
 import type { WorkerStateManager } from '@gitfix/core';
-import { getDefaultModel, resolveModelAlias } from '@gitfix/core';
+import { getDefaultModel, resolveModelAlias, getModelShortName, getModelPricing, getOpenRouterId } from '@gitfix/core';
 import { getPendingPrCommentsKey } from '@gitfix/core';
 import type { Redis } from 'ioredis';
 
@@ -375,30 +375,43 @@ export async function pickUpPendingComments(commentsToProcess: UnprocessedCommen
     return commentsToProcess;
 }
 
-export function buildMetricsSection(
+export async function buildMetricsSection(
     claudeResult: ClaudeCodeResponse,
     llm: string | null | undefined,
     authorsText: string,
     isAnalysis = false
-): string {
+): Promise<string> {
     const defaultModel = process.env.DEFAULT_CLAUDE_MODEL || 'claude-sonnet-4-20250514';
-    const model = claudeResult.model || llm || defaultModel;
+    const modelId = claudeResult.model || llm || defaultModel;
+    const modelDisplayName = getModelShortName(modelId);
     const executionTime = claudeResult.executionTime ? `${Math.round(claudeResult.executionTime / 1000)}s` : null;
     const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
 
     const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as ClaudeResult['conversationLog'] });
 
-    const cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
+    // Calculate cost using OpenRouter pricing (same as DB metrics)
+    let cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
+    if ((cost === 0 || cost == null) && totalTokens > 0 && modelId) {
+        try {
+            const openRouterId = getOpenRouterId(modelId);
+            const pricing = await getModelPricing(openRouterId);
+            if (pricing) {
+                cost = (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
+            }
+        } catch {
+            // Fall back to finalResult.cost_usd if pricing lookup fails
+        }
+    }
 
     let section = `\n---\n`;
     section += `### 🤖 ${isAnalysis ? 'Analysis' : 'Implementation'} Details\n\n`;
 
-    section += `* **Model:** ${model}\n`;
+    section += `* **Model:** ${modelDisplayName}\n`;
     if (!isAnalysis) section += `* **Requested By:** ${authorsText}\n`;
     if (numTurns) section += `* **Turns:** ${numTurns}\n`;
     if (executionTime) section += `* **Time:** ${executionTime}\n`;
     if (totalTokens > 0) section += `* **Tokens:** ${totalTokens.toLocaleString()} (${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out)\n`;
-    if (cost != null) section += `* **Cost:** $${cost.toFixed(2)}\n`;
+    if (cost != null && cost > 0) section += `* **Cost:** $${cost.toFixed(2)}\n`;
 
     return section;
 }
