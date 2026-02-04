@@ -212,24 +212,31 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
             {user && (
               <>
-                <div className="hidden sm:flex flex-col items-end">
-                  <span className="text-sm font-semibold text-gray-700">
-                    {user.displayName || user.username}
-                  </span>
-                  <span className="text-xs text-gray-500">@{user.username}</span>
-                </div>
-
-                {user.avatarUrl ? (
-                  <img
-                    src={user.avatarUrl}
-                    alt={user.username}
-                    className="w-8 h-8 rounded-full border border-gray-200"
-                  />
-                ) : (
-                  <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs">
-                    {user.username.slice(0, 2).toUpperCase()}
+                <a
+                  href={`https://github.com/${user.username}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-3 hover:bg-gray-50 rounded-lg p-1 transition-colors group"
+                >
+                  <div className="hidden sm:flex flex-col items-end">
+                    <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
+                      {user.displayName || user.username}
+                    </span>
+                    <span className="text-xs text-gray-500 group-hover:text-gray-700 transition-colors">@{user.username}</span>
                   </div>
-                )}
+
+                  {user.avatarUrl ? (
+                    <img
+                      src={user.avatarUrl}
+                      alt={user.username}
+                      className="w-8 h-8 rounded-full border border-gray-200 group-hover:border-gray-300 transition-colors"
+                    />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs group-hover:bg-primary-200 transition-colors">
+                      {user.username.slice(0, 2).toUpperCase()}
+                    </div>
+                  )}
+                </a>
 
                 <div className="h-6 w-px bg-gray-200 mx-1"></div>
 
