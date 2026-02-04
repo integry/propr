@@ -313,6 +313,74 @@ export class GeminiAgent implements Agent {
     }
 
     /**
+     * Handles an assistant message event, updating current and last complete assistant messages.
+     * Returns updated state as { current, last }.
+     */
+    private handleAssistantMessage(
+        msgEvent: GeminiMessageEvent,
+        currentAssistantMessage: string,
+        lastCompleteAssistantMessage: string
+    ): { current: string; last: string } {
+        if (msgEvent.delta) {
+            // Delta message - append to current
+            return { current: currentAssistantMessage + msgEvent.content, last: lastCompleteAssistantMessage };
+        }
+        if (currentAssistantMessage) {
+            // Non-delta message - discard accumulated delta content, use this message
+            return { current: '', last: msgEvent.content };
+        }
+        // Non-delta message - complete message, no prior delta
+        return { current: '', last: msgEvent.content };
+    }
+
+    /**
+     * Processes a single parsed Gemini event, extracting metadata and tracking assistant messages.
+     */
+    private processGeminiEvent(
+        event: GeminiEvent,
+        state: {
+            sessionId: string | undefined;
+            modelUsed: string | undefined;
+            tokenUsage: { input_tokens?: number; output_tokens?: number };
+            currentAssistantMessage: string;
+            lastCompleteAssistantMessage: string;
+        }
+    ): void {
+        // Extract session_id and model from init event
+        if (event.type === 'init') {
+            state.sessionId = (event as GeminiInitEvent).session_id;
+            state.modelUsed = (event as GeminiInitEvent).model;
+            logger.debug({ sessionId: state.sessionId, model: state.modelUsed }, 'Parsed Gemini init event');
+            return;
+        }
+
+        // Handle assistant messages - aggregate deltas
+        if (event.type === 'message' && (event as GeminiMessageEvent).role === 'assistant') {
+            const msgEvent = event as GeminiMessageEvent;
+            const result = this.handleAssistantMessage(msgEvent, state.currentAssistantMessage, state.lastCompleteAssistantMessage);
+            state.currentAssistantMessage = result.current;
+            state.lastCompleteAssistantMessage = result.last;
+            return;
+        }
+
+        // Extract token usage from result event
+        if (event.type === 'result') {
+            const resultEvent = event as GeminiResultEvent;
+            state.tokenUsage = {
+                input_tokens: resultEvent.stats.input_tokens,
+                output_tokens: resultEvent.stats.output_tokens
+            };
+            logger.debug({ tokenUsage: state.tokenUsage }, 'Parsed Gemini result event with token usage');
+        }
+
+        // When we see a non-assistant event after deltas, finalize the message
+        if (event.type !== 'message' && state.currentAssistantMessage) {
+            state.lastCompleteAssistantMessage = state.currentAssistantMessage;
+            state.currentAssistantMessage = '';
+        }
+    }
+
+    /**
      * Parses Gemini JSONL output from streaming JSON format.
      * Extracts session ID, model, summary, and conversation log.
      */
@@ -324,13 +392,13 @@ export class GeminiAgent implements Agent {
         tokenUsage: { input_tokens?: number; output_tokens?: number };
     } {
         const events: GeminiEvent[] = [];
-        let sessionId: string | undefined;
-        let modelUsed: string | undefined;
-        let tokenUsage: { input_tokens?: number; output_tokens?: number } = {};
-
-        // Track assistant messages - aggregate delta chunks, keep last complete message
-        let currentAssistantMessage = '';
-        let lastCompleteAssistantMessage = '';
+        const state = {
+            sessionId: undefined as string | undefined,
+            modelUsed: undefined as string | undefined,
+            tokenUsage: {} as { input_tokens?: number; output_tokens?: number },
+            currentAssistantMessage: '',
+            lastCompleteAssistantMessage: ''
+        };
 
         const lines = output.split('\n');
         for (const line of lines) {
@@ -339,46 +407,7 @@ export class GeminiAgent implements Agent {
             try {
                 const event = JSON.parse(line) as GeminiEvent;
                 events.push(event);
-
-                // Extract session_id and model from init event
-                if (event.type === 'init') {
-                    sessionId = (event as GeminiInitEvent).session_id;
-                    modelUsed = (event as GeminiInitEvent).model;
-                    logger.debug({ sessionId, model: modelUsed }, 'Parsed Gemini init event');
-                }
-
-                // Handle assistant messages - aggregate deltas
-                if (event.type === 'message' && (event as GeminiMessageEvent).role === 'assistant') {
-                    const msgEvent = event as GeminiMessageEvent;
-                    if (msgEvent.delta) {
-                        // Delta message - append to current
-                        currentAssistantMessage += msgEvent.content;
-                    } else if (currentAssistantMessage) {
-                        // Non-delta message - save accumulated delta content first
-                        lastCompleteAssistantMessage = currentAssistantMessage;
-                        currentAssistantMessage = '';
-                        lastCompleteAssistantMessage = msgEvent.content;
-                    } else {
-                        // Non-delta message - complete message, no prior delta
-                        lastCompleteAssistantMessage = msgEvent.content;
-                    }
-                }
-
-                // Extract token usage from result event
-                if (event.type === 'result') {
-                    const resultEvent = event as GeminiResultEvent;
-                    tokenUsage = {
-                        input_tokens: resultEvent.stats.input_tokens,
-                        output_tokens: resultEvent.stats.output_tokens
-                    };
-                    logger.debug({ tokenUsage }, 'Parsed Gemini result event with token usage');
-                }
-
-                // When we see a non-assistant event after deltas, finalize the message
-                if (event.type !== 'message' && currentAssistantMessage) {
-                    lastCompleteAssistantMessage = currentAssistantMessage;
-                    currentAssistantMessage = '';
-                }
+                this.processGeminiEvent(event, state);
             } catch {
                 // Not JSON, might be non-JSONL output - log for debugging
                 logger.debug({ linePreview: line.substring(0, 100) }, 'Non-JSON line in Gemini output');
@@ -386,11 +415,17 @@ export class GeminiAgent implements Agent {
         }
 
         // Finalize any remaining delta content
-        if (currentAssistantMessage) {
-            lastCompleteAssistantMessage = currentAssistantMessage;
+        if (state.currentAssistantMessage) {
+            state.lastCompleteAssistantMessage = state.currentAssistantMessage;
         }
 
-        return { sessionId, modelUsed, summary: lastCompleteAssistantMessage || undefined, conversationLog: events, tokenUsage };
+        return {
+            sessionId: state.sessionId,
+            modelUsed: state.modelUsed,
+            summary: state.lastCompleteAssistantMessage || undefined,
+            conversationLog: events,
+            tokenUsage: state.tokenUsage
+        };
     }
 
     private async writeConversationFile(sessionId: string, events: GeminiEvent[]): Promise<void> {
