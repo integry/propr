@@ -8,6 +8,9 @@ import {
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -16,6 +19,53 @@ const DEFAULT_GEMINI_TIMEOUT_MS = 300000;
 
 // Container path for Gemini config
 const CONTAINER_CONFIG_PATH = '/home/node/.gemini';
+
+// Gemini JSONL event types (from --output-format stream-json)
+interface GeminiInitEvent {
+    type: 'init';
+    timestamp: string;
+    session_id: string;
+    model: string;
+}
+
+interface GeminiMessageEvent {
+    type: 'message';
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: string;
+    delta?: boolean;
+}
+
+interface GeminiToolUseEvent {
+    type: 'tool_use';
+    tool_name: string;
+    tool_id: string;
+    parameters: Record<string, unknown>;
+    timestamp: string;
+}
+
+interface GeminiToolResultEvent {
+    type: 'tool_result';
+    tool_id: string;
+    status: 'success' | 'error';
+    output: string;
+    timestamp: string;
+}
+
+interface GeminiResultEvent {
+    type: 'result';
+    status: 'success' | 'error';
+    stats: {
+        total_tokens?: number;
+        input_tokens?: number;
+        output_tokens?: number;
+        duration_ms?: number;
+        tool_calls?: number;
+    };
+    timestamp: string;
+}
+
+type GeminiEvent = GeminiInitEvent | GeminiMessageEvent | GeminiToolUseEvent | GeminiToolResultEvent | GeminiResultEvent | { type: 'error'; message: string; timestamp: string };
 
 // ANSI escape code regex for stripping terminal formatting from TUI output
 // Using String.fromCharCode() to construct the pattern dynamically, avoiding literal control chars
@@ -102,23 +152,34 @@ export class GeminiAgent implements Agent {
                 agentAlias: this.config.alias
             }, 'Gemini agent execution completed');
 
-            // Strip ANSI codes from TUI output and extract result
-            const cleanedOutput = this.stripAnsiCodes(result.stdout);
-            const extractedResult = this.extractGeminiResult(cleanedOutput);
+            // Parse JSONL output from streaming JSON format
+            const { sessionId, modelUsed: parsedModel, summary, conversationLog } = this.parseGeminiJsonl(result.stdout);
 
-            const modelUsed = effectiveModel || 'unknown';
+            // Call onSessionId if we found one
+            if (sessionId && onSessionId) {
+                onSessionId(sessionId);
+            }
+
+            // Write conversation file for dashboard live tracking (same location as Claude)
+            if (sessionId && conversationLog.length > 0) {
+                await this.writeConversationFile(sessionId, conversationLog);
+            }
+
+            const modelUsed = parsedModel || effectiveModel || 'unknown';
 
             const response: AgentExecutionResult = {
                 success: result.exitCode === 0,
                 executionTimeMs: executionTime,
-                logs: cleanedOutput + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
+                logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
                 exitCode: result.exitCode,
                 rawOutput: result.stdout,
                 modelUsed,
                 modifiedFiles: [],
                 commitMessage: null,
-                summary: extractedResult ?? undefined,
-                prompt
+                summary: summary ?? undefined,
+                prompt,
+                sessionId,
+                conversationLog
             };
 
             if (!response.success) {
@@ -344,9 +405,11 @@ export class GeminiAgent implements Agent {
             ...envVars,
             '-w', '/home/node/workspace',
             dockerImage,
-            // Gemini CLI - runs with --yolo to auto-approve tool calls, prompt piped via stdin
+            // Gemini CLI - runs in headless mode with streaming JSON output
             'gemini',
-            '--yolo'
+            '--prompt', // Headless mode
+            '--yolo', // Auto-approve tool calls
+            '--output-format', 'stream-json' // JSONL output for live tracking
         ];
 
         // Add model selection via -m flag
@@ -370,5 +433,125 @@ export class GeminiAgent implements Agent {
         }, 'Docker args built for Gemini agent');
 
         return dockerArgs;
+    }
+
+    /**
+     * Parses Gemini JSONL output from streaming JSON format.
+     * Extracts session ID, model, summary, and conversation log.
+     */
+    private parseGeminiJsonl(output: string): {
+        sessionId: string | undefined;
+        modelUsed: string | undefined;
+        summary: string | undefined;
+        conversationLog: GeminiEvent[];
+    } {
+        const events: GeminiEvent[] = [];
+        let sessionId: string | undefined;
+        let modelUsed: string | undefined;
+        let summary: string | undefined;
+
+        const lines = output.split('\n');
+        for (const line of lines) {
+            if (!line.trim()) continue;
+
+            try {
+                const event = JSON.parse(line) as GeminiEvent;
+                events.push(event);
+
+                // Extract session_id and model from init event
+                if (event.type === 'init') {
+                    sessionId = (event as GeminiInitEvent).session_id;
+                    modelUsed = (event as GeminiInitEvent).model;
+                    logger.debug({ sessionId, model: modelUsed }, 'Parsed Gemini init event');
+                }
+
+                // Extract final assistant response as summary
+                if (event.type === 'message' && (event as GeminiMessageEvent).role === 'assistant') {
+                    summary = (event as GeminiMessageEvent).content;
+                }
+            } catch {
+                // Not JSON, might be non-JSONL output - log for debugging
+                logger.debug({ linePreview: line.substring(0, 100) }, 'Non-JSON line in Gemini output');
+            }
+        }
+
+        return { sessionId, modelUsed, summary, conversationLog: events };
+    }
+
+    /**
+     * Writes conversation file for dashboard live tracking.
+     * Uses the same directory structure as Claude for compatibility.
+     */
+    private async writeConversationFile(sessionId: string, events: GeminiEvent[]): Promise<void> {
+        try {
+            // Use same directory as Claude: ~/.claude/projects/-home-node-workspace/
+            const projectDir = path.join(os.homedir(), '.claude', 'projects', '-home-node-workspace');
+            await fs.promises.mkdir(projectDir, { recursive: true });
+
+            const conversationPath = path.join(projectDir, `${sessionId}.jsonl`);
+
+            // Convert Gemini events to a format compatible with Claude's conversation log format
+            const claudeFormatEvents = events.map(event => {
+                if (event.type === 'message') {
+                    const msgEvent = event as GeminiMessageEvent;
+                    return {
+                        type: msgEvent.role === 'assistant' ? 'assistant' : 'user',
+                        timestamp: msgEvent.timestamp,
+                        message: {
+                            content: [{ type: 'text', text: msgEvent.content }]
+                        }
+                    };
+                } else if (event.type === 'tool_use') {
+                    const toolEvent = event as GeminiToolUseEvent;
+                    return {
+                        type: 'assistant',
+                        timestamp: toolEvent.timestamp,
+                        message: {
+                            content: [{
+                                type: 'tool_use',
+                                name: toolEvent.tool_name,
+                                id: toolEvent.tool_id,
+                                input: toolEvent.parameters
+                            }]
+                        }
+                    };
+                } else if (event.type === 'tool_result') {
+                    const resultEvent = event as GeminiToolResultEvent;
+                    return {
+                        type: 'user',
+                        timestamp: resultEvent.timestamp,
+                        message: {
+                            content: [{
+                                type: 'tool_result',
+                                tool_use_id: resultEvent.tool_id,
+                                content: resultEvent.output,
+                                is_error: resultEvent.status === 'error'
+                            }]
+                        }
+                    };
+                } else if (event.type === 'result') {
+                    const finalEvent = event as GeminiResultEvent;
+                    return {
+                        type: 'result',
+                        timestamp: finalEvent.timestamp,
+                        message: {
+                            usage: {
+                                input_tokens: finalEvent.stats.input_tokens,
+                                output_tokens: finalEvent.stats.output_tokens
+                            }
+                        }
+                    };
+                }
+                return event;
+            });
+
+            // Write as JSONL
+            const content = claudeFormatEvents.map(e => JSON.stringify(e)).join('\n') + '\n';
+            await fs.promises.writeFile(conversationPath, content, 'utf8');
+
+            logger.info({ sessionId, path: conversationPath, eventCount: events.length }, 'Wrote Gemini conversation file');
+        } catch (error) {
+            logger.warn({ sessionId, error: (error as Error).message }, 'Failed to write Gemini conversation file');
+        }
     }
 }

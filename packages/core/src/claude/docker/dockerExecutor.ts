@@ -19,6 +19,8 @@ export interface DockerCommandOptions {
     extraMounts?: string[]; // Additional volume mounts (e.g., ['/host/path:/container/path:rw'])
     extraEnvVars?: Record<string, string>; // Additional environment variables
     taskId?: string; // Task ID for abort signal checking
+    streamToRedis?: boolean; // Stream raw stdout to Redis for live tracking (for non-JSON agents like Gemini)
+    stripAnsi?: boolean; // Strip ANSI codes before storing (for TUI output)
 }
 
 interface JsonLineMessage {
@@ -32,6 +34,13 @@ interface JsonLineMessage {
 }
 
 const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest';
+
+// ANSI escape code regex for stripping terminal formatting
+const ANSI_REGEX = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+
+function stripAnsiCodes(text: string): string {
+    return text.replace(ANSI_REGEX, '');
+}
 
 /**
  * Custom error class for when task execution is aborted by user request.
@@ -172,7 +181,7 @@ export function executeDockerCommand(
     options: DockerCommandOptions = {}
 ): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId } = options;
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, stripAnsi } = options;
 
         let executablePath: string = command;
         if (command === 'docker') {
@@ -280,6 +289,41 @@ export function executeDockerCommand(
             }, 2000); // Check every 2 seconds
         }
 
+        // Stream raw output to Redis for live tracking (for non-JSON agents like Gemini)
+        let redisStreamClient: InstanceType<typeof import('ioredis').default> | null = null;
+        let redisStreamInterval: ReturnType<typeof setInterval> | null = null;
+        let lastStreamedLength = 0;
+
+        if (streamToRedis && taskId) {
+            (async () => {
+                try {
+                    const Redis = await import('ioredis');
+                    redisStreamClient = new Redis.default({
+                        host: process.env.REDIS_HOST || 'redis',
+                        port: parseInt(process.env.REDIS_PORT || '6379', 10)
+                    });
+
+                    const redisKey = `agent:output:${taskId}`;
+
+                    redisStreamInterval = setInterval(async () => {
+                        if (stdout.length > lastStreamedLength && redisStreamClient) {
+                            try {
+                                const outputToStore = stripAnsi ? stripAnsiCodes(stdout) : stdout;
+                                await redisStreamClient.setex(redisKey, 3600, outputToStore); // 1 hour TTL
+                                lastStreamedLength = stdout.length;
+                            } catch (err) {
+                                logger.debug({ error: (err as Error).message }, 'Failed to stream output to Redis');
+                            }
+                        }
+                    }, 2000); // Stream every 2 seconds
+
+                    logger.debug({ taskId, redisKey }, 'Started streaming output to Redis');
+                } catch (err) {
+                    logger.warn({ error: (err as Error).message }, 'Failed to initialize Redis streaming');
+                }
+            })();
+        }
+
         if (command === 'docker' && args[0] === 'run' && worktreePath) {
             setTimeout(async () => {
                 if (!containerIdDetected) {
@@ -342,10 +386,26 @@ export function executeDockerCommand(
             stderr += data.toString();
         });
 
-        child.on('close', (exitCode: number | null) => {
+        child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
             if (abortCheckInterval) {
                 clearInterval(abortCheckInterval);
+            }
+
+            // Cleanup Redis streaming
+            if (redisStreamInterval) {
+                clearInterval(redisStreamInterval);
+            }
+            if (redisStreamClient && taskId) {
+                try {
+                    // Final flush of output
+                    const redisKey = `agent:output:${taskId}`;
+                    const outputToStore = stripAnsi ? stripAnsiCodes(stdout) : stdout;
+                    await redisStreamClient.setex(redisKey, 3600, outputToStore);
+                    await redisStreamClient.quit();
+                } catch (err) {
+                    logger.debug({ error: (err as Error).message }, 'Failed to cleanup Redis streaming');
+                }
             }
 
             if (timedOut) {
@@ -370,6 +430,12 @@ export function executeDockerCommand(
             clearTimeout(timeoutHandle);
             if (abortCheckInterval) {
                 clearInterval(abortCheckInterval);
+            }
+            if (redisStreamInterval) {
+                clearInterval(redisStreamInterval);
+            }
+            if (redisStreamClient) {
+                redisStreamClient.quit().catch(() => {});
             }
             reject(error);
         });
