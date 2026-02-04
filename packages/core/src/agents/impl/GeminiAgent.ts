@@ -21,12 +21,12 @@ const DEFAULT_GEMINI_TIMEOUT_MS = 300000;
 const CONTAINER_CONFIG_PATH = '/home/node/.gemini';
 
 // Gemini JSONL event types (from --output-format stream-json)
-interface GeminiInitEvent { type: 'init'; timestamp: string; session_id: string; model: string; }
-interface GeminiMessageEvent { type: 'message'; role: 'user' | 'assistant'; content: string; timestamp: string; delta?: boolean; }
-interface GeminiToolUseEvent { type: 'tool_use'; tool_name: string; tool_id: string; parameters: Record<string, unknown>; timestamp: string; }
-interface GeminiToolResultEvent { type: 'tool_result'; tool_id: string; status: 'success' | 'error'; output: string; timestamp: string; }
-interface GeminiResultEvent { type: 'result'; status: 'success' | 'error'; stats: { total_tokens?: number; input_tokens?: number; output_tokens?: number; duration_ms?: number; tool_calls?: number; }; timestamp: string; }
-type GeminiEvent = GeminiInitEvent | GeminiMessageEvent | GeminiToolUseEvent | GeminiToolResultEvent | GeminiResultEvent | { type: 'error'; message: string; timestamp: string };
+interface GeminiInitEvent { type: 'init'; timestamp: string; session_id: string; model: string }
+interface GeminiMessageEvent { type: 'message'; role: 'user' | 'assistant'; content: string; timestamp: string; delta?: boolean }
+interface GeminiToolUseEvent { type: 'tool_use'; tool_name: string; tool_id: string; parameters: Record<string, unknown>; timestamp: string }
+interface GeminiToolResultEvent { type: 'tool_result'; tool_id: string; status: 'success' | 'error'; output: string; timestamp: string }
+interface GeminiResultEvent { type: 'result'; status: 'success' | 'error'; stats: { total_tokens?: number; input_tokens?: number; output_tokens?: number; duration_ms?: number; tool_calls?: number }; timestamp: string }
+type GeminiEvent = GeminiInitEvent | GeminiMessageEvent | GeminiToolUseEvent | GeminiToolResultEvent | GeminiResultEvent | { type: 'error'; message: string; timestamp: string }
 
 // ANSI escape code regex for stripping terminal formatting from TUI output
 // Using String.fromCharCode() to construct the pattern dynamically, avoiding literal control chars
@@ -107,254 +107,92 @@ export class GeminiAgent implements Agent {
     }
 
     async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<string> {
-        logger.info({
-            agentAlias: this.config.alias,
-            promptLength: prompt.length,
-            hasContext: !!context,
-            requestedModel: model,
-            taskId
-        }, 'Running lightweight analysis via Gemini agent...');
-
-        // Use provided model or fallback to gemini-2.5-flash for lightweight analysis
+        logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId }, 'Running lightweight analysis via Gemini agent...');
         const effectiveModel = model || 'gemini-2.5-flash';
-
-        const analysisPrompt = context
-            ? `${prompt}\n\nContext:\n${context}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`
-            : `${prompt}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`;
-
-        const stdinData = analysisPrompt;
-
+        const suffix = '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+        const stdinData = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         try {
-            const dockerArgs = this.buildDockerArgs({
-                worktreePath: '/tmp/gemini-analysis',
-                githubToken: process.env.GITHUB_TOKEN || '',
-                modelName: effectiveModel,
-                issueNumber: 0,
-                outputFormat: 'text'
-            });
-
-            const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: 1800000, // 30 minute timeout for analysis (planning tasks can take longer)
-                stdinData,
-                taskId // Pass taskId for abort signal checking
-            });
-
+            const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/gemini-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, outputFormat: 'text' });
+            const result = await executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData, taskId });
             const cleanedOutput = this.stripAnsiCodes(result.stdout);
             const extractedResult = this.extractGeminiResult(cleanedOutput);
-
             if (result.exitCode === 0 || extractedResult) {
                 const analysisText = (extractedResult || cleanedOutput || '').trim();
-                logger.info({
-                    agentAlias: this.config.alias,
-                    responseLength: analysisText.length,
-                    model: effectiveModel
-                }, 'Lightweight analysis completed');
+                logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: effectiveModel }, 'Lightweight analysis completed');
                 return analysisText;
             }
-
             throw new Error(`Analysis failed: ${result.stderr || 'No result returned'}`);
         } catch (error) {
-            const err = error as Error;
-            logger.error({
-                agentAlias: this.config.alias,
-                error: err.message
-            }, 'Lightweight analysis failed');
+            logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'Lightweight analysis failed');
             throw error;
         }
     }
 
     async healthCheck(): Promise<boolean> {
-        logger.debug({
-            agentAlias: this.config.alias,
-            dockerImage: this.config.dockerImage
-        }, 'Running health check for Gemini agent...');
-
+        logger.debug({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Running health check for Gemini agent...');
         try {
-            const result = await executeDockerCommand('docker', [
-                'images', '-q', this.config.dockerImage
-            ], { timeout: 10000 });
-
+            const result = await executeDockerCommand('docker', ['images', '-q', this.config.dockerImage], { timeout: 10000 });
             const imageExists = !!result.stdout.trim();
-
-            logger.info({
-                agentAlias: this.config.alias,
-                dockerImage: this.config.dockerImage,
-                imageExists
-            }, imageExists ? 'Health check passed' : 'Health check failed: Docker image not found');
-
+            logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage, imageExists }, imageExists ? 'Health check passed' : 'Health check failed: Docker image not found');
             return imageExists;
         } catch (error) {
-            const err = error as Error;
-            logger.error({
-                agentAlias: this.config.alias,
-                error: err.message
-            }, 'Health check failed with error');
+            logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'Health check failed with error');
             return false;
         }
     }
 
-    /**
-     * Strips ANSI escape codes from output.
-     * Gemini CLI is a TUI that produces ANSI-formatted output.
-     */
-    private stripAnsiCodes(text: string): string {
-        return text.replace(ANSI_REGEX, '');
-    }
+    /** Strips ANSI escape codes from output (Gemini CLI is a TUI that produces ANSI-formatted output). */
+    private stripAnsiCodes(text: string): string { return text.replace(ANSI_REGEX, ''); }
 
-    /**
-     * Extracts the meaningful result from Gemini CLI output.
-     * The TUI may include navigation elements, prompts, and other decorations.
-     */
+    /** Extracts the meaningful result from Gemini CLI output, filtering TUI elements. */
     private extractGeminiResult(cleanedOutput: string): string | undefined {
-        // The output may contain multiple sections separated by prompts
-        // We try to extract the main assistant response
-        const lines = cleanedOutput.split('\n');
         const resultLines: string[] = [];
         let inResponse = false;
-
-        for (const line of lines) {
-            const trimmedLine = line.trim();
-
-            // Skip empty lines at the beginning
-            if (!inResponse && !trimmedLine) continue;
-
-            // Skip common TUI elements
-            if (trimmedLine.startsWith('>') || // User prompt indicator
-                trimmedLine === '/quit' ||
-                trimmedLine.startsWith('Gemini') ||
-                trimmedLine.includes('Press') ||
-                trimmedLine.includes('Ctrl+')) {
-                continue;
-            }
-
-            // Start collecting response
+        for (const line of cleanedOutput.split('\n')) {
+            const t = line.trim();
+            if (!inResponse && !t) continue;
+            if (t.startsWith('>') || t === '/quit' || t.startsWith('Gemini') || t.includes('Press') || t.includes('Ctrl+')) continue;
             inResponse = true;
             resultLines.push(line);
         }
-
         const result = resultLines.join('\n').trim();
         return result || undefined;
     }
 
-    /**
-     * Builds Docker arguments for running Gemini in a container.
-     */
-    private buildDockerArgs(params: {
-        worktreePath: string;
-        githubToken: string;
-        modelName?: string;
-        issueNumber: number;
-        outputFormat?: 'stream-json' | 'text';
-    }): string[] {
-        const {
-            worktreePath,
-            githubToken,
-            modelName,
-            issueNumber,
-            outputFormat = 'stream-json'
-        } = params;
-
-        const dockerImage = this.config.dockerImage;
+    /** Builds Docker arguments for running Gemini in a container. */
+    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; outputFormat?: 'stream-json' | 'text' }): string[] {
+        const { worktreePath, githubToken, modelName, issueNumber, outputFormat = 'stream-json' } = params;
         const configPath = resolveConfigPath(this.config.configPath);
-
-        // Inject any custom environment variables from config
         const envVars: string[] = [];
         if (this.config.envVars) {
-            for (const [key, value] of Object.entries(this.config.envVars)) {
-                envVars.push('-e', `${key}=${value}`);
-            }
+            for (const [key, value] of Object.entries(this.config.envVars)) envVars.push('-e', `${key}=${value}`);
         }
-
-        // Build Docker run arguments
         const dockerArgs: string[] = [
-            'run', '--rm',
-            '-i', // Allow stdin for piping prompt
-            '--security-opt', 'no-new-privileges',
-            '--cap-add', 'CHOWN',
-            '--network', 'bridge',
-            '--user', '0:0',
-            '-v', `${worktreePath}:/home/node/workspace:rw`,
-            '-v', '/tmp/git-processor:/tmp/git-processor:rw',
-            '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-            '-e', `GH_TOKEN=${githubToken}`,
-            '-e', `GITHUB_TOKEN=${githubToken}`,
-            '-e', 'GEMINI_CLI=1', // Environment variable to indicate Gemini CLI context
-            ...envVars,
-            '-w', '/home/node/workspace',
-            dockerImage,
-            // Gemini CLI - runs in headless mode
-            // Input is provided via stdin (no --prompt flag needed - stdin triggers non-interactive mode)
-            'gemini',
-            '--yolo', // Auto-approve tool calls
-            '--output-format', outputFormat
+            'run', '--rm', '-i', '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
+            '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
+            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'GEMINI_CLI=1', ...envVars, '-w', '/home/node/workspace',
+            this.config.dockerImage, 'gemini', '--yolo', '--output-format', outputFormat
         ];
-
-        // Add model selection via -m flag
-        if (modelName) {
-            dockerArgs.push('-m', modelName);
-            logger.info({
-                issueNumber,
-                requestedModel: modelName,
-                agentAlias: this.config.alias
-            }, 'Model specified for Gemini agent');
-        } else {
-            logger.debug({
-                issueNumber,
-                agentAlias: this.config.alias
-            }, 'No model specified, Gemini agent will use default');
-        }
-
-        logger.info({
-            issueNumber,
-            agentAlias: this.config.alias
-        }, 'Docker args built for Gemini agent');
-
+        if (modelName) { dockerArgs.push('-m', modelName); logger.info({ issueNumber, requestedModel: modelName, agentAlias: this.config.alias }, 'Model specified for Gemini agent'); }
+        else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Gemini agent will use default'); }
+        logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Gemini agent');
         return dockerArgs;
     }
 
-    /**
-     * Handles an assistant message event, updating current and last complete assistant messages.
-     * Returns updated state as { current, last }.
-     */
-    private handleAssistantMessage(
-        msgEvent: GeminiMessageEvent,
-        currentAssistantMessage: string,
-        lastCompleteAssistantMessage: string
-    ): { current: string; last: string } {
-        if (msgEvent.delta) {
-            // Delta message - append to current
-            return { current: currentAssistantMessage + msgEvent.content, last: lastCompleteAssistantMessage };
-        }
-        if (currentAssistantMessage) {
-            // Non-delta message - discard accumulated delta content, use this message
-            return { current: '', last: msgEvent.content };
-        }
-        // Non-delta message - complete message, no prior delta
+    /** Handles an assistant message event, updating current and last complete assistant messages. */
+    private handleAssistantMessage(msgEvent: GeminiMessageEvent, current: string, last: string): { current: string; last: string } {
+        if (msgEvent.delta) return { current: current + msgEvent.content, last };
         return { current: '', last: msgEvent.content };
     }
 
-    /**
-     * Processes a single parsed Gemini event, extracting metadata and tracking assistant messages.
-     */
-    private processGeminiEvent(
-        event: GeminiEvent,
-        state: {
-            sessionId: string | undefined;
-            modelUsed: string | undefined;
-            tokenUsage: { input_tokens?: number; output_tokens?: number };
-            currentAssistantMessage: string;
-            lastCompleteAssistantMessage: string;
-        }
-    ): void {
-        // Extract session_id and model from init event
+    /** Processes a single parsed Gemini event, extracting metadata and tracking assistant messages. */
+    private processGeminiEvent(event: GeminiEvent, state: { sessionId: string | undefined; modelUsed: string | undefined; tokenUsage: { input_tokens?: number; output_tokens?: number }; currentAssistantMessage: string; lastCompleteAssistantMessage: string }): void {
         if (event.type === 'init') {
             state.sessionId = (event as GeminiInitEvent).session_id;
             state.modelUsed = (event as GeminiInitEvent).model;
             logger.debug({ sessionId: state.sessionId, model: state.modelUsed }, 'Parsed Gemini init event');
             return;
         }
-
-        // Handle assistant messages - aggregate deltas
         if (event.type === 'message' && (event as GeminiMessageEvent).role === 'assistant') {
             const msgEvent = event as GeminiMessageEvent;
             const result = this.handleAssistantMessage(msgEvent, state.currentAssistantMessage, state.lastCompleteAssistantMessage);
@@ -362,70 +200,28 @@ export class GeminiAgent implements Agent {
             state.lastCompleteAssistantMessage = result.last;
             return;
         }
-
-        // Extract token usage from result event
         if (event.type === 'result') {
             const resultEvent = event as GeminiResultEvent;
-            state.tokenUsage = {
-                input_tokens: resultEvent.stats.input_tokens,
-                output_tokens: resultEvent.stats.output_tokens
-            };
+            state.tokenUsage = { input_tokens: resultEvent.stats.input_tokens, output_tokens: resultEvent.stats.output_tokens };
             logger.debug({ tokenUsage: state.tokenUsage }, 'Parsed Gemini result event with token usage');
         }
-
-        // When we see a non-assistant event after deltas, finalize the message
         if (event.type !== 'message' && state.currentAssistantMessage) {
             state.lastCompleteAssistantMessage = state.currentAssistantMessage;
             state.currentAssistantMessage = '';
         }
     }
 
-    /**
-     * Parses Gemini JSONL output from streaming JSON format.
-     * Extracts session ID, model, summary, and conversation log.
-     */
-    private parseGeminiJsonl(output: string): {
-        sessionId: string | undefined;
-        modelUsed: string | undefined;
-        summary: string | undefined;
-        conversationLog: GeminiEvent[];
-        tokenUsage: { input_tokens?: number; output_tokens?: number };
-    } {
+    /** Parses Gemini JSONL output from streaming JSON format. Extracts session ID, model, summary, and conversation log. */
+    private parseGeminiJsonl(output: string): { sessionId: string | undefined; modelUsed: string | undefined; summary: string | undefined; conversationLog: GeminiEvent[]; tokenUsage: { input_tokens?: number; output_tokens?: number } } {
         const events: GeminiEvent[] = [];
-        const state = {
-            sessionId: undefined as string | undefined,
-            modelUsed: undefined as string | undefined,
-            tokenUsage: {} as { input_tokens?: number; output_tokens?: number },
-            currentAssistantMessage: '',
-            lastCompleteAssistantMessage: ''
-        };
-
-        const lines = output.split('\n');
-        for (const line of lines) {
+        const state = { sessionId: undefined as string | undefined, modelUsed: undefined as string | undefined, tokenUsage: {} as { input_tokens?: number; output_tokens?: number }, currentAssistantMessage: '', lastCompleteAssistantMessage: '' };
+        for (const line of output.split('\n')) {
             if (!line.trim()) continue;
-
-            try {
-                const event = JSON.parse(line) as GeminiEvent;
-                events.push(event);
-                this.processGeminiEvent(event, state);
-            } catch {
-                // Not JSON, might be non-JSONL output - log for debugging
-                logger.debug({ linePreview: line.substring(0, 100) }, 'Non-JSON line in Gemini output');
-            }
+            try { const event = JSON.parse(line) as GeminiEvent; events.push(event); this.processGeminiEvent(event, state); }
+            catch { logger.debug({ linePreview: line.substring(0, 100) }, 'Non-JSON line in Gemini output'); }
         }
-
-        // Finalize any remaining delta content
-        if (state.currentAssistantMessage) {
-            state.lastCompleteAssistantMessage = state.currentAssistantMessage;
-        }
-
-        return {
-            sessionId: state.sessionId,
-            modelUsed: state.modelUsed,
-            summary: state.lastCompleteAssistantMessage || undefined,
-            conversationLog: events,
-            tokenUsage: state.tokenUsage
-        };
+        if (state.currentAssistantMessage) state.lastCompleteAssistantMessage = state.currentAssistantMessage;
+        return { sessionId: state.sessionId, modelUsed: state.modelUsed, summary: state.lastCompleteAssistantMessage || undefined, conversationLog: events, tokenUsage: state.tokenUsage };
     }
 
     private async writeConversationFile(sessionId: string, events: GeminiEvent[]): Promise<void> {
@@ -433,102 +229,41 @@ export class GeminiAgent implements Agent {
             const projectDir = path.join(os.homedir(), '.claude', 'projects', '-home-node-workspace');
             await fs.promises.mkdir(projectDir, { recursive: true });
             const conversationPath = path.join(projectDir, `${sessionId}.jsonl`);
-
-            // Aggregate consecutive delta messages before converting to Claude format
             const aggregatedEvents = this.aggregateDeltaMessages(events);
             const claudeFormatEvents = aggregatedEvents.map(event => this.convertEventToClaudeFormat(event));
             await fs.promises.writeFile(conversationPath, claudeFormatEvents.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
             logger.info({ sessionId, path: conversationPath, eventCount: aggregatedEvents.length, originalCount: events.length }, 'Wrote Gemini conversation file');
-        } catch (error) {
-            logger.warn({ sessionId, error: (error as Error).message }, 'Failed to write Gemini conversation file');
-        }
+        } catch (error) { logger.warn({ sessionId, error: (error as Error).message }, 'Failed to write Gemini conversation file'); }
     }
 
-    /**
-     * Creates a GeminiMessageEvent from a pending message object.
-     */
-    private createMessageEvent(pending: { content: string; timestamp: string; role: 'user' | 'assistant' }): GeminiMessageEvent {
-        return { type: 'message', role: pending.role, content: pending.content, timestamp: pending.timestamp } as GeminiMessageEvent;
-    }
-
-    /**
-     * Flushes pending message to result array and returns null.
-     */
-    private flushPendingMessage(
-        result: GeminiEvent[],
-        pendingMessage: { content: string; timestamp: string; role: 'user' | 'assistant' } | null
-    ): null {
-        if (pendingMessage) {
-            result.push(this.createMessageEvent(pendingMessage));
-        }
+    /** Flushes pending message to result array and returns null. */
+    private flushPendingMessage(result: GeminiEvent[], pending: { content: string; timestamp: string; role: 'user' | 'assistant' } | null): null {
+        if (pending) result.push({ type: 'message', role: pending.role, content: pending.content, timestamp: pending.timestamp } as GeminiMessageEvent);
         return null;
     }
 
-    /**
-     * Processes an assistant delta message, accumulating content or starting a new pending message.
-     */
-    private processAssistantDelta(
-        result: GeminiEvent[],
-        pendingMessage: { content: string; timestamp: string; role: 'user' | 'assistant' } | null,
-        msgEvent: GeminiMessageEvent
-    ): { content: string; timestamp: string; role: 'user' | 'assistant' } {
-        if (pendingMessage && pendingMessage.role === 'assistant') {
-            pendingMessage.content += msgEvent.content;
-            return pendingMessage;
-        }
-        this.flushPendingMessage(result, pendingMessage);
-        return { content: msgEvent.content, timestamp: msgEvent.timestamp, role: 'assistant' };
-    }
-
-    /**
-     * Aggregates consecutive delta messages into single messages.
-     * Gemini streams assistant responses as multiple delta events that need to be combined.
-     */
+    /** Aggregates consecutive delta messages into single messages. Gemini streams assistant responses as multiple delta events. */
     private aggregateDeltaMessages(events: GeminiEvent[]): GeminiEvent[] {
         const result: GeminiEvent[] = [];
-        let pendingMessage: { content: string; timestamp: string; role: 'user' | 'assistant' } | null = null;
-
+        let pending: { content: string; timestamp: string; role: 'user' | 'assistant' } | null = null;
         for (const event of events) {
-            if (event.type !== 'message') {
-                pendingMessage = this.flushPendingMessage(result, pendingMessage);
-                result.push(event);
-                continue;
-            }
-
+            if (event.type !== 'message') { pending = this.flushPendingMessage(result, pending); result.push(event); continue; }
             const msgEvent = event as GeminiMessageEvent;
-
-            if (msgEvent.role !== 'assistant') {
-                pendingMessage = this.flushPendingMessage(result, pendingMessage);
-                result.push(event);
-                continue;
-            }
-
+            if (msgEvent.role !== 'assistant') { pending = this.flushPendingMessage(result, pending); result.push(event); continue; }
             if (msgEvent.delta) {
-                pendingMessage = this.processAssistantDelta(result, pendingMessage, msgEvent);
-            } else {
-                pendingMessage = this.flushPendingMessage(result, pendingMessage);
-                result.push(event);
-            }
+                if (pending && pending.role === 'assistant') { pending.content += msgEvent.content; }
+                else { pending = this.flushPendingMessage(result, pending); pending = { content: msgEvent.content, timestamp: msgEvent.timestamp, role: 'assistant' }; }
+            } else { pending = this.flushPendingMessage(result, pending); result.push(event); }
         }
-
-        this.flushPendingMessage(result, pendingMessage);
+        this.flushPendingMessage(result, pending);
         return result;
     }
 
     private convertEventToClaudeFormat(event: GeminiEvent): unknown {
-        if (event.type === 'message') {
-            const e = event as GeminiMessageEvent;
-            return { type: e.role === 'assistant' ? 'assistant' : 'user', timestamp: e.timestamp, message: { content: [{ type: 'text', text: e.content }] } };
-        } else if (event.type === 'tool_use') {
-            const e = event as GeminiToolUseEvent;
-            return { type: 'assistant', timestamp: e.timestamp, message: { content: [{ type: 'tool_use', name: e.tool_name, id: e.tool_id, input: e.parameters }] } };
-        } else if (event.type === 'tool_result') {
-            const e = event as GeminiToolResultEvent;
-            return { type: 'user', timestamp: e.timestamp, message: { content: [{ type: 'tool_result', tool_use_id: e.tool_id, content: e.output, is_error: e.status === 'error' }] } };
-        } else if (event.type === 'result') {
-            const e = event as GeminiResultEvent;
-            return { type: 'result', timestamp: e.timestamp, message: { usage: { input_tokens: e.stats.input_tokens, output_tokens: e.stats.output_tokens } } };
-        }
+        if (event.type === 'message') { const e = event as GeminiMessageEvent; return { type: e.role === 'assistant' ? 'assistant' : 'user', timestamp: e.timestamp, message: { content: [{ type: 'text', text: e.content }] } }; }
+        if (event.type === 'tool_use') { const e = event as GeminiToolUseEvent; return { type: 'assistant', timestamp: e.timestamp, message: { content: [{ type: 'tool_use', name: e.tool_name, id: e.tool_id, input: e.parameters }] } }; }
+        if (event.type === 'tool_result') { const e = event as GeminiToolResultEvent; return { type: 'user', timestamp: e.timestamp, message: { content: [{ type: 'tool_result', tool_use_id: e.tool_id, content: e.output, is_error: e.status === 'error' }] } }; }
+        if (event.type === 'result') { const e = event as GeminiResultEvent; return { type: 'result', timestamp: e.timestamp, message: { usage: { input_tokens: e.stats.input_tokens, output_tokens: e.stats.output_tokens } } }; }
         return event;
     }
 }
