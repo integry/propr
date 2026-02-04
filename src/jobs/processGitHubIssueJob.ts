@@ -239,7 +239,8 @@ function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
         conversationId: response.conversationId,
         finalResult: response.summary ? { type: 'result', result: response.summary } : null,
         conversationLog: response.conversationLog,
-        error: response.error
+        error: response.error,
+        tokenUsage: response.tokenUsage
     };
 }
 
@@ -263,7 +264,8 @@ function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeRe
         error: result.error,
         modifiedFiles: result.modifiedFiles,
         commitMessage: result.commitMessage || null,
-        conversationLog: result.conversationLog
+        conversationLog: result.conversationLog,
+        tokenUsage: result.tokenUsage
     };
 }
 
@@ -400,7 +402,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     await addModelSpecificDelay(modelName);
 
     try {
-        await stateManager.createTaskState(taskId, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName } as IssueRef, correlationId);
+        await stateManager.createTaskState(taskId, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as IssueRef, correlationId);
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');
     }

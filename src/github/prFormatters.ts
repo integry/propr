@@ -1,4 +1,4 @@
-import { getUsageStats } from '@gitfix/core';
+import { getUsageStats, getModelPricing, getOpenRouterId } from '@gitfix/core';
 
 const MAX_COMMENT_LENGTH = 65000;
 
@@ -33,14 +33,39 @@ export interface ClaudeResult {
     modifiedFiles?: string[];
     rawOutput?: string;
     exitCode?: number | string;
+    model?: string;
 }
 
-export function generatePRBody(issueNumber: number, issueTitle: string, commitMessage: string, claudeResult: ClaudeResult | null): string {
+async function calculateApiCost(
+    claudeResult: ClaudeResult | null,
+    inputTokens: number,
+    outputTokens: number,
+    totalTokens: number
+): Promise<number> {
+    const baseCost = claudeResult?.finalResult?.cost_usd || 0;
+    if (baseCost !== 0 || totalTokens === 0 || !claudeResult?.model) {
+        return baseCost;
+    }
+
+    try {
+        const openRouterId = getOpenRouterId(claudeResult.model);
+        const pricing = await getModelPricing(openRouterId);
+        if (pricing) {
+            return (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
+        }
+    } catch {
+        // Fall back to baseCost if pricing lookup fails
+    }
+    return baseCost;
+}
+
+export async function generatePRBody(issueNumber: number, issueTitle: string, commitMessage: string, claudeResult: ClaudeResult | null): Promise<string> {
     const timestamp = new Date().toISOString();
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
     const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as { conversationLog?: Array<{ message?: { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }> } | null);
-    const cost = claudeResult?.finalResult?.cost_usd || 0;
+
+    const cost = await calculateApiCost(claudeResult, inputTokens, outputTokens, totalTokens);
 
     let body = `## 🤖 AI-Generated Solution\n\n`;
     body += `Resolves #${issueNumber}.\n\n`;
@@ -77,7 +102,7 @@ export function generatePRBody(issueNumber: number, issueTitle: string, commitMe
     return body;
 }
 
-export function generateClaudeLogsComment(claudeResult: ClaudeResult | null, issueNumber: number): string {
+export async function generateClaudeLogsComment(claudeResult: ClaudeResult | null, issueNumber: number): Promise<string> {
     let comment = `## 🔍 ProPR Execution Logs\n\n`;
     comment += `**Issue**: #${issueNumber}\n`;
     comment += `**Session ID**: \`${claudeResult?.sessionId || 'unknown'}\`\n`;
@@ -87,10 +112,13 @@ export function generateClaudeLogsComment(claudeResult: ClaudeResult | null, iss
         const result = claudeResult.finalResult;
         const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as { conversationLog?: Array<{ message?: { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }> } | null);
 
+        // Calculate cost using OpenRouter pricing
+        const cost = await calculateApiCost(claudeResult, inputTokens, outputTokens, totalTokens);
+
         comment += `### 📊 Execution Statistics\n\n`;
         comment += `- **Success**: ${claudeResult.success ? 'Yes' : 'No'}\n`;
         comment += `- **Tokens used**: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
-        comment += `- **API cost**: $${result.cost_usd || 'unknown'}\n`;
+        comment += `- **API cost**: $${cost.toFixed(2)}\n`;
         comment += `- **Execution Time**: ${Math.round((claudeResult.executionTime || 0) / 1000)}s\n`;
         comment += `- **Exit Code**: ${claudeResult.exitCode || 'unknown'}\n\n`;
 

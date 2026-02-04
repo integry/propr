@@ -8,6 +8,9 @@ import {
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -16,6 +19,14 @@ const DEFAULT_GEMINI_TIMEOUT_MS = 300000;
 
 // Container path for Gemini config
 const CONTAINER_CONFIG_PATH = '/home/node/.gemini';
+
+// Gemini JSONL event types (from --output-format stream-json)
+interface GeminiInitEvent { type: 'init'; timestamp: string; session_id: string; model: string; }
+interface GeminiMessageEvent { type: 'message'; role: 'user' | 'assistant'; content: string; timestamp: string; delta?: boolean; }
+interface GeminiToolUseEvent { type: 'tool_use'; tool_name: string; tool_id: string; parameters: Record<string, unknown>; timestamp: string; }
+interface GeminiToolResultEvent { type: 'tool_result'; tool_id: string; status: 'success' | 'error'; output: string; timestamp: string; }
+interface GeminiResultEvent { type: 'result'; status: 'success' | 'error'; stats: { total_tokens?: number; input_tokens?: number; output_tokens?: number; duration_ms?: number; tool_calls?: number; }; timestamp: string; }
+type GeminiEvent = GeminiInitEvent | GeminiMessageEvent | GeminiToolUseEvent | GeminiToolResultEvent | GeminiResultEvent | { type: 'error'; message: string; timestamp: string };
 
 // ANSI escape code regex for stripping terminal formatting from TUI output
 // Using String.fromCharCode() to construct the pattern dynamically, avoiding literal control chars
@@ -31,143 +42,67 @@ export class GeminiAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const {
-            worktreePath,
-            issueRef,
-            prompt: customPrompt,
-            model,
-            isRetry = false,
-            retryReason,
-            onSessionId,
-            onContainerId,
-            githubToken
-        } = options;
-
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
 
         logger.info({
-            issueNumber: issueRef.number,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            worktreePath,
-            dockerImage: this.config.dockerImage,
-            agentAlias: this.config.alias,
-            isRetry,
-            retryReason
+            issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
+            worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason
         }, isRetry ? 'Starting Gemini agent execution (RETRY)...' : 'Starting Gemini agent execution...');
 
         try {
-            // Build prompt with retry context if applicable
-            let prompt = customPrompt;
-            if (isRetry && retryReason) {
-                prompt = `${customPrompt}\n\n---\n\n**RETRY CONTEXT**: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
-            }
-
-            // Append /quit to ensure the session terminates
-            // This is necessary because Gemini CLI is a TUI and needs explicit exit
+            const prompt = this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
             const stdinData = `${prompt}\n\n/quit`;
 
-            // Set worktree ownership for container compatibility
             await setWorktreeOwnership(worktreePath, issueRef.number);
-
-            // Verify worktree structure before execution
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
+            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number });
 
-            // Build Docker arguments using agent config
-            const dockerArgs = this.buildDockerArgs({
-                worktreePath,
-                githubToken,
-                modelName: effectiveModel,
-                issueNumber: issueRef.number
-            });
-
-            // Execute Docker command with prompt via stdin
             const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: this.timeoutMs,
-                cwd: worktreePath,
-                onSessionId,
-                onContainerId,
-                worktreePath,
-                stdinData
+                timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData
             });
 
             const executionTime = Date.now() - startTime;
-            logger.info({
-                issueNumber: issueRef.number,
-                repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-                executionTime,
-                outputLength: result.stdout?.length || 0,
-                success: result.exitCode === 0,
-                exitCode: result.exitCode,
-                agentAlias: this.config.alias
-            }, 'Gemini agent execution completed');
-
-            // Strip ANSI codes from TUI output and extract result
-            const cleanedOutput = this.stripAnsiCodes(result.stdout);
-            const extractedResult = this.extractGeminiResult(cleanedOutput);
-
-            const modelUsed = effectiveModel || 'unknown';
-
-            const response: AgentExecutionResult = {
-                success: result.exitCode === 0,
-                executionTimeMs: executionTime,
-                logs: cleanedOutput + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
-                exitCode: result.exitCode,
-                rawOutput: result.stdout,
-                modelUsed,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: extractedResult ?? undefined,
-                prompt
-            };
-
-            if (!response.success) {
-                logger.error({
-                    issueNumber: issueRef.number,
-                    exitCode: result.exitCode,
-                    stderr: result.stderr,
-                    agentAlias: this.config.alias
-                }, 'Gemini agent execution failed');
-            } else {
-                logger.info({
-                    issueNumber: issueRef.number,
-                    model: modelUsed,
-                    agentAlias: this.config.alias
-                }, 'Gemini agent execution succeeded');
-
-                // Verify worktree state after successful execution
-                verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
-            }
-
-            return response;
+            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId });
         } catch (error) {
-            const executionTime = Date.now() - startTime;
-            const err = error as Error;
-
-            // Re-throw UsageLimitError for proper handling upstream
-            if (error instanceof UsageLimitError) {
-                throw error;
-            }
-
-            logger.error({
-                issueNumber: issueRef.number,
-                repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-                executionTime,
-                error: err.message,
-                agentAlias: this.config.alias
-            }, 'Error during Gemini agent execution');
-
-            return {
-                success: false,
-                error: err.message,
-                executionTimeMs: executionTime,
-                logs: (error as { stderr?: string }).stderr || err.message,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: undefined,
-                modelUsed: effectiveModel || 'unknown'
-            };
+            return this.handleExecutionError(error, Date.now() - startTime, issueRef, effectiveModel);
         }
+    }
+
+    private buildPromptWithRetryContext(prompt: string, isRetry: boolean, retryReason?: string): string {
+        if (isRetry && retryReason) {
+            return `${prompt}\n\n---\n\n**RETRY CONTEXT**: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
+        }
+        return prompt;
+    }
+
+    private async processExecutionResult(opts: {
+        result: { stdout: string; stderr: string; exitCode: number | null }; executionTime: number;
+        issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string | undefined;
+        prompt: string; worktreePath: string; worktreeGitContent: string | null; onSessionId?: (sessionId: string) => void;
+    }): Promise<AgentExecutionResult> {
+        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId } = opts;
+        logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Gemini agent execution completed');
+        const { sessionId, modelUsed: parsedModel, summary, conversationLog } = this.parseGeminiJsonl(result.stdout);
+        if (sessionId && onSessionId) onSessionId(sessionId);
+        if (sessionId && conversationLog.length > 0) await this.writeConversationFile(sessionId, conversationLog);
+        const modelUsed = parsedModel || effectiveModel || 'unknown';
+        const response: AgentExecutionResult = { success: result.exitCode === 0, executionTimeMs: executionTime, logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''), exitCode: result.exitCode, rawOutput: result.stdout, modelUsed, modifiedFiles: [], commitMessage: null, summary: summary ?? undefined, prompt, sessionId, conversationLog };
+        if (!response.success) logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias }, 'Gemini agent execution failed');
+        else { logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Gemini agent execution succeeded'); verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent); }
+        return response;
+    }
+
+    private handleExecutionError(error: unknown, executionTime: number, issueRef: { number: number; repoOwner: string; repoName: string }, effectiveModel: string | undefined): AgentExecutionResult {
+        if (error instanceof UsageLimitError) throw error;
+        const err = error as Error;
+        logger.error({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, error: err.message, agentAlias: this.config.alias }, 'Error during Gemini agent execution');
+        return {
+            success: false, error: err.message, executionTimeMs: executionTime,
+            logs: (error as { stderr?: string }).stderr || err.message, modifiedFiles: [],
+            commitMessage: null, summary: undefined, modelUsed: effectiveModel || 'unknown'
+        };
     }
 
     async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<string> {
@@ -344,9 +279,11 @@ export class GeminiAgent implements Agent {
             ...envVars,
             '-w', '/home/node/workspace',
             dockerImage,
-            // Gemini CLI - runs with --yolo to auto-approve tool calls, prompt piped via stdin
+            // Gemini CLI - runs in headless mode with streaming JSON output
             'gemini',
-            '--yolo'
+            '--prompt', // Headless mode
+            '--yolo', // Auto-approve tool calls
+            '--output-format', 'stream-json' // JSONL output for live tracking
         ];
 
         // Add model selection via -m flag
@@ -370,5 +307,78 @@ export class GeminiAgent implements Agent {
         }, 'Docker args built for Gemini agent');
 
         return dockerArgs;
+    }
+
+    /**
+     * Parses Gemini JSONL output from streaming JSON format.
+     * Extracts session ID, model, summary, and conversation log.
+     */
+    private parseGeminiJsonl(output: string): {
+        sessionId: string | undefined;
+        modelUsed: string | undefined;
+        summary: string | undefined;
+        conversationLog: GeminiEvent[];
+    } {
+        const events: GeminiEvent[] = [];
+        let sessionId: string | undefined;
+        let modelUsed: string | undefined;
+        let summary: string | undefined;
+
+        const lines = output.split('\n');
+        for (const line of lines) {
+            if (!line.trim()) continue;
+
+            try {
+                const event = JSON.parse(line) as GeminiEvent;
+                events.push(event);
+
+                // Extract session_id and model from init event
+                if (event.type === 'init') {
+                    sessionId = (event as GeminiInitEvent).session_id;
+                    modelUsed = (event as GeminiInitEvent).model;
+                    logger.debug({ sessionId, model: modelUsed }, 'Parsed Gemini init event');
+                }
+
+                // Extract final assistant response as summary
+                if (event.type === 'message' && (event as GeminiMessageEvent).role === 'assistant') {
+                    summary = (event as GeminiMessageEvent).content;
+                }
+            } catch {
+                // Not JSON, might be non-JSONL output - log for debugging
+                logger.debug({ linePreview: line.substring(0, 100) }, 'Non-JSON line in Gemini output');
+            }
+        }
+
+        return { sessionId, modelUsed, summary, conversationLog: events };
+    }
+
+    private async writeConversationFile(sessionId: string, events: GeminiEvent[]): Promise<void> {
+        try {
+            const projectDir = path.join(os.homedir(), '.claude', 'projects', '-home-node-workspace');
+            await fs.promises.mkdir(projectDir, { recursive: true });
+            const conversationPath = path.join(projectDir, `${sessionId}.jsonl`);
+            const claudeFormatEvents = events.map(event => this.convertEventToClaudeFormat(event));
+            await fs.promises.writeFile(conversationPath, claudeFormatEvents.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+            logger.info({ sessionId, path: conversationPath, eventCount: events.length }, 'Wrote Gemini conversation file');
+        } catch (error) {
+            logger.warn({ sessionId, error: (error as Error).message }, 'Failed to write Gemini conversation file');
+        }
+    }
+
+    private convertEventToClaudeFormat(event: GeminiEvent): unknown {
+        if (event.type === 'message') {
+            const e = event as GeminiMessageEvent;
+            return { type: e.role === 'assistant' ? 'assistant' : 'user', timestamp: e.timestamp, message: { content: [{ type: 'text', text: e.content }] } };
+        } else if (event.type === 'tool_use') {
+            const e = event as GeminiToolUseEvent;
+            return { type: 'assistant', timestamp: e.timestamp, message: { content: [{ type: 'tool_use', name: e.tool_name, id: e.tool_id, input: e.parameters }] } };
+        } else if (event.type === 'tool_result') {
+            const e = event as GeminiToolResultEvent;
+            return { type: 'user', timestamp: e.timestamp, message: { content: [{ type: 'tool_result', tool_use_id: e.tool_id, content: e.output, is_error: e.status === 'error' }] } };
+        } else if (event.type === 'result') {
+            const e = event as GeminiResultEvent;
+            return { type: 'result', timestamp: e.timestamp, message: { usage: { input_tokens: e.stats.input_tokens, output_tokens: e.stats.output_tokens } } };
+        }
+        return event;
     }
 }

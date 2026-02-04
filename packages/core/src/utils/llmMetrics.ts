@@ -8,7 +8,8 @@ import type {
     RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing,
     ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics,
     ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent,
-    LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData
+    LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData,
+    TokenUsage
 } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
@@ -32,25 +33,59 @@ function extractMetricsFromClaudeResult(claudeResult: ClaudeResult | null): Extr
     return { model, success, executionTimeMs, executionTimeSec, numTurns, sessionId, conversationId };
 }
 
-function calculateTokens(conversationLog: ConversationStep[] | undefined): { totalInputTokens: number; totalOutputTokens: number } {
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
-    if (conversationLog && Array.isArray(conversationLog)) {
-        conversationLog.forEach(step => {
-            totalInputTokens += step.message?.usage?.input_tokens ?? 0;
-            totalOutputTokens += step.message?.usage?.output_tokens ?? 0;
-        });
-    }
-    return { totalInputTokens, totalOutputTokens };
+interface CumulativeTokenUsage {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+    totalInputWithCache: number;  // input + cache_creation + cache_read (for cost calc and display)
 }
 
-async function calculateCost(model: string, totalInputTokens: number, totalOutputTokens: number, claudeResult: ClaudeResult | null): Promise<number> {
+function calculateTokens(conversationLog: ConversationStep[] | undefined): CumulativeTokenUsage {
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheCreationTokens = 0;
+    let cacheReadTokens = 0;
+
+    if (conversationLog && Array.isArray(conversationLog)) {
+        conversationLog.forEach(step => {
+            const usage = step.message?.usage;
+            if (usage) {
+                inputTokens += usage.input_tokens ?? 0;
+                outputTokens += usage.output_tokens ?? 0;
+                cacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
+                cacheReadTokens += usage.cache_read_input_tokens ?? 0;
+            }
+        });
+    }
+
+    return {
+        inputTokens,
+        outputTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
+        totalInputWithCache: inputTokens + cacheCreationTokens + cacheReadTokens
+    };
+}
+
+async function calculateCost(model: string, conversationLogTokens: CumulativeTokenUsage, claudeResult: ClaudeResult | null): Promise<number> {
     let calculatedCostUsd = 0;
     const openRouterId = getOpenRouterId(model);
     const pricing = await getModelPricing(openRouterId) as ModelPricing | null;
-    if (pricing) {
-        calculatedCostUsd = (totalInputTokens * pricing.prompt) + (totalOutputTokens * pricing.completion);
-        logger.debug({ model, openRouterId, pricing, totalInputTokens, totalOutputTokens, calculatedCostUsd }, 'Calculated dynamic cost from OpenRouter pricing');
+
+    // Use cumulative totals from conversation log (includes cache tokens for input)
+    const inputTokens = conversationLogTokens.totalInputWithCache;
+    const outputTokens = conversationLogTokens.outputTokens;
+
+    logger.info({ model, openRouterId, pricingFound: !!pricing, pricing, inputTokens, outputTokens }, 'Cost calculation: looking up pricing');
+
+    if (pricing && (inputTokens > 0 || outputTokens > 0)) {
+        calculatedCostUsd = (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
+        logger.info({ model, openRouterId, pricing, inputTokens, outputTokens, calculatedCostUsd }, 'Calculated dynamic cost from OpenRouter pricing');
+    } else if (!pricing) {
+        logger.warn({ model, openRouterId }, 'No pricing found for model - cost will be 0 or fallback');
+    } else {
+        logger.warn({ model, inputTokens, outputTokens }, 'No token data available - cost will be 0 or fallback');
     }
     return calculatedCostUsd > 0 ? calculatedCostUsd : (claudeResult?.finalResult?.cost_usd ?? claudeResult?.finalResult?.total_cost_usd ?? 0);
 }
@@ -132,9 +167,76 @@ function buildConversationDetail(params: ConversationDetailParams): Conversation
     };
 }
 
+interface ProcessConversationLogParams {
+    claudeResult: ClaudeResult;
+    executionId: string;
+    costUsd: number;
+    correlationId?: string;
+    taskId?: string | null;
+}
+
+async function processConversationLog(params: ProcessConversationLogParams): Promise<void> {
+    const { claudeResult, executionId, costUsd, correlationId, taskId } = params;
+    if (!claudeResult.conversationLog || !Array.isArray(claudeResult.conversationLog)) return;
+
+    if (claudeResult.conversationLog.length > 0) {
+        logger.debug({
+            correlationId, taskId,
+            sampleKeys: Object.keys(claudeResult.conversationLog[0]),
+            sampleItem: JSON.stringify(claudeResult.conversationLog[0]).substring(0, 200)
+        }, 'ConversationLog sample structure');
+    }
+
+    let totalTokens = 0;
+    claudeResult.conversationLog.forEach((step) => {
+        totalTokens += (step.message?.usage?.input_tokens ?? 0) + (step.message?.usage?.output_tokens ?? 0);
+    });
+
+    const detailsArray = claudeResult.conversationLog.map((step, index) =>
+        buildConversationDetail({ step, index, executionId, conversationLog: claudeResult.conversationLog!, totalTokens, costUsd })
+    );
+
+    if (detailsArray.length > 0) {
+        logger.info({
+            correlationId, taskId,
+            sampleDetail: {
+                sequence: detailsArray[0].sequence_number, type: detailsArray[0].event_type,
+                hasContent: !!detailsArray[0].content, contentPreview: detailsArray[0].content?.substring(0, 100),
+                inputTokens: detailsArray[0].token_count_input, outputTokens: detailsArray[0].token_count_output,
+                toolName: detailsArray[0].tool_name
+            }
+        }, 'DEBUG: Sample detail before insert');
+        await db('llm_execution_details').insert(detailsArray);
+    }
+}
+
+async function enqueueAnalysisTask(
+    taskId: string,
+    executionId: string,
+    sessionId: string,
+    correlationId?: string
+): Promise<void> {
+    try {
+        await analysisQueue.add('analyzeExecution', {
+            taskId,
+            executionId,
+            sessionId: sessionId || 'unknown',
+            correlationId: correlationId || 'unknown'
+        }, {
+            jobId: `analysis-${executionId}`,
+            removeOnComplete: true,
+            removeOnFail: true,
+            delay: 10000
+        });
+        logger.debug({ correlationId, taskId, executionId }, 'Enqueued task for execution analysis (with 10s delay)');
+    } catch (queueError) {
+        logger.error({ error: (queueError as Error).message, correlationId, taskId }, 'Failed to enqueue task for analysis');
+    }
+}
+
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics, correlationId?: string): Promise<void> {
     if (!taskId) return;
-    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd } = metrics;
+    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage } = metrics;
     try {
         const executionData = {
             task_id: taskId, session_id: sessionId, conversation_id: conversationId,
@@ -142,48 +244,18 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
             end_time: new Date().toISOString(), duration_ms: executionTimeMs,
             model_name: model, success: success, num_turns: numTurns, cost_usd: costUsd,
             error_message: !success ? (claudeResult?.error ?? 'Unknown error') : null,
-            prompt_length: null, output_length: null
+            prompt_length: null, output_length: null,
+            input_tokens: tokenUsage?.input_tokens ?? null,
+            output_tokens: tokenUsage?.output_tokens ?? null,
+            cache_creation_input_tokens: tokenUsage?.cache_creation_input_tokens ?? null,
+            cache_read_input_tokens: tokenUsage?.cache_read_input_tokens ?? null
         };
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
         const executionId = (insertedExecution as { execution_id: string }).execution_id;
 
-        if (claudeResult.conversationLog && Array.isArray(claudeResult.conversationLog)) {
-            if (claudeResult.conversationLog.length > 0) {
-                logger.debug({
-                    correlationId, taskId,
-                    sampleKeys: Object.keys(claudeResult.conversationLog[0]),
-                    sampleItem: JSON.stringify(claudeResult.conversationLog[0]).substring(0, 200)
-                }, 'ConversationLog sample structure');
-            }
-            let totalTokens = 0;
-            claudeResult.conversationLog.forEach((step) => {
-                totalTokens += (step.message?.usage?.input_tokens ?? 0) + (step.message?.usage?.output_tokens ?? 0);
-            });
-            const detailsArray = claudeResult.conversationLog.map((step, index) =>
-                buildConversationDetail({ step, index, executionId, conversationLog: claudeResult.conversationLog!, totalTokens, costUsd })
-            );
-            if (detailsArray.length > 0) {
-                logger.info({
-                    correlationId, taskId,
-                    sampleDetail: {
-                        sequence: detailsArray[0].sequence_number, type: detailsArray[0].event_type,
-                        hasContent: !!detailsArray[0].content, contentPreview: detailsArray[0].content?.substring(0, 100),
-                        inputTokens: detailsArray[0].token_count_input, outputTokens: detailsArray[0].token_count_output,
-                        toolName: detailsArray[0].tool_name
-                    }
-                }, 'DEBUG: Sample detail before insert');
-                await db('llm_execution_details').insert(detailsArray);
-            }
-        }
+        await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId });
         logger.debug({ correlationId, taskId, executionId }, 'LLM metrics persisted to database');
-        try {
-            await analysisQueue.add('analyzeExecution', { taskId, executionId, sessionId: sessionId || 'unknown', correlationId: correlationId || 'unknown' }, {
-                jobId: `analysis-${executionId}`, removeOnComplete: true, removeOnFail: true, delay: 10000,
-            });
-            logger.debug({ correlationId, taskId, executionId }, 'Enqueued task for execution analysis (with 10s delay)');
-        } catch (queueError) {
-            logger.error({ error: (queueError as Error).message, correlationId, taskId }, 'Failed to enqueue task for analysis');
-        }
+        await enqueueAnalysisTask(taskId, executionId, sessionId, correlationId);
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
     }
@@ -230,8 +302,8 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         const dateKey = timestamp.split('T')[0];
         const extracted = extractMetricsFromClaudeResult(claudeResult);
         const { model, success, executionTimeMs, executionTimeSec, numTurns, sessionId, conversationId } = extracted;
-        const { totalInputTokens, totalOutputTokens } = calculateTokens(claudeResult?.conversationLog);
-        const costUsd = await calculateCost(model, totalInputTokens, totalOutputTokens, claudeResult);
+        const cumulativeTokens = calculateTokens(claudeResult?.conversationLog);
+        const costUsd = await calculateCost(model, cumulativeTokens, claudeResult);
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
 
         const llmMetrics: LLMMetricsData = {
@@ -248,7 +320,14 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         logger.info({ correlationId, issueNumber: issueRef.number, model, success, costUsd, executionTimeSec, numTurns }, 'LLM metrics recorded');
         logConversationDebug(claudeResult, correlationId, taskId);
         if (claudeResult) {
-            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd }, correlationId);
+            // Build cumulative token usage from conversation log (same as PR comment)
+            const cumulativeTokenUsage: TokenUsage = {
+                input_tokens: cumulativeTokens.totalInputWithCache,
+                output_tokens: cumulativeTokens.outputTokens,
+                cache_creation_input_tokens: cumulativeTokens.cacheCreationTokens,
+                cache_read_input_tokens: cumulativeTokens.cacheReadTokens
+            };
+            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: cumulativeTokenUsage }, correlationId);
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');

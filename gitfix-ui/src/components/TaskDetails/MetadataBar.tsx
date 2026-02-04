@@ -1,6 +1,6 @@
 import React from 'react';
-import { TaskInfo, HistoryItem } from './types';
-import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban, GitCommit, Trash2 } from 'lucide-react';
+import { TaskInfo, HistoryItem, TokenUsage } from './types';
+import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban, GitCommit, Trash2, Zap } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { ProviderLogo } from '../ui/ProviderLogo';
 
@@ -32,6 +32,38 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
 
 const getDisplayModelName = (modelId: string): string => {
   return MODEL_DISPLAY_NAMES[modelId] || modelId;
+};
+
+// Format token count for display (e.g., 1234 -> "1.2k", 1234567 -> "1.2M")
+const formatTokenCount = (count: number | null | undefined): string => {
+  if (count === null || count === undefined) return '-';
+  if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
+  if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
+  return count.toString();
+};
+
+// Token usage display component
+const TokenUsageDisplay: React.FC<{ tokenUsage: TokenUsage | undefined }> = ({ tokenUsage }) => {
+  if (!tokenUsage) return null;
+
+  const inputTokens = tokenUsage.input_tokens ?? 0;
+  const outputTokens = tokenUsage.output_tokens ?? 0;
+
+  // Don't show if no tokens
+  if (inputTokens === 0 && outputTokens === 0) return null;
+
+  return (
+    <>
+      <Divider />
+      <span
+        className="flex items-center gap-1.5 bg-amber-50 text-amber-700 px-2 py-0.5 rounded text-xs font-medium border border-amber-100 cursor-default"
+        title={`Input: ${tokenUsage.input_tokens ?? 0} | Output: ${tokenUsage.output_tokens ?? 0}${tokenUsage.cache_read_input_tokens ? ` | Cache Read: ${tokenUsage.cache_read_input_tokens}` : ''}`}
+      >
+        <Zap size={12} />
+        In: {formatTokenCount(inputTokens)} | Out: {formatTokenCount(outputTokens)}
+      </span>
+    </>
+  );
 };
 
 // Vertical divider component for consistent styling
@@ -188,6 +220,7 @@ interface MetadataBarProps {
   };
   deletingTask?: boolean;
   onDeleteTask?: () => void;
+  tokenUsage?: TokenUsage;
 }
 
 const MetadataBar: React.FC<MetadataBarProps> = ({
@@ -205,7 +238,8 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   duration,
   stats,
   deletingTask = false,
-  onDeleteTask
+  onDeleteTask,
+  tokenUsage
 }) => {
   const isActive = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
   const isCancelled = currentStatus === 'CANCELLED';
@@ -252,6 +286,9 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
             </span>
           </>
         )}
+
+        {/* Token Usage Display */}
+        <TokenUsageDisplay tokenUsage={tokenUsage} />
 
         {/* Stats Display (from RealTimeStats) */}
         {stats && (

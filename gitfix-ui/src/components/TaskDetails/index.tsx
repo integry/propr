@@ -79,6 +79,24 @@ const TaskDetails: React.FC = () => {
     return { shortHash, url };
   }, [taskData.history, taskData.taskInfo]);
 
+  // Extract token usage - prefer live details for active tasks, otherwise from history
+  const tokenUsage = useMemo(() => {
+    // First check live details (for active tasks)
+    if (taskData.liveDetails?.tokenUsage) {
+      return taskData.liveDetails.tokenUsage;
+    }
+
+    // Fall back to history metadata (for completed tasks)
+    if (!taskData.history || taskData.history.length === 0) return undefined;
+
+    // Find history item with tokenUsage in metadata
+    const historyWithTokens = taskData.history.find(
+      item => item.metadata?.tokenUsage
+    );
+
+    return historyWithTokens?.metadata?.tokenUsage;
+  }, [taskData.liveDetails, taskData.history]);
+
   if (taskData.loading) {
     return <div className="text-gray-600">Loading task details...</div>;
   }
@@ -111,6 +129,7 @@ const TaskDetails: React.FC = () => {
         duration={totalDuration}
         deletingTask={taskData.deletingTask}
         onDeleteTask={handleDeleteTask}
+        tokenUsage={tokenUsage}
       />
 
       {/* Progress Bar */}

@@ -385,12 +385,12 @@ export async function updateTaskTitleForPR(options: UpdateTaskTitleOptions): Pro
     }
 }
 
-export function buildCompletionComment(
+export async function buildCompletionComment(
     commitResult: CommitResult | null,
     unprocessedComments: UnprocessedComment[],
     commentContext: CommentContext,
     claudeResult: ClaudeCodeResponse
-): string {
+): Promise<string> {
     const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl } = commentContext;
 
     // Helper to clean up LLM output that might contain metadata
@@ -418,7 +418,7 @@ export function buildCompletionComment(
             prCommentBody += `## Summary of Changes\n\n${cleanBody(contentToShow)}\n\n`;
         }
 
-        prCommentBody += buildMetricsSection(claudeResult, llm, authorsText, false);
+        prCommentBody += await buildMetricsSection(claudeResult, llm, authorsText, false);
 
         // Add undo link if we have the context and a commit was made
         if (undoContext) {
@@ -442,7 +442,7 @@ export function buildCompletionComment(
         }
 
         noChangesBody += `No code changes were necessary based on the current state of the branch.\n\n`;
-        noChangesBody += buildMetricsSection(claudeResult, llm, authorsText, true);
+        noChangesBody += await buildMetricsSection(claudeResult, llm, authorsText, true);
 
         // Add task execution link
         if (taskUrl) {

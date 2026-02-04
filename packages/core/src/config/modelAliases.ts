@@ -20,6 +20,17 @@ export function getModelShortName(modelId: string | undefined): string {
 }
 
 /**
+ * Gets the full display name for a model ID.
+ * Used for PR comments and detailed displays where the full name is preferred.
+ * E.g., "Claude Opus 4.5" instead of "Claude Opus"
+ */
+export function getModelName(modelId: string | undefined): string {
+    if (!modelId) return 'AI';
+    const modelInfo = MODEL_INFO_MAP[modelId];
+    return modelInfo?.name || 'AI';
+}
+
+/**
  * Result of resolving an LLM label to agent and model.
  */
 export interface LlmLabelResolution {

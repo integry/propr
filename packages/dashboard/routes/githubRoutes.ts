@@ -4,11 +4,50 @@ import { Queue } from 'bullmq';
 import { Knex } from 'knex';
 import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
+import { RequestError } from '@octokit/request-error';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Queue;
   db: Knex;
+}
+
+/**
+ * Check if an error is a GitHub authentication error (401)
+ */
+function isAuthError(error: unknown): boolean {
+  if (error instanceof RequestError && error.status === 401) {
+    return true;
+  }
+  // Also check for error objects with status property
+  if (error && typeof error === 'object' && 'status' in error && error.status === 401) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Handle GitHub authentication errors by clearing session and returning proper response
+ */
+async function handleAuthError(req: Request, res: Response): Promise<void> {
+  console.warn('GitHub token expired or revoked, clearing session for re-authentication');
+
+  // Clear the session to force re-login
+  await new Promise<void>((resolve) => {
+    req.logout((err) => {
+      if (err) console.error('Error during logout:', err);
+      req.session.destroy((destroyErr) => {
+        if (destroyErr) console.error('Error destroying session:', destroyErr);
+        resolve();
+      });
+    });
+  });
+
+  res.status(401).json({
+    error: 'GitHub authentication expired',
+    code: 'TOKEN_EXPIRED',
+    message: 'Your GitHub session has expired. Please log in again.'
+  });
 }
 
 export function createGitHubRoutes(deps: GitHubRoutesDeps) {
@@ -43,7 +82,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       // Get user's access token from session
       const accessToken = req.user?.accessToken;
       if (!accessToken) {
-        res.status(401).json({ error: 'No GitHub access token available' });
+        res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }
 
@@ -73,6 +112,11 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
 
       res.json({ repos });
     } catch (error) {
+      // Check if this is a token expiration/revocation error
+      if (isAuthError(error)) {
+        await handleAuthError(req, res);
+        return;
+      }
       console.error('Error in /api/github/repos:', error);
       res.status(500).json({ error: 'Failed to fetch repositories from GitHub' });
     }
@@ -90,7 +134,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       // Get user's access token from session
       const accessToken = req.user?.accessToken;
       if (!accessToken) {
-        res.status(401).json({ error: 'No GitHub access token available' });
+        res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }
 
@@ -110,6 +154,11 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         });
         defaultBranch = repoInfo.data.default_branch;
       } catch (error) {
+        // Check for auth error on repo info request
+        if (isAuthError(error)) {
+          await handleAuthError(req, res);
+          return;
+        }
         console.error('Error fetching repo info for default branch:', error);
         // Continue without default branch info
       }
@@ -136,6 +185,11 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
 
       res.json({ branches, defaultBranch });
     } catch (error) {
+      // Check if this is a token expiration/revocation error
+      if (isAuthError(error)) {
+        await handleAuthError(req, res);
+        return;
+      }
       console.error('Error in /api/github/repos/:owner/:repo/branches:', error);
       res.status(500).json({ error: 'Failed to fetch branches from GitHub' });
     }
