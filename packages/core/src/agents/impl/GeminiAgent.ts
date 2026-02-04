@@ -410,6 +410,42 @@ export class GeminiAgent implements Agent {
     }
 
     /**
+     * Creates a GeminiMessageEvent from a pending message object.
+     */
+    private createMessageEvent(pending: { content: string; timestamp: string; role: 'user' | 'assistant' }): GeminiMessageEvent {
+        return { type: 'message', role: pending.role, content: pending.content, timestamp: pending.timestamp } as GeminiMessageEvent;
+    }
+
+    /**
+     * Flushes pending message to result array and returns null.
+     */
+    private flushPendingMessage(
+        result: GeminiEvent[],
+        pendingMessage: { content: string; timestamp: string; role: 'user' | 'assistant' } | null
+    ): null {
+        if (pendingMessage) {
+            result.push(this.createMessageEvent(pendingMessage));
+        }
+        return null;
+    }
+
+    /**
+     * Processes an assistant delta message, accumulating content or starting a new pending message.
+     */
+    private processAssistantDelta(
+        result: GeminiEvent[],
+        pendingMessage: { content: string; timestamp: string; role: 'user' | 'assistant' } | null,
+        msgEvent: GeminiMessageEvent
+    ): { content: string; timestamp: string; role: 'user' | 'assistant' } {
+        if (pendingMessage && pendingMessage.role === 'assistant') {
+            pendingMessage.content += msgEvent.content;
+            return pendingMessage;
+        }
+        this.flushPendingMessage(result, pendingMessage);
+        return { content: msgEvent.content, timestamp: msgEvent.timestamp, role: 'assistant' };
+    }
+
+    /**
      * Aggregates consecutive delta messages into single messages.
      * Gemini streams assistant responses as multiple delta events that need to be combined.
      */
@@ -418,51 +454,29 @@ export class GeminiAgent implements Agent {
         let pendingMessage: { content: string; timestamp: string; role: 'user' | 'assistant' } | null = null;
 
         for (const event of events) {
-            if (event.type === 'message') {
-                const msgEvent = event as GeminiMessageEvent;
-                if (msgEvent.role === 'assistant') {
-                    if (msgEvent.delta) {
-                        // Delta message - accumulate content
-                        if (pendingMessage && pendingMessage.role === 'assistant') {
-                            pendingMessage.content += msgEvent.content;
-                        } else {
-                            // Flush any pending message first
-                            if (pendingMessage) {
-                                result.push({ type: 'message', role: pendingMessage.role, content: pendingMessage.content, timestamp: pendingMessage.timestamp } as GeminiMessageEvent);
-                            }
-                            pendingMessage = { content: msgEvent.content, timestamp: msgEvent.timestamp, role: 'assistant' };
-                        }
-                    } else {
-                        // Non-delta message - flush pending and add this one
-                        if (pendingMessage) {
-                            result.push({ type: 'message', role: pendingMessage.role, content: pendingMessage.content, timestamp: pendingMessage.timestamp } as GeminiMessageEvent);
-                            pendingMessage = null;
-                        }
-                        result.push(event);
-                    }
-                } else {
-                    // User message - flush pending and add
-                    if (pendingMessage) {
-                        result.push({ type: 'message', role: pendingMessage.role, content: pendingMessage.content, timestamp: pendingMessage.timestamp } as GeminiMessageEvent);
-                        pendingMessage = null;
-                    }
-                    result.push(event);
-                }
+            if (event.type !== 'message') {
+                pendingMessage = this.flushPendingMessage(result, pendingMessage);
+                result.push(event);
+                continue;
+            }
+
+            const msgEvent = event as GeminiMessageEvent;
+
+            if (msgEvent.role !== 'assistant') {
+                pendingMessage = this.flushPendingMessage(result, pendingMessage);
+                result.push(event);
+                continue;
+            }
+
+            if (msgEvent.delta) {
+                pendingMessage = this.processAssistantDelta(result, pendingMessage, msgEvent);
             } else {
-                // Non-message event - flush pending and add
-                if (pendingMessage) {
-                    result.push({ type: 'message', role: pendingMessage.role, content: pendingMessage.content, timestamp: pendingMessage.timestamp } as GeminiMessageEvent);
-                    pendingMessage = null;
-                }
+                pendingMessage = this.flushPendingMessage(result, pendingMessage);
                 result.push(event);
             }
         }
 
-        // Flush any remaining pending message
-        if (pendingMessage) {
-            result.push({ type: 'message', role: pendingMessage.role, content: pendingMessage.content, timestamp: pendingMessage.timestamp } as GeminiMessageEvent);
-        }
-
+        this.flushPendingMessage(result, pendingMessage);
         return result;
     }
 
