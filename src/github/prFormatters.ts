@@ -36,25 +36,36 @@ export interface ClaudeResult {
     model?: string;
 }
 
+async function calculateApiCost(
+    claudeResult: ClaudeResult | null,
+    inputTokens: number,
+    outputTokens: number,
+    totalTokens: number
+): Promise<number> {
+    const baseCost = claudeResult?.finalResult?.cost_usd || 0;
+    if (baseCost !== 0 || totalTokens === 0 || !claudeResult?.model) {
+        return baseCost;
+    }
+
+    try {
+        const openRouterId = getOpenRouterId(claudeResult.model);
+        const pricing = await getModelPricing(openRouterId);
+        if (pricing) {
+            return (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
+        }
+    } catch {
+        // Fall back to baseCost if pricing lookup fails
+    }
+    return baseCost;
+}
+
 export async function generatePRBody(issueNumber: number, issueTitle: string, commitMessage: string, claudeResult: ClaudeResult | null): Promise<string> {
     const timestamp = new Date().toISOString();
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
     const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as { conversationLog?: Array<{ message?: { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }> } | null);
 
-    // Calculate cost using OpenRouter pricing (same as DB metrics)
-    let cost = claudeResult?.finalResult?.cost_usd || 0;
-    if (cost === 0 && totalTokens > 0 && claudeResult?.model) {
-        try {
-            const openRouterId = getOpenRouterId(claudeResult.model);
-            const pricing = await getModelPricing(openRouterId);
-            if (pricing) {
-                cost = (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
-            }
-        } catch {
-            // Fall back to finalResult.cost_usd if pricing lookup fails
-        }
-    }
+    const cost = await calculateApiCost(claudeResult, inputTokens, outputTokens, totalTokens);
 
     let body = `## 🤖 AI-Generated Solution\n\n`;
     body += `Resolves #${issueNumber}.\n\n`;
