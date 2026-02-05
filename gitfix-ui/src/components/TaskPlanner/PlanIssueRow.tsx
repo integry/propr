@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -9,7 +9,7 @@ import {
   Loader2,
   Eye
 } from 'lucide-react';
-import { PlanIssue, PlanIssueStatus, STATUS_CONFIG } from '../../api/planIssuesApi';
+import { PlanIssue, PlanIssueStatus, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
 import { AgentConfig } from '../../api/gitfixApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
@@ -19,12 +19,12 @@ interface PlanIssueRowProps {
   issue: PlanIssue;
   issueTitle?: string;
   agents: AgentConfig[];
-  onImplement: (issueNumber: number) => void;
+  onImplement: (issueNumber: number, models?: AgentModelPair[]) => void;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
   implementing?: boolean;
   isFirstPending?: boolean;
-  onImplementWithWarning?: (issueNumber: number) => void;
+  onImplementWithWarning?: (issueNumber: number, models?: AgentModelPair[]) => void;
 }
 
 const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) => {
@@ -180,6 +180,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   isFirstPending = true,
   onImplementWithWarning
 }) => {
+  const [isMultiMode, setIsMultiMode] = useState(false);
+  const [selectedModels, setSelectedModels] = useState<AgentModelPair[]>([]);
+
   const isPending = issue.status === 'pending';
   const isActive = STATUS_CONFIG[issue.status]?.isActive || false;
   const isMerged = issue.status === 'merged';
@@ -197,6 +200,38 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
 
   const titleClassName = isMerged ? 'text-gray-500' : 'text-gray-600';
   const showAgentInfo = !isPending && issue.agent_alias;
+
+  // Determine if implement button should be enabled
+  // In multi mode: need at least one model selected
+  // In single mode: need an agent selected (original behavior)
+  const hasAgent = isMultiMode ? selectedModels.length > 0 : !!issue.agent_alias;
+
+  const handleMultiToggle = useCallback((multi: boolean) => {
+    setIsMultiMode(multi);
+    if (!multi) {
+      setSelectedModels([]);
+    }
+  }, []);
+
+  const handleMultiModelChange = useCallback((models: AgentModelPair[]) => {
+    setSelectedModels(models);
+  }, []);
+
+  const handleImplementClick = useCallback(() => {
+    if (isMultiMode && selectedModels.length > 0) {
+      if (isFirstPending || !onImplementWithWarning) {
+        onImplement(issue.issue_number, selectedModels);
+      } else {
+        onImplementWithWarning(issue.issue_number, selectedModels);
+      }
+    } else {
+      if (isFirstPending || !onImplementWithWarning) {
+        onImplement(issue.issue_number);
+      } else {
+        onImplementWithWarning(issue.issue_number);
+      }
+    }
+  }, [isMultiMode, selectedModels, isFirstPending, onImplementWithWarning, onImplement, issue.issue_number]);
 
   return (
     <motion.div
@@ -246,21 +281,19 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
                 onModelChange={(model) => onModelChange(issue.issue_number, model)}
                 disabled={implementing}
                 compact
+                isMulti={isMultiMode}
+                onMultiToggle={handleMultiToggle}
+                selectedModels={selectedModels}
+                onMultiModelChange={handleMultiModelChange}
               />
             )}
 
             {isPending && (
               <ImplementButton
                 implementing={implementing}
-                hasAgent={!!issue.agent_alias}
+                hasAgent={hasAgent}
                 isFirstPending={isFirstPending}
-                onClick={() => {
-                  if (isFirstPending || !onImplementWithWarning) {
-                    onImplement(issue.issue_number);
-                  } else {
-                    onImplementWithWarning(issue.issue_number);
-                  }
-                }}
+                onClick={handleImplementClick}
               />
             )}
 

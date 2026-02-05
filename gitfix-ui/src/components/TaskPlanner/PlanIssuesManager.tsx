@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
-import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue } from '../../api/planIssuesApi';
+import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue, AgentModelPair } from '../../api/planIssuesApi';
 import { AgentConfig, getAgents } from '../../api/gitfixApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
@@ -36,6 +36,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   const [globalModel, setGlobalModel] = useState<string | null>(null);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
   const [pendingImplementIssue, setPendingImplementIssue] = useState<number | null>(null);
+  const [pendingImplementModels, setPendingImplementModels] = useState<AgentModelPair[] | undefined>(undefined);
   const pollIntervalRef = React.useRef<number | null>(null);
 
   const issueTitles = React.useMemo(() => {
@@ -143,10 +144,11 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     return () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); };
   }, [hasActiveIssues, fetchIssues]);
 
-  const handleImplementIssue = useCallback(async (issueNumber: number) => {
+  const handleImplementIssue = useCallback(async (issueNumber: number, models?: AgentModelPair[]) => {
     setImplementingIssue(issueNumber);
     try {
-      await implementIssue(draftId, issueNumber);
+      const options = models && models.length > 0 ? { models } : undefined;
+      await implementIssue(draftId, issueNumber, options);
       await fetchIssues();
       onRefresh?.();
     } catch (err) {
@@ -231,21 +233,26 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   const handleRefresh = async () => { await fetchIssues(); onRefresh?.(); };
 
-  const handleImplementWithWarning = useCallback((issueNumber: number) => {
-    setPendingImplementIssue(issueNumber); setShowSequenceWarning(true);
+  const handleImplementWithWarning = useCallback((issueNumber: number, models?: AgentModelPair[]) => {
+    setPendingImplementIssue(issueNumber);
+    setPendingImplementModels(models);
+    setShowSequenceWarning(true);
   }, []);
 
   const handleCloseWarning = useCallback(() => {
-    setShowSequenceWarning(false); setPendingImplementIssue(null);
+    setShowSequenceWarning(false);
+    setPendingImplementIssue(null);
+    setPendingImplementModels(undefined);
   }, []);
 
   const handleProceedAnyway = useCallback(async () => {
     if (pendingImplementIssue !== null) {
       setShowSequenceWarning(false);
-      await handleImplementIssue(pendingImplementIssue);
+      await handleImplementIssue(pendingImplementIssue, pendingImplementModels);
       setPendingImplementIssue(null);
+      setPendingImplementModels(undefined);
     }
-  }, [pendingImplementIssue, handleImplementIssue]);
+  }, [pendingImplementIssue, pendingImplementModels, handleImplementIssue]);
 
   if (loading) {
     return (

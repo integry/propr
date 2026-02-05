@@ -92,21 +92,61 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
 
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
-
-      // Get LLM label based on the issue's model (or default model)
-      const llmLabel = getLlmLabel(planIssue.model_name);
-      const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
-
       const octokit = await getAuthenticatedOctokit();
-      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-        owner, repo, issue_number: issueNumber, labels: labelsToAdd
-      });
 
-      await updatePlanIssue(draftId, issueNumber, { status: 'processing' });
-      const labelMessage = llmLabel
-        ? `Added '${implementLabel}' and '${llmLabel}' labels to issue #${issueNumber}`
-        : `Added '${implementLabel}' label to issue #${issueNumber}`;
-      res.json({ success: true, message: labelMessage });
+      // Check if multi-agent models array is provided
+      const { models } = req.body as { models?: Array<{ agent_alias: string; model_name: string }> };
+
+      if (models && Array.isArray(models) && models.length > 0) {
+        // Multi-agent mode: apply labels for all selected agent:model combinations
+        const labelLogger = logger.withCorrelation(`implement-multi-${draftId}-${issueNumber}`);
+
+        // Collect all LLM labels from the old model (to remove) and new models (to add)
+        const oldLlmLabel = getLlmLabel(planIssue.model_name);
+        const newLlmLabels = new Set<string>();
+        for (const m of models) {
+          const label = getLlmLabel(m.model_name);
+          if (label) newLlmLabels.add(label);
+        }
+
+        // Remove old label only if it's not in the new set
+        const labelsToRemove = (oldLlmLabel && !newLlmLabels.has(oldLlmLabel)) ? [oldLlmLabel] : [];
+        const labelsToAdd = [implementLabel, ...Array.from(newLlmLabels)];
+
+        await safeUpdateLabels(
+          { octokit, owner, repo, issueNumber, logger: labelLogger },
+          labelsToRemove,
+          labelsToAdd
+        );
+
+        // Update plan issue with the first model as primary
+        const primaryModel = models[0];
+        await updatePlanIssue(draftId, issueNumber, {
+          status: 'processing',
+          agent_alias: primaryModel.agent_alias,
+          model_name: primaryModel.model_name
+        });
+
+        const labelList = Array.from(newLlmLabels).map(l => `'${l}'`).join(', ');
+        res.json({
+          success: true,
+          message: `Added '${implementLabel}' and ${labelList} labels to issue #${issueNumber} (${models.length} agents assigned)`
+        });
+      } else {
+        // Single-agent mode (original behavior)
+        const llmLabel = getLlmLabel(planIssue.model_name);
+        const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
+
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+          owner, repo, issue_number: issueNumber, labels: labelsToAdd
+        });
+
+        await updatePlanIssue(draftId, issueNumber, { status: 'processing' });
+        const labelMessage = llmLabel
+          ? `Added '${implementLabel}' and '${llmLabel}' labels to issue #${issueNumber}`
+          : `Added '${implementLabel}' label to issue #${issueNumber}`;
+        res.json({ success: true, message: labelMessage });
+      }
     } catch (error) {
       console.error('Implement issue error:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issue' });
