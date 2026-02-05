@@ -408,6 +408,7 @@ export interface RefinePlanOptions {
   repository: string;
   githubToken: string;
   correlationId?: string;
+  originalContext?: string;
 }
 
 interface TaskDraft {
@@ -660,7 +661,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 }
 
 export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
-  const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId } = options;
+  const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId, originalContext } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!Array.isArray(currentPlan)) throw new PlanningFailedError('Current plan must be an array');
@@ -668,9 +669,12 @@ export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
   // Load planner generation model from settings (refinement uses the generation model)
   const settings = await loadSettings();
   const generationModel = settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
-  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, generationModel }, 'Refining plan');
+  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, generationModel, hasOriginalContext: !!originalContext }, 'Refining plan');
 
-  const userPrompt = `${REFINER_SYSTEM_PROMPT}\n\nCurrent Plan:\n${JSON.stringify(currentPlan, null, 2)}\n\nInstruction:\n"${instruction}"\n\nRemember: Return ONLY the updated JSON array. No markdown, no explanations.`;
+  const contextSection = originalContext
+    ? `\n\nOriginal Context (codebase details from initial plan generation):\n${originalContext}\n`
+    : '';
+  const userPrompt = `${REFINER_SYSTEM_PROMPT}${contextSection}\n\nCurrent Plan:\n${JSON.stringify(currentPlan, null, 2)}\n\nInstruction:\n"${instruction}"\n\nRemember: Return ONLY the updated JSON array. No markdown, no explanations.`;
   const [repoOwner, repoName] = repository.split('/');
   const issueRef = { number: 0, repoOwner: repoOwner || 'unknown', repoName: repoName || 'unknown' };
 

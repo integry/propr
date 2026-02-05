@@ -106,13 +106,19 @@ export function createRefineHandler(db: Knex) {
       (async () => {
         try {
           const repoContext = await getRefineRepoContext(db, draftId, req.user?.accessToken || '');
+
+          // Fetch original generated context from the draft for richer refinement
+          const draft = await db('task_drafts').where({ draft_id: draftId }).select('generated_context').first();
+          const originalContext = draft?.generated_context as string | undefined;
+
           const plan = await refinePlan({
             currentPlan: currentPlan as Plan,
             instruction,
             worktreePath: repoContext.worktreePath,
             repository: repoContext.repository,
             githubToken: repoContext.authToken,
-            correlationId
+            correlationId,
+            originalContext: originalContext || undefined
           });
 
           await db('task_drafts').where({ draft_id: draftId }).update({
