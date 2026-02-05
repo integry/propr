@@ -169,6 +169,37 @@ const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (
   </Link>
 );
 
+const getContainerClassName = (isMerged: boolean): string =>
+  isMerged ? 'bg-gray-50 border-gray-200' : 'bg-white border-gray-200';
+
+const getTitleClassName = (isMerged: boolean): string =>
+  isMerged ? 'text-gray-500' : 'text-gray-600';
+
+interface IssueMetadataProps {
+  issue: PlanIssue;
+  isPending: boolean;
+  isProcessing: boolean;
+}
+
+const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, isProcessing }) => {
+  const prUrl = issue.pr_number
+    ? `https://github.com/${issue.repository}/pull/${issue.pr_number}`
+    : null;
+  const showProgressLink = isProcessing && issue.task_id;
+  const showAgentInfo = !isPending && issue.agent_alias;
+
+  return (
+    <div className="flex items-center gap-4 mt-2 text-xs">
+      {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
+      {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
+      {issue.followup_count > 0 && <FollowupCount count={issue.followup_count} />}
+      {showAgentInfo && (
+        <AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} />
+      )}
+    </div>
+  );
+};
+
 export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   issue,
   issueTitle,
@@ -187,23 +218,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   const isActive = STATUS_CONFIG[issue.status]?.isActive || false;
   const isMerged = issue.status === 'merged';
   const isProcessing = issue.status === 'processing' || issue.status === 'refinement_processing';
-  const showProgressLink = isProcessing && issue.task_id;
 
   const issueUrl = `https://github.com/${issue.repository}/issues/${issue.issue_number}`;
-  const prUrl = issue.pr_number
-    ? `https://github.com/${issue.repository}/pull/${issue.pr_number}`
-    : null;
 
-  const containerClassName = isMerged
-    ? 'bg-gray-50 border-gray-200'
-    : 'bg-white border-gray-200';
-
-  const titleClassName = isMerged ? 'text-gray-500' : 'text-gray-600';
-  const showAgentInfo = !isPending && issue.agent_alias;
-
-  // Determine if implement button should be enabled
-  // In multi mode: need at least one model selected
-  // In single mode: need an agent selected (original behavior)
   const hasAgent = isMultiMode ? selectedModels.length > 0 : !!issue.agent_alias;
 
   const handleMultiToggle = useCallback((multi: boolean) => {
@@ -218,26 +235,16 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   }, []);
 
   const handleImplementClick = useCallback(() => {
-    if (isMultiMode && selectedModels.length > 0) {
-      if (isFirstPending || !onImplementWithWarning) {
-        onImplement(issue.issue_number, selectedModels);
-      } else {
-        onImplementWithWarning(issue.issue_number, selectedModels);
-      }
-    } else {
-      if (isFirstPending || !onImplementWithWarning) {
-        onImplement(issue.issue_number);
-      } else {
-        onImplementWithWarning(issue.issue_number);
-      }
-    }
+    const models = isMultiMode && selectedModels.length > 0 ? selectedModels : undefined;
+    const handler = isFirstPending || !onImplementWithWarning ? onImplement : onImplementWithWarning;
+    handler(issue.issue_number, models);
   }, [isMultiMode, selectedModels, isFirstPending, onImplementWithWarning, onImplement, issue.issue_number]);
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`border rounded-lg overflow-hidden ${containerClassName}`}
+      className={`border rounded-lg overflow-hidden ${getContainerClassName(isMerged)}`}
     >
       <div className="p-4">
         <div className="flex items-start justify-between gap-4">
@@ -256,19 +263,12 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
             </div>
 
             {issueTitle && (
-              <p className={`text-sm ${titleClassName} truncate`}>
+              <p className={`text-sm ${getTitleClassName(isMerged)} truncate`}>
                 {issueTitle}
               </p>
             )}
 
-            <div className="flex items-center gap-4 mt-2 text-xs">
-              {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
-              {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
-              {issue.followup_count > 0 && <FollowupCount count={issue.followup_count} />}
-              {showAgentInfo && (
-                <AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} />
-              )}
-            </div>
+            <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} />
           </div>
 
           <div className="flex items-center gap-3 flex-shrink-0">
