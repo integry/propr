@@ -132,6 +132,13 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
     try {
       const options = models && models.length > 0 ? { models } : undefined;
       await implementIssue(draftId, issueNumber, options);
+
+      // Preserve selected models for display during processing (if multi-agent)
+      if (models && models.length > 0) {
+        setIssueMultiModeMap(prev => ({ ...prev, [issueNumber]: true }));
+        setIssueSelectedModelsMap(prev => ({ ...prev, [issueNumber]: models }));
+      }
+
       await fetchIssues();
       onRefresh?.();
     } catch (err) {
@@ -181,31 +188,14 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
 
     try {
       if (globalIsMulti) {
-        // Multi-mode: implement all pending issues with all selected models
-        // This adds all model labels to each issue via implementIssue API
-        const primaryModel = globalSelectedModels[0];
-        await Promise.all(
-          pendingIssues.map(issue =>
-            implementIssue(draftId, issue.issue_number, { models: globalSelectedModels })
-          )
-        );
-
-        // Update local state to reflect processing status
-        setIssues(prev =>
-          prev.map(issue =>
-            issue.status === 'pending'
-              ? { ...issue, status: 'processing' as const, agent_alias: primaryModel.agent_alias, model_name: primaryModel.model_name }
-              : issue
-          )
-        );
-
-        // Reset multi-mode state for all issues since they're now processing
-        // (no need to keep multi-mode UI state after implementation)
+        // Multi-mode: apply the selected models to all pending issues
+        // This sets the multi-mode state for each issue WITHOUT starting implementation
+        // User still has to click "Implement" button manually
         const newMultiModeMap: Record<number, boolean> = { ...issueMultiModeMap };
         const newSelectedModelsMap: Record<number, AgentModelPair[]> = { ...issueSelectedModelsMap };
         pendingIssues.forEach(issue => {
-          newMultiModeMap[issue.issue_number] = false;
-          newSelectedModelsMap[issue.issue_number] = [];
+          newMultiModeMap[issue.issue_number] = true;
+          newSelectedModelsMap[issue.issue_number] = [...globalSelectedModels];
         });
         setIssueMultiModeMap(newMultiModeMap);
         setIssueSelectedModelsMap(newSelectedModelsMap);

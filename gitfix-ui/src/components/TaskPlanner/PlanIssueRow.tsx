@@ -187,20 +187,36 @@ interface IssueMetadataProps {
   issue: PlanIssue;
   isPending: boolean;
   isProcessing: boolean;
+  /** Selected models for multi-agent implementation */
+  selectedModels?: AgentModelPair[];
 }
 
-const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, isProcessing }) => {
+const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, isProcessing, selectedModels }) => {
   const prUrl = issue.pr_number
     ? `https://github.com/${issue.repository}/pull/${issue.pr_number}`
     : null;
   const showProgressLink = isProcessing && issue.task_id;
-  const showAgentInfo = !isPending && issue.agent_alias;
+  // Show multi-agent info during processing if we have selected models
+  const showMultiAgentInfo = !isPending && selectedModels && selectedModels.length > 0;
+  // Show single agent info only if we're not showing multi-agent and we have an agent
+  const showAgentInfo = !isPending && !showMultiAgentInfo && issue.agent_alias;
 
   return (
     <div className="flex items-center gap-4 mt-2 text-xs">
       {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
       {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
       {issue.followup_count > 0 && <FollowupCount count={issue.followup_count} />}
+      {showMultiAgentInfo && (
+        <div className="flex items-center gap-1 flex-wrap">
+          {selectedModels.map((m, idx) => (
+            <span key={`${m.agent_alias}-${m.model_name}`} className="flex items-center gap-1 text-gray-500">
+              {idx > 0 && <span className="text-gray-300 mx-1">|</span>}
+              <ProviderLogo provider={m.agent_alias} className="w-3 h-3" />
+              <span>{getModelName(m.model_name)}</span>
+            </span>
+          ))}
+        </div>
+      )}
       {showAgentInfo && (
         <AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} />
       )}
@@ -281,7 +297,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               </p>
             )}
 
-            <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} />
+            <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} selectedModels={selectedModels} />
           </div>
 
           <div className="flex items-center gap-3 flex-shrink-0">
@@ -299,7 +315,6 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
                 selectedModels={selectedModels}
                 onMultiModelChange={handleMultiModelChange}
                 onMultiConfirm={handleImplementClick}
-                autoOpenMultiDropdown
               />
             )}
 
