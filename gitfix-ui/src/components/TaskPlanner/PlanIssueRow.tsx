@@ -244,7 +244,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`border rounded-lg overflow-hidden ${getContainerClassName(isMerged)}`}
+      className={`border rounded-lg ${getContainerClassName(isMerged)}`}
     >
       <div className="p-4">
         <div className="flex items-start justify-between gap-4">

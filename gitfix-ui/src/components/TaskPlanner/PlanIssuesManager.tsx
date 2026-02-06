@@ -34,6 +34,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   const [globalAgent, setGlobalAgent] = useState<string | null>(null);
   const [globalModel, setGlobalModel] = useState<string | null>(null);
+  const [globalIsMulti, setGlobalIsMulti] = useState(false);
+  const [globalSelectedModels, setGlobalSelectedModels] = useState<AgentModelPair[]>([]);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
   const [pendingImplementIssue, setPendingImplementIssue] = useState<number | null>(null);
   const [pendingImplementModels, setPendingImplementModels] = useState<AgentModelPair[] | undefined>(undefined);
@@ -174,7 +176,26 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   const handleGlobalModelChange = (modelName: string | null) => setGlobalModel(modelName);
 
+  const handleGlobalMultiToggle = (isMulti: boolean) => {
+    setGlobalIsMulti(isMulti);
+    if (!isMulti) {
+      setGlobalSelectedModels([]);
+    }
+  };
+
+  const handleGlobalMultiModelChange = (models: AgentModelPair[]) => {
+    setGlobalSelectedModels(models);
+  };
+
   const handleApplyToAll = async () => {
+    // In multi mode, we don't update the database - just set a global selection state
+    // In single mode, we update the database
+    if (globalIsMulti) {
+      // Multi-mode: nothing to persist to DB for the global selector
+      // The selectedModels state is already set and can be used when implementing
+      return;
+    }
+
     if (!globalAgent) return;
 
     setApplyingGlobal(true);
@@ -349,24 +370,30 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             onModelChange={handleGlobalModelChange}
             disabled={applyingGlobal}
             compact
+            isMulti={globalIsMulti}
+            onMultiToggle={handleGlobalMultiToggle}
+            selectedModels={globalSelectedModels}
+            onMultiModelChange={handleGlobalMultiModelChange}
           />
-          <button
-            onClick={handleApplyToAll}
-            disabled={!globalAgent || applyingGlobal}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {applyingGlobal ? (
-              <>
-                <Loader2 size={14} className="animate-spin" />
-                Applying...
-              </>
-            ) : (
-              <>
-                <CheckCircle size={14} />
-                Apply to All
-              </>
-            )}
-          </button>
+          {!globalIsMulti && (
+            <button
+              onClick={handleApplyToAll}
+              disabled={!globalAgent || applyingGlobal}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {applyingGlobal ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  Applying...
+                </>
+              ) : (
+                <>
+                  <CheckCircle size={14} />
+                  Apply to All
+                </>
+              )}
+            </button>
+          )}
         </div>
       )}
       <div className="space-y-2">
