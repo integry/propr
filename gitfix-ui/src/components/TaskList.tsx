@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTasks, getAvailableGithubRepos } from '../api/gitfixApi';
+import { getTasks, getRepoConfig, MonitoredRepo } from '../api/gitfixApi';
 import type { Task, TaskListProps, LoadConfig, TaskGroup } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';
@@ -32,8 +32,32 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     const fetchRepos = async () => {
       try {
         setReposLoading(true);
-        const data = await getAvailableGithubRepos();
-        setAvailableRepos(['all', ...(data.repos || []).sort()]);
+        const data = await getRepoConfig();
+
+        // Filter for enabled repositories only and extract repository names
+        const enabledRepos = (data.repos_to_monitor || [])
+          .filter((repo: MonitoredRepo | string) => {
+            // Handle legacy format (raw strings) gracefully
+            if (typeof repo === 'string') {
+              return true; // Include legacy string repos by default
+            }
+            // Only include enabled repos
+            return repo.enabled;
+          })
+          .map((repo: MonitoredRepo | string) => {
+            // Handle both MonitoredRepo objects and legacy string format
+            if (typeof repo === 'string') {
+              return repo;
+            }
+            return repo.name;
+          })
+          .filter((name: string, index: number, self: string[]) => {
+            // Remove duplicates
+            return self.indexOf(name) === index;
+          })
+          .sort();
+
+        setAvailableRepos(['all', ...enabledRepos]);
       } catch (err) {
         console.error('Error fetching repositories:', err);
       } finally {
