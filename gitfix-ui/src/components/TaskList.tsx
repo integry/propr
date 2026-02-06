@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTasks, getAvailableGithubRepos } from '../api/gitfixApi';
+import { getTasks, getRepoConfig, MonitoredRepo } from '../api/gitfixApi';
 import type { Task, TaskListProps, LoadConfig, TaskGroup } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';
@@ -32,8 +32,34 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     const fetchRepos = async () => {
       try {
         setReposLoading(true);
-        const data = await getAvailableGithubRepos();
-        setAvailableRepos(['all', ...(data.repos || []).sort()]);
+        const data = await getRepoConfig() as { repos_to_monitor?: unknown[] };
+        const rawRepos = data.repos_to_monitor || [];
+        const monitoredRepos = rawRepos
+          .map((repo: unknown): MonitoredRepo | null => {
+            if (typeof repo === 'string') {
+              return { id: repo, name: repo, enabled: true };
+            }
+            if (repo && typeof repo === 'object') {
+              const repoObj = repo as Record<string, unknown>;
+              const name = (repoObj.name as string) || (repoObj.full_name as string);
+              if (!name) return null;
+              const enabled = typeof repoObj.enabled === 'boolean' ? repoObj.enabled : true;
+              const id = (repoObj.id as string) || name;
+              return {
+                id,
+                name,
+                enabled,
+                alias: repoObj.alias as string | undefined,
+                baseBranch: repoObj.baseBranch as string | undefined
+              };
+            }
+            return null;
+          })
+          .filter((repo): repo is MonitoredRepo => repo !== null && repo.name !== undefined);
+        const enabledRepos = monitoredRepos.filter(repo => repo.enabled);
+        const uniqueRepoNames = Array.from(new Set(enabledRepos.map(repo => repo.name)))
+          .sort((a, b) => a.localeCompare(b));
+        setAvailableRepos(['all', ...uniqueRepoNames]);
       } catch (err) {
         console.error('Error fetching repositories:', err);
       } finally {
