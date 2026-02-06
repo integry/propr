@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
-import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue, AgentModelPair } from '../../api/planIssuesApi';
-import { AgentConfig, getAgents } from '../../api/gitfixApi';
+import { AgentModelPair } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
 import AgentModelSelector from './AgentModelSelector';
 import SequentialWarningDialog from './SequentialWarningDialog';
+import { usePlanIssuesManager } from './usePlanIssuesManager';
 
 interface PlanIssuesManagerProps {
   draftId: string;
@@ -16,8 +16,6 @@ interface PlanIssuesManagerProps {
   onViewPlanClick?: () => void;
 }
 
-const POLL_INTERVAL = 5000; // Polling interval for active issues
-
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
   tasks,
@@ -25,234 +23,39 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   onRefresh,
   onViewPlanClick
 }) => {
-  const [issues, setIssues] = useState<PlanIssue[]>([]);
-  const [agents, setAgents] = useState<AgentConfig[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [implementingIssue, setImplementingIssue] = useState<number | null>(null);
   const [showMerged, setShowMerged] = useState(false);
-
-  const [globalAgent, setGlobalAgent] = useState<string | null>(null);
-  const [globalModel, setGlobalModel] = useState<string | null>(null);
-  const [globalIsMulti, setGlobalIsMulti] = useState(false);
-  const [globalSelectedModels, setGlobalSelectedModels] = useState<AgentModelPair[]>([]);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
   const [pendingImplementIssue, setPendingImplementIssue] = useState<number | null>(null);
   const [pendingImplementModels, setPendingImplementModels] = useState<AgentModelPair[] | undefined>(undefined);
-  const pollIntervalRef = React.useRef<number | null>(null);
 
-  const issueTitles = React.useMemo(() => {
-    const map: Record<number, string> = {};
-    tasks.forEach(task => { if (task.issue_number) map[task.issue_number] = task.title; });
-    return map;
-  }, [tasks]);
-
-  // Apply default agent/model to pending issues that don't have one assigned
-  // This is UI-only state - no database update until user takes action
-  const issuesWithDefaults = useMemo(() => {
-    const defaultAgent = agents.find(a => a.enabled);
-    if (!defaultAgent) return issues;
-
-    const defaultAlias = defaultAgent.alias;
-    const defaultModel = defaultAgent.defaultModel ?? defaultAgent.supportedModels?.[0] ?? null;
-
-    return issues.map(issue => {
-      if (issue.status === 'pending' && !issue.agent_alias) {
-        return { ...issue, agent_alias: defaultAlias, model_name: defaultModel };
-      }
-      return issue;
-    });
-  }, [issues, agents]);
-
-  const { activeIssues, mergedIssues, pendingCount, hasActiveIssues, firstPendingIssueNumber } = useMemo(() => {
-    const active: PlanIssue[] = [], merged: PlanIssue[] = [];
-    let pending = 0, hasActive = false;
-
-    // Sort issues by issue_number to determine order
-    const sortedIssues = [...issuesWithDefaults].sort((a, b) => a.issue_number - b.issue_number);
-
-    // Find the first unmerged issue number (to determine which pending issue can be implemented)
-    let firstUnmergedIssueNumber: number | null = null;
-    for (const issue of sortedIssues) {
-      if (issue.status !== 'merged') {
-        firstUnmergedIssueNumber = issue.issue_number;
-        break;
-      }
-    }
-
-    // The first pending issue that can be safely implemented is only the one
-    // that is both pending AND is the first unmerged issue (all prior issues are merged)
-    let firstPending: number | null = null;
-
-    issuesWithDefaults.forEach(issue => {
-      if (issue.status === 'merged') { merged.push(issue); }
-      else {
-        active.push(issue);
-        if (issue.status === 'pending') {
-          pending++;
-          // Only mark as first pending if this issue is the first unmerged issue
-          // (meaning all prior issues have been merged)
-          if (issue.issue_number === firstUnmergedIssueNumber) {
-            firstPending = issue.issue_number;
-          }
-        }
-        if (STATUS_CONFIG[issue.status]?.isActive) hasActive = true;
-      }
-    });
-    return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive, firstPendingIssueNumber: firstPending };
-  }, [issuesWithDefaults]);
-
-  const fetchIssues = useCallback(async () => {
-    try {
-      const fetchedIssues = await getPlanIssues(draftId);
-      setIssues(fetchedIssues);
-      setError(null);
-    } catch (err) {
-      console.error('Failed to fetch plan issues:', err);
-      setError('Failed to load issues');
-    }
-  }, [draftId]);
-
-  const fetchAgents = useCallback(async () => {
-    try {
-      const { agents: fetchedAgents } = await getAgents();
-      setAgents(fetchedAgents);
-      const enabledAgent = fetchedAgents.find(a => a.enabled);
-      if (enabledAgent && !globalAgent) {
-        setGlobalAgent(enabledAgent.alias);
-        setGlobalModel(enabledAgent.defaultModel ?? enabledAgent.supportedModels?.[0] ?? null);
-      }
-    } catch (err) {
-      console.error('Failed to fetch agents:', err);
-    }
-  }, [globalAgent]);
-
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      await Promise.all([fetchIssues(), fetchAgents()]);
-      setLoading(false);
-    };
-    load();
-  }, [fetchIssues, fetchAgents]);
-
-  useEffect(() => {
-    if (hasActiveIssues) {
-      pollIntervalRef.current = window.setInterval(fetchIssues, POLL_INTERVAL);
-    } else if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-    return () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); };
-  }, [hasActiveIssues, fetchIssues]);
-
-  const handleImplementIssue = useCallback(async (issueNumber: number, models?: AgentModelPair[]) => {
-    setImplementingIssue(issueNumber);
-    try {
-      const options = models && models.length > 0 ? { models } : undefined;
-      await implementIssue(draftId, issueNumber, options);
-      await fetchIssues();
-      onRefresh?.();
-    } catch (err) {
-      console.error('Failed to implement issue:', err);
-      setError('Failed to start implementation');
-    } finally {
-      setImplementingIssue(null);
-    }
-  }, [draftId, fetchIssues, onRefresh]);
-
-  const [applyingGlobal, setApplyingGlobal] = useState(false);
-
-  const getDefaultModelForAgent = (agentAlias: string | null): string | null => {
-    if (!agentAlias) return null;
-    const agent = agents.find(a => a.alias === agentAlias);
-    return agent?.defaultModel ?? agent?.supportedModels?.[0] ?? null;
-  };
-
-  const handleGlobalAgentChange = (agentAlias: string | null) => {
-    setGlobalAgent(agentAlias);
-    setGlobalModel(getDefaultModelForAgent(agentAlias));
-  };
-
-  const handleGlobalModelChange = (modelName: string | null) => setGlobalModel(modelName);
-
-  const handleGlobalMultiToggle = (isMulti: boolean) => {
-    setGlobalIsMulti(isMulti);
-    if (!isMulti) {
-      setGlobalSelectedModels([]);
-    }
-  };
-
-  const handleGlobalMultiModelChange = (models: AgentModelPair[]) => {
-    setGlobalSelectedModels(models);
-  };
-
-  const handleApplyToAll = async () => {
-    // In multi mode, we don't update the database - just set a global selection state
-    // In single mode, we update the database
-    if (globalIsMulti) {
-      // Multi-mode: nothing to persist to DB for the global selector
-      // The selectedModels state is already set and can be used when implementing
-      return;
-    }
-
-    if (!globalAgent) return;
-
-    setApplyingGlobal(true);
-    const pendingIssues = issues.filter(issue => issue.status === 'pending');
-
-    try {
-      await Promise.all(
-        pendingIssues.map(issue =>
-          updatePlanIssue(draftId, issue.issue_number, {
-            agent_alias: globalAgent,
-            model_name: globalModel
-          })
-        )
-      );
-
-      // Update local state
-      setIssues(prev =>
-        prev.map(issue =>
-          issue.status === 'pending'
-            ? { ...issue, agent_alias: globalAgent, model_name: globalModel }
-            : issue
-        )
-      );
-    } catch (err) {
-      console.error('Failed to apply agent/model to all issues:', err);
-      setError('Failed to apply agent/model to all issues');
-    } finally {
-      setApplyingGlobal(false);
-    }
-  };
-
-  const handleAgentChange = async (issueNumber: number, agentAlias: string | null) => {
-    try {
-      const modelName = getDefaultModelForAgent(agentAlias);
-      await updatePlanIssue(draftId, issueNumber, { agent_alias: agentAlias, model_name: modelName });
-      setIssues(prev => prev.map(issue =>
-        issue.issue_number === issueNumber ? { ...issue, agent_alias: agentAlias, model_name: modelName } : issue
-      ));
-    } catch (err) {
-      console.error('Failed to update agent:', err);
-      setError('Failed to update agent');
-    }
-  };
-
-  const handleModelChange = async (issueNumber: number, modelName: string | null) => {
-    try {
-      await updatePlanIssue(draftId, issueNumber, { model_name: modelName });
-      setIssues(prev => prev.map(issue =>
-        issue.issue_number === issueNumber ? { ...issue, model_name: modelName } : issue
-      ));
-    } catch (err) {
-      console.error('Failed to update model:', err);
-      setError('Failed to update model');
-    }
-  };
-
-  const handleRefresh = async () => { await fetchIssues(); onRefresh?.(); };
+  const {
+    issues,
+    agents,
+    loading,
+    error,
+    clearError,
+    implementingIssue,
+    issueTitles,
+    activeIssues,
+    mergedIssues,
+    pendingCount,
+    hasActiveIssues,
+    firstPendingIssueNumber,
+    globalAgent,
+    globalModel,
+    globalIsMulti,
+    globalSelectedModels,
+    applyingGlobal,
+    handleImplementIssue,
+    handleGlobalAgentChange,
+    handleGlobalModelChange,
+    handleGlobalMultiToggle,
+    handleGlobalMultiModelChange,
+    handleApplyToAll,
+    handleAgentChange,
+    handleModelChange,
+    handleRefresh,
+  } = usePlanIssuesManager({ draftId, tasks, onRefresh });
 
   const handleImplementWithWarning = useCallback((issueNumber: number, models?: AgentModelPair[]) => {
     setPendingImplementIssue(issueNumber);
@@ -350,7 +153,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           <AlertCircle size={16} />
           {error}
           <button
-            onClick={() => setError(null)}
+            onClick={clearError}
             className="ml-auto text-red-500 hover:text-red-700"
           >
             Dismiss
@@ -420,11 +223,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           >
             <CheckCircle size={16} className="text-green-600" />
             <span>Merged Issues ({mergedIssues.length})</span>
-            {showMerged ? (
-              <ChevronUp size={16} />
-            ) : (
-              <ChevronDown size={16} />
-            )}
+            {showMerged ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
           </button>
 
           <AnimatePresence>
