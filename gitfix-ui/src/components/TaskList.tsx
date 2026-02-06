@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTasks, getAvailableGithubRepos } from '../api/gitfixApi';
+import { getTasks, getRepoConfig, MonitoredRepo } from '../api/gitfixApi';
 import type { Task, TaskListProps, LoadConfig, TaskGroup } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';
@@ -32,8 +32,26 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     const fetchRepos = async () => {
       try {
         setReposLoading(true);
-        const data = await getAvailableGithubRepos();
-        setAvailableRepos(['all', ...(data.repos || []).sort()]);
+        const data = await getRepoConfig();
+        const rawRepos = data?.repos_to_monitor ?? [];
+        const enabledRepoNames = rawRepos
+          .map((repo: MonitoredRepo | string | { name?: string; full_name?: string; enabled?: boolean }) => {
+            if (typeof repo === 'string') {
+              return { name: repo, enabled: true };
+            }
+
+            if (repo && typeof repo === 'object') {
+              const name = repo.name ?? repo.full_name;
+              const enabled = typeof repo.enabled === 'boolean' ? repo.enabled : true;
+              return { name, enabled };
+            }
+
+            return { name: undefined, enabled: false };
+          })
+          .filter((repo) => repo.enabled && typeof repo.name === 'string' && repo.name.length > 0)
+          .map((repo) => repo.name);
+        const uniqueSortedRepos = Array.from(new Set(enabledRepoNames)).sort((a, b) => a.localeCompare(b));
+        setAvailableRepos(['all', ...uniqueSortedRepos]);
       } catch (err) {
         console.error('Error fetching repositories:', err);
       } finally {
