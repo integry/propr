@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTasks, getAvailableGithubRepos } from '../api/gitfixApi';
+import { getTasks, getRepoConfig, MonitoredRepo } from '../api/gitfixApi';
 import type { Task, TaskListProps, LoadConfig, TaskGroup } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';
@@ -32,8 +32,29 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     const fetchRepos = async () => {
       try {
         setReposLoading(true);
-        const data = await getAvailableGithubRepos();
-        setAvailableRepos(['all', ...(data.repos || []).sort()]);
+        const data = await getRepoConfig();
+        // Handle both object format {id, name, enabled, ...} and legacy string formats
+        // Cast to unknown[] to handle potential legacy string array response
+        const rawRepos = (data.repos_to_monitor || []) as unknown[];
+        const enabledRepoNames = new Set<string>();
+
+        rawRepos.forEach((repo) => {
+          if (typeof repo === 'string') {
+            // Legacy format: just a string like "owner/repo" -> implicitly enabled
+            enabledRepoNames.add(repo);
+          } else if (repo && typeof repo === 'object') {
+            // Object format
+            const r = repo as Partial<MonitoredRepo> & { full_name?: string };
+            const name = r.name || r.full_name;
+            const enabled = typeof r.enabled === 'boolean' ? r.enabled : true;
+
+            if (name && enabled) {
+              enabledRepoNames.add(name);
+            }
+          }
+        });
+
+        setAvailableRepos(['all', ...Array.from(enabledRepoNames).sort()]);
       } catch (err) {
         console.error('Error fetching repositories:', err);
       } finally {
