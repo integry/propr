@@ -31,11 +31,21 @@ export interface PlanIssue {
 }
 
 /**
+ * Represents a single agent:model combination for multi-agent assignment.
+ */
+export interface AgentModelPair {
+  agent_alias: string;
+  model_name: string;
+}
+
+/**
  * Options for implementing an issue.
  */
 export interface ImplementIssueOptions {
   agent_alias?: string;
   model_name?: string;
+  /** Multiple agent:model combinations for parallel implementation. */
+  models?: AgentModelPair[];
 }
 
 /**

@@ -29,6 +29,8 @@ interface FetchConfig {
   contextLevel: number;
   compress: boolean;
   files: PlannerAttachment[];
+  /** Model to use for plan generation (determines context limits) */
+  generationModel: string | null;
 }
 
 interface UseContextRefreshOptions {
@@ -125,7 +127,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         granularity: currentConfig.granularity,
         contextLevel: currentConfig.contextLevel,
         compress: currentConfig.compress,
-        files: currentConfig.files.map(f => f.originalName)
+        files: currentConfig.files.map(f => f.originalName),
+        generationModel: currentConfig.generationModel || undefined
       }, controller.signal);
 
       setPreview({ isLoading: false, data: result, error: null, lastSynced: new Date() });
@@ -183,14 +186,14 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     }
   }, [config.prompt, config.baseBranch, config.files.length, config.compress, initialSyncDone, isPaused, startCountdown]);
 
-  // View changes - fetch immediately
+  // View changes - fetch immediately (granularity, contextLevel, generationModel)
   useEffect(() => {
     if (!initialSyncDone || isContextStale) return;
 
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     debounceTimerRef.current = setTimeout(() => fetchPreview(), SLIDER_DEBOUNCE_DELAY);
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
-  }, [config.granularity, config.contextLevel, initialSyncDone, isContextStale, fetchPreview]);
+  }, [config.granularity, config.contextLevel, config.generationModel, initialSyncDone, isContextStale, fetchPreview]);
 
   // Timer expiry - auto-fetch when countdown ends (only if not paused)
   useEffect(() => {

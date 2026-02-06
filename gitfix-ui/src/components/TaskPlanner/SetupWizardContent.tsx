@@ -1,5 +1,5 @@
 import React from 'react';
-import { PlannerAttachment, PreviewResult, ContextRepository, Granularity, GenerationTrace } from '../../api/gitfixApi';
+import { PlannerAttachment, PreviewResult, ContextRepository, Granularity, GenerationTrace, AgentConfig } from '../../api/gitfixApi';
 import { GenerationProgress } from './GenerationProgress';
 import { SmartFileSelection } from './SmartFileSelection';
 import { FileSelectionSkeleton } from './SkeletonLoader';
@@ -45,6 +45,11 @@ interface SetupWizardContentProps {
   onAddContextRepo: (repo: ContextRepository) => void;
   onRemoveContextRepo: (repository: string) => void;
 
+  // AI Model selection props
+  agents: AgentConfig[];
+  generationModel: string | null;
+  onGenerationModelChange: (model: string | null) => void;
+
   // Preview and state props
   preview: PreviewState;
   isContextStale: boolean;
@@ -58,6 +63,7 @@ interface SetupWizardContentProps {
   generationError: string | null;
   isGenerating: boolean;
   generationTrace?: GenerationTrace;
+  onAbort?: () => Promise<void>;
 }
 
 export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
@@ -81,6 +87,9 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
   availableRepos,
   onAddContextRepo,
   onRemoveContextRepo,
+  agents,
+  generationModel,
+  onGenerationModelChange,
   preview,
   isContextStale,
   timeUntilRefresh,
@@ -90,7 +99,8 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
   error,
   generationError,
   isGenerating,
-  generationTrace
+  generationTrace,
+  onAbort
 }) => {
   return (
     <div className="p-6 space-y-6">
@@ -122,6 +132,9 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
         onCompressChange={onCompressChange}
         modelName={preview.data?.stats.modelName}
         modelMaxContextTokens={preview.data?.stats.modelMaxContextTokens}
+        agents={agents}
+        generationModel={generationModel}
+        onGenerationModelChange={onGenerationModelChange}
       />
 
       {/* Context Repositories Section */}
@@ -158,7 +171,7 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
       )}
 
       {/* Generation Progress */}
-      {isGenerating && <GenerationProgress trace={generationTrace} />}
+      {isGenerating && <GenerationProgress trace={generationTrace} onAbort={onAbort} />}
     </div>
   );
 };

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTasks, getAvailableGithubRepos } from '../api/gitfixApi';
+import { getTasks, getRepoConfig, MonitoredRepo } from '../api/gitfixApi';
 import type { Task, TaskListProps, LoadConfig, TaskGroup } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';
@@ -32,8 +32,32 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     const fetchRepos = async () => {
       try {
         setReposLoading(true);
-        const data = await getAvailableGithubRepos();
-        setAvailableRepos(['all', ...(data.repos || []).sort()]);
+        const data = await getRepoConfig();
+        const rawRepos = data.repos_to_monitor || [];
+
+        // Filter and extract repository names from enabled repositories only
+        // Handle both object format {id, name, enabled, alias?, baseBranch?} and legacy string format
+        const enabledRepoNames = rawRepos
+          .map((repo: unknown) => {
+            if (typeof repo === 'string') {
+              // Legacy format: just a string like "owner/repo", consider it enabled
+              return repo;
+            } else if (repo && typeof repo === 'object') {
+              const repoObj = repo as MonitoredRepo;
+              // Only include if explicitly enabled
+              if (repoObj.enabled && repoObj.name) {
+                return repoObj.name;
+              }
+            }
+            return null;
+          })
+          .filter((name): name is string => name !== null);
+
+        // Remove duplicates and sort alphabetically
+        const uniqueRepos = Array.from(new Set(enabledRepoNames)).sort();
+
+        // Include "all" option at the beginning
+        setAvailableRepos(['all', ...uniqueRepos]);
       } catch (err) {
         console.error('Error fetching repositories:', err);
       } finally {

@@ -22,7 +22,14 @@ function getUsageStats(claudeResult: ClaudeResult | null): UsageStats {
     let inputTokens = 0;
     let outputTokens = 0;
 
-    if (claudeResult?.conversationLog) {
+    // First, check for direct tokenUsage (used by Gemini/Codex agents)
+    if (claudeResult?.tokenUsage) {
+        inputTokens = claudeResult.tokenUsage.input_tokens ?? 0;
+        outputTokens = claudeResult.tokenUsage.output_tokens ?? 0;
+    }
+
+    // Fall back to scanning conversationLog (used by Claude agent)
+    if (inputTokens === 0 && outputTokens === 0 && claudeResult?.conversationLog) {
         claudeResult.conversationLog.forEach(msg => {
             const message = msg.message as { usage?: MessageUsage } | undefined;
             if (message?.usage) {
@@ -71,6 +78,7 @@ interface ClaudeResult {
     rawOutput?: string;
     finalResult?: FinalResult;
     summary?: string;
+    tokenUsage?: { input_tokens?: number; output_tokens?: number };
 }
 
 interface LogFiles {
