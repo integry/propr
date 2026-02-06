@@ -46,6 +46,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     globalIsMulti,
     globalSelectedModels,
     applyingGlobal,
+    issueMultiModeMap,
+    issueSelectedModelsMap,
     handleImplementIssue,
     handleGlobalAgentChange,
     handleGlobalModelChange,
@@ -54,6 +56,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     handleApplyToAll,
     handleAgentChange,
     handleModelChange,
+    handleIssueMultiToggle,
+    handleIssueMultiModelChange,
     handleRefresh,
   } = usePlanIssuesManager({ draftId, tasks, onRefresh });
 
@@ -214,6 +218,10 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             implementing={implementingIssue === issue.issue_number}
             isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
             onImplementWithWarning={handleImplementWithWarning}
+            inheritedIsMulti={issueMultiModeMap[issue.issue_number]}
+            inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
+            onMultiToggle={(isMulti) => handleIssueMultiToggle(issue.issue_number, isMulti)}
+            onMultiModelChange={(models) => handleIssueMultiModelChange(issue.issue_number, models)}
           />
         ))}
       </div>

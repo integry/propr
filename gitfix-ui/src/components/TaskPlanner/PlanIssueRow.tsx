@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -25,6 +25,14 @@ interface PlanIssueRowProps {
   implementing?: boolean;
   isFirstPending?: boolean;
   onImplementWithWarning?: (issueNumber: number, models?: AgentModelPair[]) => void;
+  /** Inherited multi-mode state from parent (e.g., applied from global selection) */
+  inheritedIsMulti?: boolean;
+  /** Inherited selected models from parent (e.g., applied from global selection) */
+  inheritedSelectedModels?: AgentModelPair[];
+  /** Callback when multi-mode is toggled */
+  onMultiToggle?: (isMulti: boolean) => void;
+  /** Callback when multi-model selection changes */
+  onMultiModelChange?: (models: AgentModelPair[]) => void;
 }
 
 const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) => {
@@ -209,10 +217,15 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   onModelChange,
   implementing = false,
   isFirstPending = true,
-  onImplementWithWarning
+  onImplementWithWarning,
+  inheritedIsMulti,
+  inheritedSelectedModels,
+  onMultiToggle: onMultiToggleProp,
+  onMultiModelChange: onMultiModelChangeProp
 }) => {
-  const [isMultiMode, setIsMultiMode] = useState(false);
-  const [selectedModels, setSelectedModels] = useState<AgentModelPair[]>([]);
+  // Use inherited state from parent if available, otherwise fall back to local state
+  const isMultiMode = inheritedIsMulti ?? false;
+  const selectedModels = inheritedSelectedModels ?? [];
 
   const isPending = issue.status === 'pending';
   const isActive = STATUS_CONFIG[issue.status]?.isActive || false;
@@ -224,15 +237,12 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   const hasAgent = isMultiMode ? selectedModels.length > 0 : !!issue.agent_alias;
 
   const handleMultiToggle = useCallback((multi: boolean) => {
-    setIsMultiMode(multi);
-    if (!multi) {
-      setSelectedModels([]);
-    }
-  }, []);
+    onMultiToggleProp?.(multi);
+  }, [onMultiToggleProp]);
 
   const handleMultiModelChange = useCallback((models: AgentModelPair[]) => {
-    setSelectedModels(models);
-  }, []);
+    onMultiModelChangeProp?.(models);
+  }, [onMultiModelChangeProp]);
 
   const handleImplementClick = useCallback(() => {
     const models = isMultiMode && selectedModels.length > 0 ? selectedModels : undefined;

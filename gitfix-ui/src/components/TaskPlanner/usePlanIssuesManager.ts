@@ -24,6 +24,10 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
   const [globalSelectedModels, setGlobalSelectedModels] = useState<AgentModelPair[]>([]);
   const [applyingGlobal, setApplyingGlobal] = useState(false);
 
+  // Track per-issue multi-mode state (applied from global selection)
+  const [issueMultiModeMap, setIssueMultiModeMap] = useState<Record<number, boolean>>({});
+  const [issueSelectedModelsMap, setIssueSelectedModelsMap] = useState<Record<number, AgentModelPair[]>>({});
+
   const pollIntervalRef = useRef<number | null>(null);
 
   const issueTitles = useMemo(() => {
@@ -195,6 +199,16 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
               : issue
           )
         );
+
+        // Update per-issue multi-mode state for all pending issues
+        const newMultiModeMap: Record<number, boolean> = { ...issueMultiModeMap };
+        const newSelectedModelsMap: Record<number, AgentModelPair[]> = { ...issueSelectedModelsMap };
+        pendingIssues.forEach(issue => {
+          newMultiModeMap[issue.issue_number] = true;
+          newSelectedModelsMap[issue.issue_number] = [...globalSelectedModels];
+        });
+        setIssueMultiModeMap(newMultiModeMap);
+        setIssueSelectedModelsMap(newSelectedModelsMap);
       } else {
         // Single-mode: apply the selected agent/model to all issues
         await Promise.all(
@@ -213,6 +227,16 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
               : issue
           )
         );
+
+        // Clear multi-mode state for all pending issues when applying single mode
+        const newMultiModeMap: Record<number, boolean> = { ...issueMultiModeMap };
+        const newSelectedModelsMap: Record<number, AgentModelPair[]> = { ...issueSelectedModelsMap };
+        pendingIssues.forEach(issue => {
+          newMultiModeMap[issue.issue_number] = false;
+          newSelectedModelsMap[issue.issue_number] = [];
+        });
+        setIssueMultiModeMap(newMultiModeMap);
+        setIssueSelectedModelsMap(newSelectedModelsMap);
       }
     } catch (err) {
       console.error('Failed to apply agent/model to all issues:', err);
@@ -220,7 +244,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
     } finally {
       setApplyingGlobal(false);
     }
-  }, [globalIsMulti, globalAgent, globalModel, globalSelectedModels, issues, draftId]);
+  }, [globalIsMulti, globalAgent, globalModel, globalSelectedModels, issues, draftId, issueMultiModeMap, issueSelectedModelsMap]);
 
   const handleAgentChange = useCallback(async (issueNumber: number, agentAlias: string | null) => {
     try {
@@ -251,6 +275,18 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
 
   const clearError = useCallback(() => setError(null), []);
 
+  // Handlers for per-issue multi-mode state
+  const handleIssueMultiToggle = useCallback((issueNumber: number, isMulti: boolean) => {
+    setIssueMultiModeMap(prev => ({ ...prev, [issueNumber]: isMulti }));
+    if (!isMulti) {
+      setIssueSelectedModelsMap(prev => ({ ...prev, [issueNumber]: [] }));
+    }
+  }, []);
+
+  const handleIssueMultiModelChange = useCallback((issueNumber: number, models: AgentModelPair[]) => {
+    setIssueSelectedModelsMap(prev => ({ ...prev, [issueNumber]: models }));
+  }, []);
+
   return {
     issues,
     agents,
@@ -269,6 +305,8 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
     globalIsMulti,
     globalSelectedModels,
     applyingGlobal,
+    issueMultiModeMap,
+    issueSelectedModelsMap,
     handleImplementIssue,
     handleGlobalAgentChange,
     handleGlobalModelChange,
@@ -277,6 +315,8 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
     handleApplyToAll,
     handleAgentChange,
     handleModelChange,
+    handleIssueMultiToggle,
+    handleIssueMultiModelChange,
     handleRefresh,
   };
 }
