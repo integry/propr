@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -225,7 +225,10 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
 }) => {
   // Use inherited state from parent if available, otherwise fall back to local state
   const isMultiMode = inheritedIsMulti ?? false;
-  const selectedModels = inheritedSelectedModels ?? [];
+  const selectedModels = useMemo(
+    () => inheritedSelectedModels ?? [],
+    [inheritedSelectedModels]
+  );
 
   const isPending = issue.status === 'pending';
   const isActive = STATUS_CONFIG[issue.status]?.isActive || false;
