@@ -285,7 +285,8 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
                 onMultiToggle={handleMultiToggle}
                 selectedModels={selectedModels}
                 onMultiModelChange={handleMultiModelChange}
-                onMultiConfirm={() => {/* Dropdown closes automatically on confirm */}}
+                onMultiConfirm={handleImplementClick}
+                autoOpenMultiDropdown
               />
             )}
 

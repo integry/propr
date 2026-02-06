@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { ChevronDown, Users, Check } from 'lucide-react';
 import { AgentConfig } from '../../api/gitfixApi';
 import { AgentModelPair } from '../../api/planIssuesApi';
@@ -21,6 +21,8 @@ interface AgentModelSelectorProps {
   onMultiModelChange?: (models: AgentModelPair[]) => void;
   /** Callback when user confirms multi-selection */
   onMultiConfirm?: () => void;
+  /** Automatically open the multi-select dropdown when switching to multi mode */
+  autoOpenMultiDropdown?: boolean;
 }
 
 type AgentModelPairWithDisplay = AgentModelPair & { displayName: string };
@@ -310,9 +312,17 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
   onMultiToggle,
   selectedModels = [],
   onMultiModelChange,
-  onMultiConfirm
+  onMultiConfirm,
+  autoOpenMultiDropdown = false
 }) => {
-  const [multiDropdownOpen, setMultiDropdownOpen] = useState(false);
+  const [multiDropdownOpen, setMultiDropdownOpen] = useState(autoOpenMultiDropdown && isMulti);
+
+  // Auto-open dropdown when switching to multi mode
+  useEffect(() => {
+    if (isMulti && autoOpenMultiDropdown) {
+      setMultiDropdownOpen(true);
+    }
+  }, [isMulti, autoOpenMultiDropdown]);
 
   const enabledAgents = useMemo(() =>
     agents.filter(agent => agent.enabled),

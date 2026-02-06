@@ -163,39 +163,64 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
   }, []);
 
   const handleApplyToAll = useCallback(async () => {
-    if (globalIsMulti) {
+    // In multi mode, we need at least one selected model
+    if (globalIsMulti && globalSelectedModels.length === 0) {
       return;
     }
-
-    if (!globalAgent) return;
+    // In single mode, we need an agent
+    if (!globalIsMulti && !globalAgent) {
+      return;
+    }
 
     setApplyingGlobal(true);
     const pendingIssues = issues.filter(issue => issue.status === 'pending');
 
     try {
-      await Promise.all(
-        pendingIssues.map(issue =>
-          updatePlanIssue(draftId, issue.issue_number, {
-            agent_alias: globalAgent,
-            model_name: globalModel
-          })
-        )
-      );
+      if (globalIsMulti) {
+        // Multi-mode: apply first selected model to all issues (storing config for multi-agent)
+        const primaryModel = globalSelectedModels[0];
+        await Promise.all(
+          pendingIssues.map(issue =>
+            updatePlanIssue(draftId, issue.issue_number, {
+              agent_alias: primaryModel.agent_alias,
+              model_name: primaryModel.model_name
+            })
+          )
+        );
 
-      setIssues(prev =>
-        prev.map(issue =>
-          issue.status === 'pending'
-            ? { ...issue, agent_alias: globalAgent, model_name: globalModel }
-            : issue
-        )
-      );
+        setIssues(prev =>
+          prev.map(issue =>
+            issue.status === 'pending'
+              ? { ...issue, agent_alias: primaryModel.agent_alias, model_name: primaryModel.model_name }
+              : issue
+          )
+        );
+      } else {
+        // Single-mode: apply the selected agent/model to all issues
+        await Promise.all(
+          pendingIssues.map(issue =>
+            updatePlanIssue(draftId, issue.issue_number, {
+              agent_alias: globalAgent,
+              model_name: globalModel
+            })
+          )
+        );
+
+        setIssues(prev =>
+          prev.map(issue =>
+            issue.status === 'pending'
+              ? { ...issue, agent_alias: globalAgent, model_name: globalModel }
+              : issue
+          )
+        );
+      }
     } catch (err) {
       console.error('Failed to apply agent/model to all issues:', err);
       setError('Failed to apply agent/model to all issues');
     } finally {
       setApplyingGlobal(false);
     }
-  }, [globalIsMulti, globalAgent, globalModel, issues, draftId]);
+  }, [globalIsMulti, globalAgent, globalModel, globalSelectedModels, issues, draftId]);
 
   const handleAgentChange = useCallback(async (issueNumber: number, agentAlias: string | null) => {
     try {
