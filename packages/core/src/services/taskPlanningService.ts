@@ -18,6 +18,8 @@ import {
 import type { Attachment } from './attachmentService.js';
 import { loadSettings } from '../config/configManager.js';
 
+// CI retrigger
+
 /** Default model for context analysis (fast, cost-effective) */
 const DEFAULT_CONTEXT_MODEL = 'haiku';
 
