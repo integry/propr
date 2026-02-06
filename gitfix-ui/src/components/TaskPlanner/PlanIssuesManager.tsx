@@ -177,6 +177,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             onMultiToggle={handleGlobalMultiToggle}
             selectedModels={globalSelectedModels}
             onMultiModelChange={handleGlobalMultiModelChange}
+            onMultiConfirm={() => {/* Dropdown closes automatically on confirm */}}
           />
           {!globalIsMulti && (
             <button

@@ -19,6 +19,8 @@ interface AgentModelSelectorProps {
   onMultiToggle?: (isMulti: boolean) => void;
   selectedModels?: AgentModelPair[];
   onMultiModelChange?: (models: AgentModelPair[]) => void;
+  /** Callback when user confirms multi-selection */
+  onMultiConfirm?: () => void;
 }
 
 type AgentModelPairWithDisplay = AgentModelPair & { displayName: string };
@@ -113,6 +115,7 @@ interface MultiSelectModeProps {
   setMultiDropdownOpen: (open: boolean) => void;
   onMultiModelToggle: (pair: AgentModelPair) => void;
   onBackToSingle: () => void;
+  onConfirm?: () => void;
 }
 
 const MultiSelectMode: React.FC<MultiSelectModeProps> = ({
@@ -124,7 +127,8 @@ const MultiSelectMode: React.FC<MultiSelectModeProps> = ({
   multiDropdownOpen,
   setMultiDropdownOpen,
   onMultiModelToggle,
-  onBackToSingle
+  onBackToSingle,
+  onConfirm
 }) => (
   <div className={`flex items-center gap-2 ${className}`}>
     <div className="relative">
@@ -154,8 +158,8 @@ const MultiSelectMode: React.FC<MultiSelectModeProps> = ({
             className="fixed inset-0 z-10"
             onClick={() => setMultiDropdownOpen(false)}
           />
-          <div className="absolute z-20 mt-1 right-0 w-64 bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
-            <div className="p-2 border-b border-gray-100">
+          <div className="absolute z-20 mt-1 right-0 w-64 bg-white border border-gray-200 rounded-lg shadow-lg flex flex-col">
+            <div className="p-2 border-b border-gray-100 flex-shrink-0">
               <button
                 onClick={onBackToSingle}
                 className="text-xs text-gray-500 hover:text-gray-700 transition-colors"
@@ -163,22 +167,37 @@ const MultiSelectMode: React.FC<MultiSelectModeProps> = ({
                 &larr; Back to single agent
               </button>
             </div>
-            {allAgentModelPairs.map((pair) => {
-              const isSelected = selectedModels.some(
-                m => m.agent_alias === pair.agent_alias && m.model_name === pair.model_name
-              );
-              return (
-                <MultiDropdownItem
-                  key={`${pair.agent_alias}-${pair.model_name}`}
-                  pair={pair}
-                  isSelected={isSelected}
-                  onToggle={onMultiModelToggle}
-                />
-              );
-            })}
-            {allAgentModelPairs.length === 0 && (
-              <div className="px-3 py-4 text-sm text-gray-400 text-center">
-                No agents available
+            <div className="max-h-[420px] overflow-y-auto">
+              {allAgentModelPairs.map((pair) => {
+                const isSelected = selectedModels.some(
+                  m => m.agent_alias === pair.agent_alias && m.model_name === pair.model_name
+                );
+                return (
+                  <MultiDropdownItem
+                    key={`${pair.agent_alias}-${pair.model_name}`}
+                    pair={pair}
+                    isSelected={isSelected}
+                    onToggle={onMultiModelToggle}
+                  />
+                );
+              })}
+              {allAgentModelPairs.length === 0 && (
+                <div className="px-3 py-4 text-sm text-gray-400 text-center">
+                  No agents available
+                </div>
+              )}
+            </div>
+            {onConfirm && selectedModels.length > 0 && (
+              <div className="p-2 border-t border-gray-100 flex-shrink-0">
+                <button
+                  onClick={() => {
+                    onConfirm();
+                    setMultiDropdownOpen(false);
+                  }}
+                  className="w-full px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 transition-colors"
+                >
+                  Apply {selectedModels.length} Agent{selectedModels.length !== 1 ? 's' : ''}
+                </button>
               </div>
             )}
           </div>
@@ -290,7 +309,8 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
   isMulti = false,
   onMultiToggle,
   selectedModels = [],
-  onMultiModelChange
+  onMultiModelChange,
+  onMultiConfirm
 }) => {
   const [multiDropdownOpen, setMultiDropdownOpen] = useState(false);
 
@@ -388,6 +408,7 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
         setMultiDropdownOpen={setMultiDropdownOpen}
         onMultiModelToggle={handleMultiModelToggle}
         onBackToSingle={handleBackToSingle}
+        onConfirm={onMultiConfirm}
       />
     );
   }
