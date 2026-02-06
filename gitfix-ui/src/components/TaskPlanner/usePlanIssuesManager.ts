@@ -181,34 +181,38 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
 
     try {
       if (globalIsMulti) {
-        // Multi-mode: apply first selected model to all issues (storing config for multi-agent)
+        // Multi-mode: implement all pending issues with all selected models
+        // This adds all model labels to each issue via implementIssue API
         const primaryModel = globalSelectedModels[0];
         await Promise.all(
           pendingIssues.map(issue =>
-            updatePlanIssue(draftId, issue.issue_number, {
-              agent_alias: primaryModel.agent_alias,
-              model_name: primaryModel.model_name
-            })
+            implementIssue(draftId, issue.issue_number, { models: globalSelectedModels })
           )
         );
 
+        // Update local state to reflect processing status
         setIssues(prev =>
           prev.map(issue =>
             issue.status === 'pending'
-              ? { ...issue, agent_alias: primaryModel.agent_alias, model_name: primaryModel.model_name }
+              ? { ...issue, status: 'processing' as const, agent_alias: primaryModel.agent_alias, model_name: primaryModel.model_name }
               : issue
           )
         );
 
-        // Update per-issue multi-mode state for all pending issues
+        // Reset multi-mode state for all issues since they're now processing
+        // (no need to keep multi-mode UI state after implementation)
         const newMultiModeMap: Record<number, boolean> = { ...issueMultiModeMap };
         const newSelectedModelsMap: Record<number, AgentModelPair[]> = { ...issueSelectedModelsMap };
         pendingIssues.forEach(issue => {
-          newMultiModeMap[issue.issue_number] = true;
-          newSelectedModelsMap[issue.issue_number] = [...globalSelectedModels];
+          newMultiModeMap[issue.issue_number] = false;
+          newSelectedModelsMap[issue.issue_number] = [];
         });
         setIssueMultiModeMap(newMultiModeMap);
         setIssueSelectedModelsMap(newSelectedModelsMap);
+
+        // Reset global multi-mode state
+        setGlobalIsMulti(false);
+        setGlobalSelectedModels([]);
       } else {
         // Single-mode: apply the selected agent/model to all issues
         await Promise.all(
