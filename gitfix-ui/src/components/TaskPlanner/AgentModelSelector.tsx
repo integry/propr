@@ -1,8 +1,9 @@
-import React, { useMemo } from 'react';
-import { ChevronDown } from 'lucide-react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { AgentConfig } from '../../api/gitfixApi';
-import { ProviderLogo } from '../ui/ProviderLogo';
+import { AgentModelPair } from '../../api/planIssuesApi';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
+import { AgentModelPairWithDisplay } from './agentModelSelectorUtils';
+import { MultiSelectMode, SingleSelectMode } from './AgentModelSelectorParts';
 
 interface AgentModelSelectorProps {
   agents: AgentConfig[];
@@ -13,6 +14,15 @@ interface AgentModelSelectorProps {
   disabled?: boolean;
   compact?: boolean;
   className?: string;
+  /** Multi-select mode support */
+  isMulti?: boolean;
+  onMultiToggle?: (isMulti: boolean) => void;
+  selectedModels?: AgentModelPair[];
+  onMultiModelChange?: (models: AgentModelPair[]) => void;
+  /** Callback when user confirms multi-selection */
+  onMultiConfirm?: () => void;
+  /** Automatically open the multi-select dropdown when switching to multi mode */
+  autoOpenMultiDropdown?: boolean;
 }
 
 export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
@@ -23,24 +33,58 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
   onModelChange,
   disabled = false,
   compact = false,
-  className = ''
+  className = '',
+  isMulti = false,
+  onMultiToggle,
+  selectedModels = [],
+  onMultiModelChange,
+  onMultiConfirm,
+  autoOpenMultiDropdown = false
 }) => {
-  // Get enabled agents only
+  const [multiDropdownOpen, setMultiDropdownOpen] = useState(autoOpenMultiDropdown && isMulti);
+
+  // Auto-open dropdown when switching to multi mode
+  useEffect(() => {
+    if (isMulti && autoOpenMultiDropdown) {
+      setMultiDropdownOpen(true);
+    }
+  }, [isMulti, autoOpenMultiDropdown]);
+
   const enabledAgents = useMemo(() =>
     agents.filter(agent => agent.enabled),
     [agents]
   );
 
-  // Get models for the selected agent
   const availableModels = useMemo(() => {
     if (!selectedAgent) return [];
     const agent = enabledAgents.find(a => a.alias === selectedAgent);
     return agent?.supportedModels || [];
   }, [selectedAgent, enabledAgents]);
 
-  // When agent changes, reset model or set to default
+  const allAgentModelPairs = useMemo(() => {
+    const pairs: AgentModelPairWithDisplay[] = [];
+    enabledAgents.forEach(agent => {
+      (agent.supportedModels || []).forEach(modelId => {
+        const modelInfo = MODEL_INFO_MAP[modelId];
+        pairs.push({
+          agent_alias: agent.alias,
+          model_name: modelId,
+          displayName: `${agent.alias} / ${modelInfo?.name || modelId}`
+        });
+      });
+    });
+    return pairs;
+  }, [enabledAgents]);
+
   const handleAgentChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newAgent = e.target.value || null;
+    const value = e.target.value;
+
+    if (value === '__multi__') {
+      onMultiToggle?.(true);
+      return;
+    }
+
+    const newAgent = value || null;
     onAgentChange(newAgent);
 
     if (newAgent) {
@@ -61,26 +105,24 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
     onModelChange(e.target.value || null);
   };
 
-  // Get display name for model
-  const getModelDisplayName = (modelId: string): string => {
-    const modelInfo = MODEL_INFO_MAP[modelId];
-    return modelInfo?.name || modelId;
+  const handleMultiModelToggle = (pair: AgentModelPair) => {
+    if (!onMultiModelChange) return;
+    const exists = selectedModels.some(
+      m => m.agent_alias === pair.agent_alias && m.model_name === pair.model_name
+    );
+    if (exists) {
+      onMultiModelChange(selectedModels.filter(
+        m => !(m.agent_alias === pair.agent_alias && m.model_name === pair.model_name)
+      ));
+    } else {
+      onMultiModelChange([...selectedModels, pair]);
+    }
   };
 
-  const selectBaseClass = compact
-    ? 'text-xs px-2 py-1 pr-6'
-    : 'text-sm px-3 py-1.5 pr-8';
-
-  const selectClass = `
-    ${selectBaseClass}
-    appearance-none
-    bg-white
-    border border-gray-300
-    rounded-md
-    focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500
-    disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed
-    transition-colors
-  `.trim();
+  const handleBackToSingle = () => {
+    onMultiToggle?.(false);
+    onMultiModelChange?.([]);
+  };
 
   if (enabledAgents.length === 0) {
     return (
@@ -90,60 +132,36 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
     );
   }
 
-  return (
-    <div className={`flex items-center gap-2 ${className}`}>
-      {/* Agent Selector */}
-      <div className="relative">
-        <div className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none">
-          {selectedAgent ? (
-            <ProviderLogo
-              provider={selectedAgent}
-              className={compact ? "w-3 h-3" : "w-4 h-4"}
-            />
-          ) : null}
-        </div>
-        <select
-          value={selectedAgent || ''}
-          onChange={handleAgentChange}
-          disabled={disabled}
-          className={`${selectClass} ${selectedAgent ? (compact ? 'pl-6' : 'pl-8') : ''}`}
-          title="Select AI agent"
-        >
-          <option value="">Select Agent</option>
-          {enabledAgents.map(agent => (
-            <option key={agent.id} value={agent.alias}>
-              {agent.alias}
-            </option>
-          ))}
-        </select>
-        <ChevronDown
-          className={`absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 ${compact ? 'w-3 h-3' : 'w-4 h-4'}`}
-        />
-      </div>
+  if (isMulti) {
+    return (
+      <MultiSelectMode
+        compact={compact}
+        disabled={disabled}
+        className={className}
+        selectedModels={selectedModels}
+        allAgentModelPairs={allAgentModelPairs}
+        multiDropdownOpen={multiDropdownOpen}
+        setMultiDropdownOpen={setMultiDropdownOpen}
+        onMultiModelToggle={handleMultiModelToggle}
+        onBackToSingle={handleBackToSingle}
+        onConfirm={onMultiConfirm}
+      />
+    );
+  }
 
-      {/* Model Selector */}
-      {selectedAgent && availableModels.length > 0 && (
-        <div className="relative">
-          <select
-            value={selectedModel || ''}
-            onChange={handleModelChange}
-            disabled={disabled}
-            className={selectClass}
-            title="Select model"
-          >
-            <option value="">Select Model</option>
-            {availableModels.map(modelId => (
-              <option key={modelId} value={modelId}>
-                {getModelDisplayName(modelId)}
-              </option>
-            ))}
-          </select>
-          <ChevronDown
-            className={`absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 ${compact ? 'w-3 h-3' : 'w-4 h-4'}`}
-          />
-        </div>
-      )}
-    </div>
+  return (
+    <SingleSelectMode
+      compact={compact}
+      disabled={disabled}
+      className={className}
+      selectedAgent={selectedAgent}
+      selectedModel={selectedModel}
+      enabledAgents={enabledAgents}
+      availableModels={availableModels}
+      onAgentChange={handleAgentChange}
+      onModelChange={handleModelChange}
+      showMultiOption={!!onMultiToggle && enabledAgents.length > 0}
+    />
   );
 };
 

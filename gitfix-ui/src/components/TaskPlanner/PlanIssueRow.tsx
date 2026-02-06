@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -9,7 +9,7 @@ import {
   Loader2,
   Eye
 } from 'lucide-react';
-import { PlanIssue, PlanIssueStatus, STATUS_CONFIG } from '../../api/planIssuesApi';
+import { PlanIssue, PlanIssueStatus, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
 import { AgentConfig } from '../../api/gitfixApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
@@ -19,12 +19,20 @@ interface PlanIssueRowProps {
   issue: PlanIssue;
   issueTitle?: string;
   agents: AgentConfig[];
-  onImplement: (issueNumber: number) => void;
+  onImplement: (issueNumber: number, models?: AgentModelPair[]) => void;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
   implementing?: boolean;
   isFirstPending?: boolean;
-  onImplementWithWarning?: (issueNumber: number) => void;
+  onImplementWithWarning?: (issueNumber: number, models?: AgentModelPair[]) => void;
+  /** Inherited multi-mode state from parent (e.g., applied from global selection) */
+  inheritedIsMulti?: boolean;
+  /** Inherited selected models from parent (e.g., applied from global selection) */
+  inheritedSelectedModels?: AgentModelPair[];
+  /** Callback when multi-mode is toggled */
+  onMultiToggle?: (isMulti: boolean) => void;
+  /** Callback when multi-model selection changes */
+  onMultiModelChange?: (models: AgentModelPair[]) => void;
 }
 
 const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) => {
@@ -169,6 +177,53 @@ const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (
   </Link>
 );
 
+const getContainerClassName = (isMerged: boolean): string =>
+  isMerged ? 'bg-gray-50 border-gray-200' : 'bg-white border-gray-200';
+
+const getTitleClassName = (isMerged: boolean): string =>
+  isMerged ? 'text-gray-500' : 'text-gray-600';
+
+interface IssueMetadataProps {
+  issue: PlanIssue;
+  isPending: boolean;
+  isProcessing: boolean;
+  /** Selected models for multi-agent implementation */
+  selectedModels?: AgentModelPair[];
+}
+
+const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, isProcessing, selectedModels }) => {
+  const prUrl = issue.pr_number
+    ? `https://github.com/${issue.repository}/pull/${issue.pr_number}`
+    : null;
+  const showProgressLink = isProcessing && issue.task_id;
+  // Show multi-agent info during processing if we have selected models
+  const showMultiAgentInfo = !isPending && selectedModels && selectedModels.length > 0;
+  // Show single agent info only if we're not showing multi-agent and we have an agent
+  const showAgentInfo = !isPending && !showMultiAgentInfo && issue.agent_alias;
+
+  return (
+    <div className="flex items-center gap-4 mt-2 text-xs">
+      {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
+      {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
+      {issue.followup_count > 0 && <FollowupCount count={issue.followup_count} />}
+      {showMultiAgentInfo && (
+        <div className="flex items-center gap-1 flex-wrap">
+          {selectedModels.map((m, idx) => (
+            <span key={`${m.agent_alias}-${m.model_name}`} className="flex items-center gap-1 text-gray-500">
+              {idx > 0 && <span className="text-gray-300 mx-1">|</span>}
+              <ProviderLogo provider={m.agent_alias} className="w-3 h-3" />
+              <span>{getModelName(m.model_name)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {showAgentInfo && (
+        <AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} />
+      )}
+    </div>
+  );
+};
+
 export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   issue,
   issueTitle,
@@ -178,31 +233,47 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   onModelChange,
   implementing = false,
   isFirstPending = true,
-  onImplementWithWarning
+  onImplementWithWarning,
+  inheritedIsMulti,
+  inheritedSelectedModels,
+  onMultiToggle: onMultiToggleProp,
+  onMultiModelChange: onMultiModelChangeProp
 }) => {
+  // Use inherited state from parent if available, otherwise fall back to local state
+  const isMultiMode = inheritedIsMulti ?? false;
+  const selectedModels = useMemo(
+    () => inheritedSelectedModels ?? [],
+    [inheritedSelectedModels]
+  );
+
   const isPending = issue.status === 'pending';
   const isActive = STATUS_CONFIG[issue.status]?.isActive || false;
   const isMerged = issue.status === 'merged';
   const isProcessing = issue.status === 'processing' || issue.status === 'refinement_processing';
-  const showProgressLink = isProcessing && issue.task_id;
 
   const issueUrl = `https://github.com/${issue.repository}/issues/${issue.issue_number}`;
-  const prUrl = issue.pr_number
-    ? `https://github.com/${issue.repository}/pull/${issue.pr_number}`
-    : null;
 
-  const containerClassName = isMerged
-    ? 'bg-gray-50 border-gray-200'
-    : 'bg-white border-gray-200';
+  const hasAgent = isMultiMode ? selectedModels.length > 0 : !!issue.agent_alias;
 
-  const titleClassName = isMerged ? 'text-gray-500' : 'text-gray-600';
-  const showAgentInfo = !isPending && issue.agent_alias;
+  const handleMultiToggle = useCallback((multi: boolean) => {
+    onMultiToggleProp?.(multi);
+  }, [onMultiToggleProp]);
+
+  const handleMultiModelChange = useCallback((models: AgentModelPair[]) => {
+    onMultiModelChangeProp?.(models);
+  }, [onMultiModelChangeProp]);
+
+  const handleImplementClick = useCallback(() => {
+    const models = isMultiMode && selectedModels.length > 0 ? selectedModels : undefined;
+    const handler = isFirstPending || !onImplementWithWarning ? onImplement : onImplementWithWarning;
+    handler(issue.issue_number, models);
+  }, [isMultiMode, selectedModels, isFirstPending, onImplementWithWarning, onImplement, issue.issue_number]);
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`border rounded-lg overflow-hidden ${containerClassName}`}
+      className={`border rounded-lg ${getContainerClassName(isMerged)}`}
     >
       <div className="p-4">
         <div className="flex items-start justify-between gap-4">
@@ -221,19 +292,12 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
             </div>
 
             {issueTitle && (
-              <p className={`text-sm ${titleClassName} truncate`}>
+              <p className={`text-sm ${getTitleClassName(isMerged)} truncate`}>
                 {issueTitle}
               </p>
             )}
 
-            <div className="flex items-center gap-4 mt-2 text-xs">
-              {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
-              {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
-              {issue.followup_count > 0 && <FollowupCount count={issue.followup_count} />}
-              {showAgentInfo && (
-                <AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} />
-              )}
-            </div>
+            <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} selectedModels={selectedModels} />
           </div>
 
           <div className="flex items-center gap-3 flex-shrink-0">
@@ -246,21 +310,20 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
                 onModelChange={(model) => onModelChange(issue.issue_number, model)}
                 disabled={implementing}
                 compact
+                isMulti={isMultiMode}
+                onMultiToggle={handleMultiToggle}
+                selectedModels={selectedModels}
+                onMultiModelChange={handleMultiModelChange}
+                onMultiConfirm={handleImplementClick}
               />
             )}
 
             {isPending && (
               <ImplementButton
                 implementing={implementing}
-                hasAgent={!!issue.agent_alias}
+                hasAgent={hasAgent}
                 isFirstPending={isFirstPending}
-                onClick={() => {
-                  if (isFirstPending || !onImplementWithWarning) {
-                    onImplement(issue.issue_number);
-                  } else {
-                    onImplementWithWarning(issue.issue_number);
-                  }
-                }}
+                onClick={handleImplementClick}
               />
             )}
 
