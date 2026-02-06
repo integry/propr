@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTasks, getAvailableGithubRepos } from '../api/gitfixApi';
+import { getTasks, getRepoConfig, type MonitoredRepo } from '../api/gitfixApi';
 import type { Task, TaskListProps, LoadConfig, TaskGroup } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';
@@ -32,8 +32,22 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     const fetchRepos = async () => {
       try {
         setReposLoading(true);
-        const data = await getAvailableGithubRepos();
-        setAvailableRepos(['all', ...(data.repos || []).sort()]);
+        const config = await getRepoConfig();
+        const reposToMonitor = config.repos_to_monitor || [];
+        
+        // Filter enabled repos and handle potential legacy string format
+        const enabledRepoNames = (reposToMonitor as (MonitoredRepo | string)[])
+          .filter(repo => {
+            if (typeof repo === 'string') return true; // Legacy strings are assumed enabled
+            return repo.enabled;
+          })
+          .map(repo => {
+            if (typeof repo === 'string') return repo;
+            return repo.name;
+          });
+
+        const uniqueRepos = Array.from(new Set(enabledRepoNames)).sort();
+        setAvailableRepos(['all', ...uniqueRepos]);
       } catch (err) {
         console.error('Error fetching repositories:', err);
       } finally {
