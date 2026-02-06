@@ -28,7 +28,7 @@ export function createGenerateHandler(db: Knex) {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    const { draftId, baseBranch, granularity, contextLevel, compress, contextRepositories } = req.body as GenerateRequestBody;
+    const { draftId, baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel } = req.body as GenerateRequestBody;
     if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
 
     // Validate context repositories if provided
@@ -59,7 +59,7 @@ export function createGenerateHandler(db: Knex) {
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
       const worktreePath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken });
 
-      await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories });
+      await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel });
 
       await db('task_drafts').where({ draft_id: draftId }).update({
         status: 'generating',

@@ -49,7 +49,8 @@ export class CodexAgent implements Agent {
             issueDetails,
             onSessionId,
             onContainerId,
-            githubToken
+            githubToken,
+            taskId
         } = options;
 
         const startTime = Date.now();
@@ -99,7 +100,9 @@ export class CodexAgent implements Agent {
                 onSessionId,
                 onContainerId,
                 worktreePath,
-                stdinData: prompt
+                stdinData: prompt,
+                taskId,
+                streamToRedis: true
             });
 
             const executionTime = Date.now() - startTime;
@@ -133,7 +136,8 @@ export class CodexAgent implements Agent {
                 commitMessage: null,
                 summary: parsedOutput.result ?? undefined,
                 prompt,
-                error: parsedOutput.error
+                error: parsedOutput.error,
+                tokenUsage: parsedOutput.tokenUsage
             };
 
             // Store prompt in Redis for audit trail
@@ -235,7 +239,8 @@ export class CodexAgent implements Agent {
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel,
-                issueNumber: 0
+                issueNumber: 0,
+                jsonOutput: false // Plain text output for lightweight analysis
             });
 
             const result = await executeDockerCommand('docker', dockerArgs, {
@@ -244,10 +249,8 @@ export class CodexAgent implements Agent {
                 taskId // Pass taskId for abort signal checking
             });
 
-            const parsedOutput = parseCodexStreamOutput(result.stdout);
-
-            if (parsedOutput.success || parsedOutput.result) {
-                const analysisText = (parsedOutput.result || '').trim();
+            if (result.exitCode === 0 || result.stdout) {
+                const analysisText = (result.stdout || '').trim();
                 logger.info({
                     agentAlias: this.config.alias,
                     responseLength: analysisText.length,
@@ -305,12 +308,14 @@ export class CodexAgent implements Agent {
         githubToken: string;
         modelName?: string;
         issueNumber: number;
+        jsonOutput?: boolean;
     }): string[] {
         const {
             worktreePath,
             githubToken,
             modelName,
-            issueNumber
+            issueNumber,
+            jsonOutput = true
         } = params;
 
         const dockerImage = this.config.dockerImage;
@@ -342,7 +347,7 @@ export class CodexAgent implements Agent {
             dockerImage,
             // Codex CLI arguments
             'codex', 'exec',
-            '--json',                    // Output newline-delimited JSON events
+            ...(jsonOutput ? ['--json'] : []), // Output NDJSON events (for task execution) or plain text (for analysis)
             '--full-auto',               // Skip manual approvals
             '--skip-git-repo-check',     // Allow running outside git repos (for analysis workspace)
             '--sandbox', 'workspace-write', // Allow file edits in workspace

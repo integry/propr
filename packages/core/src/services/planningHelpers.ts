@@ -100,6 +100,8 @@ export interface TaskDraftConfig {
   contextRepositories?: ContextRepository[];
   /** Cached context to avoid regeneration */
   contextCache?: ContextCache;
+  /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') - overrides global setting */
+  generationModel?: string;
 }
 
 export interface ParsedContextConfig {
@@ -112,18 +114,23 @@ export interface ParsedContextConfig {
   autoFiles: string[];
   /** Additional repositories to include as reference context only */
   contextRepositories: ContextRepository[];
+  /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
+  generationModel?: string;
 }
 
 export function parseContextConfig(contextConfig: TaskDraftConfig | null, modelId?: string): ParsedContextConfig {
+  // Use draft's generationModel if set, otherwise fall back to provided modelId
+  const effectiveModelId = contextConfig?.generationModel || modelId;
   return {
     baseBranch: contextConfig?.baseBranch,
     granularity: contextConfig?.granularity || 'balanced',
     contextLevel: contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL,
     compress: contextConfig?.compress ?? false,
-    tokenLimit: getEffectiveTokenLimit(modelId, contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL),
+    tokenLimit: getEffectiveTokenLimit(effectiveModelId, contextConfig?.contextLevel ?? DEFAULT_CONTEXT_LEVEL),
     manualFiles: contextConfig?.manualFiles || [],
     autoFiles: contextConfig?.autoFiles || [],
-    contextRepositories: contextConfig?.contextRepositories || []
+    contextRepositories: contextConfig?.contextRepositories || [],
+    generationModel: contextConfig?.generationModel
   };
 }
 

@@ -177,6 +177,8 @@ export interface GenerateRequestBody {
   contextLevel?: number;
   compress?: boolean;
   contextRepositories?: ContextRepositoryInput[];
+  /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
+  generationModel?: string;
 }
 
 export function validatePreviewInput(body: Record<string, unknown>): { valid: boolean; error?: string } {
@@ -218,7 +220,7 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
     const validation = deps.validateInput(req.body);
     if (!validation.valid) { res.status(400).json({ error: validation.error }); return; }
 
-    const { draftId, prompt, baseBranch, granularity, contextLevel, compress, files, contextRepositories } = req.body;
+    const { draftId, prompt, baseBranch, granularity, contextLevel, compress, files, contextRepositories, generationModel: requestGenerationModel } = req.body;
     const correlationId = generateCorrelationId();
 
     try {
@@ -238,10 +240,12 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
       // Load settings to get the configured context model for semantic scoring and generation model for limits
       const settings = await loadSettings();
       const contextModel = settings.planner_context_model;
-      const generationModel = settings.planner_generation_model;
+      // Use request's generationModel if provided, otherwise use global setting
+      const generationModel = requestGenerationModel || settings.planner_generation_model;
 
-      // Store context repositories in draft config if provided
-      if (deps.db && contextRepositories && Array.isArray(contextRepositories) && contextRepositories.length > 0) {
+      // Store context repositories and generationModel in draft config if provided
+      const hasConfigUpdates = contextRepositories || requestGenerationModel;
+      if (deps.db && hasConfigUpdates) {
         const existingConfig = (draft.context_config as Record<string, unknown>) || {};
         const updatedConfig = {
           ...existingConfig,
@@ -249,7 +253,8 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
           granularity: granularity || 'balanced',
           contextLevel,
           compress,
-          contextRepositories
+          ...(contextRepositories && { contextRepositories }),
+          ...(requestGenerationModel && { generationModel: requestGenerationModel })
         };
         await deps.db('task_drafts').where({ draft_id: draftId }).update({
           context_config: JSON.stringify(updatedConfig),
@@ -441,9 +446,9 @@ export async function updateDraftContextConfig(
   draft: Record<string, unknown>,
   body: GenerateRequestBody
 ): Promise<void> {
-  const { baseBranch, granularity, contextLevel, compress, contextRepositories } = body;
+  const { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel } = body;
   const hasUpdates = baseBranch || granularity || contextLevel !== undefined ||
-                     compress !== undefined || contextRepositories !== undefined;
+                     compress !== undefined || contextRepositories !== undefined || generationModel !== undefined;
   if (!hasUpdates) return;
 
   // Parse context_config if it's a JSON string (stored as text in SQLite)
@@ -463,7 +468,8 @@ export async function updateDraftContextConfig(
     ...(granularity && VALID_GRANULARITIES.includes(granularity as typeof VALID_GRANULARITIES[number]) && { granularity }),
     ...(contextLevel !== undefined && { contextLevel }),
     ...(compress !== undefined && { compress }),
-    ...(contextRepositories !== undefined && { contextRepositories })
+    ...(contextRepositories !== undefined && { contextRepositories }),
+    ...(generationModel !== undefined && { generationModel })
   };
   await db('task_drafts').where({ draft_id: draftId }).update({
     context_config: JSON.stringify(updatedConfig),

@@ -48,6 +48,7 @@ export interface CodexOutput {
     sessionId?: string;
     conversationId?: string;
     model?: string;
+    tokenUsage?: { input_tokens?: number; output_tokens?: number };
 }
 
 export interface StoreCodexPromptOptions {
@@ -118,6 +119,7 @@ interface ParseState {
     sessionId: string | undefined;
     conversationId: string | undefined;
     model: string | undefined;
+    tokenUsage: { input_tokens: number; output_tokens: number };
 }
 
 function handleItemCompleted(event: CodexEvent, state: ParseState): void {
@@ -145,12 +147,29 @@ function handleResultEvent(event: CodexEvent, state: ParseState): void {
     }
 }
 
-function processEvent(event: CodexEvent, state: ParseState): void {
-    // Capture metadata from various event types
+function captureEventMetadata(event: CodexEvent, state: ParseState): void {
     if (event.session_id) state.sessionId = event.session_id;
     if (event.conversation_id) state.conversationId = event.conversation_id;
     if (event.thread_id && !state.sessionId) state.sessionId = event.thread_id;
     if (event.model) state.model = event.model;
+}
+
+function handleTurnCompleted(event: CodexEvent, state: ParseState): void {
+    state.logs += `[${event.type}]\n`;
+    if (event.usage) {
+        state.tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
+        state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
+    }
+}
+
+function handleErrorEvent(event: CodexEvent, state: ParseState): void {
+    state.isError = true;
+    state.errorMessage = event.message;
+    state.logs += `[Error] ${event.message}\n`;
+}
+
+function processEvent(event: CodexEvent, state: ParseState): void {
+    captureEventMetadata(event, state);
 
     switch (event.type) {
         case 'item.completed':
@@ -166,19 +185,18 @@ function processEvent(event: CodexEvent, state: ParseState): void {
             state.logs += `[Tool] ${event.tool} params: ${JSON.stringify(event.params)}\n`;
             break;
         case 'error':
-            state.isError = true;
-            state.errorMessage = event.message;
-            state.logs += `[Error] ${event.message}\n`;
+            handleErrorEvent(event, state);
             break;
         case 'result':
             handleResultEvent(event, state);
             break;
         case 'turn.started':
-        case 'turn.completed':
             state.logs += `[${event.type}]\n`;
             break;
+        case 'turn.completed':
+            handleTurnCompleted(event, state);
+            break;
         case 'item.started':
-            // Skip item.started as it's just a progress indicator
             break;
         default:
             state.logs += `[${event.type || 'unknown'}] ${JSON.stringify(event)}\n`;
@@ -194,7 +212,8 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
         errorMessage: undefined,
         sessionId: undefined,
         conversationId: undefined,
-        model: undefined
+        model: undefined,
+        tokenUsage: { input_tokens: 0, output_tokens: 0 }
     };
     const conversationLog: CodexEvent[] = [];
 
@@ -220,7 +239,8 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
         conversationLog,
         sessionId: state.sessionId,
         conversationId: state.conversationId,
-        model: state.model
+        model: state.model,
+        tokenUsage: (state.tokenUsage.input_tokens || state.tokenUsage.output_tokens) ? state.tokenUsage : undefined
     };
 }
 

@@ -578,11 +578,11 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   if (!db) throw new PlanningFailedError('Database not available');
 
-  // Load planner models from settings
+  // Load planner models from settings (used as defaults)
   const settings = await loadSettings();
   const contextModel = settings.planner_context_model || DEFAULT_CONTEXT_MODEL;
-  const generationModel = settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
-  correlatedLogger.info({ draftId, contextModel, generationModel }, 'Starting plan generation');
+  const defaultGenerationModel = settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
+  correlatedLogger.info({ draftId, contextModel, defaultGenerationModel }, 'Starting plan generation');
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
@@ -595,10 +595,12 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const attachmentTokens = imageTokens + textAttachmentTokens;
   correlatedLogger.info({ attachmentCount: attachments.length, imageCount: base64Images.length, imageTokens, textAttachmentTokens, attachmentTokens }, 'Loaded attachments from draft');
 
-  // Parse context_config
+  // Parse context_config - generationModel from draft config takes priority over global setting
   const parsedContextConfig = parseDraftContextConfig(draft.context_config, draftId, correlatedLogger);
-  const config = parseContextConfig(parsedContextConfig, generationModel);
-  correlatedLogger.info({ draftId, granularity: config.granularity, contextLevel: config.contextLevel, tokenLimit: config.tokenLimit, rawContextLevel: parsedContextConfig?.contextLevel }, 'Parsed context config for plan generation');
+  const config = parseContextConfig(parsedContextConfig, defaultGenerationModel);
+  // Use the effective generation model: draft config > global setting
+  const generationModel = config.generationModel || defaultGenerationModel;
+  correlatedLogger.info({ draftId, granularity: config.granularity, contextLevel: config.contextLevel, tokenLimit: config.tokenLimit, rawContextLevel: parsedContextConfig?.contextLevel, generationModel, draftGenerationModel: config.generationModel }, 'Parsed context config for plan generation');
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 
   const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId, contextModel });

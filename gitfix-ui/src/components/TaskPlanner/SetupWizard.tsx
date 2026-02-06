@@ -5,10 +5,12 @@ import {
   generatePlan,
   getRepositoryInfo,
   abortGeneration,
+  getAgents,
   PlannerDraft,
   PlannerAttachment,
   Granularity,
-  ContextRepository
+  ContextRepository,
+  AgentConfig
 } from '../../api/gitfixApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { getPlannerSettings, savePlannerSettings } from '../../hooks/usePlannerSettings';
@@ -35,6 +37,8 @@ interface PlannerConfig {
   compress: boolean;
   files: PlannerAttachment[];
   contextRepositories: ContextRepository[];
+  /** Model selection for plan generation (format: "agent:modelId" or just "modelAlias") */
+  generationModel: string | null;
 }
 
 interface RepoInfoState {
@@ -53,8 +57,11 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     contextLevel: savedSettings.lastContextLevel,
     compress: false,
     files: draft.attachments || [],
-    contextRepositories: []
+    contextRepositories: [],
+    generationModel: null
   });
+
+  const [agents, setAgents] = useState<AgentConfig[]>([]);
 
   const [availableRepos, setAvailableRepos] = useState<IndexedRepository[]>([]);
   const [repoInfo, setRepoInfo] = useState<RepoInfoState>({ isLoading: true, branches: [], error: null });
@@ -111,6 +118,19 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     };
     loadAvailableRepos();
   }, [draft.repository]);
+
+  // Fetch available agents for model selection
+  useEffect(() => {
+    const loadAgents = async () => {
+      try {
+        const data = await getAgents();
+        setAgents(data.agents || []);
+      } catch (err) {
+        console.error('Failed to load agents:', err);
+      }
+    };
+    loadAgents();
+  }, []);
 
   useEffect(() => {
     savePlannerSettings({ lastGranularity: config.granularity, lastContextLevel: config.contextLevel });
@@ -186,7 +206,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       if (isContextStale) { clearCountdown(); await fetchPreview(); }
       await generatePlan(draft.draft_id, {
         baseBranch: config.baseBranch, granularity: config.granularity, contextLevel: config.contextLevel,
-        compress: config.compress, contextRepositories: config.contextRepositories
+        compress: config.compress, contextRepositories: config.contextRepositories,
+        generationModel: config.generationModel || undefined
       });
       startPolling();
     } catch (err) {
@@ -223,6 +244,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           onCompressChange={(compress) => setConfig(prev => ({ ...prev, compress }))}
           contextRepositories={config.contextRepositories} availableRepos={availableRepos}
           onAddContextRepo={handleAddContextRepo} onRemoveContextRepo={handleRemoveContextRepo}
+          agents={agents} generationModel={config.generationModel}
+          onGenerationModelChange={(generationModel) => setConfig(prev => ({ ...prev, generationModel }))}
           preview={preview} isContextStale={isContextStale} timeUntilRefresh={timeUntilRefresh}
           isPaused={isPaused} onTogglePause={togglePause}
           onManualRefresh={handleManualRefresh} error={error} generationError={generationError}
