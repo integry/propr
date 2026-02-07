@@ -668,6 +668,75 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   return validatedPlan;
 }
 
+/**
+ * Parse LLM response into a RefinementResponse, handling various response formats.
+ * Wraps plain arrays and applies default values for missing fields.
+ */
+function parseRefinementResponse(
+  response: string,
+  correlatedLogger: typeof logger
+): RefinementResponse {
+  const parsed = parseLlmJson<RefinementResponse | PlanItem[]>(response);
+
+  // Check if LLM returned a plain array instead of structured response
+  if (Array.isArray(parsed)) {
+    correlatedLogger.warn('LLM returned plain array instead of structured response, wrapping');
+    return {
+      action: 'modified',
+      summary: 'Plan updated based on your instruction.',
+      plan: parsed
+    };
+  }
+
+  correlatedLogger.info({
+    parsedKeys: Object.keys(parsed),
+    hasPlan: 'plan' in parsed,
+    planIsArray: Array.isArray(parsed.plan)
+  }, 'Parsed refinement response structure');
+
+  return parsed;
+}
+
+/**
+ * Validate and normalize a RefinementResponse, ensuring it has required fields.
+ * Handles alternative keys that LLMs might use for the plan array.
+ */
+function validateRefinementResponse(
+  refinementResponse: RefinementResponse,
+  correlatedLogger: typeof logger
+): RefinementResponse {
+  // Handle alternative keys for plan array
+  if (!refinementResponse.plan || !Array.isArray(refinementResponse.plan)) {
+    const altKeys = ['tasks', 'items', 'issues', 'changes'] as const;
+    const responseObj = refinementResponse as unknown as Record<string, unknown>;
+    for (const key of altKeys) {
+      if (Array.isArray(responseObj[key])) {
+        correlatedLogger.warn({ foundKey: key }, 'LLM used alternative key for plan array, remapping');
+        refinementResponse.plan = responseObj[key] as PlanItem[];
+        break;
+      }
+    }
+  }
+
+  // Validate plan array exists
+  if (!refinementResponse.plan || !Array.isArray(refinementResponse.plan)) {
+    correlatedLogger.error({
+      refinementResponse: JSON.stringify(refinementResponse).substring(0, 500)
+    }, 'Invalid refinement response structure');
+    throw new PlanningFailedError('Refined plan is not a valid array');
+  }
+
+  // Apply defaults for missing fields
+  if (!refinementResponse.action || !['modified', 'answered', 'clarify'].includes(refinementResponse.action)) {
+    refinementResponse.action = 'modified';
+  }
+  if (!refinementResponse.summary || typeof refinementResponse.summary !== 'string') {
+    refinementResponse.summary = 'Plan processed.';
+  }
+
+  return refinementResponse;
+}
+
 export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlanResult> {
   const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId, originalContext } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -693,54 +762,16 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
 
   let refinementResponse: RefinementResponse;
   try {
-    const parsed = parseLlmJson<RefinementResponse | PlanItem[]>(response);
-
-    // Check if LLM returned a plain array instead of structured response
-    if (Array.isArray(parsed)) {
-      correlatedLogger.warn('LLM returned plain array instead of structured response, wrapping');
-      refinementResponse = {
-        action: 'modified',
-        summary: 'Plan updated based on your instruction.',
-        plan: parsed
-      };
-    } else {
-      refinementResponse = parsed;
-      correlatedLogger.info({ parsedKeys: Object.keys(refinementResponse), hasPlan: 'plan' in refinementResponse, planIsArray: Array.isArray(refinementResponse.plan) }, 'Parsed refinement response structure');
-    }
+    refinementResponse = parseRefinementResponse(response, correlatedLogger);
   } catch (error) {
     if (error instanceof JsonParseError) {
       correlatedLogger.error({ error: error.message, responsePreview: response.substring(0, 500) }, 'Failed to parse refined plan');
       throw new PlanningFailedError(`Failed to parse refined plan: ${error.message}`);
-    } else {
-      throw error;
     }
+    throw error;
   }
 
-  // Validate the response structure - handle different LLM response formats
-  if (!refinementResponse.plan || !Array.isArray(refinementResponse.plan)) {
-    // Try common alternative keys that LLMs might use
-    const altKeys = ['tasks', 'items', 'issues', 'changes'] as const;
-    const responseObj = refinementResponse as unknown as Record<string, unknown>;
-    for (const key of altKeys) {
-      if (Array.isArray(responseObj[key])) {
-        correlatedLogger.warn({ foundKey: key }, 'LLM used alternative key for plan array, remapping');
-        refinementResponse.plan = responseObj[key] as PlanItem[];
-        break;
-      }
-    }
-
-    // If still no plan array, check if the response itself is an array (shouldn't happen here but be safe)
-    if (!refinementResponse.plan || !Array.isArray(refinementResponse.plan)) {
-      correlatedLogger.error({ refinementResponse: JSON.stringify(refinementResponse).substring(0, 500) }, 'Invalid refinement response structure');
-      throw new PlanningFailedError('Refined plan is not a valid array');
-    }
-  }
-  if (!refinementResponse.action || !['modified', 'answered', 'clarify'].includes(refinementResponse.action)) {
-    refinementResponse.action = 'modified'; // Default to modified if action is missing
-  }
-  if (!refinementResponse.summary || typeof refinementResponse.summary !== 'string') {
-    refinementResponse.summary = 'Plan processed.'; // Default summary if missing
-  }
+  refinementResponse = validateRefinementResponse(refinementResponse, correlatedLogger);
 
   correlatedLogger.info({
     taskCount: refinementResponse.plan.length,
