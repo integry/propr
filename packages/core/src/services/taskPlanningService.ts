@@ -413,7 +413,7 @@ export interface RefinePlanOptions {
 
 export interface RefinePlanResult {
   plan: Plan;
-  action: 'modified' | 'answered' | 'both';
+  action: 'modified' | 'answered' | 'clarify';
   summary: string;
 }
 
@@ -735,7 +735,7 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
       throw new PlanningFailedError('Refined plan is not a valid array');
     }
   }
-  if (!refinementResponse.action || !['modified', 'answered', 'both'].includes(refinementResponse.action)) {
+  if (!refinementResponse.action || !['modified', 'answered', 'clarify'].includes(refinementResponse.action)) {
     refinementResponse.action = 'modified'; // Default to modified if action is missing
   }
   if (!refinementResponse.summary || typeof refinementResponse.summary !== 'string') {
