@@ -281,114 +281,133 @@ export const buildClaudeDockerImage = buildDockerImageInternal;
 
 export { generateTaskImportPrompt };
 
-export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, worktreePath, githubToken, issueRef, taskId, executionType = 'lightweight-analysis' } = options;
-    const correlatedLogger = logger.withCorrelation(correlationId);
+interface ParsedModelInfo {
+    agentAlias?: string;
+    modelOverride?: string;
+    effectiveModel: string;
+}
 
-    // Parse model which may be in format "agent_alias:model" or just "model"
-    let agentAlias: string | undefined;
-    let modelOverride: string | undefined;
-    let effectiveModel = model;
-
+function parseAgentModelFormat(model: string, correlatedLogger: ReturnType<typeof logger.withCorrelation>): ParsedModelInfo {
     if (model && model.includes(':')) {
         const parts = model.split(':');
-        agentAlias = parts[0];
-        modelOverride = parts.slice(1).join(':'); // Handle model IDs that might contain colons
-        effectiveModel = modelOverride;
+        const agentAlias = parts[0];
+        const modelOverride = parts.slice(1).join(':'); // Handle model IDs that might contain colons
         correlatedLogger.info({ model, agentAlias, modelOverride }, 'Parsed agent:model format for lightweight analysis');
+        return { agentAlias, modelOverride, effectiveModel: modelOverride };
+    }
+    return { effectiveModel: model };
+}
+
+interface AgentExecutionParams {
+    agentAlias: string;
+    modelOverride?: string;
+    prompt: string;
+    taskId?: string;
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>;
+}
+
+async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<string | null> {
+    const { agentAlias, modelOverride, prompt, taskId, correlatedLogger } = params;
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+
+    const agent = registry.getAgentByAlias(agentAlias);
+    if (!agent) {
+        correlatedLogger.warn({ agentAlias }, 'Agent not found, falling back to default execution');
+        return null;
     }
 
-    // If an agent alias was specified, use the AgentRegistry to get the appropriate agent
+    const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
+    correlatedLogger.info({ agentAlias, resolvedModel, taskId }, 'Using agent-specific lightweight LLM analysis');
+    return await agent.analyze(prompt, undefined, resolvedModel, taskId);
+}
+
+async function executeClaudeAnalysis(
+    options: RunLightweightLLMAnalysisOptions,
+    resolvedModel: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<string> {
+    const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, executionType = 'lightweight-analysis', model } = options;
+
+    const analysisPrompt = `${prompt}
+
+CRITICAL: Do not modify any files. Do not run any commands. Only provide direct output.`;
+
+    const claudeResult = await executeClaudeCode({
+        worktreePath: worktreePath,
+        issueRef: issueRef,
+        githubToken: githubToken,
+        customPrompt: analysisPrompt,
+        branchName: 'analysis-generation',
+        modelName: resolvedModel,
+        systemPrompt: LIGHTWEIGHT_SYSTEM_PROMPT,
+        tools: LIGHTWEIGHT_TOOLS
+    });
+
+    await recordLLMMetrics(
+        {
+            model: claudeResult.model ?? resolvedModel,
+            success: claudeResult.success,
+            executionTime: claudeResult.executionTime,
+            sessionId: claudeResult.sessionId,
+            conversationId: claudeResult.conversationId,
+            conversationLog: claudeResult.conversationLog as unknown as ConversationStep[],
+            tokenUsage: claudeResult.tokenUsage,
+            finalResult: claudeResult.finalResult ? {
+                num_turns: claudeResult.conversationLog?.length ?? 0,
+                cost_usd: undefined
+            } : null,
+            error: claudeResult.error
+        },
+        issueRef,
+        { correlationId, taskId, executionType }
+    );
+
+    if (claudeResult.finalResult?.result || claudeResult.summary) {
+        const analysisText = (claudeResult.finalResult?.result || claudeResult.summary)!.trim();
+        correlatedLogger.info({
+            model,
+            responseLength: analysisText.length,
+            exitCode: claudeResult.exitCode
+        }, 'Lightweight LLM analysis completed via Docker');
+        return analysisText;
+    }
+
+    correlatedLogger.error({
+        exitCode: claudeResult.exitCode,
+        rawOutputLength: claudeResult.rawOutput?.length,
+        rawOutputPreview: claudeResult.rawOutput?.substring(0, 500),
+        logs: claudeResult.logs?.substring(0, 500),
+        finalResult: claudeResult.finalResult
+    }, 'Claude execution did not produce valid result');
+
+    throw new Error(`Invalid analysis response from Claude execution: ${claudeResult.error || 'No result returned'}`);
+}
+
+export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
+    const { prompt, model, correlationId, taskId } = options;
+    const correlatedLogger = logger.withCorrelation(correlationId);
+
+    const { agentAlias, modelOverride, effectiveModel } = parseAgentModelFormat(model, correlatedLogger);
+
     if (agentAlias) {
         try {
-            const registry = AgentRegistry.getInstance();
-            await registry.ensureInitialized();
-
-            const agent = registry.getAgentByAlias(agentAlias);
-            if (agent) {
-                const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
-                correlatedLogger.info({ agentAlias, resolvedModel, taskId }, 'Using agent-specific lightweight LLM analysis');
-
-                // Use the agent's analyze method with taskId for abort checking
-                return await agent.analyze(prompt, undefined, resolvedModel, taskId);
-            } else {
-                correlatedLogger.warn({ agentAlias }, 'Agent not found, falling back to default execution');
+            const result = await tryExecuteWithAgent({ agentAlias, modelOverride, prompt, taskId, correlatedLogger });
+            if (result !== null) {
+                return result;
             }
         } catch (agentError) {
             const err = agentError as Error;
-            // Don't fall back to Claude when a specific non-Claude agent was requested but failed
-            // This prevents trying to run non-Claude models through the Claude docker container
             correlatedLogger.error({ error: err.message, agentAlias }, 'Agent execution failed');
             throw new Error(`Agent '${agentAlias}' failed: ${err.message}`);
         }
     }
 
-    // Fall back to default behavior (uses Claude via executeClaudeCode)
     const resolvedModel = resolveModelAlias(effectiveModel);
-
     correlatedLogger.info({ model, resolvedModel }, 'Running lightweight LLM analysis via Docker...');
 
     try {
-        const analysisPrompt = `${prompt}
-
-CRITICAL: Do not modify any files. Do not run any commands. Only provide direct output.`;
-
-        const claudeResult = await executeClaudeCode({
-            worktreePath: worktreePath,
-            issueRef: issueRef,
-            githubToken: githubToken,
-            customPrompt: analysisPrompt,
-            branchName: 'analysis-generation',
-            modelName: resolvedModel,
-            systemPrompt: LIGHTWEIGHT_SYSTEM_PROMPT,
-            tools: LIGHTWEIGHT_TOOLS
-        });
-
-        // Record metrics for lightweight analysis
-        await recordLLMMetrics(
-            {
-                model: claudeResult.model ?? resolvedModel,
-                success: claudeResult.success,
-                executionTime: claudeResult.executionTime,
-                sessionId: claudeResult.sessionId,
-                conversationId: claudeResult.conversationId,
-                conversationLog: claudeResult.conversationLog as unknown as ConversationStep[],
-                tokenUsage: claudeResult.tokenUsage,
-                finalResult: claudeResult.finalResult ? {
-                    num_turns: claudeResult.conversationLog?.length ?? 0,
-                    cost_usd: undefined
-                } : null,
-                error: claudeResult.error
-            },
-            issueRef,
-            {
-                correlationId,
-                taskId,
-                executionType
-            }
-        );
-
-        // Check for results even if exitCode was non-zero - Claude may have produced valid output
-        if (claudeResult.finalResult?.result || claudeResult.summary) {
-            const analysisText = (claudeResult.finalResult?.result || claudeResult.summary)!.trim();
-            correlatedLogger.info({
-                model,
-                responseLength: analysisText.length,
-                exitCode: claudeResult.exitCode
-            }, 'Lightweight LLM analysis completed via Docker');
-            return analysisText;
-        }
-
-        // Log detailed error info
-        correlatedLogger.error({
-            exitCode: claudeResult.exitCode,
-            rawOutputLength: claudeResult.rawOutput?.length,
-            rawOutputPreview: claudeResult.rawOutput?.substring(0, 500),
-            logs: claudeResult.logs?.substring(0, 500),
-            finalResult: claudeResult.finalResult
-        }, 'Claude execution did not produce valid result');
-
-        throw new Error(`Invalid analysis response from Claude execution: ${claudeResult.error || 'No result returned'}`);
+        return await executeClaudeAnalysis(options, resolvedModel, correlatedLogger);
     } catch (error) {
         const err = error as Error;
         correlatedLogger.error({ error: err.message, model }, 'Lightweight LLM analysis failed');

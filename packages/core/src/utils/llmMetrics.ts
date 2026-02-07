@@ -9,7 +9,7 @@ import type {
     ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics,
     ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent,
     LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData,
-    TokenUsage, ExecutionType
+    TokenUsage
 } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
