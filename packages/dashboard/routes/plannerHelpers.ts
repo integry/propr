@@ -760,6 +760,9 @@ export function parseDraftJsonFields(draft: Record<string, unknown>): Record<str
   if (typeof parsedDraft.generation_trace === 'string') {
     try { parsedDraft.generation_trace = JSON.parse(parsedDraft.generation_trace); } catch { parsedDraft.generation_trace = null; }
   }
+  if (typeof parsedDraft.refinement_result === 'string') {
+    try { parsedDraft.refinement_result = JSON.parse(parsedDraft.refinement_result); } catch { parsedDraft.refinement_result = null; }
+  }
   parsedDraft.task_title = draft.name as string | undefined;
   return parsedDraft;
 }
