@@ -688,36 +688,52 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
 
   const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: generationModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef });
 
+  // Debug: log raw response (first 1000 chars) to diagnose parsing issues
+  correlatedLogger.info({ responsePreview: response.substring(0, 1000), responseLength: response.length }, 'Raw LLM refinement response');
+
   let refinementResponse: RefinementResponse;
   try {
-    refinementResponse = parseLlmJson<RefinementResponse>(response);
+    const parsed = parseLlmJson<RefinementResponse | PlanItem[]>(response);
+
+    // Check if LLM returned a plain array instead of structured response
+    if (Array.isArray(parsed)) {
+      correlatedLogger.warn('LLM returned plain array instead of structured response, wrapping');
+      refinementResponse = {
+        action: 'modified',
+        summary: 'Plan updated based on your instruction.',
+        plan: parsed
+      };
+    } else {
+      refinementResponse = parsed;
+      correlatedLogger.info({ parsedKeys: Object.keys(refinementResponse), hasPlan: 'plan' in refinementResponse, planIsArray: Array.isArray(refinementResponse.plan) }, 'Parsed refinement response structure');
+    }
   } catch (error) {
     if (error instanceof JsonParseError) {
-      // Fallback: try to parse as plain array for backward compatibility
-      try {
-        const plainPlan = parseLlmJson<PlanItem[]>(response);
-        if (Array.isArray(plainPlan)) {
-          correlatedLogger.warn('LLM returned plain array instead of structured response, using fallback');
-          refinementResponse = {
-            action: 'modified',
-            summary: 'Plan updated based on your instruction.',
-            plan: plainPlan
-          };
-        } else {
-          throw new PlanningFailedError('Failed to parse refined plan');
-        }
-      } catch {
-        correlatedLogger.error({ error: error.message }, 'Failed to parse refined plan');
-        throw new PlanningFailedError(`Failed to parse refined plan: ${error.message}`);
-      }
+      correlatedLogger.error({ error: error.message, responsePreview: response.substring(0, 500) }, 'Failed to parse refined plan');
+      throw new PlanningFailedError(`Failed to parse refined plan: ${error.message}`);
     } else {
       throw error;
     }
   }
 
-  // Validate the response structure
+  // Validate the response structure - handle different LLM response formats
   if (!refinementResponse.plan || !Array.isArray(refinementResponse.plan)) {
-    throw new PlanningFailedError('Refined plan is not a valid array');
+    // Try common alternative keys that LLMs might use
+    const altKeys = ['tasks', 'items', 'issues', 'changes'] as const;
+    const responseObj = refinementResponse as unknown as Record<string, unknown>;
+    for (const key of altKeys) {
+      if (Array.isArray(responseObj[key])) {
+        correlatedLogger.warn({ foundKey: key }, 'LLM used alternative key for plan array, remapping');
+        refinementResponse.plan = responseObj[key] as PlanItem[];
+        break;
+      }
+    }
+
+    // If still no plan array, check if the response itself is an array (shouldn't happen here but be safe)
+    if (!refinementResponse.plan || !Array.isArray(refinementResponse.plan)) {
+      correlatedLogger.error({ refinementResponse: JSON.stringify(refinementResponse).substring(0, 500) }, 'Invalid refinement response structure');
+      throw new PlanningFailedError('Refined plan is not a valid array');
+    }
   }
   if (!refinementResponse.action || !['modified', 'answered', 'both'].includes(refinementResponse.action)) {
     refinementResponse.action = 'modified'; // Default to modified if action is missing
