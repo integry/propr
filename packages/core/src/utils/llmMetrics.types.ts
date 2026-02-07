@@ -56,10 +56,21 @@ export interface IssueRef {
     repoName: string;
 }
 
+export type ExecutionType =
+    | 'implementation'
+    | 'plan-generation'
+    | 'plan-refinement'
+    | 'title-generation'
+    | 'summarization'
+    | 'context-analysis'
+    | 'task-analysis'
+    | 'lightweight-analysis';
+
 export interface RecordMetricsOptions {
     jobType?: string;
     correlationId?: string;
     taskId?: string | null;
+    executionType?: ExecutionType;
 }
 
 export interface ModelPricing {
@@ -103,6 +114,7 @@ export interface PersistMetrics {
     numTurns: number;
     costUsd: number;
     tokenUsage?: TokenUsage;
+    executionType?: ExecutionType;
 }
 
 export interface ConversationDetailParams {

@@ -19,6 +19,8 @@ import {
     ClaudeOutputResult,
     TokenUsage
 } from './claudeHelpers.js';
+import { recordLLMMetrics } from '../utils/llmMetrics.js';
+import type { ExecutionType, ConversationStep } from '../utils/llmMetrics.types.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
 
@@ -85,6 +87,7 @@ export interface RunLightweightLLMAnalysisOptions {
     githubToken: string;
     issueRef: IssueRef;
     taskId?: string; // For abort signal checking (e.g., draftId for planning)
+    executionType?: ExecutionType; // Type of execution for metrics tracking (defaults to 'lightweight-analysis')
 }
 
 
@@ -237,6 +240,29 @@ CRITICAL: Do not modify any files. Do not run any commands. Only output the summ
             tools: LIGHTWEIGHT_TOOLS
         });
 
+        // Record metrics for title generation
+        await recordLLMMetrics(
+            {
+                model: claudeResult.model ?? model,
+                success: claudeResult.success,
+                executionTime: claudeResult.executionTime,
+                sessionId: claudeResult.sessionId,
+                conversationId: claudeResult.conversationId,
+                conversationLog: claudeResult.conversationLog as unknown as ConversationStep[],
+                tokenUsage: claudeResult.tokenUsage,
+                finalResult: claudeResult.finalResult ? {
+                    num_turns: claudeResult.conversationLog?.length ?? 0,
+                    cost_usd: undefined
+                } : null,
+                error: claudeResult.error
+            },
+            issueRef,
+            {
+                correlationId,
+                executionType: 'title-generation'
+            }
+        );
+
         if (claudeResult.success && (claudeResult.finalResult?.result || claudeResult.summary)) {
             const summary = (claudeResult.finalResult?.result || claudeResult.summary)!.trim().replace(/^"|"$/g, '');
             correlatedLogger.info({ summary, model }, 'Successfully generated task summary');
@@ -256,7 +282,7 @@ export const buildClaudeDockerImage = buildDockerImageInternal;
 export { generateTaskImportPrompt };
 
 export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, worktreePath, githubToken, issueRef, taskId } = options;
+    const { prompt, model, correlationId, worktreePath, githubToken, issueRef, taskId, executionType = 'lightweight-analysis' } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     // Parse model which may be in format "agent_alias:model" or just "model"
@@ -317,6 +343,30 @@ CRITICAL: Do not modify any files. Do not run any commands. Only provide direct 
             systemPrompt: LIGHTWEIGHT_SYSTEM_PROMPT,
             tools: LIGHTWEIGHT_TOOLS
         });
+
+        // Record metrics for lightweight analysis
+        await recordLLMMetrics(
+            {
+                model: claudeResult.model ?? resolvedModel,
+                success: claudeResult.success,
+                executionTime: claudeResult.executionTime,
+                sessionId: claudeResult.sessionId,
+                conversationId: claudeResult.conversationId,
+                conversationLog: claudeResult.conversationLog as unknown as ConversationStep[],
+                tokenUsage: claudeResult.tokenUsage,
+                finalResult: claudeResult.finalResult ? {
+                    num_turns: claudeResult.conversationLog?.length ?? 0,
+                    cost_usd: undefined
+                } : null,
+                error: claudeResult.error
+            },
+            issueRef,
+            {
+                correlationId,
+                taskId,
+                executionType
+            }
+        );
 
         // Check for results even if exitCode was non-zero - Claude may have produced valid output
         if (claudeResult.finalResult?.result || claudeResult.summary) {
