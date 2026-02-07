@@ -3,7 +3,7 @@ import { db } from '../db/connection.js';
 import { generateContext, generateAdditionalContext } from './contextService.js';
 import { loadFileSummaries, buildSummaryContext } from './relevance/contextBuilder.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
-import { REFINER_SYSTEM_PROMPT, Plan, PlanItem } from '../claude/prompts/plannerPrompts.js';
+import { REFINER_SYSTEM_PROMPT, Plan, PlanItem, RefinementResponse } from '../claude/prompts/plannerPrompts.js';
 import { parseLlmJson, JsonParseError } from '../utils/jsonUtils.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
@@ -408,6 +408,13 @@ export interface RefinePlanOptions {
   repository: string;
   githubToken: string;
   correlationId?: string;
+  originalContext?: string;
+}
+
+export interface RefinePlanResult {
+  plan: Plan;
+  action: 'modified' | 'answered' | 'clarify';
+  summary: string;
 }
 
 interface TaskDraft {
@@ -661,8 +668,77 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   return validatedPlan;
 }
 
-export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
-  const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId } = options;
+/**
+ * Parse LLM response into a RefinementResponse, handling various response formats.
+ * Wraps plain arrays and applies default values for missing fields.
+ */
+function parseRefinementResponse(
+  response: string,
+  correlatedLogger: MinimalLogger
+): RefinementResponse {
+  const parsed = parseLlmJson<RefinementResponse | PlanItem[]>(response);
+
+  // Check if LLM returned a plain array instead of structured response
+  if (Array.isArray(parsed)) {
+    correlatedLogger.warn('LLM returned plain array instead of structured response, wrapping');
+    return {
+      action: 'modified',
+      summary: 'Plan updated based on your instruction.',
+      plan: parsed
+    };
+  }
+
+  correlatedLogger.info({
+    parsedKeys: Object.keys(parsed),
+    hasPlan: 'plan' in parsed,
+    planIsArray: Array.isArray(parsed.plan)
+  }, 'Parsed refinement response structure');
+
+  return parsed;
+}
+
+/**
+ * Validate and normalize a RefinementResponse, ensuring it has required fields.
+ * Handles alternative keys that LLMs might use for the plan array.
+ */
+function validateRefinementResponse(
+  refinementResponse: RefinementResponse,
+  correlatedLogger: MinimalLogger
+): RefinementResponse {
+  // Handle alternative keys for plan array
+  if (!refinementResponse.plan || !Array.isArray(refinementResponse.plan)) {
+    const altKeys = ['tasks', 'items', 'issues', 'changes'] as const;
+    const responseObj = refinementResponse as unknown as Record<string, unknown>;
+    for (const key of altKeys) {
+      if (Array.isArray(responseObj[key])) {
+        correlatedLogger.warn({ foundKey: key }, 'LLM used alternative key for plan array, remapping');
+        refinementResponse.plan = responseObj[key] as PlanItem[];
+        break;
+      }
+    }
+  }
+
+  // Validate plan array exists
+  if (!refinementResponse.plan || !Array.isArray(refinementResponse.plan)) {
+    correlatedLogger.error({
+      refinementResponse: JSON.stringify(refinementResponse).substring(0, 500)
+    }, 'Invalid refinement response structure');
+    throw new PlanningFailedError('Refined plan is not a valid array');
+  }
+
+  // Apply defaults for missing fields
+  if (!refinementResponse.action || !['modified', 'answered', 'clarify'].includes(refinementResponse.action)) {
+    refinementResponse.action = 'modified';
+  }
+  if (!refinementResponse.summary || typeof refinementResponse.summary !== 'string') {
+    refinementResponse.summary = 'Plan processed.';
+  }
+
+  return refinementResponse;
+}
+
+export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlanResult> {
+  const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId, originalContext } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!Array.isArray(currentPlan)) throw new PlanningFailedError('Current plan must be an array');
@@ -670,28 +746,44 @@ export async function refinePlan(options: RefinePlanOptions): Promise<Plan> {
   // Load planner generation model from settings (refinement uses the generation model)
   const settings = await loadSettings();
   const generationModel = settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
-  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, generationModel }, 'Refining plan');
+  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, generationModel, hasOriginalContext: !!originalContext }, 'Refining plan');
 
-  const userPrompt = `${REFINER_SYSTEM_PROMPT}\n\nCurrent Plan:\n${JSON.stringify(currentPlan, null, 2)}\n\nInstruction:\n"${instruction}"\n\nRemember: Return ONLY the updated JSON array. No markdown, no explanations.`;
+  const contextSection = originalContext
+    ? `\n\nOriginal Context (codebase details from initial plan generation):\n${originalContext}\n`
+    : '';
+  const userPrompt = `${REFINER_SYSTEM_PROMPT}${contextSection}\n\nCurrent Plan:\n${JSON.stringify(currentPlan, null, 2)}\n\nUser Request:\n"${instruction}"`;
   const [repoOwner, repoName] = repository.split('/');
   const issueRef = { number: 0, repoOwner: repoOwner || 'unknown', repoName: repoName || 'unknown' };
 
   const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: generationModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef });
 
-  let refinedPlan: Plan;
+  // Debug: log raw response (first 1000 chars) to diagnose parsing issues
+  correlatedLogger.info({ responsePreview: response.substring(0, 1000), responseLength: response.length }, 'Raw LLM refinement response');
+
+  let refinementResponse: RefinementResponse;
   try {
-    refinedPlan = parseLlmJson<PlanItem[]>(response);
+    refinementResponse = parseRefinementResponse(response, correlatedLogger);
   } catch (error) {
     if (error instanceof JsonParseError) {
-      correlatedLogger.error({ error: error.message }, 'Failed to parse refined plan');
+      correlatedLogger.error({ error: error.message, responsePreview: response.substring(0, 500) }, 'Failed to parse refined plan');
       throw new PlanningFailedError(`Failed to parse refined plan: ${error.message}`);
     }
     throw error;
   }
 
-  if (!Array.isArray(refinedPlan)) throw new PlanningFailedError('Refined plan is not a valid array');
-  correlatedLogger.info({ taskCount: refinedPlan.length }, 'Plan refined successfully');
-  return refinedPlan;
+  refinementResponse = validateRefinementResponse(refinementResponse, correlatedLogger);
+
+  correlatedLogger.info({
+    taskCount: refinementResponse.plan.length,
+    action: refinementResponse.action,
+    summaryLength: refinementResponse.summary.length
+  }, 'Plan refinement completed');
+
+  return {
+    plan: refinementResponse.plan,
+    action: refinementResponse.action,
+    summary: refinementResponse.summary
+  };
 }
 
 // Re-export checkoutBranch for backwards compatibility

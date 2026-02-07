@@ -760,6 +760,9 @@ export function parseDraftJsonFields(draft: Record<string, unknown>): Record<str
   if (typeof parsedDraft.generation_trace === 'string') {
     try { parsedDraft.generation_trace = JSON.parse(parsedDraft.generation_trace); } catch { parsedDraft.generation_trace = null; }
   }
+  if (typeof parsedDraft.refinement_result === 'string') {
+    try { parsedDraft.refinement_result = JSON.parse(parsedDraft.refinement_result); } catch { parsedDraft.refinement_result = null; }
+  }
   parsedDraft.task_title = draft.name as string | undefined;
   return parsedDraft;
 }
@@ -768,7 +771,7 @@ interface RefineDeps {
   db: KnexType;
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  refinePlan: (opts: { currentPlan: any; instruction: string; worktreePath: string; repository: string; githubToken: string; correlationId: string }) => Promise<any>;
+  refinePlan: (opts: { currentPlan: any; instruction: string; worktreePath: string; repository: string; githubToken: string; correlationId: string; originalContext?: string }) => Promise<any>;
   generateCorrelationId: () => string;
 }
 
@@ -792,14 +795,31 @@ export function createRefineHandler(deps: RefineDeps) {
       (async () => {
         try {
           const repoContext = await getRefineRepoContext(deps.db, draftId, req.user?.accessToken || '');
-          const plan = await deps.refinePlan({
+
+          // Fetch original generated context from the draft for richer refinement
+          const draft = await deps.db('task_drafts').where({ draft_id: draftId }).select('generated_context').first();
+          const originalContext = draft?.generated_context as string | undefined;
+
+          const result = await deps.refinePlan({
             currentPlan, instruction, worktreePath: repoContext.worktreePath,
-            repository: repoContext.repository, githubToken: repoContext.authToken, correlationId
+            repository: repoContext.repository, githubToken: repoContext.authToken, correlationId,
+            originalContext: originalContext || undefined
           });
+
+          // Store the refinement result including action and summary
+          const refinementMeta = {
+            action: result.action,
+            summary: result.summary,
+            timestamp: new Date().toISOString()
+          };
+
           await deps.db('task_drafts').where({ draft_id: draftId }).update({
-            plan_json: JSON.stringify(plan), status: 'review', updated_at: deps.db.fn.now()
+            plan_json: JSON.stringify(result.plan),
+            refinement_result: JSON.stringify(refinementMeta),
+            status: 'review',
+            updated_at: deps.db.fn.now()
           });
-          console.log(`[refine] Plan refinement completed for draft ${draftId}`);
+          console.log(`[refine] Plan refinement completed for draft ${draftId} (action: ${result.action})`);
         } catch (error) {
           console.error(`[refine] Plan refinement failed for draft ${draftId}:`, error);
           await deps.db('task_drafts').where({ draft_id: draftId }).update({

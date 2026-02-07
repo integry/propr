@@ -79,6 +79,15 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
         if (await fs.pathExists(path.join(localRepoPath, ".git"))) {
             logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Repository exists locally. Validating and fetching updates...');
 
+            // Add to safe.directory BEFORE any git operations on this path
+            // This prevents "dubious ownership" errors in containerized environments
+            // Use simpleGit() without a path so the command runs regardless of directory ownership
+            try {
+                await simpleGit().raw(['config', '--global', '--add', 'safe.directory', localRepoPath]);
+            } catch {
+                // Non-fatal - continue anyway, the directory might already be safe
+            }
+
             try {
                 const git: SimpleGit = simpleGit(localRepoPath);
                 const isRepo = await git.checkIsRepo();
@@ -89,6 +98,8 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
                 await setupAuthenticatedRemote(git, repoUrl, authToken);
                 await git.fetch(['origin', '--prune']);
             } catch (gitError) {
+                const errorMessage = (gitError as Error).message;
+
                 // Check if there are active worktrees before removing the clone
                 // Removing the clone would delete .git/worktrees and break any running tasks
                 if (await hasActiveWorktrees(localRepoPath)) {
@@ -96,13 +107,13 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
                     logger.error({
                         repo: `${owner}/${repoName}`,
                         path: localRepoPath,
-                        error: (gitError as Error).message,
+                        error: errorMessage,
                         worktreesDir
                     }, 'Git repository has issues but has active worktrees - cannot remove and re-clone. Throwing error instead.');
-                    throw new Error(`Repository ${owner}/${repoName} is corrupted but has active worktrees: ${(gitError as Error).message}`);
+                    throw new Error(`Repository ${owner}/${repoName} is corrupted but has active worktrees: ${errorMessage}`);
                 }
 
-                logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath, error: (gitError as Error).message }, 'Git repository is corrupted or invalid. Removing and re-cloning...');
+                logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath, error: errorMessage }, 'Git repository is corrupted or invalid. Removing and re-cloning...');
                 await fs.remove(localRepoPath);
                 return ensureRepoClonedInternal(opts);
             }

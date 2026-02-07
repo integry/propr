@@ -89,6 +89,14 @@ export function parseDraftJsonFields(draft: Record<string, unknown>): Record<str
     }
   }
 
+  if (typeof parsedDraft.refinement_result === 'string') {
+    try {
+      parsedDraft.refinement_result = JSON.parse(parsedDraft.refinement_result);
+    } catch {
+      parsedDraft.refinement_result = null;
+    }
+  }
+
   return parsedDraft;
 }
 

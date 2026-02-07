@@ -227,10 +227,17 @@ export interface DraftContextConfig {
   generationModel?: string;
 }
 
+export interface RefinementResult {
+  action: 'modified' | 'answered' | 'both';
+  summary: string;
+  timestamp: string;
+}
+
 export interface DraftWithPlan extends PlannerDraft {
   plan_json: PlanTask[];
   chat_history?: ChatMessage[];
   context_config?: DraftContextConfig;
+  refinement_result?: RefinementResult;
   // These fields are dynamically added by the backend
   task_title?: string;
   title?: string;

@@ -108,14 +108,14 @@ export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile,
 export { findRelevantFiles } from './services/relevanceService.js';
 export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';
 export { generatePlan, refinePlan, generateContextPreview, checkoutBranch, PlanningFailedError, BranchNotFoundError, buildFullContext } from './services/taskPlanningService.js';
-export type { GeneratePlanOptions, RefinePlanOptions, GenerateContextPreviewOptions, PreviewResult, PreviewStats, SmartFileSelection, TaskDraftConfig, Granularity } from './services/taskPlanningService.js';
+export type { GeneratePlanOptions, RefinePlanOptions, RefinePlanResult, GenerateContextPreviewOptions, PreviewResult, PreviewStats, SmartFileSelection, TaskDraftConfig, Granularity } from './services/taskPlanningService.js';
 export type { Base64Image, ContextRepository } from './services/planningHelpers.js';
 export { executeDraft } from './services/taskExecutionService.js';
 export type { IssueLink, ExecutionResult } from './services/taskExecutionService.js';
 export { AttachmentService } from './services/attachmentService.js';
 export type { Attachment, MulterFile } from './services/attachmentService.js';
 export { PLANNER_SYSTEM_PROMPT, GRANULARITY_INSTRUCTIONS, getPlannerPrompt, REFINER_SYSTEM_PROMPT } from './claude/prompts/plannerPrompts.js';
-export type { Plan, PlanItem } from './claude/prompts/plannerPrompts.js';
+export type { Plan, PlanItem, RefinementResponse } from './claude/prompts/plannerPrompts.js';
 export { parseLlmJson, JsonParseError } from './utils/jsonUtils.js';
 export { extractKeywords } from './services/relevance/keywordExtractor.js';
 export { mineGitHistory, mineGitHistoryWithLLM, getCommitHistory, formatCommitLog } from './services/relevance/gitMiner.js';

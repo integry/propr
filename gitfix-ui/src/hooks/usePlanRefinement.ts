@@ -55,6 +55,31 @@ const ensureTaskIds = (tasks: PlanTask[]): PlanTask[] => {
   });
 };
 
+/**
+ * Safely parses plan JSON, handling both string and array inputs.
+ * Returns null if parsing fails or result is not a valid array.
+ */
+const parsePlanJson = (planJson: unknown): PlanTask[] | null => {
+  let parsed = planJson;
+  if (typeof parsed === 'string') {
+    try { parsed = JSON.parse(parsed); } catch { return null; }
+  }
+  if (parsed && Array.isArray(parsed)) {
+    return parsed as PlanTask[];
+  }
+  return null;
+};
+
+/**
+ * Safely parses refinement result, handling both string and object inputs.
+ */
+const parseRefinementResult = (result: unknown): { summary?: string; action?: 'modified' | 'answered' | 'both' } | undefined => {
+  if (typeof result === 'string') {
+    try { return JSON.parse(result); } catch { return undefined; }
+  }
+  return result as { summary?: string; action?: 'modified' | 'answered' | 'both' } | undefined;
+};
+
 interface UsePlanRefinementResult {
   plan: PlanTask[];
   updatePlan: (newPlan: PlanTask[], origin?: 'user' | 'ai') => void;
@@ -63,7 +88,7 @@ interface UsePlanRefinementResult {
   deleteTask: (taskId: string) => DeletedTask | null;
   restoreTask: (deleted: DeletedTask) => void;
   reorderTasks: (activeId: string, overId: string) => void;
-  handleRefine: (instruction: string) => Promise<{ success: boolean; message: string }>;
+  handleRefine: (instruction: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }>;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -202,13 +227,13 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     updatePlan(newPlan, 'user');
   }, [currentPlan, updatePlan]);
 
-  const handleRefine = useCallback(async (instruction: string): Promise<{ success: boolean; message: string }> => {
+  const handleRefine = useCallback(async (instruction: string): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }> => {
     try {
       // Start refinement - returns immediately with 202
       await refinePlan(draftId, currentPlan, instruction);
 
       // Poll for completion
-      const pollForCompletion = async (): Promise<{ success: boolean; message: string }> => {
+      const pollForCompletion = async (): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }> => {
         const maxAttempts = 300; // 5 minutes max
         for (let i = 0; i < maxAttempts; i++) {
           await new Promise(resolve => setTimeout(resolve, 1000));
@@ -216,15 +241,19 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
           if (draft.status === 'review') {
             // Refinement complete - defensively parse plan_json if it's a string
-            let planJson = draft.plan_json;
-            if (typeof planJson === 'string') {
-              try { planJson = JSON.parse(planJson); } catch { planJson = []; }
+            const planJson = parsePlanJson(draft.plan_json);
+            if (!planJson) {
+              return { success: false, message: 'Refinement completed but no plan returned' };
             }
-            if (planJson && Array.isArray(planJson)) {
-              updatePlan(planJson, 'ai');
-              return { success: true, message: 'Plan refined successfully' };
-            }
-            return { success: false, message: 'Refinement completed but no plan returned' };
+
+            updatePlan(planJson, 'ai');
+
+            // Extract refinement result with summary
+            const refinementResult = parseRefinementResult(draft.refinement_result);
+            const message = refinementResult?.summary || 'Plan processed successfully.';
+            const action = refinementResult?.action;
+
+            return { success: true, message, action };
           }
 
           if (draft.status !== 'refining') {
