@@ -111,7 +111,7 @@ export function createRefineHandler(db: Knex) {
           const draft = await db('task_drafts').where({ draft_id: draftId }).select('generated_context').first();
           const originalContext = draft?.generated_context as string | undefined;
 
-          const plan = await refinePlan({
+          const result = await refinePlan({
             currentPlan: currentPlan as Plan,
             instruction,
             worktreePath: repoContext.worktreePath,
@@ -121,12 +121,20 @@ export function createRefineHandler(db: Knex) {
             originalContext: originalContext || undefined
           });
 
+          // Store the refinement result including action and summary
+          const refinementMeta = {
+            action: result.action,
+            summary: result.summary,
+            timestamp: new Date().toISOString()
+          };
+
           await db('task_drafts').where({ draft_id: draftId }).update({
-            plan_json: JSON.stringify(plan),
+            plan_json: JSON.stringify(result.plan),
+            refinement_result: JSON.stringify(refinementMeta),
             status: 'review',
             updated_at: db.fn.now()
           });
-          console.log(`[refine] Plan refinement completed for draft ${draftId}`);
+          console.log(`[refine] Plan refinement completed for draft ${draftId} (action: ${result.action})`);
         } catch (error) {
           console.error(`[refine] Plan refinement failed for draft ${draftId}:`, error);
           // Revert status to review on failure

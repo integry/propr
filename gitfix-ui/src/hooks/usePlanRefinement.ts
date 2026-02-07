@@ -63,7 +63,7 @@ interface UsePlanRefinementResult {
   deleteTask: (taskId: string) => DeletedTask | null;
   restoreTask: (deleted: DeletedTask) => void;
   reorderTasks: (activeId: string, overId: string) => void;
-  handleRefine: (instruction: string) => Promise<{ success: boolean; message: string }>;
+  handleRefine: (instruction: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }>;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -202,13 +202,13 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     updatePlan(newPlan, 'user');
   }, [currentPlan, updatePlan]);
 
-  const handleRefine = useCallback(async (instruction: string): Promise<{ success: boolean; message: string }> => {
+  const handleRefine = useCallback(async (instruction: string): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }> => {
     try {
       // Start refinement - returns immediately with 202
       await refinePlan(draftId, currentPlan, instruction);
 
       // Poll for completion
-      const pollForCompletion = async (): Promise<{ success: boolean; message: string }> => {
+      const pollForCompletion = async (): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }> => {
         const maxAttempts = 300; // 5 minutes max
         for (let i = 0; i < maxAttempts; i++) {
           await new Promise(resolve => setTimeout(resolve, 1000));
@@ -222,7 +222,17 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
             }
             if (planJson && Array.isArray(planJson)) {
               updatePlan(planJson, 'ai');
-              return { success: true, message: 'Plan refined successfully' };
+
+              // Extract refinement result with summary
+              let refinementResult = draft.refinement_result;
+              if (typeof refinementResult === 'string') {
+                try { refinementResult = JSON.parse(refinementResult); } catch { refinementResult = undefined; }
+              }
+
+              const message = refinementResult?.summary || 'Plan processed successfully.';
+              const action = refinementResult?.action;
+
+              return { success: true, message, action };
             }
             return { success: false, message: 'Refinement completed but no plan returned' };
           }

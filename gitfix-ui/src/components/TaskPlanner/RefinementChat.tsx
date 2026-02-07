@@ -10,7 +10,7 @@ interface Message {
 }
 
 interface RefinementChatProps {
-  onSendMessage: (message: string) => Promise<{ success: boolean; message: string }>;
+  onSendMessage: (message: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }>;
   initialMessages?: ChatMessage[];
   onMessagesChange?: (messages: ChatMessage[]) => void;
 }
@@ -18,7 +18,7 @@ interface RefinementChatProps {
 const WELCOME_MESSAGE: Message = {
   id: 'welcome',
   role: 'assistant',
-  content: 'I can help you refine this plan. Try asking me to:\n- "Make the testing task more detailed"\n- "Split the backend task into two"\n- "Add error handling to all tasks"',
+  content: 'I can help you refine this plan. You can:\n\n**Ask questions:**\n- "Why is task #2 structured this way?"\n- "What would happen if we combined these tasks?"\n\n**Give instructions:**\n- "Make the testing task more detailed"\n- "Split the backend task into two"\n- "Add error handling to all tasks"',
   timestamp: new Date()
 };
 
