@@ -674,7 +674,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
  */
 function parseRefinementResponse(
   response: string,
-  correlatedLogger: typeof logger
+  correlatedLogger: MinimalLogger
 ): RefinementResponse {
   const parsed = parseLlmJson<RefinementResponse | PlanItem[]>(response);
 
@@ -703,7 +703,7 @@ function parseRefinementResponse(
  */
 function validateRefinementResponse(
   refinementResponse: RefinementResponse,
-  correlatedLogger: typeof logger
+  correlatedLogger: MinimalLogger
 ): RefinementResponse {
   // Handle alternative keys for plan array
   if (!refinementResponse.plan || !Array.isArray(refinementResponse.plan)) {

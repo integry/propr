@@ -49,7 +49,7 @@ export const RESERVED_OVERHEAD_TOKENS = 5000;
 export const CHARS_PER_TOKEN = 3;
 
 /** Minimal logger interface compatible with both pino Logger and EnhancedLogger */
-export type MinimalLogger = { info: LogFn; warn: LogFn };
+export type MinimalLogger = { info: LogFn; warn: LogFn; error: LogFn };
 
 export type Granularity = 'single' | 'balanced' | 'granular';
 
