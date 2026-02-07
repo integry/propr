@@ -800,15 +800,26 @@ export function createRefineHandler(deps: RefineDeps) {
           const draft = await deps.db('task_drafts').where({ draft_id: draftId }).select('generated_context').first();
           const originalContext = draft?.generated_context as string | undefined;
 
-          const plan = await deps.refinePlan({
+          const result = await deps.refinePlan({
             currentPlan, instruction, worktreePath: repoContext.worktreePath,
             repository: repoContext.repository, githubToken: repoContext.authToken, correlationId,
             originalContext: originalContext || undefined
           });
+
+          // Store the refinement result including action and summary
+          const refinementMeta = {
+            action: result.action,
+            summary: result.summary,
+            timestamp: new Date().toISOString()
+          };
+
           await deps.db('task_drafts').where({ draft_id: draftId }).update({
-            plan_json: JSON.stringify(plan), status: 'review', updated_at: deps.db.fn.now()
+            plan_json: JSON.stringify(result.plan),
+            refinement_result: JSON.stringify(refinementMeta),
+            status: 'review',
+            updated_at: deps.db.fn.now()
           });
-          console.log(`[refine] Plan refinement completed for draft ${draftId}`);
+          console.log(`[refine] Plan refinement completed for draft ${draftId} (action: ${result.action})`);
         } catch (error) {
           console.error(`[refine] Plan refinement failed for draft ${draftId}:`, error);
           await deps.db('task_drafts').where({ draft_id: draftId }).update({

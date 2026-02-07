@@ -128,6 +128,8 @@ export function createRefineHandler(db: Knex) {
             timestamp: new Date().toISOString()
           };
 
+          console.log(`[refine] Storing refinement result for draft ${draftId}:`, JSON.stringify(refinementMeta));
+
           await db('task_drafts').where({ draft_id: draftId }).update({
             plan_json: JSON.stringify(result.plan),
             refinement_result: JSON.stringify(refinementMeta),
@@ -136,7 +138,10 @@ export function createRefineHandler(db: Knex) {
           });
           console.log(`[refine] Plan refinement completed for draft ${draftId} (action: ${result.action})`);
         } catch (error) {
-          console.error(`[refine] Plan refinement failed for draft ${draftId}:`, error);
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorStack = error instanceof Error ? error.stack : undefined;
+          console.error(`[refine] Plan refinement failed for draft ${draftId}:`, errorMessage);
+          if (errorStack) console.error(`[refine] Stack trace:`, errorStack);
           // Revert status to review on failure
           await db('task_drafts').where({ draft_id: draftId }).update({
             status: 'review',
