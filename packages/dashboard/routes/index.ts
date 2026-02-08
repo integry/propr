@@ -9,6 +9,7 @@ export { createExecutionRoutes } from './executionRoutes.js';
 export { createDockerRoutes } from './dockerRoutes.js';
 export { createGitHubRoutes } from './githubRoutes.js';
 export { createLLMMetricsRoutes } from './llmMetricsRoutes.js';
+export { createLlmLogsRoutes } from './llmLogsRoutes.js';
 export { createPlannerRoutes, attachmentUpload } from './plannerRoutes.js';
 export { createRelevanceRoutes } from './relevanceRoutes.js';
 export { createAgentRoutes } from './agentRoutes.js';

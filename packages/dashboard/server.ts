@@ -18,6 +18,7 @@ import {
   createDockerRoutes,
   createGitHubRoutes,
   createLLMMetricsRoutes,
+  createLlmLogsRoutes,
   createPlannerRoutes,
   createRelevanceRoutes,
   createAgentRoutes,
@@ -164,6 +165,7 @@ function setupRoutes(): void {
   const dockerRoutes = createDockerRoutes({ redisClient });
   const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db });
   const llmMetricsRoutes = createLLMMetricsRoutes();
+  const llmLogsRoutes = createLlmLogsRoutes({ db });
   const plannerRoutes = createPlannerRoutes({ db });
   const relevanceRoutes = createRelevanceRoutes();
   const agentRoutes = createAgentRoutes();
@@ -208,6 +210,8 @@ function setupRoutes(): void {
 
   app.get('/api/llm-metrics', llmMetricsRoutes.getSummary);
   app.get('/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId);
+
+  app.get('/api/llm-logs', llmLogsRoutes.getLlmLogs);
 
   app.get('/api/execution/:sessionId/prompt', executionRoutes.getPrompt);
   app.get('/api/execution/:sessionId/logs', executionRoutes.getLogs);
