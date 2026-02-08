@@ -288,7 +288,7 @@ function logConversationDebug(claudeResult: ClaudeResult | null, correlationId?:
  * @param options - Additional options including jobType, correlationId, taskId, and executionType
  */
 export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueRef: IssueRef, options: RecordMetricsOptions = {}): Promise<void> {
-    const { jobType = 'issue', correlationId, taskId = null, executionType = 'implementation' } = options;
+    const { jobType = 'issue', correlationId, taskId = null, executionType: _executionType = 'implementation' } = options;
     const metricsRedis = new Redis(connectionOptions);
     logger.info({
         correlationId, taskId, hasClaudeResult: !!claudeResult,
