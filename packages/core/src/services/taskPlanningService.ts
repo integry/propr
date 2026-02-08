@@ -409,6 +409,8 @@ export interface RefinePlanOptions {
   githubToken: string;
   correlationId?: string;
   originalContext?: string;
+  /** Draft ID for LLM metrics tracking */
+  draftId?: string;
 }
 
 export interface RefinePlanResult {
@@ -738,7 +740,7 @@ function validateRefinementResponse(
 }
 
 export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlanResult> {
-  const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId, originalContext } = options;
+  const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId, originalContext, draftId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!Array.isArray(currentPlan)) throw new PlanningFailedError('Current plan must be an array');
@@ -746,7 +748,7 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
   // Load planner generation model from settings (refinement uses the generation model)
   const settings = await loadSettings();
   const generationModel = settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
-  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, generationModel, hasOriginalContext: !!originalContext }, 'Refining plan');
+  correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, generationModel, hasOriginalContext: !!originalContext, draftId }, 'Refining plan');
 
   const contextSection = originalContext
     ? `\n\nOriginal Context (codebase details from initial plan generation):\n${originalContext}\n`
@@ -755,7 +757,7 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
   const [repoOwner, repoName] = repository.split('/');
   const issueRef = { number: 0, repoOwner: repoOwner || 'unknown', repoName: repoName || 'unknown' };
 
-  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: generationModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef, executionType: 'plan-refinement' });
+  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: generationModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef, taskId: draftId, executionType: 'plan-refinement' });
 
   // Debug: log raw response (first 1000 chars) to diagnose parsing issues
   correlatedLogger.info({ responsePreview: response.substring(0, 1000), responseLength: response.length }, 'Raw LLM refinement response');

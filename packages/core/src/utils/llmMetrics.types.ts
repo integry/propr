@@ -114,7 +114,6 @@ export interface PersistMetrics {
     numTurns: number;
     costUsd: number;
     tokenUsage?: TokenUsage;
-    executionType?: ExecutionType;
 }
 
 export interface ConversationDetailParams {

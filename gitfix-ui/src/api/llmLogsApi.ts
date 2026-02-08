@@ -1,23 +1,24 @@
 import { API_BASE_URL, handleApiResponse } from './gitfixApi';
 
 export interface LlmLogEntry {
-  executionId: number;
-  taskId: string;
-  sessionId: string | null;
-  conversationId: string | null;
+  logId: number;
+  executionType: string;
+  modelName: string | null;
   startTime: string | null;
   endTime: string | null;
   durationMs: number | null;
-  modelName: string | null;
   success: boolean;
-  numTurns: number | null;
-  costUsd: number | null;
-  errorMessage: string | null;
   inputTokens: number | null;
   outputTokens: number | null;
   cacheCreationInputTokens: number | null;
   cacheReadInputTokens: number | null;
-  executionType: string;
+  costUsd: number | null;
+  errorMessage: string | null;
+  sessionId: string | null;
+  correlationId: string | null;
+  draftId: string | null;
+  repository: string | null;
+  agentAlias: string | null;
 }
 
 export interface LlmLogsPagination {
@@ -40,7 +41,8 @@ export interface LlmLogsParams {
   execution_type?: string;
   model?: string;
   success?: boolean;
-  task_id?: string;
+  draft_id?: string;
+  agent_alias?: string;
 }
 
 export const getLlmLogs = async (params: LlmLogsParams = {}): Promise<LlmLogsResponse> => {
@@ -61,8 +63,11 @@ export const getLlmLogs = async (params: LlmLogsParams = {}): Promise<LlmLogsRes
   if (params.success !== undefined) {
     queryParams.append('success', params.success.toString());
   }
-  if (params.task_id) {
-    queryParams.append('task_id', params.task_id);
+  if (params.draft_id) {
+    queryParams.append('draft_id', params.draft_id);
+  }
+  if (params.agent_alias) {
+    queryParams.append('agent_alias', params.agent_alias);
   }
 
   const queryString = queryParams.toString();

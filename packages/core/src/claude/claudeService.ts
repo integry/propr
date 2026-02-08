@@ -3,6 +3,7 @@ import os from 'os';
 import logger from '../utils/logger.js';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
+import type { AnalysisResult } from '../agents/types.js';
 import { generateTaskImportPrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
 import { executeDockerCommand, buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.js';
 import {
@@ -20,6 +21,7 @@ import {
     TokenUsage
 } from './claudeHelpers.js';
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
+import { persistLlmLog, createLlmLogFromAnalysis } from '../utils/llmLogger.js';
 import type { ExecutionType, ConversationStep } from '../utils/llmMetrics.types.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
@@ -306,7 +308,7 @@ interface AgentExecutionParams {
     correlatedLogger: ReturnType<typeof logger.withCorrelation>;
 }
 
-async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<string | null> {
+async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<AnalysisResult | null> {
     const { agentAlias, modelOverride, prompt, taskId, correlatedLogger } = params;
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
@@ -385,16 +387,44 @@ CRITICAL: Do not modify any files. Do not run any commands. Only provide direct 
 }
 
 export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, taskId } = options;
+    const { prompt, model, correlationId, taskId, issueRef, executionType = 'lightweight-analysis' } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { agentAlias, modelOverride, effectiveModel } = parseAgentModelFormat(model, correlatedLogger);
 
     if (agentAlias) {
         try {
-            const result = await tryExecuteWithAgent({ agentAlias, modelOverride, prompt, taskId, correlatedLogger });
-            if (result !== null) {
-                return result;
+            const analysisResult = await tryExecuteWithAgent({ agentAlias, modelOverride, prompt, taskId, correlatedLogger });
+            if (analysisResult !== null) {
+                // Persist LLM log to the new llm_logs table
+                const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
+                const logEntry = createLlmLogFromAnalysis({
+                    executionType,
+                    modelUsed: analysisResult.modelUsed,
+                    executionTimeMs: analysisResult.executionTimeMs,
+                    success: analysisResult.success,
+                    tokenUsage: analysisResult.tokenUsage,
+                    error: analysisResult.error,
+                    sessionId: analysisResult.sessionId,
+                    correlationId,
+                    draftId: taskId, // taskId is the draftId for planning calls
+                    repository,
+                    agentAlias,
+                });
+                await persistLlmLog(logEntry);
+
+                if (!analysisResult.success) {
+                    throw new Error(analysisResult.error || 'Agent analysis failed');
+                }
+
+                correlatedLogger.info({
+                    agentAlias,
+                    model: analysisResult.modelUsed,
+                    responseLength: analysisResult.response.length,
+                    executionTimeMs: analysisResult.executionTimeMs
+                }, 'Agent lightweight analysis completed with log persisted');
+
+                return analysisResult.response;
             }
         } catch (agentError) {
             const err = agentError as Error;

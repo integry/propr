@@ -88,12 +88,22 @@ const LlmLogsPage: React.FC = () => {
     setCurrentPage(1);
   };
 
-  // Format duration to human-readable
+  // Format duration to human-readable (e.g., "1m 30s")
   const formatDuration = (ms: number | null): string => {
     if (ms === null) return '-';
     if (ms < 1000) return `${ms}ms`;
-    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-    return `${(ms / 60000).toFixed(1)}m`;
+
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+
+    if (minutes === 0) {
+      return `${seconds}s`;
+    }
+    if (seconds === 0) {
+      return `${minutes}m`;
+    }
+    return `${minutes}m ${seconds}s`;
   };
 
   // Format cost
@@ -255,7 +265,7 @@ const LlmLogsPage: React.FC = () => {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {logs.map((log) => (
-                <tr key={log.executionId} className="hover:bg-gray-50">
+                <tr key={log.logId} className="hover:bg-gray-50">
                   <td className="px-4 py-4 whitespace-nowrap">
                     <div className="flex items-center" title={log.success ? 'Success' : log.errorMessage || 'Failed'}>
                       <StatusIcon success={log.success} />

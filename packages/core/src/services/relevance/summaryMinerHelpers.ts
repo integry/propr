@@ -248,7 +248,8 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
   let errorMessage: string | undefined;
 
   try {
-    const response = await agent.analyze(prompt);
+    const analysisResult = await agent.analyze(prompt);
+    const response = analysisResult.response;
     const summaries = parseBatchResponse(response);
 
     // Save summaries to DB with the actual model used

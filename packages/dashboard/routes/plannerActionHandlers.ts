@@ -118,7 +118,8 @@ export function createRefineHandler(db: Knex) {
             repository: repoContext.repository,
             githubToken: repoContext.authToken,
             correlationId,
-            originalContext: originalContext || undefined
+            originalContext: originalContext || undefined,
+            draftId
           });
 
           // Store the refinement result including action and summary

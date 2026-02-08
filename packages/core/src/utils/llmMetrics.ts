@@ -236,7 +236,7 @@ async function enqueueAnalysisTask(
 
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics, correlationId?: string): Promise<void> {
     if (!taskId) return;
-    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, executionType } = metrics;
+    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage } = metrics;
     try {
         const executionData = {
             task_id: taskId, session_id: sessionId, conversation_id: conversationId,
@@ -248,8 +248,7 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
             input_tokens: tokenUsage?.input_tokens ?? null,
             output_tokens: tokenUsage?.output_tokens ?? null,
             cache_creation_input_tokens: tokenUsage?.cache_creation_input_tokens ?? null,
-            cache_read_input_tokens: tokenUsage?.cache_read_input_tokens ?? null,
-            execution_type: executionType ?? 'implementation'
+            cache_read_input_tokens: tokenUsage?.cache_read_input_tokens ?? null
         };
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
         const executionId = (insertedExecution as { execution_id: string }).execution_id;
@@ -328,7 +327,7 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
                 cache_creation_input_tokens: cumulativeTokens.cacheCreationTokens,
                 cache_read_input_tokens: cumulativeTokens.cacheReadTokens
             };
-            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: cumulativeTokenUsage, executionType }, correlationId);
+            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: cumulativeTokenUsage }, correlationId);
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');

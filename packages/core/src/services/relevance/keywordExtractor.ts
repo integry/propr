@@ -105,7 +105,8 @@ export async function extractKeywordsWithLLM(
 
     correlatedLogger.debug({ promptLength: prompt.length }, 'Extracting keywords with LLM');
 
-    const response = await agent.analyze(llmPrompt);
+    const analysisResult = await agent.analyze(llmPrompt);
+    const response = analysisResult.response;
 
     const parsed = parseLlmJson<{ primary: string[]; alternatives: string[] }>(response);
 
