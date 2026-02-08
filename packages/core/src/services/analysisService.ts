@@ -289,7 +289,8 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
         number: task.issue_number,
         repoOwner,
         repoName
-      }
+      },
+      executionType: 'task-analysis'
     }) as string;
 
     const analysisReport: AnalysisReport = {
