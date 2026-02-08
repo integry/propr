@@ -89,7 +89,7 @@ export interface RunLightweightLLMAnalysisOptions {
     githubToken: string;
     issueRef: IssueRef;
     taskId?: string; // For abort signal checking (e.g., draftId for planning)
-    executionType?: ExecutionType; // Type of execution for metrics tracking (defaults to 'lightweight-analysis')
+    executionType?: ExecutionType; // Type of execution for metrics tracking (defaults to 'other')
 }
 
 
@@ -329,7 +329,7 @@ async function executeClaudeAnalysis(
     resolvedModel: string,
     correlatedLogger: ReturnType<typeof logger.withCorrelation>
 ): Promise<string> {
-    const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, executionType = 'lightweight-analysis', model } = options;
+    const { prompt, correlationId, worktreePath, githubToken, issueRef, taskId, executionType = 'other', model } = options;
 
     const analysisPrompt = `${prompt}
 
@@ -387,7 +387,7 @@ CRITICAL: Do not modify any files. Do not run any commands. Only provide direct 
 }
 
 export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, taskId, issueRef, executionType = 'lightweight-analysis' } = options;
+    const { prompt, model, correlationId, taskId, issueRef, executionType = 'other' } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { agentAlias, modelOverride, effectiveModel } = parseAgentModelFormat(model, correlatedLogger);
