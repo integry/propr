@@ -5,6 +5,7 @@ import { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { startDirectoryPhase, updateDirectoryProgress } from './indexingCancellation.js';
+import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 
 // --- Constants ---
 
@@ -200,6 +201,22 @@ async function aggregateSingleDirectory(options: AggregateDirOptions): Promise<v
     durationMs,
     error: errorMessage
   }, log);
+
+  // Persist to llm_logs table
+  const logEntry = createLlmLogFromAnalysis({
+    executionType: 'summarization',
+    modelUsed,
+    executionTimeMs: durationMs,
+    success,
+    tokenUsage: {
+      input_tokens: estimatedInputTokens,
+      output_tokens: estimatedOutputTokens,
+    },
+    error: errorMessage,
+    agentAlias: agent.config.alias,
+    metadata: { directoryPath: dirPath },
+  });
+  await persistLlmLog(logEntry);
 }
 
 /**

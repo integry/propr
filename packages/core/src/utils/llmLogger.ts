@@ -134,6 +134,7 @@ export function createLlmLogFromAnalysis(params: {
   draftId?: string;
   repository?: string;
   agentAlias?: string;
+  metadata?: Record<string, unknown>;
 }): LlmLogEntry {
   const now = new Date();
   const startTime = new Date(now.getTime() - params.executionTimeMs);
@@ -155,5 +156,6 @@ export function createLlmLogFromAnalysis(params: {
     draftId: params.draftId,
     repository: params.repository,
     agentAlias: params.agentAlias,
+    metadata: params.metadata,
   };
 }
