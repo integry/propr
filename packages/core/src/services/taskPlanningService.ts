@@ -479,7 +479,7 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResul
   correlatedLogger.info({ tokenCount: validation.tokenCount, source: validation.source, modelHardLimit }, 'Token validation passed');
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
-  const response = await runLightweightLLMAnalysis({ prompt: fullContext, model, correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef, taskId: draftId });
+  const response = await runLightweightLLMAnalysis({ prompt: fullContext, model, correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef, taskId: draftId, executionType: 'plan-generation' });
 
   let plan: Plan;
   try {
@@ -755,7 +755,7 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
   const [repoOwner, repoName] = repository.split('/');
   const issueRef = { number: 0, repoOwner: repoOwner || 'unknown', repoName: repoName || 'unknown' };
 
-  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: generationModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef });
+  const response = await runLightweightLLMAnalysis({ prompt: userPrompt, model: generationModel, correlationId: correlationId || 'plan-refinement', worktreePath, githubToken, issueRef, executionType: 'plan-refinement' });
 
   // Debug: log raw response (first 1000 chars) to diagnose parsing issues
   correlatedLogger.info({ responsePreview: response.substring(0, 1000), responseLength: response.length }, 'Raw LLM refinement response');
