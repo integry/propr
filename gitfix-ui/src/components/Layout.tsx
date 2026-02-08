@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { ScrollText, ListTodo, BookMarked, Bot } from 'lucide-react';
+import { ScrollText, ListTodo, BookMarked, Bot, Cpu } from 'lucide-react';
 import { getQueueStats, getCurrentUser, logout, getSystemStatus } from '../api/gitfixApi';
 import { getGeneratingPlansCount } from '../api/taskStatsApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
@@ -50,6 +50,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { name: 'Tasks', href: '/tasks', icon: ListTodo },
     { name: 'Repositories', href: '/repositories', icon: BookMarked },
     { name: 'Coding Agents', href: '/ai-agents', icon: Bot },
+    { name: 'LLM Log', href: '/llm-logs', icon: Cpu },
     { name: 'Settings', href: '/settings', icon: SettingsIcon },
   ];
 
