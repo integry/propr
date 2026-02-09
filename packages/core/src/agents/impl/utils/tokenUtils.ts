@@ -30,8 +30,9 @@ export function aggregateTokensFromConversationLog(
     };
 
     for (const entry of conversationLog) {
-        if (entry.type === 'assistant' && entry.message) {
-            const usage = (entry.message as { usage?: TokenUsage }).usage;
+        if (entry.type === 'assistant') {
+            // Usage is at the top level of the entry, not nested in message
+            const usage = (entry as { usage?: TokenUsage }).usage;
             if (usage) {
                 aggregated.input_tokens = (aggregated.input_tokens || 0) + (usage.input_tokens || 0);
                 aggregated.output_tokens = (aggregated.output_tokens || 0) + (usage.output_tokens || 0);
