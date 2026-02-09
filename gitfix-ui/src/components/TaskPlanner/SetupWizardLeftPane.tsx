@@ -1,7 +1,7 @@
 import React from 'react';
 import { PlannerAttachment, GenerationTrace, Granularity, SmartFileSelection as SmartFileInfo } from '../../api/gitfixApi';
 import { ChevronDown, Paperclip, Loader2, Sparkles, Download } from 'lucide-react';
-import { GranularityPills, AttachmentChip } from './ComposerControls';
+import { GranularityPills, AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
 import { SmartFileSelection } from './SmartFileSelection';
 import { FileSelectionSkeleton } from './SkeletonLoader';
@@ -153,9 +153,11 @@ const AttachmentsSection: React.FC<{
             />
           ))}
           {hasRemoteFiles && files.map((attachment) => (
-            <AttachmentChip
+            <RemoteAttachmentChip
               key={attachment.id}
-              file={{ name: attachment.originalName, type: attachment.mimeType || 'application/octet-stream' } as File}
+              name={attachment.originalName}
+              mimeType={attachment.mimeType}
+              tokenEstimate={attachment.tokenEstimate}
               onRemove={() => onRemoveFile(attachment.id)}
             />
           ))}
