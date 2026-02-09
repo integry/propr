@@ -93,6 +93,46 @@ function getDefaultModel(): ModelId {
 }
 
 /**
+ * Resolves a custom label to an agent if any agent has this custom label configured.
+ *
+ * @param label - The full label from GitHub (e.g., "my-bot", "custom-helper")
+ * @returns The matching agent's alias and default model, or null if no match
+ */
+async function resolveCustomLabel(label: string): Promise<LlmLabelResolution | null> {
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+
+    const agents = registry.getAllAgents();
+    const lowerLabel = label.toLowerCase();
+
+    for (const agent of agents) {
+        if (agent.config.customLabel && agent.config.customLabel.toLowerCase() === lowerLabel) {
+            return {
+                agentAlias: agent.config.alias,
+                model: agent.config.defaultModel || agent.config.supportedModels[0]
+            };
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Gets all custom labels configured across all agents.
+ *
+ * @returns Array of custom labels
+ */
+async function getAllCustomLabels(): Promise<string[]> {
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+
+    const agents = registry.getAllAgents();
+    return agents
+        .filter(a => a.config.customLabel && a.config.enabled)
+        .map(a => a.config.customLabel as string);
+}
+
+/**
  * Resolves an LLM label (e.g., "gemini-pro", "claude-opus", "codex") to an agent alias and model.
  *
  * Resolution order:
@@ -229,5 +269,7 @@ export {
     resolveModelAlias,
     getDefaultModel,
     getOpenRouterId,
-    resolveLlmLabel
+    resolveLlmLabel,
+    resolveCustomLabel,
+    getAllCustomLabels
 };

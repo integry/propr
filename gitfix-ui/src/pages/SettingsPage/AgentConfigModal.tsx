@@ -31,7 +31,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     dockerImage: AGENT_DEFAULTS.claude.dockerImage,
     configPath: AGENT_DEFAULTS.claude.configPath,
     supportedModels: AGENT_DEFAULTS.claude.defaultModels,
-    defaultModel: AGENT_DEFAULTS.claude.defaultModels[0]
+    defaultModel: AGENT_DEFAULTS.claude.defaultModels[0],
+    customLabel: ''
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -46,7 +47,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         dockerImage: agent.dockerImage,
         configPath: agent.configPath,
         supportedModels: agent.supportedModels,
-        defaultModel: agent.defaultModel || agent.supportedModels[0]
+        defaultModel: agent.defaultModel || agent.supportedModels[0],
+        customLabel: agent.customLabel || ''
       });
     }
   }, [agent]);
@@ -141,7 +143,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       dockerImage: formData.dockerImage,
       configPath: formData.configPath,
       supportedModels: formData.supportedModels,
-      defaultModel: formData.defaultModel
+      defaultModel: formData.defaultModel,
+      customLabel: formData.customLabel?.trim() || undefined
     };
 
     onSave(agentToSave);
@@ -202,6 +205,28 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             {errors.alias && <p className="mt-1 text-sm text-red-600">{errors.alias}</p>}
             <p className="mt-1 text-sm text-gray-600">
               Unique identifier using lowercase letters, numbers, and hyphens only.
+            </p>
+          </div>
+
+          {/* Custom GitHub Label */}
+          <div>
+            <label className="block text-gray-700 mb-2 font-medium" htmlFor="customLabel">
+              Custom GitHub Label
+              <span className="ml-2 text-xs font-normal text-gray-500">(optional)</span>
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                id="customLabel"
+                value={formData.customLabel || ''}
+                onChange={(e) => setFormData(prev => ({ ...prev, customLabel: e.target.value }))}
+                placeholder={`llm-${formData.alias}`}
+                className="w-full px-3 py-2 bg-gray-50 text-gray-900 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              />
+            </div>
+            <p className="mt-1 text-sm text-gray-600">
+              Custom label to trigger this agent (e.g., <code className="bg-gray-100 px-1 rounded">my-bot</code>, <code className="bg-gray-100 px-1 rounded">custom-helper</code>).
+              If not set, defaults to <code className="bg-gray-100 px-1 rounded">llm-{formData.alias || '{alias}'}</code>.
             </p>
           </div>
 

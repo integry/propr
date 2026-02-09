@@ -326,6 +326,7 @@ export interface AgentConfig {
   supportedModels: string[];
   defaultModel?: string;
   envVars?: Record<string, string>;
+  customLabel?: string;
 }
 
 export const getAgents = async (): Promise<{ agents: AgentConfig[] }> => {

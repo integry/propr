@@ -86,7 +86,8 @@ const AgentCard: React.FC<{
   onDelete: () => void;
   onToggle: () => void;
 }> = ({ agent, onEdit, onDelete, onToggle }) => {
-  const agentDefaultLabel = `llm-${agent.alias}`;
+  // Use custom label if defined, otherwise fall back to default llm-{alias} pattern
+  const agentDefaultLabel = agent.customLabel || `llm-${agent.alias}`;
 
   return (
     <div className="border rounded-lg p-4 bg-white shadow-sm">
@@ -103,12 +104,22 @@ const AgentCard: React.FC<{
               {agent.type}
             </span>
           </div>
-          <div className="text-sm text-gray-600 ml-5">
+          <div className="text-sm text-gray-600 ml-5 space-y-1">
             <div>
               <span className="font-medium mr-2">Path:</span>
               <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs text-gray-600 font-mono border border-gray-200">
                 {agent.configPath}
               </code>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="font-medium mr-2">Trigger Label:</span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded font-mono border border-purple-200">
+                <GitHubIcon className="w-3 h-3" />
+                {agentDefaultLabel}
+              </span>
+              {agent.customLabel && (
+                <span className="text-xs text-gray-500 ml-1">(custom)</span>
+              )}
             </div>
           </div>
         </div>
