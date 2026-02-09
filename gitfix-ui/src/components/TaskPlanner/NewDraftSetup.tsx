@@ -1,74 +1,47 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  createDraft,
-  uploadAttachment,
-  getAgents,
-  AgentConfig,
-  Granularity
-} from '../../api/gitfixApi';
-import { getRepoConfig } from '../../api/gitfixApi';
+import { createDraft, uploadAttachment, getAgents, AgentConfig, Granularity, getRepoConfig } from '../../api/gitfixApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { getPlannerSettings, savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { resizeImage } from './imageUtils';
-import { HeroPromptArea } from './HeroPromptArea';
-import { TaskGranularitySection } from './TaskGranularitySection';
-import { ContextSettingsSection } from './ContextSettingsSection';
-import { ContextRepositoriesSection, IndexedRepository } from './ContextRepositoriesSection';
+import { IndexedRepository } from './ContextRepositoriesSection';
+import { ChevronDown, Paperclip, Loader2, Sparkles } from 'lucide-react';
+import { ContextLevelSlider } from './ContextLevelSlider';
+import { GranularityPills, AttachmentChip } from './ComposerControls';
 
-interface Repo {
-  name: string;
-  enabled: boolean;
-  baseBranch?: string;
-}
-
-interface NewDraftSetupProps {
-  onDraftCreated?: (draftId: string) => void;
-}
+interface Repo { name: string; enabled: boolean; baseBranch?: string; }
+interface NewDraftSetupProps { onDraftCreated?: (draftId: string) => void; }
 
 export const NewDraftSetup: React.FC<NewDraftSetupProps> = ({ onDraftCreated }) => {
   const navigate = useNavigate();
   const savedSettings = getPlannerSettings();
-
-  // Repository selection
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<string>('');
   const [reposLoading, setReposLoading] = useState(true);
-
-  // Prompt and files (local state before draft creation)
   const [prompt, setPrompt] = useState('');
   const [localFiles, setLocalFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
-
-  // Settings (saved locally)
   const [granularity, setGranularity] = useState<Granularity>(savedSettings.lastGranularity);
   const [contextLevel, setContextLevel] = useState(savedSettings.lastContextLevel);
   const [compress, setCompress] = useState(false);
-
-  // Context repositories
   const [availableRepos, setAvailableRepos] = useState<IndexedRepository[]>([]);
-
-  // Agents for model selection
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [generationModel, setGenerationModel] = useState<string | null>(null);
-
-  // Error and loading states
   const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
-
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const autoResize = useCallback(() => {
     const textarea = textareaRef.current;
     if (textarea) {
       textarea.style.height = 'auto';
-      textarea.style.height = `${Math.max(textarea.scrollHeight, 300)}px`;
+      textarea.style.height = `${Math.max(textarea.scrollHeight, 200)}px`;
     }
   }, []);
 
   useEffect(() => { autoResize(); }, [prompt, autoResize]);
 
-  // Load repositories
   useEffect(() => {
     const loadRepos = async () => {
       try {
@@ -79,74 +52,43 @@ export const NewDraftSetup: React.FC<NewDraftSetupProps> = ({ onDraftCreated }) 
           .filter((repo): repo is { name: string; enabled?: boolean; baseBranch?: string } =>
             typeof repo === 'object' && repo !== null && 'name' in repo && typeof (repo as { name: unknown }).name === 'string'
           )
-          .map(repo => ({
-            name: repo.name,
-            enabled: repo.enabled !== false,
-            baseBranch: repo.baseBranch
-          }));
+          .map(repo => ({ name: repo.name, enabled: repo.enabled !== false, baseBranch: repo.baseBranch }));
         const enabledRepos = validRepos.filter(r => r.enabled);
         setRepos(enabledRepos);
-
-        // Set initial selected repo from saved settings or first available
         const lastRepo = savedSettings.lastRepository;
-        if (lastRepo && enabledRepos.some(r => r.name === lastRepo)) {
-          setSelectedRepo(lastRepo);
-        } else if (enabledRepos.length > 0) {
-          setSelectedRepo(enabledRepos[0].name);
-        }
+        if (lastRepo && enabledRepos.some(r => r.name === lastRepo)) setSelectedRepo(lastRepo);
+        else if (enabledRepos.length > 0) setSelectedRepo(enabledRepos[0].name);
       } catch (err) {
         console.error('Failed to load repositories:', err);
         setError('Failed to load repositories');
-      } finally {
-        setReposLoading(false);
-      }
+      } finally { setReposLoading(false); }
     };
     loadRepos();
   }, [savedSettings.lastRepository]);
 
-  // Load available context repositories
   useEffect(() => {
     const loadAvailableRepos = async () => {
       try {
         const data = await getRepositoriesIndexingStatus();
         const indexedRepos: IndexedRepository[] = (data.repositories || [])
-          .filter((repo: RepositoryIndexingStatus) =>
-            repo.indexing_status === 'completed' && repo.full_name !== selectedRepo
-          )
+          .filter((repo: RepositoryIndexingStatus) => repo.indexing_status === 'completed' && repo.full_name !== selectedRepo)
           .map((repo: RepositoryIndexingStatus) => ({ full_name: repo.full_name, branch: repo.branch }));
         setAvailableRepos(indexedRepos);
-      } catch (err) {
-        console.error('Failed to load indexed repos:', err);
-      }
+      } catch (err) { console.error('Failed to load indexed repos:', err); }
     };
-    if (selectedRepo) {
-      loadAvailableRepos();
-    }
+    if (selectedRepo) loadAvailableRepos();
   }, [selectedRepo]);
 
-  // Load agents
   useEffect(() => {
     const loadAgents = async () => {
-      try {
-        const data = await getAgents();
-        setAgents(data.agents || []);
-      } catch (err) {
-        console.error('Failed to load agents:', err);
-      }
+      try { const data = await getAgents(); setAgents(data.agents || []); }
+      catch (err) { console.error('Failed to load agents:', err); }
     };
     loadAgents();
   }, []);
 
-  // Save settings when they change
-  useEffect(() => {
-    savePlannerSettings({ lastGranularity: granularity, lastContextLevel: contextLevel });
-  }, [granularity, contextLevel]);
-
-  useEffect(() => {
-    if (selectedRepo) {
-      savePlannerSettings({ lastRepository: selectedRepo });
-    }
-  }, [selectedRepo]);
+  useEffect(() => { savePlannerSettings({ lastGranularity: granularity, lastContextLevel: contextLevel }); }, [granularity, contextLevel]);
+  useEffect(() => { if (selectedRepo) savePlannerSettings({ lastRepository: selectedRepo }); }, [selectedRepo]);
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items;
@@ -161,12 +103,8 @@ export const NewDraftSetup: React.FC<NewDraftSetupProps> = ({ onDraftCreated }) 
           setIsUploading(true);
           const processedFile = await resizeImage(file);
           setLocalFiles(prev => [...prev, processedFile]);
-        } catch (err) {
-          setError('Failed to process pasted image');
-          console.error('Paste error:', err);
-        } finally {
-          setIsUploading(false);
-        }
+        } catch (err) { setError('Failed to process pasted image'); console.error('Paste error:', err); }
+        finally { setIsUploading(false); }
         return;
       }
     }
@@ -177,183 +115,124 @@ export const NewDraftSetup: React.FC<NewDraftSetupProps> = ({ onDraftCreated }) 
     try {
       const processedFile = file.type.startsWith('image/') ? await resizeImage(file) : file;
       setLocalFiles(prev => [...prev, processedFile]);
-    } catch {
-      setError('Failed to process file');
-    } finally {
-      setIsUploading(false);
-    }
+    } catch { setError('Failed to process file'); }
+    finally { setIsUploading(false); }
   };
 
-  const handleRemoveFile = async (fileIndex: number) => {
-    setLocalFiles(prev => prev.filter((_, i) => i !== fileIndex));
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) await handleUpload(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
+
+  const handleRemoveFile = (fileIndex: number) => { setLocalFiles(prev => prev.filter((_, i) => i !== fileIndex)); };
 
   const handleContinue = async () => {
-    if (!selectedRepo || !prompt.trim()) {
-      setError('Please select a repository and enter a prompt');
-      return;
-    }
-
+    if (!selectedRepo || !prompt.trim()) { setError('Please select a repository and enter a prompt'); return; }
     setIsCreating(true);
     setError(null);
-
     try {
-      // Create the draft
       const draft = await createDraft(selectedRepo, prompt.trim());
-
-      // Upload any local files
       for (const file of localFiles) {
-        try {
-          await uploadAttachment(draft.draft_id, file);
-        } catch (uploadErr) {
-          console.error('Failed to upload attachment:', uploadErr);
-        }
+        try { await uploadAttachment(draft.draft_id, file); }
+        catch (uploadErr) { console.error('Failed to upload attachment:', uploadErr); }
       }
-
-      // Navigate to the studio page with the new draft
-      if (onDraftCreated) {
-        onDraftCreated(draft.draft_id);
-      }
+      if (onDraftCreated) onDraftCreated(draft.draft_id);
       navigate(`/studio/${draft.draft_id}`, { replace: true });
-    } catch (err) {
-      setError((err as Error).message || 'Failed to create draft');
-      setIsCreating(false);
-    }
+    } catch (err) { setError((err as Error).message || 'Failed to create draft'); setIsCreating(false); }
   };
 
-  // Convert local files to a format compatible with HeroPromptArea
-  // HeroPromptArea expects PlannerAttachment[], but we use local files for new drafts
-  const filesForDisplay = localFiles.map((file, index) => ({
-    id: `local-${index}`,
-    filename: file.name,
-    content_type: file.type,
-    size: file.size,
-    created_at: new Date().toISOString(),
-    _localFile: file // Store reference for display
-  }));
+  const selectedFilesCount = availableRepos.length > 0 ? 100 : 0;
+  const estimatedTokens = 42000;
+  const estimatedCost = 0.79;
 
   return (
-    <div className="h-full flex flex-col">
-      {/* Header with Repository Selection */}
-      <div className="bg-gradient-to-r from-indigo-600 to-indigo-700 text-white rounded-t-xl px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">New Implementation Plan</h2>
-            <p className="text-indigo-200 text-sm">Define your task and configure the context</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <label className="text-sm text-indigo-200">Repository:</label>
-            {reposLoading ? (
-              <div className="px-3 py-2 bg-white/20 rounded-lg text-sm">Loading...</div>
-            ) : (
-              <select
-                value={selectedRepo}
-                onChange={(e) => setSelectedRepo(e.target.value)}
-                className="px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-white/50"
-                disabled={repos.length === 0}
-              >
-                {repos.length === 0 ? (
-                  <option value="">No repositories configured</option>
-                ) : (
-                  repos.map(repo => (
-                    <option key={repo.name} value={repo.name} className="text-gray-900">
-                      {repo.baseBranch ? `${repo.name} (${repo.baseBranch})` : repo.name}
-                    </option>
-                  ))
-                )}
-              </select>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Main Content - Split View */}
-      <div className="flex-1 bg-white rounded-b-xl shadow-lg overflow-hidden">
-        <div className="h-full flex">
-          {/* Left Panel - Prompt (60%) */}
-          <div className="w-[60%] h-full flex flex-col border-r border-gray-200">
-            <div className="flex-1 overflow-auto p-6">
-              <HeroPromptArea
-                prompt={prompt}
-                files={filesForDisplay}
-                draftId=""
-                isUploading={isUploading}
-                textareaRef={textareaRef}
-                onPromptChange={setPrompt}
-                onInput={autoResize}
-                onPaste={handlePaste}
-                onUpload={handleUpload}
-                onRemoveFile={async (fileId: string) => {
-                  const index = parseInt(fileId.replace('local-', ''), 10);
-                  if (!isNaN(index)) {
-                    handleRemoveFile(index);
-                  }
-                }}
-                minHeight="calc(100vh - 400px)"
-              />
+    <div className="h-full flex flex-col bg-white">
+      <div className="flex-1 flex min-h-0">
+        <div className="w-[65%] h-full flex flex-col border-r border-gray-100">
+          <div className="px-6 py-3 border-b border-gray-100">
+            <div className="flex items-center gap-2 text-sm">
+              {reposLoading ? <span className="text-gray-400">Loading...</span> : (
+                <>
+                  <span className="font-medium text-gray-700">{selectedRepo || 'Select repository'}</span>
+                  <span className="text-gray-400">&gt;</span>
+                  <div className="relative inline-flex items-center">
+                    <select value={selectedRepo} onChange={(e) => setSelectedRepo(e.target.value)}
+                      className="appearance-none bg-transparent text-gray-600 hover:text-gray-900 focus:outline-none cursor-pointer pr-5"
+                      disabled={repos.length === 0}>
+                      {repos.length === 0 ? <option value="">No repositories</option> :
+                        repos.map(repo => <option key={repo.name} value={repo.name}>{repo.baseBranch || 'main'}</option>)}
+                    </select>
+                    <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 pointer-events-none" />
+                  </div>
+                </>
+              )}
             </div>
           </div>
-
-          {/* Right Panel - Settings (40%) */}
-          <div className="w-[40%] h-full flex flex-col bg-gray-50">
-            <div className="flex-1 overflow-auto p-5 space-y-5">
-              {/* Settings Card */}
-              <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-5">
-                {/* Task Granularity */}
-                <TaskGranularitySection
-                  granularity={granularity}
-                  onGranularityChange={setGranularity}
-                />
-
-                <div className="border-t border-gray-200" />
-
-                {/* Context Settings */}
-                <ContextSettingsSection
-                  contextLevel={contextLevel}
-                  compress={compress}
-                  onContextLevelChange={setContextLevel}
-                  onCompressChange={setCompress}
-                  agents={agents}
-                  generationModel={generationModel}
-                  onGenerationModelChange={setGenerationModel}
-                />
-
-                <div className="border-t border-gray-200" />
-
-                {/* Context Repositories */}
-                <ContextRepositoriesSection
-                  repositories={[]}
-                  availableRepos={availableRepos}
-                  onAdd={() => {}}
-                  onRemove={() => {}}
-                />
+          <div className="flex-1 flex flex-col p-6 min-h-0">
+            <div className="flex-1 flex flex-col min-h-0">
+              <div className="flex-1 min-h-0 flex flex-col" style={{ maxHeight: '80%' }}>
+                <textarea ref={textareaRef} value={prompt} onChange={(e) => setPrompt(e.target.value)}
+                  onInput={autoResize} onPaste={handlePaste}
+                  placeholder="Describe the feature, bug fix, or improvement you want to implement..."
+                  className="flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none focus:outline-none leading-relaxed"
+                  style={{ minHeight: '200px' }} />
+              </div>
+              <div className="mt-4 space-y-3">
+                {localFiles.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {localFiles.map((file, index) => (
+                      <AttachmentChip key={`file-${index}`} file={file} onRemove={() => handleRemoveFile(index)} />
+                    ))}
+                  </div>
+                )}
+                <div className="flex items-center">
+                  <input type="file" ref={fileInputRef} onChange={handleFileInputChange} className="hidden" accept="image/*,.log,.txt,.json" />
+                  <button onClick={() => fileInputRef.current?.click()} disabled={isUploading}
+                    className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 transition-colors">
+                    {isUploading ? <><Loader2 className="w-4 h-4 animate-spin" /><span>Uploading...</span></> :
+                      <><Paperclip className="w-4 h-4" /><span>Attach</span></>}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      {/* Sticky Footer */}
-      <div className="sticky bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-6 py-4 shadow-lg">
-        {error && (
-          <div className="mb-3 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-            {error}
+          <div className="border-t border-gray-100 px-6 py-4 bg-white">
+            {error && <div className="mb-3 p-2 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>}
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-gray-500">Granularity:</span>
+                <GranularityPills value={granularity} onChange={setGranularity} />
+              </div>
+              <button onClick={handleContinue} disabled={isCreating || !selectedRepo || !prompt.trim() || reposLoading}
+                className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors">
+                {isCreating ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /><span>Creating...</span></> :
+                  <><Sparkles className="w-4 h-4" /><span>Generate Plan</span></>}
+              </button>
+            </div>
           </div>
-        )}
-        <button
-          onClick={handleContinue}
-          disabled={isCreating || !selectedRepo || !prompt.trim() || reposLoading}
-          className="w-full py-3 px-4 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-        >
-          {isCreating ? (
-            <>
-              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              Creating Plan...
-            </>
-          ) : (
-            'Continue to Configure Context'
-          )}
-        </button>
+        </div>
+        <div className="w-[35%] h-full flex flex-col bg-white">
+          <div className="p-5 border-b border-gray-100">
+            <ContextLevelSlider value={contextLevel} onChange={setContextLevel} compress={compress}
+              onCompressChange={setCompress} agents={agents} generationModel={generationModel}
+              onGenerationModelChange={setGenerationModel} />
+          </div>
+          <div className="flex-1 overflow-auto p-5">
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-gray-700">Selected Files ({selectedFilesCount})</h3>
+              <p className="text-sm text-gray-400 italic">
+                {selectedFilesCount === 0 ? 'Enter a prompt to analyze relevant files' : 'Files will be selected after context analysis'}
+              </p>
+            </div>
+          </div>
+          <div className="border-t border-gray-100 px-5 py-4 bg-white">
+            <div className="flex items-center justify-between text-sm">
+              <div className="text-gray-500"><span className="font-medium text-gray-700">{(estimatedTokens / 1000).toFixed(0)}k</span> tokens</div>
+              <div className="text-gray-600">Est: <span className="font-semibold text-gray-900">${estimatedCost.toFixed(2)}</span></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
