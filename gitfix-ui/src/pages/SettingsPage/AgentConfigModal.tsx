@@ -309,20 +309,13 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                         </div>
                       </div>
 
-                      {/* GitHub label */}
-                      <div className="flex flex-col gap-1 items-end">
-                        <span className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded font-mono whitespace-nowrap">
+                      {/* GitHub label and custom label input */}
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded font-mono whitespace-nowrap">
                           <GitHubIcon className="w-3 h-3" />
                           {model.githubLabel}
                         </span>
-                      </div>
-                    </div>
-
-                    {/* Custom label input - only show when model is enabled */}
-                    {isSupported && (
-                      <div className="mt-2 ml-14">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-500 whitespace-nowrap">Custom label:</span>
+                        {isSupported && (
                           <input
                             type="text"
                             value={modelCustomLabel}
@@ -333,20 +326,19 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                                 [model.id]: e.target.value
                               }
                             }))}
-                            placeholder="e.g., my-opus-bot"
-                            className="flex-1 px-2 py-1 text-xs bg-white text-gray-900 border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+                            placeholder="custom-label"
+                            className="w-32 px-1.5 py-0.5 text-xs bg-white text-gray-700 border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500 placeholder:text-gray-400"
                           />
-                        </div>
+                        )}
                       </div>
-                    )}
+                    </div>
                   </div>
                 );
               })}
             </div>
             {errors.supportedModels && <p className="mt-1 text-sm text-red-600">{errors.supportedModels}</p>}
             <p className="mt-1 text-sm text-gray-600">
-              Use checkboxes to enable models. Use radio buttons to select the default model.
-              Custom labels allow triggering a specific model with a custom GitHub label (e.g., <code className="bg-gray-100 px-1 rounded">my-opus-bot</code>).
+              Checkboxes enable models, radio buttons select the default. Custom labels (below GitHub label) allow alternative trigger names.
             </p>
           </div>
 
