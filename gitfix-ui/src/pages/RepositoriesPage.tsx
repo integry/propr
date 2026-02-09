@@ -24,6 +24,8 @@ const RepositoriesPage: React.FC = () => {
   const [indexingStatuses, setIndexingStatuses] = useState<Record<string, RepositoryIndexingStatus>>({});
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Track repositories with pending optimistic updates to prevent server responses from overwriting them
+  const pendingOptimisticUpdatesRef = useRef<Set<string>>(new Set());
 
   const loadRepos = useCallback(async () => {
     try {
@@ -90,8 +92,30 @@ const RepositoriesPage: React.FC = () => {
         // Use composite key to distinguish same repo with different branches
         const key = getRepoStatusKey(repo.full_name, repo.branch);
         statusMap[key] = repo;
+
+        // If server confirms indexing status, clear the pending optimistic update
+        if (repo.indexing_status === 'indexing') {
+          pendingOptimisticUpdatesRef.current.delete(key);
+        }
       }
-      setIndexingStatuses(statusMap);
+
+      setIndexingStatuses(prev => {
+        const result = { ...statusMap };
+
+        // Preserve optimistic updates for repos that haven't started indexing on server yet
+        for (const key of pendingOptimisticUpdatesRef.current) {
+          const serverStatus = statusMap[key];
+          const optimisticStatus = prev[key];
+
+          // Keep the optimistic 'indexing' state if server hasn't confirmed indexing yet
+          if (optimisticStatus?.indexing_status === 'indexing' &&
+              (!serverStatus || serverStatus.indexing_status !== 'indexing')) {
+            result[key] = optimisticStatus;
+          }
+        }
+
+        return result;
+      });
     } catch (err) {
       console.error('Failed to load indexing statuses:', err);
     }
@@ -146,6 +170,9 @@ const RepositoriesPage: React.FC = () => {
     // Calculate the status key for this repository
     const statusKey = getRepoStatusKey(repoName, baseBranch);
 
+    // Mark this repository as having a pending optimistic update
+    pendingOptimisticUpdatesRef.current.add(statusKey);
+
     // Optimistic UI update: immediately set status to 'indexing'
     setIndexingStatuses(prev => ({
       ...prev,
@@ -174,7 +201,8 @@ const RepositoriesPage: React.FC = () => {
       // Short delay to allow backend to process
       setTimeout(loadIndexingStatuses, 500);
     } catch (err) {
-      // Revert optimistic update by fetching actual status
+      // Clear pending optimistic update and revert by fetching actual status
+      pendingOptimisticUpdatesRef.current.delete(statusKey);
       loadIndexingStatuses();
       alert('Failed to trigger reindex: ' + (err as Error).message);
     }
