@@ -232,10 +232,12 @@ const AgentCard: React.FC<{
                           </span>
                         )}
                         {modelCustomLabel && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-orange-600 bg-orange-50 border border-orange-200 rounded text-xs font-mono">
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-orange-600 border border-transparent rounded text-xs font-mono cursor-default"
+                            title="Custom GitHub label"
+                          >
                             <TagIcon className="w-3 h-3" />
                             {modelCustomLabel}
-                            <span className="text-[9px] text-orange-500 ml-1">(custom)</span>
                           </span>
                         )}
                         {isDefault && (
