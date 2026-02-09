@@ -1,6 +1,8 @@
 import React from 'react';
 import { AgentConfig, SmartFileSelection as SmartFileInfo } from '../../api/gitfixApi';
 import { ContextLevelSlider } from './ContextLevelSlider';
+import { SmartFileSelection } from './SmartFileSelection';
+import { FileSelectionSkeleton } from './SkeletonLoader';
 
 interface PreviewStats {
   totalTokens?: number;
@@ -51,31 +53,17 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
         />
       </div>
 
-      {/* Selected files / Cost preview area */}
+      {/* Smart file selection */}
       <div className="flex-1 overflow-auto p-5">
-        <div className="space-y-3">
-          <h3 className="text-sm font-medium text-gray-700">
-            Selected Files ({smartSelection?.length || 0})
-          </h3>
-          {isPreviewLoading ? (
-            <p className="text-sm text-gray-400 italic">Analyzing context...</p>
-          ) : smartSelection?.length ? (
-            <div className="text-sm text-gray-600 space-y-1 max-h-64 overflow-auto">
-              {smartSelection.slice(0, 10).map((file, i) => (
-                <div key={i} className="truncate text-xs text-gray-500">{file.path}</div>
-              ))}
-              {smartSelection.length > 10 && (
-                <div className="text-xs text-gray-400 italic">
-                  +{smartSelection.length - 10} more files
-                </div>
-              )}
-            </div>
-          ) : (
-            <p className="text-sm text-gray-400 italic">
-              Files will be selected after context analysis
-            </p>
-          )}
-        </div>
+        {isPreviewLoading && !smartSelection?.length ? (
+          <FileSelectionSkeleton />
+        ) : smartSelection && smartSelection.length > 0 ? (
+          <SmartFileSelection smartSelection={smartSelection} />
+        ) : (
+          <p className="text-sm text-gray-400 italic">
+            Files will be selected after context analysis
+          </p>
+        )}
       </div>
 
       {/* Cost estimate footer */}

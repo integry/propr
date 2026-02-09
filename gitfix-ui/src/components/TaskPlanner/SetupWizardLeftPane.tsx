@@ -1,10 +1,8 @@
 import React from 'react';
-import { PlannerAttachment, GenerationTrace, Granularity, SmartFileSelection as SmartFileInfo } from '../../api/gitfixApi';
+import { PlannerAttachment, GenerationTrace, Granularity } from '../../api/gitfixApi';
 import { ChevronDown, Paperclip, Loader2, Sparkles, Download } from 'lucide-react';
 import { GranularityPills, AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
-import { SmartFileSelection } from './SmartFileSelection';
-import { FileSelectionSkeleton } from './SkeletonLoader';
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; }
 
@@ -30,7 +28,7 @@ const NewModeHeader: React.FC<{
         <select
           value={selectedRepo}
           onChange={(e) => onRepoChange?.(e.target.value)}
-          className="appearance-none bg-transparent font-medium text-gray-700 hover:text-gray-900 focus:outline-none cursor-pointer pr-5"
+          className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 font-medium text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors"
           disabled={repos.length === 0}
         >
           {repos.length === 0 ? (
@@ -44,7 +42,7 @@ const NewModeHeader: React.FC<{
             </>
           )}
         </select>
-        <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 pointer-events-none" />
+        <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
       </div>
       {/* Show branch when repo is selected */}
       {selectedRepo && (
@@ -78,7 +76,7 @@ const EditModeHeader: React.FC<{
           <select
             value={baseBranch}
             onChange={(e) => onBranchChange(e.target.value)}
-            className="appearance-none bg-transparent text-gray-600 hover:text-gray-900 focus:outline-none cursor-pointer pr-5"
+            className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors"
             disabled={branches.length === 0}
           >
             {branches.length === 0 ? (
@@ -89,7 +87,7 @@ const EditModeHeader: React.FC<{
               ))
             )}
           </select>
-          <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 pointer-events-none" />
+          <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
         </>
       )}
     </div>
@@ -230,9 +228,7 @@ interface SetupWizardLeftPaneProps {
   isUploading: boolean;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  smartSelection: SmartFileInfo[] | undefined;
   isPreviewLoading: boolean;
-  hasPreviewData: boolean;
   error: string | null;
   generationError: string | null;
   isGenerating: boolean;
@@ -273,9 +269,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   isUploading,
   fileInputRef,
   onFileInputChange,
-  smartSelection,
   isPreviewLoading,
-  hasPreviewData,
   error,
   generationError,
   isGenerating,
@@ -343,15 +337,6 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           fileInputRef={fileInputRef}
           onFileInputChange={onFileInputChange}
         />
-
-        {/* Smart file selection preview */}
-        <div className="mt-6">
-          {isPreviewLoading && !hasPreviewData ? (
-            <FileSelectionSkeleton />
-          ) : smartSelection && (
-            <SmartFileSelection smartSelection={smartSelection} />
-          )}
-        </div>
       </div>
     </div>
 
