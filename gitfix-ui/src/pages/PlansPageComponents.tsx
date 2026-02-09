@@ -1,0 +1,268 @@
+import React from 'react';
+import { Link } from 'react-router-dom';
+import { Search, Filter, ChevronLeft, ChevronRight } from 'lucide-react';
+import { DraftListItem } from '../api/gitfixApi';
+import {
+  getEffectiveStatus,
+  formatRelativeTime,
+  getStatusBadge,
+  getStatusLabel,
+  getStatusIcon,
+  renderIssueSummary
+} from './PlansPageUtils';
+
+interface EmptyStateProps {
+  type: 'no-plans' | 'no-search-results' | 'no-filter-results';
+  searchQuery?: string;
+  onCreatePlan: () => void;
+  onClearSearch?: () => void;
+  onClearFilter?: () => void;
+}
+
+export const EmptyState: React.FC<EmptyStateProps> = ({
+  type,
+  searchQuery,
+  onCreatePlan,
+  onClearSearch,
+  onClearFilter
+}) => {
+  if (type === 'no-plans') {
+    return (
+      <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+        <div className="mb-4">
+          <svg className="w-16 h-16 mx-auto text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </div>
+        <p className="text-gray-500 mb-4">No plans found. Create your first plan!</p>
+        <button
+          onClick={onCreatePlan}
+          className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+        >
+          Create Your First Plan
+        </button>
+      </div>
+    );
+  }
+
+  if (type === 'no-search-results') {
+    return (
+      <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+        <div className="mb-4">
+          <Search className="w-16 h-16 mx-auto text-gray-400" />
+        </div>
+        <p className="text-gray-500 mb-4">No plans found matching "{searchQuery}"</p>
+        <button
+          onClick={onClearSearch}
+          className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+        >
+          Clear Search
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+      <div className="mb-4">
+        <Filter className="w-16 h-16 mx-auto text-gray-400" />
+      </div>
+      <p className="text-gray-500 mb-4">No plans found for the selected repository.</p>
+      <button
+        onClick={onClearFilter}
+        className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+      >
+        Show All Plans
+      </button>
+    </div>
+  );
+};
+
+interface PlansTableRowProps {
+  draft: DraftListItem;
+  abortingId: string | null;
+  onDelete: (id: string, e: React.MouseEvent) => void;
+  onAbort: (id: string, e: React.MouseEvent) => void;
+}
+
+export const PlansTableRow: React.FC<PlansTableRowProps> = ({
+  draft,
+  abortingId,
+  onDelete,
+  onAbort
+}) => {
+  const effectiveStatus = getEffectiveStatus(draft.status, draft.issue_summary);
+
+  return (
+    <tr className="hover:bg-gray-50 group">
+      <td className="px-6 py-4">
+        <Link to={`/tasks/plan/${draft.draft_id}`} className="block">
+          <div className="text-sm font-medium text-indigo-600">{draft.repository}</div>
+          <div className="text-sm text-gray-500 truncate max-w-md">
+            {draft.name || draft.initial_prompt}
+          </div>
+        </Link>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap">
+        <span className={`px-2 inline-flex items-center gap-1 text-xs leading-5 font-semibold rounded-full ${getStatusBadge(effectiveStatus)}`}>
+          {getStatusIcon(effectiveStatus)}
+          {getStatusLabel(effectiveStatus)}
+        </span>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap">
+        {renderIssueSummary(draft.issue_summary)}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+        {formatRelativeTime(draft.updated_at)}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+        <Link
+          to={`/tasks/plan/${draft.draft_id}`}
+          className="text-indigo-600 hover:text-indigo-900 mr-4"
+        >
+          {draft.status === 'executed' || draft.status === 'merged' || effectiveStatus === 'merged' ? 'Manage' : 'Resume'}
+        </Link>
+        {draft.status === 'generating' && (
+          <button
+            onClick={(e) => onAbort(draft.draft_id, e)}
+            disabled={abortingId === draft.draft_id}
+            className="text-orange-600 hover:text-orange-900 mr-4 disabled:opacity-50"
+          >
+            {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
+          </button>
+        )}
+        <button
+          onClick={(e) => onDelete(draft.draft_id, e)}
+          className="text-red-600 hover:text-red-900 opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          Delete
+        </button>
+      </td>
+    </tr>
+  );
+};
+
+interface PaginationControlsProps {
+  currentPage: number;
+  totalPages: number;
+  totalDrafts: number;
+  pageSize: number;
+  hasMore: boolean;
+  loading: boolean;
+  onPageChange: (page: number) => void;
+}
+
+export const PaginationControls: React.FC<PaginationControlsProps> = ({
+  currentPage,
+  totalPages,
+  totalDrafts,
+  pageSize,
+  hasMore,
+  loading,
+  onPageChange
+}) => {
+  if (totalPages <= 1) return null;
+
+  return (
+    <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-50">
+      <span className="text-sm text-gray-600">
+        Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, totalDrafts)} of {totalDrafts} plans
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onPageChange(Math.max(1, currentPage - 1))}
+          disabled={currentPage === 1 || loading}
+          className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          <ChevronLeft size={16} />
+          Previous
+        </button>
+        <span className="text-sm text-gray-600 px-2">
+          Page {currentPage} of {totalPages}
+        </span>
+        <button
+          onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}
+          disabled={!hasMore || loading}
+          className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          Next
+          <ChevronRight size={16} />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+interface PlansTableProps {
+  drafts: DraftListItem[];
+  abortingId: string | null;
+  onDelete: (id: string, e: React.MouseEvent) => void;
+  onAbort: (id: string, e: React.MouseEvent) => void;
+  currentPage: number;
+  totalPages: number;
+  totalDrafts: number;
+  pageSize: number;
+  hasMore: boolean;
+  loading: boolean;
+  onPageChange: (page: number) => void;
+}
+
+export const PlansTable: React.FC<PlansTableProps> = ({
+  drafts,
+  abortingId,
+  onDelete,
+  onAbort,
+  currentPage,
+  totalPages,
+  totalDrafts,
+  pageSize,
+  hasMore,
+  loading,
+  onPageChange
+}) => {
+  return (
+    <div className="bg-white shadow rounded-lg overflow-hidden">
+      <table className="min-w-full divide-y divide-gray-200">
+        <thead className="bg-gray-50">
+          <tr>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Repository / Prompt
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Status
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Issues
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Last Updated
+            </th>
+            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Actions
+            </th>
+          </tr>
+        </thead>
+        <tbody className="bg-white divide-y divide-gray-200">
+          {drafts.map((draft) => (
+            <PlansTableRow
+              key={draft.draft_id}
+              draft={draft}
+              abortingId={abortingId}
+              onDelete={onDelete}
+              onAbort={onAbort}
+            />
+          ))}
+        </tbody>
+      </table>
+      <PaginationControls
+        currentPage={currentPage}
+        totalPages={totalPages}
+        totalDrafts={totalDrafts}
+        pageSize={pageSize}
+        hasMore={hasMore}
+        loading={loading}
+        onPageChange={onPageChange}
+      />
+    </div>
+  );
+};

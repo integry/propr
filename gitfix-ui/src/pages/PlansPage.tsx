@@ -1,34 +1,35 @@
 // CI trigger: 2026-02-01
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useNewPlanForm } from '../hooks/useNewPlanForm';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem } from '../api/gitfixApi';
-import { Filter, ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
-import {
-  getEffectiveStatus,
-  formatRelativeTime,
-  getStatusBadge,
-  getStatusLabel,
-  getStatusIcon,
-  renderIssueSummary
-} from './PlansPageUtils';
+import { Filter, Search, X } from 'lucide-react';
 import { NewPlanForm } from '../components/Dashboard/index';
+import { EmptyState, PlansTable } from './PlansPageComponents';
 
-const DEFAULT_PAGE_SIZE = 10;
+const DEFAULT_PAGE_SIZE = 50;
 
 const PlansPage: React.FC = () => {
   useDocumentTitle('Plans');
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Derive state from URL parameters
+  const repoFilter = searchParams.get('repository') || 'all';
+  const statusFilter = searchParams.get('status') || 'all';
+  const urlSearch = searchParams.get('search') || '';
+  const currentPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
+
+  // Local state for search input (to handle typing before debounce)
+  const [searchQuery, setSearchQuery] = useState<string>(urlSearch);
+  const [debouncedSearch, setDebouncedSearch] = useState<string>(urlSearch);
+  const isInitialMount = useRef(true);
+
   const [drafts, setDrafts] = useState<DraftListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [repoFilter, setRepoFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [debouncedSearch, setDebouncedSearch] = useState<string>('');
 
   // Pagination state
-  const [currentPage, setCurrentPage] = useState(1);
   const [totalDrafts, setTotalDrafts] = useState(0);
   const [hasMore, setHasMore] = useState(false);
 
@@ -44,7 +45,6 @@ const PlansPage: React.FC = () => {
   // Fetch all repositories for the filter dropdown (without any filters applied)
   const loadAllRepositories = useCallback(async () => {
     try {
-      // Fetch all drafts to get repository counts (with high limit to get all)
       const data = await getDrafts({ limit: 1000 });
       const repoCounts: Record<string, number> = {};
       data.drafts.forEach(draft => {
@@ -100,14 +100,34 @@ const PlansPage: React.FC = () => {
     loadDrafts(currentPage, repoFilter, statusFilter);
   }, [currentPage, repoFilter, statusFilter, debouncedSearch, loadDrafts]);
 
-  // Debounce search query
+  // Sync search input with URL on initial load
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      setSearchQuery(urlSearch);
+      setDebouncedSearch(urlSearch);
+    }
+  }, [urlSearch]);
+
+  // Debounce search query and update URL
   useEffect(() => {
     const timer = setTimeout(() => {
-      setDebouncedSearch(searchQuery);
-      setCurrentPage(1); // Reset to first page when search changes
+      if (searchQuery !== debouncedSearch) {
+        setDebouncedSearch(searchQuery);
+        setSearchParams(prev => {
+          const newParams = new URLSearchParams(prev);
+          if (searchQuery) {
+            newParams.set('search', searchQuery);
+          } else {
+            newParams.delete('search');
+          }
+          newParams.set('page', '1');
+          return newParams;
+        }, { replace: true });
+      }
     }, 300);
     return () => clearTimeout(timer);
-  }, [searchQuery]);
+  }, [searchQuery, debouncedSearch, setSearchParams]);
 
   // Auto-polling every 5 seconds for silent refresh
   useEffect(() => {
@@ -117,21 +137,37 @@ const PlansPage: React.FC = () => {
     return () => clearInterval(intervalId);
   }, [currentPage, repoFilter, statusFilter, loadDrafts]);
 
-  // Reset to first page when filter changes
+  // Helper to update URL params
+  const updateSearchParams = useCallback((updates: Record<string, string | null>) => {
+    setSearchParams(prev => {
+      const newParams = new URLSearchParams(prev);
+      Object.entries(updates).forEach(([key, value]) => {
+        if (value === null || value === 'all' || value === '') {
+          newParams.delete(key);
+        } else {
+          newParams.set(key, value);
+        }
+      });
+      return newParams;
+    }, { replace: true });
+  }, [setSearchParams]);
+
   const handleFilterChange = (newFilter: string) => {
-    setRepoFilter(newFilter);
-    setCurrentPage(1);
+    updateSearchParams({ repository: newFilter, page: '1' });
   };
 
   const handleStatusFilterChange = (newStatus: string) => {
-    setStatusFilter(newStatus);
-    setCurrentPage(1);
+    updateSearchParams({ status: newStatus, page: '1' });
   };
 
   const handleSearchClear = () => {
     setSearchQuery('');
     setDebouncedSearch('');
-    setCurrentPage(1);
+    updateSearchParams({ search: null, page: '1' });
+  };
+
+  const handlePageChange = (newPage: number) => {
+    updateSearchParams({ page: newPage.toString() });
   };
 
   const [abortingId, setAbortingId] = useState<string | null>(null);
@@ -144,7 +180,6 @@ const PlansPage: React.FC = () => {
     setDrafts(drafts.filter(d => d.draft_id !== id));
     try {
       await deleteDraft(id);
-      // Refresh repository counts and current page
       await loadAllRepositories();
       await loadDrafts(currentPage, repoFilter, statusFilter);
     } catch (err) {
@@ -159,7 +194,6 @@ const PlansPage: React.FC = () => {
     setAbortingId(id);
     try {
       await abortGeneration(id);
-      // Refresh the list to show updated status
       await loadDrafts(currentPage, repoFilter, statusFilter);
     } catch (err) {
       setError((err as Error).message || 'Failed to stop generation');
@@ -168,7 +202,6 @@ const PlansPage: React.FC = () => {
     }
   };
 
-  // Only show full-page loading on initial load (when no data yet)
   if (loading && drafts.length === 0 && totalAllDrafts === 0) {
     return (
       <div className="p-6">
@@ -187,12 +220,59 @@ const PlansPage: React.FC = () => {
     );
   }
 
+  const renderContent = () => {
+    if (totalAllDrafts === 0 && !loading && !debouncedSearch) {
+      return (
+        <EmptyState
+          type="no-plans"
+          onCreatePlan={() => newPlanForm.setIsFormExpanded(true)}
+        />
+      );
+    }
+
+    if (drafts.length === 0 && !loading && debouncedSearch) {
+      return (
+        <EmptyState
+          type="no-search-results"
+          searchQuery={debouncedSearch}
+          onCreatePlan={() => newPlanForm.setIsFormExpanded(true)}
+          onClearSearch={handleSearchClear}
+        />
+      );
+    }
+
+    if (drafts.length === 0 && !loading) {
+      return (
+        <EmptyState
+          type="no-filter-results"
+          onCreatePlan={() => newPlanForm.setIsFormExpanded(true)}
+          onClearFilter={() => handleFilterChange('all')}
+        />
+      );
+    }
+
+    return (
+      <PlansTable
+        drafts={drafts}
+        abortingId={abortingId}
+        onDelete={handleDelete}
+        onAbort={handleAbort}
+        currentPage={currentPage}
+        totalPages={totalPages}
+        totalDrafts={totalDrafts}
+        pageSize={DEFAULT_PAGE_SIZE}
+        hasMore={hasMore}
+        loading={loading}
+        onPageChange={handlePageChange}
+      />
+    );
+  };
+
   return (
     <div className="p-6">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
         <div className="flex items-center gap-4">
-          {/* Search input */}
           <div className="relative">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
@@ -253,7 +333,6 @@ const PlansPage: React.FC = () => {
         </div>
       </div>
 
-      {/* NewPlanForm - shown when expanded */}
       {newPlanForm.isFormExpanded && (
         <div className="mb-6">
           <NewPlanForm
@@ -277,156 +356,7 @@ const PlansPage: React.FC = () => {
         </div>
       )}
 
-      {totalAllDrafts === 0 && !loading && !debouncedSearch ? (
-        <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
-          <div className="mb-4">
-            <svg className="w-16 h-16 mx-auto text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-          </div>
-          <p className="text-gray-500 mb-4">No plans found. Create your first plan!</p>
-          <button
-            onClick={() => newPlanForm.setIsFormExpanded(true)}
-            className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
-          >
-            Create Your First Plan
-          </button>
-        </div>
-      ) : drafts.length === 0 && !loading && debouncedSearch ? (
-        <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
-          <div className="mb-4">
-            <Search className="w-16 h-16 mx-auto text-gray-400" />
-          </div>
-          <p className="text-gray-500 mb-4">No plans found matching "{debouncedSearch}"</p>
-          <button
-            onClick={handleSearchClear}
-            className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
-          >
-            Clear Search
-          </button>
-        </div>
-      ) : drafts.length === 0 && !loading ? (
-        <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
-          <div className="mb-4">
-            <Filter className="w-16 h-16 mx-auto text-gray-400" />
-          </div>
-          <p className="text-gray-500 mb-4">No plans found for the selected repository.</p>
-          <button
-            onClick={() => handleFilterChange('all')}
-            className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
-          >
-            Show All Plans
-          </button>
-        </div>
-      ) : (
-        <div className="bg-white shadow rounded-lg overflow-hidden">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Repository / Prompt
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Issues
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Last Updated
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {drafts.map((draft) => (
-                <tr key={draft.draft_id} className="hover:bg-gray-50 group">
-                  <td className="px-6 py-4">
-                    <Link to={`/tasks/plan/${draft.draft_id}`} className="block">
-                      <div className="text-sm font-medium text-indigo-600">{draft.repository}</div>
-                      <div className="text-sm text-gray-500 truncate max-w-md">
-                        {draft.name || draft.initial_prompt}
-                      </div>
-                    </Link>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    {(() => {
-                      const effectiveStatus = getEffectiveStatus(draft.status, draft.issue_summary);
-                      return (
-                        <span className={`px-2 inline-flex items-center gap-1 text-xs leading-5 font-semibold rounded-full ${getStatusBadge(effectiveStatus)}`}>
-                          {getStatusIcon(effectiveStatus)}
-                          {getStatusLabel(effectiveStatus)}
-                        </span>
-                      );
-                    })()}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    {renderIssueSummary(draft.issue_summary)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {formatRelativeTime(draft.updated_at)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    <Link
-                      to={`/tasks/plan/${draft.draft_id}`}
-                      className="text-indigo-600 hover:text-indigo-900 mr-4"
-                    >
-                      {draft.status === 'executed' || draft.status === 'merged' || getEffectiveStatus(draft.status, draft.issue_summary) === 'merged' ? 'Manage' : 'Resume'}
-                    </Link>
-                    {draft.status === 'generating' && (
-                      <button
-                        onClick={(e) => handleAbort(draft.draft_id, e)}
-                        disabled={abortingId === draft.draft_id}
-                        className="text-orange-600 hover:text-orange-900 mr-4 disabled:opacity-50"
-                      >
-                        {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
-                      </button>
-                    )}
-                    <button
-                      onClick={(e) => handleDelete(draft.draft_id, e)}
-                      className="text-red-600 hover:text-red-900 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          {/* Pagination controls */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-50">
-              <span className="text-sm text-gray-600">
-                Showing {(currentPage - 1) * DEFAULT_PAGE_SIZE + 1}-{Math.min(currentPage * DEFAULT_PAGE_SIZE, totalDrafts)} of {totalDrafts} plans
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                  disabled={currentPage === 1 || loading}
-                  className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <ChevronLeft size={16} />
-                  Previous
-                </button>
-                <span className="text-sm text-gray-600 px-2">
-                  Page {currentPage} of {totalPages}
-                </span>
-                <button
-                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                  disabled={!hasMore || loading}
-                  className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  Next
-                  <ChevronRight size={16} />
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {renderContent()}
     </div>
   );
 };
