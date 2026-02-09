@@ -90,6 +90,7 @@ export interface RunLightweightLLMAnalysisOptions {
     issueRef: IssueRef;
     taskId?: string; // For abort signal checking (e.g., draftId for planning)
     executionType?: ExecutionType; // Type of execution for metrics tracking (defaults to 'other')
+    metadata?: Record<string, unknown>; // Optional metadata to include in LLM logs (e.g., granularity, contextLevel)
 }
 
 
@@ -397,7 +398,7 @@ CRITICAL: Do not modify any files. Do not run any commands. Only provide direct 
 }
 
 export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, taskId, issueRef, executionType = 'other' } = options;
+    const { prompt, model, correlationId, taskId, issueRef, executionType = 'other', metadata } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { agentAlias, modelOverride, effectiveModel } = parseAgentModelFormat(model, correlatedLogger);
@@ -420,6 +421,7 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
                     draftId: taskId, // taskId is the draftId for planning calls
                     repository,
                     agentAlias,
+                    metadata,
                 });
                 await persistLlmLog(logEntry);
 

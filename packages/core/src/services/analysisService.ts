@@ -279,6 +279,16 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     const githubToken = tokenData || process.env.GH_TOKEN || '';
 
     const [repoOwner, repoName] = task.repository.split('/');
+
+    // Build metadata for LLM log tracking
+    const taskAnalysisMetadata = {
+      hasCommitDiff: !!localDiff,
+      commitDiffLength: localDiff?.length || 0,
+      originalLogEntries: conversationLog.length,
+      compactedLogEntries: compactedLog.length,
+      compactedLogLength: compactedLogString.length,
+    };
+
     const analysisText: string = await runLightweightLLMAnalysis({
       prompt: metaPrompt,
       model,
@@ -290,7 +300,8 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
         repoOwner,
         repoName
       },
-      executionType: 'task-analysis'
+      executionType: 'task-analysis',
+      metadata: taskAnalysisMetadata
     }) as string;
 
     const analysisReport: AnalysisReport = {

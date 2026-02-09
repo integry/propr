@@ -70,6 +70,13 @@ async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<
 
   correlatedLogger.info({ draftId }, 'Generating task title via LLM');
 
+  // Build metadata for LLM log tracking
+  const titleGenerationMetadata = {
+    planTaskCount: planJson.length,
+    planSummaryLength: planSummary.length,
+    oldName,
+  };
+
   const generatedTitle = await runLightweightLLMAnalysis({
     prompt,
     model: 'haiku',
@@ -77,7 +84,8 @@ async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<
     worktreePath,
     githubToken,
     issueRef: { number: 0, repoOwner: owner, repoName },
-    executionType: 'title-generation'
+    executionType: 'title-generation',
+    metadata: titleGenerationMetadata
   });
 
   const cleanTitle = generatedTitle.replace(/^"|"$/g, '').trim();

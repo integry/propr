@@ -1,7 +1,21 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getLlmLogs, LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
-import { ChevronLeft, ChevronRight, Filter, CheckCircle, XCircle, Clock, Coins, Cpu, Zap } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Filter, Clock, Coins, Cpu, Zap, Info } from 'lucide-react';
+import {
+  formatDuration,
+  formatCost,
+  formatTokens,
+  formatTimestamp,
+  formatType,
+  getContextDisplay,
+  hasDetailedInfo,
+} from './llmLogsUtils';
+import {
+  StatusIcon,
+  ExpandButton,
+  ExpandedRowDetails,
+} from './LlmLogsPageComponents';
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -11,6 +25,7 @@ const LlmLogsPage: React.FC = () => {
   const [pagination, setPagination] = useState<LlmLogsPagination | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
   // Filter states
   const [typeFilter, setTypeFilter] = useState<string>('all');
@@ -88,67 +103,17 @@ const LlmLogsPage: React.FC = () => {
     setCurrentPage(1);
   };
 
-  // Format duration to human-readable (e.g., "1m 30s")
-  const formatDuration = (ms: number | null): string => {
-    if (ms === null) return '-';
-    if (ms < 1000) return `${ms}ms`;
-
-    const totalSeconds = Math.floor(ms / 1000);
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-
-    if (minutes === 0) {
-      return `${seconds}s`;
-    }
-    if (seconds === 0) {
-      return `${minutes}m`;
-    }
-    return `${minutes}m ${seconds}s`;
-  };
-
-  // Format cost
-  const formatCost = (cost: number | null): string => {
-    if (cost === null) return '-';
-    if (cost < 0.001) return '<$0.001';
-    if (cost < 0.01) return `$${cost.toFixed(4)}`;
-    return `$${cost.toFixed(3)}`;
-  };
-
-  // Format tokens
-  const formatTokens = (input: number | null, output: number | null): string => {
-    if (input === null && output === null) return '-';
-    const inputStr = input !== null ? input.toLocaleString() : '0';
-    const outputStr = output !== null ? output.toLocaleString() : '0';
-    return `${inputStr} / ${outputStr}`;
-  };
-
-  // Format timestamp
-  const formatTimestamp = (timestamp: string | null): string => {
-    if (!timestamp) return '-';
-    const date = new Date(timestamp);
-    return date.toLocaleString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
+  // Toggle row expansion
+  const toggleRowExpansion = (logId: number) => {
+    setExpandedRows(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(logId)) {
+        newSet.delete(logId);
+      } else {
+        newSet.add(logId);
+      }
+      return newSet;
     });
-  };
-
-  // Format execution type for display
-  const formatType = (type: string): string => {
-    return type
-      .split('_')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-  };
-
-  // Get status icon
-  const StatusIcon: React.FC<{ success: boolean }> = ({ success }) => {
-    if (success) {
-      return <CheckCircle size={18} className="text-green-500" />;
-    }
-    return <XCircle size={18} className="text-red-500" />;
   };
 
   if (loading && logs.length === 0) {
@@ -231,11 +196,20 @@ const LlmLogsPage: React.FC = () => {
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
+                <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
+                  {/* Expand/Collapse column */}
+                </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Status
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Type
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <div className="flex items-center gap-1">
+                    <Info size={14} />
+                    Context
+                  </div>
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Model
@@ -265,33 +239,55 @@ const LlmLogsPage: React.FC = () => {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {logs.map((log) => (
-                <tr key={log.logId} className="hover:bg-gray-50">
-                  <td className="px-4 py-4 whitespace-nowrap">
-                    <div className="flex items-center" title={log.success ? 'Success' : log.errorMessage || 'Failed'}>
-                      <StatusIcon success={log.success} />
-                    </div>
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap">
-                    <span className="px-2 py-1 text-xs font-medium rounded-full bg-indigo-100 text-indigo-800">
-                      {formatType(log.executionType)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                    {log.modelName || '-'}
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                    {formatTokens(log.inputTokens, log.outputTokens)}
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                    {formatCost(log.costUsd)}
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
-                    {formatDuration(log.durationMs)}
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {formatTimestamp(log.startTime)}
-                  </td>
-                </tr>
+                <React.Fragment key={log.logId}>
+                  <tr
+                    className={`hover:bg-gray-50 ${hasDetailedInfo(log) ? 'cursor-pointer' : ''}`}
+                    onClick={() => hasDetailedInfo(log) && toggleRowExpansion(log.logId)}
+                  >
+                    <td className="px-2 py-4 whitespace-nowrap">
+                      {hasDetailedInfo(log) && (
+                        <ExpandButton
+                          isExpanded={expandedRows.has(log.logId)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleRowExpansion(log.logId);
+                          }}
+                        />
+                      )}
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap">
+                      <div className="flex items-center" title={log.success ? 'Success' : log.errorMessage || 'Failed'}>
+                        <StatusIcon success={log.success} />
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap">
+                      <span className="px-2 py-1 text-xs font-medium rounded-full bg-indigo-100 text-indigo-800">
+                        {formatType(log.executionType)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
+                      <span title={log.repository || log.draftId || log.sessionId || undefined}>
+                        {getContextDisplay(log)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
+                      {log.modelName || '-'}
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
+                      {formatTokens(log.inputTokens, log.outputTokens)}
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
+                      {formatCost(log.costUsd)}
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
+                      {formatDuration(log.durationMs)}
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {formatTimestamp(log.startTime)}
+                    </td>
+                  </tr>
+                  {expandedRows.has(log.logId) && <ExpandedRowDetails log={log} />}
+                </React.Fragment>
               ))}
             </tbody>
           </table>

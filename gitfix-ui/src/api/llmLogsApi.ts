@@ -19,6 +19,7 @@ export interface LlmLogEntry {
   draftId: string | null;
   repository: string | null;
   agentAlias: string | null;
+  metadata: Record<string, unknown> | null;
 }
 
 export interface LlmLogsPagination {
