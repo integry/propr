@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getTasks, getRepositoryStats } from '../api/gitfixApi';
 import type { Task, TaskListProps, LoadConfig, TaskGroup } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
@@ -8,25 +8,91 @@ import { ParentTaskRow, ChildTaskRow, CollapseToggleRow } from './TaskList/TaskR
 import { MobileTaskCard } from './TaskList/MobileTaskCard';
 
 const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+
+  // Determine whether to use URL-based state (only when filters are shown - Tasks page)
+  const useUrlState = !hideFilters;
+
+  // Derive values directly from URL parameters
+  const urlFilter = searchParams.get('status') || 'all';
+  const urlRepoFilter = searchParams.get('repository') || 'all';
+  const urlSearchParam = searchParams.get('search') || '';
+  // Note: URL uses 1-based page, internal state uses 0-based
+  const urlPage = Math.max(0, parseInt(searchParams.get('page') || '1', 10) - 1);
+
+  // Local state (used when hideFilters is true, e.g., Dashboard)
+  const [localFilter, setLocalFilter] = useState<string>('all');
+  const [localRepoFilter, setLocalRepoFilter] = useState<string>('all');
+  const [localCurrentPage, setLocalCurrentPage] = useState<number>(0);
+
+  // Get the effective filter values based on whether we use URL or local state
+  const filter = useUrlState ? urlFilter : localFilter;
+  const repoFilter = useUrlState ? urlRepoFilter : localRepoFilter;
+  const currentPage = useUrlState ? urlPage : localCurrentPage;
+
+  // Search state - local input for typing, debounced for API/URL
+  const urlSearch = useUrlState ? urlSearchParam : '';
+  const [searchQuery, setSearchQuery] = useState<string>(urlSearch);
+  const [debouncedSearch, setDebouncedSearch] = useState<string>(urlSearch);
+  const isInitialMount = useRef(true);
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-
-  const [filter, setFilter] = useState<string>('all');
-  const [repoFilter, setRepoFilter] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [debouncedSearch, setDebouncedSearch] = useState<string>('');
 
   const [availableRepos, setAvailableRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState<boolean>(true);
 
   const [totalTasks, setTotalTasks] = useState<number>(0);
-  const [currentPage, setCurrentPage] = useState<number>(0);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   const tasksPerPage = limit;
 
-  const navigate = useNavigate();
+  // Helper to update URL params (only used when useUrlState is true)
+  const updateSearchParams = useCallback((updates: Record<string, string | null>) => {
+    if (!useUrlState) return;
+    setSearchParams(prev => {
+      const newParams = new URLSearchParams(prev);
+      Object.entries(updates).forEach(([key, value]) => {
+        if (value === null || value === 'all' || value === '' || value === '1') {
+          newParams.delete(key);
+        } else {
+          newParams.set(key, value);
+        }
+      });
+      return newParams;
+    }, { replace: true });
+  }, [useUrlState, setSearchParams]);
+
+  // Unified setters that work with both URL and local state
+  const setFilter = useCallback((newFilter: string) => {
+    if (useUrlState) {
+      updateSearchParams({ status: newFilter, page: '1' });
+    } else {
+      setLocalFilter(newFilter);
+      setLocalCurrentPage(0);
+    }
+  }, [useUrlState, updateSearchParams]);
+
+  const setRepoFilter = useCallback((newRepo: string) => {
+    if (useUrlState) {
+      updateSearchParams({ repository: newRepo, page: '1' });
+    } else {
+      setLocalRepoFilter(newRepo);
+      setLocalCurrentPage(0);
+    }
+  }, [useUrlState, updateSearchParams]);
+
+  const setCurrentPage = useCallback((pageOrUpdater: number | ((prev: number) => number)) => {
+    if (useUrlState) {
+      const newPage = typeof pageOrUpdater === 'function' ? pageOrUpdater(urlPage) : pageOrUpdater;
+      // Convert 0-based internal page to 1-based URL page
+      updateSearchParams({ page: (newPage + 1).toString() });
+    } else {
+      setLocalCurrentPage(pageOrUpdater);
+    }
+  }, [useUrlState, updateSearchParams, urlPage]);
 
   useEffect(() => {
     const fetchRepos = async () => {
@@ -48,15 +114,40 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     fetchRepos();
   }, []);
 
-  // Debounce search query
+  // Sync search input with URL on initial load (only when using URL state)
+  useEffect(() => {
+    if (useUrlState && isInitialMount.current) {
+      isInitialMount.current = false;
+      setSearchQuery(urlSearchParam);
+      setDebouncedSearch(urlSearchParam);
+    }
+  }, [useUrlState, urlSearchParam]);
+
+  // Debounce search query and update URL when applicable
   useEffect(() => {
     const timer = setTimeout(() => {
-      setDebouncedSearch(searchQuery);
-      setCurrentPage(0); // Reset page when search changes
+      if (searchQuery !== debouncedSearch) {
+        setDebouncedSearch(searchQuery);
+        if (useUrlState) {
+          // Update URL with search parameter and reset to page 1
+          setSearchParams(prev => {
+            const newParams = new URLSearchParams(prev);
+            if (searchQuery) {
+              newParams.set('search', searchQuery);
+            } else {
+              newParams.delete('search');
+            }
+            newParams.delete('page'); // Reset to page 1 (default, so delete it)
+            return newParams;
+          }, { replace: true });
+        } else {
+          setLocalCurrentPage(0); // Reset page when search changes
+        }
+      }
     }, 400); // 400ms debounce
 
     return () => clearTimeout(timer);
-  }, [searchQuery]);
+  }, [searchQuery, debouncedSearch, useUrlState, setSearchParams]);
 
   useEffect(() => {
     const fetchTasks = async (loadConfig?: LoadConfig) => {
@@ -163,7 +254,6 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         setRepoFilter={setRepoFilter}
         availableRepos={availableRepos}
         reposLoading={reposLoading}
-        setCurrentPage={setCurrentPage}
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
       />

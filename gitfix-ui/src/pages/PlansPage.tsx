@@ -1,6 +1,6 @@
 // CI trigger: 2026-02-01
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useNewPlanForm } from '../hooks/useNewPlanForm';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem } from '../api/gitfixApi';
@@ -15,20 +15,28 @@ import {
 } from './PlansPageUtils';
 import { NewPlanForm } from '../components/Dashboard/index';
 
-const DEFAULT_PAGE_SIZE = 10;
+const DEFAULT_PAGE_SIZE = 50;
 
 const PlansPage: React.FC = () => {
   useDocumentTitle('Plans');
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Derive state from URL parameters
+  const repoFilter = searchParams.get('repository') || 'all';
+  const statusFilter = searchParams.get('status') || 'all';
+  const urlSearch = searchParams.get('search') || '';
+  const currentPage = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
+
+  // Local state for search input (to handle typing before debounce)
+  const [searchQuery, setSearchQuery] = useState<string>(urlSearch);
+  const [debouncedSearch, setDebouncedSearch] = useState<string>(urlSearch);
+  const isInitialMount = useRef(true);
+
   const [drafts, setDrafts] = useState<DraftListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [repoFilter, setRepoFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [debouncedSearch, setDebouncedSearch] = useState<string>('');
 
   // Pagination state
-  const [currentPage, setCurrentPage] = useState(1);
   const [totalDrafts, setTotalDrafts] = useState(0);
   const [hasMore, setHasMore] = useState(false);
 
@@ -100,14 +108,35 @@ const PlansPage: React.FC = () => {
     loadDrafts(currentPage, repoFilter, statusFilter);
   }, [currentPage, repoFilter, statusFilter, debouncedSearch, loadDrafts]);
 
-  // Debounce search query
+  // Sync search input with URL on initial load
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      setSearchQuery(urlSearch);
+      setDebouncedSearch(urlSearch);
+    }
+  }, [urlSearch]);
+
+  // Debounce search query and update URL
   useEffect(() => {
     const timer = setTimeout(() => {
-      setDebouncedSearch(searchQuery);
-      setCurrentPage(1); // Reset to first page when search changes
+      if (searchQuery !== debouncedSearch) {
+        setDebouncedSearch(searchQuery);
+        // Update URL with search parameter and reset to page 1
+        setSearchParams(prev => {
+          const newParams = new URLSearchParams(prev);
+          if (searchQuery) {
+            newParams.set('search', searchQuery);
+          } else {
+            newParams.delete('search');
+          }
+          newParams.set('page', '1');
+          return newParams;
+        }, { replace: true });
+      }
     }, 300);
     return () => clearTimeout(timer);
-  }, [searchQuery]);
+  }, [searchQuery, debouncedSearch, setSearchParams]);
 
   // Auto-polling every 5 seconds for silent refresh
   useEffect(() => {
@@ -117,21 +146,38 @@ const PlansPage: React.FC = () => {
     return () => clearInterval(intervalId);
   }, [currentPage, repoFilter, statusFilter, loadDrafts]);
 
+  // Helper to update URL params
+  const updateSearchParams = useCallback((updates: Record<string, string | null>) => {
+    setSearchParams(prev => {
+      const newParams = new URLSearchParams(prev);
+      Object.entries(updates).forEach(([key, value]) => {
+        if (value === null || value === 'all' || value === '') {
+          newParams.delete(key);
+        } else {
+          newParams.set(key, value);
+        }
+      });
+      return newParams;
+    }, { replace: true });
+  }, [setSearchParams]);
+
   // Reset to first page when filter changes
   const handleFilterChange = (newFilter: string) => {
-    setRepoFilter(newFilter);
-    setCurrentPage(1);
+    updateSearchParams({ repository: newFilter, page: '1' });
   };
 
   const handleStatusFilterChange = (newStatus: string) => {
-    setStatusFilter(newStatus);
-    setCurrentPage(1);
+    updateSearchParams({ status: newStatus, page: '1' });
   };
 
   const handleSearchClear = () => {
     setSearchQuery('');
     setDebouncedSearch('');
-    setCurrentPage(1);
+    updateSearchParams({ search: null, page: '1' });
+  };
+
+  const handlePageChange = (newPage: number) => {
+    updateSearchParams({ page: newPage.toString() });
   };
 
   const [abortingId, setAbortingId] = useState<string | null>(null);
@@ -404,7 +450,7 @@ const PlansPage: React.FC = () => {
               </span>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
                   disabled={currentPage === 1 || loading}
                   className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
@@ -415,7 +461,7 @@ const PlansPage: React.FC = () => {
                   Page {currentPage} of {totalPages}
                 </span>
                 <button
-                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
                   disabled={!hasMore || loading}
                   className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
