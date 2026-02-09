@@ -24,6 +24,7 @@ interface LlmLogRow {
   draft_id: string | null;
   repository: string | null;
   agent_alias: string | null;
+  metadata: string | null;
 }
 
 interface CountRow {
@@ -67,7 +68,8 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
           'correlation_id',
           'draft_id',
           'repository',
-          'agent_alias'
+          'agent_alias',
+          'metadata'
         );
 
       // Apply filters
@@ -120,26 +122,38 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
 
       // Format response
       res.json({
-        logs: logs.map((row) => ({
-          logId: row.log_id,
-          executionType: row.execution_type,
-          modelName: row.model_name,
-          startTime: row.start_time,
-          endTime: row.end_time,
-          durationMs: row.duration_ms,
-          success: Boolean(row.success),
-          inputTokens: row.input_tokens,
-          outputTokens: row.output_tokens,
-          cacheCreationInputTokens: row.cache_creation_input_tokens,
-          cacheReadInputTokens: row.cache_read_input_tokens,
-          costUsd: row.cost_usd ? Number(row.cost_usd) : null,
-          errorMessage: row.error_message,
-          sessionId: row.session_id,
-          correlationId: row.correlation_id,
-          draftId: row.draft_id,
-          repository: row.repository,
-          agentAlias: row.agent_alias
-        })),
+        logs: logs.map((row) => {
+          // Parse metadata JSON string to object
+          let metadata: Record<string, unknown> | null = null;
+          if (row.metadata) {
+            try {
+              metadata = JSON.parse(row.metadata);
+            } catch {
+              // If parsing fails, keep as null
+            }
+          }
+          return {
+            logId: row.log_id,
+            executionType: row.execution_type,
+            modelName: row.model_name,
+            startTime: row.start_time,
+            endTime: row.end_time,
+            durationMs: row.duration_ms,
+            success: Boolean(row.success),
+            inputTokens: row.input_tokens,
+            outputTokens: row.output_tokens,
+            cacheCreationInputTokens: row.cache_creation_input_tokens,
+            cacheReadInputTokens: row.cache_read_input_tokens,
+            costUsd: row.cost_usd ? Number(row.cost_usd) : null,
+            errorMessage: row.error_message,
+            sessionId: row.session_id,
+            correlationId: row.correlation_id,
+            draftId: row.draft_id,
+            repository: row.repository,
+            agentAlias: row.agent_alias,
+            metadata,
+          };
+        }),
         pagination: {
           page,
           limit,

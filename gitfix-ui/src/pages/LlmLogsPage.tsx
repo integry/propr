@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getLlmLogs, LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
-import { ChevronLeft, ChevronRight, Filter, CheckCircle, XCircle, Clock, Coins, Cpu, Zap } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Filter, CheckCircle, XCircle, Clock, Coins, Cpu, Zap, Info } from 'lucide-react';
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -11,6 +11,7 @@ const LlmLogsPage: React.FC = () => {
   const [pagination, setPagination] = useState<LlmLogsPagination | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
   // Filter states
   const [typeFilter, setTypeFilter] = useState<string>('all');
@@ -88,6 +89,19 @@ const LlmLogsPage: React.FC = () => {
     setCurrentPage(1);
   };
 
+  // Toggle row expansion
+  const toggleRowExpansion = (logId: number) => {
+    setExpandedRows(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(logId)) {
+        newSet.delete(logId);
+      } else {
+        newSet.add(logId);
+      }
+      return newSet;
+    });
+  };
+
   // Format duration to human-readable (e.g., "1m 30s")
   const formatDuration = (ms: number | null): string => {
     if (ms === null) return '-';
@@ -143,12 +157,128 @@ const LlmLogsPage: React.FC = () => {
       .join(' ');
   };
 
+  // Get context display text (shows repository, draft ID, or session ID)
+  const getContextDisplay = (log: LlmLogEntry): string => {
+    if (log.repository) {
+      return log.repository;
+    }
+    if (log.draftId) {
+      // Show shortened draft ID
+      return `Draft: ${log.draftId.substring(0, 8)}...`;
+    }
+    if (log.sessionId) {
+      // Show shortened session ID
+      return `Session: ${log.sessionId.substring(0, 8)}...`;
+    }
+    return '-';
+  };
+
+  // Check if a log has detailed info to show
+  const hasDetailedInfo = (log: LlmLogEntry): boolean => {
+    return !!(log.metadata || log.draftId || log.sessionId || log.correlationId || log.errorMessage);
+  };
+
   // Get status icon
   const StatusIcon: React.FC<{ success: boolean }> = ({ success }) => {
     if (success) {
       return <CheckCircle size={18} className="text-green-500" />;
     }
     return <XCircle size={18} className="text-red-500" />;
+  };
+
+  // Expanded row detail component
+  const ExpandedRowDetails: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
+    return (
+      <tr className="bg-gray-50">
+        <td colSpan={9} className="px-4 py-4">
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            {/* IDs Section */}
+            <div className="space-y-2">
+              <h4 className="font-medium text-gray-700">Identifiers</h4>
+              <div className="bg-white p-3 rounded border border-gray-200 space-y-1">
+                {log.repository && (
+                  <div>
+                    <span className="text-gray-500">Repository:</span>{' '}
+                    <span className="font-mono text-gray-800">{log.repository}</span>
+                  </div>
+                )}
+                {log.draftId && (
+                  <div>
+                    <span className="text-gray-500">Draft ID:</span>{' '}
+                    <span className="font-mono text-gray-800">{log.draftId}</span>
+                  </div>
+                )}
+                {log.sessionId && (
+                  <div>
+                    <span className="text-gray-500">Session ID:</span>{' '}
+                    <span className="font-mono text-gray-800">{log.sessionId}</span>
+                  </div>
+                )}
+                {log.correlationId && (
+                  <div>
+                    <span className="text-gray-500">Correlation ID:</span>{' '}
+                    <span className="font-mono text-gray-800">{log.correlationId}</span>
+                  </div>
+                )}
+                {log.agentAlias && (
+                  <div>
+                    <span className="text-gray-500">Agent:</span>{' '}
+                    <span className="font-mono text-gray-800">{log.agentAlias}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Metadata Section */}
+            <div className="space-y-2">
+              <h4 className="font-medium text-gray-700">Metadata</h4>
+              <div className="bg-white p-3 rounded border border-gray-200">
+                {log.metadata ? (
+                  <pre className="text-xs font-mono text-gray-800 whitespace-pre-wrap overflow-x-auto">
+                    {JSON.stringify(log.metadata, null, 2)}
+                  </pre>
+                ) : (
+                  <span className="text-gray-400 italic">No metadata available</span>
+                )}
+              </div>
+            </div>
+
+            {/* Error Message Section (if failed) */}
+            {log.errorMessage && (
+              <div className="col-span-2 space-y-2">
+                <h4 className="font-medium text-red-700">Error Message</h4>
+                <div className="bg-red-50 p-3 rounded border border-red-200">
+                  <pre className="text-xs font-mono text-red-800 whitespace-pre-wrap">
+                    {log.errorMessage}
+                  </pre>
+                </div>
+              </div>
+            )}
+
+            {/* Cache Info Section (if available) */}
+            {(log.cacheCreationInputTokens || log.cacheReadInputTokens) && (
+              <div className="col-span-2 space-y-2">
+                <h4 className="font-medium text-gray-700">Cache Statistics</h4>
+                <div className="bg-white p-3 rounded border border-gray-200 flex gap-6">
+                  {log.cacheCreationInputTokens !== null && (
+                    <div>
+                      <span className="text-gray-500">Cache Creation Tokens:</span>{' '}
+                      <span className="font-mono text-gray-800">{log.cacheCreationInputTokens.toLocaleString()}</span>
+                    </div>
+                  )}
+                  {log.cacheReadInputTokens !== null && (
+                    <div>
+                      <span className="text-gray-500">Cache Read Tokens:</span>{' '}
+                      <span className="font-mono text-gray-800">{log.cacheReadInputTokens.toLocaleString()}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </td>
+      </tr>
+    );
   };
 
   if (loading && logs.length === 0) {
@@ -231,11 +361,20 @@ const LlmLogsPage: React.FC = () => {
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
+                <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
+                  {/* Expand/Collapse column */}
+                </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Status
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Type
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <div className="flex items-center gap-1">
+                    <Info size={14} />
+                    Context
+                  </div>
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Model
@@ -265,33 +404,61 @@ const LlmLogsPage: React.FC = () => {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {logs.map((log) => (
-                <tr key={log.logId} className="hover:bg-gray-50">
-                  <td className="px-4 py-4 whitespace-nowrap">
-                    <div className="flex items-center" title={log.success ? 'Success' : log.errorMessage || 'Failed'}>
-                      <StatusIcon success={log.success} />
-                    </div>
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap">
-                    <span className="px-2 py-1 text-xs font-medium rounded-full bg-indigo-100 text-indigo-800">
-                      {formatType(log.executionType)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                    {log.modelName || '-'}
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                    {formatTokens(log.inputTokens, log.outputTokens)}
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                    {formatCost(log.costUsd)}
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
-                    {formatDuration(log.durationMs)}
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {formatTimestamp(log.startTime)}
-                  </td>
-                </tr>
+                <React.Fragment key={log.logId}>
+                  <tr
+                    className={`hover:bg-gray-50 ${hasDetailedInfo(log) ? 'cursor-pointer' : ''}`}
+                    onClick={() => hasDetailedInfo(log) && toggleRowExpansion(log.logId)}
+                  >
+                    <td className="px-2 py-4 whitespace-nowrap">
+                      {hasDetailedInfo(log) && (
+                        <button
+                          className="p-1 hover:bg-gray-200 rounded"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleRowExpansion(log.logId);
+                          }}
+                        >
+                          {expandedRows.has(log.logId) ? (
+                            <ChevronUp size={16} className="text-gray-500" />
+                          ) : (
+                            <ChevronDown size={16} className="text-gray-500" />
+                          )}
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap">
+                      <div className="flex items-center" title={log.success ? 'Success' : log.errorMessage || 'Failed'}>
+                        <StatusIcon success={log.success} />
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap">
+                      <span className="px-2 py-1 text-xs font-medium rounded-full bg-indigo-100 text-indigo-800">
+                        {formatType(log.executionType)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
+                      <span title={log.repository || log.draftId || log.sessionId || undefined}>
+                        {getContextDisplay(log)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
+                      {log.modelName || '-'}
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
+                      {formatTokens(log.inputTokens, log.outputTokens)}
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
+                      {formatCost(log.costUsd)}
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
+                      {formatDuration(log.durationMs)}
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {formatTimestamp(log.startTime)}
+                    </td>
+                  </tr>
+                  {expandedRows.has(log.logId) && <ExpandedRowDetails log={log} />}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
