@@ -2,7 +2,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import logger from '../../utils/logger.js';
-import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult } from '../types.js';
+import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, TokenUsage } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import {
     verifyWorktreeStructure,
@@ -11,16 +11,100 @@ import {
     parseStreamJsonOutput,
     storePromptInRedis,
     buildClaudePrompt,
-    UsageLimitError
+    UsageLimitError,
+    ConversationLogEntry
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, getDefaultModel } from '../../config/modelAliases.js';
 import { resolveConfigPath } from '../../config/configManager.js';
+import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
 
 const DEFAULT_CLAUDE_MAX_TURNS = 1000;
 const DEFAULT_CLAUDE_TIMEOUT_MS = 300000;
+
+/**
+ * Aggregates token usage from all assistant messages in the conversation log.
+ * Claude Code CLI stream-json output includes per-message usage in assistant messages.
+ * This helps when the final result only reports the last turn's usage.
+ */
+function aggregateTokensFromConversationLog(conversationLog: ConversationLogEntry[]): TokenUsage {
+    const aggregated: TokenUsage = {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0
+    };
+
+    for (const entry of conversationLog) {
+        if (entry.type === 'assistant' && entry.message) {
+            const message = entry.message as { usage?: TokenUsage };
+            if (message.usage) {
+                aggregated.input_tokens = (aggregated.input_tokens || 0) + (message.usage.input_tokens || 0);
+                aggregated.output_tokens = (aggregated.output_tokens || 0) + (message.usage.output_tokens || 0);
+                aggregated.cache_creation_input_tokens = (aggregated.cache_creation_input_tokens || 0) + (message.usage.cache_creation_input_tokens || 0);
+                aggregated.cache_read_input_tokens = (aggregated.cache_read_input_tokens || 0) + (message.usage.cache_read_input_tokens || 0);
+            }
+        }
+    }
+
+    return aggregated;
+}
+
+/**
+ * Returns the better token usage between reported and aggregated values.
+ * Prefers aggregated if it has higher input tokens (indicating multi-turn conversation).
+ */
+function getCorrectedTokenUsage(
+    reported: TokenUsage | undefined,
+    conversationLog: ConversationLogEntry[]
+): TokenUsage | undefined {
+    const aggregated = aggregateTokensFromConversationLog(conversationLog);
+
+    // If aggregated has meaningful values and is higher than reported, use it
+    const aggregatedTotal = (aggregated.input_tokens || 0) + (aggregated.output_tokens || 0);
+    const reportedTotal = ((reported?.input_tokens || 0) + (reported?.output_tokens || 0));
+
+    if (aggregatedTotal > reportedTotal) {
+        logger.debug({
+            reportedInputTokens: reported?.input_tokens,
+            reportedOutputTokens: reported?.output_tokens,
+            aggregatedInputTokens: aggregated.input_tokens,
+            aggregatedOutputTokens: aggregated.output_tokens
+        }, 'Using aggregated token usage (higher than reported)');
+        return aggregated;
+    }
+
+    return reported;
+}
+
+/**
+ * Ensures the initial prompt is included in the conversation log.
+ * Claude Code CLI stream output often omits the stdin prompt, leading to incomplete logs.
+ */
+function ensurePromptInConversationLog(
+    conversationLog: ConversationLogEntry[],
+    prompt: string
+): ConversationLogEntry[] {
+    // Check if there's already a user message at the start
+    const hasInitialUserMessage = conversationLog.length > 0 && conversationLog[0].type === 'user';
+
+    if (!hasInitialUserMessage) {
+        // Inject the prompt as the first user message
+        const promptEntry: ConversationLogEntry = {
+            type: 'user',
+            message: {
+                id: 'initial-prompt',
+            },
+            timestamp: new Date().toISOString(),
+            content: [{ type: 'text', text: prompt }]
+        };
+        return [promptEntry, ...conversationLog];
+    }
+
+    return conversationLog;
+}
 
 export class ClaudeAgent implements Agent {
     readonly config: AgentConfig;
@@ -119,6 +203,12 @@ export class ClaudeAgent implements Agent {
 
             const modelUsed = claudeOutput.model || effectiveModel || getDefaultModel();
 
+            // Ensure prompt is included in conversation log (stdin prompt often omitted in stream output)
+            const fullConversationLog = ensurePromptInConversationLog(claudeOutput.conversationLog, prompt);
+
+            // Get corrected token usage (aggregate from conversation log if reported seems incomplete)
+            const correctedTokenUsage = getCorrectedTokenUsage(claudeOutput.tokenUsage, fullConversationLog);
+
             const response: AgentExecutionResult = {
                 success: claudeOutput.success,
                 executionTimeMs: executionTime,
@@ -133,8 +223,8 @@ export class ClaudeAgent implements Agent {
                 commitMessage: null,
                 summary: claudeOutput.finalResult?.result ?? undefined,
                 prompt,
-                conversationLog: claudeOutput.conversationLog,
-                tokenUsage: claudeOutput.tokenUsage
+                conversationLog: fullConversationLog,
+                tokenUsage: correctedTokenUsage
             };
 
             // Store prompt in Redis for audit trail
@@ -146,6 +236,27 @@ export class ClaudeAgent implements Agent {
                 isRetry,
                 retryReason
             });
+
+            // Persist LLM log for visibility in the LLM Logs UI
+            const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+            const logEntry = createLlmLogFromAnalysis({
+                executionType: 'implementation',
+                modelUsed,
+                executionTimeMs: executionTime,
+                success: claudeOutput.success,
+                tokenUsage: correctedTokenUsage,
+                error: claudeOutput.success ? undefined : (result.stderr || 'Execution failed'),
+                sessionId: claudeOutput.sessionId ?? undefined,
+                draftId: taskId,
+                repository,
+                agentAlias: this.config.alias,
+                metadata: {
+                    isRetry,
+                    retryReason,
+                    conversationId: claudeOutput.conversationId
+                }
+            });
+            await persistLlmLog(logEntry);
 
             if (!response.success) {
                 logger.error({

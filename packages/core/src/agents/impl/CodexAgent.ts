@@ -15,6 +15,7 @@ import {
     storeCodexPromptInRedis
 } from '../../codex/codexHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
+import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -149,6 +150,27 @@ export class CodexAgent implements Agent {
                 isRetry,
                 retryReason
             });
+
+            // Persist LLM log for visibility in the LLM Logs UI
+            const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+            const logEntry = createLlmLogFromAnalysis({
+                executionType: 'implementation',
+                modelUsed,
+                executionTimeMs: executionTime,
+                success: response.success,
+                tokenUsage: parsedOutput.tokenUsage,
+                error: response.success ? undefined : (parsedOutput.error || 'Execution failed'),
+                sessionId: parsedOutput.sessionId,
+                draftId: taskId,
+                repository,
+                agentAlias: this.config.alias,
+                metadata: {
+                    isRetry,
+                    retryReason,
+                    conversationId: parsedOutput.conversationId
+                }
+            });
+            await persistLlmLog(logEntry);
 
             if (!response.success) {
                 logger.error({

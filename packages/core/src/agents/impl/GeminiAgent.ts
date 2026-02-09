@@ -8,6 +8,7 @@ import {
     UsageLimitError
 } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
+import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -65,7 +66,7 @@ export class GeminiAgent implements Agent {
             });
 
             const executionTime = Date.now() - startTime;
-            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId });
+            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, isRetry, retryReason });
         } catch (error) {
             return this.handleExecutionError(error, Date.now() - startTime, issueRef, effectiveModel);
         }
@@ -82,14 +83,34 @@ export class GeminiAgent implements Agent {
         result: { stdout: string; stderr: string; exitCode: number | null }; executionTime: number;
         issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string | undefined;
         prompt: string; worktreePath: string; worktreeGitContent: string | null; onSessionId?: (sessionId: string) => void;
+        taskId?: string; isRetry?: boolean; retryReason?: string;
     }): Promise<AgentExecutionResult> {
-        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId } = opts;
+        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, isRetry, retryReason } = opts;
         logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Gemini agent execution completed');
         const { sessionId, modelUsed: parsedModel, summary, conversationLog, tokenUsage } = this.parseGeminiJsonl(result.stdout);
         if (sessionId && onSessionId) onSessionId(sessionId);
         if (sessionId && conversationLog.length > 0) await this.writeConversationFile(sessionId, conversationLog);
         const modelUsed = parsedModel || effectiveModel || 'unknown';
-        const response: AgentExecutionResult = { success: result.exitCode === 0, executionTimeMs: executionTime, logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''), exitCode: result.exitCode, rawOutput: result.stdout, modelUsed, modifiedFiles: [], commitMessage: null, summary: summary ?? undefined, prompt, sessionId, conversationLog, tokenUsage: (tokenUsage.input_tokens || tokenUsage.output_tokens) ? tokenUsage : undefined };
+        const finalTokenUsage = (tokenUsage.input_tokens || tokenUsage.output_tokens) ? tokenUsage : undefined;
+        const response: AgentExecutionResult = { success: result.exitCode === 0, executionTimeMs: executionTime, logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''), exitCode: result.exitCode, rawOutput: result.stdout, modelUsed, modifiedFiles: [], commitMessage: null, summary: summary ?? undefined, prompt, sessionId, conversationLog, tokenUsage: finalTokenUsage };
+
+        // Persist LLM log for visibility in the LLM Logs UI
+        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+        const logEntry = createLlmLogFromAnalysis({
+            executionType: 'implementation',
+            modelUsed,
+            executionTimeMs: executionTime,
+            success: response.success,
+            tokenUsage: finalTokenUsage,
+            error: response.success ? undefined : (result.stderr || 'Execution failed'),
+            sessionId,
+            draftId: taskId,
+            repository,
+            agentAlias: this.config.alias,
+            metadata: { isRetry, retryReason }
+        });
+        await persistLlmLog(logEntry);
+
         if (!response.success) logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias }, 'Gemini agent execution failed');
         else { logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Gemini agent execution succeeded'); verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent); }
         return response;
