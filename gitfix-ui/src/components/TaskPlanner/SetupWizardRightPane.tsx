@@ -10,6 +10,7 @@ interface PreviewStats {
 }
 
 interface SetupWizardRightPaneProps {
+  isNewMode?: boolean;
   contextLevel: number;
   onContextLevelChange: (level: number) => void;
   compress: boolean;
@@ -23,6 +24,7 @@ interface SetupWizardRightPaneProps {
 }
 
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
+  isNewMode = false,
   contextLevel,
   onContextLevelChange,
   compress,
@@ -55,9 +57,13 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
       <div className="flex-1 overflow-auto p-5">
         <div className="space-y-3">
           <h3 className="text-sm font-medium text-gray-700">
-            Selected Files ({smartSelection?.length || 0})
+            Selected Files ({isNewMode ? 0 : (smartSelection?.length || 0)})
           </h3>
-          {isPreviewLoading ? (
+          {isNewMode ? (
+            <p className="text-sm text-gray-400 italic">
+              Files will be selected after context analysis
+            </p>
+          ) : isPreviewLoading ? (
             <p className="text-sm text-gray-400 italic">Analyzing context...</p>
           ) : smartSelection?.length ? (
             <div className="text-sm text-gray-600 space-y-1 max-h-64 overflow-auto">
@@ -83,16 +89,16 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
         <div className="flex items-center justify-between text-sm">
           <div className="text-gray-500">
             <span className="font-medium text-gray-700">
-              {stats?.totalTokens
+              {isNewMode ? '42' : (stats?.totalTokens
                 ? (stats.totalTokens / 1000).toFixed(0)
-                : '0'}k
+                : '0')}k
             </span>{' '}
             tokens
           </div>
           <div className="text-gray-600">
             Est:{' '}
             <span className="font-semibold text-gray-900">
-              ${stats?.costEstimate?.toFixed(2) || '0.00'}
+              ${isNewMode ? '0.79' : (stats?.costEstimate?.toFixed(2) || '0.00')}
             </span>
           </div>
         </div>

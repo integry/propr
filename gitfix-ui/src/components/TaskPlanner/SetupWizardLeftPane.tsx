@@ -6,8 +6,15 @@ import { GenerationProgress } from './GenerationProgress';
 import { SmartFileSelection } from './SmartFileSelection';
 import { FileSelectionSkeleton } from './SkeletonLoader';
 
+interface Repo { name: string; enabled: boolean; baseBranch?: string; }
+
 interface SetupWizardLeftPaneProps {
+  isNewMode: boolean;
   repository: string;
+  repos?: Repo[];
+  selectedRepo?: string;
+  onRepoChange?: (repo: string) => void;
+  reposLoading?: boolean;
   baseBranch: string;
   branches: string[];
   isRepoLoading: boolean;
@@ -20,7 +27,9 @@ interface SetupWizardLeftPaneProps {
   autoResize: () => void;
   onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   files: PlannerAttachment[];
+  localFiles?: File[];
   onRemoveFile: (attachmentId: string) => void;
+  onRemoveLocalFile?: (fileIndex: number) => void;
   isUploading: boolean;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -30,6 +39,7 @@ interface SetupWizardLeftPaneProps {
   error: string | null;
   generationError: string | null;
   isGenerating: boolean;
+  isCreating?: boolean;
   generationTrace?: GenerationTrace;
   onAbort: () => Promise<void>;
   granularity: Granularity;
@@ -42,7 +52,12 @@ interface SetupWizardLeftPaneProps {
 }
 
 export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
+  isNewMode,
   repository,
+  repos = [],
+  selectedRepo = '',
+  onRepoChange,
+  reposLoading = false,
   baseBranch,
   branches,
   isRepoLoading,
@@ -55,7 +70,9 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   autoResize,
   onPaste,
   files,
+  localFiles = [],
   onRemoveFile,
+  onRemoveLocalFile,
   isUploading,
   fileInputRef,
   onFileInputChange,
@@ -65,6 +82,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   error,
   generationError,
   isGenerating,
+  isCreating = false,
   generationTrace,
   onAbort,
   granularity,
@@ -80,33 +98,65 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
       {/* Header with repo/branch */}
       <div className="px-6 py-3 border-b border-gray-100">
         <div className="flex items-center gap-2 text-sm">
-          <span className="font-medium text-gray-700">{repository}</span>
-          <span className="text-gray-400">&gt;</span>
-          <div className="relative inline-flex items-center">
-            {isRepoLoading ? (
+          {isNewMode ? (
+            // New mode: show repository selector
+            reposLoading ? (
               <span className="text-gray-400">Loading...</span>
             ) : (
               <>
-                <select
-                  value={baseBranch}
-                  onChange={(e) => onBranchChange(e.target.value)}
-                  className="appearance-none bg-transparent text-gray-600 hover:text-gray-900 focus:outline-none cursor-pointer pr-5"
-                  disabled={branches.length === 0}
-                >
-                  {branches.length === 0 ? (
-                    <option value="">No branches</option>
-                  ) : (
-                    branches.map(branch => (
-                      <option key={branch} value={branch}>{branch}</option>
-                    ))
-                  )}
-                </select>
-                <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 pointer-events-none" />
+                <span className="font-medium text-gray-700">{selectedRepo || 'Select repository'}</span>
+                <span className="text-gray-400">&gt;</span>
+                <div className="relative inline-flex items-center">
+                  <select
+                    value={selectedRepo}
+                    onChange={(e) => onRepoChange?.(e.target.value)}
+                    className="appearance-none bg-transparent text-gray-600 hover:text-gray-900 focus:outline-none cursor-pointer pr-5"
+                    disabled={repos.length === 0}
+                  >
+                    {repos.length === 0 ? (
+                      <option value="">No repositories</option>
+                    ) : (
+                      repos.map(repo => (
+                        <option key={repo.name} value={repo.name}>{repo.baseBranch || 'main'}</option>
+                      ))
+                    )}
+                  </select>
+                  <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 pointer-events-none" />
+                </div>
               </>
-            )}
-          </div>
-          {(branchError || repoError) && (
-            <span className="text-red-500 text-xs ml-2">{branchError || repoError}</span>
+            )
+          ) : (
+            // Edit mode: show repository and branch selector
+            <>
+              <span className="font-medium text-gray-700">{repository}</span>
+              <span className="text-gray-400">&gt;</span>
+              <div className="relative inline-flex items-center">
+                {isRepoLoading ? (
+                  <span className="text-gray-400">Loading...</span>
+                ) : (
+                  <>
+                    <select
+                      value={baseBranch}
+                      onChange={(e) => onBranchChange(e.target.value)}
+                      className="appearance-none bg-transparent text-gray-600 hover:text-gray-900 focus:outline-none cursor-pointer pr-5"
+                      disabled={branches.length === 0}
+                    >
+                      {branches.length === 0 ? (
+                        <option value="">No branches</option>
+                      ) : (
+                        branches.map(branch => (
+                          <option key={branch} value={branch}>{branch}</option>
+                        ))
+                      )}
+                    </select>
+                    <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 pointer-events-none" />
+                  </>
+                )}
+              </div>
+              {(branchError || repoError) && (
+                <span className="text-red-500 text-xs ml-2">{branchError || repoError}</span>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -130,7 +180,20 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
 
           {/* Attachments section */}
           <div className="mt-4 space-y-3">
-            {files.length > 0 && (
+            {/* Show local files for new mode */}
+            {isNewMode && localFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {localFiles.map((file, index) => (
+                  <AttachmentChip
+                    key={`file-${index}`}
+                    file={file}
+                    onRemove={() => onRemoveLocalFile?.(index)}
+                  />
+                ))}
+              </div>
+            )}
+            {/* Show server attachments for edit mode */}
+            {!isNewMode && files.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {files.map((attachment) => (
                   <AttachmentChip
@@ -228,16 +291,30 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
                 disabled={isGenerateDisabled}
                 className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
               >
-                {isGenerating ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Generating...</span>
-                  </>
+                {isNewMode ? (
+                  isCreating ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Creating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      <span>Generate Plan</span>
+                    </>
+                  )
                 ) : (
-                  <>
-                    <Sparkles className="w-4 h-4" />
-                    <span>Generate Plan</span>
-                  </>
+                  isGenerating ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Generating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      <span>Generate Plan</span>
+                    </>
+                  )
                 )}
               </button>
             </div>

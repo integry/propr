@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   uploadAttachment,
   removeAttachment,
@@ -6,6 +7,8 @@ import {
   getRepositoryInfo,
   abortGeneration,
   getAgents,
+  createDraft,
+  getRepoConfig,
   PlannerDraft,
   PlannerAttachment,
   Granularity,
@@ -22,9 +25,12 @@ import { IndexedRepository } from './ContextRepositoriesSection';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
 
+interface Repo { name: string; enabled: boolean; baseBranch?: string; }
+
 interface SetupWizardProps {
-  draft: PlannerDraft;
+  draft?: PlannerDraft;
   onGenerateComplete: () => void;
+  onDraftCreated?: (draftId: string) => void;
 }
 
 interface PlannerConfig {
@@ -44,24 +50,35 @@ interface RepoInfoState {
   error: string | null;
 }
 
-export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete }) => {
+export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete, onDraftCreated }) => {
+  const navigate = useNavigate();
   const savedSettings = getPlannerSettings();
   const { addToast } = useToast();
 
+  // Determine if this is "new draft" mode or "edit existing draft" mode
+  const isNewMode = !draft;
+
   const [config, setConfig] = useState<PlannerConfig>({
-    prompt: draft.initial_prompt || '',
+    prompt: draft?.initial_prompt || '',
     baseBranch: '',
     granularity: savedSettings.lastGranularity,
     contextLevel: savedSettings.lastContextLevel,
     compress: false,
-    files: draft.attachments || [],
+    files: draft?.attachments || [],
     contextRepositories: [],
     generationModel: null
   });
 
+  // State for new draft mode
+  const [repos, setRepos] = useState<Repo[]>([]);
+  const [selectedRepo, setSelectedRepo] = useState<string>(draft?.repository || '');
+  const [reposLoading, setReposLoading] = useState(isNewMode);
+  const [localFiles, setLocalFiles] = useState<File[]>([]);
+  const [isCreating, setIsCreating] = useState(false);
+
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [availableRepos, setAvailableRepos] = useState<IndexedRepository[]>([]);
-  const [repoInfo, setRepoInfo] = useState<RepoInfoState>({ isLoading: true, branches: [], error: null });
+  const [repoInfo, setRepoInfo] = useState<RepoInfoState>({ isLoading: !isNewMode, branches: [], error: null });
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [branchError, setBranchError] = useState<string | null>(null);
@@ -72,11 +89,11 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   }, [addToast, onGenerateComplete]);
 
   const { isGenerating, generationTrace, generationError, startPolling, setGenerationError } =
-    useGenerationPolling({ draftId: draft.draft_id, onComplete: handleGenerateComplete });
+    useGenerationPolling({ draftId: draft?.draft_id || '', onComplete: handleGenerateComplete });
   const { isExporting, exportContext } = useContextExport(setError);
 
   const { preview, isContextStale, fetchPreview, clearCountdown } =
-    useContextRefresh({ draftId: draft.draft_id, config, onBranchError: setBranchError });
+    useContextRefresh({ draftId: draft?.draft_id || '', config, onBranchError: setBranchError });
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -97,7 +114,34 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
   }, [generationError, addToast]);
 
+  // Load available repositories for new mode
   useEffect(() => {
+    if (!isNewMode) return;
+    const loadRepos = async () => {
+      try {
+        setReposLoading(true);
+        const data = await getRepoConfig() as { repos_to_monitor?: unknown[] };
+        const rawRepos = data.repos_to_monitor || [];
+        const validRepos = rawRepos
+          .filter((repo): repo is { name: string; enabled?: boolean; baseBranch?: string } =>
+            typeof repo === 'object' && repo !== null && 'name' in repo && typeof (repo as { name: unknown }).name === 'string'
+          )
+          .map(repo => ({ name: repo.name, enabled: repo.enabled !== false, baseBranch: repo.baseBranch }));
+        const enabledRepos = validRepos.filter(r => r.enabled);
+        setRepos(enabledRepos);
+        const lastRepo = savedSettings.lastRepository;
+        if (lastRepo && enabledRepos.some(r => r.name === lastRepo)) setSelectedRepo(lastRepo);
+        else if (enabledRepos.length > 0) setSelectedRepo(enabledRepos[0].name);
+      } catch (err) {
+        console.error('Failed to load repositories:', err);
+        setError('Failed to load repositories');
+      } finally { setReposLoading(false); }
+    };
+    loadRepos();
+  }, [isNewMode, savedSettings.lastRepository]);
+
+  useEffect(() => {
+    if (isNewMode || !draft) return;
     const loadRepoInfo = async () => {
       try {
         const info = await getRepositoryInfo(draft.draft_id);
@@ -109,15 +153,17 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       }
     };
     loadRepoInfo();
-  }, [draft.draft_id]);
+  }, [isNewMode, draft]);
 
   useEffect(() => {
+    const repoToUse = draft?.repository || selectedRepo;
+    if (!repoToUse) return;
     const loadAvailableRepos = async () => {
       try {
         const data = await getRepositoriesIndexingStatus();
         const indexedRepos: IndexedRepository[] = (data.repositories || [])
           .filter((repo: RepositoryIndexingStatus) =>
-            repo.indexing_status === 'completed' && repo.full_name !== draft.repository
+            repo.indexing_status === 'completed' && repo.full_name !== repoToUse
           )
           .map((repo: RepositoryIndexingStatus) => ({ full_name: repo.full_name, branch: repo.branch }));
         setAvailableRepos(indexedRepos);
@@ -126,7 +172,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       }
     };
     loadAvailableRepos();
-  }, [draft.repository]);
+  }, [draft?.repository, selectedRepo]);
 
   useEffect(() => {
     const loadAgents = async () => {
@@ -145,15 +191,22 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   }, [config.granularity, config.contextLevel]);
 
   useEffect(() => {
-    if (draft.repository) savePlannerSettings({ lastRepository: draft.repository });
-  }, [draft.repository]);
+    const repoToSave = draft?.repository || selectedRepo;
+    if (repoToSave) savePlannerSettings({ lastRepository: repoToSave });
+  }, [draft?.repository, selectedRepo]);
 
   const handleUpload = async (file: File) => {
     setIsUploading(true);
     setError(null);
     try {
-      const attachment = await uploadAttachment(draft.draft_id, file);
-      setConfig(prev => ({ ...prev, files: [...prev.files, attachment] }));
+      if (isNewMode) {
+        // For new mode, store files locally until draft is created
+        const processedFile = file.type.startsWith('image/') ? await resizeImage(file) : file;
+        setLocalFiles(prev => [...prev, processedFile]);
+      } else if (draft) {
+        const attachment = await uploadAttachment(draft.draft_id, file);
+        setConfig(prev => ({ ...prev, files: [...prev.files, attachment] }));
+      }
     } catch (err) {
       setError((err as Error).message || 'Failed to upload file');
     } finally {
@@ -162,12 +215,17 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   };
 
   const handleRemoveFile = async (attachmentId: string) => {
+    if (!draft) return;
     try {
       await removeAttachment(draft.draft_id, attachmentId);
       setConfig(prev => ({ ...prev, files: prev.files.filter(f => f.id !== attachmentId) }));
     } catch (err) {
       setError((err as Error).message || 'Failed to remove file');
     }
+  };
+
+  const handleRemoveLocalFile = (fileIndex: number) => {
+    setLocalFiles(prev => prev.filter((_, i) => i !== fileIndex));
   };
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -192,13 +250,42 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   };
 
   const handleExportContext = useCallback(() => {
+    if (!draft) return;
     exportContext({
       draftId: draft.draft_id, prompt: config.prompt, baseBranch: config.baseBranch,
       granularity: config.granularity, contextLevel: config.contextLevel, compress: config.compress, files: config.files
     });
-  }, [exportContext, draft.draft_id, config]);
+  }, [exportContext, draft, config]);
+
+  const handleCreateDraftAndGenerate = async () => {
+    if (!selectedRepo || !config.prompt.trim()) {
+      setError('Please select a repository and enter a prompt');
+      return;
+    }
+    setIsCreating(true);
+    setError(null);
+    try {
+      const newDraft = await createDraft(selectedRepo, config.prompt.trim());
+      // Upload any local files
+      for (const file of localFiles) {
+        try { await uploadAttachment(newDraft.draft_id, file); }
+        catch (uploadErr) { console.error('Failed to upload attachment:', uploadErr); }
+      }
+      if (onDraftCreated) onDraftCreated(newDraft.draft_id);
+      navigate(`/studio/${newDraft.draft_id}`, { replace: true });
+    } catch (err) {
+      setError((err as Error).message || 'Failed to create draft');
+      setIsCreating(false);
+    }
+  };
 
   const handleGenerate = async () => {
+    // For new mode, create draft first and navigate
+    if (isNewMode) {
+      await handleCreateDraftAndGenerate();
+      return;
+    }
+    if (!draft) return;
     if (branchError) { setError('Please fix the branch name before generating'); return; }
     setError(null);
     setGenerationError(null);
@@ -216,6 +303,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   };
 
   const handleAbortGeneration = async () => {
+    if (!draft) return;
     try {
       await abortGeneration(draft.draft_id);
     } catch (err) {
@@ -232,8 +320,10 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const isGenerateDisabled = isGenerating || !!branchError || repoInfo.isLoading || !config.prompt.trim();
-  const canExport = !!(config.prompt.trim() && config.baseBranch);
+  const isGenerateDisabled = isNewMode
+    ? (isCreating || !selectedRepo || !config.prompt.trim() || reposLoading)
+    : (isGenerating || !!branchError || repoInfo.isLoading || !config.prompt.trim());
+  const canExport = !isNewMode && !!(config.prompt.trim() && config.baseBranch);
 
   // Suppress unused variable warning for availableRepos (used for future context repos feature)
   void availableRepos;
@@ -242,7 +332,12 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     <div className="h-full flex flex-col bg-white">
       <div className="flex-1 flex min-h-0">
         <SetupWizardLeftPane
-          repository={draft.repository}
+          isNewMode={isNewMode}
+          repository={draft?.repository || selectedRepo}
+          repos={repos}
+          selectedRepo={selectedRepo}
+          onRepoChange={setSelectedRepo}
+          reposLoading={reposLoading}
           baseBranch={config.baseBranch}
           branches={repoInfo.branches}
           isRepoLoading={repoInfo.isLoading}
@@ -255,7 +350,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           autoResize={autoResize}
           onPaste={handlePaste}
           files={config.files}
+          localFiles={localFiles}
           onRemoveFile={handleRemoveFile}
+          onRemoveLocalFile={handleRemoveLocalFile}
           isUploading={isUploading}
           fileInputRef={fileInputRef}
           onFileInputChange={handleFileInputChange}
@@ -265,6 +362,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           error={error}
           generationError={generationError}
           isGenerating={isGenerating}
+          isCreating={isCreating}
           generationTrace={generationTrace}
           onAbort={handleAbortGeneration}
           granularity={config.granularity}
@@ -276,6 +374,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           onGenerate={handleGenerate}
         />
         <SetupWizardRightPane
+          isNewMode={isNewMode}
           contextLevel={config.contextLevel}
           onContextLevelChange={(contextLevel) => setConfig(prev => ({ ...prev, contextLevel }))}
           compress={config.compress}

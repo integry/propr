@@ -4,12 +4,11 @@ import { motion } from 'framer-motion';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDraft } from '../hooks/useDraft';
 import SetupWizard from '../components/TaskPlanner/SetupWizard';
-import NewDraftSetup from '../components/TaskPlanner/NewDraftSetup';
 import PlanEditor from '../components/TaskPlanner/PlanEditor';
 import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import SkeletonLoader from '../components/TaskPlanner/SkeletonLoader';
 import StudioStepper, { StudioStage } from '../components/TaskPlanner/StudioStepper';
-import { Draft, DraftWithPlan } from '../api/gitfixApi';
+import { PlannerDraft, DraftWithPlan } from '../api/plannerApi';
 
 interface PlanStudioPageProps {
   isNew?: boolean;
@@ -140,7 +139,7 @@ const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; on
   </div>
 );
 
-const DraftView: React.FC<{ currentStage: StudioStage; draft: Draft; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
+const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
   <div className="h-[calc(100vh-120px)] p-4 flex flex-col">
     <div className="bg-white rounded-lg shadow px-6 py-4 mb-4">
       <StudioStepper currentStage={currentStage} />
@@ -155,13 +154,13 @@ const DraftView: React.FC<{ currentStage: StudioStage; draft: Draft; onRefetch: 
   </div>
 );
 
-const getTaskTitle = (draft: Draft): string => {
+const getTaskTitle = (draft: PlannerDraft): string => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const draftAny = draft as any;
   return draftAny?.task_title || draftAny?.title || 'Untitled Task';
 };
 
-const getDocumentTitle = (draft: Draft | null): string => {
+const getDocumentTitle = (draft: PlannerDraft | null): string => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const draftAny = draft as any;
   return draftAny?.name || draftAny?.task_title || draft?.repository || 'Plan Studio';
@@ -183,7 +182,7 @@ const NewDraftView: React.FC = () => (
     </div>
 
     <div className="flex-1 overflow-hidden">
-      <NewDraftSetup />
+      <SetupWizard onGenerateComplete={() => {}} />
     </div>
   </div>
 );
