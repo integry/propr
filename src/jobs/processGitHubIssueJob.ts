@@ -173,7 +173,7 @@ async function initializeJobContext(job: Job<IssueJobData>): Promise<JobContext>
     const agent = registry.getAgentByAlias(agentAlias);
     modelName = modelName || agent?.config.defaultModel || DEFAULT_MODEL_NAME;
 
-    const taskId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentAlias}-${modelName}`;
+    const taskId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentAlias}-${modelName}-${correlationId}`;
 
     return {
         jobId, jobName, issueRef, correlationId, correlatedLogger, stateManager, agentAlias, modelName, taskId,
