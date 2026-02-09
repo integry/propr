@@ -140,15 +140,17 @@ const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; on
 );
 
 const DraftView: React.FC<{ currentStage: StudioStage; draft: Draft; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
-  <div className="flex flex-col">
-    <div className="bg-white rounded-lg shadow px-6 py-4 mx-4 mt-4 mb-0">
+  <div className="h-[calc(100vh-120px)] p-4 flex flex-col">
+    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4">
       <StudioStepper currentStage={currentStage} />
     </div>
 
-    <SetupWizard
-      draft={draft}
-      onGenerateComplete={onRefetch}
-    />
+    <div className="flex-1 overflow-auto">
+      <SetupWizard
+        draft={draft}
+        onGenerateComplete={onRefetch}
+      />
+    </div>
   </div>
 );
 

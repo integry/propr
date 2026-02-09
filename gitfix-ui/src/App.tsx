@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './components/Dashboard'
 import RepositoriesPage from './pages/RepositoriesPage'
 import TasksPage from './pages/TasksPage'
-import TaskPlannerPage from './pages/TaskPlannerPage'
+// TaskPlannerPage removed - all plan routes now use PlanStudioPage
 import PlanStudioPage from './pages/PlanStudioPage'
 import PlansPage from './pages/PlansPage'
 import AiAgentsPage from './pages/AiAgentsPage'
@@ -16,6 +16,12 @@ import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
 import './App.css'
 import { getCurrentUser } from './api/gitfixApi'
+
+// Redirect component for old plan routes
+const RedirectToStudio: React.FC = () => {
+  const { draftId } = useParams<{ draftId: string }>();
+  return <Navigate to={`/studio/${draftId}`} replace />;
+};
 
 const App: React.FC = () => {
   // Auth check state - start loading unless already on login page
@@ -95,13 +101,10 @@ const App: React.FC = () => {
               </Layout>
             }
           />
+          {/* Redirect old plan routes to new studio format */}
           <Route
             path="/tasks/plan/:draftId"
-            element={
-              <Layout>
-                <TaskPlannerPage />
-              </Layout>
-            }
+            element={<RedirectToStudio />}
           />
           <Route
             path="/studio/new"

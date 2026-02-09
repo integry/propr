@@ -246,7 +246,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const isGenerateDisabled = isGenerating || !!branchError || repoInfo.isLoading;
 
   return (
-    <div className="max-w-6xl mx-auto flex flex-col min-h-[calc(100vh-200px)]">
+    <div className="w-full flex flex-col min-h-[calc(100vh-200px)]">
       <ContextHeader
         repository={draft.repository} baseBranch={config.baseBranch} branches={repoInfo.branches}
         isLoading={repoInfo.isLoading} error={branchError || repoInfo.error}
