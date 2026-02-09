@@ -70,7 +70,7 @@ export function useNewPlanForm(): UseNewPlanFormReturn {
         }
       }
 
-      navigate(`/tasks/plan/${draft.draft_id}`);
+      navigate(`/studio/${draft.draft_id}`);
     } catch (err) {
       setFormError((err as Error).message || 'Failed to create draft');
     } finally {

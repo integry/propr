@@ -5,6 +5,7 @@ import Dashboard from './components/Dashboard'
 import RepositoriesPage from './pages/RepositoriesPage'
 import TasksPage from './pages/TasksPage'
 import TaskPlannerPage from './pages/TaskPlannerPage'
+import PlanStudioPage from './pages/PlanStudioPage'
 import PlansPage from './pages/PlansPage'
 import AiAgentsPage from './pages/AiAgentsPage'
 import SettingsPage from './pages/SettingsPage'
@@ -99,6 +100,22 @@ const App: React.FC = () => {
             element={
               <Layout>
                 <TaskPlannerPage />
+              </Layout>
+            }
+          />
+          <Route
+            path="/studio/new"
+            element={
+              <Layout>
+                <PlanStudioPage isNew />
+              </Layout>
+            }
+          />
+          <Route
+            path="/studio/:draftId"
+            element={
+              <Layout>
+                <PlanStudioPage />
               </Layout>
             }
           />
