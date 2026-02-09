@@ -90,7 +90,7 @@ export const useTaskData = (taskId: string | undefined) => {
     };
 
     fetchHistory();
-  }, [taskId]);
+  }, [taskId, addToast]);
 
   useEffect(() => {
     const fetchAnalysis = async () => {
