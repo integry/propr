@@ -86,6 +86,7 @@ const AgentCard: React.FC<{
   onDelete: () => void;
   onToggle: () => void;
 }> = ({ agent, onEdit, onDelete, onToggle }) => {
+  // Default agent trigger label pattern
   const agentDefaultLabel = `llm-${agent.alias}`;
 
   return (
@@ -103,12 +104,19 @@ const AgentCard: React.FC<{
               {agent.type}
             </span>
           </div>
-          <div className="text-sm text-gray-600 ml-5">
+          <div className="text-sm text-gray-600 ml-5 space-y-1">
             <div>
               <span className="font-medium mr-2">Path:</span>
               <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs text-gray-600 font-mono border border-gray-200">
                 {agent.configPath}
               </code>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="font-medium mr-2">Default Trigger:</span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded font-mono border border-purple-200">
+                <GitHubIcon className="w-3 h-3" />
+                {agentDefaultLabel}
+              </span>
             </div>
           </div>
         </div>
@@ -167,6 +175,7 @@ const AgentCard: React.FC<{
               {agent.supportedModels.map(modelId => {
                 const modelInfo = MODEL_INFO_MAP[modelId];
                 const isDefault = agent.defaultModel === modelId;
+                const modelCustomLabel = agent.modelCustomLabels?.[modelId];
 
                 return (
                   <tr key={modelId} className="hover:bg-gray-50 transition-colors">
@@ -220,6 +229,15 @@ const AgentCard: React.FC<{
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 text-gray-500 hover:text-gray-900 border border-transparent hover:border-gray-200 rounded text-xs transition-all cursor-default opacity-70 hover:opacity-100">
                             <TagIcon className="w-3 h-3" />
                             {modelInfo.githubLabel}
+                          </span>
+                        )}
+                        {modelCustomLabel && (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-orange-600 border border-transparent rounded text-xs font-mono cursor-default"
+                            title="Custom GitHub label"
+                          >
+                            <TagIcon className="w-3 h-3" />
+                            {modelCustomLabel}
                           </span>
                         )}
                         {isDefault && (

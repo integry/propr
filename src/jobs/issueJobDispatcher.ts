@@ -9,7 +9,7 @@ import type { RepoValidationResult } from '@gitfix/core';
 
 type RepoValidation = RepoValidationResult;
 import { issueQueue, type IssueJobData, type JobResult } from '@gitfix/core';
-import { getDefaultModel, resolveLlmLabel, loadSettings } from '@gitfix/core';
+import { getDefaultModel, resolveLlmLabel, loadSettings, resolveCustomLabel, getAllCustomLabels } from '@gitfix/core';
 import { AgentRegistry } from '@gitfix/core';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
@@ -97,12 +97,20 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         const baseLabels = labels.filter(l => l.startsWith('base-'));
         const llmLabels = labels.filter(l => l.startsWith('llm-'));
 
+        // Get all configured custom labels from agents
+        const customLabels = await getAllCustomLabels();
+        const customLabelMatches = labels.filter(l =>
+            customLabels.some(cl => cl.toLowerCase() === l.toLowerCase())
+        );
+
         const basesToProcess: BaseToProcess[] = baseLabels.length > 0
             ? baseLabels.map(l => ({ branch: l.substring('base-'.length), label: l }))
             : [{ branch: defaultBranch, label: null }];
 
-        // Resolve LLM labels to agent + model pairs
+        // Resolve LLM labels and custom labels to agent + model pairs
         const agentModelsToProcess: AgentModelToProcess[] = [];
+
+        // First, process standard llm- prefixed labels
         if (llmLabels.length > 0) {
             for (const label of llmLabels) {
                 const llmPart = label.substring('llm-'.length);
@@ -118,8 +126,30 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
                     resolvedModel: resolution.model
                 }, 'Resolved LLM label');
             }
-        } else {
-            // No LLM labels - use default agent from settings
+        }
+
+        // Then, process custom labels (that don't overlap with llm- labels)
+        if (customLabelMatches.length > 0) {
+            for (const label of customLabelMatches) {
+                const resolution = await resolveCustomLabel(label);
+                if (resolution) {
+                    agentModelsToProcess.push({
+                        agentAlias: resolution.agentAlias,
+                        model: resolution.model,
+                        label
+                    });
+                    correlatedLogger.debug({
+                        label,
+                        resolvedAgent: resolution.agentAlias,
+                        resolvedModel: resolution.model
+                    }, 'Resolved custom label');
+                }
+            }
+        }
+
+        // If no LLM or custom labels found, use the default agent
+        if (agentModelsToProcess.length === 0) {
+            // No LLM or custom labels - use default agent from settings
             const { agentAlias, modelToUse } = await resolveDefaultAgentForDispatcher(correlatedLogger);
 
             agentModelsToProcess.push({

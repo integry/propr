@@ -31,7 +31,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     dockerImage: AGENT_DEFAULTS.claude.dockerImage,
     configPath: AGENT_DEFAULTS.claude.configPath,
     supportedModels: AGENT_DEFAULTS.claude.defaultModels,
-    defaultModel: AGENT_DEFAULTS.claude.defaultModels[0]
+    defaultModel: AGENT_DEFAULTS.claude.defaultModels[0],
+    modelCustomLabels: {}
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -46,7 +47,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         dockerImage: agent.dockerImage,
         configPath: agent.configPath,
         supportedModels: agent.supportedModels,
-        defaultModel: agent.defaultModel || agent.supportedModels[0]
+        defaultModel: agent.defaultModel || agent.supportedModels[0],
+        modelCustomLabels: agent.modelCustomLabels || {}
       });
     }
   }, [agent]);
@@ -133,6 +135,17 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       return;
     }
 
+    // Filter modelCustomLabels to only include supported models with non-empty labels
+    const cleanedModelCustomLabels: Record<string, string> = {};
+    if (formData.modelCustomLabels) {
+      for (const [modelId, label] of Object.entries(formData.modelCustomLabels)) {
+        const trimmedLabel = label?.trim();
+        if (trimmedLabel && formData.supportedModels.includes(modelId)) {
+          cleanedModelCustomLabels[modelId] = trimmedLabel;
+        }
+      }
+    }
+
     const agentToSave: AgentConfig = {
       id: formData.id || crypto.randomUUID(),
       type: formData.type,
@@ -141,7 +154,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       dockerImage: formData.dockerImage,
       configPath: formData.configPath,
       supportedModels: formData.supportedModels,
-      defaultModel: formData.defaultModel
+      defaultModel: formData.defaultModel,
+      modelCustomLabels: Object.keys(cleanedModelCustomLabels).length > 0 ? cleanedModelCustomLabels : undefined
     };
 
     onSave(agentToSave);
@@ -247,65 +261,76 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 </button>
               </div>
             </div>
-            <div className={`border rounded-md p-3 bg-gray-50 max-h-64 overflow-y-auto ${
+            <div className={`border rounded-md p-3 bg-gray-50 max-h-80 overflow-y-auto ${
               errors.supportedModels ? 'border-red-500' : 'border-gray-300'
             }`}>
               {AGENT_MODELS[formData.type].map(model => {
                 const isSupported = formData.supportedModels.includes(model.id);
                 const isDefault = formData.defaultModel === model.id;
-                const agentDefaultLabel = formData.alias ? `llm-${formData.alias}` : null;
+                const modelCustomLabel = formData.modelCustomLabels?.[model.id] || '';
 
                 return (
                   <div
                     key={model.id}
-                    className="flex items-center gap-3 py-2 px-2 hover:bg-gray-100 rounded"
+                    className="py-2 px-2 hover:bg-gray-100 rounded"
                   >
-                    {/* Checkbox for enabling/disabling model */}
-                    <input
-                      type="checkbox"
-                      checked={isSupported}
-                      onChange={() => handleModelToggle(model.id)}
-                      className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 cursor-pointer"
-                    />
+                    <div className="flex items-center gap-3">
+                      {/* Checkbox for enabling/disabling model */}
+                      <input
+                        type="checkbox"
+                        checked={isSupported}
+                        onChange={() => handleModelToggle(model.id)}
+                        className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 cursor-pointer"
+                      />
 
-                    {/* Radio for default model selection */}
-                    <input
-                      type="radio"
-                      name="defaultModel"
-                      checked={isDefault}
-                      disabled={!isSupported}
-                      onChange={() => handleDefaultModelChange(model.id)}
-                      className="h-4 w-4 text-primary-600 border-gray-300 focus:ring-primary-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                      title={isSupported ? 'Set as default model' : 'Enable this model to set as default'}
-                    />
+                      {/* Radio for default model selection */}
+                      <input
+                        type="radio"
+                        name="defaultModel"
+                        checked={isDefault}
+                        disabled={!isSupported}
+                        onChange={() => handleDefaultModelChange(model.id)}
+                        className="h-4 w-4 text-primary-600 border-gray-300 focus:ring-primary-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={isSupported ? 'Set as default model' : 'Enable this model to set as default'}
+                      />
 
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-gray-900">{model.name}</span>
-                        {model.contextWindow && (
-                          <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 text-[10px] rounded font-medium">
-                            {model.contextWindow}
-                          </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-gray-900">{model.name}</span>
+                          {model.contextWindow && (
+                            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 text-[10px] rounded font-medium">
+                              {model.contextWindow}
+                            </span>
+                          )}
+                        </div>
+                        <code className="text-xs text-gray-500">{model.id}</code>
+                        <div className="text-xs text-blue-600 mt-0.5">
+                          alias: {model.shortAlias}
+                        </div>
+                      </div>
+
+                      {/* GitHub label and custom label input */}
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded font-mono whitespace-nowrap">
+                          <GitHubIcon className="w-3 h-3" />
+                          {model.githubLabel}
+                        </span>
+                        {isSupported && (
+                          <input
+                            type="text"
+                            value={modelCustomLabel}
+                            onChange={(e) => setFormData(prev => ({
+                              ...prev,
+                              modelCustomLabels: {
+                                ...prev.modelCustomLabels,
+                                [model.id]: e.target.value
+                              }
+                            }))}
+                            placeholder="custom-label"
+                            className="w-32 px-1.5 py-0.5 text-xs bg-white text-gray-700 border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500 placeholder:text-gray-400"
+                          />
                         )}
                       </div>
-                      <code className="text-xs text-gray-500">{model.id}</code>
-                      <div className="text-xs text-blue-600 mt-0.5">
-                        alias: {model.shortAlias}
-                      </div>
-                    </div>
-
-                    {/* GitHub labels column */}
-                    <div className="flex flex-col gap-1 items-end">
-                      <span className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded font-mono whitespace-nowrap">
-                        <GitHubIcon className="w-3 h-3" />
-                        {model.githubLabel}
-                      </span>
-                      {isDefault && agentDefaultLabel && (
-                        <span className="inline-flex items-center gap-1 px-2 py-1 bg-teal-100 text-teal-700 text-xs rounded font-mono whitespace-nowrap">
-                          <GitHubIcon className="w-3 h-3" />
-                          {agentDefaultLabel}
-                        </span>
-                      )}
                     </div>
                   </div>
                 );
@@ -313,7 +338,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             </div>
             {errors.supportedModels && <p className="mt-1 text-sm text-red-600">{errors.supportedModels}</p>}
             <p className="mt-1 text-sm text-gray-600">
-              Use checkboxes to enable models. Use radio buttons to select the default model for this agent.
+              Checkboxes enable models, radio buttons select the default. Custom labels (below GitHub label) allow alternative trigger names.
             </p>
           </div>
 

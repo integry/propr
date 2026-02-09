@@ -93,6 +93,62 @@ function getDefaultModel(): ModelId {
 }
 
 /**
+ * Resolves a custom label to an agent and specific model.
+ * Custom labels are now configured per-model, so this finds the exact agent+model combination.
+ *
+ * @param label - The full label from GitHub (e.g., "my-opus-bot", "custom-helper")
+ * @returns The matching agent's alias and specific model, or null if no match
+ */
+async function resolveCustomLabel(label: string): Promise<LlmLabelResolution | null> {
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+
+    const agents = registry.getAllAgents();
+    const lowerLabel = label.toLowerCase();
+
+    for (const agent of agents) {
+        // Check modelCustomLabels for this agent
+        if (agent.config.modelCustomLabels) {
+            for (const [modelId, customLabel] of Object.entries(agent.config.modelCustomLabels)) {
+                if (customLabel && customLabel.toLowerCase() === lowerLabel) {
+                    return {
+                        agentAlias: agent.config.alias,
+                        model: modelId
+                    };
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Gets all custom labels configured across all models in all agents.
+ *
+ * @returns Array of custom labels
+ */
+async function getAllCustomLabels(): Promise<string[]> {
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+
+    const agents = registry.getAllAgents();
+    const customLabels: string[] = [];
+
+    for (const agent of agents) {
+        if (agent.config.enabled && agent.config.modelCustomLabels) {
+            for (const customLabel of Object.values(agent.config.modelCustomLabels)) {
+                if (customLabel) {
+                    customLabels.push(customLabel);
+                }
+            }
+        }
+    }
+
+    return customLabels;
+}
+
+/**
  * Resolves an LLM label (e.g., "gemini-pro", "claude-opus", "codex") to an agent alias and model.
  *
  * Resolution order:
@@ -229,5 +285,7 @@ export {
     resolveModelAlias,
     getDefaultModel,
     getOpenRouterId,
-    resolveLlmLabel
+    resolveLlmLabel,
+    resolveCustomLabel,
+    getAllCustomLabels
 };
