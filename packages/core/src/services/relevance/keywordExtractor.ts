@@ -1,6 +1,7 @@
 import { parseLlmJson } from '../../utils/jsonUtils.js';
 import { Agent } from '../../agents/types.js';
 import logger from '../../utils/logger.js';
+import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 
 // --- Basic Keyword Extraction (regex-based) ---
 
@@ -100,12 +101,17 @@ export async function extractKeywordsWithLLM(
   const { agent, correlationId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
+  const startTime = Date.now();
+  let success = false;
+  let errorMessage: string | undefined;
+
   try {
     const llmPrompt = KEYWORD_EXTRACTION_PROMPT.replace('{USER_REQUEST}', prompt);
 
     correlatedLogger.debug({ promptLength: prompt.length }, 'Extracting keywords with LLM');
 
-    const response = await agent.analyze(llmPrompt);
+    const analysisResult = await agent.analyze(llmPrompt);
+    const response = analysisResult.response;
 
     const parsed = parseLlmJson<{ primary: string[]; alternatives: string[] }>(response);
 
@@ -126,6 +132,7 @@ export async function extractKeywordsWithLLM(
 
     const all = [...new Set([...primary, ...alternatives])];
 
+    success = true;
     correlatedLogger.info({
       primaryCount: primary.length,
       alternativesCount: alternatives.length,
@@ -135,11 +142,28 @@ export async function extractKeywordsWithLLM(
 
     return { primary, alternatives, all };
   } catch (error) {
+    errorMessage = (error as Error).message;
     correlatedLogger.warn(
-      { error: (error as Error).message },
+      { error: errorMessage },
       'LLM keyword extraction failed, falling back to basic extraction'
     );
     return { primary: [], alternatives: [], all: [] };
+  } finally {
+    const durationMs = Date.now() - startTime;
+    const modelUsed = agent.config.defaultModel || 'unknown';
+
+    // Persist to llm_logs table
+    const logEntry = createLlmLogFromAnalysis({
+      executionType: 'context-analysis',
+      modelUsed,
+      executionTimeMs: durationMs,
+      success,
+      error: errorMessage,
+      correlationId,
+      agentAlias: agent.config.alias,
+      metadata: { callType: 'keyword_extraction' },
+    });
+    await persistLlmLog(logEntry);
   }
 }
 

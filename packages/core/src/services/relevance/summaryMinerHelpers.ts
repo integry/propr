@@ -14,6 +14,7 @@ import {
 import type { SummarizationCallMetrics, SummarizationMetricsSummary } from './summaryMinerMetrics.js';
 import { aggregateDirectories } from './summaryMinerDirectories.js';
 import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress } from './indexingCancellation.js';
+import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 
 // Re-export metrics types and functions for backwards compatibility
 export { getSummarizationMetricsSummary, getSummarizationCallHistory };
@@ -248,7 +249,8 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
   let errorMessage: string | undefined;
 
   try {
-    const response = await agent.analyze(prompt);
+    const analysisResult = await agent.analyze(prompt);
+    const response = analysisResult.response;
     const summaries = parseBatchResponse(response);
 
     // Save summaries to DB with the actual model used
@@ -282,6 +284,22 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
     durationMs,
     error: errorMessage
   }, log);
+
+  // Persist to llm_logs table
+  const logEntry = createLlmLogFromAnalysis({
+    executionType: 'summarization',
+    modelUsed,
+    executionTimeMs: durationMs,
+    success,
+    tokenUsage: {
+      input_tokens: estimatedInputTokens,
+      output_tokens: estimatedOutputTokens,
+    },
+    error: errorMessage,
+    repository: fullName,
+    agentAlias: agent.config.alias,
+  });
+  await persistLlmLog(logEntry);
 
   return success;
 }

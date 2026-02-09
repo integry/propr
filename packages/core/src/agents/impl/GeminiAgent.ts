@@ -1,5 +1,5 @@
 import logger from '../../utils/logger.js';
-import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult } from '../types.js';
+import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import {
     verifyWorktreeStructure,
@@ -106,25 +106,62 @@ export class GeminiAgent implements Agent {
         };
     }
 
-    async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<string> {
+    async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<AnalysisResult> {
+        const startTime = Date.now();
         logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId }, 'Running lightweight analysis via Gemini agent...');
         const effectiveModel = model || 'gemini-2.5-flash';
         const suffix = '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
         const stdinData = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         try {
-            const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/gemini-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, outputFormat: 'text' });
+            // Use stream-json to get token usage metrics
+            const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/gemini-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, outputFormat: 'stream-json' });
             const result = await executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData, taskId });
-            const cleanedOutput = this.stripAnsiCodes(result.stdout);
-            const extractedResult = this.extractGeminiResult(cleanedOutput);
-            if (result.exitCode === 0 || extractedResult) {
-                const analysisText = (extractedResult || cleanedOutput || '').trim();
-                logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: effectiveModel }, 'Lightweight analysis completed');
-                return analysisText;
+            const executionTimeMs = Date.now() - startTime;
+
+            // Parse JSONL output to extract response and token usage
+            const { summary, tokenUsage, sessionId } = this.parseGeminiJsonl(result.stdout);
+
+            if (result.exitCode === 0 || summary) {
+                const analysisText = (summary || '').trim();
+                logger.info({
+                    agentAlias: this.config.alias,
+                    responseLength: analysisText.length,
+                    model: effectiveModel,
+                    executionTimeMs,
+                    inputTokens: tokenUsage.input_tokens,
+                    outputTokens: tokenUsage.output_tokens
+                }, 'Lightweight analysis completed');
+                return {
+                    response: analysisText,
+                    modelUsed: effectiveModel,
+                    executionTimeMs,
+                    success: true,
+                    tokenUsage: (tokenUsage.input_tokens || tokenUsage.output_tokens) ? {
+                        input_tokens: tokenUsage.input_tokens,
+                        output_tokens: tokenUsage.output_tokens
+                    } : undefined,
+                    sessionId
+                };
             }
-            throw new Error(`Analysis failed: ${result.stderr || 'No result returned'}`);
+            const errorMsg = result.stderr || 'No result returned';
+            return {
+                response: '',
+                modelUsed: effectiveModel,
+                executionTimeMs,
+                success: false,
+                error: `Analysis failed: ${errorMsg}`
+            };
         } catch (error) {
-            logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'Lightweight analysis failed');
-            throw error;
+            const executionTimeMs = Date.now() - startTime;
+            const err = error as Error;
+            logger.error({ agentAlias: this.config.alias, error: err.message, executionTimeMs }, 'Lightweight analysis failed');
+            return {
+                response: '',
+                modelUsed: effectiveModel,
+                executionTimeMs,
+                success: false,
+                error: err.message
+            };
         }
     }
 

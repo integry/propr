@@ -59,12 +59,12 @@ export function createAgentRoutes() {
 
           const start = Date.now();
           try {
-            const response = await agent.analyze(prompt, context, query.model);
+            const analysisResult = await agent.analyze(prompt, context, query.model);
             return {
               agentId: query.agentId,
               agentAlias: agent.config.alias,
-              model: query.model || 'default',
-              response,
+              model: analysisResult.modelUsed || query.model || 'default',
+              response: analysisResult.response,
               durationMs: Date.now() - start
             };
           } catch (err) {

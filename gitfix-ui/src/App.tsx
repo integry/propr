@@ -9,6 +9,7 @@ import PlansPage from './pages/PlansPage'
 import AiAgentsPage from './pages/AiAgentsPage'
 import SettingsPage from './pages/SettingsPage'
 import SummaryBrowserPage from './pages/SummaryBrowserPage'
+import LlmLogsPage from './pages/LlmLogsPage'
 import LoginPage from './pages/LoginPage'
 import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
@@ -130,6 +131,14 @@ const App: React.FC = () => {
             element={
               <Layout>
                 <SummaryBrowserPage />
+              </Layout>
+            }
+          />
+          <Route
+            path="/llm-logs"
+            element={
+              <Layout>
+                <LlmLogsPage />
               </Layout>
             }
           />

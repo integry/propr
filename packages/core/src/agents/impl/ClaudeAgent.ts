@@ -2,7 +2,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import logger from '../../utils/logger.js';
-import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult } from '../types.js';
+import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import {
     verifyWorktreeStructure,
@@ -196,7 +196,8 @@ export class ClaudeAgent implements Agent {
         }
     }
 
-    async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<string> {
+    async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<AnalysisResult> {
+        const startTime = Date.now();
         logger.info({
             agentAlias: this.config.alias,
             promptLength: prompt.length,
@@ -231,6 +232,7 @@ export class ClaudeAgent implements Agent {
                 taskId // Pass taskId for abort signal checking
             });
 
+            const executionTimeMs = Date.now() - startTime;
             const claudeOutput = parseStreamJsonOutput(result);
 
             if (claudeOutput.finalResult?.result || claudeOutput.success) {
@@ -238,19 +240,42 @@ export class ClaudeAgent implements Agent {
                 logger.info({
                     agentAlias: this.config.alias,
                     responseLength: analysisText.length,
-                    model: effectiveModel
+                    model: effectiveModel,
+                    executionTimeMs
                 }, 'Lightweight analysis completed');
-                return analysisText;
+                return {
+                    response: analysisText,
+                    modelUsed: claudeOutput.model || effectiveModel,
+                    executionTimeMs,
+                    success: true,
+                    tokenUsage: claudeOutput.tokenUsage,
+                    sessionId: claudeOutput.sessionId ?? undefined
+                };
             }
 
-            throw new Error(`Analysis failed: ${result.stderr || 'No result returned'}`);
+            const errorMsg = result.stderr || 'No result returned';
+            return {
+                response: '',
+                modelUsed: effectiveModel,
+                executionTimeMs,
+                success: false,
+                error: `Analysis failed: ${errorMsg}`
+            };
         } catch (error) {
+            const executionTimeMs = Date.now() - startTime;
             const err = error as Error;
             logger.error({
                 agentAlias: this.config.alias,
-                error: err.message
+                error: err.message,
+                executionTimeMs
             }, 'Lightweight analysis failed');
-            throw error;
+            return {
+                response: '',
+                modelUsed: effectiveModel,
+                executionTimeMs,
+                success: false,
+                error: err.message
+            };
         }
     }
 

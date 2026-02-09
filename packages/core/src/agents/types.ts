@@ -58,6 +58,26 @@ export interface TokenUsage {
     cache_read_input_tokens?: number;
 }
 
+/**
+ * Result from Agent.analyze() - includes response text and metadata for metrics.
+ */
+export interface AnalysisResult {
+    /** The analysis response text */
+    response: string;
+    /** Model that was actually used */
+    modelUsed: string;
+    /** Execution time in milliseconds */
+    executionTimeMs: number;
+    /** Whether the analysis succeeded */
+    success: boolean;
+    /** Optional token usage metrics */
+    tokenUsage?: TokenUsage;
+    /** Optional session ID */
+    sessionId?: string;
+    /** Optional error message if failed */
+    error?: string;
+}
+
 export interface AgentExecutionResult {
     success: boolean;
     logs: string;           // Full stderr/stdout logs
@@ -99,8 +119,9 @@ export interface Agent {
      * Runs a lightweight, read-only analysis.
      * Used for planning, summarization, and PR reviews.
      * Updated to support model override and abort signal.
+     * Returns AnalysisResult with response and metadata for metrics tracking.
      */
-    analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<string>;
+    analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<AnalysisResult>;
 
     /**
      * Verifies the agent is ready (e.g. docker image exists).

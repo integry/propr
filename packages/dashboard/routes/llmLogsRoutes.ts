@@ -5,24 +5,25 @@ interface LlmLogsRoutesDeps {
   db: Knex;
 }
 
-interface LlmExecutionRow {
-  execution_id: number;
-  task_id: string;
-  session_id: string | null;
-  conversation_id: string | null;
+interface LlmLogRow {
+  log_id: number;
+  execution_type: string;
+  model_name: string | null;
   start_time: string | null;
   end_time: string | null;
   duration_ms: number | null;
-  model_name: string | null;
   success: boolean | number;
-  num_turns: number | null;
-  cost_usd: number | string | null;
-  error_message: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
   cache_creation_input_tokens: number | null;
   cache_read_input_tokens: number | null;
-  execution_type: string | null;
+  cost_usd: number | string | null;
+  error_message: string | null;
+  session_id: string | null;
+  correlation_id: string | null;
+  draft_id: string | null;
+  repository: string | null;
+  agent_alias: string | null;
 }
 
 interface CountRow {
@@ -43,28 +44,30 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
       const executionType = req.query.execution_type as string | undefined;
       const model = req.query.model as string | undefined;
       const success = req.query.success as string | undefined;
-      const taskId = req.query.task_id as string | undefined;
+      const draftId = req.query.draft_id as string | undefined;
+      const agentAlias = req.query.agent_alias as string | undefined;
 
-      // Build base query
-      let query = db('llm_executions')
+      // Build base query from the new llm_logs table
+      let query = db('llm_logs')
         .select(
-          'execution_id',
-          'task_id',
-          'session_id',
-          'conversation_id',
+          'log_id',
+          'execution_type',
+          'model_name',
           'start_time',
           'end_time',
           'duration_ms',
-          'model_name',
           'success',
-          'num_turns',
-          'cost_usd',
-          'error_message',
           'input_tokens',
           'output_tokens',
           'cache_creation_input_tokens',
           'cache_read_input_tokens',
-          'execution_type'
+          'cost_usd',
+          'error_message',
+          'session_id',
+          'correlation_id',
+          'draft_id',
+          'repository',
+          'agent_alias'
         );
 
       // Apply filters
@@ -78,12 +81,15 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         const successBool = success === 'true' || success === '1';
         query = query.where('success', successBool);
       }
-      if (taskId) {
-        query = query.where('task_id', taskId);
+      if (draftId) {
+        query = query.where('draft_id', draftId);
+      }
+      if (agentAlias) {
+        query = query.where('agent_alias', agentAlias);
       }
 
       // Get total count for pagination
-      let countQuery = db('llm_executions').count('* as count');
+      let countQuery = db('llm_logs').count('* as count');
       if (executionType) {
         countQuery = countQuery.where('execution_type', executionType);
       }
@@ -94,15 +100,18 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         const successBool = success === 'true' || success === '1';
         countQuery = countQuery.where('success', successBool);
       }
-      if (taskId) {
-        countQuery = countQuery.where('task_id', taskId);
+      if (draftId) {
+        countQuery = countQuery.where('draft_id', draftId);
+      }
+      if (agentAlias) {
+        countQuery = countQuery.where('agent_alias', agentAlias);
       }
 
       const [logs, countResult] = await Promise.all([
         query
           .orderBy('start_time', 'desc')
           .limit(limit)
-          .offset(offset) as unknown as Promise<LlmExecutionRow[]>,
+          .offset(offset) as unknown as Promise<LlmLogRow[]>,
         countQuery.first() as unknown as Promise<CountRow | undefined>
       ]);
 
@@ -112,23 +121,24 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
       // Format response
       res.json({
         logs: logs.map((row) => ({
-          executionId: row.execution_id,
-          taskId: row.task_id,
-          sessionId: row.session_id,
-          conversationId: row.conversation_id,
+          logId: row.log_id,
+          executionType: row.execution_type,
+          modelName: row.model_name,
           startTime: row.start_time,
           endTime: row.end_time,
           durationMs: row.duration_ms,
-          modelName: row.model_name,
           success: Boolean(row.success),
-          numTurns: row.num_turns,
-          costUsd: row.cost_usd ? Number(row.cost_usd) : null,
-          errorMessage: row.error_message,
           inputTokens: row.input_tokens,
           outputTokens: row.output_tokens,
           cacheCreationInputTokens: row.cache_creation_input_tokens,
           cacheReadInputTokens: row.cache_read_input_tokens,
-          executionType: row.execution_type || 'implementation'
+          costUsd: row.cost_usd ? Number(row.cost_usd) : null,
+          errorMessage: row.error_message,
+          sessionId: row.session_id,
+          correlationId: row.correlation_id,
+          draftId: row.draft_id,
+          repository: row.repository,
+          agentAlias: row.agent_alias
         })),
         pagination: {
           page,

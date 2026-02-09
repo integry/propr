@@ -3,6 +3,7 @@ import { Agent } from '../../agents/types.js';
 import { loadFileSummaries, loadDirectorySummaries, FileSummaryRow, DirectorySummaryRow } from './contextBuilder.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions.js';
+import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 
 // --- Types ---
 
@@ -167,42 +168,83 @@ export async function scoreSemanticRelevance(
 
       try {
         // Pass modelId to use the configured context analysis model
-        const response = await agent.analyze(prompt, undefined, modelId);
+        const analysisResult = await agent.analyze(prompt, undefined, modelId);
+        const response = analysisResult.response;
         const parsed = parseSemanticResponse(response);
+
+        const chunkDurationMs = Date.now() - startTime;
+        const modelUsed = modelId || agent.config.defaultModel || 'haiku';
 
         // Log metrics for this chunk
         await logSummarizationCall({
           timestamp: new Date().toISOString(),
           callType: 'semantic_scoring',
-          model: modelId || agent.config.defaultModel || 'haiku',
+          model: modelUsed,
           agentAlias: agent.config.alias,
           estimatedInputTokens,
           estimatedOutputTokens,
           estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
           success: true,
-          durationMs: Date.now() - startTime,
+          durationMs: chunkDurationMs,
           error: undefined
         }, correlatedLogger);
 
+        // Persist to llm_logs table
+        const logEntry = createLlmLogFromAnalysis({
+          executionType: 'context-analysis',
+          modelUsed,
+          executionTimeMs: chunkDurationMs,
+          success: true,
+          tokenUsage: {
+            input_tokens: estimatedInputTokens,
+            output_tokens: estimatedOutputTokens,
+          },
+          correlationId,
+          agentAlias: agent.config.alias,
+          metadata: { callType: 'semantic_scoring', chunkIndex: index },
+        });
+        await persistLlmLog(logEntry);
+
         return parsed.files;
       } catch (err) {
+        const chunkDurationMs = Date.now() - startTime;
+        const modelUsed = modelId || agent.config.defaultModel || 'haiku';
+        const errorMessage = (err as Error).message;
+
         correlatedLogger.warn({
           chunkIndex: index,
-          error: (err as Error).message
+          error: errorMessage
         }, 'Failed to score chunk');
 
         await logSummarizationCall({
           timestamp: new Date().toISOString(),
           callType: 'semantic_scoring',
-          model: modelId || agent.config.defaultModel || 'haiku',
+          model: modelUsed,
           agentAlias: agent.config.alias,
           estimatedInputTokens,
           estimatedOutputTokens,
           estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
           success: false,
-          durationMs: Date.now() - startTime,
-          error: (err as Error).message
+          durationMs: chunkDurationMs,
+          error: errorMessage
         }, correlatedLogger);
+
+        // Persist to llm_logs table
+        const logEntry = createLlmLogFromAnalysis({
+          executionType: 'context-analysis',
+          modelUsed,
+          executionTimeMs: chunkDurationMs,
+          success: false,
+          tokenUsage: {
+            input_tokens: estimatedInputTokens,
+            output_tokens: estimatedOutputTokens,
+          },
+          error: errorMessage,
+          correlationId,
+          agentAlias: agent.config.alias,
+          metadata: { callType: 'semantic_scoring', chunkIndex: index },
+        });
+        await persistLlmLog(logEntry);
 
         return [];
       }

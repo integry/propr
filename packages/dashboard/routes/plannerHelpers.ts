@@ -771,7 +771,7 @@ interface RefineDeps {
   db: KnexType;
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  refinePlan: (opts: { currentPlan: any; instruction: string; worktreePath: string; repository: string; githubToken: string; correlationId: string; originalContext?: string }) => Promise<any>;
+  refinePlan: (opts: { currentPlan: any; instruction: string; worktreePath: string; repository: string; githubToken: string; correlationId: string; originalContext?: string; draftId?: string }) => Promise<any>;
   generateCorrelationId: () => string;
 }
 
@@ -803,7 +803,7 @@ export function createRefineHandler(deps: RefineDeps) {
           const result = await deps.refinePlan({
             currentPlan, instruction, worktreePath: repoContext.worktreePath,
             repository: repoContext.repository, githubToken: repoContext.authToken, correlationId,
-            originalContext: originalContext || undefined
+            originalContext: originalContext || undefined, draftId
           });
 
           // Store the refinement result including action and summary

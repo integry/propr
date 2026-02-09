@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
-import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult } from '../types.js';
+import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import {
     verifyWorktreeStructure,
@@ -200,7 +200,8 @@ export class CodexAgent implements Agent {
         }
     }
 
-    async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<string> {
+    async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<AnalysisResult> {
+        const startTime = Date.now();
         logger.info({
             agentAlias: this.config.alias,
             promptLength: prompt.length,
@@ -210,7 +211,7 @@ export class CodexAgent implements Agent {
         }, 'Running lightweight analysis via Codex agent...');
 
         // Use provided model or Codex's default model (null = use Codex's config default)
-        const effectiveModel = model || this.config.defaultModel || undefined;
+        const effectiveModel = model || this.config.defaultModel || 'unknown';
 
         const analysisPrompt = context
             ? `${prompt}\n\nContext:\n${context}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`
@@ -235,12 +236,13 @@ export class CodexAgent implements Agent {
         }
 
         try {
+            // Use JSON output to get token usage metrics
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
-                modelName: effectiveModel,
+                modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
                 issueNumber: 0,
-                jsonOutput: false // Plain text output for lightweight analysis
+                jsonOutput: true // Use JSON output to capture token usage
             });
 
             const result = await executeDockerCommand('docker', dockerArgs, {
@@ -249,24 +251,54 @@ export class CodexAgent implements Agent {
                 taskId // Pass taskId for abort signal checking
             });
 
-            if (result.exitCode === 0 || result.stdout) {
-                const analysisText = (result.stdout || '').trim();
+            const executionTimeMs = Date.now() - startTime;
+
+            // Parse JSON output to extract response and token usage
+            const parsedOutput = parseCodexStreamOutput(result.stdout);
+
+            if (result.exitCode === 0 || parsedOutput.result) {
+                const analysisText = (parsedOutput.result || '').trim();
                 logger.info({
                     agentAlias: this.config.alias,
                     responseLength: analysisText.length,
-                    model: effectiveModel
+                    model: effectiveModel,
+                    executionTimeMs,
+                    inputTokens: parsedOutput.tokenUsage?.input_tokens,
+                    outputTokens: parsedOutput.tokenUsage?.output_tokens
                 }, 'Lightweight analysis completed');
-                return analysisText;
+                return {
+                    response: analysisText,
+                    modelUsed: parsedOutput.model || effectiveModel,
+                    executionTimeMs,
+                    success: true,
+                    tokenUsage: parsedOutput.tokenUsage,
+                    sessionId: parsedOutput.sessionId
+                };
             }
 
-            throw new Error(`Analysis failed: ${result.stderr || 'No result returned'}`);
+            const errorMsg = parsedOutput.error || result.stderr || 'No result returned';
+            return {
+                response: '',
+                modelUsed: effectiveModel,
+                executionTimeMs,
+                success: false,
+                error: `Analysis failed: ${errorMsg}`
+            };
         } catch (error) {
+            const executionTimeMs = Date.now() - startTime;
             const err = error as Error;
             logger.error({
                 agentAlias: this.config.alias,
-                error: err.message
+                error: err.message,
+                executionTimeMs
             }, 'Lightweight analysis failed');
-            throw error;
+            return {
+                response: '',
+                modelUsed: effectiveModel,
+                executionTimeMs,
+                success: false,
+                error: err.message
+            };
         }
     }
 
