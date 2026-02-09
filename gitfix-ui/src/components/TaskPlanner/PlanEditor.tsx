@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Undo2, Redo2, Check, Loader2, AlertCircle, FileText, GripVertical, Info, X, ArrowLeft } from 'lucide-react';
+import { Undo2, Redo2, Check, Loader2, AlertCircle, FileText, GripVertical, Info, X, ArrowLeft, ChevronDown, FileQuestion } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { debounce } from 'lodash';
 import { usePlanRefinement, SaveStatus } from '../../hooks/usePlanRefinement';
@@ -11,9 +11,55 @@ import { useToast } from '../ui/useToast';
 
 interface PlanEditorProps {
   draft: DraftWithPlan;
+  originalPrompt?: string;
   onFinalize?: () => void;
   onBackToSetup?: () => void;
 }
+
+interface OriginalPromptSectionProps {
+  prompt: string;
+}
+
+const OriginalPromptSection: React.FC<OriginalPromptSectionProps> = ({ prompt }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div className="border-b border-gray-200 bg-slate-50">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-slate-100 transition-colors"
+      >
+        <div className="flex items-center gap-2 text-sm text-slate-600">
+          <FileQuestion size={14} />
+          <span className="font-medium">Original Prompt</span>
+        </div>
+        <motion.div
+          animate={{ rotate: isExpanded ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+        >
+          <ChevronDown size={16} className="text-slate-400" />
+        </motion.div>
+      </button>
+      <AnimatePresence initial={false}>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="px-4 pb-3 pt-1">
+              <div className="bg-white rounded-lg border border-slate-200 p-3">
+                <p className="text-sm text-slate-700 whitespace-pre-wrap">{prompt}</p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
 
 const SaveIndicator: React.FC<{ status: SaveStatus }> = ({ status }) => {
   if (status === 'saving') {
@@ -186,7 +232,7 @@ const BackToSetupDialog: React.FC<BackToSetupDialogProps> = ({ isOpen, onClose, 
   );
 };
 
-export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize, onBackToSetup }) => {
+export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, onFinalize, onBackToSetup }) => {
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const [enforcementNoticeDismissed, setEnforcementNoticeDismissed] = useState(false);
@@ -357,6 +403,10 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize, onBac
           enforcement={granularityEnforcement}
           onDismiss={() => setEnforcementNoticeDismissed(true)}
         />
+      )}
+
+      {originalPrompt && (
+        <OriginalPromptSection prompt={originalPrompt} />
       )}
 
       <div className="flex-1 overflow-hidden">

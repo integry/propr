@@ -131,6 +131,7 @@ const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; on
     <div className="flex-1">
       <PlanEditor
         draft={draft}
+        originalPrompt={draft.initial_prompt}
         onFinalize={onRefetch}
         onBackToSetup={onRefetch}
       />
