@@ -3,7 +3,7 @@ import os from 'os';
 import fs from 'fs';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, TokenUsage } from '../types.js';
-import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
+import { executeDockerCommand, ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import {
     verifyWorktreeStructure,
     verifyWorktreePostExecution,
@@ -24,86 +24,58 @@ export { UsageLimitError };
 const DEFAULT_CLAUDE_MAX_TURNS = 1000;
 const DEFAULT_CLAUDE_TIMEOUT_MS = 300000;
 
-/**
- * Aggregates token usage from all assistant messages in the conversation log.
- * Claude Code CLI stream-json output includes per-message usage in assistant messages.
- * This helps when the final result only reports the last turn's usage.
- */
+/** Aggregates token usage from all assistant messages in the conversation log */
 function aggregateTokensFromConversationLog(conversationLog: ConversationLogEntry[]): TokenUsage {
-    const aggregated: TokenUsage = {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 0
-    };
-
+    const aggregated: TokenUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
     for (const entry of conversationLog) {
         if (entry.type === 'assistant' && entry.message) {
-            const message = entry.message as { usage?: TokenUsage };
-            if (message.usage) {
-                aggregated.input_tokens = (aggregated.input_tokens || 0) + (message.usage.input_tokens || 0);
-                aggregated.output_tokens = (aggregated.output_tokens || 0) + (message.usage.output_tokens || 0);
-                aggregated.cache_creation_input_tokens = (aggregated.cache_creation_input_tokens || 0) + (message.usage.cache_creation_input_tokens || 0);
-                aggregated.cache_read_input_tokens = (aggregated.cache_read_input_tokens || 0) + (message.usage.cache_read_input_tokens || 0);
+            const usage = (entry.message as { usage?: TokenUsage }).usage;
+            if (usage) {
+                aggregated.input_tokens = (aggregated.input_tokens || 0) + (usage.input_tokens || 0);
+                aggregated.output_tokens = (aggregated.output_tokens || 0) + (usage.output_tokens || 0);
+                aggregated.cache_creation_input_tokens = (aggregated.cache_creation_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
+                aggregated.cache_read_input_tokens = (aggregated.cache_read_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
             }
         }
     }
-
     return aggregated;
 }
 
-/**
- * Returns the better token usage between reported and aggregated values.
- * Prefers aggregated if it has higher input tokens (indicating multi-turn conversation).
- */
-function getCorrectedTokenUsage(
-    reported: TokenUsage | undefined,
-    conversationLog: ConversationLogEntry[]
-): TokenUsage | undefined {
+/** Returns the better token usage between reported and aggregated values */
+function getCorrectedTokenUsage(reported: TokenUsage | undefined, conversationLog: ConversationLogEntry[]): TokenUsage | undefined {
     const aggregated = aggregateTokensFromConversationLog(conversationLog);
-
-    // If aggregated has meaningful values and is higher than reported, use it
     const aggregatedTotal = (aggregated.input_tokens || 0) + (aggregated.output_tokens || 0);
-    const reportedTotal = ((reported?.input_tokens || 0) + (reported?.output_tokens || 0));
-
+    const reportedTotal = (reported?.input_tokens || 0) + (reported?.output_tokens || 0);
     if (aggregatedTotal > reportedTotal) {
-        logger.debug({
-            reportedInputTokens: reported?.input_tokens,
-            reportedOutputTokens: reported?.output_tokens,
-            aggregatedInputTokens: aggregated.input_tokens,
-            aggregatedOutputTokens: aggregated.output_tokens
-        }, 'Using aggregated token usage (higher than reported)');
+        logger.debug({ reportedInputTokens: reported?.input_tokens, reportedOutputTokens: reported?.output_tokens, aggregatedInputTokens: aggregated.input_tokens, aggregatedOutputTokens: aggregated.output_tokens }, 'Using aggregated token usage (higher than reported)');
         return aggregated;
     }
-
     return reported;
 }
 
-/**
- * Ensures the initial prompt is included in the conversation log.
- * Claude Code CLI stream output often omits the stdin prompt, leading to incomplete logs.
- */
-function ensurePromptInConversationLog(
-    conversationLog: ConversationLogEntry[],
-    prompt: string
-): ConversationLogEntry[] {
-    // Check if there's already a user message at the start
-    const hasInitialUserMessage = conversationLog.length > 0 && conversationLog[0].type === 'user';
+/** Ensures the initial prompt is included in the conversation log */
+function ensurePromptInConversationLog(conversationLog: ConversationLogEntry[], prompt: string): ConversationLogEntry[] {
+    if (conversationLog.length > 0 && conversationLog[0].type === 'user') return conversationLog;
+    return [{ type: 'user', message: { id: 'initial-prompt' }, timestamp: new Date().toISOString(), content: [{ type: 'text', text: prompt }] }, ...conversationLog];
+}
 
-    if (!hasInitialUserMessage) {
-        // Inject the prompt as the first user message
-        const promptEntry: ConversationLogEntry = {
-            type: 'user',
-            message: {
-                id: 'initial-prompt',
-            },
-            timestamp: new Date().toISOString(),
-            content: [{ type: 'text', text: prompt }]
-        };
-        return [promptEntry, ...conversationLog];
-    }
+interface ProcessedResult { response: AgentExecutionResult; correctedTokenUsage: TokenUsage | undefined; modelUsed: string; }
 
-    return conversationLog;
+/** Processes Docker execution result and builds the agent response */
+function processDockerResult(result: ExecutionResult, prompt: string, effectiveModel: string, executionTime: number): ProcessedResult {
+    const claudeOutput = parseStreamJsonOutput(result);
+    const modelUsed = claudeOutput.model || effectiveModel || getDefaultModel();
+    const fullConversationLog = ensurePromptInConversationLog(claudeOutput.conversationLog, prompt);
+    const correctedTokenUsage = getCorrectedTokenUsage(claudeOutput.tokenUsage, fullConversationLog);
+    return {
+        response: {
+            success: claudeOutput.success, executionTimeMs: executionTime, logs: result.stderr || '', exitCode: result.exitCode,
+            rawOutput: result.stdout, sessionId: claudeOutput.sessionId ?? undefined, conversationId: claudeOutput.conversationId,
+            modelUsed, cost: claudeOutput.finalResult?.total_cost_usd || claudeOutput.finalResult?.cost_usd, modifiedFiles: [],
+            commitMessage: null, summary: claudeOutput.finalResult?.result ?? undefined, prompt, conversationLog: fullConversationLog, tokenUsage: correctedTokenUsage
+        },
+        correctedTokenUsage, modelUsed
+    };
 }
 
 export class ClaudeAgent implements Agent {
@@ -118,407 +90,117 @@ export class ClaudeAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const {
-            worktreePath,
-            issueRef,
-            prompt: customPrompt,
-            model,
-            systemPrompt,
-            isRetry = false,
-            retryReason,
-            branchName,
-            issueDetails,
-            onSessionId,
-            onContainerId,
-            githubToken,
-            tools,
-            taskId
-        } = options;
-
+        const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, githubToken, tools, taskId } = options;
         const startTime = Date.now();
-        const effectiveModel = model || this.config.defaultModel;
-
-        logger.info({
-            issueNumber: issueRef.number,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            worktreePath,
-            dockerImage: this.config.dockerImage,
-            agentAlias: this.config.alias,
-            isRetry,
-            retryReason
-        }, isRetry ? 'Starting Claude agent execution (RETRY)...' : 'Starting Claude agent execution...');
+        const effectiveModel = model || this.config.defaultModel || getDefaultModel();
+        const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
+        logger.info({ issueNumber: issueRef.number, repository: repo, worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason }, isRetry ? 'Starting Claude agent execution (RETRY)...' : 'Starting Claude agent execution...');
 
         try {
-            // Build the prompt using the helper (includes safety rules)
-            const prompt = buildClaudePrompt({
-                customPrompt,
-                issueRef,
-                branchName,
-                modelName: effectiveModel,
-                issueDetails,
-                isRetry,
-                retryReason
-            });
-
-            // Set worktree ownership for container compatibility
+            const prompt = buildClaudePrompt({ customPrompt, issueRef, branchName, modelName: effectiveModel, issueDetails, isRetry, retryReason });
             await setWorktreeOwnership(worktreePath, issueRef.number);
-
-            // Verify worktree structure before execution
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-
-            // Build Docker arguments using agent config
-            const dockerArgs = this.buildDockerArgs({
-                worktreePath,
-                githubToken,
-                modelName: effectiveModel,
-                issueNumber: issueRef.number,
-                systemPrompt,
-                tools
-            });
-
-            // Execute Docker command
-            const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: this.timeoutMs,
-                cwd: worktreePath,
-                onSessionId,
-                onContainerId,
-                worktreePath,
-                stdinData: prompt, // Pass prompt via stdin to avoid E2BIG
-                taskId
-            });
-
+            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, systemPrompt, tools });
+            const result = await executeDockerCommand('docker', dockerArgs, { timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData: prompt, taskId });
             const executionTime = Date.now() - startTime;
-            logger.info({
-                issueNumber: issueRef.number,
-                repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-                executionTime,
-                outputLength: result.stdout?.length || 0,
-                success: result.exitCode === 0,
-                exitCode: result.exitCode,
-                agentAlias: this.config.alias
-            }, 'Claude agent execution completed');
-
-            // Parse the streaming JSON output
-            const claudeOutput = parseStreamJsonOutput(result);
-
-            const modelUsed = claudeOutput.model || effectiveModel || getDefaultModel();
-
-            // Ensure prompt is included in conversation log (stdin prompt often omitted in stream output)
-            const fullConversationLog = ensurePromptInConversationLog(claudeOutput.conversationLog, prompt);
-
-            // Get corrected token usage (aggregate from conversation log if reported seems incomplete)
-            const correctedTokenUsage = getCorrectedTokenUsage(claudeOutput.tokenUsage, fullConversationLog);
-
-            const response: AgentExecutionResult = {
-                success: claudeOutput.success,
-                executionTimeMs: executionTime,
-                logs: result.stderr || '',
-                exitCode: result.exitCode,
-                rawOutput: result.stdout,
-                sessionId: claudeOutput.sessionId ?? undefined,
-                conversationId: claudeOutput.conversationId,
-                modelUsed,
-                cost: claudeOutput.finalResult?.total_cost_usd || claudeOutput.finalResult?.cost_usd,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: claudeOutput.finalResult?.result ?? undefined,
-                prompt,
-                conversationLog: fullConversationLog,
-                tokenUsage: correctedTokenUsage
-            };
-
-            // Store prompt in Redis for audit trail
-            await storePromptInRedis({
-                claudeOutput,
-                prompt,
-                issueRef,
-                model: modelUsed,
-                isRetry,
-                retryReason
-            });
-
-            // Persist LLM log for visibility in the LLM Logs UI
-            const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
-            const logEntry = createLlmLogFromAnalysis({
-                executionType: 'implementation',
-                modelUsed,
-                executionTimeMs: executionTime,
-                success: claudeOutput.success,
-                tokenUsage: correctedTokenUsage,
-                error: claudeOutput.success ? undefined : (result.stderr || 'Execution failed'),
-                sessionId: claudeOutput.sessionId ?? undefined,
-                draftId: taskId,
-                repository,
-                agentAlias: this.config.alias,
-                metadata: {
-                    isRetry,
-                    retryReason,
-                    conversationId: claudeOutput.conversationId
-                }
-            });
-            await persistLlmLog(logEntry);
-
+            logger.info({ issueNumber: issueRef.number, repository: repo, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Claude agent execution completed');
+            const { response, correctedTokenUsage, modelUsed } = processDockerResult(result, prompt, effectiveModel, executionTime);
+            await this.persistExecutionLogs({ result, prompt, issueRef, modelUsed, isRetry, retryReason, executionTime, correctedTokenUsage, taskId });
             if (!response.success) {
-                logger.error({
-                    issueNumber: issueRef.number,
-                    exitCode: result.exitCode,
-                    stderr: result.stderr,
-                    agentAlias: this.config.alias
-                }, 'Claude agent execution failed');
+                logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias }, 'Claude agent execution failed');
             } else {
-                logger.info({
-                    issueNumber: issueRef.number,
-                    model: modelUsed,
-                    agentAlias: this.config.alias
-                }, 'Claude agent execution succeeded');
-
-                // Verify worktree state after successful execution
+                logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Claude agent execution succeeded');
                 verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
             }
-
             return response;
         } catch (error) {
+            if (error instanceof UsageLimitError) throw error;
             const executionTime = Date.now() - startTime;
-            const err = error as Error;
-
-            // Re-throw UsageLimitError for proper handling upstream
-            if (error instanceof UsageLimitError) {
-                throw error;
-            }
-
-            logger.error({
-                issueNumber: issueRef.number,
-                repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-                executionTime,
-                error: err.message,
-                agentAlias: this.config.alias
-            }, 'Error during Claude agent execution');
-
-            return {
-                success: false,
-                error: err.message,
-                executionTimeMs: executionTime,
-                logs: (error as { stderr?: string }).stderr || err.message,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: undefined,
-                modelUsed: this.config.defaultModel || getDefaultModel()
-            };
+            logger.error({ issueNumber: issueRef.number, repository: repo, executionTime, error: (error as Error).message, agentAlias: this.config.alias }, 'Error during Claude agent execution');
+            return { success: false, error: (error as Error).message, executionTimeMs: executionTime, logs: (error as { stderr?: string }).stderr || (error as Error).message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: this.config.defaultModel || getDefaultModel() };
         }
     }
 
     async analyze(prompt: string, context?: string, model?: string, taskId?: string): Promise<AnalysisResult> {
         const startTime = Date.now();
-        logger.info({
-            agentAlias: this.config.alias,
-            promptLength: prompt.length,
-            hasContext: !!context,
-            requestedModel: model,
-            taskId
-        }, 'Running lightweight analysis via Claude agent...');
-
-        // Use provided model or fallback to haiku for lightweight analysis
+        logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId }, 'Running lightweight analysis via Claude agent...');
         const effectiveModel = model || resolveModelAlias('haiku');
-
-        const analysisPrompt = context
-            ? `${prompt}\n\nContext:\n${context}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`
-            : `${prompt}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.`;
-
-        // For analysis, we use a minimal Docker execution with a temporary worktree path
-        const tempPath = '/tmp/claude-analysis';
-
+        const suffix = '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+        const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         try {
-            const dockerArgs = this.buildDockerArgs({
-                worktreePath: tempPath,
-                githubToken: process.env.GITHUB_TOKEN || '',
-                modelName: effectiveModel,
-                issueNumber: 0,
-                systemPrompt: 'You are a helpful assistant.',
-                tools: ''
-            });
-
-            const result = await executeDockerCommand('docker', dockerArgs, {
-                timeout: 1800000, // 30 minute timeout for analysis (planning tasks can take longer)
-                stdinData: analysisPrompt,
-                taskId // Pass taskId for abort signal checking
-            });
-
+            const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/claude-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.', tools: '' });
+            const result = await executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData: analysisPrompt, taskId });
             const executionTimeMs = Date.now() - startTime;
             const claudeOutput = parseStreamJsonOutput(result);
-
             if (claudeOutput.finalResult?.result || claudeOutput.success) {
                 const analysisText = (claudeOutput.finalResult?.result || '').trim();
-                logger.info({
-                    agentAlias: this.config.alias,
-                    responseLength: analysisText.length,
-                    model: effectiveModel,
-                    executionTimeMs
-                }, 'Lightweight analysis completed');
-                return {
-                    response: analysisText,
-                    modelUsed: claudeOutput.model || effectiveModel,
-                    executionTimeMs,
-                    success: true,
-                    tokenUsage: claudeOutput.tokenUsage,
-                    sessionId: claudeOutput.sessionId ?? undefined
-                };
+                logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: effectiveModel, executionTimeMs }, 'Lightweight analysis completed');
+                return { response: analysisText, modelUsed: claudeOutput.model || effectiveModel, executionTimeMs, success: true, tokenUsage: claudeOutput.tokenUsage, sessionId: claudeOutput.sessionId ?? undefined };
             }
-
-            const errorMsg = result.stderr || 'No result returned';
-            return {
-                response: '',
-                modelUsed: effectiveModel,
-                executionTimeMs,
-                success: false,
-                error: `Analysis failed: ${errorMsg}`
-            };
+            return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${result.stderr || 'No result returned'}` };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;
-            const err = error as Error;
-            logger.error({
-                agentAlias: this.config.alias,
-                error: err.message,
-                executionTimeMs
-            }, 'Lightweight analysis failed');
-            return {
-                response: '',
-                modelUsed: effectiveModel,
-                executionTimeMs,
-                success: false,
-                error: err.message
-            };
+            logger.error({ agentAlias: this.config.alias, error: (error as Error).message, executionTimeMs }, 'Lightweight analysis failed');
+            return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: (error as Error).message };
         }
     }
 
     async healthCheck(): Promise<boolean> {
-        logger.debug({
-            agentAlias: this.config.alias,
-            dockerImage: this.config.dockerImage
-        }, 'Running health check for Claude agent...');
-
+        logger.debug({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Running health check for Claude agent...');
         try {
-            const result = await executeDockerCommand('docker', [
-                'images', '-q', this.config.dockerImage
-            ], { timeout: 10000 });
-
+            const result = await executeDockerCommand('docker', ['images', '-q', this.config.dockerImage], { timeout: 10000 });
             const imageExists = !!result.stdout.trim();
-
-            logger.info({
-                agentAlias: this.config.alias,
-                dockerImage: this.config.dockerImage,
-                imageExists
-            }, imageExists ? 'Health check passed' : 'Health check failed: Docker image not found');
-
+            logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage, imageExists }, imageExists ? 'Health check passed' : 'Health check failed: Docker image not found');
             return imageExists;
         } catch (error) {
-            const err = error as Error;
-            logger.error({
-                agentAlias: this.config.alias,
-                error: err.message
-            }, 'Health check failed with error');
+            logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'Health check failed with error');
             return false;
         }
     }
 
-    /**
-     * Builds Docker arguments for running Claude in a container.
-     * This is a private method specific to ClaudeAgent as different agents
-     * will construct Docker arguments differently.
-     */
-    private buildDockerArgs(params: {
-        worktreePath: string;
-        githubToken: string;
-        modelName?: string;
-        issueNumber: number;
-        systemPrompt?: string;
-        tools?: string;
-    }): string[] {
-        const {
-            worktreePath,
-            githubToken,
-            modelName,
-            issueNumber,
-            systemPrompt,
-            tools
-        } = params;
+    /** Persists execution logs to Redis and LLM log store */
+    private async persistExecutionLogs(params: { result: ExecutionResult; prompt: string; issueRef: { number: number; repoOwner: string; repoName: string }; modelUsed: string; isRetry: boolean; retryReason?: string; executionTime: number; correctedTokenUsage: TokenUsage | undefined; taskId?: string; }): Promise<void> {
+        const { result, prompt, issueRef, modelUsed, isRetry, retryReason, executionTime, correctedTokenUsage, taskId } = params;
+        const claudeOutput = parseStreamJsonOutput(result);
+        await storePromptInRedis({ claudeOutput, prompt, issueRef, model: modelUsed, isRetry, retryReason });
+        await persistLlmLog(createLlmLogFromAnalysis({
+            executionType: 'implementation', modelUsed, executionTimeMs: executionTime, success: claudeOutput.success, tokenUsage: correctedTokenUsage,
+            error: claudeOutput.success ? undefined : (result.stderr || 'Execution failed'), sessionId: claudeOutput.sessionId ?? undefined, draftId: taskId,
+            repository: `${issueRef.repoOwner}/${issueRef.repoName}`, agentAlias: this.config.alias, metadata: { isRetry, retryReason, conversationId: claudeOutput.conversationId }
+        }));
+    }
 
-        // Use config values instead of environment defaults
-        const dockerImage = this.config.dockerImage;
+    /** Builds Docker arguments for running Claude in a container */
+    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; systemPrompt?: string; tools?: string; }): string[] {
+        const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools } = params;
         const configPath = resolveConfigPath(this.config.configPath);
-
-        // Inject any custom environment variables from config
         const envVars: string[] = [];
         if (this.config.envVars) {
-            for (const [key, value] of Object.entries(this.config.envVars)) {
-                envVars.push('-e', `${key}=${value}`);
-            }
+            for (const [key, value] of Object.entries(this.config.envVars)) envVars.push('-e', `${key}=${value}`);
         }
-
+        const claudeJsonPath = path.join(os.homedir(), '.claude.json');
         const dockerArgs: string[] = [
-            'run', '--rm',
-            '-i', // Allow stdin for piping prompt
-            '--security-opt', 'no-new-privileges',
-            '--cap-add', 'CHOWN',
-            '--network', 'bridge',
-            '--user', '0:0',
-            '-v', `${worktreePath}:/home/node/workspace:rw`,
-            '-v', '/tmp/git-processor:/tmp/git-processor:rw',
-            '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
-            '-v', `${configPath}:/home/node/.claude:rw`,
-            ...(fs.existsSync(path.join(os.homedir(), '.claude.json'))
-                ? ['-v', `${path.join(os.homedir(), '.claude.json')}:/home/node/.claude.json:rw`]
-                : []),
-            '-e', `GH_TOKEN=${githubToken}`,
-            ...envVars,
-            '-w', '/home/node/workspace',
-            dockerImage,
-            'claude', '-p', '-', // Read prompt from stdin
-            '--max-turns', this.maxTurns.toString(),
-            '--output-format', 'stream-json',
-            '--verbose',
-            '--dangerously-skip-permissions'
+            'run', '--rm', '-i', '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
+            '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
+            '-v', `${configPath}:/home/node/.claude:rw`, ...(fs.existsSync(claudeJsonPath) ? ['-v', `${claudeJsonPath}:/home/node/.claude.json:rw`] : []),
+            '-e', `GH_TOKEN=${githubToken}`, ...envVars, '-w', '/home/node/workspace', this.config.dockerImage,
+            'claude', '-p', '-', '--max-turns', this.maxTurns.toString(), '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'
         ];
-
         if (modelName) {
-            const maxTurnsIndex = dockerArgs.indexOf('--max-turns');
-            dockerArgs.splice(maxTurnsIndex, 0, '--model', modelName);
-            logger.info({
-                issueNumber,
-                requestedModel: modelName,
-                agentAlias: this.config.alias
-            }, 'Using specific model for Claude agent execution');
+            dockerArgs.splice(dockerArgs.indexOf('--max-turns'), 0, '--model', modelName);
+            logger.info({ issueNumber, requestedModel: modelName, agentAlias: this.config.alias }, 'Using specific model for Claude agent execution');
         } else {
-            logger.debug({
-                issueNumber,
-                agentAlias: this.config.alias
-            }, 'No model specified, Claude agent will use default');
+            logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Claude agent will use default');
         }
-
         if (systemPrompt !== undefined) {
             dockerArgs.push('--system-prompt', systemPrompt);
-            logger.info({
-                issueNumber,
-                systemPromptLength: systemPrompt.length,
-                agentAlias: this.config.alias
-            }, 'Using custom system prompt');
+            logger.info({ issueNumber, systemPromptLength: systemPrompt.length, agentAlias: this.config.alias }, 'Using custom system prompt');
         }
-
         if (tools !== undefined) {
             dockerArgs.push('--tools', tools);
-            logger.info({
-                issueNumber,
-                tools,
-                agentAlias: this.config.alias
-            }, 'Using custom tools configuration');
+            logger.info({ issueNumber, tools, agentAlias: this.config.alias }, 'Using custom tools configuration');
         }
-
-        logger.info({
-            issueNumber,
-            hasSystemPrompt: systemPrompt !== undefined,
-            hasTools: tools !== undefined,
-            agentAlias: this.config.alias
-        }, 'Docker args built for Claude agent');
-
+        logger.info({ issueNumber, hasSystemPrompt: systemPrompt !== undefined, hasTools: tools !== undefined, agentAlias: this.config.alias }, 'Docker args built for Claude agent');
         return dockerArgs;
     }
 }
