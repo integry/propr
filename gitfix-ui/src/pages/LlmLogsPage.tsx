@@ -10,6 +10,8 @@ import {
   formatType,
   getContextDisplay,
   hasDetailedInfo,
+} from './llmLogsUtils';
+import {
   StatusIcon,
   ExpandButton,
   ExpandedRowDetails,
