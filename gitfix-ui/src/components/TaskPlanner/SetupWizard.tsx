@@ -19,10 +19,8 @@ import { useContextExport } from '../../hooks/useContextExport';
 import { useContextRefresh } from '../../hooks/useContextRefresh';
 import { useToast } from '../ui/useToast';
 import { resizeImage } from './imageUtils';
-import { GenerateButton } from './GenerateButton';
 import { ContextHeader } from './ContextHeader';
 import { IndexedRepository } from './ContextRepositoriesSection';
-import { ExportContextButton } from './ExportContextButton';
 import { SetupWizardContent } from './SetupWizardContent';
 
 interface SetupWizardProps {
@@ -248,7 +246,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const isGenerateDisabled = isGenerating || !!branchError || repoInfo.isLoading;
 
   return (
-    <div className="max-w-4xl mx-auto flex flex-col min-h-[calc(100vh-200px)]">
+    <div className="max-w-6xl mx-auto flex flex-col min-h-[calc(100vh-200px)]">
       <ContextHeader
         repository={draft.repository} baseBranch={config.baseBranch} branches={repoInfo.branches}
         isLoading={repoInfo.isLoading} error={branchError || repoInfo.error}
@@ -272,11 +270,14 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           onManualRefresh={handleManualRefresh} error={error} generationError={generationError}
           isGenerating={isGenerating} generationTrace={generationTrace}
           onAbort={handleAbortGeneration}
+          isRepoLoading={repoInfo.isLoading}
+          isGenerateDisabled={isGenerateDisabled}
+          onGenerate={handleGenerate}
+          isExporting={isExporting}
+          isPreviewLoading={preview.isLoading}
+          canExport={!!(config.prompt.trim() && config.baseBranch)}
+          onExport={handleExportContext}
         />
-        <div className="sticky bottom-0 bg-white border-t border-gray-200 p-4 rounded-b-xl space-y-3">
-          <GenerateButton isGenerating={isGenerating} isRepoLoading={repoInfo.isLoading} disabled={isGenerateDisabled} onClick={handleGenerate} />
-          <ExportContextButton isExporting={isExporting} isPreviewLoading={preview.isLoading} canExport={!!(config.prompt.trim() && config.baseBranch)} onExport={handleExportContext} />
-        </div>
       </div>
     </div>
   );

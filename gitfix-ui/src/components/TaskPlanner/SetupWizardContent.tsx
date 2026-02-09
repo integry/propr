@@ -8,6 +8,8 @@ import { TaskGranularitySection } from './TaskGranularitySection';
 import { ContextSettingsSection } from './ContextSettingsSection';
 import { ContextRepositoriesSection, IndexedRepository } from './ContextRepositoriesSection';
 import { CostPreview } from './CostPreview';
+import { GenerateButton } from './GenerateButton';
+import { ExportContextButton } from './ExportContextButton';
 
 interface PreviewState {
   isLoading: boolean;
@@ -64,6 +66,17 @@ interface SetupWizardContentProps {
   isGenerating: boolean;
   generationTrace?: GenerationTrace;
   onAbort?: () => Promise<void>;
+
+  // Generate button props
+  isRepoLoading: boolean;
+  isGenerateDisabled: boolean;
+  onGenerate: () => void;
+
+  // Export context props
+  isExporting: boolean;
+  isPreviewLoading: boolean;
+  canExport: boolean;
+  onExport: () => void;
 }
 
 export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
@@ -100,78 +113,127 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
   generationError,
   isGenerating,
   generationTrace,
-  onAbort
+  onAbort,
+  isRepoLoading,
+  isGenerateDisabled,
+  onGenerate,
+  isExporting,
+  isPreviewLoading,
+  canExport,
+  onExport
 }) => {
   return (
-    <div className="p-6 space-y-6">
-      {/* Hero Prompt Area */}
-      <HeroPromptArea
-        prompt={prompt}
-        files={files}
-        draftId={draftId}
-        isUploading={isUploading}
-        textareaRef={textareaRef}
-        onPromptChange={onPromptChange}
-        onInput={onInput}
-        onPaste={onPaste}
-        onUpload={onUpload}
-        onRemoveFile={onRemoveFile}
-      />
+    <div className="p-6">
+      {/* Split-view layout: Left (prompt) and Right (settings) */}
+      <div className="grid grid-cols-12 gap-6">
+        {/* Left Column - Prompt Area (col-span-7) */}
+        <div className="col-span-12 lg:col-span-7 flex flex-col">
+          <div className="flex-1 space-y-4">
+            {/* Hero Prompt Area - expanded to fill available height */}
+            <HeroPromptArea
+              prompt={prompt}
+              files={files}
+              draftId={draftId}
+              isUploading={isUploading}
+              textareaRef={textareaRef}
+              onPromptChange={onPromptChange}
+              onInput={onInput}
+              onPaste={onPaste}
+              onUpload={onUpload}
+              onRemoveFile={onRemoveFile}
+            />
 
-      {/* Task Granularity Section - now separate from Context Settings */}
-      <TaskGranularitySection
-        granularity={granularity}
-        onGranularityChange={onGranularityChange}
-      />
+            {/* Smart File Selection - with skeleton during loading */}
+            <div className="mt-4">
+              {preview.isLoading && !preview.data ? (
+                <FileSelectionSkeleton />
+              ) : preview.data && (
+                <SmartFileSelection smartSelection={preview.data.smartSelection} />
+              )}
+            </div>
+          </div>
+        </div>
 
-      {/* Context Settings Section */}
-      <ContextSettingsSection
-        contextLevel={contextLevel}
-        compress={compress}
-        onContextLevelChange={onContextLevelChange}
-        onCompressChange={onCompressChange}
-        modelName={preview.data?.stats.modelName}
-        modelMaxContextTokens={preview.data?.stats.modelMaxContextTokens}
-        agents={agents}
-        generationModel={generationModel}
-        onGenerationModelChange={onGenerationModelChange}
-      />
+        {/* Right Column - Configuration Panel (col-span-5) */}
+        <div className="col-span-12 lg:col-span-5 space-y-4">
+          {/* Settings container with card styling */}
+          <div className="bg-gray-50 rounded-xl border border-gray-200 p-5 space-y-5">
+            {/* Task Granularity Section */}
+            <TaskGranularitySection
+              granularity={granularity}
+              onGranularityChange={onGranularityChange}
+            />
 
-      {/* Context Repositories Section */}
-      <ContextRepositoriesSection
-        repositories={contextRepositories}
-        availableRepos={availableRepos}
-        onAdd={onAddContextRepo}
-        onRemove={onRemoveContextRepo}
-      />
+            {/* Divider */}
+            <div className="border-t border-gray-200" />
 
-      {/* Cost Preview with integrated Refresh Indicator */}
-      <CostPreview
-        preview={preview}
-        contextRepositories={contextRepositories}
-        isContextStale={isContextStale}
-        timeUntilRefresh={timeUntilRefresh}
-        isPaused={isPaused}
-        onTogglePause={onTogglePause}
-        onManualRefresh={onManualRefresh}
-      />
+            {/* Context Settings Section */}
+            <ContextSettingsSection
+              contextLevel={contextLevel}
+              compress={compress}
+              onContextLevelChange={onContextLevelChange}
+              onCompressChange={onCompressChange}
+              modelName={preview.data?.stats.modelName}
+              modelMaxContextTokens={preview.data?.stats.modelMaxContextTokens}
+              agents={agents}
+              generationModel={generationModel}
+              onGenerationModelChange={onGenerationModelChange}
+            />
 
-      {/* Smart File Selection - with skeleton during loading */}
-      {preview.isLoading && !preview.data ? (
-        <FileSelectionSkeleton />
-      ) : preview.data && (
-        <SmartFileSelection smartSelection={preview.data.smartSelection} />
-      )}
+            {/* Divider */}
+            <div className="border-t border-gray-200" />
 
-      {/* Error display */}
+            {/* Context Repositories Section */}
+            <ContextRepositoriesSection
+              repositories={contextRepositories}
+              availableRepos={availableRepos}
+              onAdd={onAddContextRepo}
+              onRemove={onRemoveContextRepo}
+            />
+          </div>
+
+          {/* Cost Preview - outside the settings card for emphasis */}
+          <CostPreview
+            preview={preview}
+            contextRepositories={contextRepositories}
+            isContextStale={isContextStale}
+            timeUntilRefresh={timeUntilRefresh}
+            isPaused={isPaused}
+            onTogglePause={onTogglePause}
+            onManualRefresh={onManualRefresh}
+          />
+        </div>
+      </div>
+
+      {/* Error display - full width */}
       {(error || generationError) && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-red-700">
+        <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700">
           {error || generationError}
         </div>
       )}
 
-      {/* Generation Progress */}
-      {isGenerating && <GenerationProgress trace={generationTrace} onAbort={onAbort} />}
+      {/* Generation Progress - full width */}
+      {isGenerating && (
+        <div className="mt-6">
+          <GenerationProgress trace={generationTrace} onAbort={onAbort} />
+        </div>
+      )}
+
+      {/* Action buttons - sticky footer style */}
+      <div className="mt-6 pt-4 border-t border-gray-200 space-y-3">
+        <GenerateButton
+          isGenerating={isGenerating}
+          isRepoLoading={isRepoLoading}
+          disabled={isGenerateDisabled}
+          onClick={onGenerate}
+        />
+        <ExportContextButton
+          isExporting={isExporting}
+          isPreviewLoading={isPreviewLoading}
+          canExport={canExport}
+          onExport={onExport}
+        />
+      </div>
     </div>
   );
 };
