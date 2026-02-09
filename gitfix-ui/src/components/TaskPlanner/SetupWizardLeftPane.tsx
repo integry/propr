@@ -16,29 +16,43 @@ const NewModeHeader: React.FC<{
   onRepoChange?: (repo: string) => void;
 }> = ({ reposLoading, selectedRepo, repos, onRepoChange }) => {
   if (reposLoading) {
-    return <span className="text-gray-400">Loading...</span>;
+    return <span className="text-gray-400">Loading repositories...</span>;
   }
+
+  // Get the selected repo's base branch for display
+  const selectedRepoData = repos.find(r => r.name === selectedRepo);
+  const displayBranch = selectedRepoData?.baseBranch || 'main';
+
   return (
     <>
-      <span className="font-medium text-gray-700">{selectedRepo || 'Select repository'}</span>
-      <span className="text-gray-400">&gt;</span>
+      {/* Repository selector */}
       <div className="relative inline-flex items-center">
         <select
           value={selectedRepo}
           onChange={(e) => onRepoChange?.(e.target.value)}
-          className="appearance-none bg-transparent text-gray-600 hover:text-gray-900 focus:outline-none cursor-pointer pr-5"
+          className="appearance-none bg-transparent font-medium text-gray-700 hover:text-gray-900 focus:outline-none cursor-pointer pr-5"
           disabled={repos.length === 0}
         >
           {repos.length === 0 ? (
-            <option value="">No repositories</option>
+            <option value="">No repositories available</option>
           ) : (
-            repos.map(repo => (
-              <option key={repo.name} value={repo.name}>{repo.baseBranch || 'main'}</option>
-            ))
+            <>
+              <option value="">Select repository</option>
+              {repos.map(repo => (
+                <option key={repo.name} value={repo.name}>{repo.name}</option>
+              ))}
+            </>
           )}
         </select>
         <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 pointer-events-none" />
       </div>
+      {/* Show branch when repo is selected */}
+      {selectedRepo && (
+        <>
+          <span className="text-gray-400">&gt;</span>
+          <span className="text-gray-600">{displayBranch}</span>
+        </>
+      )}
     </>
   );
 };
@@ -95,31 +109,14 @@ const AttachmentsSection: React.FC<{
   isUploading: boolean;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-}> = ({ isNewMode, localFiles, files, onRemoveLocalFile, onRemoveFile, isUploading, fileInputRef, onFileInputChange }) => (
-  <div className="mt-4 space-y-3">
-    {isNewMode && localFiles.length > 0 && (
-      <div className="flex flex-wrap gap-2">
-        {localFiles.map((file, index) => (
-          <AttachmentChip
-            key={`file-${index}`}
-            file={file}
-            onRemove={() => onRemoveLocalFile?.(index)}
-          />
-        ))}
-      </div>
-    )}
-    {!isNewMode && files.length > 0 && (
-      <div className="flex flex-wrap gap-2">
-        {files.map((attachment) => (
-          <AttachmentChip
-            key={attachment.id}
-            file={{ name: attachment.originalName, type: attachment.mimeType || 'application/octet-stream' } as File}
-            onRemove={() => onRemoveFile(attachment.id)}
-          />
-        ))}
-      </div>
-    )}
-    <div className="flex items-center">
+}> = ({ isNewMode, localFiles, files, onRemoveLocalFile, onRemoveFile, isUploading, fileInputRef, onFileInputChange }) => {
+  const hasLocalFiles = isNewMode && localFiles.length > 0;
+  const hasRemoteFiles = !isNewMode && files.length > 0;
+  const hasAnyFiles = hasLocalFiles || hasRemoteFiles;
+
+  return (
+    <div className="mt-4 flex items-center gap-3 flex-wrap">
+      {/* Attach button - always first */}
       <input
         type="file"
         ref={fileInputRef}
@@ -130,7 +127,7 @@ const AttachmentsSection: React.FC<{
       <button
         onClick={() => fileInputRef.current?.click()}
         disabled={isUploading}
-        className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+        className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors border border-gray-200"
       >
         {isUploading ? (
           <>
@@ -140,13 +137,33 @@ const AttachmentsSection: React.FC<{
         ) : (
           <>
             <Paperclip className="w-4 h-4" />
-            <span>Attach</span>
+            <span>Attach file</span>
           </>
         )}
       </button>
+
+      {/* Attached files shown inline after the button */}
+      {hasAnyFiles && (
+        <div className="flex flex-wrap gap-2">
+          {hasLocalFiles && localFiles.map((file, index) => (
+            <AttachmentChip
+              key={`file-${index}`}
+              file={file}
+              onRemove={() => onRemoveLocalFile?.(index)}
+            />
+          ))}
+          {hasRemoteFiles && files.map((attachment) => (
+            <AttachmentChip
+              key={attachment.id}
+              file={{ name: attachment.originalName, type: attachment.mimeType || 'application/octet-stream' } as File}
+              onRemove={() => onRemoveFile(attachment.id)}
+            />
+          ))}
+        </div>
+      )}
     </div>
-  </div>
-);
+  );
+};
 
 // Extracted: Generate button content
 const GenerateButtonContent: React.FC<{
@@ -308,7 +325,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             onInput={autoResize}
             onPaste={onPaste}
             placeholder="Describe the feature, bug fix, or improvement you want to implement..."
-            className="flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none focus:outline-none leading-relaxed"
+            className="flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed border border-gray-200 rounded-lg p-4 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
             style={{ minHeight: '160px' }}
           />
         </div>

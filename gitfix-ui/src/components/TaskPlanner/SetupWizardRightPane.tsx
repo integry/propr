@@ -10,7 +10,6 @@ interface PreviewStats {
 }
 
 interface SetupWizardRightPaneProps {
-  isNewMode?: boolean;
   contextLevel: number;
   onContextLevelChange: (level: number) => void;
   compress: boolean;
@@ -24,7 +23,6 @@ interface SetupWizardRightPaneProps {
 }
 
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
-  isNewMode = false,
   contextLevel,
   onContextLevelChange,
   compress,
@@ -57,13 +55,9 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
       <div className="flex-1 overflow-auto p-5">
         <div className="space-y-3">
           <h3 className="text-sm font-medium text-gray-700">
-            Selected Files ({isNewMode ? 0 : (smartSelection?.length || 0)})
+            Selected Files ({smartSelection?.length || 0})
           </h3>
-          {isNewMode ? (
-            <p className="text-sm text-gray-400 italic">
-              Files will be selected after context analysis
-            </p>
-          ) : isPreviewLoading ? (
+          {isPreviewLoading ? (
             <p className="text-sm text-gray-400 italic">Analyzing context...</p>
           ) : smartSelection?.length ? (
             <div className="text-sm text-gray-600 space-y-1 max-h-64 overflow-auto">
@@ -78,7 +72,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
             </div>
           ) : (
             <p className="text-sm text-gray-400 italic">
-              Enter a prompt to analyze relevant files
+              Files will be selected after context analysis
             </p>
           )}
         </div>
@@ -88,18 +82,28 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
       <div className="border-t border-gray-100 px-5 py-4 bg-white">
         <div className="flex items-center justify-between text-sm">
           <div className="text-gray-500">
-            <span className="font-medium text-gray-700">
-              {isNewMode ? '42' : (stats?.totalTokens
-                ? (stats.totalTokens / 1000).toFixed(0)
-                : '0')}k
-            </span>{' '}
-            tokens
+            {stats?.totalTokens ? (
+              <>
+                <span className="font-medium text-gray-700">
+                  {(stats.totalTokens / 1000).toFixed(0)}k
+                </span>{' '}
+                tokens
+              </>
+            ) : (
+              <span className="text-gray-400 italic">Token count pending</span>
+            )}
           </div>
           <div className="text-gray-600">
-            Est:{' '}
-            <span className="font-semibold text-gray-900">
-              ${isNewMode ? '0.79' : (stats?.costEstimate?.toFixed(2) || '0.00')}
-            </span>
+            {stats?.costEstimate ? (
+              <>
+                Est:{' '}
+                <span className="font-semibold text-gray-900">
+                  ${stats.costEstimate.toFixed(2)}
+                </span>
+              </>
+            ) : (
+              <span className="text-gray-400 italic">--</span>
+            )}
           </div>
         </div>
       </div>

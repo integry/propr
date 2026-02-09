@@ -185,7 +185,6 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           onGenerate={handleGenerate}
         />
         <SetupWizardRightPane
-          isNewMode={isNewMode}
           contextLevel={config.contextLevel}
           onContextLevelChange={(contextLevel) => setConfig(prev => ({ ...prev, contextLevel }))}
           compress={config.compress}
