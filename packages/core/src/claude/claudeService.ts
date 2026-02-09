@@ -266,7 +266,17 @@ CRITICAL: Do not modify any files. Do not run any commands. Only output the summ
         );
 
         if (claudeResult.success && (claudeResult.finalResult?.result || claudeResult.summary)) {
-            const summary = (claudeResult.finalResult?.result || claudeResult.summary)!.trim().replace(/^"|"$/g, '');
+            const rawSummary = claudeResult.finalResult?.result || claudeResult.summary;
+            // Clean up the summary:
+            // 1. Split by newline and take the first line (to exclude explanations)
+            // 2. Remove leading markdown header characters (# symbols) and optional following whitespace
+            // 3. Remove surrounding quotes
+            // 4. Trim whitespace
+            const summary = rawSummary!
+                .split('\n')[0]
+                .replace(/^#+\s*/, '')
+                .replace(/^"|"$/g, '')
+                .trim();
             correlatedLogger.info({ summary, model }, 'Successfully generated task summary');
             return summary;
         }
