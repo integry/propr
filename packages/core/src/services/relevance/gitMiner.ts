@@ -210,7 +210,8 @@ export async function mineGitHistoryWithLLM(
       correlationId: options.correlationId || 'semantic-mining',
       worktreePath: options.worktreePath,
       githubToken: options.githubToken,
-      issueRef: options.issueRef
+      issueRef: options.issueRef,
+      executionType: 'context-analysis'
     };
 
     const response = await runLightweightLLMAnalysis(llmOptions);

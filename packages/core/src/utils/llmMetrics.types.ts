@@ -64,7 +64,7 @@ export type ExecutionType =
     | 'summarization'
     | 'context-analysis'
     | 'task-analysis'
-    | 'lightweight-analysis';
+    | 'other';
 
 export interface RecordMetricsOptions {
     jobType?: string;

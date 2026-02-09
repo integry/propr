@@ -76,7 +76,8 @@ async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<
     correlationId: correlationId || 'finalize-title-gen',
     worktreePath,
     githubToken,
-    issueRef: { number: 0, repoOwner: owner, repoName }
+    issueRef: { number: 0, repoOwner: owner, repoName },
+    executionType: 'title-generation'
   });
 
   const cleanTitle = generatedTitle.replace(/^"|"$/g, '').trim();
