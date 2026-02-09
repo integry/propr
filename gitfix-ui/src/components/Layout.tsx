@@ -114,19 +114,12 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           const previousStatus = repoStatusesRef.current.get(repo.full_name);
           const currentStatus = repo.indexing_status;
 
-          // Show toast when transitioning from 'indexing' to 'completed' or 'failed'
-          if (previousStatus === 'indexing') {
-            if (currentStatus === 'completed') {
-              addToast({
-                type: 'success',
-                message: `Indexing completed for ${repo.full_name}`,
-              });
-            } else if (currentStatus === 'failed') {
-              addToast({
-                type: 'error',
-                message: `Indexing failed for ${repo.full_name}`,
-              });
-            }
+          // Show toast when transitioning from 'indexing' to 'failed'
+          if (previousStatus === 'indexing' && currentStatus === 'failed') {
+            addToast({
+              type: 'error',
+              message: `Indexing failed for ${repo.full_name}`,
+            });
           }
 
           // Update the tracked status
