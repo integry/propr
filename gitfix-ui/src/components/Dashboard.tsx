@@ -1,14 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import TaskStatsChart from './TaskStatsChart';
 import RepositoryBreakdown from './RepositoryBreakdown';
 import TopModels from './TopModels';
 import TaskList from './TaskList';
-import { getRepoConfig, createDraft, uploadAttachment, getQueueStats } from '../api/gitfixApi';
+import { getQueueStats } from '../api/gitfixApi';
 import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
-import { resizeImage } from './TaskPlanner/imageUtils';
-import { NewPlanForm, KPICard, transformRepoData, getInitialSelectedRepo, Repo } from './Dashboard/index';
+import { KPICard } from './Dashboard/index';
 
 interface QueueStats {
   active: number;
@@ -20,37 +19,12 @@ interface QueueStats {
 const Dashboard: React.FC = () => {
   useDocumentTitle('Dashboard');
   const navigate = useNavigate();
-  const [repos, setRepos] = useState<Repo[]>([]);
-  const [selectedRepo, setSelectedRepo] = useState<string>('');
-  const [prompt, setPrompt] = useState<string>('');
-  const [isCreating, setIsCreating] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [isPastingImage, setIsPastingImage] = useState<boolean>(false);
-  const [isFormExpanded, setIsFormExpanded] = useState<boolean>(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Lifted state for KPIs
   const [taskStats, setTaskStats] = useState<TaskStatsResponse | null>(null);
   const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
   const [overviewStats, setOverviewStats] = useState<StatsOverviewResponse | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(true);
-
-  useEffect(() => {
-    const loadRepos = async () => {
-      try {
-        const data = await getRepoConfig() as { repos_to_monitor?: unknown[] };
-        const rawRepos = data.repos_to_monitor || [];
-        const validRepos = transformRepoData(rawRepos);
-        const enabledRepos = validRepos.filter((r: Repo) => r.enabled);
-        setRepos(enabledRepos);
-        setSelectedRepo(getInitialSelectedRepo(enabledRepos));
-      } catch (err) {
-        console.error('Failed to load repositories:', err);
-      }
-    };
-    loadRepos();
-  }, []);
 
   // Fetch task stats, queue stats, and overview stats for KPIs
   useEffect(() => {
@@ -85,94 +59,30 @@ const Dashboard: React.FC = () => {
     return Math.round((completed / total) * 100) + '%';
   };
 
-  const handleStartPlanning = async () => {
-    if (!selectedRepo || !prompt.trim()) return;
-
-    setIsCreating(true);
-    setError(null);
-    try {
-      const draft = await createDraft(selectedRepo, prompt.trim());
-
-      // Upload any selected files to the draft
-      for (const file of selectedFiles) {
-        try {
-          await uploadAttachment(draft.draft_id, file);
-        } catch (uploadErr) {
-          console.error('Failed to upload attachment:', uploadErr);
-        }
-      }
-
-      navigate(`/tasks/plan/${draft.draft_id}`);
-    } catch (err) {
-      setError((err as Error).message || 'Failed to create draft');
-    } finally {
-      setIsCreating(false);
-    }
-  };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      setSelectedFiles(prev => [...prev, ...Array.from(files)]);
-    }
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const handleRemoveFile = (index: number) => {
-    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-
-    for (const item of Array.from(items)) {
-      if (item.type.startsWith('image/')) {
-        e.preventDefault();
-        const blob = item.getAsFile();
-        if (!blob) continue;
-
-        const filename = `pasted-image-${Date.now()}.png`;
-        const file = new File([blob], filename, { type: blob.type });
-
-        setIsPastingImage(true);
-        setError(null);
-        try {
-          const processedFile = await resizeImage(file);
-          setSelectedFiles(prev => [...prev, processedFile]);
-        } catch (err) {
-          setError('Failed to process pasted image');
-          console.error('Paste error:', err);
-        } finally {
-          setIsPastingImage(false);
-        }
-        return;
-      }
-    }
+  // Handler to navigate directly to new plan studio
+  const handleNewPlan = () => {
+    navigate('/studio/new');
   };
 
   return (
     <div>
-      <NewPlanForm
-        repos={repos}
-        selectedRepo={selectedRepo}
-        onRepoChange={setSelectedRepo}
-        prompt={prompt}
-        onPromptChange={setPrompt}
-        onPaste={handlePaste}
-        selectedFiles={selectedFiles}
-        onRemoveFile={handleRemoveFile}
-        onFileSelect={handleFileSelect}
-        fileInputRef={fileInputRef}
-        isPastingImage={isPastingImage}
-        error={error}
-        isCreating={isCreating}
-        onStartPlanning={handleStartPlanning}
-        isExpanded={isFormExpanded}
-        onExpandChange={setIsFormExpanded}
-      />
+      {/* New Plan CTA */}
+      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8 shadow-md hover:shadow-lg transition-all duration-300 border-t-4 border-t-indigo-500">
+        <div className="flex justify-between items-center">
+          <div>
+            <h3 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
+              <span>✨</span> Start New AI Plan
+            </h3>
+            <p className="text-gray-500 text-sm mt-1">Create an implementation plan for your next feature or task</p>
+          </div>
+          <button
+            onClick={handleNewPlan}
+            className="px-6 py-3 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors"
+          >
+            + New Plan
+          </button>
+        </div>
+      </div>
 
       {/* KPI Bar */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">

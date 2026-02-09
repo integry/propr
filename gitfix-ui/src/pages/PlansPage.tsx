@@ -1,17 +1,16 @@
 // CI trigger: 2026-02-01
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { useNewPlanForm } from '../hooks/useNewPlanForm';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem } from '../api/gitfixApi';
 import { Filter, Search, X } from 'lucide-react';
-import { NewPlanForm } from '../components/Dashboard/index';
 import { EmptyState, PlansTable } from './PlansPageComponents';
 
 const DEFAULT_PAGE_SIZE = 50;
 
 const PlansPage: React.FC = () => {
   useDocumentTitle('Plans');
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Derive state from URL parameters
@@ -37,8 +36,10 @@ const PlansPage: React.FC = () => {
   const [allRepositories, setAllRepositories] = useState<{ repo: string; count: number }[]>([]);
   const [totalAllDrafts, setTotalAllDrafts] = useState(0);
 
-  // NewPlanForm hook
-  const newPlanForm = useNewPlanForm();
+  // Handler to navigate directly to new plan studio
+  const handleNewPlan = useCallback(() => {
+    navigate('/studio/new');
+  }, [navigate]);
 
   const totalPages = useMemo(() => Math.ceil(totalDrafts / DEFAULT_PAGE_SIZE), [totalDrafts]);
 
@@ -225,7 +226,7 @@ const PlansPage: React.FC = () => {
       return (
         <EmptyState
           type="no-plans"
-          onCreatePlan={() => newPlanForm.setIsFormExpanded(true)}
+          onCreatePlan={handleNewPlan}
         />
       );
     }
@@ -235,7 +236,7 @@ const PlansPage: React.FC = () => {
         <EmptyState
           type="no-search-results"
           searchQuery={debouncedSearch}
-          onCreatePlan={() => newPlanForm.setIsFormExpanded(true)}
+          onCreatePlan={handleNewPlan}
           onClearSearch={handleSearchClear}
         />
       );
@@ -245,7 +246,7 @@ const PlansPage: React.FC = () => {
       return (
         <EmptyState
           type="no-filter-results"
-          onCreatePlan={() => newPlanForm.setIsFormExpanded(true)}
+          onCreatePlan={handleNewPlan}
           onClearFilter={() => handleFilterChange('all')}
         />
       );
@@ -325,36 +326,13 @@ const PlansPage: React.FC = () => {
             </div>
           )}
           <button
-            onClick={newPlanForm.toggleFormExpanded}
+            onClick={handleNewPlan}
             className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
           >
             + New Plan
           </button>
         </div>
       </div>
-
-      {newPlanForm.isFormExpanded && (
-        <div className="mb-6">
-          <NewPlanForm
-            repos={newPlanForm.repos}
-            selectedRepo={newPlanForm.selectedRepo}
-            onRepoChange={newPlanForm.setSelectedRepo}
-            prompt={newPlanForm.prompt}
-            onPromptChange={newPlanForm.setPrompt}
-            onPaste={newPlanForm.handlePaste}
-            selectedFiles={newPlanForm.selectedFiles}
-            onRemoveFile={newPlanForm.handleRemoveFile}
-            onFileSelect={newPlanForm.handleFileSelect}
-            fileInputRef={newPlanForm.fileInputRef}
-            isPastingImage={newPlanForm.isPastingImage}
-            error={newPlanForm.formError}
-            isCreating={newPlanForm.isCreating}
-            onStartPlanning={newPlanForm.handleStartPlanning}
-            isExpanded={newPlanForm.isFormExpanded}
-            onExpandChange={newPlanForm.setIsFormExpanded}
-          />
-        </div>
-      )}
 
       {renderContent()}
     </div>

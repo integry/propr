@@ -1,9 +1,10 @@
-import React, { useEffect } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import React from 'react';
+import { useParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDraft } from '../hooks/useDraft';
 import SetupWizard from '../components/TaskPlanner/SetupWizard';
+import NewDraftSetup from '../components/TaskPlanner/NewDraftSetup';
 import PlanEditor from '../components/TaskPlanner/PlanEditor';
 import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import SkeletonLoader from '../components/TaskPlanner/SkeletonLoader';
@@ -174,23 +175,34 @@ const isReviewStatus = (status: string | undefined): boolean => {
   return status === 'review' || status === 'refining';
 };
 
+// New Draft View - for /studio/new route
+const NewDraftView: React.FC = () => (
+  <div className="h-[calc(100vh-120px)] p-4 flex flex-col">
+    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4">
+      <StudioStepper currentStage="draft" />
+    </div>
+
+    <div className="flex-1 overflow-hidden">
+      <NewDraftSetup />
+    </div>
+  </div>
+);
+
 const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
   const { draftId } = useParams<{ draftId: string }>();
-  const navigate = useNavigate();
   const { draft, loading, error, refetch } = useDraft(isNew ? '' : (draftId || ''));
 
-  useEffect(() => {
-    if (isNew) {
-      navigate('/', { replace: true });
-    }
-  }, [isNew, navigate]);
+  useDocumentTitle(isNew ? 'New Plan' : getDocumentTitle(draft));
 
-  useDocumentTitle(getDocumentTitle(draft));
+  // Show the new draft setup page for /studio/new
+  if (isNew) {
+    return <NewDraftView />;
+  }
 
   const currentStage = getStageFromStatus(draft?.status);
 
-  if (loading || isNew) {
-    return <LoadingView isNew={isNew} />;
+  if (loading) {
+    return <LoadingView isNew={false} />;
   }
 
   if (error || !draft) {

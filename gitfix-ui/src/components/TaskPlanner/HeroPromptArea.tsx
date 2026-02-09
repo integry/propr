@@ -13,6 +13,7 @@ interface HeroPromptAreaProps {
   onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   onUpload: (file: File) => Promise<void>;
   onRemoveFile: (attachmentId: string) => Promise<void>;
+  minHeight?: string;
 }
 
 export const HeroPromptArea: React.FC<HeroPromptAreaProps> = ({
@@ -25,7 +26,8 @@ export const HeroPromptArea: React.FC<HeroPromptAreaProps> = ({
   onInput,
   onPaste,
   onUpload,
-  onRemoveFile
+  onRemoveFile,
+  minHeight = '160px'
 }) => {
   return (
     <div className="space-y-3">
@@ -41,7 +43,7 @@ export const HeroPromptArea: React.FC<HeroPromptAreaProps> = ({
           onPaste={onPaste}
           placeholder="Describe the feature, bug fix, or improvement you want to implement..."
           className="w-full px-5 py-4 text-base border-0 focus:ring-0 resize-none overflow-hidden"
-          style={{ minHeight: '160px' }}
+          style={{ minHeight }}
         />
         {/* Integrated attachment area */}
         <div className="px-4 pb-3 border-t border-gray-100 bg-gray-50">

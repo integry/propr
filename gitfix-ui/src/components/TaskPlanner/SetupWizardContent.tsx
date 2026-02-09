@@ -123,13 +123,13 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
   onExport
 }) => {
   return (
-    <div className="p-6">
-      {/* Split-view layout: Left (prompt) and Right (settings) */}
-      <div className="grid grid-cols-12 gap-6">
-        {/* Left Column - Prompt Area (col-span-7) */}
-        <div className="col-span-12 lg:col-span-7 flex flex-col">
-          <div className="flex-1 space-y-4">
-            {/* Hero Prompt Area - expanded to fill available height */}
+    <div className="h-full flex flex-col">
+      {/* Main Content - Full Height Vertical Split */}
+      <div className="flex-1 flex min-h-0">
+        {/* Left Panel - Prompt Area (60%) */}
+        <div className="w-[60%] h-full flex flex-col border-r border-gray-200">
+          <div className="flex-1 overflow-auto p-6">
+            {/* Hero Prompt Area - full height */}
             <HeroPromptArea
               prompt={prompt}
               files={files}
@@ -141,10 +141,11 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
               onPaste={onPaste}
               onUpload={onUpload}
               onRemoveFile={onRemoveFile}
+              minHeight="300px"
             />
 
-            {/* Smart File Selection - with skeleton during loading */}
-            <div className="mt-4">
+            {/* Smart File Selection - below prompt */}
+            <div className="mt-6">
               {preview.isLoading && !preview.data ? (
                 <FileSelectionSkeleton />
               ) : preview.data && (
@@ -154,85 +155,89 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
           </div>
         </div>
 
-        {/* Right Column - Configuration Panel (col-span-5) */}
-        <div className="col-span-12 lg:col-span-5 space-y-4">
-          {/* Settings container with card styling */}
-          <div className="bg-gray-50 rounded-xl border border-gray-200 p-5 space-y-5">
-            {/* Task Granularity Section */}
-            <TaskGranularitySection
-              granularity={granularity}
-              onGranularityChange={onGranularityChange}
-            />
+        {/* Right Panel - Configuration (40%) */}
+        <div className="w-[40%] h-full flex flex-col bg-gray-50">
+          <div className="flex-1 overflow-auto p-5 space-y-4">
+            {/* Settings container */}
+            <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-5">
+              {/* Task Granularity Section */}
+              <TaskGranularitySection
+                granularity={granularity}
+                onGranularityChange={onGranularityChange}
+              />
 
-            {/* Divider */}
-            <div className="border-t border-gray-200" />
+              <div className="border-t border-gray-200" />
 
-            {/* Context Settings Section */}
-            <ContextSettingsSection
-              contextLevel={contextLevel}
-              compress={compress}
-              onContextLevelChange={onContextLevelChange}
-              onCompressChange={onCompressChange}
-              modelName={preview.data?.stats.modelName}
-              modelMaxContextTokens={preview.data?.stats.modelMaxContextTokens}
-              agents={agents}
-              generationModel={generationModel}
-              onGenerationModelChange={onGenerationModelChange}
-            />
+              {/* Context Settings Section */}
+              <ContextSettingsSection
+                contextLevel={contextLevel}
+                compress={compress}
+                onContextLevelChange={onContextLevelChange}
+                onCompressChange={onCompressChange}
+                modelName={preview.data?.stats.modelName}
+                modelMaxContextTokens={preview.data?.stats.modelMaxContextTokens}
+                agents={agents}
+                generationModel={generationModel}
+                onGenerationModelChange={onGenerationModelChange}
+              />
 
-            {/* Divider */}
-            <div className="border-t border-gray-200" />
+              <div className="border-t border-gray-200" />
 
-            {/* Context Repositories Section */}
-            <ContextRepositoriesSection
-              repositories={contextRepositories}
-              availableRepos={availableRepos}
-              onAdd={onAddContextRepo}
-              onRemove={onRemoveContextRepo}
+              {/* Context Repositories Section */}
+              <ContextRepositoriesSection
+                repositories={contextRepositories}
+                availableRepos={availableRepos}
+                onAdd={onAddContextRepo}
+                onRemove={onRemoveContextRepo}
+              />
+            </div>
+
+            {/* Cost Preview */}
+            <CostPreview
+              preview={preview}
+              contextRepositories={contextRepositories}
+              isContextStale={isContextStale}
+              timeUntilRefresh={timeUntilRefresh}
+              isPaused={isPaused}
+              onTogglePause={onTogglePause}
+              onManualRefresh={onManualRefresh}
             />
           </div>
-
-          {/* Cost Preview - outside the settings card for emphasis */}
-          <CostPreview
-            preview={preview}
-            contextRepositories={contextRepositories}
-            isContextStale={isContextStale}
-            timeUntilRefresh={timeUntilRefresh}
-            isPaused={isPaused}
-            onTogglePause={onTogglePause}
-            onManualRefresh={onManualRefresh}
-          />
         </div>
       </div>
 
-      {/* Error display - full width */}
+      {/* Error display - above footer */}
       {(error || generationError) && (
-        <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700">
+        <div className="px-6 py-3 bg-red-50 border-t border-red-200 text-red-700">
           {error || generationError}
         </div>
       )}
 
-      {/* Generation Progress - full width */}
+      {/* Generation Progress - above footer */}
       {isGenerating && (
-        <div className="mt-6">
+        <div className="px-6 py-3 border-t border-gray-200">
           <GenerationProgress trace={generationTrace} onAbort={onAbort} />
         </div>
       )}
 
-      {/* Action buttons - sticky footer style */}
-      <div className="mt-6 pt-4 border-t border-gray-200 space-y-3">
-        <GenerateButton
-          isGenerating={isGenerating}
-          isRepoLoading={isRepoLoading}
-          disabled={isGenerateDisabled}
-          onClick={onGenerate}
-        />
-        <ExportContextButton
-          isExporting={isExporting}
-          isPreviewLoading={isPreviewLoading}
-          canExport={canExport}
-          onExport={onExport}
-        />
+      {/* Sticky Footer - Always visible */}
+      <div className="sticky bottom-0 bg-white border-t border-gray-200 px-6 py-4 shadow-lg">
+        <div className="flex items-center gap-4">
+          <div className="flex-1">
+            <GenerateButton
+              isGenerating={isGenerating}
+              isRepoLoading={isRepoLoading}
+              disabled={isGenerateDisabled}
+              onClick={onGenerate}
+            />
+          </div>
+          <ExportContextButton
+            isExporting={isExporting}
+            isPreviewLoading={isPreviewLoading}
+            canExport={canExport}
+            onExport={onExport}
+          />
+        </div>
       </div>
     </div>
   );
