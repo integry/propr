@@ -1,0 +1,21 @@
+/**
+ * Claude agent utility modules.
+ *
+ * This barrel file exports all utility functions used by ClaudeAgent.
+ */
+
+export {
+    aggregateTokensFromConversationLog,
+    getCorrectedTokenUsage,
+    ensurePromptInConversationLog
+} from './tokenUtils.js';
+
+export {
+    processDockerResult,
+    type ProcessedDockerResult
+} from './dockerResultProcessor.js';
+
+export {
+    buildDockerArgs,
+    type DockerArgsParams
+} from './dockerArgsBuilder.js';
