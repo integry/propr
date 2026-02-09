@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   getTaskHistory,
   getTaskLiveDetails,
@@ -13,6 +13,7 @@ import {
   LiveDetails,
   AnalysisData
 } from './types';
+import { useToast } from '../ui/useToast';
 
 export const useTaskData = (taskId: string | undefined) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -25,6 +26,9 @@ export const useTaskData = (taskId: string | undefined) => {
   const [stoppingExecution, setStoppingExecution] = useState<boolean>(false);
   const [stopFailed, setStopFailed] = useState<boolean>(false);
   const [deletingTask, setDeletingTask] = useState<boolean>(false);
+  const { addToast } = useToast();
+  // Track the last notified terminal state to avoid duplicate toasts
+  const lastNotifiedStateRef = useRef<string | null>(null);
 
   useEffect(() => {
     const fetchHistory = async () => {
@@ -47,20 +51,34 @@ export const useTaskData = (taskId: string | undefined) => {
               const updatedData = await getTaskHistory(taskId);
               setHistory(updatedData.history || []);
               setTaskInfo(updatedData.taskInfo || null);
-              
-              const stillActive = updatedData.history && updatedData.history.length > 0 && 
-                ['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(
-                  updatedData.history[updatedData.history.length - 1]?.state?.toUpperCase()
-                );
-              
+
+              const latestState = updatedData.history?.[updatedData.history.length - 1]?.state?.toUpperCase() || '';
+              const stillActive = updatedData.history && updatedData.history.length > 0 &&
+                ['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(latestState);
+
               if (!stillActive) {
                 clearInterval(interval);
+
+                // Show toast notification for task completion or failure
+                if (latestState === 'COMPLETED' && lastNotifiedStateRef.current !== 'COMPLETED') {
+                  lastNotifiedStateRef.current = 'COMPLETED';
+                  addToast({
+                    type: 'success',
+                    message: 'Task completed successfully',
+                  });
+                } else if (latestState === 'FAILED' && lastNotifiedStateRef.current !== 'FAILED') {
+                  lastNotifiedStateRef.current = 'FAILED';
+                  addToast({
+                    type: 'error',
+                    message: 'Task execution failed',
+                  });
+                }
               }
             } catch (err) {
               console.error('Error polling task history:', err);
             }
           }, 3000);
-          
+
           return () => clearInterval(interval);
         }
       } catch (err) {

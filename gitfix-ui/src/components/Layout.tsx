@@ -1,9 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ScrollText, ListTodo, BookMarked, Bot, Cpu } from 'lucide-react';
 import { getQueueStats, getCurrentUser, logout, getSystemStatus } from '../api/gitfixApi';
 import { getGeneratingPlansCount } from '../api/taskStatsApi';
+import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
+import { useToast } from './ui/useToast';
 
 interface SystemStatusData {
   daemon: string;
@@ -30,11 +32,14 @@ interface User {
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
+  const { addToast } = useToast();
   const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
   const [generatingPlansCount, setGeneratingPlansCount] = useState<number>(0);
   const [user, setUser] = useState<User | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatusData | null>(null);
+  // Track repository indexing statuses for toast notifications
+  const repoStatusesRef = useRef<Map<string, string>>(new Map());
 
   // Update favicon to show combined count of tasks + plans
   // Note: activeTaskCount currently includes plans due to backend bug, which satisfies the requirement
@@ -100,17 +105,51 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       }
     };
 
+    const fetchIndexingStatus = async () => {
+      try {
+        const data = await getRepositoriesIndexingStatus();
+        const repositories = data.repositories || [];
+
+        repositories.forEach((repo: RepositoryIndexingStatus) => {
+          const previousStatus = repoStatusesRef.current.get(repo.full_name);
+          const currentStatus = repo.indexing_status;
+
+          // Show toast when transitioning from 'indexing' to 'completed' or 'failed'
+          if (previousStatus === 'indexing') {
+            if (currentStatus === 'completed') {
+              addToast({
+                type: 'success',
+                message: `Indexing completed for ${repo.full_name}`,
+              });
+            } else if (currentStatus === 'failed') {
+              addToast({
+                type: 'error',
+                message: `Indexing failed for ${repo.full_name}`,
+              });
+            }
+          }
+
+          // Update the tracked status
+          repoStatusesRef.current.set(repo.full_name, currentStatus);
+        });
+      } catch (err) {
+        console.error('Error fetching repository indexing status:', err);
+      }
+    };
+
     fetchStats();
     fetchUser();
     fetchSystemStatus();
     fetchGeneratingPlansCount();
+    fetchIndexingStatus();
     const interval = setInterval(() => {
       fetchStats();
       fetchSystemStatus();
       fetchGeneratingPlansCount();
+      fetchIndexingStatus();
     }, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [addToast]);
 
   // Helper for status color
   const getStatusColor = (status?: string): string => {

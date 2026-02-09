@@ -17,6 +17,7 @@ import { getPlannerSettings, savePlannerSettings } from '../../hooks/usePlannerS
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
 import { useContextRefresh } from '../../hooks/useContextRefresh';
+import { useToast } from '../ui/useToast';
 import { resizeImage } from './imageUtils';
 import { GenerateButton } from './GenerateButton';
 import { ContextHeader } from './ContextHeader';
@@ -49,6 +50,7 @@ interface RepoInfoState {
 
 export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete }) => {
   const savedSettings = getPlannerSettings();
+  const { addToast } = useToast();
 
   const [config, setConfig] = useState<PlannerConfig>({
     prompt: draft.initial_prompt || '',
@@ -69,8 +71,17 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const [error, setError] = useState<string | null>(null);
   const [branchError, setBranchError] = useState<string | null>(null);
 
+  // Wrap onGenerateComplete to show success toast
+  const handleGenerateComplete = useCallback(() => {
+    addToast({
+      type: 'success',
+      message: 'Plan generated successfully',
+    });
+    onGenerateComplete();
+  }, [addToast, onGenerateComplete]);
+
   const { isGenerating, generationTrace, generationError, startPolling, setGenerationError } =
-    useGenerationPolling({ draftId: draft.draft_id, onComplete: onGenerateComplete });
+    useGenerationPolling({ draftId: draft.draft_id, onComplete: handleGenerateComplete });
   const { isExporting, exportContext } = useContextExport(setError);
 
   const { preview, isContextStale, timeUntilRefresh, isPaused, fetchPreview, handleManualRefresh, clearCountdown, togglePause } =
@@ -87,6 +98,16 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   }, []);
 
   useEffect(() => { autoResize(); }, [config.prompt, autoResize]);
+
+  // Watch for generation errors and show error toast
+  useEffect(() => {
+    if (generationError) {
+      addToast({
+        type: 'error',
+        message: `Plan generation failed: ${generationError}`,
+      });
+    }
+  }, [generationError, addToast]);
 
   useEffect(() => {
     const loadRepoInfo = async () => {
