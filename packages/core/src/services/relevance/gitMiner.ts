@@ -204,6 +204,13 @@ export async function mineGitHistoryWithLLM(
 
     const prompt = generateSemanticMinerPrompt(userPrompt, commitLog);
 
+    // Build metadata for LLM log tracking
+    const semanticMiningMetadata = {
+      commitCount: commits.length,
+      commitLogLength: commitLog.length,
+      promptLength: userPrompt.length,
+    };
+
     const llmOptions: RunLightweightLLMAnalysisOptions = {
       prompt,
       model: 'haiku',
@@ -211,7 +218,8 @@ export async function mineGitHistoryWithLLM(
       worktreePath: options.worktreePath,
       githubToken: options.githubToken,
       issueRef: options.issueRef,
-      executionType: 'context-analysis'
+      executionType: 'context-analysis',
+      metadata: semanticMiningMetadata
     };
 
     const response = await runLightweightLLMAnalysis(llmOptions);
