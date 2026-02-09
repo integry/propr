@@ -143,11 +143,39 @@ const RepositoriesPage: React.FC = () => {
   };
 
   const handleReindexRepo = async (repoName: string, baseBranch?: string) => {
+    // Calculate the status key for this repository
+    const statusKey = getRepoStatusKey(repoName, baseBranch);
+
+    // Optimistic UI update: immediately set status to 'indexing'
+    setIndexingStatuses(prev => ({
+      ...prev,
+      [statusKey]: {
+        // Preserve existing data if available
+        ...prev[statusKey],
+        full_name: repoName,
+        branch: baseBranch || 'HEAD',
+        indexing_status: 'indexing',
+        // Ensure progress object exists for UI rendering
+        progress: prev[statusKey]?.progress || {
+          totalFiles: 0,
+          processedFiles: 0,
+          percentComplete: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          phase: 'files' as const,
+          totalDirectories: 0,
+          processedDirectories: 0
+        }
+      }
+    }));
+
     try {
       await triggerRepositoryIndexing(repoName, baseBranch);
       // Short delay to allow backend to process
       setTimeout(loadIndexingStatuses, 500);
     } catch (err) {
+      // Revert optimistic update by fetching actual status
+      loadIndexingStatuses();
       alert('Failed to trigger reindex: ' + (err as Error).message);
     }
   };
