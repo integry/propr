@@ -86,8 +86,8 @@ const AgentCard: React.FC<{
   onDelete: () => void;
   onToggle: () => void;
 }> = ({ agent, onEdit, onDelete, onToggle }) => {
-  // Use custom label if defined, otherwise fall back to default llm-{alias} pattern
-  const agentDefaultLabel = agent.customLabel || `llm-${agent.alias}`;
+  // Default agent trigger label pattern
+  const agentDefaultLabel = `llm-${agent.alias}`;
 
   return (
     <div className="border rounded-lg p-4 bg-white shadow-sm">
@@ -112,14 +112,11 @@ const AgentCard: React.FC<{
               </code>
             </div>
             <div className="flex items-center gap-1">
-              <span className="font-medium mr-2">Trigger Label:</span>
+              <span className="font-medium mr-2">Default Trigger:</span>
               <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded font-mono border border-purple-200">
                 <GitHubIcon className="w-3 h-3" />
                 {agentDefaultLabel}
               </span>
-              {agent.customLabel && (
-                <span className="text-xs text-gray-500 ml-1">(custom)</span>
-              )}
             </div>
           </div>
         </div>
@@ -178,6 +175,7 @@ const AgentCard: React.FC<{
               {agent.supportedModels.map(modelId => {
                 const modelInfo = MODEL_INFO_MAP[modelId];
                 const isDefault = agent.defaultModel === modelId;
+                const modelCustomLabel = agent.modelCustomLabels?.[modelId];
 
                 return (
                   <tr key={modelId} className="hover:bg-gray-50 transition-colors">
@@ -231,6 +229,13 @@ const AgentCard: React.FC<{
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 text-gray-500 hover:text-gray-900 border border-transparent hover:border-gray-200 rounded text-xs transition-all cursor-default opacity-70 hover:opacity-100">
                             <TagIcon className="w-3 h-3" />
                             {modelInfo.githubLabel}
+                          </span>
+                        )}
+                        {modelCustomLabel && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-orange-600 bg-orange-50 border border-orange-200 rounded text-xs font-mono">
+                            <TagIcon className="w-3 h-3" />
+                            {modelCustomLabel}
+                            <span className="text-[9px] text-orange-500 ml-1">(custom)</span>
                           </span>
                         )}
                         {isDefault && (

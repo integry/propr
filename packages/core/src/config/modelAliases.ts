@@ -93,10 +93,11 @@ function getDefaultModel(): ModelId {
 }
 
 /**
- * Resolves a custom label to an agent if any agent has this custom label configured.
+ * Resolves a custom label to an agent and specific model.
+ * Custom labels are now configured per-model, so this finds the exact agent+model combination.
  *
- * @param label - The full label from GitHub (e.g., "my-bot", "custom-helper")
- * @returns The matching agent's alias and default model, or null if no match
+ * @param label - The full label from GitHub (e.g., "my-opus-bot", "custom-helper")
+ * @returns The matching agent's alias and specific model, or null if no match
  */
 async function resolveCustomLabel(label: string): Promise<LlmLabelResolution | null> {
     const registry = AgentRegistry.getInstance();
@@ -106,11 +107,16 @@ async function resolveCustomLabel(label: string): Promise<LlmLabelResolution | n
     const lowerLabel = label.toLowerCase();
 
     for (const agent of agents) {
-        if (agent.config.customLabel && agent.config.customLabel.toLowerCase() === lowerLabel) {
-            return {
-                agentAlias: agent.config.alias,
-                model: agent.config.defaultModel || agent.config.supportedModels[0]
-            };
+        // Check modelCustomLabels for this agent
+        if (agent.config.modelCustomLabels) {
+            for (const [modelId, customLabel] of Object.entries(agent.config.modelCustomLabels)) {
+                if (customLabel && customLabel.toLowerCase() === lowerLabel) {
+                    return {
+                        agentAlias: agent.config.alias,
+                        model: modelId
+                    };
+                }
+            }
         }
     }
 
@@ -118,7 +124,7 @@ async function resolveCustomLabel(label: string): Promise<LlmLabelResolution | n
 }
 
 /**
- * Gets all custom labels configured across all agents.
+ * Gets all custom labels configured across all models in all agents.
  *
  * @returns Array of custom labels
  */
@@ -127,9 +133,19 @@ async function getAllCustomLabels(): Promise<string[]> {
     await registry.ensureInitialized();
 
     const agents = registry.getAllAgents();
-    return agents
-        .filter(a => a.config.customLabel && a.config.enabled)
-        .map(a => a.config.customLabel as string);
+    const customLabels: string[] = [];
+
+    for (const agent of agents) {
+        if (agent.config.enabled && agent.config.modelCustomLabels) {
+            for (const customLabel of Object.values(agent.config.modelCustomLabels)) {
+                if (customLabel) {
+                    customLabels.push(customLabel);
+                }
+            }
+        }
+    }
+
+    return customLabels;
 }
 
 /**

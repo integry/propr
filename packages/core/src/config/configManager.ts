@@ -43,9 +43,9 @@ export interface AgentConfig {
     // Environment variables to inject into container
     envVars?: Record<string, string>;
 
-    // Custom GitHub label for triggering this agent (e.g., 'custom-bot', 'my-helper')
-    // If not set, the default 'llm-{alias}' pattern is used
-    customLabel?: string;
+    // Custom GitHub labels per model (maps model ID to custom label)
+    // e.g., { 'claude-opus-4-5-20251101': 'my-opus-bot', 'claude-sonnet-4-5-20251101': 'my-sonnet-bot' }
+    modelCustomLabels?: Record<string, string>;
 }
 
 /**
