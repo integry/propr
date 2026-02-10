@@ -60,7 +60,7 @@ const ErrorView: React.FC<{ error: string | null }> = ({ error }) => (
 const GeneratingView: React.FC<{ currentStage: StudioStage; taskTitle: string }> = ({ currentStage, taskTitle }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
-    <div className="bg-white px-6 py-4" style={{ borderBottom: '1px solid #E5E7EB' }}>
+    <div className="bg-gray-50 px-6 py-4" style={{ borderBottom: '1px solid #D1D5DB' }}>
       <StudioStepper currentStage={currentStage} />
     </div>
 
@@ -117,7 +117,7 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; taskTitle: string }>
 const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan }> = ({ currentStage, draft }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
-    <div className="bg-white px-6 py-4" style={{ borderBottom: '1px solid #E5E7EB' }}>
+    <div className="bg-gray-50 px-6 py-4" style={{ borderBottom: '1px solid #D1D5DB' }}>
       <StudioStepper currentStage={currentStage} />
     </div>
 
@@ -131,7 +131,7 @@ const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan }
 const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
-    <div className="bg-white px-6 py-4" style={{ borderBottom: '1px solid #E5E7EB' }}>
+    <div className="bg-gray-50 px-6 py-4" style={{ borderBottom: '1px solid #D1D5DB' }}>
       <StudioStepper currentStage={currentStage} />
     </div>
 
@@ -150,7 +150,7 @@ const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; on
 const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
-    <div className="bg-white px-6 py-4" style={{ borderBottom: '1px solid #E5E7EB' }}>
+    <div className="bg-gray-50 px-6 py-4" style={{ borderBottom: '1px solid #D1D5DB' }}>
       <StudioStepper currentStage={currentStage} />
     </div>
 
@@ -188,7 +188,7 @@ const isReviewStatus = (status: string | undefined): boolean => {
 const NewDraftView: React.FC = () => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
-    <div className="bg-white px-6 py-4" style={{ borderBottom: '1px solid #E5E7EB' }}>
+    <div className="bg-gray-50 px-6 py-4" style={{ borderBottom: '1px solid #D1D5DB' }}>
       <StudioStepper currentStage="draft" />
     </div>
 

@@ -241,7 +241,7 @@ const SetupWizardContent: React.FC<{
       </div>
 
       {/* Fixed Footer Bar - Full-width anchored to bottom */}
-      <div className="flex-shrink-0 px-6 py-4" style={{ borderTop: '1px solid #E5E7EB', backgroundColor: '#F9FAFB' }}>
+      <div className="flex-shrink-0 px-6 py-4 bg-gray-50" style={{ borderTop: '1px solid #D1D5DB' }}>
         <div className="flex items-center justify-between gap-4">
           {/* Left side: Granularity + Generate */}
           <div className="flex items-center gap-6">

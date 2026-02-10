@@ -65,7 +65,7 @@ const Dashboard: React.FC = () => {
   };
 
   return (
-    <div>
+    <div className="p-4 sm:p-8">
       {/* New Plan CTA */}
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8 shadow-md hover:shadow-lg transition-all duration-300 border-t-4 border-t-indigo-500">
         <div className="flex justify-between items-center">

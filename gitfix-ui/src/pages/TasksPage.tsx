@@ -11,7 +11,7 @@ const TasksPage: React.FC = () => {
   useDocumentTitle(taskId ? undefined : 'Tasks');
 
   return (
-    <div>
+    <div className="p-4 sm:p-8">
       {taskId ? (
         <TaskDetails />
       ) : (
