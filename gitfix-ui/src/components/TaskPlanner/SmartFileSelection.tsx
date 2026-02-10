@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import { FileCode, FileText, FileJson, File, FolderOpen, Check } from 'lucide-react';
 import { PreviewResult } from '../../api/gitfixApi';
 
@@ -56,29 +56,6 @@ interface FilePathDisplayProps {
 
 const FilePathDisplay: React.FC<FilePathDisplayProps> = ({ path }) => {
   const [copied, setCopied] = useState(false);
-  const [showTooltip, setShowTooltip] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const textRef = useRef<HTMLSpanElement>(null);
-  const [isTruncated, setIsTruncated] = useState(false);
-
-  // Check if text is truncated for tooltip display
-  useEffect(() => {
-    const checkTruncation = () => {
-      if (!textRef.current) return;
-      // Check if the element is overflowing
-      setIsTruncated(textRef.current.scrollWidth > textRef.current.clientWidth);
-    };
-
-    checkTruncation();
-
-    // Re-check on resize
-    const resizeObserver = new ResizeObserver(checkTruncation);
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
-    }
-
-    return () => resizeObserver.disconnect();
-  }, [path]);
 
   const handleCopy = useCallback(async () => {
     try {
@@ -91,14 +68,8 @@ const FilePathDisplay: React.FC<FilePathDisplayProps> = ({ path }) => {
   }, [path]);
 
   return (
-    <div
-      ref={containerRef}
-      className="flex-1 min-w-0 relative group"
-      onMouseEnter={() => setShowTooltip(true)}
-      onMouseLeave={() => setShowTooltip(false)}
-    >
+    <div className="flex-1 min-w-0 relative group">
       <span
-        ref={textRef}
         className="font-mono text-sm text-gray-900 block cursor-pointer hover:text-indigo-600 transition-colors overflow-hidden whitespace-nowrap"
         onClick={handleCopy}
         title={path}
@@ -112,12 +83,6 @@ const FilePathDisplay: React.FC<FilePathDisplayProps> = ({ path }) => {
         <bdi>{path}</bdi>
       </span>
 
-      {/* Tooltip with full path */}
-      {showTooltip && isTruncated && (
-        <div className="absolute left-0 bottom-full mb-1 z-50 px-2 py-1 bg-gray-900 text-white text-xs rounded shadow-lg max-w-md whitespace-nowrap overflow-hidden">
-          <span className="font-mono">{path}</span>
-        </div>
-      )}
 
       {/* Copy feedback */}
       {copied && (

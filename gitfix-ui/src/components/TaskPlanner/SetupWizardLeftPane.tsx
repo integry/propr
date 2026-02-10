@@ -67,6 +67,20 @@ const NewModeHeader: React.FC<{
   );
 };
 
+// Helper to format repository name with bold repo part
+const FormatRepoName: React.FC<{ repository: string }> = ({ repository }) => {
+  const parts = repository.split('/');
+  if (parts.length === 2) {
+    return (
+      <>
+        <span className="text-gray-500">{parts[0]}/</span>
+        <span className="font-semibold text-gray-700">{parts[1]}</span>
+      </>
+    );
+  }
+  return <span className="text-gray-700">{repository}</span>;
+};
+
 // Extracted: Header for edit mode (branch selector)
 const EditModeHeader: React.FC<{
   repository: string;
@@ -76,12 +90,42 @@ const EditModeHeader: React.FC<{
   branchError: string | null;
   repoError: string | null;
   onBranchChange: (branch: string) => void;
-}> = ({ repository, isRepoLoading, baseBranch, branches, branchError, repoError, onBranchChange }) => (
+  isChangingRepo: boolean;
+  onChangeRepoClick: () => void;
+  repos: Repo[];
+  onRepoChange: (repo: string) => void;
+  reposLoading: boolean;
+}> = ({ repository, isRepoLoading, baseBranch, branches, branchError, repoError, onBranchChange, isChangingRepo, onChangeRepoClick, repos, onRepoChange, reposLoading }) => (
   <>
-    <div className="inline-flex items-center gap-1.5 max-w-[50%]">
-      <Github className="w-4 h-4 text-gray-500 flex-shrink-0" />
-      <span className="font-mono text-gray-700 truncate">{repository}</span>
-    </div>
+    {isChangingRepo ? (
+      /* Repository dropdown when changing */
+      <div className="relative inline-flex items-center max-w-[50%]">
+        <Github className="w-4 h-4 text-gray-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <select
+          value={repository}
+          onChange={(e) => onRepoChange(e.target.value)}
+          className="appearance-none bg-white border border-gray-300 rounded-md text-sm pl-8 pr-8 py-1.5 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
+          disabled={reposLoading || repos.length === 0}
+        >
+          {reposLoading ? (
+            <option value="">Loading...</option>
+          ) : repos.length === 0 ? (
+            <option value="">No repositories available</option>
+          ) : (
+            repos.map(repo => (
+              <option key={repo.name} value={repo.name}>{repo.name}</option>
+            ))
+          )}
+        </select>
+        <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+      </div>
+    ) : (
+      /* Static repository display */
+      <div className="inline-flex items-center gap-1.5 max-w-[50%]">
+        <Github className="w-4 h-4 text-gray-500 flex-shrink-0" />
+        <span className="font-mono truncate"><FormatRepoName repository={repository} /></span>
+      </div>
+    )}
     <span className="text-gray-400 flex-shrink-0">/</span>
     <div className="relative inline-flex items-center max-w-[50%]">
       {isRepoLoading ? (
@@ -106,6 +150,15 @@ const EditModeHeader: React.FC<{
         </>
       )}
     </div>
+    {/* Change repo link */}
+    {!isChangingRepo && (
+      <button
+        onClick={onChangeRepoClick}
+        className="text-xs text-indigo-600 hover:text-indigo-800 ml-2 flex-shrink-0 hover:underline"
+      >
+        change repo
+      </button>
+    )}
     {(branchError || repoError) && (
       <span className="text-red-500 text-xs ml-2 flex-shrink-0">{branchError || repoError}</span>
     )}
@@ -234,6 +287,8 @@ interface SetupWizardLeftPaneProps {
   branchError: string | null;
   repoError: string | null;
   onBranchChange: (branch: string) => void;
+  isChangingRepo?: boolean;
+  onChangeRepoClick?: () => void;
   prompt: string;
   onPromptChange: (prompt: string) => void;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -273,6 +328,8 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   branchError,
   repoError,
   onBranchChange,
+  isChangingRepo = false,
+  onChangeRepoClick,
   prompt,
   onPromptChange,
   textareaRef,
@@ -318,6 +375,11 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             branchError={branchError}
             repoError={repoError}
             onBranchChange={onBranchChange}
+            isChangingRepo={isChangingRepo}
+            onChangeRepoClick={onChangeRepoClick || (() => {})}
+            repos={repos}
+            onRepoChange={onRepoChange || (() => {})}
+            reposLoading={reposLoading}
           />
         )}
       </div>

@@ -47,9 +47,13 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     generationModel: null
   });
 
+  // State for changing repository in edit mode
+  const [isChangingRepo, setIsChangingRepo] = useState(false);
+
   // Use extracted hooks for data loading
+  // Load repos in new mode OR when changing repo in edit mode
   const { repos, selectedRepo, setSelectedRepo, reposLoading, loadError: reposLoadError } =
-    useRepositoryLoader(isNewMode, savedSettings.lastRepository);
+    useRepositoryLoader(isNewMode || isChangingRepo, savedSettings.lastRepository);
   const repoInfo = useRepoInfoLoader(isNewMode, draft, setConfig);
   const agents = useAgentsLoader();
 
@@ -124,6 +128,30 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     }
   };
 
+  // Handle repo change in edit mode - creates a new draft with the same prompt/settings
+  const handleRepoChangeInEditMode = useCallback(async (newRepo: string) => {
+    if (!newRepo || newRepo === draft?.repository) {
+      setIsChangingRepo(false);
+      return;
+    }
+
+    setIsCreating(true);
+    setError(null);
+    try {
+      const { createDraft } = await import('../../api/gitfixApi');
+      // Create new draft with the new repo but preserve prompt
+      // Note: Attachments cannot be transferred to the new draft - they would need to be re-uploaded
+      const newDraft = await createDraft(newRepo, config.prompt.trim() || 'Untitled');
+
+      if (onDraftCreated) onDraftCreated(newDraft.draft_id);
+      navigate(`/studio/${newDraft.draft_id}`, { replace: true });
+    } catch (err) {
+      setError((err as Error).message || 'Failed to change repository');
+      setIsCreating(false);
+      setIsChangingRepo(false);
+    }
+  }, [draft?.repository, config.prompt, onDraftCreated, navigate]);
+
   const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
@@ -151,7 +179,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           repository={draft?.repository || selectedRepo}
           repos={repos}
           selectedRepo={selectedRepo}
-          onRepoChange={setSelectedRepo}
+          onRepoChange={isNewMode ? setSelectedRepo : handleRepoChangeInEditMode}
           reposLoading={reposLoading}
           baseBranch={config.baseBranch}
           branches={repoInfo.branches}
@@ -159,6 +187,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           branchError={branchError}
           repoError={repoInfo.error}
           onBranchChange={(branch) => setConfig(prev => ({ ...prev, baseBranch: branch }))}
+          isChangingRepo={isChangingRepo}
+          onChangeRepoClick={() => setIsChangingRepo(true)}
           prompt={config.prompt}
           onPromptChange={(prompt) => setConfig(prev => ({ ...prev, prompt }))}
           textareaRef={textareaRef}
