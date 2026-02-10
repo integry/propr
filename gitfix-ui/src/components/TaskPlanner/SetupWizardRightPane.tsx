@@ -38,21 +38,18 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
 
       {/* Smart file selection - extends to fill remaining space */}
       <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-        {isPreviewLoading && !smartSelection?.length ? (
-          <div className="p-5">
-            <FileSelectionSkeleton />
-          </div>
-        ) : smartSelection && smartSelection.length > 0 ? (
+        {smartSelection && smartSelection.length > 0 ? (
           <SmartFileSelection
             smartSelection={smartSelection}
             totalTokens={stats?.totalTokens}
             costEstimate={stats?.costEstimate}
           />
         ) : (
-          <div className="p-5">
+          <div className="p-5 space-y-4">
             <p className="text-sm text-gray-400 italic">
               Files will be selected after context analysis
             </p>
+            {isPreviewLoading && <FileSelectionSkeleton />}
           </div>
         )}
       </div>
