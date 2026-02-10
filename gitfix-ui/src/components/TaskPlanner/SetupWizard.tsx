@@ -125,8 +125,12 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   };
 
   const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) await handleUpload(file);
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      for (const file of Array.from(files)) {
+        await handleUpload(file);
+      }
+    }
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -162,6 +166,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           onPaste={handlePaste}
           files={config.files}
           localFiles={localFiles}
+          draftId={draft?.draft_id}
           onRemoveFile={handleRemoveFile}
           onRemoveLocalFile={handleRemoveLocalFile}
           isUploading={isUploading}

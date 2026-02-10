@@ -1,5 +1,5 @@
 import React from 'react';
-import { PlannerAttachment, GenerationTrace, Granularity } from '../../api/gitfixApi';
+import { PlannerAttachment, GenerationTrace, Granularity, getAttachmentUrl } from '../../api/gitfixApi';
 import { ChevronDown, Paperclip, Loader2, Sparkles, Download, Github } from 'lucide-react';
 import { GranularityPills, AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
@@ -24,12 +24,12 @@ const NewModeHeader: React.FC<{
   return (
     <>
       {/* Repository selector with GitHub icon */}
-      <div className="relative inline-flex items-center">
+      <div className="relative inline-flex items-center max-w-[50%]">
         <Github className="w-4 h-4 text-gray-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
         <select
           value={selectedRepo}
           onChange={(e) => onRepoChange?.(e.target.value)}
-          className="appearance-none bg-white border border-gray-300 rounded-md text-sm pl-8 pr-8 py-1.5 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors"
+          className="appearance-none bg-white border border-gray-300 rounded-md text-sm pl-8 pr-8 py-1.5 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
           disabled={repos.length === 0}
         >
           {repos.length === 0 ? (
@@ -48,8 +48,8 @@ const NewModeHeader: React.FC<{
       {/* Show branch when repo is selected */}
       {selectedRepo && (
         <>
-          <span className="text-gray-400">/</span>
-          <span className="text-gray-600 font-mono">{displayBranch}</span>
+          <span className="text-gray-400 flex-shrink-0">/</span>
+          <span className="text-gray-600 font-mono truncate max-w-[50%]">{displayBranch}</span>
         </>
       )}
     </>
@@ -67,12 +67,12 @@ const EditModeHeader: React.FC<{
   onBranchChange: (branch: string) => void;
 }> = ({ repository, isRepoLoading, baseBranch, branches, branchError, repoError, onBranchChange }) => (
   <>
-    <div className="inline-flex items-center gap-1.5">
-      <Github className="w-4 h-4 text-gray-500" />
-      <span className="font-mono text-gray-700">{repository}</span>
+    <div className="inline-flex items-center gap-1.5 max-w-[50%]">
+      <Github className="w-4 h-4 text-gray-500 flex-shrink-0" />
+      <span className="font-mono text-gray-700 truncate">{repository}</span>
     </div>
-    <span className="text-gray-400">/</span>
-    <div className="relative inline-flex items-center">
+    <span className="text-gray-400 flex-shrink-0">/</span>
+    <div className="relative inline-flex items-center max-w-[50%]">
       {isRepoLoading ? (
         <span className="text-gray-400">Loading...</span>
       ) : (
@@ -80,7 +80,7 @@ const EditModeHeader: React.FC<{
           <select
             value={baseBranch}
             onChange={(e) => onBranchChange(e.target.value)}
-            className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors"
+            className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
             disabled={branches.length === 0}
           >
             {branches.length === 0 ? (
@@ -96,7 +96,7 @@ const EditModeHeader: React.FC<{
       )}
     </div>
     {(branchError || repoError) && (
-      <span className="text-red-500 text-xs ml-2">{branchError || repoError}</span>
+      <span className="text-red-500 text-xs ml-2 flex-shrink-0">{branchError || repoError}</span>
     )}
   </>
 );
@@ -106,12 +106,13 @@ const AttachmentsSection: React.FC<{
   isNewMode: boolean;
   localFiles: File[];
   files: PlannerAttachment[];
+  draftId?: string;
   onRemoveLocalFile?: (fileIndex: number) => void;
   onRemoveFile: (attachmentId: string) => void;
   isUploading: boolean;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-}> = ({ isNewMode, localFiles, files, onRemoveLocalFile, onRemoveFile, isUploading, fileInputRef, onFileInputChange }) => {
+}> = ({ isNewMode, localFiles, files, draftId, onRemoveLocalFile, onRemoveFile, isUploading, fileInputRef, onFileInputChange }) => {
   const hasLocalFiles = isNewMode && localFiles.length > 0;
   const hasRemoteFiles = !isNewMode && files.length > 0;
   const hasAnyFiles = hasLocalFiles || hasRemoteFiles;
@@ -125,6 +126,7 @@ const AttachmentsSection: React.FC<{
         onChange={onFileInputChange}
         className="hidden"
         accept="image/*,.log,.txt,.json"
+        multiple
       />
       <button
         onClick={() => fileInputRef.current?.click()}
@@ -139,7 +141,7 @@ const AttachmentsSection: React.FC<{
         ) : (
           <>
             <Paperclip className="w-4 h-4" />
-            <span>Attach file</span>
+            <span>Attach files</span>
           </>
         )}
       </button>
@@ -160,6 +162,7 @@ const AttachmentsSection: React.FC<{
               name={attachment.originalName}
               mimeType={attachment.mimeType}
               tokenEstimate={attachment.tokenEstimate}
+              previewUrl={draftId && attachment.mimeType?.startsWith('image/') ? getAttachmentUrl(draftId, attachment.id) : undefined}
               onRemove={() => onRemoveFile(attachment.id)}
             />
           ))}
@@ -227,6 +230,7 @@ interface SetupWizardLeftPaneProps {
   onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   files: PlannerAttachment[];
   localFiles?: File[];
+  draftId?: string;
   onRemoveFile: (attachmentId: string) => void;
   onRemoveLocalFile?: (fileIndex: number) => void;
   isUploading: boolean;
@@ -269,6 +273,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   onPaste,
   files,
   localFiles = [],
+  draftId,
   onRemoveFile,
   onRemoveLocalFile,
   isUploading,
@@ -293,7 +298,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   <div className="w-[65%] h-full flex flex-col border-r border-gray-100">
     {/* Header with repo/branch */}
     <div className="px-6 py-3 border-b border-gray-100">
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex items-center gap-2 text-sm flex-nowrap overflow-hidden">
         {isNewMode ? (
           <NewModeHeader
             reposLoading={reposLoading}
@@ -335,6 +340,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             isNewMode={isNewMode}
             localFiles={localFiles}
             files={files}
+            draftId={draftId}
             onRemoveLocalFile={onRemoveLocalFile}
             onRemoveFile={onRemoveFile}
             isUploading={isUploading}
