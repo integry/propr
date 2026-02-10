@@ -12,7 +12,7 @@ const getEstimatedIssueText = (granularity: Granularity): string => {
     granular: '5-10',
   };
   const count = counts[granularity] || '1';
-  return `(~${count} ${count === '1' ? 'issue' : 'issues'})`;
+  return `${count} ${count === '1' ? 'issue' : 'issues'}`;
 };
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; }
@@ -378,7 +378,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             {/* Row 1: Label and estimated issues */}
             <div className="flex items-center justify-between gap-4">
               <span className="text-sm text-gray-500">Break plan into issues:</span>
-              <span className="text-sm text-gray-500">
+              <span className="text-xs text-gray-400">
                 {getEstimatedIssueText(granularity)}
               </span>
             </div>

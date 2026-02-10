@@ -57,8 +57,8 @@ export const GranularityPills: React.FC<{
         })}
       </div>
       {!hideEstimate && (
-        <span className="text-sm text-gray-500">
-          (~{estimatedIssues} {estimatedIssues === '1' ? 'issue' : 'issues'})
+        <span className="text-xs text-gray-400">
+          {estimatedIssues} {estimatedIssues === '1' ? 'issue' : 'issues'}
         </span>
       )}
     </div>

@@ -49,7 +49,7 @@ const getRelevanceColor = (percentage: number): string => {
   return 'bg-gray-400';
 };
 
-// Component for displaying file path with ellipsis at beginning and copy functionality
+// Component for displaying file path with CSS-only ellipsis at beginning and copy functionality
 interface FilePathDisplayProps {
   path: string;
 }
@@ -59,54 +59,14 @@ const FilePathDisplay: React.FC<FilePathDisplayProps> = ({ path }) => {
   const [showTooltip, setShowTooltip] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLSpanElement>(null);
-  const [displayPath, setDisplayPath] = useState(path);
+  const [isTruncated, setIsTruncated] = useState(false);
 
-  // Check if text is truncated and calculate display path
+  // Check if text is truncated for tooltip display
   useEffect(() => {
     const checkTruncation = () => {
-      if (!containerRef.current || !textRef.current) return;
-
-      const containerWidth = containerRef.current.clientWidth;
-
-      // Create a temporary span to measure full text width
-      const tempSpan = document.createElement('span');
-      tempSpan.style.cssText = window.getComputedStyle(textRef.current).cssText;
-      tempSpan.style.position = 'absolute';
-      tempSpan.style.visibility = 'hidden';
-      tempSpan.style.whiteSpace = 'nowrap';
-      tempSpan.textContent = path;
-      document.body.appendChild(tempSpan);
-
-      const fullWidth = tempSpan.offsetWidth;
-
-      if (fullWidth > containerWidth) {
-        // Need to truncate from the beginning
-        const ellipsis = '...';
-        let truncatedPath = path;
-
-        // Binary search to find the right length
-        const pathParts = path.split('/');
-        for (let i = 1; i < pathParts.length; i++) {
-          const testPath = ellipsis + '/' + pathParts.slice(i).join('/');
-          tempSpan.textContent = testPath;
-          if (tempSpan.offsetWidth <= containerWidth) {
-            truncatedPath = testPath;
-            break;
-          }
-        }
-
-        // If still too long, just use filename with ellipsis
-        if (tempSpan.offsetWidth > containerWidth) {
-          const filename = pathParts[pathParts.length - 1];
-          truncatedPath = ellipsis + filename;
-        }
-
-        setDisplayPath(truncatedPath);
-      } else {
-        setDisplayPath(path);
-      }
-
-      document.body.removeChild(tempSpan);
+      if (!textRef.current) return;
+      // Check if the element is overflowing
+      setIsTruncated(textRef.current.scrollWidth > textRef.current.clientWidth);
     };
 
     checkTruncation();
@@ -139,15 +99,21 @@ const FilePathDisplay: React.FC<FilePathDisplayProps> = ({ path }) => {
     >
       <span
         ref={textRef}
-        className="font-mono text-sm text-gray-900 block cursor-pointer hover:text-indigo-600 transition-colors truncate overflow-hidden whitespace-nowrap"
+        className="font-mono text-sm text-gray-900 block cursor-pointer hover:text-indigo-600 transition-colors overflow-hidden whitespace-nowrap"
         onClick={handleCopy}
         title={path}
+        style={{
+          direction: 'rtl',
+          textAlign: 'left',
+          textOverflow: 'ellipsis',
+        }}
       >
-        {displayPath}
+        {/* Use Unicode LRO to preserve left-to-right text order within the RTL container */}
+        <bdi>{path}</bdi>
       </span>
 
       {/* Tooltip with full path */}
-      {showTooltip && displayPath !== path && (
+      {showTooltip && isTruncated && (
         <div className="absolute left-0 bottom-full mb-1 z-50 px-2 py-1 bg-gray-900 text-white text-xs rounded shadow-lg max-w-md whitespace-nowrap overflow-hidden">
           <span className="font-mono">{path}</span>
         </div>
