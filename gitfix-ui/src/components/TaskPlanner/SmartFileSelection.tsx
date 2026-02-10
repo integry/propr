@@ -139,7 +139,7 @@ const FilePathDisplay: React.FC<FilePathDisplayProps> = ({ path }) => {
     >
       <span
         ref={textRef}
-        className="font-mono text-sm text-gray-900 block cursor-pointer hover:text-indigo-600 transition-colors"
+        className="font-mono text-sm text-gray-900 block cursor-pointer hover:text-indigo-600 transition-colors truncate overflow-hidden whitespace-nowrap"
         onClick={handleCopy}
         title={path}
       >

@@ -372,9 +372,17 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
 
       {/* Action bar */}
       <div className="px-6 py-4">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-gray-500">Break plan into issues:</span>
+        <div className="flex items-start justify-between gap-4">
+          {/* Left side: Granularity in 2 rows */}
+          <div className="flex flex-col gap-2">
+            {/* Row 1: Label and estimated issues */}
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-sm text-gray-500">Break plan into issues:</span>
+              <span className="text-sm text-gray-500">
+                {getEstimatedIssueText(granularity)}
+              </span>
+            </div>
+            {/* Row 2: Granularity pills */}
             <GranularityPills
               value={granularity}
               onChange={onGranularityChange}
@@ -382,23 +390,18 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
               hideEstimate
             />
           </div>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-500">
-              {getEstimatedIssueText(granularity)}
-            </span>
-            {/* Generate Plan Button */}
-            <button
-              onClick={onGenerate}
-              disabled={isGenerateDisabled}
-              className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-            >
-              <GenerateButtonContent
-                isNewMode={isNewMode}
-                isCreating={isCreating}
-                isGenerating={isGenerating}
-              />
-            </button>
-          </div>
+          {/* Right side: Generate Plan Button */}
+          <button
+            onClick={onGenerate}
+            disabled={isGenerateDisabled}
+            className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+          >
+            <GenerateButtonContent
+              isNewMode={isNewMode}
+              isCreating={isCreating}
+              isGenerating={isGenerating}
+            />
+          </button>
         </div>
       </div>
     </div>
