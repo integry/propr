@@ -317,7 +317,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Data loading hooks
-  const repoLoader = useRepositoryLoader(isNewMode || isChangingRepo, savedSettings.lastRepository ?? undefined);
+  // Always load repositories so the dropdown shows all available repos in both new and edit modes
+  const repoLoader = useRepositoryLoader(true, savedSettings.lastRepository ?? undefined);
   const newModeBranches = useBranchesLoader(isNewMode ? repoLoader.selectedRepo : '', setConfig);
   const repoInfo = useRepoInfoLoader(isNewMode, draft, setConfig);
   const agents = useAgentsLoader();

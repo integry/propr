@@ -72,15 +72,15 @@ async function processFileForUpload(file: File): Promise<File> {
   return file.type.startsWith('image/') ? resizeImage(file) : file;
 }
 
-// Hook: Load available repositories (for new mode)
-export function useRepositoryLoader(isNewMode: boolean, savedLastRepository: string | undefined) {
+// Hook: Load available repositories (for both new and edit modes)
+export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: string | undefined) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<string>('');
-  const [reposLoading, setReposLoading] = useState(isNewMode);
+  const [reposLoading, setReposLoading] = useState(shouldLoad);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isNewMode) return;
+    if (!shouldLoad) return;
     setReposLoading(true);
     loadRepositories(savedLastRepository)
       .then(({ repos: loadedRepos, selectedRepo: defaultRepo }) => {
@@ -92,7 +92,7 @@ export function useRepositoryLoader(isNewMode: boolean, savedLastRepository: str
         setLoadError('Failed to load repositories');
       })
       .finally(() => setReposLoading(false));
-  }, [isNewMode, savedLastRepository]);
+  }, [shouldLoad, savedLastRepository]);
 
   return { repos, selectedRepo, setSelectedRepo, reposLoading, loadError };
 }
