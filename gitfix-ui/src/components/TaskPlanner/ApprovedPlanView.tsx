@@ -321,10 +321,10 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="h-full bg-white rounded-lg shadow overflow-hidden flex flex-col"
+      className="h-full bg-white overflow-hidden flex flex-col"
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50 flex-shrink-0">
+      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white flex-shrink-0">
         <div className="flex items-center gap-4">
           <div className="text-sm text-gray-500 truncate max-w-md">{draft.task_title || draft.title || 'Untitled Task'}</div>
           {draft.status === 'merged' ? (

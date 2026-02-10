@@ -58,77 +58,85 @@ const ErrorView: React.FC<{ error: string | null }> = ({ error }) => (
 );
 
 const GeneratingView: React.FC<{ currentStage: StudioStage; taskTitle: string }> = ({ currentStage, taskTitle }) => (
-  <div className="h-[calc(100vh-120px)] pl-0 pr-4 py-4 flex flex-col">
-    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4 ml-4">
+  <div className="h-[calc(100vh-64px)] flex flex-col">
+    {/* Fixed Header */}
+    <div className="bg-white px-6 py-4" style={{ borderBottom: '1px solid #E5E7EB' }}>
       <StudioStepper currentStage={currentStage} />
     </div>
 
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="flex-1 bg-white rounded-lg shadow overflow-hidden"
-    >
-      <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
-        <div className="flex items-center gap-4">
-          <div className="text-sm text-gray-500 truncate max-w-md">{taskTitle}</div>
-          <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-700 flex items-center gap-1">
-            <motion.span
-              animate={{ opacity: [1, 0.5, 1] }}
-              transition={{ duration: 1.5, repeat: Infinity }}
-              className="w-2 h-2 bg-yellow-500 rounded-full"
-            />
-            Generating
-          </span>
+    {/* Scrollable Canvas */}
+    <div className="flex-1 overflow-auto bg-white">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="h-full"
+      >
+        <div className="flex items-center justify-between px-6 py-3 border-b border-gray-100">
+          <div className="flex items-center gap-4">
+            <div className="text-sm text-gray-500 truncate max-w-md">{taskTitle}</div>
+            <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-700 flex items-center gap-1">
+              <motion.span
+                animate={{ opacity: [1, 0.5, 1] }}
+                transition={{ duration: 1.5, repeat: Infinity }}
+                className="w-2 h-2 bg-yellow-500 rounded-full"
+              />
+              Generating
+            </span>
+          </div>
         </div>
-      </div>
 
-      <div className="relative h-[calc(100%-56px)]">
-        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.3 }}
-            className="bg-white/90 backdrop-blur-sm rounded-xl shadow-xl p-6 text-center max-w-md"
-          >
+        <div className="relative h-[calc(100%-56px)]">
+          <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
             <motion.div
-              animate={{ rotate: 360 }}
-              transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-              className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto mb-4"
-            />
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Generating Your Plan</h3>
-            <p className="text-gray-600 text-sm">
-              The AI is analyzing your repository and creating an implementation plan...
-            </p>
-          </motion.div>
-        </div>
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ delay: 0.3 }}
+              className="bg-white/90 backdrop-blur-sm rounded-xl shadow-xl p-6 text-center max-w-md"
+            >
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto mb-4"
+              />
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">Generating Your Plan</h3>
+              <p className="text-gray-600 text-sm">
+                The AI is analyzing your repository and creating an implementation plan...
+              </p>
+            </motion.div>
+          </div>
 
-        <div className="opacity-40">
-          <SkeletonLoader count={3} />
+          <div className="opacity-40">
+            <SkeletonLoader count={3} />
+          </div>
         </div>
-      </div>
-    </motion.div>
+      </motion.div>
+    </div>
   </div>
 );
 
 const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan }> = ({ currentStage, draft }) => (
-  <div className="h-[calc(100vh-120px)] pl-0 pr-4 py-4 flex flex-col">
-    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4 ml-4">
+  <div className="h-[calc(100vh-64px)] flex flex-col">
+    {/* Fixed Header */}
+    <div className="bg-white px-6 py-4" style={{ borderBottom: '1px solid #E5E7EB' }}>
       <StudioStepper currentStage={currentStage} />
     </div>
 
-    <div className="flex-1">
+    {/* Scrollable Canvas */}
+    <div className="flex-1 overflow-auto bg-white">
       <ApprovedPlanView draft={draft} />
     </div>
   </div>
 );
 
 const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
-  <div className="h-[calc(100vh-120px)] pl-0 pr-4 py-4 flex flex-col">
-    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4 ml-4">
+  <div className="h-[calc(100vh-64px)] flex flex-col">
+    {/* Fixed Header */}
+    <div className="bg-white px-6 py-4" style={{ borderBottom: '1px solid #E5E7EB' }}>
       <StudioStepper currentStage={currentStage} />
     </div>
 
-    <div className="flex-1">
+    {/* Scrollable Canvas */}
+    <div className="flex-1 overflow-auto bg-white">
       <PlanEditor
         draft={draft}
         originalPrompt={draft.initial_prompt}
@@ -140,12 +148,14 @@ const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; on
 );
 
 const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
-  <div className="h-[calc(100vh-120px)] pl-0 pr-4 py-4 flex flex-col">
-    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4 ml-4">
+  <div className="h-[calc(100vh-64px)] flex flex-col">
+    {/* Fixed Header */}
+    <div className="bg-white px-6 py-4" style={{ borderBottom: '1px solid #E5E7EB' }}>
       <StudioStepper currentStage={currentStage} />
     </div>
 
-    <div className="flex-1 overflow-auto">
+    {/* Scrollable Canvas */}
+    <div className="flex-1 overflow-auto bg-white">
       <SetupWizard
         draft={draft}
         onGenerateComplete={onRefetch}
@@ -176,12 +186,14 @@ const isReviewStatus = (status: string | undefined): boolean => {
 
 // New Draft View - for /studio/new route
 const NewDraftView: React.FC = () => (
-  <div className="h-[calc(100vh-120px)] pl-0 pr-4 py-4 flex flex-col">
-    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4 ml-4">
+  <div className="h-[calc(100vh-64px)] flex flex-col">
+    {/* Fixed Header */}
+    <div className="bg-white px-6 py-4" style={{ borderBottom: '1px solid #E5E7EB' }}>
       <StudioStepper currentStage="draft" />
     </div>
 
-    <div className="flex-1 overflow-hidden">
+    {/* Scrollable Canvas */}
+    <div className="flex-1 overflow-auto bg-white">
       <SetupWizard onGenerateComplete={() => {}} />
     </div>
   </div>

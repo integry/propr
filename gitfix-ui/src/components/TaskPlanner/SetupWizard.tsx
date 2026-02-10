@@ -195,7 +195,8 @@ const SetupWizardContent: React.FC<{
 
   return (
     <div className="h-full flex flex-col bg-white">
-      <div className="flex-1 flex min-h-0">
+      {/* Scrollable Canvas - Middle content area */}
+      <div className="flex-1 flex min-h-0 overflow-auto">
         <SetupWizardLeftPane
           isNewMode={isNewMode}
           repository={repository}
@@ -239,8 +240,8 @@ const SetupWizardContent: React.FC<{
         />
       </div>
 
-      {/* Unified Footer Bar - Control Strip with subtle background */}
-      <div className="px-6 py-4" style={{ borderTop: '1px solid #e5e7eb', backgroundColor: '#F9FAFB' }}>
+      {/* Fixed Footer Bar - Full-width anchored to bottom */}
+      <div className="flex-shrink-0 px-6 py-4" style={{ borderTop: '1px solid #E5E7EB', backgroundColor: '#F9FAFB' }}>
         <div className="flex items-center justify-between gap-4">
           {/* Left side: Granularity + Generate */}
           <div className="flex items-center gap-6">
