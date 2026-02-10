@@ -49,12 +49,6 @@ const getPercentageTextColor = (percentage: number): string => {
   return 'text-gray-500';
 };
 
-// Get color for relevance bar
-const getRelevanceBarColor = (percentage: number): string => {
-  if (percentage >= 100) return 'bg-green-500';
-  if (percentage >= 40) return 'bg-blue-500';
-  return 'bg-gray-400';
-};
 
 // Extract filename from path
 const getFileName = (path: string): string => {
@@ -171,14 +165,13 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
         {smartSelection.map((file, idx) => {
           const relevance = getRelevancePercentage(file.score ? (file.score / maxScore) * 100 : 50);
           const percentageColor = getPercentageTextColor(relevance);
-          const barColor = getRelevanceBarColor(relevance);
           // Only show 'manual' pill, hide 'auto' pill
           const showManualPill = file.source === 'manual';
 
           return (
             <div
               key={idx}
-              className="px-4 py-2.5 flex items-start gap-3 hover:bg-gray-50 transition-colors"
+              className="px-4 py-2 flex items-start gap-3 hover:bg-gray-50 transition-colors"
             >
               {/* File icon - aligned to top */}
               <div className="pt-0.5">
@@ -188,7 +181,7 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
               {/* Two-line file display */}
               <TwoLineFileDisplay path={file.path} />
 
-              {/* Right side: pills and percentage with bar underneath */}
+              {/* Right side: pills and percentage (no progress bar) */}
               <div className="flex items-start gap-3 flex-shrink-0">
                 {/* Manual pill (only shown if source is manual) */}
                 {showManualPill && (
@@ -197,18 +190,10 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
                   </span>
                 )}
 
-                {/* Percentage with bar underneath */}
-                <div className="flex flex-col items-end w-10">
-                  <span className={`text-xs font-medium ${percentageColor}`}>
-                    {Math.round(relevance)}%
-                  </span>
-                  <div className="w-full h-1 bg-gray-200 rounded-full overflow-hidden mt-1">
-                    <div
-                      className={`h-full rounded-full transition-all ${barColor}`}
-                      style={{ width: `${relevance}%` }}
-                    />
-                  </div>
-                </div>
+                {/* Percentage only - no bar */}
+                <span className={`text-xs font-medium ${percentageColor} w-10 text-right`}>
+                  {Math.round(relevance)}%
+                </span>
               </div>
             </div>
           );

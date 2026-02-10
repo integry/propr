@@ -17,7 +17,7 @@ export const FormatRepoName: React.FC<{ repository: string }> = ({ repository })
   return <span className="text-gray-700">{repository}</span>;
 };
 
-// Header for new mode (repository selector)
+// Header for new mode (repository selector) - IDE-style breadcrumb layout
 export const NewModeHeader: React.FC<{
   reposLoading: boolean;
   selectedRepo: string;
@@ -29,19 +29,20 @@ export const NewModeHeader: React.FC<{
   onBranchChange: (branch: string) => void;
 }> = ({ reposLoading, selectedRepo, repos, onRepoChange, branches, baseBranch, isLoadingBranches, onBranchChange }) => {
   if (reposLoading) {
-    return <span className="text-gray-400">Loading repositories...</span>;
+    return <span className="text-gray-400 text-sm">Loading repositories...</span>;
   }
 
   return (
     <>
-      {/* Repository selector with GitHub icon */}
+      {/* Repository selector - breadcrumb style */}
       <div className="relative inline-flex items-center max-w-[50%]">
-        <Github className="w-4 h-4 text-gray-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <Github className="w-4 h-4 text-gray-500 mr-1.5 flex-shrink-0" />
         <select
           value={selectedRepo}
           onChange={(e) => onRepoChange?.(e.target.value)}
-          className="appearance-none bg-white border border-gray-300 rounded-md text-sm pl-8 pr-8 py-1.5 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
+          className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full"
           disabled={repos.length === 0}
+          title="Select repository"
         >
           {repos.length === 0 ? (
             <option value="">No repositories available</option>
@@ -54,22 +55,23 @@ export const NewModeHeader: React.FC<{
             </>
           )}
         </select>
-        <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
       </div>
       {/* Show branch selector when repo is selected */}
       {selectedRepo && (
         <>
-          <span className="text-gray-400 flex-shrink-0">/</span>
+          <span className="text-gray-400 flex-shrink-0 mx-0.5">/</span>
           <div className="relative inline-flex items-center max-w-[50%]">
             {isLoadingBranches ? (
-              <span className="text-gray-400">Loading...</span>
+              <span className="text-gray-400 text-sm">Loading...</span>
             ) : (
               <>
                 <select
                   value={baseBranch}
                   onChange={(e) => onBranchChange(e.target.value)}
-                  className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
+                  className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full"
                   disabled={branches.length === 0}
+                  title="Select branch"
                 >
                   {branches.length === 0 ? (
                     <option value="">No branches</option>
@@ -79,7 +81,7 @@ export const NewModeHeader: React.FC<{
                     ))
                   )}
                 </select>
-                <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
               </>
             )}
           </div>
@@ -89,7 +91,7 @@ export const NewModeHeader: React.FC<{
   );
 };
 
-// Header for edit mode (branch selector)
+// Header for edit mode (branch selector) - IDE-style breadcrumb layout
 export const EditModeHeader: React.FC<{
   repository: string;
   isRepoLoading: boolean;
@@ -98,53 +100,48 @@ export const EditModeHeader: React.FC<{
   branchError: string | null;
   repoError: string | null;
   onBranchChange: (branch: string) => void;
-  isChangingRepo: boolean;
-  onChangeRepoClick: () => void;
+  isChangingRepo?: boolean;
+  onChangeRepoClick?: () => void;
   repos: Repo[];
   onRepoChange: (repo: string) => void;
   reposLoading: boolean;
-}> = ({ repository, isRepoLoading, baseBranch, branches, branchError, repoError, onBranchChange, isChangingRepo, onChangeRepoClick, repos, onRepoChange, reposLoading }) => (
+}> = ({ repository, isRepoLoading, baseBranch, branches, branchError, repoError, onBranchChange, repos, onRepoChange, reposLoading }) => (
   <>
-    {isChangingRepo ? (
-      /* Repository dropdown when changing */
-      <div className="relative inline-flex items-center max-w-[50%]">
-        <Github className="w-4 h-4 text-gray-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-        <select
-          value={repository}
-          onChange={(e) => onRepoChange(e.target.value)}
-          className="appearance-none bg-white border border-gray-300 rounded-md text-sm pl-8 pr-8 py-1.5 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
-          disabled={reposLoading || repos.length === 0}
-        >
-          {reposLoading ? (
-            <option value="">Loading...</option>
-          ) : repos.length === 0 ? (
-            <option value="">No repositories available</option>
-          ) : (
-            repos.map(repo => (
-              <option key={repo.name} value={repo.name}>{repo.name}</option>
-            ))
-          )}
-        </select>
-        <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-      </div>
-    ) : (
-      /* Static repository display */
-      <div className="inline-flex items-center gap-1.5 max-w-[50%]">
-        <Github className="w-4 h-4 text-gray-500 flex-shrink-0" />
-        <span className="font-mono truncate"><FormatRepoName repository={repository} /></span>
-      </div>
-    )}
-    <span className="text-gray-400 flex-shrink-0">/</span>
+    {/* Repository - always clickable dropdown styled as breadcrumb */}
+    <div className="relative inline-flex items-center max-w-[50%]">
+      <Github className="w-4 h-4 text-gray-500 mr-1.5 flex-shrink-0" />
+      <select
+        value={repository}
+        onChange={(e) => onRepoChange(e.target.value)}
+        className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full"
+        disabled={reposLoading || repos.length === 0}
+        title="Click to change repository"
+      >
+        {reposLoading ? (
+          <option value="">Loading...</option>
+        ) : repos.length === 0 ? (
+          <option value="">No repositories available</option>
+        ) : (
+          repos.map(repo => (
+            <option key={repo.name} value={repo.name}>{repo.name}</option>
+          ))
+        )}
+      </select>
+      <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
+    </div>
+    <span className="text-gray-400 flex-shrink-0 mx-0.5">/</span>
+    {/* Branch selector - breadcrumb style */}
     <div className="relative inline-flex items-center max-w-[50%]">
       {isRepoLoading ? (
-        <span className="text-gray-400">Loading...</span>
+        <span className="text-gray-400 text-sm">Loading...</span>
       ) : (
         <>
           <select
             value={baseBranch}
             onChange={(e) => onBranchChange(e.target.value)}
-            className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
+            className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full"
             disabled={branches.length === 0}
+            title="Click to change branch"
           >
             {branches.length === 0 ? (
               <option value="">No branches</option>
@@ -154,19 +151,10 @@ export const EditModeHeader: React.FC<{
               ))
             )}
           </select>
-          <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
         </>
       )}
     </div>
-    {/* Change repo link */}
-    {!isChangingRepo && (
-      <button
-        onClick={onChangeRepoClick}
-        className="text-xs text-indigo-600 hover:text-indigo-800 ml-2 flex-shrink-0 hover:underline"
-      >
-        change repo
-      </button>
-    )}
     {(branchError || repoError) && (
       <span className="text-red-500 text-xs ml-2 flex-shrink-0">{branchError || repoError}</span>
     )}

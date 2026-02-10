@@ -239,8 +239,8 @@ const SetupWizardContent: React.FC<{
         />
       </div>
 
-      {/* Unified Footer Bar */}
-      <div className="bg-white px-6 py-4" style={{ borderTop: '1px solid #e5e7eb' }}>
+      {/* Unified Footer Bar - Control Strip with subtle background */}
+      <div className="px-6 py-4" style={{ borderTop: '1px solid #e5e7eb', backgroundColor: '#F9FAFB' }}>
         <div className="flex items-center justify-between gap-4">
           {/* Left side: Granularity + Generate */}
           <div className="flex items-center gap-6">

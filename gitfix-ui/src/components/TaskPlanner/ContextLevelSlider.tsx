@@ -83,15 +83,15 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
             Context Level
           </label>
         </div>
-        {/* Single line indicator with monotone icons */}
-        <div className="flex items-center gap-1.5 text-xs text-gray-600">
-          <SpeedIcon className="w-3.5 h-3.5" />
+        {/* Single line indicator with monotone icons - 8px spacing between icons and labels */}
+        <div className="flex items-center gap-2 text-xs text-gray-600">
+          <SpeedIcon className="w-3.5 h-3.5 mr-1" />
           <span>{levelType === 'standard' ? 'Fast' : levelType === 'comprehensive' ? 'Moderate' : 'Slower'}</span>
           <span className="text-gray-400">•</span>
-          <DollarSign className="w-3.5 h-3.5" />
+          <DollarSign className="w-3.5 h-3.5 mr-1" />
           <span>{config.costText}</span>
           <span className="text-gray-400">•</span>
-          <PrecisionIcon className="w-3.5 h-3.5" />
+          <PrecisionIcon className="w-3.5 h-3.5 mr-1" />
           <span>{levelType === 'standard' ? 'Standard' : levelType === 'comprehensive' ? 'High Precision' : 'Precision'}</span>
         </div>
       </div>
@@ -111,21 +111,21 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
           <button
             type="button"
             onClick={() => handleLabelClick(20)}
-            className={`transition-colors ${levelType === 'standard' ? 'text-green-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-left ${levelType === 'standard' ? 'text-green-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
             Standard
           </button>
           <button
             type="button"
             onClick={() => handleLabelClick(50)}
-            className={`transition-colors ${levelType === 'comprehensive' ? 'text-blue-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-center ${levelType === 'comprehensive' ? 'text-blue-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
             Comprehensive
           </button>
           <button
             type="button"
             onClick={() => handleLabelClick(90)}
-            className={`transition-colors ${levelType === 'deepdive' ? 'text-purple-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-right ${levelType === 'deepdive' ? 'text-purple-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
             Deep Dive
           </button>
