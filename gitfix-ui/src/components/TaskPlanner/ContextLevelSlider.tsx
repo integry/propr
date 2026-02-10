@@ -9,13 +9,13 @@ interface ContextLevelSliderProps {
 }
 
 // Level thresholds for determining which config to use
-type LevelType = 'standard' | 'comprehensive' | 'deepdive';
+type LevelType = 'focused' | 'expanded' | 'fullscan';
 
 // Get the level type from a value (0-100)
 const getLevelType = (value: number): LevelType => {
-  if (value <= 35) return 'standard';
-  if (value <= 70) return 'comprehensive';
-  return 'deepdive';
+  if (value <= 35) return 'focused';
+  if (value <= 70) return 'expanded';
+  return 'fullscan';
 };
 
 // Context level configuration with monotone icons
@@ -29,25 +29,25 @@ interface ContextLevelConfig {
 }
 
 const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
-  standard: {
-    label: 'Standard',
-    subtitle: 'Prioritizes speed and cost. Best for simple features.',
+  focused: {
+    label: 'Focused',
+    subtitle: 'Analyzes only directly referenced files. Best for isolated bug fixes and simple tweaks.',
     indicatorLine: 'Fast • $ • Standard',
     speedIcon: Zap,
     costText: '$',
     precisionIcon: BarChart2,
   },
-  comprehensive: {
-    label: 'Comprehensive',
-    subtitle: 'Balanced approach. Good for most development tasks.',
+  expanded: {
+    label: 'Expanded',
+    subtitle: 'Analyzes imports, dependencies, and related modules. Best for adding new features or updating logic.',
     indicatorLine: 'Moderate • $$ • High Precision',
     speedIcon: Clock,
     costText: '$$',
     precisionIcon: BarChart2,
   },
-  deepdive: {
-    label: 'Deep Dive',
-    subtitle: 'Prioritizes accuracy and edge-cases. Best for complex refactors.',
+  fullscan: {
+    label: 'Full Scan',
+    subtitle: 'Scans the entire repository structure to catch edge cases. Essential for refactoring and architectural changes.',
     indicatorLine: 'Slower • $$$ • Max Precision',
     speedIcon: Turtle,
     costText: '$$$',
@@ -80,19 +80,19 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
         <div className="flex items-center gap-2">
           <Layers className="w-4 h-4 text-gray-500" />
           <label className="text-sm font-medium text-gray-700">
-            Context Level
+            Context Scope
           </label>
         </div>
         {/* Single line indicator with monotone icons - Ocean Depth color scale */}
-        <div className={`flex items-center gap-2 text-xs ${levelType === 'standard' ? 'text-sky-400' : levelType === 'comprehensive' ? 'text-blue-500' : 'text-indigo-600'}`}>
+        <div className={`flex items-center gap-2 text-xs ${levelType === 'focused' ? 'text-sky-400' : levelType === 'expanded' ? 'text-blue-500' : 'text-indigo-600'}`}>
           <SpeedIcon className="w-3.5 h-3.5 mr-1 text-gray-500" />
-          <span>{levelType === 'standard' ? 'Fast' : levelType === 'comprehensive' ? 'Moderate' : 'Slower'}</span>
+          <span>{levelType === 'focused' ? 'Fast' : levelType === 'expanded' ? 'Moderate' : 'Slower'}</span>
           <span className="text-gray-400">•</span>
           <DollarSign className="w-3.5 h-3.5 mr-1 text-gray-500" />
           <span>{config.costText}</span>
           <span className="text-gray-400">•</span>
           <PrecisionIcon className="w-3.5 h-3.5 mr-1 text-gray-500" />
-          <span>{levelType === 'standard' ? 'Standard' : levelType === 'comprehensive' ? 'High Precision' : 'Max Precision'}</span>
+          <span>{levelType === 'focused' ? 'Standard' : levelType === 'expanded' ? 'High Precision' : 'Max Precision'}</span>
         </div>
       </div>
 
@@ -111,23 +111,23 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
           <button
             type="button"
             onClick={() => handleLabelClick(20)}
-            className={`transition-colors text-left ${levelType === 'standard' ? 'text-sky-400 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-left ${levelType === 'focused' ? 'text-sky-400 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
-            Standard
+            Focused
           </button>
           <button
             type="button"
             onClick={() => handleLabelClick(50)}
-            className={`transition-colors text-center ${levelType === 'comprehensive' ? 'text-blue-500 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-center ${levelType === 'expanded' ? 'text-blue-500 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
-            Comprehensive
+            Expanded
           </button>
           <button
             type="button"
             onClick={() => handleLabelClick(90)}
-            className={`transition-colors text-right ${levelType === 'deepdive' ? 'text-indigo-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-right ${levelType === 'fullscan' ? 'text-indigo-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
-            Deep Dive
+            Full Scan
           </button>
         </div>
       </div>
