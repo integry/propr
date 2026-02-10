@@ -268,7 +268,10 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
           <button
             onClick={handleFinalize}
             disabled={isFinalizing || plan.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            className="flex items-center gap-2 px-4 py-2 text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            style={{ backgroundColor: isFinalizing || plan.length === 0 ? undefined : 'rgb(29, 138, 138)' }}
+            onMouseEnter={(e) => { if (!isFinalizing && plan.length > 0) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
+            onMouseLeave={(e) => { if (!isFinalizing && plan.length > 0) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
           >
             {isFinalizing ? (
               <>
@@ -316,7 +319,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
             />
           </Panel>
           
-          <PanelResizeHandle className="w-2 bg-gray-200 hover:bg-indigo-400 transition-colors flex items-center justify-center cursor-col-resize">
+          <PanelResizeHandle className="w-2 bg-gray-200 hover:bg-teal-500 transition-colors flex items-center justify-center cursor-col-resize">
             <GripVertical size={12} className="text-gray-400" />
           </PanelResizeHandle>
           

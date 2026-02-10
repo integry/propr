@@ -37,7 +37,7 @@ const AttachmentsSection: React.FC<{
       <button
         onClick={() => fileInputRef.current?.click()}
         disabled={isUploading}
-        className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors border border-gray-200"
+        className="flex items-center gap-1.5 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-600 hover:bg-gray-50 rounded-md transition-colors"
       >
         {isUploading ? (
           <>
@@ -193,7 +193,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           onPaste={onPaste}
           placeholder="Describe the feature, bug fix, or improvement you want to implement..."
           className="flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none"
-          style={{ minHeight: '160px' }}
+          style={{ minHeight: '160px', maxWidth: '80ch' }}
         />
         <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-white border-t border-gray-100">
           <AttachmentsSection

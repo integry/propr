@@ -128,7 +128,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     <div className="flex flex-col h-full bg-gray-50">
       <div className="p-3 border-b bg-white">
         <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-          <Bot size={18} className="text-indigo-600" />
+          <Bot size={18} style={{ color: 'rgb(29, 138, 138)' }} />
           AI Refinement Assistant
         </h3>
       </div>
@@ -139,10 +139,13 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             key={message.id}
             className={`flex items-start gap-3 ${message.role === 'user' ? 'flex-row-reverse' : ''}`}
           >
-            <div className={`
-              flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center
-              ${message.role === 'user' ? 'bg-indigo-600' : message.role === 'thinking' ? 'bg-gray-300' : 'bg-gray-700'}
-            `}>
+            <div
+              className={`
+                flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center
+                ${message.role === 'thinking' ? 'bg-gray-300' : message.role !== 'user' ? 'bg-gray-700' : ''}
+              `}
+              style={message.role === 'user' ? { backgroundColor: 'rgb(29, 138, 138)' } : undefined}
+            >
               {message.role === 'user' ? (
                 <User size={16} className="text-white" />
               ) : message.role === 'thinking' ? (
@@ -151,15 +154,18 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
                 <Bot size={16} className="text-white" />
               )}
             </div>
-            <div className={`
-              max-w-[80%] rounded-lg p-3
-              ${message.role === 'user' 
-                ? 'bg-indigo-600 text-white' 
-                : message.role === 'thinking'
-                  ? 'bg-gray-200 text-gray-600 italic'
-                  : 'bg-white border border-gray-200 text-gray-800'
-              }
-            `}>
+            <div
+              className={`
+                max-w-[80%] rounded-lg p-3
+                ${message.role === 'user'
+                  ? 'text-white'
+                  : message.role === 'thinking'
+                    ? 'bg-gray-200 text-gray-600 italic'
+                    : 'bg-white border border-gray-200 text-gray-800'
+                }
+              `}
+              style={message.role === 'user' ? { backgroundColor: 'rgb(29, 138, 138)' } : undefined}
+            >
               <p className="text-sm whitespace-pre-wrap">{message.content}</p>
             </div>
           </div>
@@ -177,12 +183,15 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             placeholder="Ask the AI to refine the plan... (Shift+Enter for new line)"
             disabled={isLoading}
             rows={1}
-            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 resize-none min-h-[44px] max-h-[300px] overflow-y-auto"
+            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent disabled:bg-gray-100 resize-none min-h-[44px] max-h-[300px] overflow-y-auto"
           />
           <button
             type="submit"
             disabled={!input.trim() || isLoading}
-            className="px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+            className="px-4 py-3 text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+            style={{ backgroundColor: (!input.trim() || isLoading) ? undefined : 'rgb(29, 138, 138)' }}
+            onMouseEnter={(e) => { if (input.trim() && !isLoading) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
+            onMouseLeave={(e) => { if (input.trim() && !isLoading) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
           >
             {isLoading ? (
               <Loader2 size={18} className="animate-spin" />

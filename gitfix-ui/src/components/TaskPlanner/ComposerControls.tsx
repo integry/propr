@@ -46,9 +46,10 @@ export const GranularityPills: React.FC<{
               onClick={() => onChange(opt.id)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
                 isSelected
-                  ? 'bg-white text-indigo-700 shadow-sm'
+                  ? 'bg-white shadow-sm'
                   : 'text-gray-500 hover:text-gray-700'
               }`}
+              style={isSelected ? { color: 'rgb(29, 138, 138)' } : undefined}
             >
               <Icon className="w-3.5 h-3.5" />
               {opt.label}
@@ -135,8 +136,8 @@ export const RemoteAttachmentChip: React.FC<{
           />
         </div>
       ) : isImage ? (
-        <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-indigo-100 flex items-center justify-center border border-indigo-200">
-          <FileText className="w-4 h-4 text-indigo-500" />
+        <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 flex items-center justify-center border" style={{ backgroundColor: 'rgba(29, 138, 138, 0.1)', borderColor: 'rgba(29, 138, 138, 0.2)' }}>
+          <FileText className="w-4 h-4" style={{ color: 'rgb(29, 138, 138)' }} />
         </div>
       ) : (
         <FileText className="w-4 h-4 text-gray-500 flex-shrink-0" />

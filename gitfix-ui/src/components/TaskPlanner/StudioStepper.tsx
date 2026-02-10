@@ -51,12 +51,19 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                     flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition-colors
                     ${
                       state === 'completed'
-                        ? 'bg-indigo-600 text-white'
+                        ? 'text-white'
                         : state === 'active'
-                        ? 'border-2 border-indigo-600 bg-white text-indigo-600'
+                        ? 'border-2 bg-white'
                         : 'border-2 border-gray-300 bg-white text-gray-400'
                     }
                   `}
+                  style={
+                    state === 'completed'
+                      ? { backgroundColor: 'rgb(29, 138, 138)' }
+                      : state === 'active'
+                      ? { borderColor: 'rgb(29, 138, 138)', color: 'rgb(29, 138, 138)' }
+                      : undefined
+                  }
                 >
                   {state === 'completed' ? (
                     <Check className="h-4 w-4" />
@@ -69,14 +76,9 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                 <span
                   className={`
                     ml-2 text-sm font-medium whitespace-nowrap
-                    ${
-                      state === 'completed'
-                        ? 'text-indigo-600'
-                        : state === 'active'
-                        ? 'text-indigo-600'
-                        : 'text-gray-400'
-                    }
+                    ${state === 'pending' ? 'text-gray-400' : ''}
                   `}
+                  style={state !== 'pending' ? { color: 'rgb(29, 138, 138)' } : undefined}
                 >
                   {step.label}
                 </span>
@@ -89,10 +91,11 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                     mx-4 h-0.5 flex-1 min-w-[40px]
                     ${
                       getStepState(STEPS[index + 1].id, currentStage) !== 'pending'
-                        ? 'bg-indigo-600'
+                        ? ''
                         : 'bg-gray-300'
                     }
                   `}
+                  style={getStepState(STEPS[index + 1].id, currentStage) !== 'pending' ? { backgroundColor: 'rgb(29, 138, 138)' } : undefined}
                 />
               )}
             </li>

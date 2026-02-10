@@ -44,7 +44,8 @@ const GenerateButtonContent: React.FC<{
   isNewMode: boolean;
   isCreating: boolean;
   isGenerating: boolean;
-}> = ({ isNewMode, isCreating, isGenerating }) => {
+  issueCountText: string;
+}> = ({ isNewMode, isCreating, isGenerating, issueCountText }) => {
   if (isNewMode && isCreating) {
     return (
       <>
@@ -64,7 +65,7 @@ const GenerateButtonContent: React.FC<{
   return (
     <>
       <Sparkles className="w-4 h-4" />
-      <span>Generate Plan</span>
+      <span>Generate Plan ({issueCountText})</span>
     </>
   );
 };
@@ -252,14 +253,16 @@ const SetupWizardContent: React.FC<{
                 onChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
                 hideEstimate
               />
-              <span className="text-xs text-gray-400">{getEstimatedIssueText(config.granularity)}</span>
             </div>
             <button
               onClick={handleGenerate}
               disabled={isGenerateDisabled}
-              className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center gap-2 px-6 py-2.5 text-white font-medium rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              style={{ backgroundColor: isGenerateDisabled ? undefined : 'rgb(29, 138, 138)' }}
+              onMouseEnter={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
+              onMouseLeave={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
             >
-              <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} />
+              <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />
             </button>
           </div>
 
