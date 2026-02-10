@@ -39,6 +39,36 @@ const getEstimatedIssueText = (granularity: Granularity): string => {
   return `${count} ${count === '1' ? 'issue' : 'issues'}`;
 };
 
+// Generate button content - extracted to reduce cyclomatic complexity
+const GenerateButtonContent: React.FC<{
+  isNewMode: boolean;
+  isCreating: boolean;
+  isGenerating: boolean;
+}> = ({ isNewMode, isCreating, isGenerating }) => {
+  if (isNewMode && isCreating) {
+    return (
+      <>
+        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        <span>Creating...</span>
+      </>
+    );
+  }
+  if (!isNewMode && isGenerating) {
+    return (
+      <>
+        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        <span>Generating...</span>
+      </>
+    );
+  }
+  return (
+    <>
+      <Sparkles className="w-4 h-4" />
+      <span>Generate Plan</span>
+    </>
+  );
+};
+
 interface SetupWizardProps {
   draft?: PlannerDraft;
   onGenerateComplete: () => void;
@@ -120,32 +150,6 @@ const SetupWizardContent: React.FC<{
   const isGenerating = generationPolling.isGenerating;
   const stats = contextRefresh.preview.data?.stats;
 
-  // Generate button content
-  const renderGenerateButtonContent = () => {
-    if (isNewMode && isCreating) {
-      return (
-        <>
-          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          <span>Creating...</span>
-        </>
-      );
-    }
-    if (!isNewMode && isGenerating) {
-      return (
-        <>
-          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          <span>Generating...</span>
-        </>
-      );
-    }
-    return (
-      <>
-        <Sparkles className="w-4 h-4" />
-        <span>Generate Plan</span>
-      </>
-    );
-  };
-
   return (
     <div className="h-full flex flex-col bg-white">
       <div className="flex-1 flex min-h-0">
@@ -211,7 +215,7 @@ const SetupWizardContent: React.FC<{
               disabled={isGenerateDisabled}
               className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
             >
-              {renderGenerateButtonContent()}
+              <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} />
             </button>
           </div>
 
