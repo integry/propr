@@ -4,6 +4,17 @@ import { ChevronDown, Paperclip, Loader2, Sparkles, Github } from 'lucide-react'
 import { GranularityPills, AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
 
+// Helper to get estimated issue count text
+const getEstimatedIssueText = (granularity: Granularity): string => {
+  const counts: Record<Granularity, string> = {
+    single: '1',
+    balanced: '3-5',
+    granular: '5-10',
+  };
+  const count = counts[granularity] || '1';
+  return `(~${count} ${count === '1' ? 'issue' : 'issues'})`;
+};
+
 interface Repo { name: string; enabled: boolean; baseBranch?: string; }
 
 // Extracted: Header for new mode (repository selector)
@@ -368,20 +379,26 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
               value={granularity}
               onChange={onGranularityChange}
               fileCount={contextFileCount}
+              hideEstimate
             />
           </div>
-          {/* Generate Plan Button */}
-          <button
-            onClick={onGenerate}
-            disabled={isGenerateDisabled}
-            className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-          >
-            <GenerateButtonContent
-              isNewMode={isNewMode}
-              isCreating={isCreating}
-              isGenerating={isGenerating}
-            />
-          </button>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-gray-500">
+              {getEstimatedIssueText(granularity)}
+            </span>
+            {/* Generate Plan Button */}
+            <button
+              onClick={onGenerate}
+              disabled={isGenerateDisabled}
+              className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            >
+              <GenerateButtonContent
+                isNewMode={isNewMode}
+                isCreating={isCreating}
+                isGenerating={isGenerating}
+              />
+            </button>
+          </div>
         </div>
       </div>
     </div>

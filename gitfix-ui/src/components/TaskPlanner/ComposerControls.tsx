@@ -24,7 +24,8 @@ export const GranularityPills: React.FC<{
   value: Granularity;
   onChange: (g: Granularity) => void;
   fileCount?: number;
-}> = ({ value, onChange }) => {
+  hideEstimate?: boolean;
+}> = ({ value, onChange, hideEstimate = false }) => {
   const options: { id: Granularity; label: string; icon: typeof Square }[] = [
     { id: 'single', label: 'Single', icon: Square },
     { id: 'balanced', label: 'Balanced', icon: Layers },
@@ -55,9 +56,11 @@ export const GranularityPills: React.FC<{
           );
         })}
       </div>
-      <span className="text-sm text-gray-500">
-        (~{estimatedIssues} {estimatedIssues === '1' ? 'issue' : 'issues'})
-      </span>
+      {!hideEstimate && (
+        <span className="text-sm text-gray-500">
+          (~{estimatedIssues} {estimatedIssues === '1' ? 'issue' : 'issues'})
+        </span>
+      )}
     </div>
   );
 };

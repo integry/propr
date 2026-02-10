@@ -109,11 +109,6 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
                   <span className="font-mono text-sm text-gray-900 block truncate">
                     {file.path}
                   </span>
-                  {file.reason && (
-                    <span className="text-xs text-gray-500 block truncate" title={file.reason}>
-                      {file.reason}
-                    </span>
-                  )}
                 </div>
               </div>
 
