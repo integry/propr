@@ -136,7 +136,7 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
         <div className="flex items-center gap-2">
           <FolderOpen className="w-5 h-5 text-indigo-500" />
           <span className="font-medium text-gray-900">
-            Context ({smartSelection.length} files)
+            Included Context ({smartSelection.length} files)
           </span>
         </div>
         <div className="flex items-center gap-2 text-sm">
