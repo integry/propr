@@ -1,20 +1,9 @@
 import React from 'react';
-import { PlannerAttachment, GenerationTrace, Granularity, getAttachmentUrl } from '../../api/gitfixApi';
-import { Paperclip, Loader2, Sparkles } from 'lucide-react';
-import { GranularityPills, AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
+import { PlannerAttachment, GenerationTrace, getAttachmentUrl } from '../../api/gitfixApi';
+import { Paperclip, Loader2 } from 'lucide-react';
+import { AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
 import { NewModeHeader, EditModeHeader } from './SetupWizardHeaders';
-
-// Get estimated issue count based on granularity setting
-const getEstimatedIssueText = (granularity: Granularity): string => {
-  const counts: Record<Granularity, string> = {
-    single: '1',
-    balanced: '3-5',
-    granular: '5-10',
-  };
-  const count = counts[granularity] || '1';
-  return `${count} ${count === '1' ? 'issue' : 'issues'}`;
-};
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; }
 
@@ -89,36 +78,6 @@ const AttachmentsSection: React.FC<{
   );
 };
 
-// Extracted: Generate button content
-const GenerateButtonContent: React.FC<{
-  isNewMode: boolean;
-  isCreating: boolean;
-  isGenerating: boolean;
-}> = ({ isNewMode, isCreating, isGenerating }) => {
-  if (isNewMode && isCreating) {
-    return (
-      <>
-        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-        <span>Creating...</span>
-      </>
-    );
-  }
-  if (!isNewMode && isGenerating) {
-    return (
-      <>
-        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-        <span>Generating...</span>
-      </>
-    );
-  }
-  return (
-    <>
-      <Sparkles className="w-4 h-4" />
-      <span>Generate Plan</span>
-    </>
-  );
-};
-
 interface SetupWizardLeftPaneProps {
   isNewMode: boolean;
   repository: string;
@@ -150,14 +109,8 @@ interface SetupWizardLeftPaneProps {
   error: string | null;
   generationError: string | null;
   isGenerating: boolean;
-  isCreating?: boolean;
   generationTrace?: GenerationTrace;
   onAbort: () => Promise<void>;
-  granularity: Granularity;
-  onGranularityChange: (granularity: Granularity) => void;
-  contextFileCount?: number;
-  isGenerateDisabled: boolean;
-  onGenerate: () => void;
 }
 
 export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
@@ -191,16 +144,10 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   error,
   generationError,
   isGenerating,
-  isCreating = false,
   generationTrace,
   onAbort,
-  granularity,
-  onGranularityChange,
-  contextFileCount,
-  isGenerateDisabled,
-  onGenerate
 }) => (
-  <div className="w-[65%] h-full flex flex-col border-r border-gray-100">
+  <div className="w-[65%] h-full flex flex-col">
     {/* Header with repo/branch */}
     <div className="px-6 py-3 border-b border-gray-100">
       <div className="flex items-center gap-2 text-sm flex-nowrap overflow-hidden">
@@ -263,36 +210,16 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
       </div>
     </div>
 
-    {/* Footer with error, generation progress, and actions */}
-    <div className="border-t border-gray-100 bg-white">
-      {(error || generationError) && (
-        <div className="px-6 py-3 bg-red-50 border-b border-red-200 text-red-700 text-sm">
-          {error || generationError}
-        </div>
-      )}
-      {isGenerating && (
-        <div className="px-6 py-3 border-b border-gray-100">
-          <GenerationProgress trace={generationTrace} onAbort={onAbort} />
-        </div>
-      )}
-      <div className="px-6 py-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-sm text-gray-500">Break plan into issues:</span>
-              <span className="text-xs text-gray-400">{getEstimatedIssueText(granularity)}</span>
-            </div>
-            <GranularityPills value={granularity} onChange={onGranularityChange} fileCount={contextFileCount} hideEstimate />
-          </div>
-          <button
-            onClick={onGenerate}
-            disabled={isGenerateDisabled}
-            className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-          >
-            <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} />
-          </button>
-        </div>
+    {/* Error display - above footer */}
+    {(error || generationError) && (
+      <div className="px-6 py-3 bg-red-50 border-b border-red-200 text-red-700 text-sm">
+        {error || generationError}
       </div>
-    </div>
+    )}
+    {isGenerating && (
+      <div className="px-6 py-3 border-b border-gray-100">
+        <GenerationProgress trace={generationTrace} onAbort={onAbort} />
+      </div>
+    )}
   </div>
 );

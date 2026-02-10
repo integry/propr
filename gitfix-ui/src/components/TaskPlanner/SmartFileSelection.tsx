@@ -42,20 +42,42 @@ const getRelevancePercentage = (score?: number): number => {
   return Math.min(100, Math.max(0, score));
 };
 
+// Get color for percentage text
+const getPercentageTextColor = (percentage: number): string => {
+  if (percentage >= 100) return 'text-green-600';
+  if (percentage >= 40) return 'text-blue-600';
+  return 'text-gray-500';
+};
+
 // Get color for relevance bar
-const getRelevanceColor = (percentage: number): string => {
-  if (percentage >= 70) return 'bg-green-500';
+const getRelevanceBarColor = (percentage: number): string => {
+  if (percentage >= 100) return 'bg-green-500';
   if (percentage >= 40) return 'bg-blue-500';
   return 'bg-gray-400';
 };
 
-// Component for displaying file path with CSS-only ellipsis at beginning and copy functionality
-interface FilePathDisplayProps {
+// Extract filename from path
+const getFileName = (path: string): string => {
+  const parts = path.split('/');
+  return parts[parts.length - 1];
+};
+
+// Extract directory path from full path (excluding filename)
+const getDirectoryPath = (path: string): string => {
+  const parts = path.split('/');
+  if (parts.length <= 1) return '';
+  return parts.slice(0, -1).join('/');
+};
+
+// Component for displaying file with two lines: filename on top, path below
+interface TwoLineFileDisplayProps {
   path: string;
 }
 
-const FilePathDisplay: React.FC<FilePathDisplayProps> = ({ path }) => {
+const TwoLineFileDisplay: React.FC<TwoLineFileDisplayProps> = ({ path }) => {
   const [copied, setCopied] = useState(false);
+  const fileName = getFileName(path);
+  const dirPath = getDirectoryPath(path);
 
   const handleCopy = useCallback(async () => {
     try {
@@ -68,22 +90,28 @@ const FilePathDisplay: React.FC<FilePathDisplayProps> = ({ path }) => {
   }, [path]);
 
   return (
-    <div className="flex-1 min-w-0 relative group">
-      <span
-        className="font-mono text-sm text-gray-900 block cursor-pointer hover:text-indigo-600 transition-colors overflow-hidden whitespace-nowrap"
-        onClick={handleCopy}
-        title={path}
-        style={{
-          direction: 'rtl',
-          textAlign: 'left',
-          textOverflow: 'ellipsis',
-        }}
-      >
-        {/* Use Unicode LRO to preserve left-to-right text order within the RTL container */}
-        <bdi>{path}</bdi>
-      </span>
-
-
+    <div
+      className="flex-1 min-w-0 relative cursor-pointer group"
+      onClick={handleCopy}
+      title={path}
+    >
+      {/* Filename - bold */}
+      <div className="font-mono text-sm font-semibold text-gray-900 truncate group-hover:text-indigo-600 transition-colors">
+        {fileName}
+      </div>
+      {/* Directory path - dimmed, middle-truncated */}
+      {dirPath && (
+        <div
+          className="font-mono text-xs text-gray-400 overflow-hidden whitespace-nowrap"
+          style={{
+            direction: 'rtl',
+            textAlign: 'left',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          <bdi>{dirPath}</bdi>
+        </div>
+      )}
       {/* Copy feedback */}
       {copied && (
         <div className="absolute left-0 bottom-full mb-1 z-50 px-2 py-1 bg-green-600 text-white text-xs rounded shadow-lg flex items-center gap-1">
@@ -142,38 +170,44 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
       }}>
         {smartSelection.map((file, idx) => {
           const relevance = getRelevancePercentage(file.score ? (file.score / maxScore) * 100 : 50);
-          const relevanceColor = getRelevanceColor(relevance);
+          const percentageColor = getPercentageTextColor(relevance);
+          const barColor = getRelevanceBarColor(relevance);
+          // Only show 'manual' pill, hide 'auto' pill
+          const showManualPill = file.source === 'manual';
 
           return (
             <div
               key={idx}
-              className="px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+              className="px-4 py-2.5 flex items-start gap-3 hover:bg-gray-50 transition-colors"
             >
-              <div className="flex items-center gap-3 flex-1 min-w-0">
+              {/* File icon - aligned to top */}
+              <div className="pt-0.5">
                 {getFileIcon(file.path)}
-                <FilePathDisplay path={file.path} />
               </div>
 
-              <div className="flex items-center gap-3 flex-shrink-0 ml-4">
-                <span className={`text-xs px-1.5 py-0.5 rounded ${
-                  file.source === 'manual'
-                    ? 'bg-gray-200 text-gray-600'
-                    : 'bg-green-100 text-green-700'
-                }`}>
-                  {file.source === 'auto' ? 'auto' : 'manual'}
-                </span>
+              {/* Two-line file display */}
+              <TwoLineFileDisplay path={file.path} />
 
-                {/* Relevance bar */}
-                <div className="flex items-center gap-2 w-28">
-                  <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+              {/* Right side: pills and percentage with bar underneath */}
+              <div className="flex items-start gap-3 flex-shrink-0">
+                {/* Manual pill (only shown if source is manual) */}
+                {showManualPill && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-gray-200 text-gray-600 mt-0.5">
+                    manual
+                  </span>
+                )}
+
+                {/* Percentage with bar underneath */}
+                <div className="flex flex-col items-end w-10">
+                  <span className={`text-xs font-medium ${percentageColor}`}>
+                    {Math.round(relevance)}%
+                  </span>
+                  <div className="w-full h-1 bg-gray-200 rounded-full overflow-hidden mt-1">
                     <div
-                      className={`h-full rounded-full transition-all ${relevanceColor}`}
+                      className={`h-full rounded-full transition-all ${barColor}`}
                       style={{ width: `${relevance}%` }}
                     />
                   </div>
-                  <span className="text-xs text-gray-500 w-8 text-right">
-                    {Math.round(relevance)}%
-                  </span>
                 </div>
               </div>
             </div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { PlannerDraft, createDraft } from '../../api/gitfixApi';
+import { Download, Loader2, Sparkles, ChevronDown } from 'lucide-react';
+import { PlannerDraft, createDraft, Granularity } from '../../api/gitfixApi';
 import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
@@ -8,6 +9,9 @@ import { useContextRefresh } from '../../hooks/useContextRefresh';
 import { useToast } from '../ui/useToast';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
+import { GranularityPills } from './ComposerControls';
+import { ProviderLogo } from '../ui/ProviderLogo';
+import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 import {
   PlannerConfig,
   useRepositoryLoader,
@@ -23,6 +27,17 @@ import {
   computeCanExport,
   useAutoResize
 } from './setupWizardHooks';
+
+// Get estimated issue count based on granularity setting
+const getEstimatedIssueText = (granularity: Granularity): string => {
+  const counts: Record<Granularity, string> = {
+    single: '1',
+    balanced: '3-5',
+    granular: '5-10',
+  };
+  const count = counts[granularity] || '1';
+  return `${count} ${count === '1' ? 'issue' : 'issues'}`;
+};
 
 interface SetupWizardProps {
   draft?: PlannerDraft;
@@ -83,6 +98,54 @@ const SetupWizardContent: React.FC<{
   });
   const canExport = computeCanExport(isNewMode, promptTrimmed, config.baseBranch);
 
+  // Model selection derived values
+  const enabledAgents = agents.filter(agent => agent.enabled);
+  const selectedAgent = config.generationModel?.includes(':')
+    ? config.generationModel.split(':')[0]
+    : config.generationModel;
+
+  const modelOptions = enabledAgents.flatMap(agent =>
+    (agent.supportedModels || []).map(modelId => ({
+      value: `${agent.alias}:${modelId}`,
+      label: `${agent.alias} / ${MODEL_INFO_MAP[modelId]?.name || modelId}`,
+      agent: agent.alias
+    }))
+  );
+
+  const handleModelSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newValue = e.target.value || null;
+    setConfig(prev => ({ ...prev, generationModel: newValue }));
+  };
+
+  const isGenerating = generationPolling.isGenerating;
+  const stats = contextRefresh.preview.data?.stats;
+
+  // Generate button content
+  const renderGenerateButtonContent = () => {
+    if (isNewMode && isCreating) {
+      return (
+        <>
+          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          <span>Creating...</span>
+        </>
+      );
+    }
+    if (!isNewMode && isGenerating) {
+      return (
+        <>
+          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          <span>Generating...</span>
+        </>
+      );
+    }
+    return (
+      <>
+        <Sparkles className="w-4 h-4" />
+        <span>Generate Plan</span>
+      </>
+    );
+  };
+
   return (
     <div className="h-full flex flex-col bg-white">
       <div className="flex-1 flex min-h-0">
@@ -116,31 +179,86 @@ const SetupWizardContent: React.FC<{
           onFileInputChange={handleFileInputChange}
           error={error}
           generationError={generationPolling.generationError}
-          isGenerating={generationPolling.isGenerating}
-          isCreating={isCreating}
+          isGenerating={isGenerating}
           generationTrace={generationPolling.generationTrace}
           onAbort={generationHandlers.handleAbortGeneration}
-          granularity={config.granularity}
-          onGranularityChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
-          contextFileCount={contextRefresh.preview.data?.smartSelection?.length}
-          isGenerateDisabled={isGenerateDisabled}
-          onGenerate={handleGenerate}
         />
         <SetupWizardRightPane
           contextLevel={config.contextLevel}
           onContextLevelChange={(contextLevel) => setConfig(prev => ({ ...prev, contextLevel }))}
-          compress={config.compress}
-          onCompressChange={(compress) => setConfig(prev => ({ ...prev, compress }))}
-          agents={agents}
-          generationModel={config.generationModel}
-          onGenerationModelChange={(generationModel) => setConfig(prev => ({ ...prev, generationModel }))}
           smartSelection={contextRefresh.preview.data?.smartSelection}
           isPreviewLoading={contextRefresh.preview.isLoading}
-          stats={contextRefresh.preview.data?.stats}
-          isExporting={contextExport.isExporting}
-          canExport={canExport}
-          onExport={handleExportContext}
+          stats={stats}
         />
+      </div>
+
+      {/* Unified Footer Bar */}
+      <div className="bg-white px-6 py-4" style={{ borderTop: '1px solid #e5e7eb' }}>
+        <div className="flex items-center justify-between gap-4">
+          {/* Left side: Granularity + Generate */}
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-gray-500 whitespace-nowrap">Break plan into issues:</span>
+              <GranularityPills
+                value={config.granularity}
+                onChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
+                hideEstimate
+              />
+              <span className="text-xs text-gray-400">{getEstimatedIssueText(config.granularity)}</span>
+            </div>
+            <button
+              onClick={handleGenerate}
+              disabled={isGenerateDisabled}
+              className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            >
+              {renderGenerateButtonContent()}
+            </button>
+          </div>
+
+          {/* Right side: Model + Export */}
+          <div className="flex items-center gap-4">
+            {enabledAgents.length > 0 && (
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <span className="text-gray-500">Model:</span>
+                <div className="relative inline-flex items-center max-w-[200px]">
+                  {selectedAgent && (
+                    <ProviderLogo
+                      provider={selectedAgent}
+                      className="w-4 h-4 absolute left-2 pointer-events-none z-10"
+                    />
+                  )}
+                  <select
+                    value={config.generationModel || ''}
+                    onChange={handleModelSelectChange}
+                    className={`appearance-none bg-white border border-gray-200 rounded-md text-sm py-1.5 pr-7 text-gray-700 hover:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate w-full ${selectedAgent ? 'pl-7' : 'pl-2.5'}`}
+                    title="Select AI model for plan generation"
+                  >
+                    <option value="">{stats?.modelName ? `${stats.modelName} (default)` : 'Default model'}</option>
+                    {modelOptions.map(opt => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-gray-400 absolute right-2 pointer-events-none" />
+                </div>
+              </div>
+            )}
+            <button
+              onClick={handleExportContext}
+              disabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+              title="Export context as XML"
+            >
+              {contextExport.isExporting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
+              <span>Export Context</span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

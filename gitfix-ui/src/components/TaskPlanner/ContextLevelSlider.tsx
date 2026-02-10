@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { Layers, Minimize2 } from 'lucide-react';
+import { Layers, Zap, Clock, Turtle, DollarSign, BarChart2, Target } from 'lucide-react';
 
 interface ContextLevelSliderProps {
   value: number;
@@ -18,43 +18,49 @@ const getLevelType = (value: number): LevelType => {
   return 'deepdive';
 };
 
-// Context level configuration with all dynamic indicators
+// Context level configuration with monotone icons
 interface ContextLevelConfig {
   label: string;
   subtitle: string;
-  speed: { icon: string; text: string };
-  cost: { icon: string; text: string };
-  precision: { icon: string; text: string };
+  indicatorLine: string;
+  speedIcon: React.ComponentType<{ className?: string }>;
+  costText: string;
+  precisionIcon: React.ComponentType<{ className?: string }>;
 }
 
 const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
   standard: {
     label: 'Standard',
     subtitle: 'Prioritizes speed and cost. Best for simple features.',
-    speed: { icon: '⚡', text: 'Fast' },
-    cost: { icon: '🟢', text: '$' },
-    precision: { icon: '📉', text: 'Std Precision' },
+    indicatorLine: 'Fast • $ • Standard',
+    speedIcon: Zap,
+    costText: '$',
+    precisionIcon: BarChart2,
   },
   comprehensive: {
     label: 'Comprehensive',
     subtitle: 'Balanced approach. Good for most development tasks.',
-    speed: { icon: '🕓', text: 'Moderate' },
-    cost: { icon: '🟡', text: '$$' },
-    precision: { icon: '📊', text: 'High Precision' },
+    indicatorLine: 'Moderate • $$ • High Precision',
+    speedIcon: Clock,
+    costText: '$$',
+    precisionIcon: BarChart2,
   },
   deepdive: {
     label: 'Deep Dive',
     subtitle: 'Prioritizes accuracy and edge-cases. Best for complex refactors.',
-    speed: { icon: '🐌', text: 'Slower' },
-    cost: { icon: '🔴', text: '$$$' },
-    precision: { icon: '🎯', text: 'Max Precision' },
+    indicatorLine: 'Slower • $$$ • Precision',
+    speedIcon: Turtle,
+    costText: '$$$',
+    precisionIcon: Target,
   },
 };
 
-export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange, compress = false, onCompressChange }) => {
+export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange }) => {
   // Get the current level type and config
   const levelType = getLevelType(value);
   const config = LEVEL_CONFIGS[levelType];
+  const SpeedIcon = config.speedIcon;
+  const PrecisionIcon = config.precisionIcon;
 
   // Handle slider change - no snapping, moves at 10% increments
   const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -69,7 +75,7 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
 
   return (
     <div className="space-y-4">
-      {/* Header Row: Title on left, compact status metrics on right */}
+      {/* Header Row: Title on left, compact status line on right */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Layers className="w-4 h-4 text-gray-500" />
@@ -77,16 +83,16 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
             Context Level
           </label>
         </div>
-        {/* Compact Status Row - updates live based on slider position */}
-        <div className="flex items-center gap-1 text-xs text-gray-600">
-          <span>{config.speed.icon}</span>
-          <span>{config.speed.text}</span>
-          <span className="text-gray-400 mx-1">•</span>
-          <span>{config.cost.icon}</span>
-          <span>{config.cost.text}</span>
-          <span className="text-gray-400 mx-1">•</span>
-          <span>{config.precision.icon}</span>
-          <span>{config.precision.text}</span>
+        {/* Single line indicator with monotone icons */}
+        <div className="flex items-center gap-1.5 text-xs text-gray-600">
+          <SpeedIcon className="w-3.5 h-3.5" />
+          <span>{levelType === 'standard' ? 'Fast' : levelType === 'comprehensive' ? 'Moderate' : 'Slower'}</span>
+          <span className="text-gray-400">•</span>
+          <DollarSign className="w-3.5 h-3.5" />
+          <span>{config.costText}</span>
+          <span className="text-gray-400">•</span>
+          <PrecisionIcon className="w-3.5 h-3.5" />
+          <span>{levelType === 'standard' ? 'Standard' : levelType === 'comprehensive' ? 'High Precision' : 'Precision'}</span>
         </div>
       </div>
 
@@ -130,26 +136,6 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
       <p className="text-xs text-gray-600 italic">
         {config.subtitle}
       </p>
-
-      {onCompressChange && (
-        <label className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors">
-          <input
-            type="checkbox"
-            checked={compress}
-            onChange={(e) => onCompressChange(e.target.checked)}
-            className="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
-          />
-          <div className="flex items-center gap-2 flex-1">
-            <Minimize2 className="w-4 h-4 text-gray-500" />
-            <div>
-              <span className="text-sm font-medium text-gray-700">Compress context</span>
-              <p className="text-xs text-gray-500">
-                Remove comments and whitespace to fit more files
-              </p>
-            </div>
-          </div>
-        </label>
-      )}
     </div>
   );
 };
