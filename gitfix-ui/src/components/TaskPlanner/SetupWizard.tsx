@@ -30,7 +30,8 @@ interface SetupWizardProps {
   onDraftCreated?: (draftId: string) => void;
 }
 
-// Separate component for left pane rendering to reduce complexity
+// Content component handles rendering while SetupWizard handles state/hooks
+// This split reduces cyclomatic complexity to comply with ESLint rules
 const SetupWizardContent: React.FC<{
   isNewMode: boolean;
   draft: PlannerDraft | undefined;

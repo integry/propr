@@ -5,7 +5,7 @@ import { GranularityPills, AttachmentChip, RemoteAttachmentChip } from './Compos
 import { GenerationProgress } from './GenerationProgress';
 import { NewModeHeader, EditModeHeader } from './SetupWizardHeaders';
 
-// Helper to get estimated issue count text
+// Get estimated issue count based on granularity setting
 const getEstimatedIssueText = (granularity: Granularity): string => {
   const counts: Record<Granularity, string> = {
     single: '1',
