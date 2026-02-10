@@ -121,9 +121,9 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
         <div className="flex items-center justify-between gap-3">
           {/* Model Selection - minimalist style */}
           {enabledAgents.length > 0 && (
-            <div className="flex items-center gap-2 text-sm text-gray-600 min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-sm text-gray-600 min-w-0">
               <span className="text-gray-500 flex-shrink-0">Model:</span>
-              <div className="relative inline-flex items-center min-w-0 flex-1">
+              <div className="relative inline-flex items-center min-w-0 max-w-[200px]">
                 {selectedAgent && (
                   <ProviderLogo
                     provider={selectedAgent}
@@ -160,7 +160,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
             ) : (
               <Download className="w-4 h-4" />
             )}
-            <span>Export</span>
+            <span>Export Context</span>
           </button>
         </div>
       </div>

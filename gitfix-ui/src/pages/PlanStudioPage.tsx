@@ -58,8 +58,8 @@ const ErrorView: React.FC<{ error: string | null }> = ({ error }) => (
 );
 
 const GeneratingView: React.FC<{ currentStage: StudioStage; taskTitle: string }> = ({ currentStage, taskTitle }) => (
-  <div className="h-[calc(100vh-120px)] p-4 flex flex-col">
-    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4">
+  <div className="h-[calc(100vh-120px)] pl-0 pr-4 py-4 flex flex-col">
+    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4 ml-4">
       <StudioStepper currentStage={currentStage} />
     </div>
 
@@ -111,8 +111,8 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; taskTitle: string }>
 );
 
 const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan }> = ({ currentStage, draft }) => (
-  <div className="h-[calc(100vh-120px)] p-4 flex flex-col">
-    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4">
+  <div className="h-[calc(100vh-120px)] pl-0 pr-4 py-4 flex flex-col">
+    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4 ml-4">
       <StudioStepper currentStage={currentStage} />
     </div>
 
@@ -123,8 +123,8 @@ const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan }
 );
 
 const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
-  <div className="h-[calc(100vh-120px)] p-4 flex flex-col">
-    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4">
+  <div className="h-[calc(100vh-120px)] pl-0 pr-4 py-4 flex flex-col">
+    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4 ml-4">
       <StudioStepper currentStage={currentStage} />
     </div>
 
@@ -140,8 +140,8 @@ const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; on
 );
 
 const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
-  <div className="h-[calc(100vh-120px)] p-4 flex flex-col">
-    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4">
+  <div className="h-[calc(100vh-120px)] pl-0 pr-4 py-4 flex flex-col">
+    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4 ml-4">
       <StudioStepper currentStage={currentStage} />
     </div>
 
@@ -176,8 +176,8 @@ const isReviewStatus = (status: string | undefined): boolean => {
 
 // New Draft View - for /studio/new route
 const NewDraftView: React.FC = () => (
-  <div className="h-[calc(100vh-120px)] p-4 flex flex-col">
-    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4">
+  <div className="h-[calc(100vh-120px)] pl-0 pr-4 py-4 flex flex-col">
+    <div className="bg-white rounded-lg shadow px-6 py-4 mb-4 ml-4">
       <StudioStepper currentStage="draft" />
     </div>
 
