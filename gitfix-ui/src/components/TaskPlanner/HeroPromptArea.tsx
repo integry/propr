@@ -34,7 +34,8 @@ export const HeroPromptArea: React.FC<HeroPromptAreaProps> = ({
       <label className="block text-lg font-semibold text-gray-900 mb-3">
         What would you like to build?
       </label>
-      <div className="rounded-xl border-2 border-gray-200 focus-within:border-indigo-500 transition-colors overflow-hidden">
+      {/* Borderless textarea - white canvas stands on its own with gray Header/Footer framing */}
+      <div className="overflow-hidden">
         <textarea
           ref={textareaRef}
           value={prompt}

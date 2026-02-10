@@ -43,10 +43,14 @@ const getRelevancePercentage = (score?: number): number => {
 };
 
 // Get color for percentage text
+// UX Rule: "Success should be quiet. Exceptions should be loud."
+// - 100% (Perfect Match): Gray/quiet with checkmark - user assumes AI is right
+// - 90%+ (Partial Match): Blue - might want to check manually
+// - <40% (Low Confidence): Gray - lower priority
 const getPercentageTextColor = (percentage: number): string => {
-  if (percentage >= 100) return 'text-green-600';
-  if (percentage >= 40) return 'text-blue-600';
-  return 'text-gray-500';
+  if (percentage >= 100) return 'text-gray-500'; // Quiet success
+  if (percentage >= 40) return 'text-blue-600';  // Needs attention
+  return 'text-gray-400'; // Low confidence
 };
 
 
@@ -128,7 +132,7 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
   return (
     <div className="flex flex-col h-full">
       {/* Status bar header */}
-      <div className="px-4 py-3 flex items-center justify-between border-b border-gray-200 bg-gray-50">
+      <div className="px-4 py-3 flex items-center justify-between border-b border-gray-300 bg-gray-100">
         <div className="flex items-center gap-2">
           <FolderOpen className="w-5 h-5 text-indigo-500" />
           <span className="font-medium text-gray-900">
@@ -190,10 +194,16 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
                   </span>
                 )}
 
-                {/* Percentage only - no bar */}
-                <span className={`text-xs font-medium ${percentageColor} w-10 text-right`}>
-                  {Math.round(relevance)}%
-                </span>
+                {/* Show checkmark for 100%, percentage for others */}
+                {Math.round(relevance) >= 100 ? (
+                  <span className="text-gray-400 w-10 text-right flex justify-end">
+                    <Check className="w-4 h-4" />
+                  </span>
+                ) : (
+                  <span className={`text-xs font-medium ${percentageColor} w-10 text-right`}>
+                    {Math.round(relevance)}%
+                  </span>
+                )}
               </div>
             </div>
           );

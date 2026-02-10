@@ -148,8 +148,8 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   onAbort,
 }) => (
   <div className="w-[65%] h-full flex flex-col">
-    {/* Header with repo/branch */}
-    <div className="px-6 py-3 border-b border-gray-100">
+    {/* Header with repo/branch - Toolbar border for alignment with right pane */}
+    <div className="px-6 py-3 border-b border-gray-300">
       <div className="flex items-center gap-2 text-sm flex-nowrap overflow-hidden">
         {isNewMode ? (
           <NewModeHeader
@@ -183,7 +183,8 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
 
     {/* Main content area */}
     <div className="flex-1 flex flex-col p-6 min-h-0">
-      <div className="flex-1 flex flex-col min-h-0 relative border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-indigo-500">
+      {/* Borderless textarea - white canvas stands on its own with gray Header/Footer framing */}
+      <div className="flex-1 flex flex-col min-h-0 relative">
         <textarea
           ref={textareaRef}
           value={prompt}
@@ -191,10 +192,10 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           onInput={autoResize}
           onPaste={onPaste}
           placeholder="Describe the feature, bug fix, or improvement you want to implement..."
-          className="flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none rounded-lg"
+          className="flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none"
           style={{ minHeight: '160px' }}
         />
-        <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-white border-t border-gray-100 rounded-b-lg">
+        <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-white border-t border-gray-100">
           <AttachmentsSection
             isNewMode={isNewMode}
             localFiles={localFiles}

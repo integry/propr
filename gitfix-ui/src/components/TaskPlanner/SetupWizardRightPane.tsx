@@ -27,9 +27,9 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   stats,
 }) => {
   return (
-    <div className="w-[35%] h-full flex flex-col bg-white border-l border-gray-100">
-      {/* Context Level Slider */}
-      <div className="p-5 border-b border-gray-100">
+    <div className="w-[35%] h-full flex flex-col bg-white border-l border-gray-300">
+      {/* Context Level Slider - Toolbar aligns with left pane header */}
+      <div className="p-5 border-b border-gray-300">
         <ContextLevelSlider
           value={contextLevel}
           onChange={onContextLevelChange}
