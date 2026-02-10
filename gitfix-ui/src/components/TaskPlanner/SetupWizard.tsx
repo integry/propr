@@ -69,6 +69,64 @@ const GenerateButtonContent: React.FC<{
   );
 };
 
+// Model selector component - extracted to reduce cyclomatic complexity
+const ModelSelector: React.FC<{
+  agents: ReturnType<typeof useAgentsLoader>;
+  generationModel: string | null;
+  onModelChange: (value: string | null) => void;
+  modelName?: string;
+}> = ({ agents, generationModel, onModelChange, modelName }) => {
+  const enabledAgents = agents.filter(agent => agent.enabled);
+
+  if (enabledAgents.length === 0) {
+    return null;
+  }
+
+  const selectedAgent = generationModel?.includes(':')
+    ? generationModel.split(':')[0]
+    : generationModel;
+
+  const modelOptions = enabledAgents.flatMap(agent =>
+    (agent.supportedModels || []).map(modelId => ({
+      value: `${agent.alias}:${modelId}`,
+      label: `${agent.alias} / ${MODEL_INFO_MAP[modelId]?.name || modelId}`,
+      agent: agent.alias
+    }))
+  );
+
+  const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    onModelChange(e.target.value || null);
+  };
+
+  return (
+    <div className="flex items-center gap-2 text-sm text-gray-600">
+      <span className="text-gray-500">Model:</span>
+      <div className="relative inline-flex items-center max-w-[200px]">
+        {selectedAgent && (
+          <ProviderLogo
+            provider={selectedAgent}
+            className="w-4 h-4 absolute left-2 pointer-events-none z-10"
+          />
+        )}
+        <select
+          value={generationModel || ''}
+          onChange={handleChange}
+          className={`appearance-none bg-white border border-gray-200 rounded-md text-sm py-1.5 pr-7 text-gray-700 hover:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate w-full ${selectedAgent ? 'pl-7' : 'pl-2.5'}`}
+          title="Select AI model for plan generation"
+        >
+          <option value="">{modelName ? `${modelName} (default)` : 'Default model'}</option>
+          {modelOptions.map(opt => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="w-4 h-4 text-gray-400 absolute right-2 pointer-events-none" />
+      </div>
+    </div>
+  );
+};
+
 interface SetupWizardProps {
   draft?: PlannerDraft;
   onGenerateComplete: () => void;
@@ -128,23 +186,8 @@ const SetupWizardContent: React.FC<{
   });
   const canExport = computeCanExport(isNewMode, promptTrimmed, config.baseBranch);
 
-  // Model selection derived values
-  const enabledAgents = agents.filter(agent => agent.enabled);
-  const selectedAgent = config.generationModel?.includes(':')
-    ? config.generationModel.split(':')[0]
-    : config.generationModel;
-
-  const modelOptions = enabledAgents.flatMap(agent =>
-    (agent.supportedModels || []).map(modelId => ({
-      value: `${agent.alias}:${modelId}`,
-      label: `${agent.alias} / ${MODEL_INFO_MAP[modelId]?.name || modelId}`,
-      agent: agent.alias
-    }))
-  );
-
-  const handleModelSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newValue = e.target.value || null;
-    setConfig(prev => ({ ...prev, generationModel: newValue }));
+  const handleModelChange = (value: string | null) => {
+    setConfig(prev => ({ ...prev, generationModel: value }));
   };
 
   const isGenerating = generationPolling.isGenerating;
@@ -221,33 +264,12 @@ const SetupWizardContent: React.FC<{
 
           {/* Right side: Model + Export */}
           <div className="flex items-center gap-4">
-            {enabledAgents.length > 0 && (
-              <div className="flex items-center gap-2 text-sm text-gray-600">
-                <span className="text-gray-500">Model:</span>
-                <div className="relative inline-flex items-center max-w-[200px]">
-                  {selectedAgent && (
-                    <ProviderLogo
-                      provider={selectedAgent}
-                      className="w-4 h-4 absolute left-2 pointer-events-none z-10"
-                    />
-                  )}
-                  <select
-                    value={config.generationModel || ''}
-                    onChange={handleModelSelectChange}
-                    className={`appearance-none bg-white border border-gray-200 rounded-md text-sm py-1.5 pr-7 text-gray-700 hover:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate w-full ${selectedAgent ? 'pl-7' : 'pl-2.5'}`}
-                    title="Select AI model for plan generation"
-                  >
-                    <option value="">{stats?.modelName ? `${stats.modelName} (default)` : 'Default model'}</option>
-                    {modelOptions.map(opt => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="w-4 h-4 text-gray-400 absolute right-2 pointer-events-none" />
-                </div>
-              </div>
-            )}
+            <ModelSelector
+              agents={agents}
+              generationModel={config.generationModel}
+              onModelChange={handleModelChange}
+              modelName={stats?.modelName}
+            />
             <button
               onClick={handleExportContext}
               disabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
