@@ -149,9 +149,10 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
   let currentHeadCommitMessage: string | undefined;
   try {
     const git: SimpleGit = simpleGit(repoPath);
-    // Use the specific branch to get hash - supports both local and remote refs
-    // For 'HEAD', use HEAD directly; for named branches, try origin/<branch> first
-    const refToResolve = branch === 'HEAD' ? 'HEAD' : `origin/${branch}`;
+    // Use origin refs to get the remote branch state, not the local checkout state.
+    // For 'HEAD', use origin/HEAD (the remote's default branch), not local HEAD
+    // (which is whatever branch happens to be checked out locally).
+    const refToResolve = branch === 'HEAD' ? 'origin/HEAD' : `origin/${branch}`;
     currentHeadHash = await git.revparse([refToResolve]);
     // Get the commit message for the HEAD commit
     const logResult = await git.log({ maxCount: 1, from: refToResolve });

@@ -265,9 +265,10 @@ async function processRepositoryForIndexing(
     let currentHash: string | undefined;
     try {
         const git = simpleGit(repoPath);
-        // Use the specific branch to get hash - supports both local and remote refs
-        // For 'HEAD', use HEAD directly; for named branches, try origin/<branch> first
-        const refToResolve = branch === 'HEAD' ? 'HEAD' : `origin/${branch}`;
+        // Use origin refs to get the remote branch state, not the local checkout state.
+        // For 'HEAD', use origin/HEAD (the remote's default branch), not local HEAD
+        // (which is whatever branch happens to be checked out locally).
+        const refToResolve = branch === 'HEAD' ? 'origin/HEAD' : `origin/${branch}`;
         currentHash = await git.revparse([refToResolve]);
     } catch (hashError) {
         log.warn({ repository: repoName, branch, error: (hashError as Error).message }, 'Failed to get branch hash');
