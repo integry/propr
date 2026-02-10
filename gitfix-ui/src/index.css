@@ -62,7 +62,7 @@ body {
 .context-slider::-webkit-slider-runnable-track {
   height: 8px;
   border-radius: 4px;
-  background: linear-gradient(to right, #10B981, #3B82F6, #8B5CF6);
+  background: linear-gradient(to right, #38BDF8, #F97316);
 }
 
 .context-slider::-webkit-slider-thumb {
@@ -71,7 +71,7 @@ body {
   width: 20px;
   height: 20px;
   background: white;
-  border: 2px solid #6366f1;
+  border: 2px solid #F97316;
   border-radius: 50%;
   cursor: pointer;
   margin-top: -6px;
@@ -91,14 +91,14 @@ body {
 .context-slider::-moz-range-track {
   height: 8px;
   border-radius: 4px;
-  background: linear-gradient(to right, #10B981, #3B82F6, #8B5CF6);
+  background: linear-gradient(to right, #38BDF8, #F97316);
 }
 
 .context-slider::-moz-range-thumb {
   width: 20px;
   height: 20px;
   background: white;
-  border: 2px solid #6366f1;
+  border: 2px solid #F97316;
   border-radius: 50%;
   cursor: pointer;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
@@ -115,5 +115,5 @@ body {
 }
 
 .context-slider:focus::-webkit-slider-thumb {
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.2);
 }

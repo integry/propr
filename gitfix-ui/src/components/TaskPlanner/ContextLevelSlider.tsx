@@ -83,8 +83,8 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
             Context Level
           </label>
         </div>
-        {/* Single line indicator with monotone icons - 8px spacing between icons and labels */}
-        <div className="flex items-center gap-2 text-xs text-gray-600">
+        {/* Single line indicator with color-coded icons based on temperature scale */}
+        <div className={`flex items-center gap-2 text-xs ${levelType === 'standard' ? 'text-sky-500' : levelType === 'comprehensive' ? 'text-amber-500' : 'text-orange-500'}`}>
           <SpeedIcon className="w-3.5 h-3.5 mr-1" />
           <span>{levelType === 'standard' ? 'Fast' : levelType === 'comprehensive' ? 'Moderate' : 'Slower'}</span>
           <span className="text-gray-400">•</span>
@@ -111,21 +111,21 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
           <button
             type="button"
             onClick={() => handleLabelClick(20)}
-            className={`transition-colors text-left ${levelType === 'standard' ? 'text-green-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-left ${levelType === 'standard' ? 'text-sky-500 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
             Standard
           </button>
           <button
             type="button"
             onClick={() => handleLabelClick(50)}
-            className={`transition-colors text-center ${levelType === 'comprehensive' ? 'text-blue-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-center ${levelType === 'comprehensive' ? 'text-amber-500 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
             Comprehensive
           </button>
           <button
             type="button"
             onClick={() => handleLabelClick(90)}
-            className={`transition-colors text-right ${levelType === 'deepdive' ? 'text-purple-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-right ${levelType === 'deepdive' ? 'text-orange-500 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
             Deep Dive
           </button>

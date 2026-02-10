@@ -37,7 +37,7 @@ const AttachmentsSection: React.FC<{
       <button
         onClick={() => fileInputRef.current?.click()}
         disabled={isUploading}
-        className="flex items-center gap-1.5 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-600 hover:bg-gray-50 rounded-md transition-colors"
+        className="flex items-center gap-1.5 px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
       >
         {isUploading ? (
           <>
