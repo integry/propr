@@ -176,6 +176,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           onAbort={handleAbortGeneration}
           granularity={config.granularity}
           onGranularityChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
+          contextFileCount={preview.data?.smartSelection?.length}
           isExporting={isExporting}
           canExport={canExport}
           onExport={handleExportContext}

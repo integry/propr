@@ -2,37 +2,65 @@ import React from 'react';
 import { X, FileText, Square, Layers, LayoutGrid } from 'lucide-react';
 import { Granularity } from '../../api/gitfixApi';
 
+// Helper to estimate issue count based on granularity and file count
+const estimateIssueCount = (granularity: Granularity, fileCount: number): number => {
+  if (fileCount === 0) return 0;
+  switch (granularity) {
+    case 'single':
+      return 1;
+    case 'balanced':
+      // Balanced groups files logically, estimate ~3-4 files per issue
+      return Math.max(1, Math.ceil(fileCount / 3));
+    case 'granular':
+      return fileCount;
+    default:
+      return 1;
+  }
+};
+
 // Compact Granularity Segmented Control for Composer Bar
 export const GranularityPills: React.FC<{
   value: Granularity;
   onChange: (g: Granularity) => void;
-}> = ({ value, onChange }) => {
+  fileCount?: number;
+}> = ({ value, onChange, fileCount }) => {
   const options: { id: Granularity; label: string; icon: typeof Square }[] = [
     { id: 'single', label: 'Single', icon: Square },
     { id: 'balanced', label: 'Balanced', icon: Layers },
     { id: 'granular', label: 'Granular', icon: LayoutGrid },
   ];
 
+  const estimatedIssues = fileCount !== undefined && fileCount > 0
+    ? estimateIssueCount(value, fileCount)
+    : null;
+
   return (
-    <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
-      {options.map((opt) => {
-        const Icon = opt.icon;
-        const isSelected = value === opt.id;
-        return (
-          <button
-            key={opt.id}
-            onClick={() => onChange(opt.id)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-              isSelected
-                ? 'bg-white text-indigo-700 shadow-sm'
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <Icon className="w-3.5 h-3.5" />
-            {opt.label}
-          </button>
-        );
-      })}
+    <div className="inline-flex items-center gap-2">
+      <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+        {options.map((opt) => {
+          const Icon = opt.icon;
+          const isSelected = value === opt.id;
+          return (
+            <button
+              key={opt.id}
+              onClick={() => onChange(opt.id)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                isSelected
+                  ? 'bg-white text-indigo-700 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+      {estimatedIssues !== null && (
+        <span className="text-sm text-gray-500">
+          (~{estimatedIssues} {estimatedIssues === 1 ? 'issue' : 'issues'})
+        </span>
+      )}
     </div>
   );
 };
@@ -63,7 +91,7 @@ export const AttachmentChip: React.FC<{
   return (
     <div className="inline-flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm">
       {isImage && previewUrl ? (
-        <div className="w-6 h-6 rounded overflow-hidden flex-shrink-0 bg-gray-200">
+        <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-gray-200 border border-gray-300">
           <img
             src={previewUrl}
             alt={file.name}
@@ -90,15 +118,25 @@ export const RemoteAttachmentChip: React.FC<{
   name: string;
   mimeType?: string;
   tokenEstimate?: number;
+  previewUrl?: string;
   onRemove: () => void;
-}> = ({ name, mimeType, tokenEstimate, onRemove }) => {
+}> = ({ name, mimeType, tokenEstimate, previewUrl, onRemove }) => {
   const isImage = mimeType?.startsWith('image/');
 
   return (
     <div className="inline-flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm">
-      {isImage ? (
-        <div className="w-6 h-6 rounded overflow-hidden flex-shrink-0 bg-indigo-100 flex items-center justify-center">
-          <FileText className="w-3 h-3 text-indigo-500" />
+      {isImage && previewUrl ? (
+        <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-gray-200 border border-gray-300">
+          <img
+            src={previewUrl}
+            alt={name}
+            className="w-full h-full object-cover"
+            crossOrigin="use-credentials"
+          />
+        </div>
+      ) : isImage ? (
+        <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-indigo-100 flex items-center justify-center border border-indigo-200">
+          <FileText className="w-4 h-4 text-indigo-500" />
         </div>
       ) : (
         <FileText className="w-4 h-4 text-gray-500 flex-shrink-0" />

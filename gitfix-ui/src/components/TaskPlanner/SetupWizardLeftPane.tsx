@@ -1,6 +1,6 @@
 import React from 'react';
 import { PlannerAttachment, GenerationTrace, Granularity } from '../../api/gitfixApi';
-import { ChevronDown, Paperclip, Loader2, Sparkles, Download } from 'lucide-react';
+import { ChevronDown, Paperclip, Loader2, Sparkles, Download, Github } from 'lucide-react';
 import { GranularityPills, AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
 
@@ -23,12 +23,13 @@ const NewModeHeader: React.FC<{
 
   return (
     <>
-      {/* Repository selector */}
+      {/* Repository selector with GitHub icon */}
       <div className="relative inline-flex items-center">
+        <Github className="w-4 h-4 text-gray-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
         <select
           value={selectedRepo}
           onChange={(e) => onRepoChange?.(e.target.value)}
-          className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 font-medium text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors"
+          className="appearance-none bg-white border border-gray-300 rounded-md text-sm pl-8 pr-8 py-1.5 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors"
           disabled={repos.length === 0}
         >
           {repos.length === 0 ? (
@@ -47,8 +48,8 @@ const NewModeHeader: React.FC<{
       {/* Show branch when repo is selected */}
       {selectedRepo && (
         <>
-          <span className="text-gray-400">&gt;</span>
-          <span className="text-gray-600">{displayBranch}</span>
+          <span className="text-gray-400">/</span>
+          <span className="text-gray-600 font-mono">{displayBranch}</span>
         </>
       )}
     </>
@@ -66,8 +67,11 @@ const EditModeHeader: React.FC<{
   onBranchChange: (branch: string) => void;
 }> = ({ repository, isRepoLoading, baseBranch, branches, branchError, repoError, onBranchChange }) => (
   <>
-    <span className="font-medium text-gray-700">{repository}</span>
-    <span className="text-gray-400">&gt;</span>
+    <div className="inline-flex items-center gap-1.5">
+      <Github className="w-4 h-4 text-gray-500" />
+      <span className="font-mono text-gray-700">{repository}</span>
+    </div>
+    <span className="text-gray-400">/</span>
     <div className="relative inline-flex items-center">
       {isRepoLoading ? (
         <span className="text-gray-400">Loading...</span>
@@ -76,7 +80,7 @@ const EditModeHeader: React.FC<{
           <select
             value={baseBranch}
             onChange={(e) => onBranchChange(e.target.value)}
-            className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors"
+            className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors"
             disabled={branches.length === 0}
           >
             {branches.length === 0 ? (
@@ -237,6 +241,7 @@ interface SetupWizardLeftPaneProps {
   onAbort: () => Promise<void>;
   granularity: Granularity;
   onGranularityChange: (granularity: Granularity) => void;
+  contextFileCount?: number;
   isExporting: boolean;
   canExport: boolean;
   onExport: () => void;
@@ -278,6 +283,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   onAbort,
   granularity,
   onGranularityChange,
+  contextFileCount,
   isExporting,
   canExport,
   onExport,
@@ -359,10 +365,11 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
       <div className="px-6 py-4">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <span className="text-sm text-gray-500">Granularity:</span>
+            <span className="text-sm text-gray-500">Break plan into issues:</span>
             <GranularityPills
               value={granularity}
               onChange={onGranularityChange}
+              fileCount={contextFileCount}
             />
           </div>
           <div className="flex items-center gap-3">
