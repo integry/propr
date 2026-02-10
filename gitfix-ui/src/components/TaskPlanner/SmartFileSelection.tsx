@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { FileCode, FileText, FileJson, File, FolderOpen } from 'lucide-react';
+import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
+import { FileCode, FileText, FileJson, File, FolderOpen, Check } from 'lucide-react';
 import { PreviewResult } from '../../api/gitfixApi';
 
 interface SmartFileSelectionProps {
@@ -47,6 +47,121 @@ const getRelevanceColor = (percentage: number): string => {
   if (percentage >= 70) return 'bg-green-500';
   if (percentage >= 40) return 'bg-blue-500';
   return 'bg-gray-400';
+};
+
+// Component for displaying file path with ellipsis at beginning and copy functionality
+interface FilePathDisplayProps {
+  path: string;
+}
+
+const FilePathDisplay: React.FC<FilePathDisplayProps> = ({ path }) => {
+  const [copied, setCopied] = useState(false);
+  const [showTooltip, setShowTooltip] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [displayPath, setDisplayPath] = useState(path);
+
+  // Check if text is truncated and calculate display path
+  useEffect(() => {
+    const checkTruncation = () => {
+      if (!containerRef.current || !textRef.current) return;
+
+      const containerWidth = containerRef.current.clientWidth;
+
+      // Create a temporary span to measure full text width
+      const tempSpan = document.createElement('span');
+      tempSpan.style.cssText = window.getComputedStyle(textRef.current).cssText;
+      tempSpan.style.position = 'absolute';
+      tempSpan.style.visibility = 'hidden';
+      tempSpan.style.whiteSpace = 'nowrap';
+      tempSpan.textContent = path;
+      document.body.appendChild(tempSpan);
+
+      const fullWidth = tempSpan.offsetWidth;
+
+      if (fullWidth > containerWidth) {
+        // Need to truncate from the beginning
+        const ellipsis = '...';
+        let truncatedPath = path;
+
+        // Binary search to find the right length
+        const pathParts = path.split('/');
+        for (let i = 1; i < pathParts.length; i++) {
+          const testPath = ellipsis + '/' + pathParts.slice(i).join('/');
+          tempSpan.textContent = testPath;
+          if (tempSpan.offsetWidth <= containerWidth) {
+            truncatedPath = testPath;
+            break;
+          }
+        }
+
+        // If still too long, just use filename with ellipsis
+        if (tempSpan.offsetWidth > containerWidth) {
+          const filename = pathParts[pathParts.length - 1];
+          truncatedPath = ellipsis + filename;
+        }
+
+        setDisplayPath(truncatedPath);
+      } else {
+        setDisplayPath(path);
+      }
+
+      document.body.removeChild(tempSpan);
+    };
+
+    checkTruncation();
+
+    // Re-check on resize
+    const resizeObserver = new ResizeObserver(checkTruncation);
+    if (containerRef.current) {
+      resizeObserver.observe(containerRef.current);
+    }
+
+    return () => resizeObserver.disconnect();
+  }, [path]);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(path);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy path:', err);
+    }
+  }, [path]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="flex-1 min-w-0 relative group"
+      onMouseEnter={() => setShowTooltip(true)}
+      onMouseLeave={() => setShowTooltip(false)}
+    >
+      <span
+        ref={textRef}
+        className="font-mono text-sm text-gray-900 block cursor-pointer hover:text-indigo-600 transition-colors"
+        onClick={handleCopy}
+        title={path}
+      >
+        {displayPath}
+      </span>
+
+      {/* Tooltip with full path */}
+      {showTooltip && displayPath !== path && (
+        <div className="absolute left-0 bottom-full mb-1 z-50 px-2 py-1 bg-gray-900 text-white text-xs rounded shadow-lg max-w-md whitespace-nowrap overflow-hidden">
+          <span className="font-mono">{path}</span>
+        </div>
+      )}
+
+      {/* Copy feedback */}
+      {copied && (
+        <div className="absolute left-0 bottom-full mb-1 z-50 px-2 py-1 bg-green-600 text-white text-xs rounded shadow-lg flex items-center gap-1">
+          <Check className="w-3 h-3" />
+          <span>Copied!</span>
+        </div>
+      )}
+    </div>
+  );
 };
 
 export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSelection, totalTokens, costEstimate }) => {
@@ -105,11 +220,7 @@ export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSel
             >
               <div className="flex items-center gap-3 flex-1 min-w-0">
                 {getFileIcon(file.path)}
-                <div className="flex-1 min-w-0">
-                  <span className="font-mono text-sm text-gray-900 block truncate">
-                    {file.path}
-                  </span>
-                </div>
+                <FilePathDisplay path={file.path} />
               </div>
 
               <div className="flex items-center gap-3 flex-shrink-0 ml-4">
