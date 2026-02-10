@@ -14,8 +14,10 @@ interface PreviewStats {
 interface SetupWizardRightPaneProps {
   contextLevel: number;
   onContextLevelChange: (level: number) => void;
-  compress: boolean;
-  onCompressChange: (compress: boolean) => void;
+  /** @deprecated Hidden for now - will be polished later */
+  compress?: boolean;
+  /** @deprecated Hidden for now - will be polished later */
+  onCompressChange?: (compress: boolean) => void;
   agents: AgentConfig[];
   generationModel: string | null;
   onGenerationModelChange: (model: string | null) => void;
@@ -27,8 +29,6 @@ interface SetupWizardRightPaneProps {
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   contextLevel,
   onContextLevelChange,
-  compress,
-  onCompressChange,
   agents,
   generationModel,
   onGenerationModelChange,
@@ -39,12 +39,11 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   return (
     <div className="w-[35%] h-full flex flex-col bg-white">
       {/* Context Level Slider */}
+      {/* Note: compress and onCompressChange props are kept in the interface but not passed to slider - feature hidden for now */}
       <div className="p-5 border-b border-gray-100">
         <ContextLevelSlider
           value={contextLevel}
           onChange={onContextLevelChange}
-          compress={compress}
-          onCompressChange={onCompressChange}
           agents={agents}
           generationModel={generationModel}
           onGenerationModelChange={onGenerationModelChange}

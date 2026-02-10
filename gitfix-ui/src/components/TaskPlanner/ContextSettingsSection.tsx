@@ -5,9 +5,11 @@ import { AgentConfig } from '../../api/gitfixApi';
 
 interface ContextSettingsSectionProps {
   contextLevel: number;
-  compress: boolean;
+  /** @deprecated Hidden for now - will be polished later */
+  compress?: boolean;
   onContextLevelChange: (level: number) => void;
-  onCompressChange: (compress: boolean) => void;
+  /** @deprecated Hidden for now - will be polished later */
+  onCompressChange?: (compress: boolean) => void;
   /** Name of the model used for context limits */
   modelName?: string;
   /** Full context window size of the model in tokens */
@@ -22,9 +24,7 @@ interface ContextSettingsSectionProps {
 
 export const ContextSettingsSection: React.FC<ContextSettingsSectionProps> = ({
   contextLevel,
-  compress,
   onContextLevelChange,
-  onCompressChange,
   modelName,
   modelMaxContextTokens,
   agents,
@@ -40,11 +40,10 @@ export const ContextSettingsSection: React.FC<ContextSettingsSectionProps> = ({
 
       <div className="bg-gray-50 rounded-xl p-5 border border-gray-100 space-y-5">
         {/* Context Level Slider */}
+        {/* Note: compress and onCompressChange props are kept in the interface but not passed to slider - feature hidden for now */}
         <ContextLevelSlider
           value={contextLevel}
           onChange={onContextLevelChange}
-          compress={compress}
-          onCompressChange={onCompressChange}
           modelName={modelName}
           modelMaxContextTokens={modelMaxContextTokens}
           agents={agents}

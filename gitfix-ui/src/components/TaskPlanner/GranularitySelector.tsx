@@ -6,24 +6,28 @@ const GRANULARITY_OPTIONS: Array<{
   id: Granularity;
   label: string;
   description: string;
+  estimatedIssues: string;
   icon: typeof Square;
 }> = [
   {
     id: 'single',
-    label: 'Single Task',
+    label: 'Single',
     description: 'Consolidate all changes into one large GitHub issue.',
+    estimatedIssues: '~1 issue',
     icon: Square
   },
   {
     id: 'balanced',
     label: 'Balanced',
     description: 'Group related changes logically. (Recommended)',
+    estimatedIssues: '~5-15 issues',
     icon: Layers
   },
   {
     id: 'granular',
     label: 'Granular',
     description: 'Create a separate issue for every modified file.',
+    estimatedIssues: '~100 issues',
     icon: LayoutGrid
   }
 ];
@@ -34,9 +38,15 @@ interface GranularitySelectorProps {
 }
 
 export const GranularitySelector: React.FC<GranularitySelectorProps> = ({ value, onChange }) => {
+  const selectedOption = GRANULARITY_OPTIONS.find(o => o.id === value);
   return (
     <div className="space-y-3">
-      <label className="block text-sm font-medium text-gray-700">Task Granularity</label>
+      <div className="flex items-center justify-between">
+        <label className="block text-sm font-medium text-gray-700">Break plan into issues</label>
+        {selectedOption && (
+          <span className="text-xs text-indigo-600 font-medium">{selectedOption.estimatedIssues}</span>
+        )}
+      </div>
       <div className="flex gap-2">
         {GRANULARITY_OPTIONS.map((option) => {
           const Icon = option.icon;
@@ -59,7 +69,7 @@ export const GranularitySelector: React.FC<GranularitySelectorProps> = ({ value,
         })}
       </div>
       <p className="text-xs text-gray-500">
-        {GRANULARITY_OPTIONS.find(o => o.id === value)?.description}
+        {selectedOption?.description}
       </p>
     </div>
   );
