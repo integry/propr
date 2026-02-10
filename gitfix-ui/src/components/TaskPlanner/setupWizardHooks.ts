@@ -7,6 +7,7 @@ import {
   abortGeneration,
   getAgents,
   getRepoConfig,
+  getRepoBranches,
   PlannerDraft,
   PlannerAttachment,
   AgentConfig
@@ -94,6 +95,40 @@ export function useRepositoryLoader(isNewMode: boolean, savedLastRepository: str
   }, [isNewMode, savedLastRepository]);
 
   return { repos, selectedRepo, setSelectedRepo, reposLoading, loadError };
+}
+
+// Hook: Load branches for selected repo (for new mode)
+export function useBranchesLoader(selectedRepo: string, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
+  const [branchesState, setBranchesState] = useState<RepoInfoState>({ isLoading: false, branches: [], error: null });
+
+  useEffect(() => {
+    if (!selectedRepo) {
+      setBranchesState({ isLoading: false, branches: [], error: null });
+      return;
+    }
+
+    const [owner, repo] = selectedRepo.split('/');
+    if (!owner || !repo) {
+      setBranchesState({ isLoading: false, branches: [], error: 'Invalid repository format' });
+      return;
+    }
+
+    setBranchesState(prev => ({ ...prev, isLoading: true, error: null }));
+    getRepoBranches(owner, repo)
+      .then((data) => {
+        setBranchesState({ isLoading: false, branches: data.branches, error: null });
+        // Set the default branch when repo changes
+        setConfig(prev => ({ ...prev, baseBranch: data.defaultBranch }));
+      })
+      .catch((err) => {
+        console.error('Failed to load branches:', err);
+        setBranchesState({ isLoading: false, branches: [], error: (err as Error).message });
+        // Fallback to 'main' if fetching fails
+        setConfig(prev => ({ ...prev, baseBranch: 'main' }));
+      });
+  }, [selectedRepo, setConfig]);
+
+  return branchesState;
 }
 
 // Hook: Load repository info (for edit mode)

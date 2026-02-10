@@ -23,14 +23,14 @@ const NewModeHeader: React.FC<{
   selectedRepo: string;
   repos: Repo[];
   onRepoChange?: (repo: string) => void;
-}> = ({ reposLoading, selectedRepo, repos, onRepoChange }) => {
+  branches: string[];
+  baseBranch: string;
+  isLoadingBranches: boolean;
+  onBranchChange: (branch: string) => void;
+}> = ({ reposLoading, selectedRepo, repos, onRepoChange, branches, baseBranch, isLoadingBranches, onBranchChange }) => {
   if (reposLoading) {
     return <span className="text-gray-400">Loading repositories...</span>;
   }
-
-  // Get the selected repo's base branch for display
-  const selectedRepoData = repos.find(r => r.name === selectedRepo);
-  const displayBranch = selectedRepoData?.baseBranch || 'main';
 
   return (
     <>
@@ -56,11 +56,33 @@ const NewModeHeader: React.FC<{
         </select>
         <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
       </div>
-      {/* Show branch when repo is selected */}
+      {/* Show branch selector when repo is selected */}
       {selectedRepo && (
         <>
           <span className="text-gray-400 flex-shrink-0">/</span>
-          <span className="text-gray-600 font-mono truncate max-w-[50%]">{displayBranch}</span>
+          <div className="relative inline-flex items-center max-w-[50%]">
+            {isLoadingBranches ? (
+              <span className="text-gray-400">Loading...</span>
+            ) : (
+              <>
+                <select
+                  value={baseBranch}
+                  onChange={(e) => onBranchChange(e.target.value)}
+                  className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
+                  disabled={branches.length === 0}
+                >
+                  {branches.length === 0 ? (
+                    <option value="">No branches</option>
+                  ) : (
+                    branches.map(branch => (
+                      <option key={branch} value={branch}>{branch}</option>
+                    ))
+                  )}
+                </select>
+                <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </>
+            )}
+          </div>
         </>
       )}
     </>
@@ -365,6 +387,10 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             selectedRepo={selectedRepo}
             repos={repos}
             onRepoChange={onRepoChange}
+            branches={branches}
+            baseBranch={baseBranch}
+            isLoadingBranches={isRepoLoading}
+            onBranchChange={onBranchChange}
           />
         ) : (
           <EditModeHeader

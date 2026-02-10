@@ -11,6 +11,7 @@ import { SetupWizardRightPane } from './SetupWizardRightPane';
 import {
   PlannerConfig,
   useRepositoryLoader,
+  useBranchesLoader,
   useRepoInfoLoader,
   useAgentsLoader,
   useIndexedRepositoriesLoader,
@@ -54,6 +55,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   // Load repos in new mode OR when changing repo in edit mode
   const { repos, selectedRepo, setSelectedRepo, reposLoading, loadError: reposLoadError } =
     useRepositoryLoader(isNewMode || isChangingRepo, savedSettings.lastRepository);
+  // Load branches for selected repo in new mode (fetches from GitHub API with default branch)
+  const newModeBranches = useBranchesLoader(isNewMode ? selectedRepo : '', setConfig);
   const repoInfo = useRepoInfoLoader(isNewMode, draft, setConfig);
   const agents = useAgentsLoader();
 
@@ -182,10 +185,10 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           onRepoChange={isNewMode ? setSelectedRepo : handleRepoChangeInEditMode}
           reposLoading={reposLoading}
           baseBranch={config.baseBranch}
-          branches={repoInfo.branches}
-          isRepoLoading={repoInfo.isLoading}
+          branches={isNewMode ? newModeBranches.branches : repoInfo.branches}
+          isRepoLoading={isNewMode ? newModeBranches.isLoading : repoInfo.isLoading}
           branchError={branchError}
-          repoError={repoInfo.error}
+          repoError={isNewMode ? newModeBranches.error : repoInfo.error}
           onBranchChange={(branch) => setConfig(prev => ({ ...prev, baseBranch: branch }))}
           isChangingRepo={isChangingRepo}
           onChangeRepoClick={() => setIsChangingRepo(true)}
