@@ -48,7 +48,7 @@ const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
   deepdive: {
     label: 'Deep Dive',
     subtitle: 'Prioritizes accuracy and edge-cases. Best for complex refactors.',
-    indicatorLine: 'Slower • $$$ • Precision',
+    indicatorLine: 'Slower • $$$ • Max Precision',
     speedIcon: Turtle,
     costText: '$$$',
     precisionIcon: Target,
@@ -83,16 +83,16 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
             Context Level
           </label>
         </div>
-        {/* Single line indicator with color-coded icons based on temperature scale */}
-        <div className={`flex items-center gap-2 text-xs ${levelType === 'standard' ? 'text-sky-500' : levelType === 'comprehensive' ? 'text-amber-500' : 'text-orange-500'}`}>
-          <SpeedIcon className="w-3.5 h-3.5 mr-1" />
+        {/* Single line indicator with monotone icons - Ocean Depth color scale */}
+        <div className={`flex items-center gap-2 text-xs ${levelType === 'standard' ? 'text-sky-400' : levelType === 'comprehensive' ? 'text-blue-500' : 'text-indigo-600'}`}>
+          <SpeedIcon className="w-3.5 h-3.5 mr-1 text-gray-500" />
           <span>{levelType === 'standard' ? 'Fast' : levelType === 'comprehensive' ? 'Moderate' : 'Slower'}</span>
           <span className="text-gray-400">•</span>
-          <DollarSign className="w-3.5 h-3.5 mr-1" />
+          <DollarSign className="w-3.5 h-3.5 mr-1 text-gray-500" />
           <span>{config.costText}</span>
           <span className="text-gray-400">•</span>
-          <PrecisionIcon className="w-3.5 h-3.5 mr-1" />
-          <span>{levelType === 'standard' ? 'Standard' : levelType === 'comprehensive' ? 'High Precision' : 'Precision'}</span>
+          <PrecisionIcon className="w-3.5 h-3.5 mr-1 text-gray-500" />
+          <span>{levelType === 'standard' ? 'Standard' : levelType === 'comprehensive' ? 'High Precision' : 'Max Precision'}</span>
         </div>
       </div>
 
@@ -111,21 +111,21 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
           <button
             type="button"
             onClick={() => handleLabelClick(20)}
-            className={`transition-colors text-left ${levelType === 'standard' ? 'text-sky-500 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-left ${levelType === 'standard' ? 'text-sky-400 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
             Standard
           </button>
           <button
             type="button"
             onClick={() => handleLabelClick(50)}
-            className={`transition-colors text-center ${levelType === 'comprehensive' ? 'text-amber-500 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-center ${levelType === 'comprehensive' ? 'text-blue-500 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
             Comprehensive
           </button>
           <button
             type="button"
             onClick={() => handleLabelClick(90)}
-            className={`transition-colors text-right ${levelType === 'deepdive' ? 'text-orange-500 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
+            className={`transition-colors text-right ${levelType === 'deepdive' ? 'text-indigo-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
             Deep Dive
           </button>
