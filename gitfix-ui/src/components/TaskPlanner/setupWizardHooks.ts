@@ -369,3 +369,15 @@ export function computeIsGenerateDisabled(params: GenerateDisabledParams): boole
 export function computeCanExport(isNewMode: boolean, promptTrimmed: string, baseBranch: string): boolean {
   return !isNewMode && !!(promptTrimmed && baseBranch);
 }
+
+// Hook: Auto resize textarea
+export function useAutoResize(textareaRef: React.RefObject<HTMLTextAreaElement | null>) {
+  return useCallback(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = `${Math.max(textarea.scrollHeight, 160)}px`;
+    }
+  }, [textareaRef]);
+}
+

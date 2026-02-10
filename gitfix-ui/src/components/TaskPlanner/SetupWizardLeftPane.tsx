@@ -1,8 +1,9 @@
 import React from 'react';
 import { PlannerAttachment, GenerationTrace, Granularity, getAttachmentUrl } from '../../api/gitfixApi';
-import { ChevronDown, Paperclip, Loader2, Sparkles, Github } from 'lucide-react';
+import { Paperclip, Loader2, Sparkles } from 'lucide-react';
 import { GranularityPills, AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
+import { NewModeHeader, EditModeHeader } from './SetupWizardHeaders';
 
 // Helper to get estimated issue count text
 const getEstimatedIssueText = (granularity: Granularity): string => {
@@ -16,176 +17,6 @@ const getEstimatedIssueText = (granularity: Granularity): string => {
 };
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; }
-
-// Extracted: Header for new mode (repository selector)
-const NewModeHeader: React.FC<{
-  reposLoading: boolean;
-  selectedRepo: string;
-  repos: Repo[];
-  onRepoChange?: (repo: string) => void;
-  branches: string[];
-  baseBranch: string;
-  isLoadingBranches: boolean;
-  onBranchChange: (branch: string) => void;
-}> = ({ reposLoading, selectedRepo, repos, onRepoChange, branches, baseBranch, isLoadingBranches, onBranchChange }) => {
-  if (reposLoading) {
-    return <span className="text-gray-400">Loading repositories...</span>;
-  }
-
-  return (
-    <>
-      {/* Repository selector with GitHub icon */}
-      <div className="relative inline-flex items-center max-w-[50%]">
-        <Github className="w-4 h-4 text-gray-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-        <select
-          value={selectedRepo}
-          onChange={(e) => onRepoChange?.(e.target.value)}
-          className="appearance-none bg-white border border-gray-300 rounded-md text-sm pl-8 pr-8 py-1.5 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
-          disabled={repos.length === 0}
-        >
-          {repos.length === 0 ? (
-            <option value="">No repositories available</option>
-          ) : (
-            <>
-              <option value="">Select repository</option>
-              {repos.map(repo => (
-                <option key={repo.name} value={repo.name}>{repo.name}</option>
-              ))}
-            </>
-          )}
-        </select>
-        <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-      </div>
-      {/* Show branch selector when repo is selected */}
-      {selectedRepo && (
-        <>
-          <span className="text-gray-400 flex-shrink-0">/</span>
-          <div className="relative inline-flex items-center max-w-[50%]">
-            {isLoadingBranches ? (
-              <span className="text-gray-400">Loading...</span>
-            ) : (
-              <>
-                <select
-                  value={baseBranch}
-                  onChange={(e) => onBranchChange(e.target.value)}
-                  className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
-                  disabled={branches.length === 0}
-                >
-                  {branches.length === 0 ? (
-                    <option value="">No branches</option>
-                  ) : (
-                    branches.map(branch => (
-                      <option key={branch} value={branch}>{branch}</option>
-                    ))
-                  )}
-                </select>
-                <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-              </>
-            )}
-          </div>
-        </>
-      )}
-    </>
-  );
-};
-
-// Helper to format repository name with bold repo part
-const FormatRepoName: React.FC<{ repository: string }> = ({ repository }) => {
-  const parts = repository.split('/');
-  if (parts.length === 2) {
-    return (
-      <>
-        <span className="text-gray-500">{parts[0]}/</span>
-        <span className="font-semibold text-gray-700">{parts[1]}</span>
-      </>
-    );
-  }
-  return <span className="text-gray-700">{repository}</span>;
-};
-
-// Extracted: Header for edit mode (branch selector)
-const EditModeHeader: React.FC<{
-  repository: string;
-  isRepoLoading: boolean;
-  baseBranch: string;
-  branches: string[];
-  branchError: string | null;
-  repoError: string | null;
-  onBranchChange: (branch: string) => void;
-  isChangingRepo: boolean;
-  onChangeRepoClick: () => void;
-  repos: Repo[];
-  onRepoChange: (repo: string) => void;
-  reposLoading: boolean;
-}> = ({ repository, isRepoLoading, baseBranch, branches, branchError, repoError, onBranchChange, isChangingRepo, onChangeRepoClick, repos, onRepoChange, reposLoading }) => (
-  <>
-    {isChangingRepo ? (
-      /* Repository dropdown when changing */
-      <div className="relative inline-flex items-center max-w-[50%]">
-        <Github className="w-4 h-4 text-gray-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-        <select
-          value={repository}
-          onChange={(e) => onRepoChange(e.target.value)}
-          className="appearance-none bg-white border border-gray-300 rounded-md text-sm pl-8 pr-8 py-1.5 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
-          disabled={reposLoading || repos.length === 0}
-        >
-          {reposLoading ? (
-            <option value="">Loading...</option>
-          ) : repos.length === 0 ? (
-            <option value="">No repositories available</option>
-          ) : (
-            repos.map(repo => (
-              <option key={repo.name} value={repo.name}>{repo.name}</option>
-            ))
-          )}
-        </select>
-        <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-      </div>
-    ) : (
-      /* Static repository display */
-      <div className="inline-flex items-center gap-1.5 max-w-[50%]">
-        <Github className="w-4 h-4 text-gray-500 flex-shrink-0" />
-        <span className="font-mono truncate"><FormatRepoName repository={repository} /></span>
-      </div>
-    )}
-    <span className="text-gray-400 flex-shrink-0">/</span>
-    <div className="relative inline-flex items-center max-w-[50%]">
-      {isRepoLoading ? (
-        <span className="text-gray-400">Loading...</span>
-      ) : (
-        <>
-          <select
-            value={baseBranch}
-            onChange={(e) => onBranchChange(e.target.value)}
-            className="appearance-none bg-white border border-gray-300 rounded-md text-sm px-3 py-1.5 pr-8 font-mono text-gray-700 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate max-w-full"
-            disabled={branches.length === 0}
-          >
-            {branches.length === 0 ? (
-              <option value="">No branches</option>
-            ) : (
-              branches.map(branch => (
-                <option key={branch} value={branch}>{branch}</option>
-              ))
-            )}
-          </select>
-          <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-        </>
-      )}
-    </div>
-    {/* Change repo link */}
-    {!isChangingRepo && (
-      <button
-        onClick={onChangeRepoClick}
-        className="text-xs text-indigo-600 hover:text-indigo-800 ml-2 flex-shrink-0 hover:underline"
-      >
-        change repo
-      </button>
-    )}
-    {(branchError || repoError) && (
-      <span className="text-red-500 text-xs ml-2 flex-shrink-0">{branchError || repoError}</span>
-    )}
-  </>
-);
 
 // Extracted: Attachments section
 const AttachmentsSection: React.FC<{
@@ -264,23 +95,15 @@ const GenerateButtonContent: React.FC<{
   isCreating: boolean;
   isGenerating: boolean;
 }> = ({ isNewMode, isCreating, isGenerating }) => {
-  if (isNewMode) {
-    if (isCreating) {
-      return (
-        <>
-          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          <span>Creating...</span>
-        </>
-      );
-    }
+  if (isNewMode && isCreating) {
     return (
       <>
-        <Sparkles className="w-4 h-4" />
-        <span>Generate Plan</span>
+        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        <span>Creating...</span>
       </>
     );
   }
-  if (isGenerating) {
+  if (!isNewMode && isGenerating) {
     return (
       <>
         <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -411,9 +234,8 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
       </div>
     </div>
 
-    {/* Main content area - flex-grow to fill space between header and footer */}
+    {/* Main content area */}
     <div className="flex-1 flex flex-col p-6 min-h-0">
-      {/* Text input container - grows to fill available space */}
       <div className="flex-1 flex flex-col min-h-0 relative border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-indigo-500">
         <textarea
           ref={textareaRef}
@@ -425,7 +247,6 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           className="flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none rounded-lg"
           style={{ minHeight: '160px' }}
         />
-        {/* Attachments pinned to bottom of text area */}
         <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-white border-t border-gray-100 rounded-b-lg">
           <AttachmentsSection
             isNewMode={isNewMode}
@@ -444,51 +265,31 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
 
     {/* Footer with error, generation progress, and actions */}
     <div className="border-t border-gray-100 bg-white">
-      {/* Error display */}
       {(error || generationError) && (
         <div className="px-6 py-3 bg-red-50 border-b border-red-200 text-red-700 text-sm">
           {error || generationError}
         </div>
       )}
-
-      {/* Generation Progress */}
       {isGenerating && (
         <div className="px-6 py-3 border-b border-gray-100">
           <GenerationProgress trace={generationTrace} onAbort={onAbort} />
         </div>
       )}
-
-      {/* Action bar */}
       <div className="px-6 py-4">
         <div className="flex items-start justify-between gap-4">
-          {/* Left side: Granularity in 2 rows */}
           <div className="flex flex-col gap-2">
-            {/* Row 1: Label and estimated issues */}
             <div className="flex items-center justify-between gap-4">
               <span className="text-sm text-gray-500">Break plan into issues:</span>
-              <span className="text-xs text-gray-400">
-                {getEstimatedIssueText(granularity)}
-              </span>
+              <span className="text-xs text-gray-400">{getEstimatedIssueText(granularity)}</span>
             </div>
-            {/* Row 2: Granularity pills */}
-            <GranularityPills
-              value={granularity}
-              onChange={onGranularityChange}
-              fileCount={contextFileCount}
-              hideEstimate
-            />
+            <GranularityPills value={granularity} onChange={onGranularityChange} fileCount={contextFileCount} hideEstimate />
           </div>
-          {/* Right side: Generate Plan Button */}
           <button
             onClick={onGenerate}
             disabled={isGenerateDisabled}
             className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
           >
-            <GenerateButtonContent
-              isNewMode={isNewMode}
-              isCreating={isCreating}
-              isGenerating={isGenerating}
-            />
+            <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} />
           </button>
         </div>
       </div>
