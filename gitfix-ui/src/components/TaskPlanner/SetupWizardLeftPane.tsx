@@ -1,6 +1,6 @@
 import React from 'react';
 import { PlannerAttachment, GenerationTrace, Granularity, getAttachmentUrl } from '../../api/gitfixApi';
-import { ChevronDown, Paperclip, Loader2, Sparkles, Download, Github } from 'lucide-react';
+import { ChevronDown, Paperclip, Loader2, Sparkles, Github } from 'lucide-react';
 import { GranularityPills, AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
 
@@ -236,7 +236,6 @@ interface SetupWizardLeftPaneProps {
   isUploading: boolean;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  isPreviewLoading: boolean;
   error: string | null;
   generationError: string | null;
   isGenerating: boolean;
@@ -246,9 +245,6 @@ interface SetupWizardLeftPaneProps {
   granularity: Granularity;
   onGranularityChange: (granularity: Granularity) => void;
   contextFileCount?: number;
-  isExporting: boolean;
-  canExport: boolean;
-  onExport: () => void;
   isGenerateDisabled: boolean;
   onGenerate: () => void;
 }
@@ -279,7 +275,6 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   isUploading,
   fileInputRef,
   onFileInputChange,
-  isPreviewLoading,
   error,
   generationError,
   isGenerating,
@@ -289,9 +284,6 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   granularity,
   onGranularityChange,
   contextFileCount,
-  isExporting,
-  canExport,
-  onExport,
   isGenerateDisabled,
   onGenerate
 }) => (
@@ -378,35 +370,18 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
               fileCount={contextFileCount}
             />
           </div>
-          <div className="flex items-center gap-3">
-            {/* Export Context Button */}
-            <button
-              onClick={onExport}
-              disabled={isExporting || isPreviewLoading || !canExport}
-              className="flex items-center gap-2 px-4 py-2 text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
-              title="Export context as file"
-            >
-              {isExporting ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Download className="w-4 h-4" />
-              )}
-              <span>Export</span>
-            </button>
-
-            {/* Generate Plan Button */}
-            <button
-              onClick={onGenerate}
-              disabled={isGenerateDisabled}
-              className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-            >
-              <GenerateButtonContent
-                isNewMode={isNewMode}
-                isCreating={isCreating}
-                isGenerating={isGenerating}
-              />
-            </button>
-          </div>
+          {/* Generate Plan Button */}
+          <button
+            onClick={onGenerate}
+            disabled={isGenerateDisabled}
+            className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+          >
+            <GenerateButtonContent
+              isNewMode={isNewMode}
+              isCreating={isCreating}
+              isGenerating={isGenerating}
+            />
+          </button>
         </div>
       </div>
     </div>

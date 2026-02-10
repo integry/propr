@@ -172,7 +172,6 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           isUploading={isUploading}
           fileInputRef={fileInputRef}
           onFileInputChange={handleFileInputChange}
-          isPreviewLoading={preview.isLoading}
           error={error}
           generationError={generationError}
           isGenerating={isGenerating}
@@ -182,9 +181,6 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           granularity={config.granularity}
           onGranularityChange={(granularity) => setConfig(prev => ({ ...prev, granularity }))}
           contextFileCount={preview.data?.smartSelection?.length}
-          isExporting={isExporting}
-          canExport={canExport}
-          onExport={handleExportContext}
           isGenerateDisabled={isGenerateDisabled}
           onGenerate={handleGenerate}
         />
@@ -199,6 +195,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
           smartSelection={preview.data?.smartSelection}
           isPreviewLoading={preview.isLoading}
           stats={preview.data?.stats}
+          isExporting={isExporting}
+          canExport={canExport}
+          onExport={handleExportContext}
         />
       </div>
     </div>

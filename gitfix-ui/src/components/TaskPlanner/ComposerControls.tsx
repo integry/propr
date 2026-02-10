@@ -2,19 +2,20 @@ import React from 'react';
 import { X, FileText, Square, Layers, LayoutGrid } from 'lucide-react';
 import { Granularity } from '../../api/gitfixApi';
 
-// Helper to estimate issue count based on granularity and file count
-const estimateIssueCount = (granularity: Granularity, fileCount: number): number => {
-  if (fileCount === 0) return 0;
+// Helper to estimate issue count based on granularity
+// Single: always exactly 1 issue
+// Balanced: 3-5 issues
+// Granular: 5-10 issues
+const estimateIssueCount = (granularity: Granularity): string => {
   switch (granularity) {
     case 'single':
-      return 1;
+      return '1';
     case 'balanced':
-      // Balanced groups files logically, estimate ~3-4 files per issue
-      return Math.max(1, Math.ceil(fileCount / 3));
+      return '3-5';
     case 'granular':
-      return fileCount;
+      return '5-10';
     default:
-      return 1;
+      return '1';
   }
 };
 
@@ -23,16 +24,14 @@ export const GranularityPills: React.FC<{
   value: Granularity;
   onChange: (g: Granularity) => void;
   fileCount?: number;
-}> = ({ value, onChange, fileCount }) => {
+}> = ({ value, onChange }) => {
   const options: { id: Granularity; label: string; icon: typeof Square }[] = [
     { id: 'single', label: 'Single', icon: Square },
     { id: 'balanced', label: 'Balanced', icon: Layers },
     { id: 'granular', label: 'Granular', icon: LayoutGrid },
   ];
 
-  const estimatedIssues = fileCount !== undefined && fileCount > 0
-    ? estimateIssueCount(value, fileCount)
-    : null;
+  const estimatedIssues = estimateIssueCount(value);
 
   return (
     <div className="inline-flex items-center gap-2">
@@ -56,11 +55,9 @@ export const GranularityPills: React.FC<{
           );
         })}
       </div>
-      {estimatedIssues !== null && (
-        <span className="text-sm text-gray-500">
-          (~{estimatedIssues} {estimatedIssues === 1 ? 'issue' : 'issues'})
-        </span>
-      )}
+      <span className="text-sm text-gray-500">
+        (~{estimatedIssues} {estimatedIssues === '1' ? 'issue' : 'issues'})
+      </span>
     </div>
   );
 };

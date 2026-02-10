@@ -13,21 +13,21 @@ const GRANULARITY_OPTIONS: Array<{
     id: 'single',
     label: 'Single',
     description: 'Consolidate all changes into one large GitHub issue.',
-    estimatedIssues: '~1 issue',
+    estimatedIssues: '1 issue',
     icon: Square
   },
   {
     id: 'balanced',
     label: 'Balanced',
     description: 'Group related changes logically. (Recommended)',
-    estimatedIssues: '~5-15 issues',
+    estimatedIssues: '3-5 issues',
     icon: Layers
   },
   {
     id: 'granular',
     label: 'Granular',
     description: 'Create a separate issue for every modified file.',
-    estimatedIssues: '~100 issues',
+    estimatedIssues: '5-10 issues',
     icon: LayoutGrid
   }
 ];

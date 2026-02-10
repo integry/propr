@@ -1,5 +1,5 @@
 import React from 'react';
-import { PlannerAttachment, PreviewResult, ContextRepository, Granularity, GenerationTrace, AgentConfig } from '../../api/gitfixApi';
+import { PlannerAttachment, PreviewResult, ContextRepository, Granularity, GenerationTrace } from '../../api/gitfixApi';
 import { GenerationProgress } from './GenerationProgress';
 import { SmartFileSelection } from './SmartFileSelection';
 import { FileSelectionSkeleton } from './SkeletonLoader';
@@ -46,11 +46,6 @@ interface SetupWizardContentProps {
   availableRepos: IndexedRepository[];
   onAddContextRepo: (repo: ContextRepository) => void;
   onRemoveContextRepo: (repository: string) => void;
-
-  // AI Model selection props
-  agents: AgentConfig[];
-  generationModel: string | null;
-  onGenerationModelChange: (model: string | null) => void;
 
   // Preview and state props
   preview: PreviewState;
@@ -100,9 +95,6 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
   availableRepos,
   onAddContextRepo,
   onRemoveContextRepo,
-  agents,
-  generationModel,
-  onGenerationModelChange,
   preview,
   isContextStale,
   timeUntilRefresh,
@@ -174,11 +166,6 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
                 compress={compress}
                 onContextLevelChange={onContextLevelChange}
                 onCompressChange={onCompressChange}
-                modelName={preview.data?.stats.modelName}
-                modelMaxContextTokens={preview.data?.stats.modelMaxContextTokens}
-                agents={agents}
-                generationModel={generationModel}
-                onGenerationModelChange={onGenerationModelChange}
               />
 
               <div className="border-t border-gray-200" />

@@ -1,7 +1,6 @@
 import React from 'react';
 import { Settings2 } from 'lucide-react';
 import { ContextLevelSlider } from './ContextLevelSlider';
-import { AgentConfig } from '../../api/gitfixApi';
 
 interface ContextSettingsSectionProps {
   contextLevel: number;
@@ -10,26 +9,11 @@ interface ContextSettingsSectionProps {
   onContextLevelChange: (level: number) => void;
   /** @deprecated Hidden for now - will be polished later */
   onCompressChange?: (compress: boolean) => void;
-  /** Name of the model used for context limits */
-  modelName?: string;
-  /** Full context window size of the model in tokens */
-  modelMaxContextTokens?: number;
-  /** Available agents for model selection */
-  agents: AgentConfig[];
-  /** Currently selected generation model (format: "agent:modelId" or null for default) */
-  generationModel: string | null;
-  /** Callback when generation model changes */
-  onGenerationModelChange: (model: string | null) => void;
 }
 
 export const ContextSettingsSection: React.FC<ContextSettingsSectionProps> = ({
   contextLevel,
   onContextLevelChange,
-  modelName,
-  modelMaxContextTokens,
-  agents,
-  generationModel,
-  onGenerationModelChange
 }) => {
   return (
     <div className="space-y-4">
@@ -44,11 +28,6 @@ export const ContextSettingsSection: React.FC<ContextSettingsSectionProps> = ({
         <ContextLevelSlider
           value={contextLevel}
           onChange={onContextLevelChange}
-          modelName={modelName}
-          modelMaxContextTokens={modelMaxContextTokens}
-          agents={agents}
-          generationModel={generationModel}
-          onGenerationModelChange={onGenerationModelChange}
         />
       </div>
     </div>
