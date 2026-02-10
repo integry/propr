@@ -113,7 +113,7 @@ const AttachmentsSection: React.FC<{
   const hasAnyFiles = hasLocalFiles || hasRemoteFiles;
 
   return (
-    <div className="mt-4 flex items-center gap-3 flex-wrap">
+    <div className="flex items-center gap-3 flex-wrap">
       {/* Attach button - always first */}
       <input
         type="file"
@@ -309,34 +309,33 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
       </div>
     </div>
 
-    {/* Main content area */}
-    <div className="flex-1 flex flex-col p-6 min-h-0 overflow-auto">
-      <div className="flex-1 flex flex-col min-h-0">
-        {/* Prompt textarea */}
-        <div className="flex-1 min-h-0 flex flex-col" style={{ maxHeight: '60%' }}>
-          <textarea
-            ref={textareaRef}
-            value={prompt}
-            onChange={(e) => onPromptChange(e.target.value)}
-            onInput={autoResize}
-            onPaste={onPaste}
-            placeholder="Describe the feature, bug fix, or improvement you want to implement..."
-            className="flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed border border-gray-200 rounded-lg p-4 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-            style={{ minHeight: '160px' }}
+    {/* Main content area - flex-grow to fill space between header and footer */}
+    <div className="flex-1 flex flex-col p-6 min-h-0">
+      {/* Text input container - grows to fill available space */}
+      <div className="flex-1 flex flex-col min-h-0 relative border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-indigo-500">
+        <textarea
+          ref={textareaRef}
+          value={prompt}
+          onChange={(e) => onPromptChange(e.target.value)}
+          onInput={autoResize}
+          onPaste={onPaste}
+          placeholder="Describe the feature, bug fix, or improvement you want to implement..."
+          className="flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none rounded-lg"
+          style={{ minHeight: '160px' }}
+        />
+        {/* Attachments pinned to bottom of text area */}
+        <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-white border-t border-gray-100 rounded-b-lg">
+          <AttachmentsSection
+            isNewMode={isNewMode}
+            localFiles={localFiles}
+            files={files}
+            onRemoveLocalFile={onRemoveLocalFile}
+            onRemoveFile={onRemoveFile}
+            isUploading={isUploading}
+            fileInputRef={fileInputRef}
+            onFileInputChange={onFileInputChange}
           />
         </div>
-
-        {/* Attachments section */}
-        <AttachmentsSection
-          isNewMode={isNewMode}
-          localFiles={localFiles}
-          files={files}
-          onRemoveLocalFile={onRemoveLocalFile}
-          onRemoveFile={onRemoveFile}
-          isUploading={isUploading}
-          fileInputRef={fileInputRef}
-          onFileInputChange={onFileInputChange}
-        />
       </div>
     </div>
 

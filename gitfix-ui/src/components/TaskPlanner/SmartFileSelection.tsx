@@ -1,9 +1,11 @@
-import React, { useState, useMemo } from 'react';
-import { ChevronDown, ChevronUp, FileCode, FileText, FileJson, File, FolderOpen } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { FileCode, FileText, FileJson, File, FolderOpen } from 'lucide-react';
 import { PreviewResult } from '../../api/gitfixApi';
 
 interface SmartFileSelectionProps {
   smartSelection: PreviewResult['smartSelection'];
+  totalTokens?: number;
+  costEstimate?: number;
 }
 
 // Get appropriate icon for file type
@@ -47,115 +49,100 @@ const getRelevanceColor = (percentage: number): string => {
   return 'bg-gray-400';
 };
 
-export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSelection }) => {
-  // Auto-expand when files are selected
-  const [isExpanded, setIsExpanded] = useState(true);
-
-  const { autoCount, manualCount, maxScore } = useMemo(() => {
-    const auto = smartSelection.filter(f => f.source === 'auto').length;
-    const manual = smartSelection.filter(f => f.source === 'manual').length;
+export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSelection, totalTokens, costEstimate }) => {
+  const { maxScore } = useMemo(() => {
     const max = Math.max(...smartSelection.map(f => f.score || 0), 1);
-    return { autoCount: auto, manualCount: manual, maxScore: max };
+    return { maxScore: max };
   }, [smartSelection]);
 
   if (smartSelection.length === 0) return null;
 
-  const displayFiles = isExpanded ? smartSelection : smartSelection.slice(0, 0);
-
   return (
-    <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-      {/* Collapsible header */}
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full px-4 py-3 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition-colors"
-      >
-        <div className="flex items-center gap-3">
+    <div className="flex flex-col h-full">
+      {/* Status bar header */}
+      <div className="px-4 py-3 flex items-center justify-between border-b border-gray-200 bg-gray-50">
+        <div className="flex items-center gap-2">
           <FolderOpen className="w-5 h-5 text-indigo-500" />
           <span className="font-medium text-gray-900">
-            {smartSelection.length} files selected
+            Context ({smartSelection.length} files)
           </span>
-          {autoCount > 0 && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">
-              {autoCount} auto-selected
-            </span>
-          )}
-          {manualCount > 0 && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">
-              {manualCount} manual
-            </span>
-          )}
         </div>
-        <div className="flex items-center gap-2 text-sm text-indigo-600 font-medium">
-          {isExpanded ? (
-            <>
-              <span>Hide files</span>
-              <ChevronUp className="w-4 h-4" />
-            </>
+        <div className="flex items-center gap-2 text-sm">
+          {totalTokens ? (
+            <span className="text-gray-600">
+              <span className="font-medium text-gray-700">
+                {(totalTokens / 1000).toFixed(0)}k
+              </span>{' '}
+              tokens
+            </span>
           ) : (
-            <>
-              <span>Review files</span>
-              <ChevronDown className="w-4 h-4" />
-            </>
+            <span className="text-gray-400 italic">--</span>
+          )}
+          <span className="text-gray-300">•</span>
+          {costEstimate ? (
+            <span className="font-semibold text-gray-900">
+              ${costEstimate.toFixed(2)}
+            </span>
+          ) : (
+            <span className="text-gray-400 italic">--</span>
           )}
         </div>
-      </button>
+      </div>
 
-      {/* Expandable file list */}
-      {isExpanded && (
-        <div className="max-h-80 overflow-y-auto divide-y divide-gray-100 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-400" style={{
-          scrollbarWidth: 'thin',
-          scrollbarColor: '#d1d5db #f3f4f6'
-        }}>
-          {displayFiles.map((file, idx) => {
-            const relevance = getRelevancePercentage(file.score ? (file.score / maxScore) * 100 : 50);
-            const relevanceColor = getRelevanceColor(relevance);
+      {/* Scrollable file list */}
+      <div className="flex-1 overflow-y-auto divide-y divide-gray-100 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-400" style={{
+        scrollbarWidth: 'thin',
+        scrollbarColor: '#d1d5db #f3f4f6'
+      }}>
+        {smartSelection.map((file, idx) => {
+          const relevance = getRelevancePercentage(file.score ? (file.score / maxScore) * 100 : 50);
+          const relevanceColor = getRelevanceColor(relevance);
 
-            return (
-              <div
-                key={idx}
-                className="px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex items-center gap-3 flex-1 min-w-0">
-                  {getFileIcon(file.path)}
-                  <div className="flex-1 min-w-0">
-                    <span className="font-mono text-sm text-gray-900 block truncate">
-                      {file.path}
-                    </span>
-                    {file.reason && (
-                      <span className="text-xs text-gray-500 block truncate" title={file.reason}>
-                        {file.reason}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3 flex-shrink-0 ml-4">
-                  <span className={`text-xs px-1.5 py-0.5 rounded ${
-                    file.source === 'manual'
-                      ? 'bg-gray-200 text-gray-600'
-                      : 'bg-green-100 text-green-700'
-                  }`}>
-                    {file.source === 'auto' ? 'auto' : 'manual'}
+          return (
+            <div
+              key={idx}
+              className="px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+            >
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                {getFileIcon(file.path)}
+                <div className="flex-1 min-w-0">
+                  <span className="font-mono text-sm text-gray-900 block truncate">
+                    {file.path}
                   </span>
-
-                  {/* Relevance bar */}
-                  <div className="flex items-center gap-2 w-28">
-                    <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${relevanceColor}`}
-                        style={{ width: `${relevance}%` }}
-                      />
-                    </div>
-                    <span className="text-xs text-gray-500 w-8 text-right">
-                      {Math.round(relevance)}%
+                  {file.reason && (
+                    <span className="text-xs text-gray-500 block truncate" title={file.reason}>
+                      {file.reason}
                     </span>
-                  </div>
+                  )}
                 </div>
               </div>
-            );
-          })}
-        </div>
-      )}
+
+              <div className="flex items-center gap-3 flex-shrink-0 ml-4">
+                <span className={`text-xs px-1.5 py-0.5 rounded ${
+                  file.source === 'manual'
+                    ? 'bg-gray-200 text-gray-600'
+                    : 'bg-green-100 text-green-700'
+                }`}>
+                  {file.source === 'auto' ? 'auto' : 'manual'}
+                </span>
+
+                {/* Relevance bar */}
+                <div className="flex items-center gap-2 w-28">
+                  <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${relevanceColor}`}
+                      style={{ width: `${relevance}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-gray-500 w-8 text-right">
+                    {Math.round(relevance)}%
+                  </span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };

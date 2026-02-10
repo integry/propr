@@ -53,47 +53,25 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
         />
       </div>
 
-      {/* Smart file selection */}
-      <div className="flex-1 overflow-auto p-5">
+      {/* Smart file selection - extends to bottom */}
+      <div className="flex-1 overflow-hidden flex flex-col">
         {isPreviewLoading && !smartSelection?.length ? (
-          <FileSelectionSkeleton />
+          <div className="p-5">
+            <FileSelectionSkeleton />
+          </div>
         ) : smartSelection && smartSelection.length > 0 ? (
-          <SmartFileSelection smartSelection={smartSelection} />
+          <SmartFileSelection
+            smartSelection={smartSelection}
+            totalTokens={stats?.totalTokens}
+            costEstimate={stats?.costEstimate}
+          />
         ) : (
-          <p className="text-sm text-gray-400 italic">
-            Files will be selected after context analysis
-          </p>
+          <div className="p-5">
+            <p className="text-sm text-gray-400 italic">
+              Files will be selected after context analysis
+            </p>
+          </div>
         )}
-      </div>
-
-      {/* Cost estimate footer */}
-      <div className="border-t border-gray-100 px-5 py-4 bg-white">
-        <div className="flex items-center justify-between text-sm">
-          <div className="text-gray-500">
-            {stats?.totalTokens ? (
-              <>
-                <span className="font-medium text-gray-700">
-                  {(stats.totalTokens / 1000).toFixed(0)}k
-                </span>{' '}
-                tokens
-              </>
-            ) : (
-              <span className="text-gray-400 italic">Token count pending</span>
-            )}
-          </div>
-          <div className="text-gray-600">
-            {stats?.costEstimate ? (
-              <>
-                Est:{' '}
-                <span className="font-semibold text-gray-900">
-                  ${stats.costEstimate.toFixed(2)}
-                </span>
-              </>
-            ) : (
-              <span className="text-gray-400 italic">--</span>
-            )}
-          </div>
-        </div>
       </div>
     </div>
   );
