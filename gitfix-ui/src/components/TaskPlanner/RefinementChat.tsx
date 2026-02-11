@@ -15,13 +15,6 @@ interface RefinementChatProps {
   onMessagesChange?: (messages: ChatMessage[]) => void;
 }
 
-const WELCOME_MESSAGE: Message = {
-  id: 'welcome',
-  role: 'assistant',
-  content: 'I can help you refine this plan. You can:\n\n**Ask questions:**\n- "Why is task #2 structured this way?"\n- "What would happen if we combined these tasks?"\n\n**Give instructions:**\n- "Make the testing task more detailed"\n- "Split the backend task into two"\n- "Add error handling to all tasks"',
-  timestamp: new Date()
-};
-
 export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange }) => {
   const [messages, setMessages] = useState<Message[]>(() => {
     if (initialMessages && initialMessages.length > 0) {
@@ -30,7 +23,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
         timestamp: new Date(m.timestamp)
       }));
     }
-    return [WELCOME_MESSAGE];
+    return [];
   });
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -136,11 +129,26 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       </div>
 
       {/* Messages area - no border, fills available space */}
-      <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-4">
-        {messages.map(message => (
+      <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-4 scrollbar-thin [scrollbar-gutter:stable]">
+        {/* Onboarding Card - shown only when chat is empty */}
+        {messages.length === 0 && (
+          <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+            <p className="text-sm text-gray-700 whitespace-pre-wrap">
+              I can help you refine this plan. You can:{'\n\n'}
+              <strong>Ask questions:</strong>{'\n'}
+              - "Why is task #2 structured this way?"{'\n'}
+              - "What would happen if we combined these tasks?"{'\n\n'}
+              <strong>Give instructions:</strong>{'\n'}
+              - "Make the testing task more detailed"{'\n'}
+              - "Split the backend task into two"{'\n'}
+              - "Add error handling to all tasks"
+            </p>
+          </div>
+        )}
+        {messages.map((message, index) => (
           <div
             key={message.id}
-            className={`flex items-start gap-3 ${message.role === 'user' ? 'flex-row-reverse' : ''}`}
+            className={`flex items-start gap-3 ${message.role === 'user' ? 'flex-row-reverse' : ''} ${index < messages.length - 1 ? 'border-b border-slate-100 pb-4' : ''}`}
           >
             <div
               className={`
@@ -164,7 +172,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
                   ? 'text-white'
                   : message.role === 'thinking'
                     ? 'bg-slate-200 text-gray-600 italic'
-                    : 'bg-white text-gray-800 shadow-sm'
+                    : 'bg-transparent text-gray-800'
                 }
               `}
               style={message.role === 'user' ? { backgroundColor: 'rgb(29, 138, 138)' } : undefined}
