@@ -15,6 +15,7 @@ import {
   parseContextConfig, checkoutBaseBranch, TaskDraftConfig, Granularity, PlanningFailedError, buildFullContext,
   Base64Image, MinimalLogger, ContextRepository, getModelHardLimit
 } from './planningHelpers.js';
+import { estimateLlmDuration } from '../utils/llmEstimation.js';
 import type { Attachment } from './attachmentService.js';
 import { loadSettings } from '../config/configManager.js';
 
@@ -462,7 +463,6 @@ interface CallLLMForPlanResult {
 async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
   const { draftId, fullContext, worktreePath, githubToken, repository, correlationId, tokenLimit, model = DEFAULT_GENERATION_MODEL, granularity } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
-  await updateTrace(draftId, 'llm', 'pending');
 
   // Use model's hard limit for validation (context level is a guideline, not a hard limit)
   const modelHardLimit = getModelHardLimit(model);
@@ -479,6 +479,24 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResul
   }
 
   correlatedLogger.info({ tokenCount: validation.tokenCount, source: validation.source, modelHardLimit }, 'Token validation passed');
+
+  // Estimate LLM execution duration based on historical data
+  const estimation = await estimateLlmDuration({
+    executionType: 'plan-generation',
+    modelName: model,
+    inputTokenCount: validation.tokenCount,
+    correlationId
+  });
+
+  const startedAt = new Date().toISOString();
+
+  // Update trace with pending status, estimated duration, and start time
+  await updateTrace(draftId, 'llm', 'pending', {
+    estimatedDuration: estimation.estimatedDurationMs,
+    startedAt,
+    isHistoricalEstimate: estimation.isHistoricalEstimate,
+    sampleCount: estimation.sampleCount
+  });
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
   // Build metadata for LLM log tracking
