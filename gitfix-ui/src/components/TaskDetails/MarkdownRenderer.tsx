@@ -162,7 +162,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                     lineNumberStyle={{
                       color: '#6b7280',
                       paddingRight: '0.75em',
-                      paddingLeft: '0.75em',
+                      paddingLeft: '1em',
                       marginLeft: 0,
                       minWidth: '2em',
                       textAlign: 'right',
@@ -182,7 +182,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                         backgroundColor: 'transparent',
                       },
                     }}
-                    className="code-block-scrollbar [&_span]:!bg-transparent [&_.linenumber]:!pl-0 [&_.linenumber]:!ml-0"
+                    className="code-block-scrollbar [&_span]:!bg-transparent [&_.linenumber]:!ml-0 [&_.linenumber]:!pl-[1em]"
                   >
                     {codeContent}
                   </SyntaxHighlighter>
