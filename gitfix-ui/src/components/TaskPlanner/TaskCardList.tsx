@@ -1,5 +1,4 @@
 import React, { useState, useCallback } from 'react';
-import { Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import TaskCard from './TaskCard';
 import TaskTimeline from './TaskTimeline';
@@ -9,62 +8,14 @@ interface TaskCardListProps {
   tasks: PlanTask[];
   highlightedIds: string[];
   onTaskChange: (taskId: string, updates: Partial<PlanTask>) => void;
-  onAddTask: (afterTaskId: string) => void;
   onDeleteTask: (taskId: string) => void;
   onReorderTasks?: (activeId: string, overId: string) => void;
 }
-
-interface HoverAddLineProps {
-  isVisible: boolean;
-  onAdd: () => void;
-}
-
-const HoverAddLine: React.FC<HoverAddLineProps> = ({ isVisible, onAdd }) => {
-  return (
-    <div
-      className={`relative h-6 flex items-center justify-center transition-all duration-200 ${
-        isVisible ? 'opacity-100' : 'opacity-0 h-2'
-      }`}
-    >
-      {isVisible && (
-        <>
-          <div className="absolute left-0 right-0 h-0.5 bg-indigo-300" />
-          <button
-            onClick={onAdd}
-            className="relative z-10 flex items-center justify-center w-6 h-6 bg-indigo-500 text-white rounded-full shadow-md hover:bg-indigo-600 hover:scale-110 transition-all"
-          >
-            <Plus size={14} />
-          </button>
-        </>
-      )}
-    </div>
-  );
-};
-
-interface HoverZoneProps {
-  taskId: string;
-  onAddTask: (afterTaskId: string) => void;
-}
-
-const HoverZone: React.FC<HoverZoneProps> = ({ taskId, onAddTask }) => {
-  const [isHovering, setIsHovering] = useState(false);
-
-  return (
-    <div
-      className="relative"
-      onMouseEnter={() => setIsHovering(true)}
-      onMouseLeave={() => setIsHovering(false)}
-    >
-      <HoverAddLine isVisible={isHovering} onAdd={() => onAddTask(taskId)} />
-    </div>
-  );
-};
 
 export const TaskCardList: React.FC<TaskCardListProps> = ({
   tasks,
   highlightedIds,
   onTaskChange,
-  onAddTask,
   onDeleteTask,
   onReorderTasks,
 }) => {
@@ -103,64 +54,55 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
     return (
       <div className="flex flex-col items-center justify-center h-full text-gray-500 p-8">
         <div className="text-center">
-          <p className="mb-4">No tasks in the plan yet.</p>
-          <button
-            onClick={() => onAddTask('')}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-          >
-            <Plus size={16} />
-            Add First Task
-          </button>
+          <p>No tasks in the plan yet.</p>
+          <p className="text-sm mt-2">Use the assistant to generate tasks from your prompt.</p>
         </div>
       </div>
     );
   }
 
+  // Only show timeline when there are multiple tasks
+  const showTimeline = tasks.length > 1;
+
   return (
     <div className="flex h-full">
-      {/* Sticky Timeline Sidebar with Drag & Drop */}
-      <TaskTimeline
-        taskCount={tasks.length}
-        activeIndex={activeTaskIndex}
-        onStepClick={handleTimelineClick}
-        taskTitles={tasks.map(t => t.title)}
-        taskIds={tasks.map(t => t.id)}
-        onReorderTasks={onReorderTasks}
-      />
+      {/* Sticky Timeline Sidebar with Drag & Drop - only show when multiple tasks */}
+      {showTimeline && (
+        <TaskTimeline
+          taskCount={tasks.length}
+          activeIndex={activeTaskIndex}
+          onStepClick={handleTimelineClick}
+          taskTitles={tasks.map(t => t.title)}
+          taskIds={tasks.map(t => t.id)}
+          onReorderTasks={onReorderTasks}
+        />
+      )}
 
       {/* Main Task List */}
       <div
-        className="flex-1 p-4 overflow-y-auto"
+        className={`flex-1 p-4 overflow-y-auto ${!showTimeline ? 'px-6' : ''}`}
         data-task-list
         onScroll={handleScroll}
       >
-        <div className="space-y-2">
-          {/* Hover zone before first task */}
-          <HoverZone taskId="" onAddTask={() => onAddTask('')} />
-
+        <div>
           <AnimatePresence mode="popLayout">
             {tasks.map((task, index) => {
               const isHighlighted = highlightedIds.includes(task.id);
+              const isLastTask = index === tasks.length - 1;
               return (
                 <motion.div
                   key={task.id}
                   data-task-index={index}
                   layout
-                  initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                  initial={{ opacity: 0, y: 20 }}
                   animate={{
                     opacity: 1,
                     y: 0,
-                    scale: 1,
-                    boxShadow: isHighlighted
-                      ? '0 0 0 3px rgba(129, 140, 248, 0.4), 0 4px 20px rgba(129, 140, 248, 0.15)'
-                      : 'none',
                   }}
-                  exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                  exit={{ opacity: 0, y: -10 }}
                   transition={{
                     layout: { duration: 0.3 },
                     opacity: { duration: 0.2 },
-                    scale: { duration: 0.2 },
-                    boxShadow: { duration: 0.3 },
                   }}
                   className="relative"
                 >
@@ -168,9 +110,9 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                   {isHighlighted && (
                     <motion.div
                       initial={{ opacity: 0 }}
-                      animate={{ opacity: [0.5, 0.2, 0.5] }}
+                      animate={{ opacity: [0.3, 0.1, 0.3] }}
                       transition={{ duration: 1.5, repeat: Infinity }}
-                      className="absolute inset-0 bg-indigo-100 rounded-xl -z-10"
+                      className="absolute inset-0 bg-indigo-50 rounded-lg -z-10"
                     />
                   )}
                   <TaskCard
@@ -184,10 +126,11 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                       console.log(`[TaskCardList] Deleting task: id="${taskIdToDelete}", title="${task.title}"`);
                       onDeleteTask(taskIdToDelete);
                     }}
-                    onAddBelow={() => onAddTask(task.id)}
                   />
-                  {/* Hover zone after each task */}
-                  <HoverZone taskId={task.id} onAddTask={onAddTask} />
+                  {/* Horizontal divider between tasks */}
+                  {!isLastTask && (
+                    <div className="my-8 border-b border-gray-200" />
+                  )}
                 </motion.div>
               );
             })}
