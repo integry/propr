@@ -74,6 +74,13 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
              currentPath.startsWith('/studio');
     }
 
+    // Repositories should be active for /repositories routes and /summaries routes (repo content browsing)
+    if (path === '/repositories') {
+      return currentPath === '/repositories' ||
+             currentPath.startsWith('/repositories/') ||
+             currentPath.startsWith('/summaries');
+    }
+
     // All other menu items use prefix matching
     return currentPath === path || currentPath.startsWith(path + '/');
   };
