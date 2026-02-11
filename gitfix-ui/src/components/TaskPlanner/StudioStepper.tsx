@@ -52,7 +52,7 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                     transition-all duration-200 ease-in-out
                     ${
                       state === 'completed'
-                        ? 'bg-primary-600 text-white'
+                        ? 'bg-green-100 text-green-600 border-2 border-green-300'
                         : state === 'active'
                         ? 'bg-primary-600 text-white'
                         : 'bg-gray-100 text-gray-500'
@@ -60,7 +60,7 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                   `}
                 >
                   {state === 'completed' ? (
-                    <Check className="h-4 w-4" />
+                    <Check className="h-4 w-4 stroke-[2.5]" />
                   ) : (
                     step.number
                   )}
@@ -72,7 +72,7 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                     ml-2 text-sm whitespace-nowrap transition-all duration-200 ease-in-out
                     ${
                       state === 'completed'
-                        ? 'font-medium text-primary-600'
+                        ? 'font-medium text-green-600'
                         : state === 'active'
                         ? 'font-bold text-primary-600'
                         : 'font-medium text-gray-500'
