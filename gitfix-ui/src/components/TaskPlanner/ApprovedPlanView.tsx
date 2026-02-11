@@ -177,10 +177,10 @@ const IssueCard: React.FC<IssueCardProps> = ({ task, index }) => {
 
               {/* Notes */}
               {task.notes && (
-                <div className="mt-3 bg-yellow-50 rounded-lg p-3">
+                <div className="mt-3 bg-white rounded-lg p-3 border border-dashed border-gray-300">
                   <div className="flex items-center gap-2 mb-2">
-                    <StickyNote size={12} className="text-yellow-600" />
-                    <span className="text-xs font-semibold text-yellow-600 uppercase tracking-wider">Notes</span>
+                    <StickyNote size={12} className="text-slate-500" />
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Notes</span>
                   </div>
                   <div className="text-sm text-gray-600">
                     <MarkdownRenderer text={task.notes} className="prose prose-sm max-w-none" />
