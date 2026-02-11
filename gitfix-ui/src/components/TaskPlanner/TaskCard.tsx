@@ -166,76 +166,72 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
           </div>
         </div>
 
-        {/* SECTION 2: IMPLEMENTATION (Terminal Style) */}
-        <div className="bg-gray-900 rounded-lg mt-4 p-4 group/impl border-l-4 border-teal-500">
-          <div className="flex items-start gap-3">
-            <div
-              className="mt-1 p-1.5 bg-gray-700 text-gray-300 rounded-md cursor-pointer hover:bg-gray-600 transition-colors"
-              onClick={toggleImplementationCollapse}
-            >
-              <MessageSquare size={16} />
+        {/* SECTION 2: IMPLEMENTATION (Light Document Style) */}
+        <div className="bg-gray-50 rounded-lg mt-4 group/impl border border-gray-200">
+          {/* Header */}
+          <div
+            className="flex items-center justify-between px-4 py-3 border-b border-gray-200 cursor-pointer select-none"
+            onClick={toggleImplementationCollapse}
+          >
+            <div className="flex items-center gap-3">
+              <div className="p-1.5 bg-white text-gray-500 rounded-md border border-gray-200">
+                <MessageSquare size={14} />
+              </div>
+              <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Suggested Implementation</span>
+              <motion.div
+                animate={{ rotate: isImplementationCollapsed ? 0 : 180 }}
+                transition={{ duration: 0.2 }}
+              >
+                <ChevronDown size={14} className="text-gray-400" />
+              </motion.div>
             </div>
-            <div className="flex-1">
-              <div
-                className="flex items-center justify-between mb-2 cursor-pointer select-none"
+            {task.implementation && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onChange({ ...task, implementation: '' });
+                }}
+                className="opacity-0 group-hover/impl:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-500 hover:bg-gray-100 rounded transition-colors"
+                title="Clear implementation"
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
+          </div>
+
+          {/* Content */}
+          <AnimatePresence initial={false}>
+            {isImplementationCollapsed ? (
+              <motion.div
+                key="collapsed"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+                className="px-4 py-3 text-sm text-gray-500 italic truncate cursor-pointer font-mono"
                 onClick={toggleImplementationCollapse}
               >
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Suggested Implementation</span>
-                  <motion.div
-                    animate={{ rotate: isImplementationCollapsed ? 0 : 180 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <ChevronDown size={16} className="text-gray-500" />
-                  </motion.div>
-                </div>
-                {task.implementation && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onChange({ ...task, implementation: '' });
-                    }}
-                    className="opacity-0 group-hover/impl:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-400 hover:bg-gray-800 rounded transition-colors"
-                    title="Clear implementation"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                {getImplementationPreview()}
+              </motion.div>
+            ) : (
+              <motion.div
+                key="expanded"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+                className="p-4"
+              >
+                {renderEditableContent(
+                  'implementation',
+                  task.implementation,
+                  'Implementation details...',
+                  'w-full font-mono text-sm text-gray-700 bg-transparent transition-colors placeholder-gray-400',
+                  'w-full font-mono text-sm text-gray-700 [&_code]:bg-gray-100 [&_code]:text-gray-700'
                 )}
-              </div>
-
-              <AnimatePresence initial={false}>
-                {isImplementationCollapsed ? (
-                  <motion.div
-                    key="collapsed"
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.2 }}
-                    className="text-sm text-gray-500 italic truncate cursor-pointer font-mono"
-                    onClick={toggleImplementationCollapse}
-                  >
-                    {getImplementationPreview()}
-                  </motion.div>
-                ) : (
-                  <motion.div
-                    key="expanded"
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    {renderEditableContent(
-                      'implementation',
-                      task.implementation,
-                      'Implementation details...',
-                      'w-full font-mono text-sm text-gray-200 bg-transparent transition-colors placeholder-gray-600',
-                      'w-full font-mono text-sm text-gray-200 [&_code]:bg-gray-700 [&_code]:text-gray-200'
-                    )}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* SECTION 3: NOTES (Draft Style - Scratchpad) */}
