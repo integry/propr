@@ -166,11 +166,11 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
           </div>
         </div>
 
-        {/* SECTION 2: IMPLEMENTATION (Comment Style) */}
-        <div className="bg-slate-50/50 rounded-lg mt-4 p-4 group/impl">
+        {/* SECTION 2: IMPLEMENTATION (Terminal Style) */}
+        <div className="bg-gray-900 rounded-lg mt-4 p-4 group/impl border-l-4 border-teal-500">
           <div className="flex items-start gap-3">
             <div
-              className="mt-1 p-1.5 bg-slate-200 text-slate-600 rounded-md cursor-pointer hover:bg-slate-300 transition-colors"
+              className="mt-1 p-1.5 bg-gray-700 text-gray-300 rounded-md cursor-pointer hover:bg-gray-600 transition-colors"
               onClick={toggleImplementationCollapse}
             >
               <MessageSquare size={16} />
@@ -181,12 +181,12 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 onClick={toggleImplementationCollapse}
               >
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Suggested Implementation</span>
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Suggested Implementation</span>
                   <motion.div
                     animate={{ rotate: isImplementationCollapsed ? 0 : 180 }}
                     transition={{ duration: 0.2 }}
                   >
-                    <ChevronDown size={16} className="text-slate-400" />
+                    <ChevronDown size={16} className="text-gray-500" />
                   </motion.div>
                 </div>
                 {task.implementation && (
@@ -195,7 +195,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                       e.stopPropagation();
                       onChange({ ...task, implementation: '' });
                     }}
-                    className="opacity-0 group-hover/impl:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                    className="opacity-0 group-hover/impl:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-400 hover:bg-gray-800 rounded transition-colors"
                     title="Clear implementation"
                   >
                     <Trash2 size={14} />
@@ -211,7 +211,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                     animate={{ opacity: 1, height: 'auto' }}
                     exit={{ opacity: 0, height: 0 }}
                     transition={{ duration: 0.2 }}
-                    className="text-sm text-slate-400 italic truncate cursor-pointer"
+                    className="text-sm text-gray-500 italic truncate cursor-pointer font-mono"
                     onClick={toggleImplementationCollapse}
                   >
                     {getImplementationPreview()}
@@ -228,8 +228,8 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                       'implementation',
                       task.implementation,
                       'Implementation details...',
-                      'w-full font-mono text-sm text-gray-800 bg-transparent transition-colors',
-                      'w-full font-mono text-sm text-gray-800'
+                      'w-full font-mono text-sm text-gray-200 bg-transparent transition-colors placeholder-gray-600',
+                      'w-full font-mono text-sm text-gray-200 [&_code]:bg-gray-700 [&_code]:text-gray-200'
                     )}
                   </motion.div>
                 )}
@@ -238,19 +238,19 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
           </div>
         </div>
 
-        {/* SECTION 3: NOTES (Draft Style) */}
-        <div className="bg-yellow-50/50 rounded-lg mt-3 p-4">
+        {/* SECTION 3: NOTES (Draft Style - Scratchpad) */}
+        <div className="bg-white rounded-lg mt-3 p-4 border border-dashed border-gray-300">
           <div className="flex items-start gap-3">
-            <div className="mt-1 p-1.5 text-yellow-600">
+            <div className="mt-1 p-1.5 text-gray-400">
               <StickyNote size={16} />
             </div>
             <div className="flex-1">
-              <span className="text-xs font-semibold text-yellow-700 uppercase tracking-wider block mb-1">User Notes</span>
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-1">User Notes</span>
               {renderEditableContent(
                 'notes',
                 task.notes || '',
                 'Add your notes here...',
-                'w-full text-sm text-gray-800 bg-transparent placeholder-yellow-600/30',
+                'w-full text-sm text-gray-800 bg-transparent placeholder-gray-400',
                 'w-full text-sm text-gray-800'
               )}
             </div>

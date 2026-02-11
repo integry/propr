@@ -40,7 +40,8 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
             return !inline && match ? (
               <div className="my-2 relative group syntax-highlighter-no-bg">
                 <style>{`
-                  .syntax-highlighter-no-bg span {
+                  .syntax-highlighter-no-bg span,
+                  .syntax-highlighter-no-bg code {
                     background: transparent !important;
                     background-color: transparent !important;
                   }

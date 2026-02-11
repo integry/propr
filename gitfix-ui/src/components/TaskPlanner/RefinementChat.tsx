@@ -176,9 +176,9 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input area - pinned to bottom, no border, blends with sidebar */}
-      <div className="p-4 bg-slate-50">
-        <form onSubmit={handleSubmit}>
+      {/* Input area - pinned to bottom, flush against Global Footer */}
+      <div className="flex-shrink-0 bg-slate-50 border-t border-slate-200">
+        <form onSubmit={handleSubmit} className="p-3">
           <div className="flex gap-2 items-end bg-white rounded-lg shadow-sm border border-slate-200 p-1">
             <textarea
               ref={textareaRef}
