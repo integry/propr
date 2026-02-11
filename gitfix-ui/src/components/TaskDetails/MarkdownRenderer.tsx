@@ -38,7 +38,13 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
           code({ inline, className, children, ...props }: { inline?: boolean; className?: string; children?: React.ReactNode }) {
             const match = /language-(\w+)/.exec(className || '');
             return !inline && match ? (
-              <div className="my-2 relative group">
+              <div className="my-2 relative group syntax-highlighter-no-bg">
+                <style>{`
+                  .syntax-highlighter-no-bg span {
+                    background: transparent !important;
+                    background-color: transparent !important;
+                  }
+                `}</style>
                 <div className="absolute top-2 right-2 text-xs text-gray-400 bg-gray-800 px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity z-10">
                   {match[1].toUpperCase()}
                 </div>
