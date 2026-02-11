@@ -190,7 +190,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
           {footerStats.underReview > 0 && (
             <>
               <span className="text-gray-400 mx-1">•</span>
-              <span className="text-blue-600">{footerStats.underReview} Under Review</span>
+              <span className="text-blue-600">{footerStats.underReview} Review</span>
             </>
           )}
           {footerStats.processing > 0 && (

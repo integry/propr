@@ -228,21 +228,21 @@ export const STATUS_CONFIG: Record<PlanIssueStatus, {
     isActive: true
   },
   under_review: {
-    label: 'Under Review',
+    label: 'Review',
     color: 'text-purple-700',
     bgColor: 'bg-purple-100',
     borderColor: 'border-purple-200',
     isActive: false
   },
   in_refinement: {
-    label: 'In Refinement',
+    label: 'Refining',
     color: 'text-amber-700',
     bgColor: 'bg-amber-100',
     borderColor: 'border-amber-200',
     isActive: false
   },
   refinement_processing: {
-    label: 'Processing Feedback',
+    label: 'Feedback',
     color: 'text-orange-700',
     bgColor: 'bg-orange-100',
     borderColor: 'border-orange-200',
