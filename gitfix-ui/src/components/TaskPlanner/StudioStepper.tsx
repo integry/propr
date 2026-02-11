@@ -55,7 +55,7 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                         ? 'bg-green-100 text-green-600 border-2 border-green-300'
                         : state === 'active'
                         ? 'bg-primary-600 text-white'
-                        : 'bg-gray-100 text-gray-500'
+                        : 'bg-white text-gray-500 border-2 border-gray-300'
                     }
                   `}
                 >
@@ -89,11 +89,12 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                   className={`
                     mx-4 h-0.5 flex-1 min-w-[40px] transition-all duration-200 ease-in-out
                     ${
-                      getStepState(STEPS[index + 1].id, currentStage) !== 'pending'
+                      state === 'completed'
                         ? 'bg-primary-600'
-                        : 'bg-gray-300'
+                        : 'bg-gray-300 border-t-2 border-dashed border-gray-300'
                     }
                   `}
+                  style={state !== 'completed' ? { background: 'transparent' } : {}}
                 />
               )}
             </li>
