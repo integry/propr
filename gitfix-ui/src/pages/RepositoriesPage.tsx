@@ -257,7 +257,7 @@ const RepositoriesPage: React.FC = () => {
 
   if (loading && repos.length === 0) {
     return (
-      <div>
+      <div className="p-4 sm:p-8">
         <h2 className="text-gray-900 text-2xl font-semibold mb-4">Manage Monitored Repositories</h2>
         <div className="flex items-center justify-center py-12">
           <div className="flex items-center gap-3 text-gray-600">
@@ -275,7 +275,7 @@ const RepositoriesPage: React.FC = () => {
   // Show error state if loading failed
   if (error && repos.length === 0 && !loading) {
     return (
-      <div>
+      <div className="p-4 sm:p-8">
         <h2 className="text-gray-900 text-2xl font-semibold mb-4">Manage Monitored Repositories</h2>
         <div className="p-6 bg-red-50 border border-red-200 rounded-md">
           <div className="flex items-start gap-3">
@@ -302,7 +302,7 @@ const RepositoriesPage: React.FC = () => {
   }
 
   return (
-    <div>
+    <div className="p-4 sm:p-8">
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-gray-900 text-2xl font-semibold">Manage Monitored Repositories</h2>
         {/* Auto-save status indicator */}

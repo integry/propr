@@ -16,7 +16,7 @@ export const TaskGranularitySection: React.FC<TaskGranularitySectionProps> = ({
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-gray-700">
         <ListTodo className="w-5 h-5" />
-        <h3 className="font-semibold">Task Granularity</h3>
+        <h3 className="font-semibold">Break Plan Into Issues</h3>
       </div>
 
       <div className="bg-gray-50 rounded-xl p-5 border border-gray-100">

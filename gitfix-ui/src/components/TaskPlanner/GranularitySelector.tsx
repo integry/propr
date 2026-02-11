@@ -1,30 +1,29 @@
 import React from 'react';
-import { Square, Layers, LayoutGrid } from 'lucide-react';
 import { Granularity } from '../../api/gitfixApi';
 
 const GRANULARITY_OPTIONS: Array<{
   id: Granularity;
   label: string;
   description: string;
-  icon: typeof Square;
+  estimatedIssues: string;
 }> = [
   {
     id: 'single',
-    label: 'Single Task',
+    label: 'Single',
     description: 'Consolidate all changes into one large GitHub issue.',
-    icon: Square
+    estimatedIssues: '1 issue'
   },
   {
     id: 'balanced',
     label: 'Balanced',
     description: 'Group related changes logically. (Recommended)',
-    icon: Layers
+    estimatedIssues: '3-5 issues'
   },
   {
     id: 'granular',
     label: 'Granular',
     description: 'Create a separate issue for every modified file.',
-    icon: LayoutGrid
+    estimatedIssues: '5-10 issues'
   }
 ];
 
@@ -34,33 +33,36 @@ interface GranularitySelectorProps {
 }
 
 export const GranularitySelector: React.FC<GranularitySelectorProps> = ({ value, onChange }) => {
+  const selectedOption = GRANULARITY_OPTIONS.find(o => o.id === value);
   return (
-    <div className="space-y-3">
-      <label className="block text-sm font-medium text-gray-700">Task Granularity</label>
+    <div className="space-y-2">
+      {/* Row 1: Label on left, estimated issues on right */}
+      <div className="flex items-center justify-between">
+        <label className="block text-sm font-medium text-gray-700">Break plan into issues</label>
+        {selectedOption && (
+          <span className="text-sm text-indigo-600 font-medium">{selectedOption.estimatedIssues}</span>
+        )}
+      </div>
+      {/* Row 2: Three option buttons */}
       <div className="flex gap-2">
         {GRANULARITY_OPTIONS.map((option) => {
-          const Icon = option.icon;
           const isSelected = value === option.id;
           return (
             <button
               key={option.id}
               onClick={() => onChange(option.id)}
-              className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 transition-all ${
+              className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-md border transition-all ${
                 isSelected
                   ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
                   : 'border-gray-200 bg-white hover:border-gray-300 text-gray-600'
               }`}
               title={option.description}
             >
-              <Icon className="w-4 h-4" />
               <span className="font-medium text-sm">{option.label}</span>
             </button>
           );
         })}
       </div>
-      <p className="text-xs text-gray-500">
-        {GRANULARITY_OPTIONS.find(o => o.id === value)?.description}
-      </p>
     </div>
   );
 };

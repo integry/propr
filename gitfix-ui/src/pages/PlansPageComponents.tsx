@@ -96,7 +96,7 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
   return (
     <tr className="hover:bg-gray-50 group">
       <td className="px-6 py-4">
-        <Link to={`/tasks/plan/${draft.draft_id}`} className="block">
+        <Link to={`/studio/${draft.draft_id}`} className="block">
           <div className="text-sm font-medium text-indigo-600">{draft.repository}</div>
           <div className="text-sm text-gray-500 truncate max-w-md">
             {draft.name || draft.initial_prompt}
@@ -117,7 +117,7 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
       </td>
       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
         <Link
-          to={`/tasks/plan/${draft.draft_id}`}
+          to={`/studio/${draft.draft_id}`}
           className="text-indigo-600 hover:text-indigo-900 mr-4"
         >
           {draft.status === 'executed' || draft.status === 'merged' || effectiveStatus === 'merged' ? 'Manage' : 'Resume'}

@@ -1,9 +1,11 @@
-import React, { useState, useMemo } from 'react';
-import { ChevronDown, ChevronUp, FileCode, FileText, FileJson, File, FolderOpen } from 'lucide-react';
+import React, { useMemo, useState, useCallback } from 'react';
+import { FileCode, FileText, FileJson, File, FolderOpen, Check } from 'lucide-react';
 import { PreviewResult } from '../../api/gitfixApi';
 
 interface SmartFileSelectionProps {
   smartSelection: PreviewResult['smartSelection'];
+  totalTokens?: number;
+  costEstimate?: number;
 }
 
 // Get appropriate icon for file type
@@ -40,122 +42,173 @@ const getRelevancePercentage = (score?: number): number => {
   return Math.min(100, Math.max(0, score));
 };
 
-// Get color for relevance bar
-const getRelevanceColor = (percentage: number): string => {
-  if (percentage >= 70) return 'bg-green-500';
-  if (percentage >= 40) return 'bg-blue-500';
-  return 'bg-gray-400';
+// Get color for percentage text
+// UX Rule: "Success should be quiet. Exceptions should be loud."
+// - 100% (Perfect Match): Gray/quiet with checkmark - user assumes AI is right
+// - 90%+ (Partial Match): Blue - might want to check manually
+// - <40% (Low Confidence): Gray - lower priority
+const getPercentageTextColor = (percentage: number): string => {
+  if (percentage >= 100) return 'text-gray-500'; // Quiet success
+  if (percentage >= 40) return 'text-blue-600';  // Needs attention
+  return 'text-gray-400'; // Low confidence
 };
 
-export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSelection }) => {
-  // Auto-expand when files are selected
-  const [isExpanded, setIsExpanded] = useState(true);
 
-  const { autoCount, manualCount, maxScore } = useMemo(() => {
-    const auto = smartSelection.filter(f => f.source === 'auto').length;
-    const manual = smartSelection.filter(f => f.source === 'manual').length;
+// Extract filename from path
+const getFileName = (path: string): string => {
+  const parts = path.split('/');
+  return parts[parts.length - 1];
+};
+
+// Extract directory path from full path (excluding filename)
+const getDirectoryPath = (path: string): string => {
+  const parts = path.split('/');
+  if (parts.length <= 1) return '';
+  return parts.slice(0, -1).join('/');
+};
+
+// Component for displaying file with two lines: filename on top, path below
+interface TwoLineFileDisplayProps {
+  path: string;
+}
+
+const TwoLineFileDisplay: React.FC<TwoLineFileDisplayProps> = ({ path }) => {
+  const [copied, setCopied] = useState(false);
+  const fileName = getFileName(path);
+  const dirPath = getDirectoryPath(path);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(path);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy path:', err);
+    }
+  }, [path]);
+
+  return (
+    <div
+      className="flex-1 min-w-0 relative cursor-pointer group"
+      onClick={handleCopy}
+      title={path}
+    >
+      {/* Filename - bold */}
+      <div className="font-mono text-sm font-semibold text-gray-900 truncate group-hover:text-indigo-600 transition-colors">
+        {fileName}
+      </div>
+      {/* Directory path - dimmed, middle-truncated */}
+      {dirPath && (
+        <div
+          className="font-mono text-xs text-gray-400 overflow-hidden whitespace-nowrap"
+          style={{
+            direction: 'rtl',
+            textAlign: 'left',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          <bdi>{dirPath}</bdi>
+        </div>
+      )}
+      {/* Copy feedback */}
+      {copied && (
+        <div className="absolute left-0 bottom-full mb-1 z-50 px-2 py-1 bg-green-600 text-white text-xs rounded shadow-lg flex items-center gap-1">
+          <Check className="w-3 h-3" />
+          <span>Copied!</span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const SmartFileSelection: React.FC<SmartFileSelectionProps> = ({ smartSelection, totalTokens, costEstimate }) => {
+  const { maxScore } = useMemo(() => {
     const max = Math.max(...smartSelection.map(f => f.score || 0), 1);
-    return { autoCount: auto, manualCount: manual, maxScore: max };
+    return { maxScore: max };
   }, [smartSelection]);
 
   if (smartSelection.length === 0) return null;
 
-  const displayFiles = isExpanded ? smartSelection : smartSelection.slice(0, 0);
-
   return (
-    <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-      {/* Collapsible header */}
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full px-4 py-3 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition-colors"
-      >
-        <div className="flex items-center gap-3">
+    <div className="flex flex-col h-full">
+      {/* Status bar header */}
+      <div className="px-4 py-3 flex items-center justify-between border-b border-gray-300 bg-gray-100">
+        <div className="flex items-center gap-2">
           <FolderOpen className="w-5 h-5 text-indigo-500" />
           <span className="font-medium text-gray-900">
-            {smartSelection.length} files selected
+            Included Context ({smartSelection.length} files)
           </span>
-          {autoCount > 0 && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">
-              {autoCount} auto-selected
-            </span>
-          )}
-          {manualCount > 0 && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">
-              {manualCount} manual
-            </span>
-          )}
         </div>
-        <div className="flex items-center gap-2 text-sm text-indigo-600 font-medium">
-          {isExpanded ? (
-            <>
-              <span>Hide files</span>
-              <ChevronUp className="w-4 h-4" />
-            </>
+        <div className="flex items-center gap-2 text-sm">
+          {totalTokens ? (
+            <span className="text-gray-600">
+              <span className="font-medium text-gray-700">
+                {(totalTokens / 1000).toFixed(0)}k
+              </span>{' '}
+              tokens
+            </span>
           ) : (
-            <>
-              <span>Review files</span>
-              <ChevronDown className="w-4 h-4" />
-            </>
+            <span className="text-gray-400 italic">--</span>
+          )}
+          <span className="text-gray-300">•</span>
+          {costEstimate ? (
+            <span className="font-semibold text-gray-900">
+              ${costEstimate.toFixed(2)}
+            </span>
+          ) : (
+            <span className="text-gray-400 italic">--</span>
           )}
         </div>
-      </button>
+      </div>
 
-      {/* Expandable file list */}
-      {isExpanded && (
-        <div className="max-h-80 overflow-y-auto divide-y divide-gray-100 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-400" style={{
-          scrollbarWidth: 'thin',
-          scrollbarColor: '#d1d5db #f3f4f6'
-        }}>
-          {displayFiles.map((file, idx) => {
-            const relevance = getRelevancePercentage(file.score ? (file.score / maxScore) * 100 : 50);
-            const relevanceColor = getRelevanceColor(relevance);
+      {/* Scrollable file list */}
+      <div className="flex-1 overflow-y-auto divide-y divide-gray-100 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 hover:scrollbar-thumb-gray-400" style={{
+        scrollbarWidth: 'thin',
+        scrollbarColor: '#d1d5db #f3f4f6'
+      }}>
+        {smartSelection.map((file, idx) => {
+          const relevance = getRelevancePercentage(file.score ? (file.score / maxScore) * 100 : 50);
+          const percentageColor = getPercentageTextColor(relevance);
+          // Only show 'manual' pill, hide 'auto' pill
+          const showManualPill = file.source === 'manual';
 
-            return (
-              <div
-                key={idx}
-                className="px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex items-center gap-3 flex-1 min-w-0">
-                  {getFileIcon(file.path)}
-                  <div className="flex-1 min-w-0">
-                    <span className="font-mono text-sm text-gray-900 block truncate">
-                      {file.path}
-                    </span>
-                    {file.reason && (
-                      <span className="text-xs text-gray-500 block truncate" title={file.reason}>
-                        {file.reason}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3 flex-shrink-0 ml-4">
-                  <span className={`text-xs px-1.5 py-0.5 rounded ${
-                    file.source === 'manual'
-                      ? 'bg-gray-200 text-gray-600'
-                      : 'bg-green-100 text-green-700'
-                  }`}>
-                    {file.source === 'auto' ? 'auto' : 'manual'}
-                  </span>
-
-                  {/* Relevance bar */}
-                  <div className="flex items-center gap-2 w-28">
-                    <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${relevanceColor}`}
-                        style={{ width: `${relevance}%` }}
-                      />
-                    </div>
-                    <span className="text-xs text-gray-500 w-8 text-right">
-                      {Math.round(relevance)}%
-                    </span>
-                  </div>
-                </div>
+          return (
+            <div
+              key={idx}
+              className="px-4 py-2 flex items-start gap-3 hover:bg-gray-50 transition-colors"
+            >
+              {/* File icon - aligned to top */}
+              <div className="pt-0.5">
+                {getFileIcon(file.path)}
               </div>
-            );
-          })}
-        </div>
-      )}
+
+              {/* Two-line file display */}
+              <TwoLineFileDisplay path={file.path} />
+
+              {/* Right side: pills and percentage (no progress bar) */}
+              <div className="flex items-start gap-3 flex-shrink-0">
+                {/* Manual pill (only shown if source is manual) */}
+                {showManualPill && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-gray-200 text-gray-600 mt-0.5">
+                    manual
+                  </span>
+                )}
+
+                {/* Show checkmark for 100%, percentage for others */}
+                {Math.round(relevance) >= 100 ? (
+                  <span className="text-gray-400 w-10 text-right flex justify-end">
+                    <Check className="w-4 h-4" />
+                  </span>
+                ) : (
+                  <span className={`text-xs font-medium ${percentageColor} w-10 text-right`}>
+                    {Math.round(relevance)}%
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };

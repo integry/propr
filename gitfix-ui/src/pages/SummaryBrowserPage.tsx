@@ -42,7 +42,7 @@ const SummaryBrowserPage: React.FC = () => {
   // If owner and repo are provided, show the browser
   if (owner && repo) {
     return (
-      <div>
+      <div className="p-4 sm:p-8">
         <button
           onClick={() => navigate('/repositories')}
           className="flex items-center gap-2 text-gray-600 hover:text-gray-800 mb-4 transition-colors"
@@ -58,7 +58,7 @@ const SummaryBrowserPage: React.FC = () => {
 
   // Otherwise, show repository selection
   return (
-    <div>
+    <div className="p-4 sm:p-8">
       <div className="mb-6">
         <h2 className="text-2xl font-semibold text-gray-800 flex items-center gap-3">
           <Book className="w-7 h-7 text-primary-600" />

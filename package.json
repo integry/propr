@@ -49,7 +49,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "Automated GitHub Issue Processor with AI-powered solution generation",
+  "description": "Automated GitHub Issue Processor with AI-powered solution generation and unified Plan Studio workflow",
   "dependencies": {
     "@anthropic-ai/claude-code": "^2.0.1",
     "@anthropic-ai/sdk": "^0.71.2",

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, CheckCircle, MessageSquare, StickyNote, Github, ChevronDown, Settings2, GitMerge } from 'lucide-react';
+import { ExternalLink, CheckCircle, MessageSquare, StickyNote, Github, ChevronDown, GitMerge, FileQuestion, GripVertical, Clock, AlertCircle, Loader2, Play } from 'lucide-react';
 import { DraftWithPlan, PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 import PlanIssuesManager from './PlanIssuesManager';
@@ -14,36 +15,98 @@ interface ViewOnlyTaskCardProps {
   index: number;
 }
 
-const ViewOnlyTaskCard: React.FC<ViewOnlyTaskCardProps> = ({ task, index }) => {
-  const [isImplementationCollapsed, setIsImplementationCollapsed] = useState(true);
+// Original Prompt Section Component
+interface OriginalPromptSectionProps {
+  prompt: string;
+}
 
-  const toggleImplementationCollapse = () => {
-    setIsImplementationCollapsed(prev => !prev);
+const OriginalPromptSection: React.FC<OriginalPromptSectionProps> = ({ prompt }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div className="border-b border-gray-200 bg-slate-50">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-slate-100 transition-colors"
+      >
+        <div className="flex items-center gap-2 text-sm text-slate-600">
+          <FileQuestion size={14} />
+          <span className="font-medium">Original Prompt</span>
+        </div>
+        <motion.div
+          animate={{ rotate: isExpanded ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+        >
+          <ChevronDown size={16} className="text-slate-400" />
+        </motion.div>
+      </button>
+      <AnimatePresence initial={false}>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="px-4 pb-3 pt-1">
+              <div className="bg-white rounded-lg border border-slate-200 p-3">
+                <p className="text-sm text-slate-700 whitespace-pre-wrap">{prompt}</p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+// Issue Card Component for left panel
+interface IssueCardProps {
+  task: PlanTask;
+  index: number;
+}
+
+const IssueCard: React.FC<IssueCardProps> = ({ task, index }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  // Determine status based on task data
+  const getStatus = () => {
+    if (task.issue_url) {
+      return 'created';
+    }
+    return 'pending';
   };
 
-  const getImplementationPreview = () => {
-    if (!task.implementation) return 'No implementation details';
-    const firstLine = task.implementation.split('\n')[0];
-    return firstLine.length > 80 ? firstLine.substring(0, 80) + '...' : firstLine || 'Click to expand';
+  const status = getStatus();
+
+  const statusConfig = {
+    pending: { bg: 'bg-gray-100', text: 'text-gray-600', icon: Clock, label: 'Pending' },
+    in_progress: { bg: 'bg-blue-100', text: 'text-blue-600', icon: Loader2, label: 'In Progress' },
+    created: { bg: 'bg-green-100', text: 'text-green-600', icon: CheckCircle, label: 'Created' },
+    failed: { bg: 'bg-red-100', text: 'text-red-600', icon: AlertCircle, label: 'Failed' }
   };
+
+  const config = statusConfig[status as keyof typeof statusConfig] || statusConfig.pending;
+  const StatusIcon = config.icon;
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
+      initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, delay: index * 0.1 }}
-      className="group relative"
+      transition={{ duration: 0.2, delay: index * 0.05 }}
+      className="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow"
     >
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden ml-8 shadow-sm">
-        {/* SECTION 1: ISSUE HEADER (Title & Context) */}
-        <div className="p-6 pb-4">
-          <div className="flex items-start gap-3 mb-4">
-            <div className="mt-1 p-1.5 bg-green-50 text-green-600 rounded-md">
-              <CheckCircle size={18} />
+      {/* Card Header */}
+      <div className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 flex-1 min-w-0">
+            <div className={`mt-0.5 p-1.5 ${config.bg} ${config.text} rounded-md flex-shrink-0`}>
+              <StatusIcon size={16} className={status === 'in_progress' ? 'animate-spin' : ''} />
             </div>
-            <div className="flex-1">
-              <div className="flex items-center gap-3 mb-2">
-                <h3 className="text-lg font-bold text-gray-900">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-semibold text-gray-900 text-sm truncate">
                   {task.title}
                 </h3>
                 {task.issue_url && (
@@ -51,114 +114,191 @@ const ViewOnlyTaskCard: React.FC<ViewOnlyTaskCardProps> = ({ task, index }) => {
                     href={task.issue_url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors flex-shrink-0"
                   >
-                    <Github size={12} />
+                    <Github size={10} />
                     #{task.issue_number}
-                    <ExternalLink size={10} />
+                    <ExternalLink size={8} />
                   </a>
                 )}
               </div>
-              <div className="mt-2">
-                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Context</span>
-                {task.body ? (
-                  <div className="mt-1 text-gray-600 leading-relaxed">
+              <span className={`inline-flex items-center gap-1 text-xs ${config.text} mt-1`}>
+                {config.label}
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors flex-shrink-0"
+          >
+            <motion.div
+              animate={{ rotate: isExpanded ? 180 : 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <ChevronDown size={16} />
+            </motion.div>
+          </button>
+        </div>
+      </div>
+
+      {/* Expandable Content */}
+      <AnimatePresence initial={false}>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="px-4 pb-4 pt-0 border-t border-gray-100">
+              {/* Context */}
+              {task.body && (
+                <div className="mt-3">
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Context</span>
+                  <div className="mt-1 text-sm text-gray-600">
                     <MarkdownRenderer text={task.body} className="prose prose-sm max-w-none" />
                   </div>
-                ) : (
-                  <p className="mt-1 text-gray-400 italic text-sm">No context provided</p>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* SECTION 2: IMPLEMENTATION (Comment Style) */}
-        <div className="bg-slate-50 border-t border-gray-100 p-6 pt-4">
-          <div className="flex items-start gap-3">
-            <div
-              className="mt-1 p-1.5 bg-slate-200 text-slate-600 rounded-md cursor-pointer hover:bg-slate-300 transition-colors"
-              onClick={toggleImplementationCollapse}
-            >
-              <MessageSquare size={16} />
-            </div>
-            <div className="flex-1">
-              <div
-                className="flex items-center justify-between mb-2 cursor-pointer select-none"
-                onClick={toggleImplementationCollapse}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Suggested Implementation</span>
-                  <motion.div
-                    animate={{ rotate: isImplementationCollapsed ? 0 : 180 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <ChevronDown size={16} className="text-slate-400" />
-                  </motion.div>
                 </div>
-              </div>
+              )}
 
-              <AnimatePresence initial={false}>
-                {isImplementationCollapsed ? (
-                  <motion.div
-                    key="collapsed"
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.2 }}
-                    className="text-sm text-slate-400 italic truncate cursor-pointer"
-                    onClick={toggleImplementationCollapse}
-                  >
-                    {getImplementationPreview()}
-                  </motion.div>
-                ) : (
-                  <motion.div
-                    key="expanded"
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    {task.implementation ? (
-                      <div className="font-mono text-sm text-slate-700">
-                        <MarkdownRenderer text={task.implementation} className="prose prose-sm max-w-none" />
-                      </div>
-                    ) : (
-                      <p className="text-slate-400 italic text-sm">No implementation details</p>
-                    )}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          </div>
-        </div>
-
-        {/* SECTION 3: NOTES (Draft Style) */}
-        {task.notes && (
-          <div className="bg-yellow-50/50 border-t border-yellow-100/50 p-4">
-            <div className="flex items-start gap-3">
-              <div className="mt-1 p-1.5 text-yellow-600">
-                <StickyNote size={16} />
-              </div>
-              <div className="flex-1">
-                <span className="text-xs font-semibold text-yellow-600/70 uppercase tracking-wider block mb-1">User Notes</span>
-                <div className="text-sm text-gray-600">
-                  <MarkdownRenderer text={task.notes} className="prose prose-sm max-w-none" />
+              {/* Implementation */}
+              {task.implementation && (
+                <div className="mt-3 bg-slate-50 rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <MessageSquare size={12} className="text-slate-500" />
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Implementation</span>
+                  </div>
+                  <div className="text-sm text-slate-700">
+                    <MarkdownRenderer text={task.implementation} className="prose prose-sm max-w-none" />
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* Notes */}
+              {task.notes && (
+                <div className="mt-3 bg-yellow-50 rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <StickyNote size={12} className="text-yellow-600" />
+                    <span className="text-xs font-semibold text-yellow-600 uppercase tracking-wider">Notes</span>
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    <MarkdownRenderer text={task.notes} className="prose prose-sm max-w-none" />
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
+          </motion.div>
         )}
-      </div>
+      </AnimatePresence>
     </motion.div>
   );
 };
 
-type ViewMode = 'tasks' | 'issues';
+// Execution Status Panel Component
+interface ExecutionStatusPanelProps {
+  draft: DraftWithPlan;
+  tasks: PlanTask[];
+}
+
+const ExecutionStatusPanel: React.FC<ExecutionStatusPanelProps> = ({ draft, tasks }) => {
+  const createdCount = tasks.filter(t => t.issue_url).length;
+  const totalCount = tasks.length;
+
+  return (
+    <div className="h-full flex flex-col bg-gray-50">
+      {/* Panel Header */}
+      <div className="px-4 py-3 border-b border-gray-200 bg-white">
+        <h3 className="font-semibold text-gray-900 text-sm">Execution Status</h3>
+        <p className="text-xs text-gray-500 mt-0.5">Monitor your plan execution</p>
+      </div>
+
+      {/* Status Summary */}
+      <div className="p-4 border-b border-gray-200 bg-white">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm text-gray-600">Progress</span>
+          <span className="text-sm font-medium text-gray-900">{createdCount} / {totalCount}</span>
+        </div>
+        <div className="w-full bg-gray-200 rounded-full h-2">
+          <div
+            className="bg-green-500 h-2 rounded-full transition-all duration-300"
+            style={{ width: `${(createdCount / totalCount) * 100}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Status Messages / Log */}
+      <div className="flex-1 overflow-auto p-4">
+        <div className="space-y-3">
+          {/* Success Message */}
+          <div className="flex items-start gap-3 p-3 bg-green-50 rounded-lg border border-green-200">
+            <CheckCircle size={16} className="text-green-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-medium text-green-800">Issues Created Successfully</p>
+              <p className="text-xs text-green-600 mt-0.5">
+                {createdCount} GitHub {createdCount === 1 ? 'issue has' : 'issues have'} been created from your plan
+              </p>
+            </div>
+          </div>
+
+          {/* Repository Info */}
+          <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-gray-200">
+            <Github size={16} className="text-gray-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-medium text-gray-800">Repository</p>
+              <a
+                href={`https://github.com/${draft.repository}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-indigo-600 hover:text-indigo-700 flex items-center gap-1 mt-0.5"
+              >
+                {draft.repository}
+                <ExternalLink size={10} />
+              </a>
+            </div>
+          </div>
+
+          {/* Status Badge */}
+          <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-gray-200">
+            {draft.status === 'merged' ? (
+              <>
+                <GitMerge size={16} className="text-purple-600 mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-gray-800">Status: Merged</p>
+                  <p className="text-xs text-gray-500 mt-0.5">All issues have been merged</p>
+                </div>
+              </>
+            ) : (
+              <>
+                <Play size={16} className="text-blue-600 mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-gray-800">Status: Ready for Implementation</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Issues are ready for agents to implement</p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Action Footer */}
+      <div className="p-4 border-t border-gray-200 bg-white">
+        <a
+          href={`https://github.com/${draft.repository}/issues`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm font-medium"
+        >
+          <Github size={16} />
+          View All Issues on GitHub
+          <ExternalLink size={14} />
+        </a>
+      </div>
+    </div>
+  );
+};
 
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => {
-  const [viewMode, setViewMode] = useState<ViewMode>('issues');
-
   // Defensively ensure plan_json is an array
   const tasks = (() => {
     let planJson = draft.plan_json;
@@ -170,7 +310,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
 
   // Extract repository URL from draft
   const getRepositoryUrl = () => {
-    // Format: "owner/repo"
     const repo = draft.repository;
     if (!repo) return null;
     return `https://github.com/${repo}/issues`;
@@ -182,10 +321,10 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="h-full bg-white rounded-lg shadow overflow-hidden flex flex-col"
+      className="h-full bg-white overflow-hidden flex flex-col"
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
+      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white flex-shrink-0">
         <div className="flex items-center gap-4">
           <div className="text-sm text-gray-500 truncate max-w-md">{draft.task_title || draft.title || 'Untitled Task'}</div>
           {draft.status === 'merged' ? (
@@ -202,42 +341,12 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
         </div>
 
         <div className="flex items-center gap-2">
-          {/* View Mode Toggle */}
-          <div className="flex items-center bg-gray-100 rounded-lg p-1">
-            <button
-              onClick={() => setViewMode('issues')}
-              className={`
-                flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors
-                ${viewMode === 'issues'
-                  ? 'bg-white text-gray-900 shadow-sm'
-                  : 'text-gray-600 hover:text-gray-800'
-                }
-              `}
-            >
-              <Settings2 size={14} />
-              Manage Issues
-            </button>
-            <button
-              onClick={() => setViewMode('tasks')}
-              className={`
-                flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors
-                ${viewMode === 'tasks'
-                  ? 'bg-white text-gray-900 shadow-sm'
-                  : 'text-gray-600 hover:text-gray-800'
-                }
-              `}
-            >
-              <CheckCircle size={14} />
-              View Plan
-            </button>
-          </div>
-
           {repoUrl && (
             <a
               href={repoUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+              className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm"
             >
               <Github size={16} />
               View on GitHub
@@ -247,91 +356,53 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
         </div>
       </div>
 
-      {/* Success Banner */}
-      <motion.div
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
-        className="bg-green-50 border-b border-green-200 px-4 py-3"
-      >
-        <div className="flex items-center gap-3">
-          <div className="p-1.5 bg-green-100 rounded-full">
-            <CheckCircle size={18} className="text-green-600" />
-          </div>
-          <div>
-            <p className="text-green-800 font-medium">
-              {tasks.length} GitHub {tasks.length === 1 ? 'issue' : 'issues'} created successfully
-            </p>
-            <p className="text-green-600 text-sm">
-              Your implementation plan has been converted to GitHub issues
-            </p>
-          </div>
-        </div>
-      </motion.div>
+      {/* Original Prompt Section */}
+      {draft.initial_prompt && (
+        <OriginalPromptSection prompt={draft.initial_prompt} />
+      )}
 
-      {/* Content Area */}
-      <div className="flex-1 overflow-y-auto p-4">
-        <AnimatePresence mode="wait">
-          {viewMode === 'issues' ? (
-            <motion.div
-              key="issues"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-              transition={{ duration: 0.2 }}
-            >
+      {/* Split View Content */}
+      <div className="flex-1 overflow-hidden">
+        <PanelGroup direction="horizontal">
+          {/* Left Panel - Issue Cards */}
+          <Panel defaultSize={60} minSize={40}>
+            <div className="h-full flex flex-col">
+              {/* Issue List Header */}
+              <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex-shrink-0">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-gray-700 text-sm">
+                    Plan Issues ({tasks.length})
+                  </h3>
+                  <span className="text-xs text-gray-500">
+                    {tasks.filter(t => t.issue_url).length} created
+                  </span>
+                </div>
+              </div>
+
+              {/* Issue Cards */}
+              <div className="flex-1 overflow-auto p-4 space-y-3">
+                {tasks.map((task, index) => (
+                  <IssueCard key={task.id} task={task} index={index} />
+                ))}
+              </div>
+            </div>
+          </Panel>
+
+          <PanelResizeHandle className="w-2 bg-gray-200 hover:bg-indigo-400 transition-colors flex items-center justify-center cursor-col-resize">
+            <GripVertical size={12} className="text-gray-400" />
+          </PanelResizeHandle>
+
+          {/* Right Panel - Execution Status / Management */}
+          <Panel defaultSize={40} minSize={25}>
+            <div className="h-full overflow-hidden">
               <PlanIssuesManager
                 draftId={draft.draft_id}
                 tasks={tasks}
                 repository={draft.repository}
-                onViewPlanClick={() => setViewMode('tasks')}
               />
-            </motion.div>
-          ) : (
-            <motion.div
-              key="tasks"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              transition={{ duration: 0.2 }}
-            >
-              <div className="flex">
-                {/* Timeline */}
-                <div className="w-16 flex-shrink-0 py-2">
-                  <div className="flex flex-col items-center">
-                    {tasks.map((_, index) => (
-                      <div key={index} className="flex flex-col items-center">
-                        <motion.div
-                          initial={{ scale: 0 }}
-                          animate={{ scale: 1 }}
-                          transition={{ delay: 0.3 + index * 0.1, type: "spring", stiffness: 500 }}
-                          className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center"
-                        >
-                          <CheckCircle size={16} className="text-green-600" />
-                        </motion.div>
-                        {index < tasks.length - 1 && (
-                          <motion.div
-                            initial={{ height: 0 }}
-                            animate={{ height: 40 }}
-                            transition={{ delay: 0.4 + index * 0.1 }}
-                            className="w-0.5 bg-green-200"
-                          />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Cards */}
-                <div className="flex-1 space-y-4">
-                  {tasks.map((task, index) => (
-                    <ViewOnlyTaskCard key={task.id} task={task} index={index} />
-                  ))}
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            </div>
+          </Panel>
+        </PanelGroup>
       </div>
     </motion.div>
   );

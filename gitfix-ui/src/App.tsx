@@ -4,7 +4,7 @@ import Layout from './components/Layout'
 import Dashboard from './components/Dashboard'
 import RepositoriesPage from './pages/RepositoriesPage'
 import TasksPage from './pages/TasksPage'
-import TaskPlannerPage from './pages/TaskPlannerPage'
+// TaskPlannerPage removed - all plan routes now use PlanStudioPage
 import PlanStudioPage from './pages/PlanStudioPage'
 import PlansPage from './pages/PlansPage'
 import AiAgentsPage from './pages/AiAgentsPage'
@@ -92,14 +92,6 @@ const App: React.FC = () => {
             element={
               <Layout>
                 <TasksPage />
-              </Layout>
-            }
-          />
-          <Route
-            path="/tasks/plan/:draftId"
-            element={
-              <Layout>
-                <TaskPlannerPage />
               </Layout>
             }
           />

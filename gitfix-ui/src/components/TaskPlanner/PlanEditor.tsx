@@ -1,19 +1,66 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Undo2, Redo2, Check, Loader2, AlertCircle, FileText, GripVertical, Info, X, ArrowLeft } from 'lucide-react';
+import { Undo2, Redo2, Check, Loader2, AlertCircle, FileText, GripVertical, Info, X, ArrowLeft, ChevronDown, FileQuestion } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { debounce } from 'lodash';
 import { usePlanRefinement, SaveStatus } from '../../hooks/usePlanRefinement';
 import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, GranularityEnforcementMetadata, resetDraftToSetup } from '../../api/gitfixApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
+import BackToSetupDialog from './BackToSetupDialog';
 import { useToast } from '../ui/useToast';
 
 interface PlanEditorProps {
   draft: DraftWithPlan;
+  originalPrompt?: string;
   onFinalize?: () => void;
   onBackToSetup?: () => void;
 }
+
+interface OriginalPromptSectionProps {
+  prompt: string;
+}
+
+const OriginalPromptSection: React.FC<OriginalPromptSectionProps> = ({ prompt }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div className="border-b border-gray-200 bg-slate-50">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-slate-100 transition-colors"
+      >
+        <div className="flex items-center gap-2 text-sm text-slate-600">
+          <FileQuestion size={14} />
+          <span className="font-medium">Original Prompt</span>
+        </div>
+        <motion.div
+          animate={{ rotate: isExpanded ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+        >
+          <ChevronDown size={16} className="text-slate-400" />
+        </motion.div>
+      </button>
+      <AnimatePresence initial={false}>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="px-4 pb-3 pt-1">
+              <div className="bg-white rounded-lg border border-slate-200 p-3">
+                <p className="text-sm text-slate-700 whitespace-pre-wrap">{prompt}</p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
 
 const SaveIndicator: React.FC<{ status: SaveStatus }> = ({ status }) => {
   if (status === 'saving') {
@@ -79,114 +126,7 @@ const GranularityEnforcementNotice: React.FC<GranularityEnforcementNoticeProps> 
   );
 };
 
-interface BackToSetupDialogProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onConfirm: () => void;
-  isLoading: boolean;
-}
-
-const BackToSetupDialog: React.FC<BackToSetupDialogProps> = ({ isOpen, onClose, onConfirm, isLoading }) => {
-  const dialogRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isLoading) {
-        onClose();
-      }
-    };
-
-    document.body.style.overflow = 'hidden';
-    document.addEventListener('keydown', handleKeyDown);
-    dialogRef.current?.focus();
-
-    return () => {
-      document.body.style.overflow = '';
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isOpen, onClose, isLoading]);
-
-  return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.15 }}
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget && !isLoading) {
-              onClose();
-            }
-          }}
-        >
-          <motion.div
-            ref={dialogRef}
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            transition={{ duration: 0.15 }}
-            className="bg-white rounded-lg max-w-md w-full border border-gray-300 shadow-lg"
-            tabIndex={-1}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="back-to-setup-dialog-title"
-          >
-            <div className="p-6">
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
-                  <AlertCircle className="w-5 h-5 text-amber-600" />
-                </div>
-                <div className="flex-1">
-                  <h3 id="back-to-setup-dialog-title" className="text-lg font-semibold text-gray-900 mb-2">
-                    Return to Setup?
-                  </h3>
-                  <p className="text-sm text-gray-600 mb-4">
-                    Going back to setup will discard all refinements you've made to the generated plan.
-                    Your configuration settings (prompt, branch, granularity, attachments) will be preserved.
-                  </p>
-                  <p className="text-sm text-gray-600">
-                    Are you sure you want to continue?
-                  </p>
-                </div>
-              </div>
-            </div>
-            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50 rounded-b-lg">
-              <button
-                type="button"
-                onClick={onClose}
-                disabled={isLoading}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={onConfirm}
-                disabled={isLoading}
-                className="px-4 py-2 text-sm font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 size={14} className="animate-spin" />
-                    Resetting...
-                  </>
-                ) : (
-                  'Go Back to Setup'
-                )}
-              </button>
-            </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  );
-};
-
-export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize, onBackToSetup }) => {
+export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, onFinalize, onBackToSetup }) => {
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const [enforcementNoticeDismissed, setEnforcementNoticeDismissed] = useState(false);
@@ -288,8 +228,8 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize, onBac
   };
 
   return (
-    <div className="h-full flex flex-col bg-white rounded-lg shadow overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
+    <div className="h-full flex flex-col bg-white overflow-hidden">
+      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white">
         <div className="flex items-center gap-4">
           <div className="text-sm text-gray-500 truncate max-w-md">{(draft as DraftWithPlan & { name?: string }).name || draft.initial_prompt || 'Untitled Task'}</div>
           <StatusBadge status={draft.status} />
@@ -328,7 +268,10 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize, onBac
           <button
             onClick={handleFinalize}
             disabled={isFinalizing || plan.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            className="flex items-center gap-2 px-4 py-2 text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            style={{ backgroundColor: isFinalizing || plan.length === 0 ? undefined : 'rgb(29, 138, 138)' }}
+            onMouseEnter={(e) => { if (!isFinalizing && plan.length > 0) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
+            onMouseLeave={(e) => { if (!isFinalizing && plan.length > 0) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
           >
             {isFinalizing ? (
               <>
@@ -359,6 +302,10 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize, onBac
         />
       )}
 
+      {originalPrompt && (
+        <OriginalPromptSection prompt={originalPrompt} />
+      )}
+
       <div className="flex-1 overflow-hidden">
         <PanelGroup direction="horizontal">
           <Panel defaultSize={60} minSize={30}>
@@ -372,7 +319,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, onFinalize, onBac
             />
           </Panel>
           
-          <PanelResizeHandle className="w-2 bg-gray-200 hover:bg-indigo-400 transition-colors flex items-center justify-center cursor-col-resize">
+          <PanelResizeHandle className="w-2 bg-gray-200 hover:bg-teal-500 transition-colors flex items-center justify-center cursor-col-resize">
             <GripVertical size={12} className="text-gray-400" />
           </PanelResizeHandle>
           

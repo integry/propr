@@ -13,6 +13,7 @@ interface HeroPromptAreaProps {
   onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   onUpload: (file: File) => Promise<void>;
   onRemoveFile: (attachmentId: string) => Promise<void>;
+  minHeight?: string;
 }
 
 export const HeroPromptArea: React.FC<HeroPromptAreaProps> = ({
@@ -25,14 +26,16 @@ export const HeroPromptArea: React.FC<HeroPromptAreaProps> = ({
   onInput,
   onPaste,
   onUpload,
-  onRemoveFile
+  onRemoveFile,
+  minHeight = '160px'
 }) => {
   return (
     <div className="space-y-3">
       <label className="block text-lg font-semibold text-gray-900 mb-3">
         What would you like to build?
       </label>
-      <div className="rounded-xl border-2 border-gray-200 focus-within:border-indigo-500 transition-colors overflow-hidden">
+      {/* Borderless textarea - white canvas stands on its own with gray Header/Footer framing */}
+      <div className="overflow-hidden">
         <textarea
           ref={textareaRef}
           value={prompt}
@@ -41,7 +44,7 @@ export const HeroPromptArea: React.FC<HeroPromptAreaProps> = ({
           onPaste={onPaste}
           placeholder="Describe the feature, bug fix, or improvement you want to implement..."
           className="w-full px-5 py-4 text-base border-0 focus:ring-0 resize-none overflow-hidden"
-          style={{ minHeight: '160px' }}
+          style={{ minHeight }}
         />
         {/* Integrated attachment area */}
         <div className="px-4 pb-3 border-t border-gray-100 bg-gray-50">

@@ -1,0 +1,226 @@
+import React from 'react';
+import { PlannerAttachment, GenerationTrace, getAttachmentUrl } from '../../api/gitfixApi';
+import { Paperclip, Loader2 } from 'lucide-react';
+import { AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
+import { GenerationProgress } from './GenerationProgress';
+import { NewModeHeader, EditModeHeader } from './SetupWizardHeaders';
+
+interface Repo { name: string; enabled: boolean; baseBranch?: string; }
+
+// Extracted: Attachments section
+const AttachmentsSection: React.FC<{
+  isNewMode: boolean;
+  localFiles: File[];
+  files: PlannerAttachment[];
+  draftId?: string;
+  onRemoveLocalFile?: (fileIndex: number) => void;
+  onRemoveFile: (attachmentId: string) => void;
+  isUploading: boolean;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  onFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+}> = ({ isNewMode, localFiles, files, draftId, onRemoveLocalFile, onRemoveFile, isUploading, fileInputRef, onFileInputChange }) => {
+  const hasLocalFiles = isNewMode && localFiles.length > 0;
+  const hasRemoteFiles = !isNewMode && files.length > 0;
+  const hasAnyFiles = hasLocalFiles || hasRemoteFiles;
+
+  return (
+    <div className="flex items-center gap-3 flex-wrap">
+      {/* Attach button - always first */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={onFileInputChange}
+        className="hidden"
+        accept="image/*,.log,.txt,.json"
+        multiple
+      />
+      <button
+        onClick={() => fileInputRef.current?.click()}
+        disabled={isUploading}
+        className="flex items-center gap-1.5 px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+      >
+        {isUploading ? (
+          <>
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span>Uploading...</span>
+          </>
+        ) : (
+          <>
+            <Paperclip className="w-4 h-4" />
+            <span>Attach files</span>
+          </>
+        )}
+      </button>
+
+      {/* Attached files shown inline after the button */}
+      {hasAnyFiles && (
+        <div className="flex flex-wrap gap-2">
+          {hasLocalFiles && localFiles.map((file, index) => (
+            <AttachmentChip
+              key={`file-${index}`}
+              file={file}
+              onRemove={() => onRemoveLocalFile?.(index)}
+            />
+          ))}
+          {hasRemoteFiles && files.map((attachment) => (
+            <RemoteAttachmentChip
+              key={attachment.id}
+              name={attachment.originalName}
+              mimeType={attachment.mimeType}
+              tokenEstimate={attachment.tokenEstimate}
+              previewUrl={draftId && attachment.mimeType?.startsWith('image/') ? getAttachmentUrl(draftId, attachment.id) : undefined}
+              onRemove={() => onRemoveFile(attachment.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+interface SetupWizardLeftPaneProps {
+  isNewMode: boolean;
+  repository: string;
+  repos?: Repo[];
+  selectedRepo?: string;
+  onRepoChange?: (repo: string) => void;
+  reposLoading?: boolean;
+  baseBranch: string;
+  branches: string[];
+  isRepoLoading: boolean;
+  branchError: string | null;
+  repoError: string | null;
+  onBranchChange: (branch: string) => void;
+  isChangingRepo?: boolean;
+  onChangeRepoClick?: () => void;
+  prompt: string;
+  onPromptChange: (prompt: string) => void;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  autoResize: () => void;
+  onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
+  files: PlannerAttachment[];
+  localFiles?: File[];
+  draftId?: string;
+  onRemoveFile: (attachmentId: string) => void;
+  onRemoveLocalFile?: (fileIndex: number) => void;
+  isUploading: boolean;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  onFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  error: string | null;
+  generationError: string | null;
+  isGenerating: boolean;
+  generationTrace?: GenerationTrace;
+  onAbort: () => Promise<void>;
+}
+
+export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
+  isNewMode,
+  repository,
+  repos = [],
+  selectedRepo = '',
+  onRepoChange,
+  reposLoading = false,
+  baseBranch,
+  branches,
+  isRepoLoading,
+  branchError,
+  repoError,
+  onBranchChange,
+  isChangingRepo = false,
+  onChangeRepoClick,
+  prompt,
+  onPromptChange,
+  textareaRef,
+  autoResize,
+  onPaste,
+  files,
+  localFiles = [],
+  draftId,
+  onRemoveFile,
+  onRemoveLocalFile,
+  isUploading,
+  fileInputRef,
+  onFileInputChange,
+  error,
+  generationError,
+  isGenerating,
+  generationTrace,
+  onAbort,
+}) => (
+  <div className="w-[65%] h-full flex flex-col">
+    {/* Header with repo/branch - Toolbar border for alignment with right pane */}
+    <div className="px-6 py-3 border-b border-gray-300">
+      <div className="flex items-center gap-2 text-sm flex-nowrap overflow-hidden">
+        {isNewMode ? (
+          <NewModeHeader
+            reposLoading={reposLoading}
+            selectedRepo={selectedRepo}
+            repos={repos}
+            onRepoChange={onRepoChange}
+            branches={branches}
+            baseBranch={baseBranch}
+            isLoadingBranches={isRepoLoading}
+            onBranchChange={onBranchChange}
+          />
+        ) : (
+          <EditModeHeader
+            repository={repository}
+            isRepoLoading={isRepoLoading}
+            baseBranch={baseBranch}
+            branches={branches}
+            branchError={branchError}
+            repoError={repoError}
+            onBranchChange={onBranchChange}
+            isChangingRepo={isChangingRepo}
+            onChangeRepoClick={onChangeRepoClick || (() => {})}
+            repos={repos}
+            onRepoChange={onRepoChange || (() => {})}
+            reposLoading={reposLoading}
+          />
+        )}
+      </div>
+    </div>
+
+    {/* Main content area */}
+    <div className="flex-1 flex flex-col p-6 min-h-0">
+      {/* Borderless textarea - white canvas stands on its own with gray Header/Footer framing */}
+      <div className="flex-1 flex flex-col min-h-0 relative">
+        <textarea
+          ref={textareaRef}
+          value={prompt}
+          onChange={(e) => onPromptChange(e.target.value)}
+          onInput={autoResize}
+          onPaste={onPaste}
+          placeholder="Describe the feature, bug fix, or improvement you want to implement..."
+          className="flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none"
+          style={{ minHeight: '160px', maxWidth: '80ch' }}
+        />
+        <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-white border-t border-gray-100">
+          <AttachmentsSection
+            isNewMode={isNewMode}
+            localFiles={localFiles}
+            files={files}
+            draftId={draftId}
+            onRemoveLocalFile={onRemoveLocalFile}
+            onRemoveFile={onRemoveFile}
+            isUploading={isUploading}
+            fileInputRef={fileInputRef}
+            onFileInputChange={onFileInputChange}
+          />
+        </div>
+      </div>
+    </div>
+
+    {/* Error display - above footer */}
+    {(error || generationError) && (
+      <div className="px-6 py-3 bg-red-50 border-b border-red-200 text-red-700 text-sm">
+        {error || generationError}
+      </div>
+    )}
+    {isGenerating && (
+      <div className="px-6 py-3 border-b border-gray-100">
+        <GenerationProgress trace={generationTrace} onAbort={onAbort} />
+      </div>
+    )}
+  </div>
+);

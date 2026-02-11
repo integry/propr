@@ -394,16 +394,38 @@ export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
 
       const authToken = await getRepoAuthToken(accessToken);
       const { Octokit } = await import('@octokit/core');
-      const octokit = new Octokit({ auth: authToken });
+      const { paginateRest } = await import('@octokit/plugin-paginate-rest');
+      const PaginatedOctokit = Octokit.plugin(paginateRest);
+      const octokit = new PaginatedOctokit({ auth: authToken });
 
-      const [repoInfo, branchesResponse] = await Promise.all([
-        octokit.request('GET /repos/{owner}/{repo}', { owner, repo: repoName }),
-        octokit.request('GET /repos/{owner}/{repo}/branches', { owner, repo: repoName, per_page: 100 })
-      ]);
+      // Get repository info for default branch
+      const repoInfo = await octokit.request('GET /repos/{owner}/{repo}', { owner, repo: repoName });
+      const defaultBranch = repoInfo.data.default_branch;
+
+      // Fetch all branches using pagination
+      const branches: string[] = [];
+      for await (const response of octokit.paginate.iterator('GET /repos/{owner}/{repo}/branches', {
+        owner,
+        repo: repoName,
+        per_page: 100
+      })) {
+        for (const branch of response.data) {
+          if (branch.name) {
+            branches.push(branch.name);
+          }
+        }
+      }
+
+      // Sort alphabetically but put default branch first
+      branches.sort((a, b) => {
+        if (a === defaultBranch) return -1;
+        if (b === defaultBranch) return 1;
+        return a.toLowerCase().localeCompare(b.toLowerCase());
+      });
 
       res.json({
-        defaultBranch: repoInfo.data.default_branch,
-        branches: branchesResponse.data.map(b => b.name)
+        defaultBranch,
+        branches
       });
     } catch (error) {
       console.error('Get repository info error:', error);
