@@ -117,3 +117,31 @@ body {
 .context-slider:focus::-webkit-slider-thumb {
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2);
 }
+
+/* Dark themed thin scrollbar for code blocks */
+.code-block-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #4b5563 #1E1E1E;
+}
+
+.code-block-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.code-block-scrollbar::-webkit-scrollbar-track {
+  background: #1E1E1E;
+}
+
+.code-block-scrollbar::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 4px;
+}
+
+.code-block-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+.code-block-scrollbar::-webkit-scrollbar-corner {
+  background: #1E1E1E;
+}

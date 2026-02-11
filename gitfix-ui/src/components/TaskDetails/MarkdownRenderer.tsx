@@ -2,7 +2,7 @@ import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vs } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 interface MarkdownRendererProps {
   text: unknown;
@@ -34,35 +34,38 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          // Code blocks with syntax highlighting
+          // Code blocks with syntax highlighting - VS Code window style
           code({ inline, className, children, ...props }: { inline?: boolean; className?: string; children?: React.ReactNode }) {
             const match = /language-(\w+)/.exec(className || '');
             return !inline && match ? (
-              <div className="my-2 relative group">
-                <div className="absolute top-2 right-2 text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                  {match[1].toUpperCase()}
+              <div className="my-6 rounded-lg border border-gray-700 overflow-hidden">
+                {/* VS Code style header bar */}
+                <div className="bg-gray-800 px-4 py-2 flex items-center justify-between">
+                  <span className="text-white text-sm font-mono">{match[1].toUpperCase()}</span>
                 </div>
+                {/* Code body with dark background */}
                 <SyntaxHighlighter
                   {...props}
-                  style={vs}
+                  style={vscDarkPlus}
                   language={match[1]}
                   PreTag="div"
                   showLineNumbers={true}
                   lineNumberStyle={{
-                    color: '#9ca3af',
+                    color: '#6b7280',
                     paddingRight: '1em',
                     minWidth: '2.5em',
                     textAlign: 'right',
                   }}
                   customStyle={{
-                    borderRadius: '0.375rem',
+                    borderRadius: 0,
                     fontSize: '0.875rem',
-                    border: '1px solid #e5e7eb',
+                    border: 'none',
                     margin: 0,
-                    backgroundColor: '#f9fafb',
+                    backgroundColor: '#1E1E1E',
                     maxHeight: '300px',
                     overflowY: 'auto',
                   }}
+                  className="code-block-scrollbar"
                 >
                   {String(children).replace(/\n$/, '')}
                 </SyntaxHighlighter>
