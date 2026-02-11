@@ -28,11 +28,14 @@ const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt })
     <div className="relative">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-200 px-2 py-1 rounded transition-colors"
+        className="flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors"
+        style={{ color: 'rgb(29, 138, 138)' }}
+        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(29, 138, 138, 0.1)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
         title="View original prompt"
       >
         <FileQuestion size={14} />
-        <span className="hidden sm:inline">Prompt</span>
+        <span className="hidden sm:inline font-medium">Prompt</span>
       </button>
       <AnimatePresence>
         {isOpen && (
@@ -303,8 +306,8 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
         </PanelGroup>
       </div>
 
-      {/* Pro Studio Footer - Gray background with primary action */}
-      <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
+      {/* Pro Studio Footer - Gray background with primary action and extra vertical padding for "gravity" */}
+      <div className="flex items-center justify-between px-6 py-5 border-t border-gray-200 bg-gray-100 flex-shrink-0">
         <div className="text-sm text-gray-500">
           {plan.length} {plan.length === 1 ? 'task' : 'tasks'} in plan
         </div>

@@ -80,10 +80,33 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
 
       {/* Main Task List */}
       <div
-        className={`flex-1 p-4 overflow-y-auto ${!showTimeline ? 'px-6' : ''}`}
+        className={`task-list-scroll flex-1 p-4 overflow-y-auto ${!showTimeline ? 'px-6' : ''}`}
         data-task-list
         onScroll={handleScroll}
+        style={{
+          scrollbarWidth: 'thin',
+          scrollbarColor: 'transparent transparent'
+        }}
       >
+        <style>{`
+          .task-list-scroll::-webkit-scrollbar {
+            width: 6px;
+          }
+          .task-list-scroll::-webkit-scrollbar-track {
+            background: transparent;
+          }
+          .task-list-scroll::-webkit-scrollbar-thumb {
+            background-color: transparent;
+            border-radius: 3px;
+            transition: background-color 0.2s;
+          }
+          .task-list-scroll:hover::-webkit-scrollbar-thumb {
+            background-color: #9ca3af;
+          }
+          .task-list-scroll:hover {
+            scrollbar-color: #9ca3af transparent;
+          }
+        `}</style>
         <div>
           <AnimatePresence mode="popLayout">
             {tasks.map((task, index) => {
