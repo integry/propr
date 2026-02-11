@@ -48,9 +48,19 @@ function calculateTokens(conversationLog: ConversationStep[] | undefined): Cumul
     let cacheReadTokens = 0;
 
     if (conversationLog && Array.isArray(conversationLog)) {
+        // Deduplicate by message ID (per Claude docs, same ID = same usage)
+        const seenIds = new Set<string>();
         conversationLog.forEach(step => {
-            const usage = step.message?.usage;
+            const message = step.message as { id?: string; usage?: TokenUsage } | undefined;
+            const usage = message?.usage;
             if (usage) {
+                // Skip if we've already counted this message ID
+                if (message?.id && seenIds.has(message.id)) {
+                    return;
+                }
+                if (message?.id) {
+                    seenIds.add(message.id);
+                }
                 inputTokens += usage.input_tokens ?? 0;
                 outputTokens += usage.output_tokens ?? 0;
                 cacheCreationTokens += usage.cache_creation_input_tokens ?? 0;

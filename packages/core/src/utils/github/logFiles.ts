@@ -22,17 +22,29 @@ function getUsageStats(claudeResult: ClaudeResult | null): UsageStats {
     let inputTokens = 0;
     let outputTokens = 0;
 
-    // First, check for direct tokenUsage (used by Gemini/Codex agents)
+    // First, check for direct tokenUsage from result message (authoritative per Claude docs)
+    // Total input = input_tokens + cache_creation + cache_read (per billing docs)
     if (claudeResult?.tokenUsage) {
-        inputTokens = claudeResult.tokenUsage.input_tokens ?? 0;
-        outputTokens = claudeResult.tokenUsage.output_tokens ?? 0;
+        const usage = claudeResult.tokenUsage;
+        inputTokens = (usage.input_tokens ?? 0) +
+                      (usage.cache_creation_input_tokens ?? 0) +
+                      (usage.cache_read_input_tokens ?? 0);
+        outputTokens = usage.output_tokens ?? 0;
     }
 
-    // Fall back to scanning conversationLog (used by Claude agent)
+    // Fall back to scanning conversationLog (deduplicate by message ID)
     if (inputTokens === 0 && outputTokens === 0 && claudeResult?.conversationLog) {
+        const seenIds = new Set<string>();
         claudeResult.conversationLog.forEach(msg => {
-            const message = msg.message as { usage?: MessageUsage } | undefined;
+            const message = msg.message as { id?: string; usage?: MessageUsage } | undefined;
             if (message?.usage) {
+                // Skip if we've already counted this message ID
+                if (message.id && seenIds.has(message.id)) {
+                    return;
+                }
+                if (message.id) {
+                    seenIds.add(message.id);
+                }
                 const usage = message.usage;
                 inputTokens += (usage.input_tokens ?? 0);
                 inputTokens += (usage.cache_creation_input_tokens ?? 0);
@@ -78,7 +90,7 @@ interface ClaudeResult {
     rawOutput?: string;
     finalResult?: FinalResult;
     summary?: string;
-    tokenUsage?: { input_tokens?: number; output_tokens?: number };
+    tokenUsage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
 }
 
 interface LogFiles {

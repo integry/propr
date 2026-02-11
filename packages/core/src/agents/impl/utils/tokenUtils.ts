@@ -29,11 +29,14 @@ export function aggregateTokensFromConversationLog(
         cache_read_input_tokens: 0
     };
 
+    let foundCount = 0;
     for (const entry of conversationLog) {
         if (entry.type === 'assistant') {
-            // Usage is at the top level of the entry, not nested in message
-            const usage = (entry as { usage?: TokenUsage }).usage;
+            // Usage is nested inside message object
+            const message = entry.message as { usage?: TokenUsage } | undefined;
+            const usage = message?.usage;
             if (usage) {
+                foundCount++;
                 aggregated.input_tokens = (aggregated.input_tokens || 0) + (usage.input_tokens || 0);
                 aggregated.output_tokens = (aggregated.output_tokens || 0) + (usage.output_tokens || 0);
                 aggregated.cache_creation_input_tokens =
@@ -43,6 +46,15 @@ export function aggregateTokensFromConversationLog(
             }
         }
     }
+
+    logger.debug({
+        conversationLogLength: conversationLog.length,
+        assistantMessagesWithUsage: foundCount,
+        aggregatedInputTokens: aggregated.input_tokens,
+        aggregatedCacheRead: aggregated.cache_read_input_tokens,
+        aggregatedCacheCreation: aggregated.cache_creation_input_tokens,
+        aggregatedOutputTokens: aggregated.output_tokens
+    }, 'Token aggregation from conversation log');
 
     return aggregated;
 }
@@ -64,16 +76,32 @@ export function getCorrectedTokenUsage(
     conversationLog: ConversationLogEntry[]
 ): TokenUsage | undefined {
     const aggregated = aggregateTokensFromConversationLog(conversationLog);
-    const aggregatedTotal = (aggregated.input_tokens || 0) + (aggregated.output_tokens || 0);
-    const reportedTotal = (reported?.input_tokens || 0) + (reported?.output_tokens || 0);
+
+    // Include cache tokens in totals for proper comparison
+    const aggregatedTotal = (aggregated.input_tokens || 0) +
+                           (aggregated.cache_creation_input_tokens || 0) +
+                           (aggregated.cache_read_input_tokens || 0) +
+                           (aggregated.output_tokens || 0);
+    const reportedTotal = (reported?.input_tokens || 0) +
+                         (reported?.cache_creation_input_tokens || 0) +
+                         (reported?.cache_read_input_tokens || 0) +
+                         (reported?.output_tokens || 0);
+
+    logger.debug({
+        reportedInputTokens: reported?.input_tokens,
+        reportedCacheRead: reported?.cache_read_input_tokens,
+        reportedCacheCreation: reported?.cache_creation_input_tokens,
+        reportedOutputTokens: reported?.output_tokens,
+        reportedTotal,
+        aggregatedInputTokens: aggregated.input_tokens,
+        aggregatedCacheRead: aggregated.cache_read_input_tokens,
+        aggregatedCacheCreation: aggregated.cache_creation_input_tokens,
+        aggregatedOutputTokens: aggregated.output_tokens,
+        aggregatedTotal
+    }, 'Token usage comparison');
 
     if (aggregatedTotal > reportedTotal) {
-        logger.debug({
-            reportedInputTokens: reported?.input_tokens,
-            reportedOutputTokens: reported?.output_tokens,
-            aggregatedInputTokens: aggregated.input_tokens,
-            aggregatedOutputTokens: aggregated.output_tokens
-        }, 'Using aggregated token usage (higher than reported)');
+        logger.debug('Using aggregated token usage (higher than reported)');
         return aggregated;
     }
 

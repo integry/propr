@@ -20,6 +20,13 @@ export interface ClaudeResult {
     rawOutput?: string;
     exitCode?: number | string;
     model?: string;
+    // Cumulative token usage from result message
+    tokenUsage?: {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+    };
 }
 
 interface ConversationLogEntry {

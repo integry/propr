@@ -34,6 +34,13 @@ export interface ClaudeResult {
     rawOutput?: string;
     exitCode?: number | string;
     model?: string;
+    // Cumulative token usage from result message (authoritative per Claude docs)
+    tokenUsage?: {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+    };
 }
 
 async function calculateApiCost(
@@ -63,7 +70,10 @@ export async function generatePRBody(issueNumber: number, issueTitle: string, co
     const timestamp = new Date().toISOString();
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
-    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as { conversationLog?: Array<{ message?: { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }> } | null);
+    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as {
+        tokenUsage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+        conversationLog?: Array<{ message?: { id?: string; usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }>
+    } | null);
 
     const cost = await calculateApiCost(claudeResult, inputTokens, outputTokens, totalTokens);
 
@@ -110,7 +120,10 @@ export async function generateClaudeLogsComment(claudeResult: ClaudeResult | nul
 
     if (claudeResult?.finalResult) {
         const result = claudeResult.finalResult;
-        const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as { conversationLog?: Array<{ message?: { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }> } | null);
+        const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as {
+        tokenUsage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+        conversationLog?: Array<{ message?: { id?: string; usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }>
+    } | null);
 
         // Calculate cost using OpenRouter pricing
         const cost = await calculateApiCost(claudeResult, inputTokens, outputTokens, totalTokens);

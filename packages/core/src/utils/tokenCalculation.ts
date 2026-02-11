@@ -18,6 +18,8 @@ interface ConversationLogEntry {
 
 export interface ClaudeResult {
     conversationLog?: ConversationLogEntry[];
+    // The result message's cumulative usage (authoritative per Claude docs)
+    tokenUsage?: MessageUsage;
 }
 
 interface UsageStats {
@@ -26,14 +28,40 @@ interface UsageStats {
     totalTokens: number;
 }
 
+/**
+ * Get token usage stats from Claude result.
+ *
+ * Per Claude documentation, the result message contains authoritative cumulative usage.
+ * This function prefers tokenUsage (from result message) over conversation log aggregation.
+ *
+ * Total input includes: input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+ */
 export function getUsageStats(claudeResult: ClaudeResult | null): UsageStats {
     let inputTokens = 0;
     let outputTokens = 0;
 
-    if (claudeResult?.conversationLog) {
+    // Prefer the result message's cumulative tokenUsage (authoritative)
+    if (claudeResult?.tokenUsage) {
+        const usage = claudeResult.tokenUsage;
+        // Total input = base input + cache tokens (per Claude billing docs)
+        inputTokens = (usage.input_tokens ?? 0) +
+                      (usage.cache_creation_input_tokens ?? 0) +
+                      (usage.cache_read_input_tokens ?? 0);
+        outputTokens = usage.output_tokens ?? 0;
+    } else if (claudeResult?.conversationLog) {
+        // Fallback: aggregate from conversation log (deduplicate by message ID)
+        const seenIds = new Set<string>();
         claudeResult.conversationLog.forEach(msg => {
-            if (msg.message?.usage) {
-                const usage = msg.message.usage;
+            const msgObj = msg.message as { id?: string; usage?: MessageUsage } | undefined;
+            if (msgObj?.usage) {
+                // Skip if we've already counted this message ID
+                if (msgObj.id && seenIds.has(msgObj.id)) {
+                    return;
+                }
+                if (msgObj.id) {
+                    seenIds.add(msgObj.id);
+                }
+                const usage = msgObj.usage;
                 inputTokens += (usage.input_tokens ?? 0);
                 inputTokens += (usage.cache_creation_input_tokens ?? 0);
                 inputTokens += (usage.cache_read_input_tokens ?? 0);

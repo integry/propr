@@ -377,7 +377,8 @@ function buildClaudeResultSection(claudeResult: ClaudeCodeResponse | null): { su
         error: claudeResult?.error ?? null,
         sessionId: claudeResult?.sessionId ?? null,
         conversationId: claudeResult?.conversationId ?? null,
-        model: claudeResult?.model ?? null
+        model: claudeResult?.model ?? null,
+        tokenUsage: claudeResult?.tokenUsage ?? null
     } as { success: boolean };
 }
 
