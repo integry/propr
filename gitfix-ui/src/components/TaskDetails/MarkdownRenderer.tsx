@@ -173,7 +173,6 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                       border: 'none',
                       margin: 0,
                       padding: '0.75rem 0',
-                      paddingLeft: '0.5rem',
                       backgroundColor: '#1E1E1E',
                       maxHeight: '300px',
                       overflowY: 'auto',
