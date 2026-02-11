@@ -215,7 +215,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       {/* Input area - floating command bar style with margin */}
       <div className="flex-shrink-0 m-4">
         <form onSubmit={handleSubmit}>
-          <div className="flex gap-2 items-end bg-white rounded-lg shadow-sm border border-slate-200 p-1">
+          <div className="flex gap-2 items-end bg-white rounded-lg shadow-sm border border-slate-200 p-4">
             <textarea
               ref={textareaRef}
               value={input}
@@ -241,7 +241,6 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
               )}
             </button>
           </div>
-          <p className="text-xs text-gray-400 mt-2 text-center">Shift+Enter for new line</p>
         </form>
       </div>
     </div>
