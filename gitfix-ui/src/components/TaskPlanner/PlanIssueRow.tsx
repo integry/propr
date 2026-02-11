@@ -189,6 +189,141 @@ const getContainerClassName = (isMerged: boolean): string =>
 const getTitleClassName = (isMerged: boolean): string =>
   isMerged ? 'text-gray-500' : 'text-gray-600';
 
+interface RowActionsProps {
+  isPending: boolean;
+  isActive: boolean;
+  hasExpandableContent: boolean;
+  isExpanded: boolean;
+  implementing: boolean;
+  isMultiMode: boolean;
+  selectedModels: AgentModelPair[];
+  hasAgent: boolean;
+  isFirstPending: boolean;
+  agents: AgentConfig[];
+  issue: PlanIssue;
+  onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
+  onModelChange: (issueNumber: number, modelName: string | null) => void;
+  handleMultiToggle: (multi: boolean) => void;
+  handleMultiModelChange: (models: AgentModelPair[]) => void;
+  handleImplementClick: () => void;
+  handleToggleExpand: (e: React.MouseEvent) => void;
+}
+
+const RowActions: React.FC<RowActionsProps> = ({
+  isPending,
+  isActive,
+  hasExpandableContent,
+  isExpanded,
+  implementing,
+  isMultiMode,
+  selectedModels,
+  hasAgent,
+  isFirstPending,
+  agents,
+  issue,
+  onAgentChange,
+  onModelChange,
+  handleMultiToggle,
+  handleMultiModelChange,
+  handleImplementClick,
+  handleToggleExpand
+}) => (
+  <div className="flex items-center gap-3 flex-shrink-0">
+    {isPending && (
+      <AgentModelSelector
+        agents={agents}
+        selectedAgent={issue.agent_alias}
+        selectedModel={issue.model_name}
+        onAgentChange={(agent) => onAgentChange(issue.issue_number, agent)}
+        onModelChange={(model) => onModelChange(issue.issue_number, model)}
+        disabled={implementing}
+        compact
+        isMulti={isMultiMode}
+        onMultiToggle={handleMultiToggle}
+        selectedModels={selectedModels}
+        onMultiModelChange={handleMultiModelChange}
+        onMultiConfirm={handleImplementClick}
+      />
+    )}
+
+    {isPending && (
+      <ImplementButton
+        implementing={implementing}
+        hasAgent={hasAgent}
+        isFirstPending={isFirstPending}
+        onClick={handleImplementClick}
+      />
+    )}
+
+    {isActive && !isPending && (
+      <div className="flex items-center gap-1.5 text-sm text-blue-600">
+        <Loader2 size={14} className="animate-spin" />
+        <span>In Progress</span>
+      </div>
+    )}
+
+    {/* Expand/Collapse Toggle */}
+    {hasExpandableContent && (
+      <button
+        onClick={handleToggleExpand}
+        className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
+        title={isExpanded ? 'Collapse details' : 'Expand details'}
+      >
+        <motion.div
+          animate={{ rotate: isExpanded ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+        >
+          <ChevronDown size={16} />
+        </motion.div>
+      </button>
+    )}
+  </div>
+);
+
+interface ExpandedContentProps {
+  task: PlanTask;
+}
+
+const ExpandedContent: React.FC<ExpandedContentProps> = ({ task }) => (
+  <div className="px-4 pb-4 pt-0 border-t border-gray-100">
+    {/* Context / Body */}
+    {task.body && (
+      <div className="mt-3">
+        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Context</span>
+        <div className="mt-1 text-sm text-gray-600">
+          <MarkdownRenderer text={task.body} className="prose prose-sm max-w-none" />
+        </div>
+      </div>
+    )}
+
+    {/* Implementation */}
+    {task.implementation && (
+      <div className="mt-3 bg-slate-50 rounded-lg p-3">
+        <div className="flex items-center gap-2 mb-2">
+          <MessageSquare size={12} className="text-slate-500" />
+          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Implementation</span>
+        </div>
+        <div className="text-sm text-slate-700">
+          <MarkdownRenderer text={task.implementation} className="prose prose-sm max-w-none" />
+        </div>
+      </div>
+    )}
+
+    {/* Notes */}
+    {task.notes && (
+      <div className="mt-3 bg-white rounded-lg p-3 border border-dashed border-gray-300">
+        <div className="flex items-center gap-2 mb-2">
+          <StickyNote size={12} className="text-slate-500" />
+          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Notes</span>
+        </div>
+        <div className="text-sm text-gray-600">
+          <MarkdownRenderer text={task.notes} className="prose prose-sm max-w-none" />
+        </div>
+      </div>
+    )}
+  </div>
+);
+
 interface IssueMetadataProps {
   issue: PlanIssue;
   isPending: boolean;
@@ -319,56 +454,25 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
             <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} selectedModels={selectedModels} />
           </div>
 
-          <div className="flex items-center gap-3 flex-shrink-0">
-            {isPending && (
-              <AgentModelSelector
-                agents={agents}
-                selectedAgent={issue.agent_alias}
-                selectedModel={issue.model_name}
-                onAgentChange={(agent) => onAgentChange(issue.issue_number, agent)}
-                onModelChange={(model) => onModelChange(issue.issue_number, model)}
-                disabled={implementing}
-                compact
-                isMulti={isMultiMode}
-                onMultiToggle={handleMultiToggle}
-                selectedModels={selectedModels}
-                onMultiModelChange={handleMultiModelChange}
-                onMultiConfirm={handleImplementClick}
-              />
-            )}
-
-            {isPending && (
-              <ImplementButton
-                implementing={implementing}
-                hasAgent={hasAgent}
-                isFirstPending={isFirstPending}
-                onClick={handleImplementClick}
-              />
-            )}
-
-            {isActive && !isPending && (
-              <div className="flex items-center gap-1.5 text-sm text-blue-600">
-                <Loader2 size={14} className="animate-spin" />
-                <span>In Progress</span>
-              </div>
-            )}
-
-            {/* Expand/Collapse Toggle */}
-            {hasExpandableContent && (
-              <button
-                onClick={handleToggleExpand}
-                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
-                title={isExpanded ? 'Collapse details' : 'Expand details'}
-              >
-                <motion.div
-                  animate={{ rotate: isExpanded ? 180 : 0 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <ChevronDown size={16} />
-                </motion.div>
-              </button>
-            )}
-          </div>
+          <RowActions
+            isPending={isPending}
+            isActive={isActive}
+            hasExpandableContent={hasExpandableContent}
+            isExpanded={isExpanded}
+            implementing={implementing}
+            isMultiMode={isMultiMode}
+            selectedModels={selectedModels}
+            hasAgent={hasAgent}
+            isFirstPending={isFirstPending}
+            agents={agents}
+            issue={issue}
+            onAgentChange={onAgentChange}
+            onModelChange={onModelChange}
+            handleMultiToggle={handleMultiToggle}
+            handleMultiModelChange={handleMultiModelChange}
+            handleImplementClick={handleImplementClick}
+            handleToggleExpand={handleToggleExpand}
+          />
         </div>
       </div>
 
@@ -382,43 +486,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="px-4 pb-4 pt-0 border-t border-gray-100">
-              {/* Context / Body */}
-              {task.body && (
-                <div className="mt-3">
-                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Context</span>
-                  <div className="mt-1 text-sm text-gray-600">
-                    <MarkdownRenderer text={task.body} className="prose prose-sm max-w-none" />
-                  </div>
-                </div>
-              )}
-
-              {/* Implementation */}
-              {task.implementation && (
-                <div className="mt-3 bg-slate-50 rounded-lg p-3">
-                  <div className="flex items-center gap-2 mb-2">
-                    <MessageSquare size={12} className="text-slate-500" />
-                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Implementation</span>
-                  </div>
-                  <div className="text-sm text-slate-700">
-                    <MarkdownRenderer text={task.implementation} className="prose prose-sm max-w-none" />
-                  </div>
-                </div>
-              )}
-
-              {/* Notes */}
-              {task.notes && (
-                <div className="mt-3 bg-white rounded-lg p-3 border border-dashed border-gray-300">
-                  <div className="flex items-center gap-2 mb-2">
-                    <StickyNote size={12} className="text-slate-500" />
-                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Notes</span>
-                  </div>
-                  <div className="text-sm text-gray-600">
-                    <MarkdownRenderer text={task.notes} className="prose prose-sm max-w-none" />
-                  </div>
-                </div>
-              )}
-            </div>
+            <ExpandedContent task={task} />
           </motion.div>
         )}
       </AnimatePresence>
