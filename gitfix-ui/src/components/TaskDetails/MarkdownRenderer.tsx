@@ -128,15 +128,25 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
               const filePath = filePathMap.get(currentIndex);
               const codeContent = String(children).replace(/\n$/, '');
 
+              // Extract directory path and filename
+              const pathParts = filePath ? filePath.split('/') : [];
+              const fileName = pathParts.length > 0 ? pathParts.pop() : '';
+              const dirPath = pathParts.length > 0 ? pathParts.join('/') : '';
+
               return (
                 <div className="code-block-container my-6 rounded-lg border border-gray-700 overflow-hidden shadow-md">
-                  {/* VS Code style header bar with file path on left, type on right */}
+                  {/* VS Code style header bar with path/filename in 2 rows on left, type on right */}
                   <div className="bg-gray-800 px-3 py-2 flex items-center justify-between border-b border-gray-700">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       {filePath && (
                         <>
-                          <FileText size={14} className="text-gray-400 flex-shrink-0" />
-                          <span className="text-gray-200 text-sm font-mono truncate">{filePath}</span>
+                          <FileText size={12} className="text-gray-400 flex-shrink-0 self-start mt-0.5" />
+                          <div className="flex flex-col min-w-0">
+                            {dirPath && (
+                              <span className="text-gray-500 text-xs font-mono truncate">{dirPath}/</span>
+                            )}
+                            <span className="text-gray-200 text-xs font-mono truncate">{fileName}</span>
+                          </div>
                         </>
                       )}
                     </div>
