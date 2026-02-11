@@ -16,6 +16,7 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
   const lines = text.split('\n');
   const processedLines: string[] = [];
   let codeBlockIndex = 0;
+  let pendingFilePath: string | null = null;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -28,20 +29,24 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
         nextLineIndex++;
       }
       if (nextLineIndex < lines.length && lines[nextLineIndex].startsWith('```')) {
-        // This is a file path for a code block - store it and skip this line
-        filePathMap.set(codeBlockIndex, fileMatch[1].trim());
-        // Skip empty lines between file path and code block
+        // This is a file path for a code block - store it for the next code block
+        pendingFilePath = fileMatch[1].trim();
+        // Skip this line and empty lines between file path and code block
         i = nextLineIndex - 1;
         continue;
       }
     }
 
-    // Track code blocks
+    // Track code blocks - when we encounter an opening code block, associate pending file path
     if (line.startsWith('```') && !line.slice(3).includes('```')) {
       // Check if this is opening a code block (not inline)
       const isOpening = processedLines.filter(l => l.startsWith('```')).length % 2 === 0;
       if (isOpening) {
         codeBlockIndex++;
+        if (pendingFilePath) {
+          filePathMap.set(codeBlockIndex, pendingFilePath);
+          pendingFilePath = null;
+        }
       }
     }
 
@@ -92,7 +97,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
               return (
                 <div className="code-block-container my-6 rounded-lg border border-gray-700 overflow-hidden shadow-md">
                   {/* VS Code style header bar with file path on left, type on right */}
-                  <div className="bg-gray-800 px-4 py-2 flex items-center justify-between border-b border-gray-700">
+                  <div className="bg-gray-800 px-3 py-2 flex items-center justify-between border-b border-gray-700">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       {filePath && (
                         <>
@@ -112,8 +117,8 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                     showLineNumbers={true}
                     lineNumberStyle={{
                       color: '#6b7280',
-                      paddingRight: '1em',
-                      minWidth: '2.5em',
+                      paddingRight: '0.75em',
+                      minWidth: '2em',
                       textAlign: 'right',
                     }}
                     customStyle={{
@@ -121,6 +126,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                       fontSize: '0.875rem',
                       border: 'none',
                       margin: 0,
+                      padding: '0.75rem 0',
                       backgroundColor: '#1E1E1E',
                       maxHeight: '300px',
                       overflowY: 'auto',
