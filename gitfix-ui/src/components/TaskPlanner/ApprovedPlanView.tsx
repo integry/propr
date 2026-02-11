@@ -1,54 +1,66 @@
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, CheckCircle, Github, ChevronDown, GitMerge, FileQuestion, GitBranch } from 'lucide-react';
+import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw } from 'lucide-react';
 import { DraftWithPlan } from '../../api/gitfixApi';
 import PlanIssuesManager from './PlanIssuesManager';
 import { PlanTask } from '../../api/plannerApi';
+import { PlanIssue } from '../../api/planIssuesApi';
 
 interface ApprovedPlanViewProps {
   draft: DraftWithPlan;
 }
 
-// Original Prompt Section Component
-interface OriginalPromptSectionProps {
+// Original Prompt Popover Component - styled like Step 2 (Review Plan)
+interface OriginalPromptPopoverProps {
   prompt: string;
 }
 
-const OriginalPromptSection: React.FC<OriginalPromptSectionProps> = ({ prompt }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt }) => {
+  const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <div className="border-b border-gray-200 bg-slate-50">
+    <div className="relative">
       <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-slate-100 transition-colors"
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors"
+        style={{ color: 'rgb(29, 138, 138)' }}
+        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(29, 138, 138, 0.1)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+        title="View original prompt"
       >
-        <div className="flex items-center gap-2 text-sm text-slate-600">
-          <FileQuestion size={14} />
-          <span className="font-medium">Original Prompt</span>
-        </div>
-        <motion.div
-          animate={{ rotate: isExpanded ? 180 : 0 }}
-          transition={{ duration: 0.2 }}
-        >
-          <ChevronDown size={16} className="text-slate-400" />
-        </motion.div>
+        <FileQuestion size={14} />
+        <span className="hidden sm:inline font-medium">Prompt</span>
       </button>
-      <AnimatePresence initial={false}>
-        {isExpanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden"
-          >
-            <div className="px-4 pb-3 pt-1">
-              <div className="bg-white rounded-lg border border-slate-200 p-3">
-                <p className="text-sm text-slate-700 whitespace-pre-wrap">{prompt}</p>
+      <AnimatePresence>
+        {isOpen && (
+          <>
+            {/* Backdrop */}
+            <div
+              className="fixed inset-0 z-40"
+              onClick={() => setIsOpen(false)}
+            />
+            {/* Popover */}
+            <motion.div
+              initial={{ opacity: 0, y: -10, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10, scale: 0.95 }}
+              transition={{ duration: 0.15 }}
+              className="absolute top-full left-0 mt-2 z-50 w-80 max-w-[calc(100vw-2rem)] bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
+            >
+              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Original Prompt</span>
+                <button
+                  onClick={() => setIsOpen(false)}
+                  className="p-1 hover:bg-gray-200 rounded transition-colors"
+                >
+                  <X size={14} className="text-gray-400" />
+                </button>
               </div>
-            </div>
-          </motion.div>
+              <div className="p-3 max-h-60 overflow-y-auto">
+                <p className="text-sm text-gray-700 whitespace-pre-wrap">{prompt}</p>
+              </div>
+            </motion.div>
+          </>
         )}
       </AnimatePresence>
     </div>
@@ -57,6 +69,10 @@ const OriginalPromptSection: React.FC<OriginalPromptSectionProps> = ({ prompt })
 
 
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => {
+  // State to hold issues data for footer stats
+  const [issues, setIssues] = useState<PlanIssue[]>([]);
+  const [refreshKey, setRefreshKey] = useState(0);
+
   // Defensively ensure plan_json is an array
   const tasks: PlanTask[] = (() => {
     let planJson = draft.plan_json;
@@ -79,15 +95,25 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
   const repository = draft.repository || '';
   const baseBranch = draft.context_config?.baseBranch || 'main';
 
-  // Compute footer stats from tasks
+  // Callback to receive issues from PlanIssuesManager
+  const handleIssuesChange = (updatedIssues: PlanIssue[]) => {
+    setIssues(updatedIssues);
+  };
+
+  // Compute footer stats from issues (actual data, not tasks)
   const footerStats = useMemo(() => {
-    const total = tasks.length;
-    const merged = tasks.filter(t => t.status === 'merged').length;
-    const underReview = tasks.filter(t => t.status === 'pr_open' || t.status === 'pr_review').length;
-    const pending = tasks.filter(t => t.status === 'pending' || !t.status).length;
-    const processing = tasks.filter(t => t.status === 'processing' || t.status === 'refinement_processing').length;
+    const total = issues.length;
+    const merged = issues.filter(i => i.status === 'merged').length;
+    const underReview = issues.filter(i => i.status === 'pr_open' || i.status === 'pr_review').length;
+    const pending = issues.filter(i => i.status === 'pending').length;
+    const processing = issues.filter(i => i.status === 'processing' || i.status === 'refinement_processing').length;
     return { total, merged, underReview, pending, processing };
-  }, [tasks]);
+  }, [issues]);
+
+  // Handle refresh from footer
+  const handleRefresh = () => {
+    setRefreshKey(prev => prev + 1);
+  };
 
   return (
     <motion.div
@@ -106,17 +132,21 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
             <GitBranch size={14} className="text-gray-500" />
             <span className="text-gray-600">{baseBranch}</span>
           </div>
-          <div className="h-4 w-px bg-gray-300" />
-          {draft.status === 'merged' ? (
-            <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1">
-              <GitMerge size={12} />
-              Merged
-            </span>
-          ) : (
-            <span className="px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-700 flex items-center gap-1">
-              <CheckCircle size={12} />
-              Issues Created
-            </span>
+          {/* Original Prompt - styled like Step 2 (Review Plan) */}
+          {draft.initial_prompt && (
+            <>
+              <div className="h-4 w-px bg-gray-300" />
+              <OriginalPromptPopover prompt={draft.initial_prompt} />
+            </>
+          )}
+          {draft.status === 'merged' && (
+            <>
+              <div className="h-4 w-px bg-gray-300" />
+              <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1">
+                <GitMerge size={12} />
+                Merged
+              </span>
+            </>
           )}
         </div>
 
@@ -129,17 +159,12 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
               className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm"
             >
               <Github size={16} />
-              View on GitHub
+              View Issues on GitHub
               <ExternalLink size={14} />
             </a>
           )}
         </div>
       </div>
-
-      {/* Original Prompt Section */}
-      {draft.initial_prompt && (
-        <OriginalPromptSection prompt={draft.initial_prompt} />
-      )}
 
       {/* Single-Pane Action Dashboard */}
       <div className="flex-1 overflow-auto p-4">
@@ -147,10 +172,12 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
           draftId={draft.draft_id}
           tasks={tasks}
           repository={draft.repository}
+          onIssuesChange={handleIssuesChange}
+          refreshKey={refreshKey}
         />
       </div>
 
-      {/* Pro Studio Footer - Anchored with status summary */}
+      {/* Pro Studio Footer - Anchored with status summary and refresh */}
       <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
         <div className="flex items-center gap-1 text-sm text-gray-600">
           <span className="font-medium">{footerStats.total} {footerStats.total === 1 ? 'Issue' : 'Issues'} Total</span>
@@ -179,9 +206,13 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
             </>
           )}
         </div>
-        <div className="text-xs text-gray-400">
-          Execution Hub
-        </div>
+        <button
+          onClick={handleRefresh}
+          className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors"
+          title="Refresh issues"
+        >
+          <RefreshCw size={16} />
+        </button>
       </div>
     </motion.div>
   );

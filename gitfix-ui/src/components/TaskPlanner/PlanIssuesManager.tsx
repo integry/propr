@@ -1,7 +1,7 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
-import { AgentModelPair } from '../../api/planIssuesApi';
+import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
+import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
 import AgentModelSelector from './AgentModelSelector';
@@ -14,6 +14,10 @@ interface PlanIssuesManagerProps {
   repository?: string;
   onRefresh?: () => void;
   onViewPlanClick?: () => void;
+  /** Callback to report issues data to parent for footer stats */
+  onIssuesChange?: (issues: PlanIssue[]) => void;
+  /** Key to trigger refresh from parent */
+  refreshKey?: number;
 }
 
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
@@ -21,7 +25,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   tasks,
   repository,
   onRefresh,
-  onViewPlanClick
+  onViewPlanClick,
+  onIssuesChange,
+  refreshKey
 }) => {
   const [showMerged, setShowMerged] = useState(false);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
@@ -83,6 +89,18 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     }
   }, [pendingImplementIssue, pendingImplementModels, handleImplementIssue]);
 
+  // Report issues to parent for footer stats
+  useEffect(() => {
+    onIssuesChange?.(issues);
+  }, [issues, onIssuesChange]);
+
+  // Trigger refresh when refreshKey changes (from parent footer button)
+  useEffect(() => {
+    if (refreshKey !== undefined && refreshKey > 0) {
+      handleRefresh();
+    }
+  }, [refreshKey, handleRefresh]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8 text-gray-500">
@@ -134,24 +152,15 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleRefresh}
-            className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
-            title="Refresh issues"
-          >
-            <RefreshCw size={16} />
-          </button>
-          {hasActiveIssues && (
-            <span className="flex items-center gap-1 text-xs text-blue-600">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-              </span>
-              Auto-refreshing
+        {hasActiveIssues && (
+          <span className="flex items-center gap-1 text-xs text-blue-600">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
             </span>
-          )}
-        </div>
+            Auto-refreshing
+          </span>
+        )}
       </div>
       {/* Continuous horizontal divider spanning full width */}
       <div className="-mx-4 border-b border-gray-200" />
