@@ -59,7 +59,24 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { name: 'Settings', href: '/settings', icon: SettingsIcon },
   ];
 
-  const isActive = (path: string): boolean => location.pathname === path;
+  const isActive = (path: string): boolean => {
+    const currentPath = location.pathname;
+
+    // Dashboard should only be active on exact match
+    if (path === '/') {
+      return currentPath === '/';
+    }
+
+    // Plans should be active for /plans routes and /studio routes
+    if (path === '/plans') {
+      return currentPath === '/plans' ||
+             currentPath.startsWith('/plans/') ||
+             currentPath.startsWith('/studio');
+    }
+
+    // All other menu items use prefix matching
+    return currentPath === path || currentPath.startsWith(path + '/');
+  };
 
   // Close sidebar on route change (mobile)
   useEffect(() => {
