@@ -48,25 +48,19 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                 {/* Step circle */}
                 <div
                   className={`
-                    flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition-colors
+                    flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium
+                    transition-all duration-200 ease-in-out
                     ${
                       state === 'completed'
-                        ? 'text-white'
+                        ? 'bg-green-100 text-green-600 border-2 border-green-300'
                         : state === 'active'
-                        ? 'border-2 bg-white'
-                        : 'border-2 border-gray-300 bg-white text-gray-400'
+                        ? 'bg-primary-600 text-white'
+                        : 'bg-white text-gray-500 border-2 border-gray-300'
                     }
                   `}
-                  style={
-                    state === 'completed'
-                      ? { backgroundColor: 'rgb(29, 138, 138)' }
-                      : state === 'active'
-                      ? { borderColor: 'rgb(29, 138, 138)', color: 'rgb(29, 138, 138)' }
-                      : undefined
-                  }
                 >
                   {state === 'completed' ? (
-                    <Check className="h-4 w-4" />
+                    <Check className="h-4 w-4 stroke-[2.5]" />
                   ) : (
                     step.number
                   )}
@@ -75,10 +69,15 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                 {/* Step label */}
                 <span
                   className={`
-                    ml-2 text-sm font-medium whitespace-nowrap
-                    ${state === 'pending' ? 'text-gray-400' : ''}
+                    ml-2 text-sm whitespace-nowrap transition-all duration-200 ease-in-out
+                    ${
+                      state === 'completed'
+                        ? 'font-medium text-green-600'
+                        : state === 'active'
+                        ? 'font-bold text-primary-600'
+                        : 'font-medium text-gray-500'
+                    }
                   `}
-                  style={state !== 'pending' ? { color: 'rgb(29, 138, 138)' } : undefined}
                 >
                   {step.label}
                 </span>
@@ -88,14 +87,14 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
               {!isLast && (
                 <div
                   className={`
-                    mx-4 h-0.5 flex-1 min-w-[40px]
+                    mx-4 h-0.5 flex-1 min-w-[40px] transition-all duration-200 ease-in-out
                     ${
-                      getStepState(STEPS[index + 1].id, currentStage) !== 'pending'
-                        ? ''
-                        : 'bg-gray-300'
+                      state === 'completed'
+                        ? 'bg-primary-600'
+                        : 'bg-gray-300 border-t-2 border-dashed border-gray-300'
                     }
                   `}
-                  style={getStepState(STEPS[index + 1].id, currentStage) !== 'pending' ? { backgroundColor: 'rgb(29, 138, 138)' } : undefined}
+                  style={state !== 'completed' ? { background: 'transparent' } : {}}
                 />
               )}
             </li>
