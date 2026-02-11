@@ -27,6 +27,7 @@ export interface TaskListProps {
   limit: number;
   showViewAll?: boolean;
   hideFilters?: boolean;
+  title?: string;
 }
 
 export interface LoadConfig {

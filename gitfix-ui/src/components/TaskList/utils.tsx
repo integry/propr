@@ -60,13 +60,17 @@ export const getStatusPill = (status: string) => {
   const baseClasses = "px-2 py-0.5 text-xs font-medium rounded-full inline-flex items-center gap-1.5";
 
   switch (status) {
+    // "Success is Quiet" - Gray for completed tasks
     case 'completed':
       return (
-        <span className={`${baseClasses} bg-green-50 text-green-700 border border-green-200`}>
-           <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+        <span className={`${baseClasses} bg-gray-100 text-gray-500 border border-gray-200`}>
+           <svg className="w-3 h-3 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+             <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+           </svg>
            Completed
         </span>
       );
+    // Red for failed tasks
     case 'failed':
       return (
         <span className={`${baseClasses} bg-red-50 text-red-700 border border-red-200`}>
@@ -81,20 +85,21 @@ export const getStatusPill = (status: string) => {
            Cancelled
         </span>
       );
+    // Teal/Blue for active tasks (implementing)
     case 'active':
     case 'claude_execution':
     case 'processing':
       return (
-        <span className={`${baseClasses} bg-blue-50 text-blue-700 border border-blue-200`}>
-           <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+        <span className={`${baseClasses} bg-teal-50 text-teal-700 border border-teal-200`}>
+           <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse"></span>
            Implementing
         </span>
       );
     case 'waiting':
     case 'pending':
       return (
-        <span className={`${baseClasses} bg-purple-50 text-purple-700 border border-purple-200`}>
-           <span className="w-1.5 h-1.5 rounded-full bg-purple-500"></span>
+        <span className={`${baseClasses} bg-blue-50 text-blue-700 border border-blue-200`}>
+           <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
            Pending
         </span>
       );

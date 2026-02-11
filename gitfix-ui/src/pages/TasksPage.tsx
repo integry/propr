@@ -11,15 +11,11 @@ const TasksPage: React.FC = () => {
   useDocumentTitle(taskId ? undefined : 'Tasks');
 
   return (
-    <div className="p-4 sm:p-8">
+    <div className={taskId ? 'p-4 sm:p-8' : ''}>
       {taskId ? (
         <TaskDetails />
       ) : (
-        <>
-          <h2 className="text-gray-900 text-2xl font-semibold mb-4">Tasks</h2>
-          <p className="text-gray-600 mb-4">View all current and previous tasks.</p>
-          <TaskList limit={50} />
-        </>
+        <TaskList limit={50} title="Tasks" />
       )}
     </div>
   );

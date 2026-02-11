@@ -7,7 +7,7 @@ import { Pagination } from './TaskList/Pagination';
 import { ParentTaskRow, ChildTaskRow, CollapseToggleRow } from './TaskList/TaskRows';
 import { MobileTaskCard } from './TaskList/MobileTaskCard';
 
-const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
+const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false, title }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
@@ -246,6 +246,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   return (
     <div>
       <Filters
+        title={title}
         hideFilters={hideFilters}
         showViewAll={showViewAll}
         filter={filter}
@@ -275,65 +276,48 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
             ))}
           </div>
 
-          {/* Desktop Table View */}
-          <div className="hidden md:block overflow-x-auto bg-white border border-gray-200 rounded-lg shadow-sm">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-200 bg-gray-50/50">
-                  <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-48">Repository</th>
-                  <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Issue/Task</th>
-                  <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-32">Status</th>
-                  <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-36">Metadata</th>
-                  <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-16"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {groupedTasks.map((group, index) => {
-                  const parentTask = group.tasks[0];
-                  const allChildren = group.tasks.slice(1);
+          {/* Desktop List View */}
+          <div className="hidden md:block bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+            <div className="divide-y divide-gray-100">
+              {groupedTasks.map((group) => {
+                const parentTask = group.tasks[0];
+                const allChildren = group.tasks.slice(1);
 
-                  const isExpanded = expandedGroups.has(group.key);
+                const isExpanded = expandedGroups.has(group.key);
 
-                  // The "Last 3" Rule
-                  // If group has many items (e.g. > 5 total, so > 4 children), collapse by default
-                  // show collapse trigger if children > 3
-                  const shouldCollapse = allChildren.length > 3;
+                // The "Last 3" Rule
+                // If group has many items (e.g. > 5 total, so > 4 children), collapse by default
+                // show collapse trigger if children > 3
+                const shouldCollapse = allChildren.length > 3;
 
-                  let visibleChildren = allChildren;
-                  let hiddenCount = 0;
+                let visibleChildren = allChildren;
+                let hiddenCount = 0;
 
-                  if (shouldCollapse && !isExpanded) {
-                    visibleChildren = allChildren.slice(0, 3);
-                    hiddenCount = allChildren.length - 3;
-                  }
+                if (shouldCollapse && !isExpanded) {
+                  visibleChildren = allChildren.slice(0, 3);
+                  hiddenCount = allChildren.length - 3;
+                }
 
-                  // Check if this group's repository is the same as the previous one
-                  const prevGroup = index > 0 ? groupedTasks[index - 1] : null;
-                  const isDuplicateRepo = prevGroup
-                    ? prevGroup.repoOwner === group.repoOwner && prevGroup.repoName === group.repoName
-                    : false;
+                return (
+                  <React.Fragment key={group.key}>
+                    <ParentTaskRow group={group} task={parentTask} onRowClick={handleRowClick} />
 
-                  return (
-                    <React.Fragment key={group.key}>
-                      <ParentTaskRow group={group} task={parentTask} onRowClick={handleRowClick} isDuplicateRepo={isDuplicateRepo} />
+                    {visibleChildren.map((child, childIndex) => (
+                      <ChildTaskRow
+                        key={child.id}
+                        task={child}
+                        onRowClick={handleRowClick}
+                        isLastChild={childIndex === visibleChildren.length - 1 && hiddenCount === 0}
+                      />
+                    ))}
 
-                      {visibleChildren.map((child, childIndex) => (
-                        <ChildTaskRow
-                          key={child.id}
-                          task={child}
-                          onRowClick={handleRowClick}
-                          isLastChild={childIndex === visibleChildren.length - 1 && hiddenCount === 0}
-                        />
-                      ))}
-
-                      {hiddenCount > 0 && (
-                        <CollapseToggleRow groupKey={group.key} hiddenCount={hiddenCount} onToggle={toggleGroup} />
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
+                    {hiddenCount > 0 && (
+                      <CollapseToggleRow groupKey={group.key} hiddenCount={hiddenCount} onToggle={toggleGroup} />
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </div>
           </div>
         </>
       )}
