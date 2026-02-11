@@ -8,10 +8,7 @@ import logger from './logger.js';
 import type { ExecutionType } from './llmMetrics.types.js';
 
 /** Default estimated duration in milliseconds when no historical data is available */
-const DEFAULT_ESTIMATED_DURATION_MS = 60000; // 60 seconds
-
-/** Minimum estimated duration to prevent unreasonably short estimates */
-const MIN_ESTIMATED_DURATION_MS = 10000; // 10 seconds
+const DEFAULT_ESTIMATED_DURATION_MS = 90000; // 90 seconds - realistic for plan generation
 
 /** Maximum estimated duration to prevent unreasonably long estimates */
 const MAX_ESTIMATED_DURATION_MS = 300000; // 5 minutes
@@ -19,8 +16,30 @@ const MAX_ESTIMATED_DURATION_MS = 300000; // 5 minutes
 /** Number of recent logs to consider for estimation */
 const HISTORY_SAMPLE_SIZE = 20;
 
-/** Default ms per token when no historical data exists */
-const DEFAULT_MS_PER_TOKEN = 0.5;
+/**
+ * Default ms per token when no historical data exists.
+ * Based on typical Claude API performance with network overhead:
+ * - Claude processes ~50-100 output tokens/second
+ * - But we measure total request time including prompt processing
+ * - A conservative estimate of ~8ms per input token accounts for
+ *   prompt processing, network latency, and response generation
+ */
+const DEFAULT_MS_PER_TOKEN = 8;
+
+/**
+ * Execution-type-specific minimum durations.
+ * Different operations have different baseline overhead costs.
+ */
+const MIN_DURATION_BY_TYPE: Record<string, number> = {
+  'plan-generation': 30000,    // 30 seconds minimum - complex task with large prompts
+  'plan-refinement': 15000,    // 15 seconds minimum - simpler than full generation
+  'default': 10000             // 10 seconds fallback for unknown types
+};
+
+/** Get minimum duration for a specific execution type */
+function getMinDuration(executionType: string): number {
+  return MIN_DURATION_BY_TYPE[executionType] ?? MIN_DURATION_BY_TYPE['default'];
+}
 
 export interface EstimationResult {
   /** Estimated duration in milliseconds */
@@ -104,13 +123,15 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
       .limit(HISTORY_SAMPLE_SIZE);
 
     if (recentLogs.length === 0) {
+      const minDuration = getMinDuration(executionType);
+      const tokenBasedEstimate = inputTokenCount * DEFAULT_MS_PER_TOKEN;
       correlatedLogger.info(
-        { executionType, modelName: normalizedModel, inputTokenCount },
+        { executionType, modelName: normalizedModel, inputTokenCount, tokenBasedEstimate, minDuration },
         'No historical data for LLM estimation, using defaults'
       );
       return {
         estimatedDurationMs: Math.min(
-          Math.max(inputTokenCount * DEFAULT_MS_PER_TOKEN, MIN_ESTIMATED_DURATION_MS),
+          Math.max(tokenBasedEstimate, minDuration),
           MAX_ESTIMATED_DURATION_MS
         ),
         isHistoricalEstimate: false,
@@ -148,9 +169,10 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
     const avgMsPerToken = totalMsPerToken / validSamples;
     const estimatedDurationMs = Math.round(avgMsPerToken * inputTokenCount);
 
-    // Clamp to reasonable bounds
+    // Clamp to reasonable bounds (using execution-type-specific minimum)
+    const minDuration = getMinDuration(executionType);
     const clampedDuration = Math.min(
-      Math.max(estimatedDurationMs, MIN_ESTIMATED_DURATION_MS),
+      Math.max(estimatedDurationMs, minDuration),
       MAX_ESTIMATED_DURATION_MS
     );
 
