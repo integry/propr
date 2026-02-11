@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
@@ -63,6 +63,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     handleIssueMultiToggle,
     handleIssueMultiModelChange,
     handleRefresh,
+    getUnmergedIssuesBefore,
   } = usePlanIssuesManager({ draftId, tasks, onRefresh });
 
   const handleImplementWithWarning = useCallback((issueNumber: number, models?: AgentModelPair[]) => {
@@ -85,6 +86,12 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
       setPendingImplementModels(undefined);
     }
   }, [pendingImplementIssue, pendingImplementModels, handleImplementIssue]);
+
+  // Compute unmerged issues for the warning dialog
+  const warningUnmergedIssues = useMemo(() => {
+    if (pendingImplementIssue === null) return [];
+    return getUnmergedIssuesBefore(pendingImplementIssue);
+  }, [pendingImplementIssue, getUnmergedIssuesBefore]);
 
   // Report issues to parent for footer stats
   useEffect(() => {
@@ -244,6 +251,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         isOpen={showSequenceWarning}
         onClose={handleCloseWarning}
         onProceed={handleProceedAnyway}
+        unmergedIssues={warningUnmergedIssues}
       />
     </div>
   );
