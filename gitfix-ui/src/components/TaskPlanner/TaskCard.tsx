@@ -1,6 +1,6 @@
 import { useState, forwardRef } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { MessageSquare, StickyNote, Trash2, Eye, Pencil, ChevronDown } from 'lucide-react';
+import { MessageSquare, StickyNote, Trash2, Pencil, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
@@ -78,7 +78,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         onClick={() => handleFieldClick(field)}
         className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1 task-card-content`}
       >
-        <MarkdownRenderer text={value} className="prose prose-sm max-w-none [&_code]:bg-slate-100 [&_code]:text-slate-700 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded-md [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none" />
+        <MarkdownRenderer text={value} className="prose prose-sm max-w-none [&_code]:bg-slate-100 [&_code]:text-slate-700 [&_code]:px-1.5 [&_code]:py-px [&_code]:rounded [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none" />
       </div>
     );
   };
@@ -105,72 +105,54 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     >
       {/* Main Card Container */}
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-        {/* Card Header with Step Number, Title, Mode Toggle and Actions */}
-        <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-100">
-          <div className="flex items-center gap-3">
-            <div className="w-7 h-7 flex items-center justify-center bg-indigo-600 text-white rounded-full font-semibold text-xs flex-shrink-0">
-              {stepNumber}
-            </div>
-            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Task {stepNumber}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            {/* Review/Edit Toggle - Always visible */}
-            <div className="flex items-center bg-white rounded-lg p-0.5 border border-gray-200">
-              <button
-                onClick={() => { setViewMode('preview'); setEditingField(null); }}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors text-xs font-medium ${
-                  viewMode === 'preview'
-                    ? 'bg-indigo-100 text-indigo-700'
-                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                }`}
-              >
-                <Eye size={12} />
-                Review
-              </button>
-              <button
-                onClick={() => setViewMode('edit')}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors text-xs font-medium ${
-                  viewMode === 'edit'
-                    ? 'bg-indigo-100 text-indigo-700'
-                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                }`}
-              >
-                <Pencil size={12} />
-                Edit
-              </button>
-            </div>
-            {/* Delete Button */}
-            <button
-              onClick={onDelete}
-              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors opacity-0 group-hover:opacity-100"
-            >
-              <Trash2 size={14} />
-            </button>
-          </div>
-        </div>
-
         {/* SECTION 1: ISSUE CONTENT (Title & Specification) */}
         <div className="p-5 pb-4">
           <div className="flex flex-col gap-3">
-            <div className="flex-1">
-              {viewMode === 'edit' || editingField === 'title' ? (
-                <input
-                  value={task.title}
-                  onChange={e => onChange({ ...task, title: e.target.value })}
-                  onBlur={handleBlur}
-                  onFocus={() => setEditingField('title')}
-                  autoFocus={editingField === 'title'}
-                  className="w-full text-xl font-semibold text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 rounded px-2 py-1 -ml-2 border border-transparent focus:border-indigo-200"
-                  placeholder="Task Title"
-                />
-              ) : (
-                <h3
-                  onClick={() => handleFieldClick('title')}
-                  className="text-xl font-semibold text-gray-900 cursor-default hover:bg-gray-50 rounded px-2 py-1 -ml-2 leading-tight"
+            {/* Title Row with Step Number, Title, Edit Icon, and Delete */}
+            <div className="flex items-start gap-3">
+              <span className="text-xl font-semibold text-gray-400 flex-shrink-0 mt-0.5">{stepNumber}.</span>
+              <div className="flex-1 min-w-0">
+                {viewMode === 'edit' || editingField === 'title' ? (
+                  <input
+                    value={task.title}
+                    onChange={e => onChange({ ...task, title: e.target.value })}
+                    onBlur={handleBlur}
+                    onFocus={() => setEditingField('title')}
+                    autoFocus={editingField === 'title'}
+                    className="w-full text-xl font-semibold text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 rounded px-2 py-1 -ml-2 border border-transparent focus:border-indigo-200"
+                    placeholder="Task Title"
+                  />
+                ) : (
+                  <h3
+                    onClick={() => handleFieldClick('title')}
+                    className="text-xl font-semibold text-gray-900 cursor-default hover:bg-gray-50 rounded px-2 py-1 -ml-2 leading-tight"
+                  >
+                    {task.title || <span className="text-gray-400 italic font-normal">Task Title</span>}
+                  </h3>
+                )}
+              </div>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                {/* Edit Toggle Icon */}
+                <button
+                  onClick={() => setViewMode(viewMode === 'edit' ? 'preview' : 'edit')}
+                  className={`p-1.5 rounded-md transition-colors ${
+                    viewMode === 'edit'
+                      ? 'text-teal-600 bg-teal-50 hover:bg-teal-100'
+                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+                  }`}
+                  title={viewMode === 'edit' ? 'Done editing' : 'Edit task'}
                 >
-                  {task.title || <span className="text-gray-400 italic font-normal">Task Title</span>}
-                </h3>
-              )}
+                  <Pencil size={14} />
+                </button>
+                {/* Delete Button */}
+                <button
+                  onClick={onDelete}
+                  className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors opacity-0 group-hover:opacity-100"
+                  title="Delete task"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             </div>
             <div className="mt-1">
               <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Specification</span>

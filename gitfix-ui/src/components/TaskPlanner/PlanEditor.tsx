@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Undo2, Redo2, Loader2, AlertCircle, FileText, GripVertical, Info, X, ArrowLeft, ChevronDown, FileQuestion, Github, GitBranch } from 'lucide-react';
+import { Undo2, Redo2, Loader2, AlertCircle, FileText, GripVertical, Info, X, ArrowLeft, FileQuestion, Github, GitBranch } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { debounce } from 'lodash';
 import { usePlanRefinement, SaveStatus } from '../../hooks/usePlanRefinement';
@@ -17,45 +17,53 @@ interface PlanEditorProps {
   onBackToSetup?: () => void;
 }
 
-interface OriginalPromptSectionProps {
+interface OriginalPromptPopoverProps {
   prompt: string;
 }
 
-const OriginalPromptSection: React.FC<OriginalPromptSectionProps> = ({ prompt }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt }) => {
+  const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <div className="border-b border-gray-200 bg-slate-50">
+    <div className="relative">
       <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-slate-100 transition-colors"
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-200 px-2 py-1 rounded transition-colors"
+        title="View original prompt"
       >
-        <div className="flex items-center gap-2 text-sm text-slate-600">
-          <FileQuestion size={14} />
-          <span className="font-medium">Original Prompt</span>
-        </div>
-        <motion.div
-          animate={{ rotate: isExpanded ? 180 : 0 }}
-          transition={{ duration: 0.2 }}
-        >
-          <ChevronDown size={16} className="text-slate-400" />
-        </motion.div>
+        <FileQuestion size={14} />
+        <span className="hidden sm:inline">Prompt</span>
       </button>
-      <AnimatePresence initial={false}>
-        {isExpanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden"
-          >
-            <div className="px-4 pb-3 pt-1">
-              <div className="bg-white rounded-lg border border-slate-200 p-3">
-                <p className="text-sm text-slate-700 whitespace-pre-wrap">{prompt}</p>
+      <AnimatePresence>
+        {isOpen && (
+          <>
+            {/* Backdrop */}
+            <div
+              className="fixed inset-0 z-40"
+              onClick={() => setIsOpen(false)}
+            />
+            {/* Popover */}
+            <motion.div
+              initial={{ opacity: 0, y: -10, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10, scale: 0.95 }}
+              transition={{ duration: 0.15 }}
+              className="absolute top-full left-0 mt-2 z-50 w-80 max-w-[calc(100vw-2rem)] bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
+            >
+              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Original Prompt</span>
+                <button
+                  onClick={() => setIsOpen(false)}
+                  className="p-1 hover:bg-gray-200 rounded transition-colors"
+                >
+                  <X size={14} className="text-gray-400" />
+                </button>
               </div>
-            </div>
-          </motion.div>
+              <div className="p-3 max-h-60 overflow-y-auto">
+                <p className="text-sm text-gray-700 whitespace-pre-wrap">{prompt}</p>
+              </div>
+            </motion.div>
+          </>
         )}
       </AnimatePresence>
     </div>
@@ -223,6 +231,13 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
           </div>
           <div className="h-4 w-px bg-gray-300" />
           <StatusBadge status={draft.status} saveStatus={saveStatus} />
+          {/* Original Prompt - moved to header */}
+          {originalPrompt && (
+            <>
+              <div className="h-4 w-px bg-gray-300" />
+              <OriginalPromptPopover prompt={originalPrompt} />
+            </>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -272,10 +287,6 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
           enforcement={granularityEnforcement}
           onDismiss={() => setEnforcementNoticeDismissed(true)}
         />
-      )}
-
-      {originalPrompt && (
-        <OriginalPromptSection prompt={originalPrompt} />
       )}
 
       {/* Main Content Area - Dual Pane Layout */}
