@@ -36,6 +36,13 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
     return map;
   }, [tasks]);
 
+  // Map issue_number to full PlanTask for expandable details
+  const issueTaskMap = useMemo(() => {
+    const map: Record<number, PlanTask> = {};
+    tasks.forEach(task => { if (task.issue_number) map[task.issue_number] = task; });
+    return map;
+  }, [tasks]);
+
   const issuesWithDefaults = useMemo(() => {
     const defaultAgent = agents.find(a => a.enabled);
     if (!defaultAgent) return issues;
@@ -51,14 +58,14 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
     });
   }, [issues, agents]);
 
-  const { activeIssues, mergedIssues, pendingCount, hasActiveIssues, firstPendingIssueNumber } = useMemo(() => {
+  const { activeIssues, mergedIssues, pendingCount, hasActiveIssues, firstPendingIssueNumber, sortedIssues } = useMemo(() => {
     const active: PlanIssue[] = [], merged: PlanIssue[] = [];
     let pending = 0, hasActive = false;
 
-    const sortedIssues = [...issuesWithDefaults].sort((a, b) => a.issue_number - b.issue_number);
+    const sorted = [...issuesWithDefaults].sort((a, b) => a.issue_number - b.issue_number);
 
     let firstUnmergedIssueNumber: number | null = null;
-    for (const issue of sortedIssues) {
+    for (const issue of sorted) {
       if (issue.status !== 'merged') {
         firstUnmergedIssueNumber = issue.issue_number;
         break;
@@ -80,8 +87,23 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
         if (STATUS_CONFIG[issue.status]?.isActive) hasActive = true;
       }
     });
-    return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive, firstPendingIssueNumber: firstPending };
+    return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive, firstPendingIssueNumber: firstPending, sortedIssues: sorted };
   }, [issuesWithDefaults]);
+
+  // Get unmerged issues that come before a given issue number (for dependency warning)
+  const getUnmergedIssuesBefore = useCallback((issueNumber: number) => {
+    const unmerged: Array<{ issue_number: number; title?: string }> = [];
+    for (const issue of sortedIssues) {
+      if (issue.issue_number >= issueNumber) break;
+      if (issue.status !== 'merged') {
+        unmerged.push({
+          issue_number: issue.issue_number,
+          title: issueTitles[issue.issue_number]
+        });
+      }
+    }
+    return unmerged;
+  }, [sortedIssues, issueTitles]);
 
   const fetchIssues = useCallback(async () => {
     try {
@@ -289,6 +311,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
     clearError,
     implementingIssue,
     issueTitles,
+    issueTaskMap,
     activeIssues,
     mergedIssues,
     pendingCount,
@@ -312,5 +335,6 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
     handleIssueMultiToggle,
     handleIssueMultiModelChange,
     handleRefresh,
+    getUnmergedIssuesBefore,
   };
 }

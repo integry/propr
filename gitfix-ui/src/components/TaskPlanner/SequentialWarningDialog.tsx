@@ -2,16 +2,23 @@ import React, { useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AlertTriangle } from 'lucide-react';
 
+interface UnmergedIssue {
+  issue_number: number;
+  title?: string;
+}
+
 interface SequentialWarningDialogProps {
   isOpen: boolean;
   onClose: () => void;
   onProceed: () => void;
+  unmergedIssues?: UnmergedIssue[];
 }
 
 export const SequentialWarningDialog: React.FC<SequentialWarningDialogProps> = ({
   isOpen,
   onClose,
-  onProceed
+  onProceed,
+  unmergedIssues = []
 }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -69,16 +76,31 @@ export const SequentialWarningDialog: React.FC<SequentialWarningDialogProps> = (
             <div className="p-6">
               <div className="flex items-start gap-4">
                 <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
-                  <AlertTriangle className="w-5 h-5 text-amber-600" />
+                  <AlertTriangle className="w-5 h-5 text-amber-500" />
                 </div>
                 <div className="flex-1">
                   <h3 id="warning-dialog-title" className="text-lg font-semibold text-gray-900 mb-2">
-                    Previous Tasks Not Merged
+                    Dependency Warning
                   </h3>
-                  <p className="text-sm text-gray-600 mb-4">
-                    This task should ideally be implemented after the previous tasks have been merged.
-                    Implementing out of order may lead to conflicts or incomplete implementations.
-                  </p>
+                  {unmergedIssues.length > 0 ? (
+                    <p className="text-sm text-gray-600 mb-4">
+                      This task depends on{' '}
+                      <span className="font-semibold text-gray-900">
+                        {unmergedIssues.map((issue, index) => (
+                          <span key={issue.issue_number}>
+                            {index > 0 && index === unmergedIssues.length - 1 ? ' and ' : index > 0 ? ', ' : ''}
+                            Issue #{issue.issue_number}
+                          </span>
+                        ))}
+                      </span>
+                      . Implementing out of order may lead to merge conflicts.
+                    </p>
+                  ) : (
+                    <p className="text-sm text-gray-600 mb-4">
+                      This task should ideally be implemented after the previous tasks have been merged.
+                      Implementing out of order may lead to conflicts or incomplete implementations.
+                    </p>
+                  )}
                   <p className="text-sm text-gray-600">
                     Are you sure you want to proceed?
                   </p>
@@ -89,14 +111,14 @@ export const SequentialWarningDialog: React.FC<SequentialWarningDialogProps> = (
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                className="px-4 py-2 text-sm font-medium text-gray-600 bg-transparent hover:bg-gray-100 rounded-md transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={onProceed}
-                className="px-4 py-2 text-sm font-medium text-white bg-amber-600 rounded-md hover:bg-amber-700 transition-colors"
+                className="px-4 py-2 text-sm font-medium text-white bg-amber-500 rounded-md hover:bg-amber-600 transition-colors shadow-sm"
               >
                 Proceed Anyway
               </button>

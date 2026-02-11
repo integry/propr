@@ -1,7 +1,7 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, RefreshCw, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
-import { AgentModelPair } from '../../api/planIssuesApi';
+import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
 import AgentModelSelector from './AgentModelSelector';
@@ -11,17 +11,21 @@ import { usePlanIssuesManager } from './usePlanIssuesManager';
 interface PlanIssuesManagerProps {
   draftId: string;
   tasks: PlanTask[];
-  repository?: string;
   onRefresh?: () => void;
   onViewPlanClick?: () => void;
+  /** Callback to report issues data to parent for footer stats */
+  onIssuesChange?: (issues: PlanIssue[]) => void;
+  /** Key to trigger refresh from parent */
+  refreshKey?: number;
 }
 
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
   tasks,
-  repository,
   onRefresh,
-  onViewPlanClick
+  onViewPlanClick,
+  onIssuesChange,
+  refreshKey
 }) => {
   const [showMerged, setShowMerged] = useState(false);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
@@ -36,10 +40,10 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     clearError,
     implementingIssue,
     issueTitles,
+    issueTaskMap,
     activeIssues,
     mergedIssues,
     pendingCount,
-    hasActiveIssues,
     firstPendingIssueNumber,
     globalAgent,
     globalModel,
@@ -59,6 +63,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     handleIssueMultiToggle,
     handleIssueMultiModelChange,
     handleRefresh,
+    getUnmergedIssuesBefore,
   } = usePlanIssuesManager({ draftId, tasks, onRefresh });
 
   const handleImplementWithWarning = useCallback((issueNumber: number, models?: AgentModelPair[]) => {
@@ -81,6 +86,24 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
       setPendingImplementModels(undefined);
     }
   }, [pendingImplementIssue, pendingImplementModels, handleImplementIssue]);
+
+  // Compute unmerged issues for the warning dialog
+  const warningUnmergedIssues = useMemo(() => {
+    if (pendingImplementIssue === null) return [];
+    return getUnmergedIssuesBefore(pendingImplementIssue);
+  }, [pendingImplementIssue, getUnmergedIssuesBefore]);
+
+  // Report issues to parent for footer stats
+  useEffect(() => {
+    onIssuesChange?.(issues);
+  }, [issues, onIssuesChange]);
+
+  // Trigger refresh when refreshKey changes (from parent footer button)
+  useEffect(() => {
+    if (refreshKey !== undefined && refreshKey > 0) {
+      handleRefresh();
+    }
+  }, [refreshKey, handleRefresh]);
 
   if (loading) {
     return (
@@ -111,47 +134,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
-            Plan Issues
-          </h3>
-          <span className="text-xs text-gray-500">
-            {issues.length} total
-            {pendingCount > 0 && ` (${pendingCount} pending)`}
-          </span>
-          {repository && (
-            <a
-              href={`https://github.com/${repository}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
-            >
-              <Github size={12} />
-              {repository}
-            </a>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleRefresh}
-            className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
-            title="Refresh issues"
-          >
-            <RefreshCw size={16} />
-          </button>
-          {hasActiveIssues && (
-            <span className="flex items-center gap-1 text-xs text-blue-600">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-              </span>
-              Auto-refreshing
-            </span>
-          )}
-        </div>
-      </div>
       {error && (
         <div className="flex items-center gap-2 p-3 bg-red-50 text-red-700 text-sm rounded-lg border border-red-200">
           <AlertCircle size={16} />
@@ -222,6 +204,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
             onMultiToggle={(isMulti) => handleIssueMultiToggle(issue.issue_number, isMulti)}
             onMultiModelChange={(models) => handleIssueMultiModelChange(issue.issue_number, models)}
+            task={issueTaskMap[issue.issue_number]}
           />
         ))}
       </div>
@@ -255,6 +238,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                     onAgentChange={handleAgentChange}
                     onModelChange={handleModelChange}
                     implementing={false}
+                    task={issueTaskMap[issue.issue_number]}
                   />
                 ))}
               </motion.div>
@@ -267,6 +251,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         isOpen={showSequenceWarning}
         onClose={handleCloseWarning}
         onProceed={handleProceedAnyway}
+        unmergedIssues={warningUnmergedIssues}
       />
     </div>
   );
