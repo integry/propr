@@ -1,9 +1,135 @@
-import { useState, forwardRef } from 'react';
+import { useState, forwardRef, useRef, useEffect } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { MessageSquare, StickyNote, Trash2, Pencil, ChevronDown } from 'lucide-react';
+import { MessageSquare, StickyNote, Trash2, Pencil, ChevronDown, AlertCircle, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
+
+// Confirmation dialog component for clearing implementation
+interface ClearImplementationDialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  fileCount: number;
+}
+
+const ClearImplementationDialog: React.FC<ClearImplementationDialogProps> = ({ isOpen, onClose, onConfirm, fileCount }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', handleKeyDown);
+    dialogRef.current?.focus();
+
+    return () => {
+      document.body.style.overflow = '';
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onClose]);
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              onClose();
+            }
+          }}
+        >
+          <motion.div
+            ref={dialogRef}
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.15 }}
+            className="bg-white rounded-lg max-w-md w-full border border-gray-300 shadow-lg"
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="clear-implementation-dialog-title"
+          >
+            <div className="p-6">
+              <div className="flex items-start gap-4">
+                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                  <AlertCircle className="w-5 h-5 text-red-600" />
+                </div>
+                <div className="flex-1">
+                  <h3 id="clear-implementation-dialog-title" className="text-lg font-semibold text-gray-900 mb-2">
+                    Clear Implementation Details?
+                  </h3>
+                  <p className="text-sm text-gray-600 mb-4">
+                    This will remove the suggested implementation containing {fileCount} file{fileCount !== 1 ? 's' : ''}.
+                    This action cannot be undone.
+                  </p>
+                  <p className="text-sm text-gray-600">
+                    Are you sure you want to continue?
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50 rounded-b-lg">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onConfirm}
+                className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700 transition-colors"
+              >
+                Clear Implementation
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+};
+
+// Helper to extract file paths from implementation markdown
+const extractFilePaths = (implementation: string): string[] => {
+  if (!implementation) return [];
+
+  const filePaths: string[] = [];
+  const lines = implementation.split('\n');
+
+  for (const line of lines) {
+    // Match patterns like: "File: path", "**File: path**", "### File: `path`", etc.
+    const fileMatch = line.match(/^(?:#{1,6}\s+)?(?:\*\*)?File:\s*[`]?([^`\n]+?)[`]?(?:\*\*)?$/i);
+    if (fileMatch) {
+      filePaths.push(fileMatch[1].trim());
+    }
+  }
+
+  // If no File: patterns found, try to extract from code block language hints
+  if (filePaths.length === 0) {
+    const codeBlockMatches = implementation.matchAll(/```(\w+)/g);
+    for (const match of codeBlockMatches) {
+      // Count code blocks as generic files
+      filePaths.push(`(${match[1]} code block)`);
+    }
+  }
+
+  return filePaths;
+};
 
 interface TaskCardProps {
   task: PlanTask;
@@ -26,6 +152,11 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   const [editingField, setEditingField] = useState<EditableField>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
   const [isImplementationCollapsed, setIsImplementationCollapsed] = useState(true);
+  const [showClearDialog, setShowClearDialog] = useState(false);
+
+  // Extract file paths from implementation for collapsed summary and count
+  const filePaths = extractFilePaths(task.implementation);
+  const fileCount = filePaths.length;
 
   const handleFieldClick = (field: EditableField) => {
     if (viewMode === 'edit') {
@@ -177,7 +308,9 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
               <div className="p-1.5 text-gray-500 rounded-md">
                 <MessageSquare size={14} />
               </div>
-              <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Suggested Implementation</span>
+              <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">
+                Suggested Implementation{fileCount > 0 && ` (${fileCount} FILE${fileCount !== 1 ? 'S' : ''})`}
+              </span>
               <motion.div
                 animate={{ rotate: isImplementationCollapsed ? 0 : 180 }}
                 transition={{ duration: 0.2 }}
@@ -189,7 +322,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onChange({ ...task, implementation: '' });
+                  setShowClearDialog(true);
                 }}
                 className="opacity-0 group-hover/impl:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-500 hover:bg-gray-100 rounded transition-colors"
                 title="Clear implementation"
@@ -208,10 +341,23 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ duration: 0.2 }}
-                className="py-3 text-sm text-gray-500 italic truncate cursor-pointer font-mono"
+                className="py-3 cursor-pointer"
                 onClick={toggleImplementationCollapse}
               >
-                {getImplementationPreview()}
+                {filePaths.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {filePaths.map((path, index) => (
+                      <div key={index} className="flex items-center gap-2 text-sm text-gray-600">
+                        <FileText size={14} className="text-gray-400 flex-shrink-0" />
+                        <span className="font-mono text-xs truncate">{path}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-gray-500 italic">
+                    {task.implementation ? getImplementationPreview() : 'No implementation details'}
+                  </div>
+                )}
               </motion.div>
             ) : (
               <motion.div
@@ -253,6 +399,16 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         </div>
       </div>
 
+      {/* Confirmation Dialog for clearing implementation */}
+      <ClearImplementationDialog
+        isOpen={showClearDialog}
+        onClose={() => setShowClearDialog(false)}
+        onConfirm={() => {
+          onChange({ ...task, implementation: '' });
+          setShowClearDialog(false);
+        }}
+        fileCount={fileCount || 1}
+      />
     </div>
   );
 });
