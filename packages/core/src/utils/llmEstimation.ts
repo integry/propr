@@ -66,16 +66,32 @@ export interface EstimationOptions {
 /**
  * Normalize model name for comparison.
  * Handles both short aliases (e.g., 'opus') and full model IDs.
+ * Also handles agent:model format (e.g., 'gemini:gemini-3-pro-preview').
  */
 function normalizeModelName(modelName: string): string {
-  // Extract the base model name for comparison
-  // e.g., 'claude:claude-opus-4-5-20251101' -> 'opus'
-  // e.g., 'opus' -> 'opus'
-  const lowerName = modelName.toLowerCase();
+  let lowerName = modelName.toLowerCase();
 
+  // Handle agent:model format by extracting the model part
+  // e.g., 'gemini:gemini-3-pro-preview' -> 'gemini-3-pro-preview'
+  // e.g., 'claude:claude-opus-4-5-20251101' -> 'claude-opus-4-5-20251101'
+  if (lowerName.includes(':')) {
+    const parts = lowerName.split(':');
+    lowerName = parts.slice(1).join(':'); // Handle model IDs that might contain colons
+  }
+
+  // Claude model family normalization
   if (lowerName.includes('opus')) return 'opus';
   if (lowerName.includes('sonnet')) return 'sonnet';
   if (lowerName.includes('haiku')) return 'haiku';
+
+  // Gemini model family normalization - extract the base model name
+  // e.g., 'gemini-3-pro-preview' -> 'gemini-3-pro'
+  // e.g., 'gemini-2.5-pro' -> 'gemini-2.5-pro'
+  if (lowerName.includes('gemini')) {
+    // Remove common suffixes like '-preview', '-exp', etc. for broader matching
+    // but keep the core model identifier
+    return lowerName.replace(/-preview$/, '').replace(/-exp$/, '');
+  }
 
   return lowerName;
 }
