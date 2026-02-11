@@ -10,6 +10,11 @@ interface MarkdownRendererProps {
   className?: string;
 }
 
+// Helper to check if a line starts a code block (supports both ``` and ~~~)
+const isCodeBlockDelimiter = (line: string): boolean => {
+  return line.startsWith('```') || line.startsWith('~~~');
+};
+
 // Helper to extract file path from markdown and clean the content
 const preprocessMarkdown = (text: string): { processedText: string; filePathMap: Map<number, string> } => {
   const filePathMap = new Map<number, string>();
@@ -30,7 +35,7 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
       const extractedPath = fileMatch[1].trim();
       // Look ahead for a code block (may have empty lines or other content between)
       for (let j = i + 1; j < lines.length && j <= i + 10; j++) {
-        if (lines[j].startsWith('```')) {
+        if (isCodeBlockDelimiter(lines[j])) {
           // Found a code block - mark this File: line for removal
           linesToSkip.add(i);
           pendingFilePath = extractedPath;
@@ -38,7 +43,7 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
         }
         // If we hit another File: line or significant content, stop looking
         if (lines[j].match(/^(?:#{1,6}\s+)?(?:\*\*)?File:/i) ||
-            (lines[j].trim() !== '' && !lines[j].startsWith('```') && j > i + 3)) {
+            (lines[j].trim() !== '' && !isCodeBlockDelimiter(lines[j]) && j > i + 3)) {
           break;
         }
       }
@@ -60,9 +65,16 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
     }
 
     // Track code blocks - when we encounter an opening code block, associate pending file path
-    if (line.startsWith('```') && !line.slice(3).includes('```')) {
+    // Supports both ``` and ~~~ delimiters
+    const isBacktickDelimiter = line.startsWith('```') && !line.slice(3).includes('```');
+    const isTildeDelimiter = line.startsWith('~~~') && !line.slice(3).includes('~~~');
+    if (isBacktickDelimiter || isTildeDelimiter) {
       // Check if this is opening a code block (not inline)
-      const isOpening = processedLines.filter(l => l.startsWith('```')).length % 2 === 0;
+      const countDelimiters = processedLines.filter(l =>
+        (l.startsWith('```') && !l.slice(3).includes('```')) ||
+        (l.startsWith('~~~') && !l.slice(3).includes('~~~'))
+      ).length;
+      const isOpening = countDelimiters % 2 === 0;
       if (isOpening) {
         codeBlockIndex++;
         if (pendingFilePath) {
