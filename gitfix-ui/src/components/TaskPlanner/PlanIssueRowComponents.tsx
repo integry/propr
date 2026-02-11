@@ -143,7 +143,6 @@ export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) =>
 
 export interface RowActionsProps {
   isPending: boolean;
-  isActive: boolean;
   hasExpandableContent: boolean;
   isExpanded: boolean;
   implementing: boolean;
@@ -163,7 +162,6 @@ export interface RowActionsProps {
 
 export const RowActions: React.FC<RowActionsProps> = ({
   isPending,
-  isActive,
   hasExpandableContent,
   isExpanded,
   implementing,

@@ -60,7 +60,6 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   );
 
   const isPending = issue.status === 'pending';
-  const isActive = STATUS_CONFIG[issue.status]?.isActive || false;
   const isMerged = issue.status === 'merged';
   const isProcessing = issue.status === 'processing' || issue.status === 'refinement_processing';
 
@@ -135,7 +134,6 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
             <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} selectedModels={selectedModels} />
             <RowActions
               isPending={isPending}
-              isActive={isActive}
               hasExpandableContent={hasExpandableContent}
               isExpanded={isExpanded}
               implementing={implementing}
