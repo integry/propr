@@ -162,7 +162,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                     lineNumberStyle={{
                       color: '#6b7280',
                       paddingRight: '0.75em',
-                      paddingLeft: 0,
+                      paddingLeft: '0.75em',
                       marginLeft: 0,
                       minWidth: '2em',
                       textAlign: 'right',
