@@ -11,3 +11,19 @@ export const getContainerClassName = (isMerged: boolean): string =>
 
 export const getTitleClassName = (isMerged: boolean): string =>
   isMerged ? 'text-gray-500' : 'text-gray-600';
+
+export const getImplementButtonClassName = (implementing: boolean, hasAgent: boolean, isFirstPending: boolean): string => {
+  if (implementing || !hasAgent) {
+    return 'bg-gray-100 text-gray-400 cursor-not-allowed';
+  }
+  if (!isFirstPending) {
+    return 'bg-gray-200 text-gray-500 hover:bg-gray-300 border border-gray-300';
+  }
+  return 'bg-primary-600 text-white hover:bg-primary-700';
+};
+
+export const getImplementButtonTitle = (hasAgent: boolean, isFirstPending: boolean): string => {
+  if (!hasAgent) return 'Select an agent first';
+  if (!isFirstPending) return 'Previous tasks not yet merged - click to implement anyway';
+  return 'Start AI implementation';
+};
