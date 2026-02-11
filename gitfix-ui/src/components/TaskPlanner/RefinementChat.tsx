@@ -197,7 +197,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
                 className={`
                   rounded-lg inline-block
                   ${message.role === 'user'
-                    ? 'bg-white border border-slate-200 text-slate-800 shadow-sm px-4 py-2'
+                    ? 'bg-white border border-teal-100 text-slate-800 shadow-sm px-4 py-2'
                     : message.role === 'thinking'
                       ? 'bg-slate-200 text-gray-600 italic p-3'
                       : 'bg-transparent text-gray-800'
@@ -215,7 +215,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       {/* Input area - floating command bar style with margin */}
       <div className="flex-shrink-0 m-4">
         <form onSubmit={handleSubmit}>
-          <div className="flex gap-2 items-end bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+          <div className="flex gap-2 items-end bg-white rounded-lg shadow-lg border border-slate-200 p-4">
             <textarea
               ref={textareaRef}
               value={input}
@@ -226,6 +226,8 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
               rows={1}
               className="flex-1 px-3 py-2 bg-transparent focus:outline-none disabled:bg-gray-50 resize-none min-h-[40px] max-h-[200px] overflow-y-auto text-sm"
             />
+            {/* Keyboard shortcut hint */}
+            <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>
             <button
               type="submit"
               disabled={!input.trim() || isLoading}
