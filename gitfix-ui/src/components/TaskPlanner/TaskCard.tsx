@@ -1,6 +1,6 @@
 import { useState, forwardRef } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { MessageSquare, StickyNote, Trash2, Eye, Code, ChevronDown } from 'lucide-react';
+import { MessageSquare, StickyNote, Trash2, Eye, Pencil, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
@@ -15,7 +15,7 @@ interface TaskCardProps {
 }
 
 type EditableField = 'title' | 'body' | 'implementation' | 'notes' | null;
-type ViewMode = 'preview' | 'markdown';
+type ViewMode = 'preview' | 'edit';
 
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   task,
@@ -29,7 +29,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   const [isImplementationCollapsed, setIsImplementationCollapsed] = useState(true);
 
   const handleFieldClick = (field: EditableField) => {
-    if (viewMode === 'markdown') {
+    if (viewMode === 'edit') {
       setEditingField(field);
     }
   };
@@ -45,7 +45,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     className: string,
     markdownClassName?: string
   ) => {
-    const isEditing = editingField === field || viewMode === 'markdown';
+    const isEditing = editingField === field || viewMode === 'edit';
 
     if (isEditing) {
       return (
@@ -76,9 +76,9 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     return (
       <div
         onClick={() => handleFieldClick(field)}
-        className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1`}
+        className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1 task-card-content`}
       >
-        <MarkdownRenderer text={value} className="prose prose-sm max-w-none" />
+        <MarkdownRenderer text={value} className="prose prose-sm max-w-none [&_code]:bg-slate-100 [&_code]:text-slate-700 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded-md [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none" />
       </div>
     );
   };
@@ -105,72 +105,82 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     >
       {/* Main Card Container */}
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-        {/* View Mode Toggle and Delete - positioned at top right, not overlaying title */}
-        <div className="absolute -top-3 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 flex items-center gap-2">
-          <div className="flex items-center bg-gray-100 rounded-lg p-1">
-            <button
-              onClick={() => { setViewMode('preview'); setEditingField(null); }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors text-sm ${
-                viewMode === 'preview'
-                  ? 'bg-white text-gray-700 shadow-sm'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <Eye size={14} />
-              Preview
-            </button>
-            <button
-              onClick={() => setViewMode('markdown')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors text-sm ${
-                viewMode === 'markdown'
-                  ? 'bg-white text-gray-700 shadow-sm'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <Code size={14} />
-              Edit
-            </button>
-          </div>
-          <button onClick={onDelete} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors bg-gray-100">
-            <Trash2 size={16} />
-          </button>
-        </div>
-
-        {/* SECTION 1: ISSUE HEADER (Title & Specification) */}
-        <div className="p-6 pb-4">
-          <div className="flex items-start gap-3 mb-4">
-            <div className="mt-1 w-8 h-8 flex items-center justify-center bg-indigo-600 text-white rounded-full font-semibold text-sm flex-shrink-0">
+        {/* Card Header with Step Number, Title, Mode Toggle and Actions */}
+        <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-100">
+          <div className="flex items-center gap-3">
+            <div className="w-7 h-7 flex items-center justify-center bg-indigo-600 text-white rounded-full font-semibold text-xs flex-shrink-0">
               {stepNumber}
             </div>
+            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Task {stepNumber}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Review/Edit Toggle - Always visible */}
+            <div className="flex items-center bg-white rounded-lg p-0.5 border border-gray-200">
+              <button
+                onClick={() => { setViewMode('preview'); setEditingField(null); }}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors text-xs font-medium ${
+                  viewMode === 'preview'
+                    ? 'bg-indigo-100 text-indigo-700'
+                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <Eye size={12} />
+                Review
+              </button>
+              <button
+                onClick={() => setViewMode('edit')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors text-xs font-medium ${
+                  viewMode === 'edit'
+                    ? 'bg-indigo-100 text-indigo-700'
+                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <Pencil size={12} />
+                Edit
+              </button>
+            </div>
+            {/* Delete Button */}
+            <button
+              onClick={onDelete}
+              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors opacity-0 group-hover:opacity-100"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        </div>
+
+        {/* SECTION 1: ISSUE CONTENT (Title & Specification) */}
+        <div className="p-5 pb-4">
+          <div className="flex flex-col gap-3">
             <div className="flex-1">
-              {viewMode === 'markdown' || editingField === 'title' ? (
+              {viewMode === 'edit' || editingField === 'title' ? (
                 <input
                   value={task.title}
                   onChange={e => onChange({ ...task, title: e.target.value })}
                   onBlur={handleBlur}
                   onFocus={() => setEditingField('title')}
                   autoFocus={editingField === 'title'}
-                  className="w-full text-lg font-bold text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-100 rounded px-1 -ml-1"
+                  className="w-full text-xl font-semibold text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 rounded px-2 py-1 -ml-2 border border-transparent focus:border-indigo-200"
                   placeholder="Task Title"
                 />
               ) : (
-                <div
+                <h3
                   onClick={() => handleFieldClick('title')}
-                  className="w-full text-lg font-bold text-gray-900 cursor-default hover:bg-gray-50 rounded px-1 -ml-1"
+                  className="text-xl font-semibold text-gray-900 cursor-default hover:bg-gray-50 rounded px-2 py-1 -ml-2 leading-tight"
                 >
                   {task.title || <span className="text-gray-400 italic font-normal">Task Title</span>}
-                </div>
+                </h3>
               )}
-              <div className="mt-2">
-                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Specification</span>
-                {renderEditableContent(
-                  'body',
-                  task.body,
-                  'Describe the context...',
-                  'w-full mt-1 text-gray-800 leading-relaxed',
-                  'w-full mt-1 text-gray-800 leading-relaxed'
-                )}
-              </div>
+            </div>
+            <div className="mt-1">
+              <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Specification</span>
+              {renderEditableContent(
+                'body',
+                task.body,
+                'Describe the context...',
+                'w-full mt-1.5 text-gray-700 leading-relaxed text-sm',
+                'w-full mt-1.5 text-gray-700 leading-relaxed text-sm'
+              )}
             </div>
           </div>
         </div>

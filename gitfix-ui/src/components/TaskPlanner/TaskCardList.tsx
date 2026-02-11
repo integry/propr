@@ -116,21 +116,26 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
     );
   }
 
+  // Only show timeline when there are multiple tasks
+  const showTimeline = tasks.length > 1;
+
   return (
     <div className="flex h-full">
-      {/* Sticky Timeline Sidebar with Drag & Drop */}
-      <TaskTimeline
-        taskCount={tasks.length}
-        activeIndex={activeTaskIndex}
-        onStepClick={handleTimelineClick}
-        taskTitles={tasks.map(t => t.title)}
-        taskIds={tasks.map(t => t.id)}
-        onReorderTasks={onReorderTasks}
-      />
+      {/* Sticky Timeline Sidebar with Drag & Drop - only show when multiple tasks */}
+      {showTimeline && (
+        <TaskTimeline
+          taskCount={tasks.length}
+          activeIndex={activeTaskIndex}
+          onStepClick={handleTimelineClick}
+          taskTitles={tasks.map(t => t.title)}
+          taskIds={tasks.map(t => t.id)}
+          onReorderTasks={onReorderTasks}
+        />
+      )}
 
       {/* Main Task List */}
       <div
-        className="flex-1 p-4 overflow-y-auto"
+        className={`flex-1 p-4 overflow-y-auto ${!showTimeline ? 'px-6' : ''}`}
         data-task-list
         onScroll={handleScroll}
       >
