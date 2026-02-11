@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { FileText, Copy, Check } from 'lucide-react';
+import { FileText } from 'lucide-react';
 
 interface MarkdownRendererProps {
   text: unknown;
@@ -52,8 +52,6 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
 };
 
 const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '' }) => {
-  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
-
   if (!text) return null;
 
   // Handle non-string content (JSON objects)
@@ -77,16 +75,6 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
   const { processedText, filePathMap } = preprocessMarkdown(text);
   let codeBlockCounter = 0;
 
-  const handleCopy = async (code: string, index: number) => {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopiedIndex(index);
-      setTimeout(() => setCopiedIndex(null), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
-  };
-
   return (
     <div className={`markdown-body ${className}`}>
       <ReactMarkdown
@@ -103,40 +91,17 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
 
               return (
                 <div className="code-block-container my-6 rounded-lg border border-gray-700 overflow-hidden shadow-md">
-                  {/* VS Code style header bar with file path */}
+                  {/* VS Code style header bar with file path on left, type on right */}
                   <div className="bg-gray-800 px-4 py-2 flex items-center justify-between border-b border-gray-700">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
-                      {filePath ? (
+                      {filePath && (
                         <>
                           <FileText size={14} className="text-gray-400 flex-shrink-0" />
                           <span className="text-gray-200 text-sm font-mono truncate">{filePath}</span>
                         </>
-                      ) : (
-                        <span className="text-gray-400 text-sm font-mono">{match[1].toUpperCase()}</span>
                       )}
                     </div>
-                    <div className="flex items-center gap-3 flex-shrink-0 ml-4">
-                      {filePath && (
-                        <span className="text-gray-500 text-xs font-mono uppercase">{match[1]}</span>
-                      )}
-                      <button
-                        onClick={() => handleCopy(codeContent, currentIndex)}
-                        className="flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors text-xs"
-                        title="Copy code"
-                      >
-                        {copiedIndex === currentIndex ? (
-                          <>
-                            <Check size={14} className="text-green-400" />
-                            <span className="text-green-400">Copied</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy size={14} />
-                            <span>Copy</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
+                    <span className="text-gray-500 text-xs font-mono uppercase flex-shrink-0 ml-4">{match[1]}</span>
                   </div>
                   {/* Code body with dark background */}
                   <SyntaxHighlighter
