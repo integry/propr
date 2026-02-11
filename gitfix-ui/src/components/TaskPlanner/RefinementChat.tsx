@@ -127,14 +127,17 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     <div className="flex flex-col h-full bg-slate-50">
       {/* Header */}
       <div className="px-4 py-3">
-        <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-          <div className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center">
-            <Bot size={14} className="text-white" />
+        <div className="flex items-center">
+          {/* Fixed 40px icon column to match message gutter alignment */}
+          <div className="w-10 flex-shrink-0 flex justify-center">
+            <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
+              <Bot size={16} className="text-white" />
+            </div>
           </div>
-          Assistant
-        </h3>
+          <h3 className="font-semibold text-gray-900 ml-3">Assistant</h3>
+        </div>
         {messages.length === 0 && (
-          <p className="text-xs text-gray-500 mt-0.5">Refine your plan through conversation</p>
+          <p className="text-xs text-gray-500 mt-0.5 ml-[52px]">Refine your plan through conversation</p>
         )}
       </div>
 
