@@ -21,7 +21,8 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     // Check if this is a "File: path" line followed by a code block
-    const fileMatch = line.match(/^(?:\*\*)?File:\s*`?([^`\n]+)`?(?:\*\*)?$/i);
+    // Supports: "File: path", "**File: path**", "### File: `path`", etc.
+    const fileMatch = line.match(/^(?:#{1,6}\s+)?(?:\*\*)?File:\s*`?([^`\n]+)`?(?:\*\*)?$/i);
     if (fileMatch) {
       // Look ahead to see if next non-empty line is a code block
       let nextLineIndex = i + 1;

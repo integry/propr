@@ -170,7 +170,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         <div className="mt-4 group/impl">
           {/* Header */}
           <div
-            className="flex items-center justify-between px-4 py-3 cursor-pointer select-none"
+            className="flex items-center justify-between py-3 cursor-pointer select-none"
             onClick={toggleImplementationCollapse}
           >
             <div className="flex items-center gap-3">
@@ -208,7 +208,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ duration: 0.2 }}
-                className="px-4 py-3 text-sm text-gray-500 italic truncate cursor-pointer font-mono"
+                className="py-3 text-sm text-gray-500 italic truncate cursor-pointer font-mono"
                 onClick={toggleImplementationCollapse}
               >
                 {getImplementationPreview()}
@@ -220,7 +220,6 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ duration: 0.2 }}
-                className="p-4"
               >
                 {renderEditableContent(
                   'implementation',
