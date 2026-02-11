@@ -1,6 +1,6 @@
 import { useState, forwardRef, useRef, useEffect } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { MessageSquare, StickyNote, Trash2, Pencil, ChevronDown, AlertCircle, FileText } from 'lucide-react';
+import { MessageSquare, Trash2, Pencil, ChevronDown, AlertCircle, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PlanTask } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
@@ -345,11 +345,11 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 onClick={toggleImplementationCollapse}
               >
                 {filePaths.length > 0 ? (
-                  <div className="space-y-1.5">
+                  <div className="border-l-2 border-gray-200 pl-4 ml-2 space-y-1.5">
                     {filePaths.map((path, index) => (
                       <div key={index} className="flex items-center gap-2 text-sm text-gray-600">
                         <FileText size={14} className="text-gray-400 flex-shrink-0" />
-                        <span className="font-mono text-xs truncate">{path}</span>
+                        <span className="font-mono text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-sm truncate">{path}</span>
                       </div>
                     ))}
                   </div>
@@ -383,7 +383,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         <div className="bg-white rounded-lg mt-3 mb-8 p-4 border border-dashed border-gray-300">
           <div className="flex items-start gap-3">
             <div className="mt-1 p-1.5 text-gray-400">
-              <StickyNote size={16} />
+              <Pencil size={16} />
             </div>
             <div className="flex-1">
               <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-1">User Notes</span>
