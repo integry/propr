@@ -139,7 +139,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
         className="refinement-chat-messages flex-1 overflow-y-auto px-4 pb-4 space-y-4 [scrollbar-gutter:stable]"
         style={{
           scrollbarWidth: 'thin',
-          scrollbarColor: '#9ca3af transparent'
+          scrollbarColor: '#d1d5db transparent'
         }}
       >
         <style>{`
@@ -150,7 +150,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             background: transparent;
           }
           .refinement-chat-messages::-webkit-scrollbar-thumb {
-            background-color: #9ca3af;
+            background-color: #d1d5db;
             border-radius: 3px;
           }
         `}</style>
@@ -172,45 +172,49 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
         {messages.map((message, index) => (
           <div
             key={message.id}
-            className={`flex items-start gap-3 pb-6 ${message.role === 'user' ? 'flex-row-reverse' : ''} ${index < messages.length - 1 ? 'border-b border-slate-100' : ''}`}
+            className={`flex items-start pb-6 ${index < messages.length - 1 ? 'border-b border-slate-100' : ''}`}
           >
-            <div
-              className={`
-                flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center
-                ${message.role === 'thinking' ? 'bg-gray-300' : message.role !== 'user' ? 'bg-gray-700' : ''}
-              `}
-              style={message.role === 'user' ? { backgroundColor: 'rgb(29, 138, 138)' } : undefined}
-            >
-              {message.role === 'user' ? (
-                <User size={16} className="text-white" />
-              ) : message.role === 'thinking' ? (
-                <Loader2 size={16} className="text-gray-600 animate-spin" />
-              ) : (
-                <Bot size={16} className="text-white" />
-              )}
+            {/* Fixed 40px icon column for gutter alignment */}
+            <div className="w-10 flex-shrink-0 flex justify-center">
+              <div
+                className={`
+                  w-8 h-8 rounded-full flex items-center justify-center
+                  ${message.role === 'thinking' ? 'bg-gray-300' : message.role === 'assistant' ? 'bg-gray-700' : 'bg-white border border-slate-200'}
+                `}
+              >
+                {message.role === 'user' ? (
+                  <User size={16} className="text-slate-600" />
+                ) : message.role === 'thinking' ? (
+                  <Loader2 size={16} className="text-gray-600 animate-spin" />
+                ) : (
+                  <Bot size={16} className="text-white" />
+                )}
+              </div>
             </div>
-            <div
-              className={`
-                max-w-[80%] rounded-lg
-                ${message.role === 'user'
-                  ? 'text-white px-4 py-2'
-                  : message.role === 'thinking'
-                    ? 'bg-slate-200 text-gray-600 italic p-3'
-                    : 'bg-transparent text-gray-800 p-3'
-                }
-              `}
-              style={message.role === 'user' ? { backgroundColor: 'rgb(29, 138, 138)' } : undefined}
-            >
-              <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+            {/* Message text column - never wraps under icon */}
+            <div className="flex-1 min-w-0 ml-3">
+              <div
+                className={`
+                  rounded-lg inline-block
+                  ${message.role === 'user'
+                    ? 'bg-white border border-slate-200 text-slate-800 shadow-sm px-4 py-2'
+                    : message.role === 'thinking'
+                      ? 'bg-slate-200 text-gray-600 italic p-3'
+                      : 'bg-transparent text-gray-800'
+                  }
+                `}
+              >
+                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+              </div>
             </div>
           </div>
         ))}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input area - pinned to bottom, flush against Global Footer */}
-      <div className="flex-shrink-0 bg-slate-50 border-t border-slate-200">
-        <form onSubmit={handleSubmit} className="p-3">
+      {/* Input area - floating command bar style with margin */}
+      <div className="flex-shrink-0 m-4">
+        <form onSubmit={handleSubmit}>
           <div className="flex gap-2 items-end bg-white rounded-lg shadow-sm border border-slate-200 p-1">
             <textarea
               ref={textareaRef}
@@ -237,7 +241,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
               )}
             </button>
           </div>
-          <p className="text-xs text-gray-400 mt-1.5 text-center">Shift+Enter for new line</p>
+          <p className="text-xs text-gray-400 mt-2 text-center">Shift+Enter for new line</p>
         </form>
       </div>
     </div>
