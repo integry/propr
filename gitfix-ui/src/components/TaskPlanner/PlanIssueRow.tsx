@@ -91,58 +91,69 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
     setIsExpanded(prev => !prev);
   }, []);
 
+  // Click on the row to expand (but not on interactive elements)
+  const handleRowClick = useCallback((e: React.MouseEvent) => {
+    // Only toggle expand if clicking on non-interactive area and there's expandable content
+    const target = e.target as HTMLElement;
+    const isInteractive = target.closest('button, a, select, input, [role="button"]');
+    if (!isInteractive && hasExpandableContent) {
+      setIsExpanded(prev => !prev);
+    }
+  }, [hasExpandableContent]);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`border rounded-lg ${getContainerClassName(isMerged)} overflow-hidden`}
+      className={`border rounded-lg ${getContainerClassName(isMerged)} overflow-hidden ${hasExpandableContent ? 'cursor-pointer' : ''}`}
+      onClick={handleRowClick}
     >
-      {/* Collapsed Header Row */}
-      <div className="p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <a
-                href={issueUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm font-medium text-gray-900 hover:text-primary-600 truncate flex items-center gap-1"
-                onClick={(e) => e.stopPropagation()}
-              >
-                #{issue.issue_number}
-                <ExternalLink size={12} className="flex-shrink-0 opacity-50" />
-              </a>
-              <StatusBadge status={issue.status} />
-            </div>
-
+      {/* High-Density Collapsed Row - Status, Title, and Actions on one line */}
+      <div className="px-4 py-2.5">
+        <div className="flex items-center justify-between gap-3">
+          {/* Left: Issue Number + Status Badge + Title - All inline */}
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <a
+              href={issueUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-mono text-xs px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-gray-700 hover:bg-gray-200 hover:text-primary-600 transition-colors flex items-center gap-1 flex-shrink-0"
+              onClick={(e) => e.stopPropagation()}
+            >
+              #{issue.issue_number}
+              <ExternalLink size={10} className="opacity-50" />
+            </a>
+            <StatusBadge status={issue.status} />
             {issueTitle && (
-              <p className={`text-sm ${getTitleClassName(isMerged)} truncate`}>
+              <span className={`text-sm ${getTitleClassName(isMerged)} truncate`}>
                 {issueTitle}
-              </p>
+              </span>
             )}
-
-            <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} selectedModels={selectedModels} />
           </div>
 
-          <RowActions
-            isPending={isPending}
-            isActive={isActive}
-            hasExpandableContent={hasExpandableContent}
-            isExpanded={isExpanded}
-            implementing={implementing}
-            isMultiMode={isMultiMode}
-            selectedModels={selectedModels}
-            hasAgent={hasAgent}
-            isFirstPending={isFirstPending}
-            agents={agents}
-            issue={issue}
-            onAgentChange={onAgentChange}
-            onModelChange={onModelChange}
-            handleMultiToggle={handleMultiToggle}
-            handleMultiModelChange={handleMultiModelChange}
-            handleImplementClick={handleImplementClick}
-            handleToggleExpand={handleToggleExpand}
-          />
+          {/* Right: Metadata + Actions */}
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} selectedModels={selectedModels} />
+            <RowActions
+              isPending={isPending}
+              isActive={isActive}
+              hasExpandableContent={hasExpandableContent}
+              isExpanded={isExpanded}
+              implementing={implementing}
+              isMultiMode={isMultiMode}
+              selectedModels={selectedModels}
+              hasAgent={hasAgent}
+              isFirstPending={isFirstPending}
+              agents={agents}
+              issue={issue}
+              onAgentChange={onAgentChange}
+              onModelChange={onModelChange}
+              handleMultiToggle={handleMultiToggle}
+              handleMultiModelChange={handleMultiModelChange}
+              handleImplementClick={handleImplementClick}
+              handleToggleExpand={handleToggleExpand}
+            />
+          </div>
         </div>
       </div>
 

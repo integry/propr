@@ -112,7 +112,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between pb-3">
         <div className="flex items-center gap-3">
           <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
             Plan Issues
@@ -153,6 +153,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           )}
         </div>
       </div>
+      {/* Continuous horizontal divider spanning full width */}
+      <div className="-mx-4 border-b border-gray-200" />
       {error && (
         <div className="flex items-center gap-2 p-3 bg-red-50 text-red-700 text-sm rounded-lg border border-red-200">
           <AlertCircle size={16} />

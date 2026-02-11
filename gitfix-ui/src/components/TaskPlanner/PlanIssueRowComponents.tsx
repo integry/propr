@@ -128,10 +128,11 @@ export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (
     href={prUrl}
     target="_blank"
     rel="noopener noreferrer"
-    className="flex items-center gap-1 text-purple-600 hover:text-purple-800"
+    className="inline-flex items-center gap-1.5 font-mono text-xs px-2 py-0.5 bg-purple-50 border border-purple-200 rounded text-purple-700 hover:bg-purple-100 hover:border-purple-300 transition-colors"
+    onClick={(e) => e.stopPropagation()}
   >
     <GitPullRequest size={12} />
-    PR #{prNumber}
+    <span>PR #{prNumber}</span>
     <ExternalLink size={10} className="opacity-50" />
   </a>
 );
@@ -154,7 +155,8 @@ export interface ViewProgressLinkProps {
 export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (
   <Link
     to={`/tasks/${taskId}`}
-    className="flex items-center gap-1 text-blue-600 hover:text-blue-800"
+    className="inline-flex items-center gap-1.5 font-mono text-xs px-2 py-0.5 bg-blue-50 border border-blue-200 rounded text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors"
+    onClick={(e) => e.stopPropagation()}
   >
     <Eye size={12} />
     View Progress
@@ -320,8 +322,13 @@ export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, 
   // Show single agent info only if we're not showing multi-agent and we have an agent
   const showAgentInfo = !isPending && !showMultiAgentInfo && issue.agent_alias;
 
+  // If no metadata to show, return null
+  if (!prUrl && !showProgressLink && issue.followup_count <= 0 && !showMultiAgentInfo && !showAgentInfo) {
+    return null;
+  }
+
   return (
-    <div className="flex items-center gap-4 mt-2 text-xs">
+    <div className="flex items-center gap-3 text-xs">
       {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
       {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
       {issue.followup_count > 0 && <FollowupCount count={issue.followup_count} />}

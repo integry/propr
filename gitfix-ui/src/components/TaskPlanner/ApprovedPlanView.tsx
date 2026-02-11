@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, CheckCircle, Github, ChevronDown, GitMerge, FileQuestion } from 'lucide-react';
+import { ExternalLink, CheckCircle, Github, ChevronDown, GitMerge, FileQuestion, GitBranch } from 'lucide-react';
 import { DraftWithPlan } from '../../api/gitfixApi';
 import PlanIssuesManager from './PlanIssuesManager';
+import { PlanTask } from '../../api/plannerApi';
 
 interface ApprovedPlanViewProps {
   draft: DraftWithPlan;
@@ -57,7 +58,7 @@ const OriginalPromptSection: React.FC<OriginalPromptSectionProps> = ({ prompt })
 
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => {
   // Defensively ensure plan_json is an array
-  const tasks = (() => {
+  const tasks: PlanTask[] = (() => {
     let planJson = draft.plan_json;
     if (typeof planJson === 'string') {
       try { planJson = JSON.parse(planJson); } catch { return []; }
@@ -74,16 +75,38 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
 
   const repoUrl = getRepositoryUrl();
 
+  // Extract repository and branch info
+  const repository = draft.repository || '';
+  const baseBranch = draft.context_config?.baseBranch || 'main';
+
+  // Compute footer stats from tasks
+  const footerStats = useMemo(() => {
+    const total = tasks.length;
+    const merged = tasks.filter(t => t.status === 'merged').length;
+    const underReview = tasks.filter(t => t.status === 'pr_open' || t.status === 'pr_review').length;
+    const pending = tasks.filter(t => t.status === 'pending' || !t.status).length;
+    const processing = tasks.filter(t => t.status === 'processing' || t.status === 'refinement_processing').length;
+    return { total, merged, underReview, pending, processing };
+  }, [tasks]);
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       className="h-full bg-white overflow-hidden flex flex-col"
     >
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white flex-shrink-0">
+      {/* Pro Studio Header - Anchored with gray background */}
+      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0">
         <div className="flex items-center gap-4">
-          <div className="text-sm text-gray-500 truncate max-w-md">{draft.task_title || draft.title || 'Untitled Task'}</div>
+          {/* Repository and Branch Breadcrumb */}
+          <div className="flex items-center gap-2 text-sm">
+            <Github size={16} className="text-gray-500" />
+            <span className="font-medium text-gray-900">{repository}</span>
+            <span className="text-gray-400">/</span>
+            <GitBranch size={14} className="text-gray-500" />
+            <span className="text-gray-600">{baseBranch}</span>
+          </div>
+          <div className="h-4 w-px bg-gray-300" />
           {draft.status === 'merged' ? (
             <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1">
               <GitMerge size={12} />
@@ -92,7 +115,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
           ) : (
             <span className="px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-700 flex items-center gap-1">
               <CheckCircle size={12} />
-              Issues created
+              Issues Created
             </span>
           )}
         </div>
@@ -125,6 +148,40 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
           tasks={tasks}
           repository={draft.repository}
         />
+      </div>
+
+      {/* Pro Studio Footer - Anchored with status summary */}
+      <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
+        <div className="flex items-center gap-1 text-sm text-gray-600">
+          <span className="font-medium">{footerStats.total} {footerStats.total === 1 ? 'Issue' : 'Issues'} Total</span>
+          {footerStats.merged > 0 && (
+            <>
+              <span className="text-gray-400 mx-1">•</span>
+              <span className="text-purple-600">{footerStats.merged} Merged</span>
+            </>
+          )}
+          {footerStats.underReview > 0 && (
+            <>
+              <span className="text-gray-400 mx-1">•</span>
+              <span className="text-blue-600">{footerStats.underReview} Under Review</span>
+            </>
+          )}
+          {footerStats.processing > 0 && (
+            <>
+              <span className="text-gray-400 mx-1">•</span>
+              <span className="text-amber-600">{footerStats.processing} Processing</span>
+            </>
+          )}
+          {footerStats.pending > 0 && (
+            <>
+              <span className="text-gray-400 mx-1">•</span>
+              <span className="text-gray-500">{footerStats.pending} Pending</span>
+            </>
+          )}
+        </div>
+        <div className="text-xs text-gray-400">
+          Execution Hub
+        </div>
       </div>
     </motion.div>
   );
