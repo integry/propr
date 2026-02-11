@@ -16,6 +16,7 @@ import {
   Base64Image, MinimalLogger, ContextRepository, getModelHardLimit
 } from './planningHelpers.js';
 import { estimateLlmDuration } from '../utils/llmEstimation.js';
+import { estimateTokens } from '../utils/tokenCalculation.js';
 import type { Attachment } from './attachmentService.js';
 import { loadSettings } from '../config/configManager.js';
 
@@ -789,8 +790,8 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
   const [repoOwner, repoName] = repository.split('/');
   const issueRef = { number: 0, repoOwner: repoOwner || 'unknown', repoName: repoName || 'unknown' };
 
-  // Estimate input token count (rough: ~4 chars per token)
-  const estimatedInputTokens = Math.ceil(userPrompt.length / 4);
+  // Estimate input token count using tiktoken (more accurate than rough char/4 estimate)
+  const estimatedInputTokens = estimateTokens(userPrompt);
 
   // Estimate LLM execution duration based on historical data
   const estimation = await estimateLlmDuration({
