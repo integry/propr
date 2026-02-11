@@ -236,9 +236,19 @@ export interface DraftContextConfig {
 }
 
 export interface RefinementResult {
-  action: 'modified' | 'answered' | 'both';
-  summary: string;
-  timestamp: string;
+  /** Status of the refinement: 'in_progress' during processing, 'completed' when done */
+  status?: 'in_progress' | 'completed';
+  action?: 'modified' | 'answered' | 'both';
+  summary?: string;
+  timestamp?: string;
+  /** ISO timestamp when refinement started */
+  startedAt?: string;
+  /** Estimated duration in milliseconds */
+  estimatedDuration?: number;
+  /** Whether the estimate is based on historical data */
+  isHistoricalEstimate?: boolean;
+  /** Number of historical samples used for estimation */
+  sampleCount?: number;
 }
 
 export interface DraftWithPlan extends PlannerDraft {

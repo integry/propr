@@ -9,7 +9,9 @@ import {
   executeDraft,
   getGitHubInstallationToken,
   ensureRepoCloned,
-  generateCorrelationId
+  generateCorrelationId,
+  estimateLlmDuration,
+  loadSettings
 } from '@gitfix/core';
 import type { Plan } from '@gitfix/core';
 import {
@@ -93,9 +95,36 @@ export function createRefineHandler(db: Knex) {
       const ownership = await verifyDraftOwnership(db, draftId, req.user!.id, ['user_id']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
-      // Set status to 'refining' and return immediately
+      // Calculate estimation early so we can store it before the LLM call starts
+      // Estimate input token count based on current plan size and instruction
+      const planJsonStr = JSON.stringify(currentPlan, null, 2);
+      const estimatedInputTokens = Math.ceil((planJsonStr.length + instruction.length + 2000) / 4); // +2000 for system prompt
+
+      const settings = await loadSettings();
+      const generationModel = settings.planner_generation_model || 'opus';
+
+      const estimation = await estimateLlmDuration({
+        executionType: 'plan-refinement',
+        modelName: generationModel,
+        inputTokenCount: estimatedInputTokens,
+        correlationId
+      });
+
+      const startedAt = new Date().toISOString();
+
+      // Set status to 'refining' with initial refinement_result containing estimation data
+      // This allows the frontend to show progress immediately
+      const initialRefinementMeta = {
+        status: 'in_progress',
+        startedAt,
+        estimatedDuration: estimation.estimatedDurationMs,
+        isHistoricalEstimate: estimation.isHistoricalEstimate,
+        sampleCount: estimation.sampleCount
+      };
+
       await db('task_drafts').where({ draft_id: draftId }).update({
         status: 'refining',
+        refinement_result: JSON.stringify(initialRefinementMeta),
         updated_at: db.fn.now()
       });
 
@@ -122,11 +151,17 @@ export function createRefineHandler(db: Knex) {
             draftId
           });
 
-          // Store the refinement result including action and summary
+          // Store the refinement result including action, summary, and estimation data
           const refinementMeta = {
+            status: 'completed',
             action: result.action,
             summary: result.summary,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            // Include estimation data from the LLM call
+            estimatedDuration: result.estimation?.estimatedDurationMs,
+            startedAt: result.estimation?.startedAt,
+            isHistoricalEstimate: result.estimation?.isHistoricalEstimate,
+            sampleCount: result.estimation?.sampleCount
           };
 
           console.log(`[refine] Storing refinement result for draft ${draftId}:`, JSON.stringify(refinementMeta));

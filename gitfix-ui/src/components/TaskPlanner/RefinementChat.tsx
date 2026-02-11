@@ -1,6 +1,7 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Send, Bot, User, Loader2 } from 'lucide-react';
 import { ChatMessage } from '../../api/gitfixApi';
+import type { RefinementProgress } from '../../hooks/usePlanRefinement';
 
 interface Message {
   id: string;
@@ -13,9 +14,85 @@ interface RefinementChatProps {
   onSendMessage: (message: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }>;
   initialMessages?: ChatMessage[];
   onMessagesChange?: (messages: ChatMessage[]) => void;
+  refinementProgress?: RefinementProgress;
 }
 
-export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange }) => {
+/** Maximum progress percentage to show when execution takes longer than estimated */
+const MAX_PROGRESS_PERCENT = 98;
+
+/** Format duration for display (e.g., "1m 30s") */
+const formatDuration = (ms: number): string => {
+  if (ms < 1000) return `${Math.round(ms / 100) / 10}s`;
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds}s`;
+  if (seconds === 0) return `${minutes}m`;
+  return `${minutes}m ${seconds}s`;
+};
+
+interface RefinementProgressBarProps {
+  startedAt: string;
+  estimatedDuration: number;
+}
+
+const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt, estimatedDuration }) => {
+  const [progress, setProgress] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+
+  const startTime = useMemo(() => new Date(startedAt).getTime(), [startedAt]);
+
+  useEffect(() => {
+    const updateProgress = () => {
+      const now = Date.now();
+      const elapsedMs = now - startTime;
+      setElapsed(elapsedMs);
+
+      // Calculate progress percentage, capped at MAX_PROGRESS_PERCENT until completion
+      const rawProgress = (elapsedMs / estimatedDuration) * 100;
+      setProgress(Math.min(rawProgress, MAX_PROGRESS_PERCENT));
+    };
+
+    // Update immediately
+    updateProgress();
+
+    // Update every 500ms for smooth progress
+    const interval = setInterval(updateProgress, 500);
+
+    return () => clearInterval(interval);
+  }, [startTime, estimatedDuration]);
+
+  const remaining = Math.max(0, estimatedDuration - elapsed);
+  const isOverEstimate = elapsed > estimatedDuration;
+
+  return (
+    <div className="mt-2 mb-1">
+      {/* Progress bar */}
+      <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
+        <div
+          className="h-full transition-all duration-500 ease-out rounded-full"
+          style={{
+            width: `${progress}%`,
+            backgroundColor: isOverEstimate ? 'rgb(234, 179, 8)' : 'rgb(29, 138, 138)'
+          }}
+        />
+      </div>
+      {/* Progress info */}
+      <div className="flex justify-between mt-1 text-xs text-gray-400">
+        <span>
+          {isOverEstimate ? (
+            <span className="text-yellow-600">Taking longer than expected...</span>
+          ) : (
+            `~${formatDuration(remaining)} remaining`
+          )}
+        </span>
+        <span>{Math.round(progress)}%</span>
+      </div>
+    </div>
+  );
+};
+
+export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress }) => {
   const [messages, setMessages] = useState<Message[]>(() => {
     if (initialMessages && initialMessages.length > 0) {
       // Filter out any legacy welcome messages stored in the database
@@ -202,16 +279,23 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             <div className="flex-1 min-w-0 ml-3">
               <div
                 className={`
-                  rounded-lg inline-block
+                  rounded-lg
                   ${message.role === 'user'
-                    ? 'bg-white border border-teal-100 text-slate-800 shadow-sm px-4 py-2'
+                    ? 'bg-white border border-teal-100 text-slate-800 shadow-sm px-4 py-2 inline-block'
                     : message.role === 'thinking'
-                      ? 'bg-slate-200 text-gray-600 italic p-3'
-                      : 'bg-transparent text-gray-800'
+                      ? 'bg-slate-200 text-gray-600 italic p-3 w-full max-w-xs'
+                      : 'bg-transparent text-gray-800 inline-block'
                   }
                 `}
               >
                 <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                {/* Show progress bar for thinking messages when progress data is available */}
+                {message.role === 'thinking' && refinementProgress?.startedAt && refinementProgress?.estimatedDuration && (
+                  <RefinementProgressBar
+                    startedAt={refinementProgress.startedAt}
+                    estimatedDuration={refinementProgress.estimatedDuration}
+                  />
+                )}
               </div>
             </div>
           </div>

@@ -764,7 +764,14 @@ function validateRefinementResponse(
   return refinementResponse;
 }
 
-export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlanResult> {
+export interface RefinePlanEstimation {
+  estimatedDurationMs: number;
+  startedAt: string;
+  isHistoricalEstimate: boolean;
+  sampleCount: number;
+}
+
+export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlanResult & { estimation?: RefinePlanEstimation }> {
   const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId, originalContext, draftId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
@@ -781,6 +788,25 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
   const userPrompt = `${REFINER_SYSTEM_PROMPT}${contextSection}\n\nCurrent Plan:\n${JSON.stringify(currentPlan, null, 2)}\n\nUser Request:\n"${instruction}"`;
   const [repoOwner, repoName] = repository.split('/');
   const issueRef = { number: 0, repoOwner: repoOwner || 'unknown', repoName: repoName || 'unknown' };
+
+  // Estimate input token count (rough: ~4 chars per token)
+  const estimatedInputTokens = Math.ceil(userPrompt.length / 4);
+
+  // Estimate LLM execution duration based on historical data
+  const estimation = await estimateLlmDuration({
+    executionType: 'plan-refinement',
+    modelName: generationModel,
+    inputTokenCount: estimatedInputTokens,
+    correlationId
+  });
+
+  const startedAt = new Date().toISOString();
+  correlatedLogger.info({
+    estimatedDurationMs: estimation.estimatedDurationMs,
+    isHistoricalEstimate: estimation.isHistoricalEstimate,
+    sampleCount: estimation.sampleCount,
+    estimatedInputTokens
+  }, 'Estimated refinement duration');
 
   // Build metadata for LLM log tracking
   const refinementMetadata = {
@@ -816,7 +842,13 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
   return {
     plan: refinementResponse.plan,
     action: refinementResponse.action,
-    summary: refinementResponse.summary
+    summary: refinementResponse.summary,
+    estimation: {
+      estimatedDurationMs: estimation.estimatedDurationMs,
+      startedAt,
+      isHistoricalEstimate: estimation.isHistoricalEstimate,
+      sampleCount: estimation.sampleCount
+    }
   };
 }
 

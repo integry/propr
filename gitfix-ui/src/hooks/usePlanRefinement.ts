@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { debounce } from 'lodash';
-import { updateDraft, refinePlan, getDraftWithPlan, PlanTask } from '../api/gitfixApi';
+import { updateDraft, refinePlan, getDraftWithPlan, PlanTask, RefinementResult } from '../api/gitfixApi';
 
 export type SaveStatus = 'saved' | 'saving' | 'error';
 
@@ -80,6 +80,17 @@ const parseRefinementResult = (result: unknown): { summary?: string; action?: 'm
   return result as { summary?: string; action?: 'modified' | 'answered' | 'both' } | undefined;
 };
 
+export interface RefinementProgress {
+  /** Whether refinement is in progress */
+  isRefining: boolean;
+  /** ISO timestamp when refinement started */
+  startedAt?: string;
+  /** Estimated duration in milliseconds */
+  estimatedDuration?: number;
+  /** Whether the estimate is based on historical data */
+  isHistoricalEstimate?: boolean;
+}
+
 interface UsePlanRefinementResult {
   plan: PlanTask[];
   updatePlan: (newPlan: PlanTask[], origin?: 'user' | 'ai') => void;
@@ -95,6 +106,8 @@ interface UsePlanRefinementResult {
   canRedo: boolean;
   saveStatus: SaveStatus;
   highlightedIds: string[];
+  /** Progress data for refinement operations */
+  refinementProgress: RefinementProgress;
 }
 
 export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): UsePlanRefinementResult => {
@@ -103,6 +116,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
   const [pointer, setPointer] = useState(0);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
+  const [refinementProgress, setRefinementProgress] = useState<RefinementProgress>({ isRefining: false });
   const saveRef = useRef<ReturnType<typeof debounce> | null>(null);
 
   const currentPlan = history[pointer];
@@ -229,20 +243,40 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
   const handleRefine = useCallback(async (instruction: string): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }> => {
     try {
+      // Set initial refining state
+      setRefinementProgress({ isRefining: true });
+
       // Start refinement - returns immediately with 202
       await refinePlan(draftId, currentPlan, instruction);
 
       // Poll for completion
       const pollForCompletion = async (): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }> => {
         const maxAttempts = 300; // 5 minutes max
+        let hasUpdatedProgress = false;
+
         for (let i = 0; i < maxAttempts; i++) {
           await new Promise(resolve => setTimeout(resolve, 1000));
           const draft = await getDraftWithPlan(draftId);
+
+          // Update progress from refinement_result if available
+          if (!hasUpdatedProgress && draft.refinement_result) {
+            const refinementResult = parseRefinementResult(draft.refinement_result) as RefinementResult | undefined;
+            if (refinementResult?.startedAt && refinementResult?.estimatedDuration) {
+              setRefinementProgress({
+                isRefining: true,
+                startedAt: refinementResult.startedAt,
+                estimatedDuration: refinementResult.estimatedDuration,
+                isHistoricalEstimate: refinementResult.isHistoricalEstimate
+              });
+              hasUpdatedProgress = true;
+            }
+          }
 
           if (draft.status === 'review') {
             // Refinement complete - defensively parse plan_json if it's a string
             const planJson = parsePlanJson(draft.plan_json);
             if (!planJson) {
+              setRefinementProgress({ isRefining: false });
               return { success: false, message: 'Refinement completed but no plan returned' };
             }
 
@@ -253,20 +287,24 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
             const message = refinementResult?.summary || 'Plan processed successfully.';
             const action = refinementResult?.action;
 
+            setRefinementProgress({ isRefining: false });
             return { success: true, message, action };
           }
 
           if (draft.status !== 'refining') {
             // Unexpected status
+            setRefinementProgress({ isRefining: false });
             return { success: false, message: 'Refinement failed unexpectedly' };
           }
         }
+        setRefinementProgress({ isRefining: false });
         return { success: false, message: 'Refinement timed out. Please try again.' };
       };
 
       return await pollForCompletion();
     } catch (e) {
       console.error(e);
+      setRefinementProgress({ isRefining: false });
       return { success: false, message: 'Failed to refine plan. Please try again.' };
     }
   }, [draftId, currentPlan, updatePlan]);
@@ -301,6 +339,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     canUndo: pointer > 0,
     canRedo: pointer < history.length - 1,
     saveStatus,
-    highlightedIds
+    highlightedIds,
+    refinementProgress
   };
 };
