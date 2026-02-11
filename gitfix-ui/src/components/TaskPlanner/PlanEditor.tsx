@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Undo2, Redo2, Loader2, AlertCircle, FileText, GripVertical, Info, X, ArrowLeft, FileQuestion, Github, GitBranch } from 'lucide-react';
+import { Undo2, Redo2, Loader2, AlertCircle, GripVertical, Info, X, ArrowLeft, FileQuestion, Github, GitBranch } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { debounce } from 'lodash';
 import { usePlanRefinement } from '../../hooks/usePlanRefinement';
@@ -323,8 +323,8 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
             </>
           ) : (
             <>
-              <FileText size={16} />
-              Create GitHub Issues
+              <Github size={16} />
+              Create {plan.length} GitHub {plan.length === 1 ? 'Issue' : 'Issues'}
             </>
           )}
         </button>
