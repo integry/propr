@@ -18,10 +18,16 @@ interface RefinementChatProps {
 export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange }) => {
   const [messages, setMessages] = useState<Message[]>(() => {
     if (initialMessages && initialMessages.length > 0) {
-      return initialMessages.map(m => ({
-        ...m,
-        timestamp: new Date(m.timestamp)
-      }));
+      // Filter out any legacy welcome messages stored in the database
+      const filteredMessages = initialMessages.filter(m =>
+        !(m.role === 'assistant' && m.content.includes('I can help you refine this plan'))
+      );
+      if (filteredMessages.length > 0) {
+        return filteredMessages.map(m => ({
+          ...m,
+          timestamp: new Date(m.timestamp)
+        }));
+      }
     }
     return [];
   });
@@ -129,7 +135,25 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       </div>
 
       {/* Messages area - no border, fills available space */}
-      <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-4 scrollbar-thin [scrollbar-gutter:stable]">
+      <div
+        className="refinement-chat-messages flex-1 overflow-y-auto px-4 pb-4 space-y-4 [scrollbar-gutter:stable]"
+        style={{
+          scrollbarWidth: 'thin',
+          scrollbarColor: '#9ca3af transparent'
+        }}
+      >
+        <style>{`
+          .refinement-chat-messages::-webkit-scrollbar {
+            width: 6px;
+          }
+          .refinement-chat-messages::-webkit-scrollbar-track {
+            background: transparent;
+          }
+          .refinement-chat-messages::-webkit-scrollbar-thumb {
+            background-color: #9ca3af;
+            border-radius: 3px;
+          }
+        `}</style>
         {/* Onboarding Card - shown only when chat is empty */}
         {messages.length === 0 && (
           <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
@@ -148,7 +172,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
         {messages.map((message, index) => (
           <div
             key={message.id}
-            className={`flex items-start gap-3 ${message.role === 'user' ? 'flex-row-reverse' : ''} ${index < messages.length - 1 ? 'border-b border-slate-100 pb-4' : ''}`}
+            className={`flex items-start gap-3 pb-6 ${message.role === 'user' ? 'flex-row-reverse' : ''} ${index < messages.length - 1 ? 'border-b border-slate-100' : ''}`}
           >
             <div
               className={`
@@ -167,12 +191,12 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             </div>
             <div
               className={`
-                max-w-[80%] rounded-lg p-3
+                max-w-[80%] rounded-lg
                 ${message.role === 'user'
-                  ? 'text-white'
+                  ? 'text-white px-4 py-2'
                   : message.role === 'thinking'
-                    ? 'bg-slate-200 text-gray-600 italic'
-                    : 'bg-transparent text-gray-800'
+                    ? 'bg-slate-200 text-gray-600 italic p-3'
+                    : 'bg-transparent text-gray-800 p-3'
                 }
               `}
               style={message.role === 'user' ? { backgroundColor: 'rgb(29, 138, 138)' } : undefined}
