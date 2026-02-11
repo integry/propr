@@ -3,7 +3,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Undo2, Redo2, Loader2, AlertCircle, FileText, GripVertical, Info, X, ArrowLeft, FileQuestion, Github, GitBranch } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { debounce } from 'lodash';
-import { usePlanRefinement, SaveStatus } from '../../hooks/usePlanRefinement';
+import { usePlanRefinement } from '../../hooks/usePlanRefinement';
 import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, GranularityEnforcementMetadata, resetDraftToSetup } from '../../api/gitfixApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
@@ -70,21 +70,6 @@ const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt })
   );
 };
 
-const StatusBadge: React.FC<{ status: string; saveStatus: SaveStatus }> = ({ status, saveStatus }) => {
-  const statusLabel = status === 'draft' ? 'Draft Specification' : status.charAt(0).toUpperCase() + status.slice(1);
-  const saveLabel = saveStatus === 'saving' ? 'Saving...' : saveStatus === 'error' ? 'Error' : 'Saved';
-
-  return (
-    <span className="text-sm text-gray-500 flex items-center gap-1">
-      <span>{statusLabel}</span>
-      <span className="text-gray-300">•</span>
-      <span className={saveStatus === 'error' ? 'text-red-500' : saveStatus === 'saving' ? 'text-yellow-600' : 'text-gray-500'}>
-        {saveLabel}
-      </span>
-    </span>
-  );
-};
-
 interface GranularityEnforcementNoticeProps {
   enforcement: GranularityEnforcementMetadata;
   onDismiss: () => void;
@@ -147,7 +132,6 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
     redo,
     canUndo,
     canRedo,
-    saveStatus,
     highlightedIds
   } = usePlanRefinement(draft.draft_id, initialPlan);
 
@@ -229,8 +213,6 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
             <GitBranch size={14} className="text-gray-500" />
             <span className="text-gray-600">{baseBranch}</span>
           </div>
-          <div className="h-4 w-px bg-gray-300" />
-          <StatusBadge status={draft.status} saveStatus={saveStatus} />
           {/* Original Prompt - moved to header */}
           {originalPrompt && (
             <>

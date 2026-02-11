@@ -110,7 +110,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
           <div className="flex flex-col gap-3">
             {/* Title Row with Step Number, Title, Edit Icon, and Delete */}
             <div className="flex items-start gap-3">
-              <span className="text-xl font-semibold text-gray-400 flex-shrink-0 mt-0.5">{stepNumber}.</span>
+              <span className="text-xl font-semibold flex-shrink-0 mt-0.5" style={{ color: 'rgb(29, 138, 138)' }}>{stepNumber}.</span>
               <div className="flex-1 min-w-0">
                 {viewMode === 'edit' || editingField === 'title' ? (
                   <input
