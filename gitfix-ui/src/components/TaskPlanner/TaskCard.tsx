@@ -11,7 +11,6 @@ interface TaskCardProps {
   stepNumber: number;
   onChange: (task: PlanTask) => void;
   onDelete: () => void;
-  onAddBelow: () => void;
 }
 
 type EditableField = 'title' | 'body' | 'implementation' | 'notes' | null;
