@@ -11,7 +11,6 @@ import { usePlanIssuesManager } from './usePlanIssuesManager';
 interface PlanIssuesManagerProps {
   draftId: string;
   tasks: PlanTask[];
-  repository?: string;
   onRefresh?: () => void;
   onViewPlanClick?: () => void;
   /** Callback to report issues data to parent for footer stats */
@@ -23,7 +22,6 @@ interface PlanIssuesManagerProps {
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
   tasks,
-  repository,
   onRefresh,
   onViewPlanClick,
   onIssuesChange,
