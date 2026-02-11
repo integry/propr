@@ -1,19 +1,23 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   ExternalLink,
   GitPullRequest,
   MessageSquare,
   Play,
   Loader2,
-  Eye
+  Eye,
+  ChevronDown,
+  StickyNote
 } from 'lucide-react';
 import { PlanIssue, PlanIssueStatus, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
 import { AgentConfig } from '../../api/gitfixApi';
+import { PlanTask } from '../../api/plannerApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 import AgentModelSelector from './AgentModelSelector';
+import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 
 interface PlanIssueRowProps {
   issue: PlanIssue;
@@ -33,6 +37,8 @@ interface PlanIssueRowProps {
   onMultiToggle?: (isMulti: boolean) => void;
   /** Callback when multi-model selection changes */
   onMultiModelChange?: (models: AgentModelPair[]) => void;
+  /** Full task specification data for expandable details */
+  task?: PlanTask;
 }
 
 const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) => {
@@ -237,8 +243,11 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   inheritedIsMulti,
   inheritedSelectedModels,
   onMultiToggle: onMultiToggleProp,
-  onMultiModelChange: onMultiModelChangeProp
+  onMultiModelChange: onMultiModelChangeProp,
+  task
 }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
   // Use inherited state from parent if available, otherwise fall back to local state
   const isMultiMode = inheritedIsMulti ?? false;
   const selectedModels = useMemo(
@@ -255,6 +264,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
 
   const hasAgent = isMultiMode ? selectedModels.length > 0 : !!issue.agent_alias;
 
+  // Determine if there is expandable content
+  const hasExpandableContent = task && (task.body || task.implementation || task.notes);
+
   const handleMultiToggle = useCallback((multi: boolean) => {
     onMultiToggleProp?.(multi);
   }, [onMultiToggleProp]);
@@ -269,12 +281,18 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
     handler(issue.issue_number, models);
   }, [isMultiMode, selectedModels, isFirstPending, onImplementWithWarning, onImplement, issue.issue_number]);
 
+  const handleToggleExpand = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsExpanded(prev => !prev);
+  }, []);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`border rounded-lg ${getContainerClassName(isMerged)}`}
+      className={`border rounded-lg ${getContainerClassName(isMerged)} overflow-hidden`}
     >
+      {/* Collapsed Header Row */}
       <div className="p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
@@ -284,6 +302,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-sm font-medium text-gray-900 hover:text-primary-600 truncate flex items-center gap-1"
+                onClick={(e) => e.stopPropagation()}
               >
                 #{issue.issue_number}
                 <ExternalLink size={12} className="flex-shrink-0 opacity-50" />
@@ -333,9 +352,76 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
                 <span>In Progress</span>
               </div>
             )}
+
+            {/* Expand/Collapse Toggle */}
+            {hasExpandableContent && (
+              <button
+                onClick={handleToggleExpand}
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
+                title={isExpanded ? 'Collapse details' : 'Expand details'}
+              >
+                <motion.div
+                  animate={{ rotate: isExpanded ? 180 : 0 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <ChevronDown size={16} />
+                </motion.div>
+              </button>
+            )}
           </div>
         </div>
       </div>
+
+      {/* Expandable Content */}
+      <AnimatePresence initial={false}>
+        {isExpanded && hasExpandableContent && task && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="px-4 pb-4 pt-0 border-t border-gray-100">
+              {/* Context / Body */}
+              {task.body && (
+                <div className="mt-3">
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Context</span>
+                  <div className="mt-1 text-sm text-gray-600">
+                    <MarkdownRenderer text={task.body} className="prose prose-sm max-w-none" />
+                  </div>
+                </div>
+              )}
+
+              {/* Implementation */}
+              {task.implementation && (
+                <div className="mt-3 bg-slate-50 rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <MessageSquare size={12} className="text-slate-500" />
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Implementation</span>
+                  </div>
+                  <div className="text-sm text-slate-700">
+                    <MarkdownRenderer text={task.implementation} className="prose prose-sm max-w-none" />
+                  </div>
+                </div>
+              )}
+
+              {/* Notes */}
+              {task.notes && (
+                <div className="mt-3 bg-white rounded-lg p-3 border border-dashed border-gray-300">
+                  <div className="flex items-center gap-2 mb-2">
+                    <StickyNote size={12} className="text-slate-500" />
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Notes</span>
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    <MarkdownRenderer text={task.notes} className="prose prose-sm max-w-none" />
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 };

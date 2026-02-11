@@ -36,6 +36,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     clearError,
     implementingIssue,
     issueTitles,
+    issueTaskMap,
     activeIssues,
     mergedIssues,
     pendingCount,
@@ -222,6 +223,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
             onMultiToggle={(isMulti) => handleIssueMultiToggle(issue.issue_number, isMulti)}
             onMultiModelChange={(models) => handleIssueMultiModelChange(issue.issue_number, models)}
+            task={issueTaskMap[issue.issue_number]}
           />
         ))}
       </div>
@@ -255,6 +257,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                     onAgentChange={handleAgentChange}
                     onModelChange={handleModelChange}
                     implementing={false}
+                    task={issueTaskMap[issue.issue_number]}
                   />
                 ))}
               </motion.div>

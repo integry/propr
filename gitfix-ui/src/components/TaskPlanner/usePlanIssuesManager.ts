@@ -36,6 +36,13 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
     return map;
   }, [tasks]);
 
+  // Map issue_number to full PlanTask for expandable details
+  const issueTaskMap = useMemo(() => {
+    const map: Record<number, PlanTask> = {};
+    tasks.forEach(task => { if (task.issue_number) map[task.issue_number] = task; });
+    return map;
+  }, [tasks]);
+
   const issuesWithDefaults = useMemo(() => {
     const defaultAgent = agents.find(a => a.enabled);
     if (!defaultAgent) return issues;
@@ -289,6 +296,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
     clearError,
     implementingIssue,
     issueTitles,
+    issueTaskMap,
     activeIssues,
     mergedIssues,
     pendingCount,
