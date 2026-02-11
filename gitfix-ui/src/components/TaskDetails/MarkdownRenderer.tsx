@@ -38,9 +38,9 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
           code({ inline, className, children, ...props }: { inline?: boolean; className?: string; children?: React.ReactNode }) {
             const match = /language-(\w+)/.exec(className || '');
             return !inline && match ? (
-              <div className="my-6 rounded-lg border border-gray-700 overflow-hidden">
+              <div className="my-6 rounded-lg border border-gray-700 overflow-hidden shadow-md">
                 {/* VS Code style header bar */}
-                <div className="bg-gray-800 px-4 py-2 flex items-center justify-between">
+                <div className="bg-[#2d2d2d] px-4 py-2 flex items-center justify-between border-b border-gray-700">
                   <span className="text-white text-sm font-mono">{match[1].toUpperCase()}</span>
                 </div>
                 {/* Code body with dark background */}
@@ -65,7 +65,12 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                     maxHeight: '300px',
                     overflowY: 'auto',
                   }}
-                  className="code-block-scrollbar"
+                  codeTagProps={{
+                    style: {
+                      backgroundColor: 'transparent',
+                    },
+                  }}
+                  className="code-block-scrollbar [&_span]:!bg-transparent"
                 >
                   {String(children).replace(/\n$/, '')}
                 </SyntaxHighlighter>

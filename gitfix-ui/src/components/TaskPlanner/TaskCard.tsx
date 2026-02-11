@@ -166,15 +166,15 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
           </div>
         </div>
 
-        {/* SECTION 2: IMPLEMENTATION (Light Document Style) */}
-        <div className="bg-gray-50 rounded-lg mt-4 group/impl border border-gray-200">
+        {/* SECTION 2: IMPLEMENTATION (Dark Code Window Style) */}
+        <div className="mt-4 group/impl">
           {/* Header */}
           <div
-            className="flex items-center justify-between px-4 py-3 border-b border-gray-200 cursor-pointer select-none"
+            className="flex items-center justify-between px-4 py-3 cursor-pointer select-none"
             onClick={toggleImplementationCollapse}
           >
             <div className="flex items-center gap-3">
-              <div className="p-1.5 bg-white text-gray-500 rounded-md border border-gray-200">
+              <div className="p-1.5 text-gray-500 rounded-md">
                 <MessageSquare size={14} />
               </div>
               <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Suggested Implementation</span>
