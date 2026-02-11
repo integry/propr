@@ -128,7 +128,9 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       {/* Header */}
       <div className="px-4 py-3">
         <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-          <Bot size={18} style={{ color: 'rgb(29, 138, 138)' }} />
+          <div className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center">
+            <Bot size={14} className="text-white" />
+          </div>
           Assistant
         </h3>
         {messages.length === 0 && (
