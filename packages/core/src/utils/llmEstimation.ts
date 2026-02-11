@@ -28,12 +28,13 @@ const DEFAULT_MS_PER_TOKEN = 8;
 
 /**
  * Execution-type-specific minimum durations.
- * Different operations have different baseline overhead costs.
+ * These are floor values for sanity checking, set low to avoid
+ * overriding accurate historical estimates.
  */
 const MIN_DURATION_BY_TYPE: Record<string, number> = {
-  'plan-generation': 30000,    // 30 seconds minimum - complex task with large prompts
-  'plan-refinement': 15000,    // 15 seconds minimum - simpler than full generation
-  'default': 10000             // 10 seconds fallback for unknown types
+  'plan-generation': 5000,     // 5 seconds minimum
+  'plan-refinement': 5000,     // 5 seconds minimum
+  'default': 3000              // 3 seconds fallback for unknown types
 };
 
 /** Get minimum duration for a specific execution type */
@@ -64,36 +65,19 @@ export interface EstimationOptions {
 }
 
 /**
- * Normalize model name for comparison.
- * Handles both short aliases (e.g., 'opus') and full model IDs.
- * Also handles agent:model format (e.g., 'gemini:gemini-3-pro-preview').
+ * Strip agent prefix from model name if present.
+ * Model names should be used as-is for matching, but agent prefixes should be ignored.
+ * e.g., 'claude:claude-opus-4-5-20251101' -> 'claude-opus-4-5-20251101'
+ * e.g., 'gemini:gemini-3-pro-preview' -> 'gemini-3-pro-preview'
+ * e.g., 'opus' -> 'opus' (no change for aliases)
  */
-function normalizeModelName(modelName: string): string {
-  let lowerName = modelName.toLowerCase();
-
+function stripAgentPrefix(modelName: string): string {
   // Handle agent:model format by extracting the model part
-  // e.g., 'gemini:gemini-3-pro-preview' -> 'gemini-3-pro-preview'
-  // e.g., 'claude:claude-opus-4-5-20251101' -> 'claude-opus-4-5-20251101'
-  if (lowerName.includes(':')) {
-    const parts = lowerName.split(':');
-    lowerName = parts.slice(1).join(':'); // Handle model IDs that might contain colons
+  if (modelName.includes(':')) {
+    const parts = modelName.split(':');
+    return parts.slice(1).join(':'); // Handle model IDs that might contain colons
   }
-
-  // Claude model family normalization
-  if (lowerName.includes('opus')) return 'opus';
-  if (lowerName.includes('sonnet')) return 'sonnet';
-  if (lowerName.includes('haiku')) return 'haiku';
-
-  // Gemini model family normalization - extract the base model name
-  // e.g., 'gemini-3-pro-preview' -> 'gemini-3-pro'
-  // e.g., 'gemini-2.5-pro' -> 'gemini-2.5-pro'
-  if (lowerName.includes('gemini')) {
-    // Remove common suffixes like '-preview', '-exp', etc. for broader matching
-    // but keep the core model identifier
-    return lowerName.replace(/-preview$/, '').replace(/-exp$/, '');
-  }
-
-  return lowerName;
+  return modelName;
 }
 
 /**
@@ -109,7 +93,8 @@ function normalizeModelName(modelName: string): string {
 export async function estimateLlmDuration(options: EstimationOptions): Promise<EstimationResult> {
   const { executionType, modelName, inputTokenCount, correlationId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
-  const normalizedModel = normalizeModelName(modelName);
+  // Strip agent prefix but keep the exact model name for matching
+  const cleanModelName = stripAgentPrefix(modelName);
 
   // Return defaults if no database connection
   if (!db) {
@@ -123,7 +108,10 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
 
   try {
     // Query recent successful executions for the same type
-    // Use LIKE for model name to match both aliases and full model IDs
+    // Match model names: exact match OR model names containing the provided name
+    // This handles both cases:
+    // - Full model IDs (e.g., 'claude-opus-4-5-20251101')
+    // - Aliases passed that need to match stored full IDs (e.g., 'opus' matches 'claude-opus-4-5-20251101')
     const recentLogs = await db('llm_logs')
       .select('duration_ms', 'input_tokens')
       .where('execution_type', executionType)
@@ -132,8 +120,8 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
       .whereNotNull('input_tokens')
       .where('input_tokens', '>', 0)
       .where(function() {
-        this.where('model_name', 'like', `%${normalizedModel}%`)
-          .orWhere('model_name', modelName);
+        this.where('model_name', cleanModelName)
+          .orWhere('model_name', 'like', `%${cleanModelName}%`);
       })
       .orderBy('start_time', 'desc')
       .limit(HISTORY_SAMPLE_SIZE);
@@ -142,7 +130,7 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
       const minDuration = getMinDuration(executionType);
       const tokenBasedEstimate = inputTokenCount * DEFAULT_MS_PER_TOKEN;
       correlatedLogger.info(
-        { executionType, modelName: normalizedModel, inputTokenCount, tokenBasedEstimate, minDuration },
+        { executionType, modelName: cleanModelName, inputTokenCount, tokenBasedEstimate, minDuration },
         'No historical data for LLM estimation, using defaults'
       );
       return {
@@ -172,7 +160,7 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
 
     if (validSamples === 0) {
       correlatedLogger.info(
-        { executionType, modelName: normalizedModel },
+        { executionType, modelName: cleanModelName },
         'No valid samples for LLM estimation, using defaults'
       );
       return {
@@ -195,7 +183,7 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
     correlatedLogger.info(
       {
         executionType,
-        modelName: normalizedModel,
+        modelName: cleanModelName,
         inputTokenCount,
         avgMsPerToken: avgMsPerToken.toFixed(3),
         estimatedDurationMs: clampedDuration,
