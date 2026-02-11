@@ -17,25 +17,46 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
   const processedLines: string[] = [];
   let codeBlockIndex = 0;
   let pendingFilePath: string | null = null;
+  const linesToSkip = new Set<number>();
 
+  // First pass: identify File: lines and their associated code blocks
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    // Check if this is a "File: path" line followed by a code block
-    // Supports: "File: path", "**File: path**", "### File: `path`", etc.
-    const fileMatch = line.match(/^(?:#{1,6}\s+)?(?:\*\*)?File:\s*`?([^`\n]+)`?(?:\*\*)?$/i);
+    // Check if this is a "File: path" line
+    // Supports: "File: path", "**File: path**", "### File: `path`", "#### File: `path`", etc.
+    // Also handles backticks around the path
+    const fileMatch = line.match(/^(?:#{1,6}\s+)?(?:\*\*)?File:\s*[`]?([^`\n]+?)[`]?(?:\*\*)?$/i);
     if (fileMatch) {
-      // Look ahead to see if next non-empty line is a code block
-      let nextLineIndex = i + 1;
-      while (nextLineIndex < lines.length && lines[nextLineIndex].trim() === '') {
-        nextLineIndex++;
+      const extractedPath = fileMatch[1].trim();
+      // Look ahead for a code block (may have empty lines or other content between)
+      for (let j = i + 1; j < lines.length && j <= i + 10; j++) {
+        if (lines[j].startsWith('```')) {
+          // Found a code block - mark this File: line for removal
+          linesToSkip.add(i);
+          pendingFilePath = extractedPath;
+          break;
+        }
+        // If we hit another File: line or significant content, stop looking
+        if (lines[j].match(/^(?:#{1,6}\s+)?(?:\*\*)?File:/i) ||
+            (lines[j].trim() !== '' && !lines[j].startsWith('```') && j > i + 3)) {
+          break;
+        }
       }
-      if (nextLineIndex < lines.length && lines[nextLineIndex].startsWith('```')) {
-        // This is a file path for a code block - store it for the next code block
-        pendingFilePath = fileMatch[1].trim();
-        // Skip this line and empty lines between file path and code block
-        i = nextLineIndex - 1;
-        continue;
-      }
+    }
+  }
+
+  // Reset pending file path for second pass
+  pendingFilePath = null;
+
+  // Second pass: build processed lines and track code blocks
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Check for File: pattern and extract path for next code block
+    const fileMatch = line.match(/^(?:#{1,6}\s+)?(?:\*\*)?File:\s*[`]?([^`\n]+?)[`]?(?:\*\*)?$/i);
+    if (fileMatch && linesToSkip.has(i)) {
+      pendingFilePath = fileMatch[1].trim();
+      continue; // Skip this line
     }
 
     // Track code blocks - when we encounter an opening code block, associate pending file path
@@ -119,6 +140,8 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                     lineNumberStyle={{
                       color: '#6b7280',
                       paddingRight: '0.75em',
+                      paddingLeft: 0,
+                      marginLeft: 0,
                       minWidth: '2em',
                       textAlign: 'right',
                     }}
@@ -128,6 +151,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                       border: 'none',
                       margin: 0,
                       padding: '0.75rem 0',
+                      paddingLeft: '0.5rem',
                       backgroundColor: '#1E1E1E',
                       maxHeight: '300px',
                       overflowY: 'auto',
@@ -137,7 +161,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                         backgroundColor: 'transparent',
                       },
                     }}
-                    className="code-block-scrollbar [&_span]:!bg-transparent"
+                    className="code-block-scrollbar [&_span]:!bg-transparent [&_.linenumber]:!pl-0 [&_.linenumber]:!ml-0"
                   >
                     {codeContent}
                   </SyntaxHighlighter>
