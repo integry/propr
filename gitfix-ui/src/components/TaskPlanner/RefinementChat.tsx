@@ -125,13 +125,14 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
-      {/* Header - borderless, blends with sidebar */}
-      <div className="px-4 py-3">
-        <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-          <Bot size={18} style={{ color: 'rgb(29, 138, 138)' }} />
-          AI Refinement Assistant
+      {/* Header - compact, label-style */}
+      <div className="px-4 py-2">
+        <h3 className="text-sm font-medium text-slate-600 flex items-center gap-2">
+          <div className="w-5 h-5 rounded-full bg-gray-700 flex items-center justify-center">
+            <Bot size={12} className="text-white" />
+          </div>
+          Assistant
         </h3>
-        <p className="text-xs text-gray-500 mt-0.5">Refine your plan through conversation</p>
       </div>
 
       {/* Messages area - no border, fills available space */}
