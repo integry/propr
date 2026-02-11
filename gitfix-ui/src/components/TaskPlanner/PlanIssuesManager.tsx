@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle, Github } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
@@ -46,7 +46,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     activeIssues,
     mergedIssues,
     pendingCount,
-    hasActiveIssues,
     firstPendingIssueNumber,
     globalAgent,
     globalModel,
@@ -130,40 +129,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between pb-3">
-        <div className="flex items-center gap-3">
-          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
-            Plan Issues
-          </h3>
-          <span className="text-xs text-gray-500">
-            {issues.length} total
-            {pendingCount > 0 && ` (${pendingCount} pending)`}
-          </span>
-          {repository && (
-            <a
-              href={`https://github.com/${repository}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
-            >
-              <Github size={12} />
-              {repository}
-            </a>
-          )}
-        </div>
-
-        {hasActiveIssues && (
-          <span className="flex items-center gap-1 text-xs text-blue-600">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-            </span>
-            Auto-refreshing
-          </span>
-        )}
-      </div>
-      {/* Continuous horizontal divider spanning full width */}
-      <div className="-mx-4 border-b border-gray-200" />
       {error && (
         <div className="flex items-center gap-2 p-3 bg-red-50 text-red-700 text-sm rounded-lg border border-red-200">
           <AlertCircle size={16} />
