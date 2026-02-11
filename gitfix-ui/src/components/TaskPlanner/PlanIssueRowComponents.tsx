@@ -15,9 +15,9 @@ import { PlanIssue, PlanIssueStatus, STATUS_CONFIG, AgentModelPair } from '../..
 import { AgentConfig } from '../../api/gitfixApi';
 import { PlanTask } from '../../api/plannerApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
-import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 import AgentModelSelector from './AgentModelSelector';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
+import { getModelName } from './planIssueRowUtils';
 
 export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) => {
   const config = STATUS_CONFIG[status];
@@ -41,12 +41,6 @@ export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) =
       {config.label}
     </span>
   );
-};
-
-export const getModelName = (modelId: string | null): string => {
-  if (!modelId) return '';
-  const modelInfo = MODEL_INFO_MAP[modelId];
-  return modelInfo?.name || modelId;
 };
 
 const getImplementButtonClassName = (implementing: boolean, hasAgent: boolean, isFirstPending: boolean): string => {
@@ -162,12 +156,6 @@ export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) =>
     View Progress
   </Link>
 );
-
-export const getContainerClassName = (isMerged: boolean): string =>
-  isMerged ? 'bg-gray-50 border-gray-200' : 'bg-white border-gray-200';
-
-export const getTitleClassName = (isMerged: boolean): string =>
-  isMerged ? 'text-gray-500' : 'text-gray-600';
 
 export interface RowActionsProps {
   isPending: boolean;

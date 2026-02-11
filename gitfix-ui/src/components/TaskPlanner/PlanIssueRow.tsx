@@ -8,10 +8,9 @@ import {
   StatusBadge,
   RowActions,
   ExpandedContent,
-  IssueMetadata,
-  getContainerClassName,
-  getTitleClassName
+  IssueMetadata
 } from './PlanIssueRowComponents';
+import { getContainerClassName, getTitleClassName } from './planIssueRowUtils';
 
 interface PlanIssueRowProps {
   issue: PlanIssue;
