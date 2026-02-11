@@ -106,7 +106,7 @@ export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (
     href={prUrl}
     target="_blank"
     rel="noopener noreferrer"
-    className="inline-flex items-center gap-1.5 font-mono text-xs px-2 py-0.5 bg-purple-50 border border-purple-200 rounded text-purple-700 hover:bg-purple-100 hover:border-purple-300 transition-colors"
+    className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-purple-50 border border-purple-200 rounded-sm text-purple-700 hover:bg-purple-100 hover:border-purple-300 transition-colors"
     onClick={(e) => e.stopPropagation()}
   >
     <GitPullRequest size={12} />
@@ -133,7 +133,7 @@ export interface ViewProgressLinkProps {
 export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (
   <Link
     to={`/tasks/${taskId}`}
-    className="inline-flex items-center gap-1.5 font-mono text-xs px-2 py-0.5 bg-blue-50 border border-blue-200 rounded text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors"
+    className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-blue-50 border border-blue-200 rounded-sm text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors"
     onClick={(e) => e.stopPropagation()}
   >
     <Eye size={12} />
@@ -207,12 +207,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
       />
     )}
 
-    {isActive && !isPending && (
-      <div className="flex items-center gap-1.5 text-sm text-blue-600">
-        <Loader2 size={14} className="animate-spin" />
-        <span>In Progress</span>
-      </div>
-    )}
+{/* Status badge already shows status, no need for redundant "In Progress" text */}
 
     {/* Expand/Collapse Toggle */}
     {hasExpandableContent && (

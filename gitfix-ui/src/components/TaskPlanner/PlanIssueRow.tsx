@@ -116,7 +116,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               href={issueUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="font-mono text-xs px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-gray-700 hover:bg-gray-200 hover:text-primary-600 transition-colors flex items-center gap-1 flex-shrink-0"
+              className="font-mono text-xs px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded-sm text-gray-700 hover:bg-gray-200 hover:text-primary-600 transition-colors flex items-center gap-1 flex-shrink-0"
               onClick={(e) => e.stopPropagation()}
             >
               #{issue.issue_number}
