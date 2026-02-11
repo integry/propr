@@ -1,15 +1,59 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { FileText, Copy, Check } from 'lucide-react';
 
 interface MarkdownRendererProps {
   text: unknown;
   className?: string;
 }
 
+// Helper to extract file path from markdown and clean the content
+const preprocessMarkdown = (text: string): { processedText: string; filePathMap: Map<number, string> } => {
+  const filePathMap = new Map<number, string>();
+  const lines = text.split('\n');
+  const processedLines: string[] = [];
+  let codeBlockIndex = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Check if this is a "File: path" line followed by a code block
+    const fileMatch = line.match(/^(?:\*\*)?File:\s*`?([^`\n]+)`?(?:\*\*)?$/i);
+    if (fileMatch) {
+      // Look ahead to see if next non-empty line is a code block
+      let nextLineIndex = i + 1;
+      while (nextLineIndex < lines.length && lines[nextLineIndex].trim() === '') {
+        nextLineIndex++;
+      }
+      if (nextLineIndex < lines.length && lines[nextLineIndex].startsWith('```')) {
+        // This is a file path for a code block - store it and skip this line
+        filePathMap.set(codeBlockIndex, fileMatch[1].trim());
+        // Skip empty lines between file path and code block
+        i = nextLineIndex - 1;
+        continue;
+      }
+    }
+
+    // Track code blocks
+    if (line.startsWith('```') && !line.slice(3).includes('```')) {
+      // Check if this is opening a code block (not inline)
+      const isOpening = processedLines.filter(l => l.startsWith('```')).length % 2 === 0;
+      if (isOpening) {
+        codeBlockIndex++;
+      }
+    }
+
+    processedLines.push(line);
+  }
+
+  return { processedText: processedLines.join('\n'), filePathMap };
+};
+
 const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '' }) => {
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+
   if (!text) return null;
 
   // Handle non-string content (JSON objects)
@@ -29,6 +73,20 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
     return <>{String(text)}</>;
   }
 
+  // Preprocess to extract file paths
+  const { processedText, filePathMap } = preprocessMarkdown(text);
+  let codeBlockCounter = 0;
+
+  const handleCopy = async (code: string, index: number) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedIndex(index);
+      setTimeout(() => setCopiedIndex(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+
   return (
     <div className={`markdown-body ${className}`}>
       <ReactMarkdown
@@ -37,45 +95,84 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
           // Code blocks with syntax highlighting - VS Code window style
           code({ inline, className, children, ...props }: { inline?: boolean; className?: string; children?: React.ReactNode }) {
             const match = /language-(\w+)/.exec(className || '');
-            return !inline && match ? (
-              <div className="my-6 rounded-lg border border-gray-700 overflow-hidden shadow-md">
-                {/* VS Code style header bar */}
-                <div className="bg-[#2d2d2d] px-4 py-2 flex items-center justify-between border-b border-gray-700">
-                  <span className="text-white text-sm font-mono">{match[1].toUpperCase()}</span>
+            if (!inline && match) {
+              codeBlockCounter++;
+              const currentIndex = codeBlockCounter;
+              const filePath = filePathMap.get(currentIndex);
+              const codeContent = String(children).replace(/\n$/, '');
+
+              return (
+                <div className="code-block-container my-6 rounded-lg border border-gray-700 overflow-hidden shadow-md">
+                  {/* VS Code style header bar with file path */}
+                  <div className="bg-gray-800 px-4 py-2 flex items-center justify-between border-b border-gray-700">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      {filePath ? (
+                        <>
+                          <FileText size={14} className="text-gray-400 flex-shrink-0" />
+                          <span className="text-gray-200 text-sm font-mono truncate">{filePath}</span>
+                        </>
+                      ) : (
+                        <span className="text-gray-400 text-sm font-mono">{match[1].toUpperCase()}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 flex-shrink-0 ml-4">
+                      {filePath && (
+                        <span className="text-gray-500 text-xs font-mono uppercase">{match[1]}</span>
+                      )}
+                      <button
+                        onClick={() => handleCopy(codeContent, currentIndex)}
+                        className="flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors text-xs"
+                        title="Copy code"
+                      >
+                        {copiedIndex === currentIndex ? (
+                          <>
+                            <Check size={14} className="text-green-400" />
+                            <span className="text-green-400">Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy size={14} />
+                            <span>Copy</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  {/* Code body with dark background */}
+                  <SyntaxHighlighter
+                    {...props}
+                    style={vscDarkPlus}
+                    language={match[1]}
+                    PreTag="div"
+                    showLineNumbers={true}
+                    lineNumberStyle={{
+                      color: '#6b7280',
+                      paddingRight: '1em',
+                      minWidth: '2.5em',
+                      textAlign: 'right',
+                    }}
+                    customStyle={{
+                      borderRadius: 0,
+                      fontSize: '0.875rem',
+                      border: 'none',
+                      margin: 0,
+                      backgroundColor: '#1E1E1E',
+                      maxHeight: '300px',
+                      overflowY: 'auto',
+                    }}
+                    codeTagProps={{
+                      style: {
+                        backgroundColor: 'transparent',
+                      },
+                    }}
+                    className="code-block-scrollbar [&_span]:!bg-transparent"
+                  >
+                    {codeContent}
+                  </SyntaxHighlighter>
                 </div>
-                {/* Code body with dark background */}
-                <SyntaxHighlighter
-                  {...props}
-                  style={vscDarkPlus}
-                  language={match[1]}
-                  PreTag="div"
-                  showLineNumbers={true}
-                  lineNumberStyle={{
-                    color: '#6b7280',
-                    paddingRight: '1em',
-                    minWidth: '2.5em',
-                    textAlign: 'right',
-                  }}
-                  customStyle={{
-                    borderRadius: 0,
-                    fontSize: '0.875rem',
-                    border: 'none',
-                    margin: 0,
-                    backgroundColor: '#1E1E1E',
-                    maxHeight: '300px',
-                    overflowY: 'auto',
-                  }}
-                  codeTagProps={{
-                    style: {
-                      backgroundColor: 'transparent',
-                    },
-                  }}
-                  className="code-block-scrollbar [&_span]:!bg-transparent"
-                >
-                  {String(children).replace(/\n$/, '')}
-                </SyntaxHighlighter>
-              </div>
-            ) : (
+              );
+            }
+            return (
               <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300 text-gray-800" {...props}>
                 {children}
               </code>
@@ -135,7 +232,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
           ),
         }}
       >
-        {text}
+        {processedText}
       </ReactMarkdown>
     </div>
   );

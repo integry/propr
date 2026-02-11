@@ -235,7 +235,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         </div>
 
         {/* SECTION 3: NOTES (Draft Style - Scratchpad) */}
-        <div className="bg-white rounded-lg mt-3 p-4 border border-dashed border-gray-300">
+        <div className="bg-white rounded-lg mt-3 mb-8 p-4 border border-dashed border-gray-300">
           <div className="flex items-start gap-3">
             <div className="mt-1 p-1.5 text-gray-400">
               <StickyNote size={16} />
@@ -245,7 +245,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
               {renderEditableContent(
                 'notes',
                 task.notes || '',
-                'Add your notes here...',
+                'Add specific constraints, API keys, or reminders for the implementation phase...',
                 'w-full text-sm text-gray-800 bg-transparent placeholder-gray-400',
                 'w-full text-sm text-gray-800'
               )}

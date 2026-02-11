@@ -145,3 +145,26 @@ body {
 .code-block-scrollbar::-webkit-scrollbar-corner {
   background: #1E1E1E;
 }
+
+/* Code block container - custom dark scrollbars */
+.code-block-container ::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.code-block-container ::-webkit-scrollbar-track {
+  background: #1E1E1E;
+}
+
+.code-block-container ::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 4px;
+}
+
+.code-block-container ::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+.code-block-container ::-webkit-scrollbar-corner {
+  background: #1E1E1E;
+}
