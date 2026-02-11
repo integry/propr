@@ -77,7 +77,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         onClick={() => handleFieldClick(field)}
         className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1 task-card-content`}
       >
-        <MarkdownRenderer text={value} className="prose prose-sm max-w-none [&_code]:bg-slate-100 [&_code]:text-slate-700 [&_code]:px-1.5 [&_code]:py-px [&_code]:rounded [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none" />
+        <MarkdownRenderer text={value} className="prose prose-sm max-w-none [&_code]:bg-gray-100 [&_code]:text-gray-600 [&_code]:px-1 [&_code]:py-0 [&_code]:rounded-sm [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none" />
       </div>
     );
   };
@@ -99,13 +99,13 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
       ref={ref}
       className={
         'group relative transition-all duration-500 ' +
-        (isHighlighted ? 'ring-2 ring-indigo-400 shadow-lg' : 'hover:shadow-md')
+        (isHighlighted ? 'ring-2 ring-indigo-400 ring-offset-4 ring-offset-white' : '')
       }
     >
-      {/* Main Card Container */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      {/* Main Content Container - Borderless document stream style */}
+      <div className="bg-white">
         {/* SECTION 1: ISSUE CONTENT (Title & Specification) */}
-        <div className="p-5 pb-4">
+        <div className="pb-4">
           <div className="flex flex-col gap-3">
             {/* Title Row with Step Number, Title, Edit Icon, and Delete */}
             <div className="flex items-start gap-3">
@@ -167,7 +167,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         </div>
 
         {/* SECTION 2: IMPLEMENTATION (Comment Style) */}
-        <div className="bg-slate-50 border-t border-gray-100 p-6 pt-4 group/impl">
+        <div className="bg-slate-50/50 rounded-lg mt-4 p-4 group/impl">
           <div className="flex items-start gap-3">
             <div
               className="mt-1 p-1.5 bg-slate-200 text-slate-600 rounded-md cursor-pointer hover:bg-slate-300 transition-colors"
@@ -239,7 +239,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         </div>
 
         {/* SECTION 3: NOTES (Draft Style) */}
-        <div className="bg-yellow-50/50 border-t border-yellow-100/50 p-4">
+        <div className="bg-yellow-50/50 rounded-lg mt-3 p-4">
           <div className="flex items-start gap-3">
             <div className="mt-1 p-1.5 text-yellow-600">
               <StickyNote size={16} />

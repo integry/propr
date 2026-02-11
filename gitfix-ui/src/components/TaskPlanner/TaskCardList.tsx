@@ -84,30 +84,25 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
         data-task-list
         onScroll={handleScroll}
       >
-        <div className="space-y-4">
+        <div>
           <AnimatePresence mode="popLayout">
             {tasks.map((task, index) => {
               const isHighlighted = highlightedIds.includes(task.id);
+              const isLastTask = index === tasks.length - 1;
               return (
                 <motion.div
                   key={task.id}
                   data-task-index={index}
                   layout
-                  initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                  initial={{ opacity: 0, y: 20 }}
                   animate={{
                     opacity: 1,
                     y: 0,
-                    scale: 1,
-                    boxShadow: isHighlighted
-                      ? '0 0 0 3px rgba(129, 140, 248, 0.4), 0 4px 20px rgba(129, 140, 248, 0.15)'
-                      : 'none',
                   }}
-                  exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                  exit={{ opacity: 0, y: -10 }}
                   transition={{
                     layout: { duration: 0.3 },
                     opacity: { duration: 0.2 },
-                    scale: { duration: 0.2 },
-                    boxShadow: { duration: 0.3 },
                   }}
                   className="relative"
                 >
@@ -115,9 +110,9 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                   {isHighlighted && (
                     <motion.div
                       initial={{ opacity: 0 }}
-                      animate={{ opacity: [0.5, 0.2, 0.5] }}
+                      animate={{ opacity: [0.3, 0.1, 0.3] }}
                       transition={{ duration: 1.5, repeat: Infinity }}
-                      className="absolute inset-0 bg-indigo-100 rounded-xl -z-10"
+                      className="absolute inset-0 bg-indigo-50 rounded-lg -z-10"
                     />
                   )}
                   <TaskCard
@@ -132,6 +127,10 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                       onDeleteTask(taskIdToDelete);
                     }}
                   />
+                  {/* Horizontal divider between tasks */}
+                  {!isLastTask && (
+                    <div className="my-8 border-b border-gray-200" />
+                  )}
                 </motion.div>
               );
             })}

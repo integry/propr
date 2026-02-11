@@ -304,7 +304,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
       </div>
 
       {/* Pro Studio Footer - Gray background with primary action */}
-      <div className="flex items-center justify-between px-6 py-3 border-t border-gray-200 bg-gray-100 flex-shrink-0">
+      <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
         <div className="text-sm text-gray-500">
           {plan.length} {plan.length === 1 ? 'task' : 'tasks'} in plan
         </div>
