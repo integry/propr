@@ -1,16 +1,10 @@
 import React from 'react';
 import { ChevronRight } from 'lucide-react';
 import type { Task, TaskGroup } from './types';
-import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration } from './utils.tsx';
+import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration, shouldDimTask } from './utils.tsx';
 import { TaskTypeBadge } from './TaskTypeBadge';
 import { ScoreBadge } from './ScoreBadge';
 import { ProviderLogo } from '../ui/ProviderLogo';
-
-// Helper function to check if a task should be dimmed (merged or closed)
-const shouldDimTask = (task: Task): boolean => {
-  const status = task.planIssueStatus?.toLowerCase();
-  return status === 'merged' || status === 'closed';
-};
 
 interface ParentTaskRowProps {
   group: TaskGroup;
