@@ -32,7 +32,7 @@ const MobileTaskItemWithGroup: React.FC<{
       onClick={() => onRowClick(task.id)}
       className={`flex items-start justify-between gap-2 py-3 cursor-pointer active:bg-gray-50 ${
         isChild ? 'pl-4 border-l-2 border-gray-200 ml-2' : ''
-      } ${isDimmed ? 'opacity-40' : ''}`}
+      }`}
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap mb-1">
@@ -51,7 +51,7 @@ const MobileTaskItemWithGroup: React.FC<{
             </>
           )}
           {getStatusPill(task.status)}
-          <ScoreBadge score={task.critiqueScore} />
+          <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
         </div>
         <p className={`text-sm text-gray-900 line-clamp-2 ${isChild ? 'text-gray-600' : 'font-medium'}`}>
           {displayTitle}

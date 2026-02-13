@@ -283,13 +283,15 @@ async function getTasksFromDb(
     .as('pi');
 
   // Subquery to get critique_score from the latest llm_execution per task
-  // We need to select only the most recent execution with an analysis_report
+  // The analysis_report is a JSON object with a "report" field that contains a JSON string
+  // We need to extract the "report" field and then parse it to get implementation_critique_score
   const critiqueScoreSubquery = db.raw(`
     (SELECT
       task_id,
-      json_extract(analysis_report, '$.implementation_critique_score') as critique_score
+      json_extract(json(json_extract(analysis_report, '$.report')), '$.implementation_critique_score') as critique_score
     FROM llm_executions le1
     WHERE analysis_report IS NOT NULL
+      AND json_extract(analysis_report, '$.report') IS NOT NULL
       AND execution_id = (
         SELECT MAX(le2.execution_id)
         FROM llm_executions le2

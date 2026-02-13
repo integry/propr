@@ -19,7 +19,7 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
 
   return (
     <tr
-      className={`hover:bg-gray-50 transition-colors cursor-pointer group bg-white ${isDimmed ? 'opacity-40' : ''}`}
+      className="hover:bg-gray-50 transition-colors cursor-pointer group bg-white"
       onClick={() => onRowClick(task.id)}
     >
       <td className="py-3 px-4 align-top">
@@ -76,7 +76,7 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
       <td className="py-3 px-4 align-top">
         <div className="flex items-center gap-2">
           {getStatusPill(task.status)}
-          <ScoreBadge score={task.critiqueScore} />
+          <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
         </div>
       </td>
       <td className="py-3 px-4 align-top">
@@ -119,7 +119,7 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
 
   return (
     <tr
-      className={`hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30 group ${isDimmed ? 'opacity-40' : ''}`}
+      className="hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30 group"
       onClick={() => onRowClick(task.id)}
     >
       <td className="py-3 px-4 align-top relative">
@@ -157,7 +157,7 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
       <td className="py-3 px-4 align-top">
         <div className="flex items-center gap-2">
           {getStatusPill(task.status)}
-          <ScoreBadge score={task.critiqueScore} />
+          <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
         </div>
       </td>
       <td className="py-3 px-4 align-top">

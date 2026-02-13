@@ -2,9 +2,10 @@ import React from 'react';
 
 interface ScoreBadgeProps {
   score: number | null | undefined;
+  dimmed?: boolean;
 }
 
-export const ScoreBadge: React.FC<ScoreBadgeProps> = ({ score }) => {
+export const ScoreBadge: React.FC<ScoreBadgeProps> = ({ score, dimmed = false }) => {
   if (score === null || score === undefined) return null;
 
   // Determine color based on score
@@ -19,7 +20,7 @@ export const ScoreBadge: React.FC<ScoreBadgeProps> = ({ score }) => {
 
   return (
     <span
-      className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-xs font-bold ${colorClasses}`}
+      className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-xs font-bold ${colorClasses} ${dimmed ? 'opacity-40' : ''}`}
       title={`Implementation Critique Score: ${score}/10`}
     >
       {score}
