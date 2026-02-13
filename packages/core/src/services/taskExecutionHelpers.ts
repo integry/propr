@@ -16,38 +16,39 @@ export interface PlanTaskAttachment {
 interface BuildUserNotesOptions {
   notes: string | undefined;
   attachments: PlanTaskAttachment[];
+  draftId: string;
   correlatedLogger: Logger | EnhancedLogger;
 }
 
 /**
- * Read and embed a single image attachment as base64.
- * Returns the markdown string or null if the file couldn't be read.
+ * Get the public base URL for attachments.
+ * Uses WEB_UI_URL or FRONTEND_URL environment variable.
  */
-async function embedImageAttachment(
+function getPublicBaseUrl(): string {
+  return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
+}
+
+/**
+ * Build a direct URL for an image attachment.
+ * Returns the markdown string with the image embedded using the public URL.
+ */
+function embedImageAttachment(
   attachment: PlanTaskAttachment,
+  draftId: string,
   correlatedLogger: Logger | EnhancedLogger
-): Promise<string | null> {
-  const filePath = path.join(process.cwd(), attachment.storedPath);
-  const fileExists = await fs.pathExists(filePath);
-
-  if (!fileExists) {
-    correlatedLogger.warn({ attachmentId: attachment.id, originalName: attachment.originalName }, 'Image attachment file not found');
-    return null;
-  }
-
-  const imageBuffer = await fs.readFile(filePath);
-  const base64Data = imageBuffer.toString('base64');
-  const mimeType = attachment.mimeType || 'image/webp';
+): string {
+  const baseUrl = getPublicBaseUrl();
+  const attachmentUrl = `${baseUrl}/api/planner/drafts/${draftId}/attachments/${attachment.id}`;
 
   correlatedLogger.info({
     attachmentId: attachment.id,
     originalName: attachment.originalName,
-    size: imageBuffer.length
-  }, 'Embedded image as base64 in comment');
+    attachmentUrl
+  }, 'Embedded image with direct URL in comment');
 
   const lines = [
     `**${attachment.originalName}:**`,
-    `<img src="data:${mimeType};base64,${base64Data}" alt="${attachment.originalName}" />`,
+    `![${attachment.originalName}](${attachmentUrl})`,
     ''
   ];
   return lines.join('\n');
@@ -87,11 +88,12 @@ async function formatTextAttachment(
  */
 async function processAttachment(
   attachment: PlanTaskAttachment,
+  draftId: string,
   correlatedLogger: Logger | EnhancedLogger
 ): Promise<string | null> {
   try {
     if (attachment.type === 'image') {
-      return await embedImageAttachment(attachment, correlatedLogger);
+      return embedImageAttachment(attachment, draftId, correlatedLogger);
     }
     return await formatTextAttachment(attachment, correlatedLogger);
   } catch (err) {
@@ -106,11 +108,11 @@ async function processAttachment(
 
 /**
  * Build a user notes comment body with attachments.
- * Images are embedded directly as base64 data URIs for GitHub compatibility.
+ * Images are embedded using direct URLs to the attachment endpoint.
  * Text files are displayed with their content inline as code blocks.
  */
 export async function buildUserNotesCommentBody(options: BuildUserNotesOptions): Promise<string | null> {
-  const { notes, attachments, correlatedLogger } = options;
+  const { notes, attachments, draftId, correlatedLogger } = options;
 
   if (!notes && attachments.length === 0) {
     return null;
@@ -128,7 +130,7 @@ export async function buildUserNotesCommentBody(options: BuildUserNotesOptions):
     parts.push('### Attachments\n');
 
     for (const attachment of attachments) {
-      const attachmentMarkdown = await processAttachment(attachment, correlatedLogger);
+      const attachmentMarkdown = await processAttachment(attachment, draftId, correlatedLogger);
       if (attachmentMarkdown) {
         parts.push(attachmentMarkdown);
       }
