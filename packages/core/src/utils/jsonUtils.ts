@@ -10,22 +10,28 @@ export class JsonParseError extends Error {
  * rather than code snippets that happen to contain { or [
  */
 function findJsonStart(text: string): { start: number; type: 'object' | 'array' } | null {
-  // Look for JSON-like patterns in order of likelihood
-  // These patterns are more specific than just { or [
+  // Look for JSON-like patterns - find ALL matches and pick the earliest one
+  // This ensures we get the outermost JSON structure, not a nested one
   const jsonPatterns = [
-    { pattern: /\[\s*\{/g, type: 'array' as const },      // [{ - array of objects (most common for plans)
     { pattern: /\{\s*"/g, type: 'object' as const },      // {" - object with string key
+    { pattern: /\[\s*\{/g, type: 'array' as const },      // [{ - array of objects
     { pattern: /\[\s*"/g, type: 'array' as const },       // [" - array of strings
     { pattern: /\[\s*\[/g, type: 'array' as const },      // [[ - nested array
     { pattern: /\{\s*\n/g, type: 'object' as const },     // {\n - object with newline
     { pattern: /\[\s*\n/g, type: 'array' as const },      // [\n - array with newline
   ];
 
+  let earliest: { start: number; type: 'object' | 'array' } | null = null;
+
   for (const { pattern, type } of jsonPatterns) {
     const match = pattern.exec(text);
-    if (match) {
-      return { start: match.index, type };
+    if (match && (earliest === null || match.index < earliest.start)) {
+      earliest = { start: match.index, type };
     }
+  }
+
+  if (earliest) {
+    return earliest;
   }
 
   // Fallback to simple { or [ if no patterns matched
