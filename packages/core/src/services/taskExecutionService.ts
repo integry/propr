@@ -5,8 +5,7 @@ import { type Logger } from 'pino';
 import { ensureRepoCloned } from '../git/repoManager.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { createPlanIssue } from '../config/planIssueManager.js';
-import fs from 'fs-extra';
-import path from 'path';
+import { buildUserNotesCommentBody, type PlanTaskAttachment } from './taskExecutionHelpers.js';
 
 export interface IssueLink {
   number: number;
@@ -33,16 +32,6 @@ interface TaskDraft {
   updated_at: Date;
 }
 
-interface PlanTaskAttachment {
-  id: string;
-  originalName: string;
-  storedPath: string;
-  mimeType: string;
-  size: number;
-  tokenEstimate: number;
-  type: 'image' | 'text';
-}
-
 interface PlanTask {
   id?: string;
   title: string;
@@ -55,190 +44,6 @@ interface PlanTask {
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-interface UploadedAttachment {
-  originalName: string;
-  rawUrl: string;
-  type: 'image' | 'text';
-}
-
-interface UploadAttachmentsOptions {
-  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
-  owner: string;
-  repoName: string;
-  attachments: PlanTaskAttachment[];
-  issueNumber: number;
-  correlatedLogger: Logger | EnhancedLogger;
-}
-
-/**
- * Upload attachments to the repository in a .gitfix/attachments folder.
- * Returns the raw URLs for the uploaded files.
- */
-async function uploadAttachmentsToRepo(options: UploadAttachmentsOptions): Promise<UploadedAttachment[]> {
-  const { octokit, owner, repoName, attachments, issueNumber, correlatedLogger } = options;
-  const uploaded: UploadedAttachment[] = [];
-
-  // Get the default branch for constructing raw URLs
-  let defaultBranch = 'main';
-  try {
-    const repoInfo = await octokit.request('GET /repos/{owner}/{repo}', {
-      owner,
-      repo: repoName
-    });
-    defaultBranch = repoInfo.data.default_branch || 'main';
-  } catch (err) {
-    correlatedLogger.warn({ error: (err as Error).message }, 'Failed to get default branch, using "main"');
-  }
-
-  for (const attachment of attachments) {
-    try {
-      const filePath = path.join(process.cwd(), attachment.storedPath);
-      const fileExists = await fs.pathExists(filePath);
-
-      if (!fileExists) {
-        correlatedLogger.warn({ attachmentId: attachment.id, originalName: attachment.originalName }, 'Attachment file not found');
-        continue;
-      }
-
-      const fileBuffer = await fs.readFile(filePath);
-      const base64Content = fileBuffer.toString('base64');
-
-      // Generate a unique filename to avoid collisions
-      const ext = path.extname(attachment.originalName) || (attachment.type === 'image' ? '.webp' : '.txt');
-      const baseName = path.basename(attachment.originalName, ext);
-      const uniqueFilename = `${baseName}-${attachment.id}${ext}`;
-      const repoPath = `.gitfix/attachments/issue-${issueNumber}/${uniqueFilename}`;
-
-      // Upload file to repository
-      await octokit.request('PUT /repos/{owner}/{repo}/contents/{path}', {
-        owner,
-        repo: repoName,
-        path: repoPath,
-        message: `Add attachment ${attachment.originalName} for issue #${issueNumber} [skip ci]`,
-        content: base64Content
-      });
-
-      // Construct raw URL for the uploaded file
-      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repoName}/${defaultBranch}/${repoPath}`;
-
-      uploaded.push({
-        originalName: attachment.originalName,
-        rawUrl,
-        type: attachment.type
-      });
-
-      correlatedLogger.info({
-        attachmentId: attachment.id,
-        originalName: attachment.originalName,
-        repoPath,
-        rawUrl
-      }, 'Attachment uploaded to repository');
-
-    } catch (err) {
-      correlatedLogger.error({
-        attachmentId: attachment.id,
-        originalName: attachment.originalName,
-        error: (err as Error).message
-      }, 'Failed to upload attachment to repository');
-    }
-  }
-
-  return uploaded;
-}
-
-/**
- * Build a user notes comment body with attachments.
- * Images are embedded using URLs pointing to files uploaded to the repository.
- * Text files are displayed with their content inline as code blocks.
- */
-function buildUserNotesCommentBody(
-  notes: string | undefined,
-  uploadedAttachments: UploadedAttachment[],
-  textAttachments: Array<{ originalName: string; content: string; ext: string }>
-): string | null {
-  if (!notes && uploadedAttachments.length === 0 && textAttachments.length === 0) {
-    return null;
-  }
-
-  const parts: string[] = [];
-  parts.push('## 📝 User Notes\n');
-
-  if (notes && notes.trim()) {
-    parts.push(notes.trim());
-    parts.push('');
-  }
-
-  const hasAttachments = uploadedAttachments.length > 0 || textAttachments.length > 0;
-  if (hasAttachments) {
-    parts.push('### Attachments\n');
-
-    // Add images (uploaded to repo)
-    for (const attachment of uploadedAttachments) {
-      if (attachment.type === 'image') {
-        parts.push(`**${attachment.originalName}:**`);
-        parts.push(`![${attachment.originalName}](${attachment.rawUrl})`);
-        parts.push('');
-      } else {
-        // Non-image files uploaded to repo - show as links
-        parts.push(`- 📄 [${attachment.originalName}](${attachment.rawUrl})`);
-      }
-    }
-
-    // Add text file contents inline
-    for (const textFile of textAttachments) {
-      parts.push(`**${textFile.originalName}:**`);
-      parts.push('```' + textFile.ext);
-      parts.push(textFile.content.trim());
-      parts.push('```');
-      parts.push('');
-    }
-  }
-
-  const body = parts.join('\n').trim();
-  return body || null;
-}
-
-/**
- * Read text attachment contents for inline display.
- */
-async function readTextAttachmentContents(
-  attachments: PlanTaskAttachment[],
-  correlatedLogger: Logger | EnhancedLogger
-): Promise<Array<{ originalName: string; content: string; ext: string }>> {
-  const textContents: Array<{ originalName: string; content: string; ext: string }> = [];
-
-  for (const attachment of attachments) {
-    if (attachment.type !== 'text') continue;
-
-    try {
-      const filePath = path.join(process.cwd(), attachment.storedPath);
-      const fileExists = await fs.pathExists(filePath);
-
-      if (!fileExists) {
-        correlatedLogger.warn({ attachmentId: attachment.id, originalName: attachment.originalName }, 'Text attachment file not found');
-        continue;
-      }
-
-      const content = await fs.readFile(filePath, 'utf-8');
-      const ext = path.extname(attachment.originalName).toLowerCase().replace('.', '') || 'txt';
-
-      textContents.push({
-        originalName: attachment.originalName,
-        content,
-        ext
-      });
-    } catch (err) {
-      correlatedLogger.error({
-        attachmentId: attachment.id,
-        originalName: attachment.originalName,
-        error: (err as Error).message
-      }, 'Failed to read text attachment');
-    }
-  }
-
-  return textContents;
-}
 
 interface GenerateTitleOptions {
   draftId: string;
@@ -326,33 +131,13 @@ async function postIssueComments(options: PostIssueCommentsOptions): Promise<voi
   const hasAttachments = task.attachments && task.attachments.length > 0;
 
   if (hasNotes || hasAttachments) {
-    let uploadedAttachments: UploadedAttachment[] = [];
-    let textAttachments: Array<{ originalName: string; content: string; ext: string }> = [];
-
-    if (task.attachments && task.attachments.length > 0) {
-      // Filter image attachments to upload to repository
-      const imageAttachments = task.attachments.filter(a => a.type === 'image');
-
-      if (imageAttachments.length > 0) {
-        uploadedAttachments = await uploadAttachmentsToRepo({
-          octokit,
-          owner,
-          repoName,
-          attachments: imageAttachments,
-          issueNumber,
-          correlatedLogger
-        });
-      }
-
-      // Read text file contents for inline display
-      textAttachments = await readTextAttachmentContents(task.attachments, correlatedLogger);
-    }
-
-    const userNotesCommentBody = buildUserNotesCommentBody(
-      task.notes,
-      uploadedAttachments,
-      textAttachments
-    );
+    // Build comment body with embedded images (base64) and inline text files
+    // Files remain on the server and are not committed to the repository
+    const userNotesCommentBody = await buildUserNotesCommentBody({
+      notes: task.notes,
+      attachments: task.attachments || [],
+      correlatedLogger
+    });
 
     if (userNotesCommentBody) {
       await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -366,9 +151,7 @@ async function postIssueComments(options: PostIssueCommentsOptions): Promise<voi
         draftId,
         issueNumber,
         hasNotes: !!task.notes,
-        attachmentCount: task.attachments?.length || 0,
-        uploadedImageCount: uploadedAttachments.length,
-        inlineTextFileCount: textAttachments.length
+        attachmentCount: task.attachments?.length || 0
       }, 'User notes comment created');
     }
   }
