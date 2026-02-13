@@ -419,6 +419,18 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         } catch {
             // Keep default if resolution fails
         }
+    } else {
+        // No LLM specified - use the default agent's model for accurate tracking
+        try {
+            const registry = AgentRegistry.getInstance();
+            await registry.ensureInitialized();
+            const defaultAgent = registry.getDefaultAgent();
+            if (defaultAgent?.config.defaultModel) {
+                modelName = defaultAgent.config.defaultModel;
+            }
+        } catch {
+            // Keep DEFAULT_MODEL_NAME if registry fails
+        }
     }
 
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
