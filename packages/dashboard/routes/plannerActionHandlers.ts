@@ -93,9 +93,11 @@ export function createRefineHandler(db: Knex) {
       const ownership = await verifyDraftOwnership(db, draftId, req.user!.id, ['user_id']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
-      // Set status to 'refining' and return immediately
+      // Set status to 'refining' and clear any previous refinement_result (e.g., from cancelled operations)
+      // This ensures that when polling starts, a previous 'cancelled' result won't be mistaken for current operation
       await db('task_drafts').where({ draft_id: draftId }).update({
         status: 'refining',
+        refinement_result: null,
         updated_at: db.fn.now()
       });
 
