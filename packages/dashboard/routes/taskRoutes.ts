@@ -282,14 +282,22 @@ async function getTasksFromDb(
     .whereNotNull('task_id')
     .as('pi');
 
-  // Subquery to get critique_score from llm_executions analysis_report
-  const critiqueScoreSubquery = db('llm_executions')
-    .select(
-      'task_id',
-      db.raw(`json_extract(analysis_report, '$.implementation_critique_score') as critique_score`)
-    )
-    .whereNotNull('analysis_report')
-    .as('cs_score');
+  // Subquery to get critique_score from the latest llm_execution per task
+  // We need to select only the most recent execution with an analysis_report
+  const critiqueScoreSubquery = db.raw(`
+    (SELECT
+      task_id,
+      json_extract(analysis_report, '$.implementation_critique_score') as critique_score
+    FROM llm_executions le1
+    WHERE analysis_report IS NOT NULL
+      AND execution_id = (
+        SELECT MAX(le2.execution_id)
+        FROM llm_executions le2
+        WHERE le2.task_id = le1.task_id
+          AND le2.analysis_report IS NOT NULL
+      )
+    ) as cs_score
+  `);
 
   const baseQuery = db('tasks as t')
     .join(latestHistorySubquery, function() {
