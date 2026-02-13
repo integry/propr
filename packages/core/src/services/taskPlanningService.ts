@@ -512,8 +512,9 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResul
     startedAt
   }, 'LLM duration estimation completed');
 
-  // Update trace with pending status, estimated duration, and start time
-  await updateTrace(draftId, 'llm', 'pending', {
+  // Update trace with in_progress status, estimated duration, and start time
+  // Using 'in_progress' so the frontend shows the progress bar immediately
+  await updateTrace(draftId, 'llm', 'in_progress', {
     estimatedDuration: estimation.estimatedDurationMs,
     startedAt,
     isHistoricalEstimate: estimation.isHistoricalEstimate,
