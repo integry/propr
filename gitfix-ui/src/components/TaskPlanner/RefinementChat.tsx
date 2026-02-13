@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Bot, User, Loader2 } from 'lucide-react';
+import { Send, Bot, User, Loader2, Square } from 'lucide-react';
 import { ChatMessage } from '../../api/gitfixApi';
 
 interface Message {
@@ -10,7 +10,7 @@ interface Message {
 }
 
 interface RefinementChatProps {
-  onSendMessage: (message: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }>;
+  onSendMessage: (message: string, signal?: AbortSignal) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
   initialMessages?: ChatMessage[];
   onMessagesChange?: (messages: ChatMessage[]) => void;
 }
@@ -35,6 +35,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Auto-resize textarea based on content
   const adjustTextareaHeight = useCallback(() => {
@@ -80,6 +81,13 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     }
   };
 
+  const handleStop = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
@@ -103,15 +111,24 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     setInput('');
     setIsLoading(true);
 
+    // Create a new AbortController for this request
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     // Save user message immediately
     onMessagesChange?.(toChatMessages(messagesWithUser));
 
-    const result = await onSendMessage(userMessage.content);
+    const result = await onSendMessage(userMessage.content, abortController.signal);
+
+    // Clear the abort controller reference
+    abortControllerRef.current = null;
 
     const assistantMessage: Message = {
       id: `assistant-${Date.now()}`,
       role: 'assistant',
-      content: result.success ? result.message : `Error: ${result.message}`,
+      content: result.cancelled
+        ? 'Refinement cancelled by user.'
+        : (result.success ? result.message : `Error: ${result.message}`),
       timestamp: new Date()
     };
 
@@ -235,20 +252,27 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             />
             {/* Keyboard shortcut hint */}
             <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>
-            <button
-              type="submit"
-              disabled={!input.trim() || isLoading}
-              className="p-2 text-white rounded-md disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center flex-shrink-0"
-              style={{ backgroundColor: (!input.trim() || isLoading) ? undefined : 'rgb(29, 138, 138)' }}
-              onMouseEnter={(e) => { if (input.trim() && !isLoading) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
-              onMouseLeave={(e) => { if (input.trim() && !isLoading) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
-            >
-              {isLoading ? (
-                <Loader2 size={16} className="animate-spin" />
-              ) : (
+            {isLoading ? (
+              <button
+                type="button"
+                onClick={handleStop}
+                className="p-2 text-white rounded-md bg-red-500 hover:bg-red-600 transition-colors flex items-center justify-center flex-shrink-0"
+                title="Stop refinement"
+              >
+                <Square size={16} />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim()}
+                className="p-2 text-white rounded-md disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center flex-shrink-0"
+                style={{ backgroundColor: !input.trim() ? undefined : 'rgb(29, 138, 138)' }}
+                onMouseEnter={(e) => { if (input.trim()) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
+                onMouseLeave={(e) => { if (input.trim()) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
+              >
                 <Send size={16} />
-              )}
-            </button>
+              </button>
+            )}
           </div>
         </form>
       </div>

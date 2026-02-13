@@ -267,12 +267,13 @@ export interface RefineResponse {
   message: string;
 }
 
-export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instruction: string): Promise<RefineResponse> => {
+export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instruction: string, signal?: AbortSignal): Promise<RefineResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/refine`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draftId, plan: currentPlan, instruction }),
-    credentials: 'include'
+    credentials: 'include',
+    signal
   });
   await handleApiResponse(response);
   return response.json();
