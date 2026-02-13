@@ -57,13 +57,14 @@ interface PlanTask {
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * Build a user notes comment body with embedded attachments.
- * Images are embedded as base64 inline images in markdown.
- * Text files are included as code blocks.
+ * Build a user notes comment body with attachments.
+ * Images are embedded directly using markdown image syntax with the dashboard URL.
+ * Text files are displayed as links to the dashboard.
  */
 async function buildUserNotesCommentBody(
   notes: string | undefined,
-  attachments: PlanTaskAttachment[] | undefined
+  attachments: PlanTaskAttachment[] | undefined,
+  draftId: string
 ): Promise<string | null> {
   if (!notes && (!attachments || attachments.length === 0)) {
     return null;
@@ -80,6 +81,10 @@ async function buildUserNotesCommentBody(
   if (attachments && attachments.length > 0) {
     parts.push('### Attachments\n');
 
+    // Get the base URL for attachment links
+    const baseUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
+    const apiBaseUrl = process.env.API_BASE_URL || baseUrl.replace(/:\d+$/, ':4000');
+
     for (const attachment of attachments) {
       try {
         const filePath = path.join(process.cwd(), attachment.storedPath);
@@ -90,23 +95,17 @@ async function buildUserNotesCommentBody(
           continue;
         }
 
+        // Build the attachment URL
+        const attachmentUrl = `${apiBaseUrl}/api/planner/drafts/${draftId}/attachments/${attachment.id}`;
+
         if (attachment.type === 'image') {
-          // Embed image as base64 inline
-          const imageBuffer = await fs.readFile(filePath);
-          const base64Image = imageBuffer.toString('base64');
-          const mimeType = attachment.mimeType || 'image/webp';
+          // Embed image directly using markdown image syntax
           parts.push(`**${attachment.originalName}:**`);
-          parts.push(`![${attachment.originalName}](data:${mimeType};base64,${base64Image})`);
+          parts.push(`![${attachment.originalName}](${attachmentUrl})`);
           parts.push('');
         } else {
-          // Include text file content as a code block
-          const content = await fs.readFile(filePath, 'utf-8');
-          const ext = path.extname(attachment.originalName).slice(1) || 'txt';
-          parts.push(`**${attachment.originalName}:**`);
-          parts.push('```' + ext);
-          parts.push(content);
-          parts.push('```');
-          parts.push('');
+          // Display as a link for non-image files
+          parts.push(`- 📄 [${attachment.originalName}](${attachmentUrl})`);
         }
       } catch {
         parts.push(`- ⚠️ *${attachment.originalName}* (error reading file)`);
@@ -200,7 +199,7 @@ async function postIssueComments(options: PostIssueCommentsOptions): Promise<voi
   }
 
   // Post user notes and attachments as a separate comment if they exist
-  const userNotesCommentBody = await buildUserNotesCommentBody(task.notes, task.attachments);
+  const userNotesCommentBody = await buildUserNotesCommentBody(task.notes, task.attachments, draftId);
   if (userNotesCommentBody) {
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
       owner,
