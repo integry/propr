@@ -198,6 +198,7 @@ export interface PlanTask {
   body: string;
   implementation: string;
   notes?: string;
+  attachments?: PlannerAttachment[];
   issue_number?: number;
   issue_url?: string;
 }

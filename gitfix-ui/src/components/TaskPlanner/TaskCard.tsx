@@ -1,9 +1,11 @@
-import { useState, forwardRef, useRef, useEffect } from 'react';
+import { useState, forwardRef, useRef, useEffect, useCallback } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
 import { MessageSquare, Trash2, Pencil, ChevronDown, AlertCircle, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { PlanTask } from '../../api/gitfixApi';
+import { PlanTask, uploadAttachment, removeAttachment } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
+import { AttachmentUploader } from './AttachmentUploader';
+import { resizeImage } from './imageUtils';
 
 // Confirmation dialog component for clearing implementation
 interface ClearImplementationDialogProps {
@@ -135,6 +137,7 @@ interface TaskCardProps {
   task: PlanTask;
   isHighlighted: boolean;
   stepNumber: number;
+  draftId: string;
   onChange: (task: PlanTask) => void;
   onDelete: () => void;
 }
@@ -146,6 +149,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   task,
   isHighlighted,
   stepNumber,
+  draftId,
   onChange,
   onDelete,
 }, ref) => {
@@ -153,16 +157,72 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
   const [isImplementationCollapsed, setIsImplementationCollapsed] = useState(true);
   const [showClearDialog, setShowClearDialog] = useState(false);
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const notesTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Extract file paths from implementation for collapsed summary and count
   const filePaths = extractFilePaths(task.implementation);
   const fileCount = filePaths.length;
 
   const handleFieldClick = (field: EditableField) => {
-    if (viewMode === 'edit') {
+    // Allow direct editing of notes regardless of view mode
+    if (viewMode === 'edit' || field === 'notes') {
       setEditingField(field);
     }
   };
+
+  // Handle attachment upload
+  const handleAttachmentUpload = useCallback(async (file: File) => {
+    if (!draftId) return;
+
+    setIsUploadingAttachment(true);
+    try {
+      const attachment = await uploadAttachment(draftId, file);
+      const currentAttachments = task.attachments || [];
+      onChange({
+        ...task,
+        attachments: [...currentAttachments, attachment]
+      });
+    } catch (error) {
+      console.error('Failed to upload attachment:', error);
+    } finally {
+      setIsUploadingAttachment(false);
+    }
+  }, [draftId, task, onChange]);
+
+  // Handle attachment removal
+  const handleAttachmentRemove = useCallback(async (attachmentId: string) => {
+    if (!draftId) return;
+
+    try {
+      await removeAttachment(draftId, attachmentId);
+      const currentAttachments = task.attachments || [];
+      onChange({
+        ...task,
+        attachments: currentAttachments.filter(a => a.id !== attachmentId)
+      });
+    } catch (error) {
+      console.error('Failed to remove attachment:', error);
+    }
+  }, [draftId, task, onChange]);
+
+  // Handle paste in notes textarea for image upload
+  const handleNotesPaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          const processedFile = await resizeImage(file);
+          await handleAttachmentUpload(processedFile);
+        }
+        return;
+      }
+    }
+  }, [handleAttachmentUpload]);
 
   const handleBlur = () => {
     setEditingField(null);
@@ -175,15 +235,19 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     className: string,
     markdownClassName?: string
   ) => {
+    // For notes field, allow editing even in preview mode when editingField === 'notes'
     const isEditing = editingField === field || viewMode === 'edit';
+    const isNotesField = field === 'notes';
 
     if (isEditing) {
       return (
         <TextareaAutosize
+          ref={isNotesField ? notesTextareaRef : undefined}
           value={value}
           onChange={e => onChange({ ...task, [field as string]: e.target.value })}
           onBlur={handleBlur}
           onFocus={() => setEditingField(field)}
+          onPaste={isNotesField ? handleNotesPaste : undefined}
           autoFocus={editingField === field}
           className={`${className} resize-none focus:outline-none focus:bg-gray-50 rounded p-1 -ml-1 cursor-text`}
           placeholder={placeholder}
@@ -192,11 +256,14 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     }
 
     // Preview mode - render markdown
+    // For notes field, use cursor-text to indicate it's directly editable
+    const cursorClass = isNotesField ? 'cursor-text' : 'cursor-default';
+
     if (!value || value.trim() === '') {
       return (
         <div
           onClick={() => handleFieldClick(field)}
-          className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1 min-h-[24px] text-gray-400 italic`}
+          className={`${markdownClassName || className} ${cursorClass} hover:bg-gray-50 rounded p-1 -ml-1 min-h-[24px] text-gray-400 italic`}
         >
           {placeholder}
         </div>
@@ -206,7 +273,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     return (
       <div
         onClick={() => handleFieldClick(field)}
-        className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1 task-card-content`}
+        className={`${markdownClassName || className} ${cursorClass} hover:bg-gray-50 rounded p-1 -ml-1 task-card-content`}
       >
         <MarkdownRenderer text={value} className="prose prose-sm max-w-none [&_code]:bg-gray-100 [&_code]:text-gray-600 [&_code]:px-1 [&_code]:py-0 [&_code]:rounded-sm [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none" />
       </div>
@@ -394,6 +461,17 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 'w-full text-sm text-gray-800 bg-transparent placeholder-gray-400',
                 'w-full text-sm text-gray-800'
               )}
+              {/* Attachments section */}
+              <div className="mt-3">
+                <AttachmentUploader
+                  files={task.attachments || []}
+                  draftId={draftId}
+                  isUploading={isUploadingAttachment}
+                  onUpload={handleAttachmentUpload}
+                  onRemove={handleAttachmentRemove}
+                  compact
+                />
+              </div>
             </div>
           </div>
         </div>
