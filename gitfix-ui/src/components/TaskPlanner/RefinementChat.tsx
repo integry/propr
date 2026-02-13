@@ -13,9 +13,10 @@ interface RefinementChatProps {
   onSendMessage: (message: string, signal?: AbortSignal) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
   initialMessages?: ChatMessage[];
   onMessagesChange?: (messages: ChatMessage[]) => void;
+  onStop?: () => Promise<void>;
 }
 
-export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange }) => {
+export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, onStop }) => {
   const [messages, setMessages] = useState<Message[]>(() => {
     if (initialMessages && initialMessages.length > 0) {
       // Filter out any legacy welcome messages stored in the database
@@ -81,12 +82,20 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     }
   };
 
-  const handleStop = useCallback(() => {
+  const handleStop = useCallback(async () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-  }, []);
+    // Call the backend abort endpoint to stop server-side processing
+    if (onStop) {
+      try {
+        await onStop();
+      } catch (err) {
+        console.error('Failed to abort refinement:', err);
+      }
+    }
+  }, [onStop]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

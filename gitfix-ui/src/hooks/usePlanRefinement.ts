@@ -73,11 +73,11 @@ const parsePlanJson = (planJson: unknown): PlanTask[] | null => {
 /**
  * Safely parses refinement result, handling both string and object inputs.
  */
-const parseRefinementResult = (result: unknown): { summary?: string; action?: 'modified' | 'answered' | 'both' } | undefined => {
+const parseRefinementResult = (result: unknown): { summary?: string; action?: 'modified' | 'answered' | 'both' | 'cancelled' } | undefined => {
   if (typeof result === 'string') {
     try { return JSON.parse(result); } catch { return undefined; }
   }
-  return result as { summary?: string; action?: 'modified' | 'answered' | 'both' } | undefined;
+  return result as { summary?: string; action?: 'modified' | 'answered' | 'both' | 'cancelled' } | undefined;
 };
 
 interface UsePlanRefinementResult {
@@ -256,6 +256,14 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
           const draft = await getDraftWithPlan(draftId);
 
           if (draft.status === 'review') {
+            // Extract refinement result first to check for cancellation
+            const refinementResult = parseRefinementResult(draft.refinement_result);
+
+            // Check if refinement was cancelled via the abort endpoint
+            if (refinementResult?.action === 'cancelled') {
+              return { success: false, message: refinementResult.summary || 'Refinement cancelled by user.', cancelled: true };
+            }
+
             // Refinement complete - defensively parse plan_json if it's a string
             const planJson = parsePlanJson(draft.plan_json);
             if (!planJson) {
@@ -264,8 +272,6 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
             updatePlan(planJson, 'ai');
 
-            // Extract refinement result with summary
-            const refinementResult = parseRefinementResult(draft.refinement_result);
             const message = refinementResult?.summary || 'Plan processed successfully.';
             const action = refinementResult?.action;
 
