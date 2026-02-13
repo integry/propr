@@ -73,11 +73,11 @@ const parsePlanJson = (planJson: unknown): PlanTask[] | null => {
 /**
  * Safely parses refinement result, handling both string and object inputs.
  */
-const parseRefinementResult = (result: unknown): { summary?: string; action?: 'modified' | 'answered' | 'both' } | undefined => {
+const parseRefinementResult = (result: unknown): { summary?: string; action?: 'modified' | 'answered' | 'both' | 'cancelled' } | undefined => {
   if (typeof result === 'string') {
     try { return JSON.parse(result); } catch { return undefined; }
   }
-  return result as { summary?: string; action?: 'modified' | 'answered' | 'both' } | undefined;
+  return result as { summary?: string; action?: 'modified' | 'answered' | 'both' | 'cancelled' } | undefined;
 };
 
 interface UsePlanRefinementResult {
@@ -88,7 +88,7 @@ interface UsePlanRefinementResult {
   deleteTask: (taskId: string) => DeletedTask | null;
   restoreTask: (deleted: DeletedTask) => void;
   reorderTasks: (activeId: string, overId: string) => void;
-  handleRefine: (instruction: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }>;
+  handleRefine: (instruction: string, signal?: AbortSignal) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -227,19 +227,43 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     updatePlan(newPlan, 'user');
   }, [currentPlan, updatePlan]);
 
-  const handleRefine = useCallback(async (instruction: string): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }> => {
+  const handleRefine = useCallback(async (instruction: string, signal?: AbortSignal): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }> => {
     try {
+      // Check if already aborted
+      if (signal?.aborted) {
+        return { success: false, message: 'Refinement cancelled by user.', cancelled: true };
+      }
+
       // Start refinement - returns immediately with 202
-      await refinePlan(draftId, currentPlan, instruction);
+      await refinePlan(draftId, currentPlan, instruction, signal);
 
       // Poll for completion
-      const pollForCompletion = async (): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }> => {
+      const pollForCompletion = async (): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }> => {
         const maxAttempts = 300; // 5 minutes max
         for (let i = 0; i < maxAttempts; i++) {
+          // Check if aborted during polling
+          if (signal?.aborted) {
+            return { success: false, message: 'Refinement cancelled by user.', cancelled: true };
+          }
+
           await new Promise(resolve => setTimeout(resolve, 1000));
+
+          // Check again after the wait
+          if (signal?.aborted) {
+            return { success: false, message: 'Refinement cancelled by user.', cancelled: true };
+          }
+
           const draft = await getDraftWithPlan(draftId);
 
           if (draft.status === 'review') {
+            // Extract refinement result first to check for cancellation
+            const refinementResult = parseRefinementResult(draft.refinement_result);
+
+            // Check if refinement was cancelled via the abort endpoint
+            if (refinementResult?.action === 'cancelled') {
+              return { success: false, message: refinementResult.summary || 'Refinement cancelled by user.', cancelled: true };
+            }
+
             // Refinement complete - defensively parse plan_json if it's a string
             const planJson = parsePlanJson(draft.plan_json);
             if (!planJson) {
@@ -248,8 +272,6 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
             updatePlan(planJson, 'ai');
 
-            // Extract refinement result with summary
-            const refinementResult = parseRefinementResult(draft.refinement_result);
             const message = refinementResult?.summary || 'Plan processed successfully.';
             const action = refinementResult?.action;
 
@@ -266,6 +288,10 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
       return await pollForCompletion();
     } catch (e) {
+      // Handle AbortError specifically
+      if (e instanceof Error && e.name === 'AbortError') {
+        return { success: false, message: 'Refinement cancelled by user.', cancelled: true };
+      }
       console.error(e);
       return { success: false, message: 'Failed to refine plan. Please try again.' };
     }
