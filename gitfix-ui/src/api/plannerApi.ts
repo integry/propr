@@ -5,6 +5,14 @@ export interface GenerationStepData {
   files?: Array<{ path: string; reason: string; score: number }>;
   includedFiles?: string[];
   tokenCount?: number;
+  /** Estimated duration in milliseconds for this step */
+  estimatedDuration?: number;
+  /** ISO timestamp when this step started */
+  startedAt?: string;
+  /** Whether the estimate is based on historical data */
+  isHistoricalEstimate?: boolean;
+  /** Number of historical samples used for estimation */
+  sampleCount?: number;
 }
 
 export interface GenerationStep {
@@ -229,9 +237,19 @@ export interface DraftContextConfig {
 }
 
 export interface RefinementResult {
-  action: 'modified' | 'answered' | 'both';
-  summary: string;
-  timestamp: string;
+  /** Status of the refinement: 'in_progress' during processing, 'completed' when done */
+  status?: 'in_progress' | 'completed';
+  action?: 'modified' | 'answered' | 'both';
+  summary?: string;
+  timestamp?: string;
+  /** ISO timestamp when refinement started */
+  startedAt?: string;
+  /** Estimated duration in milliseconds */
+  estimatedDuration?: number;
+  /** Whether the estimate is based on historical data */
+  isHistoricalEstimate?: boolean;
+  /** Number of historical samples used for estimation */
+  sampleCount?: number;
 }
 
 export interface DraftWithPlan extends PlannerDraft {

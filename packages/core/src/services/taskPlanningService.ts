@@ -15,6 +15,8 @@ import {
   parseContextConfig, checkoutBaseBranch, TaskDraftConfig, Granularity, PlanningFailedError, buildFullContext,
   Base64Image, MinimalLogger, ContextRepository, getModelHardLimit
 } from './planningHelpers.js';
+import { estimateLlmDuration } from '../utils/llmEstimation.js';
+import { estimateTokens } from '../utils/tokenCalculation.js';
 import type { Attachment } from './attachmentService.js';
 import { loadSettings } from '../config/configManager.js';
 
@@ -462,7 +464,6 @@ interface CallLLMForPlanResult {
 async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
   const { draftId, fullContext, worktreePath, githubToken, repository, correlationId, tokenLimit, model = DEFAULT_GENERATION_MODEL, granularity } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
-  await updateTrace(draftId, 'llm', 'pending');
 
   // Use model's hard limit for validation (context level is a guideline, not a hard limit)
   const modelHardLimit = getModelHardLimit(model);
@@ -479,6 +480,46 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResul
   }
 
   correlatedLogger.info({ tokenCount: validation.tokenCount, source: validation.source, modelHardLimit }, 'Token validation passed');
+
+  // Estimate LLM execution duration based on historical data
+  correlatedLogger.info({
+    estimationInput: {
+      executionType: 'plan-generation',
+      modelName: model,
+      inputTokenCount: validation.tokenCount,
+      contextCharLength: fullContext.length
+    }
+  }, 'Calling estimateLlmDuration with parameters');
+
+  const estimation = await estimateLlmDuration({
+    executionType: 'plan-generation',
+    modelName: model,
+    inputTokenCount: validation.tokenCount,
+    correlationId
+  });
+
+  const startedAt = new Date().toISOString();
+
+  correlatedLogger.info({
+    estimationResult: {
+      estimatedDurationMs: estimation.estimatedDurationMs,
+      estimatedDurationFormatted: `${Math.floor(estimation.estimatedDurationMs / 60000)}m ${Math.floor((estimation.estimatedDurationMs % 60000) / 1000)}s`,
+      isHistoricalEstimate: estimation.isHistoricalEstimate,
+      sampleCount: estimation.sampleCount,
+      avgMsPerToken: estimation.avgMsPerToken
+    },
+    inputTokenCount: validation.tokenCount,
+    startedAt
+  }, 'LLM duration estimation completed');
+
+  // Update trace with in_progress status, estimated duration, and start time
+  // Using 'in_progress' so the frontend shows the progress bar immediately
+  await updateTrace(draftId, 'llm', 'in_progress', {
+    estimatedDuration: estimation.estimatedDurationMs,
+    startedAt,
+    isHistoricalEstimate: estimation.isHistoricalEstimate,
+    sampleCount: estimation.sampleCount
+  });
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
   // Build metadata for LLM log tracking
@@ -746,7 +787,14 @@ function validateRefinementResponse(
   return refinementResponse;
 }
 
-export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlanResult> {
+export interface RefinePlanEstimation {
+  estimatedDurationMs: number;
+  startedAt: string;
+  isHistoricalEstimate: boolean;
+  sampleCount: number;
+}
+
+export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlanResult & { estimation?: RefinePlanEstimation }> {
   const { currentPlan, instruction, worktreePath, repository, githubToken, correlationId, originalContext, draftId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
@@ -763,6 +811,25 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
   const userPrompt = `${REFINER_SYSTEM_PROMPT}${contextSection}\n\nCurrent Plan:\n${JSON.stringify(currentPlan, null, 2)}\n\nUser Request:\n"${instruction}"`;
   const [repoOwner, repoName] = repository.split('/');
   const issueRef = { number: 0, repoOwner: repoOwner || 'unknown', repoName: repoName || 'unknown' };
+
+  // Estimate input token count using tiktoken (more accurate than rough char/4 estimate)
+  const estimatedInputTokens = estimateTokens(userPrompt);
+
+  // Estimate LLM execution duration based on historical data
+  const estimation = await estimateLlmDuration({
+    executionType: 'plan-refinement',
+    modelName: generationModel,
+    inputTokenCount: estimatedInputTokens,
+    correlationId
+  });
+
+  const startedAt = new Date().toISOString();
+  correlatedLogger.info({
+    estimatedDurationMs: estimation.estimatedDurationMs,
+    isHistoricalEstimate: estimation.isHistoricalEstimate,
+    sampleCount: estimation.sampleCount,
+    estimatedInputTokens
+  }, 'Estimated refinement duration');
 
   // Build metadata for LLM log tracking
   const refinementMetadata = {
@@ -798,7 +865,13 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
   return {
     plan: refinementResponse.plan,
     action: refinementResponse.action,
-    summary: refinementResponse.summary
+    summary: refinementResponse.summary,
+    estimation: {
+      estimatedDurationMs: estimation.estimatedDurationMs,
+      startedAt,
+      isHistoricalEstimate: estimation.isHistoricalEstimate,
+      sampleCount: estimation.sampleCount
+    }
   };
 }
 

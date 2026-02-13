@@ -156,7 +156,7 @@ export const CLAUDE_CODE_OVERHEAD = 5000;
 
 export interface GenerationTraceStep {
   name: string;
-  status: 'pending' | 'completed' | 'failed';
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
   data?: Record<string, unknown>;
 }
 
@@ -167,7 +167,7 @@ export interface GenerationTrace {
 export async function updateTrace(
   draftId: string,
   step: string,
-  status: 'pending' | 'completed' | 'failed',
+  status: 'pending' | 'in_progress' | 'completed' | 'failed',
   data?: Record<string, unknown>
 ): Promise<void> {
   if (!db) return;

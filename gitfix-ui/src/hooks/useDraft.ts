@@ -31,19 +31,24 @@ export const useDraft = (draftId: string): UseDraftResult => {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchDraft = useCallback(async () => {
+  const fetchDraft = useCallback(async (isPolling = false) => {
     if (!draftId) return;
 
     try {
-      setLoading(true);
+      // Only show loading state on initial fetch, not during polling
+      if (!isPolling) {
+        setLoading(true);
+      }
       setError(null);
       const data = await getDraft(draftId);
       // Defensively parse JSON fields in case backend returns strings
-      setDraft(parseJsonFields(data));
+      setDraft(parseJsonFields(data as unknown as Record<string, unknown>) as unknown as PlannerDraft);
     } catch (err) {
       setError((err as Error).message || 'Failed to fetch draft');
     } finally {
-      setLoading(false);
+      if (!isPolling) {
+        setLoading(false);
+      }
     }
   }, [draftId]);
 
@@ -54,9 +59,9 @@ export const useDraft = (draftId: string): UseDraftResult => {
   useEffect(() => {
     if (draft?.status !== 'generating') return;
 
-    const interval = setInterval(fetchDraft, 3000);
+    const interval = setInterval(() => fetchDraft(true), 3000);
     return () => clearInterval(interval);
   }, [draft?.status, fetchDraft]);
 
-  return { draft, loading, error, refetch: fetchDraft };
+  return { draft, loading, error, refetch: () => fetchDraft(false) };
 };

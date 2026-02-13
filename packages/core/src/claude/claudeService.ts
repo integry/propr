@@ -23,6 +23,7 @@ import {
 import { recordLLMMetrics } from '../utils/llmMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../utils/llmLogger.js';
 import type { ExecutionType, ConversationStep } from '../utils/llmMetrics.types.js';
+import { estimateTokens } from '../utils/tokenCalculation.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
 
@@ -409,12 +410,15 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
             if (analysisResult !== null) {
                 // Persist LLM log to the new llm_logs table
                 const repository = issueRef ? `${issueRef.repoOwner}/${issueRef.repoName}` : undefined;
+                // Calculate estimated input tokens from prompt (reliable for single-turn operations)
+                const estimatedInputTokens = estimateTokens(prompt);
                 const logEntry = createLlmLogFromAnalysis({
                     executionType,
                     modelUsed: analysisResult.modelUsed,
                     executionTimeMs: analysisResult.executionTimeMs,
                     success: analysisResult.success,
                     tokenUsage: analysisResult.tokenUsage,
+                    estimatedInputTokens,
                     error: analysisResult.error,
                     sessionId: analysisResult.sessionId,
                     correlationId,

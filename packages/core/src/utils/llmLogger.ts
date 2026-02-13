@@ -18,6 +18,8 @@ export interface LlmLogEntry {
   success: boolean;
   inputTokens?: number;
   outputTokens?: number;
+  /** Calculated token count from prompt (using tiktoken) - reliable for single-turn operations */
+  estimatedInputTokens?: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
   costUsd?: number;
@@ -78,6 +80,7 @@ export async function persistLlmLog(entry: LlmLogEntry): Promise<number | null> 
       success: entry.success,
       input_tokens: entry.inputTokens ?? null,
       output_tokens: entry.outputTokens ?? null,
+      estimated_input_tokens: entry.estimatedInputTokens ?? null,
       cache_creation_input_tokens: entry.cacheCreationInputTokens ?? null,
       cache_read_input_tokens: entry.cacheReadInputTokens ?? null,
       cost_usd: costUsd ?? null,
@@ -128,6 +131,8 @@ export function createLlmLogFromAnalysis(params: {
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
   };
+  /** Calculated token count from prompt - more reliable than agent-reported for single-turn */
+  estimatedInputTokens?: number;
   error?: string;
   sessionId?: string;
   correlationId?: string;
@@ -148,6 +153,7 @@ export function createLlmLogFromAnalysis(params: {
     success: params.success,
     inputTokens: params.tokenUsage?.input_tokens,
     outputTokens: params.tokenUsage?.output_tokens,
+    estimatedInputTokens: params.estimatedInputTokens,
     cacheCreationInputTokens: params.tokenUsage?.cache_creation_input_tokens,
     cacheReadInputTokens: params.tokenUsage?.cache_read_input_tokens,
     errorMessage: params.error,

@@ -9,7 +9,11 @@ import {
   executeDraft,
   getGitHubInstallationToken,
   ensureRepoCloned,
-  generateCorrelationId
+  generateCorrelationId,
+  estimateLlmDuration,
+  loadSettings,
+  estimateTokens,
+  REFINER_SYSTEM_PROMPT
 } from '@gitfix/core';
 import type { Plan } from '@gitfix/core';
 import {
@@ -93,11 +97,46 @@ export function createRefineHandler(db: Knex) {
       const ownership = await verifyDraftOwnership(db, draftId, req.user!.id, ['user_id']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
-      // Set status to 'refining' and clear any previous refinement_result (e.g., from cancelled operations)
-      // This ensures that when polling starts, a previous 'cancelled' result won't be mistaken for current operation
+      // Calculate estimation early so we can store it before the LLM call starts
+      // Fetch original context to include in the token estimate (this is the bulk of the prompt)
+      const draftForContext = await db('task_drafts').where({ draft_id: draftId }).select('generated_context').first();
+      const originalContext = draftForContext?.generated_context as string | undefined;
+
+      // Build a close approximation of the full prompt for token estimation
+      // This matches the structure in taskPlanningService.refinePlan()
+      const planJsonStr = JSON.stringify(currentPlan, null, 2);
+      const contextSection = originalContext
+        ? `\n\nOriginal Context (codebase details from initial plan generation):\n${originalContext}\n`
+        : '';
+      const roughPrompt = `${REFINER_SYSTEM_PROMPT}${contextSection}\n\nCurrent Plan:\n${planJsonStr}\n\nUser Request:\n"${instruction}"`;
+      // Use tiktoken for accurate token count
+      const estimatedInputTokens = estimateTokens(roughPrompt);
+
+      const settings = await loadSettings();
+      const generationModel = settings.planner_generation_model || 'opus';
+
+      const estimation = await estimateLlmDuration({
+        executionType: 'plan-refinement',
+        modelName: generationModel,
+        inputTokenCount: estimatedInputTokens,
+        correlationId
+      });
+
+      const startedAt = new Date().toISOString();
+
+      // Set status to 'refining' with initial refinement_result containing estimation data
+      // This allows the frontend to show progress immediately while also clearing any previous cancelled state
+      const initialRefinementMeta = {
+        status: 'in_progress',
+        startedAt,
+        estimatedDuration: estimation.estimatedDurationMs,
+        isHistoricalEstimate: estimation.isHistoricalEstimate,
+        sampleCount: estimation.sampleCount
+      };
+
       await db('task_drafts').where({ draft_id: draftId }).update({
         status: 'refining',
-        refinement_result: null,
+        refinement_result: JSON.stringify(initialRefinementMeta),
         updated_at: db.fn.now()
       });
 
@@ -147,11 +186,17 @@ export function createRefineHandler(db: Knex) {
             return;
           }
 
-          // Store the refinement result including action and summary
+          // Store the refinement result including action, summary, and estimation data
           const refinementMeta = {
+            status: 'completed',
             action: result.action,
             summary: result.summary,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            // Include estimation data from the LLM call
+            estimatedDuration: result.estimation?.estimatedDurationMs,
+            startedAt: result.estimation?.startedAt,
+            isHistoricalEstimate: result.estimation?.isHistoricalEstimate,
+            sampleCount: result.estimation?.sampleCount
           };
 
           console.log(`[refine] Storing refinement result for draft ${draftId}:`, JSON.stringify(refinementMeta));

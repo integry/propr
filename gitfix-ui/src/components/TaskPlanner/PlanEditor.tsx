@@ -3,7 +3,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Undo2, Redo2, Loader2, AlertCircle, GripVertical, Info, X, ArrowLeft, FileQuestion, Github, GitBranch } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { debounce } from 'lodash';
-import { usePlanRefinement } from '../../hooks/usePlanRefinement';
+import { usePlanRefinement, RefinementProgress } from '../../hooks/usePlanRefinement';
 import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, GranularityEnforcementMetadata, resetDraftToSetup, abortRefinement } from '../../api/gitfixApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
@@ -134,7 +134,8 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
     redo,
     canUndo,
     canRedo,
-    highlightedIds
+    highlightedIds,
+    refinementProgress
   } = usePlanRefinement(draft.draft_id, initialPlan);
 
   // Handle soft delete with undo toast
@@ -305,6 +306,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
                 onSendMessage={handleRefine}
                 initialMessages={draft.chat_history}
                 onMessagesChange={handleChatMessagesChange}
+refinementProgress={refinementProgress}
                 onStop={handleStopRefinement}
               />
             </div>
