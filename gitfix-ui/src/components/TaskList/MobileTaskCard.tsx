@@ -3,30 +3,7 @@ import { ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
 import type { Task, TaskGroup } from './types';
 import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration } from './utils';
 import { TaskTypeBadge } from './TaskTypeBadge';
-
-// Helper component to render the critique score badge
-const ScoreBadge: React.FC<{ score: number | null | undefined }> = ({ score }) => {
-  if (score === null || score === undefined) return null;
-
-  // Determine color based on score
-  let colorClasses: string;
-  if (score >= 8) {
-    colorClasses = 'bg-green-500';
-  } else if (score <= 4) {
-    colorClasses = 'bg-red-500';
-  } else {
-    colorClasses = 'bg-yellow-500';
-  }
-
-  return (
-    <span
-      className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-xs font-bold ${colorClasses}`}
-      title={`Implementation Critique Score: ${score}/10`}
-    >
-      {score}
-    </span>
-  );
-};
+import { ScoreBadge } from './ScoreBadge';
 
 // Helper function to check if a task should be dimmed (merged or closed)
 const shouldDimTask = (task: Task): boolean => {
