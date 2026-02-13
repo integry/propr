@@ -283,16 +283,34 @@ async function getTasksFromDb(
     .as('pi');
 
   // Subquery to get critique_score from the latest llm_execution per task
-  // The analysis_report is a JSON object with a "report" field that contains a JSON string
-  // We need to extract the "report" field and then parse it to get implementation_critique_score
-  // Use json_valid() to safely handle malformed JSON data
+  // The analysis_report is a JSON object with a "report" field that contains the LLM response
+  // The LLM response is wrapped in a markdown code block: ```json\n{...}\n```
+  // We need to strip the markdown formatting to extract the actual JSON and parse it
+  // Strategy: Use RTRIM to remove trailing whitespace and backticks, find first '{', extract from there
   const critiqueScoreSubquery = db.raw(`
     (SELECT
       task_id,
       CASE
         WHEN json_valid(analysis_report) = 1
-          AND json_valid(json_extract(analysis_report, '$.report')) = 1
-        THEN json_extract(json_extract(analysis_report, '$.report'), '$.implementation_critique_score')
+          AND json_extract(analysis_report, '$.report') IS NOT NULL
+          AND INSTR(json_extract(analysis_report, '$.report'), '{') > 0
+        THEN (
+          SELECT
+            CASE
+              WHEN json_valid(clean_json) = 1
+              THEN json_extract(clean_json, '$.implementation_critique_score')
+              ELSE NULL
+            END
+          FROM (
+            SELECT RTRIM(
+              SUBSTR(
+                json_extract(analysis_report, '$.report'),
+                INSTR(json_extract(analysis_report, '$.report'), '{')
+              ),
+              CHAR(10) || CHAR(13) || ' ' || '\`'
+            ) as clean_json
+          )
+        )
         ELSE NULL
       END as critique_score
     FROM llm_executions le1
