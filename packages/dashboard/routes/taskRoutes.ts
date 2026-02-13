@@ -276,12 +276,65 @@ async function getTasksFromDb(
     .groupBy('task_id')
     .as('cs');
 
+  // Subquery to get plan_issue_status from plan_issues table
+  const planIssueStatusSubquery = db('plan_issues')
+    .select('task_id', 'status as plan_issue_status')
+    .whereNotNull('task_id')
+    .as('pi');
+
+  // Subquery to get critique_score from the latest llm_execution per task
+  // The analysis_report is a JSON object with a "report" field that contains the LLM response
+  // The LLM response is wrapped in a markdown code block: ```json\n{...}\n```
+  // We need to strip the markdown formatting to extract the actual JSON and parse it
+  // Strategy: Use RTRIM to remove trailing whitespace and backticks, find first '{', extract from there
+  const critiqueScoreSubquery = db.raw(`
+    (SELECT
+      task_id,
+      CASE
+        WHEN json_valid(analysis_report) = 1
+          AND json_extract(analysis_report, '$.report') IS NOT NULL
+          AND INSTR(json_extract(analysis_report, '$.report'), '{') > 0
+        THEN (
+          SELECT
+            CASE
+              WHEN json_valid(clean_json) = 1
+              THEN json_extract(clean_json, '$.implementation_critique_score')
+              ELSE NULL
+            END
+          FROM (
+            SELECT RTRIM(
+              SUBSTR(
+                json_extract(analysis_report, '$.report'),
+                INSTR(json_extract(analysis_report, '$.report'), '{')
+              ),
+              CHAR(10) || CHAR(13) || ' ' || '\`'
+            ) as clean_json
+          )
+        )
+        ELSE NULL
+      END as critique_score
+    FROM llm_executions le1
+    WHERE analysis_report IS NOT NULL
+      AND json_valid(analysis_report) = 1
+      AND json_extract(analysis_report, '$.report') IS NOT NULL
+      AND execution_id = (
+        SELECT MAX(le2.execution_id)
+        FROM llm_executions le2
+        WHERE le2.task_id = le1.task_id
+          AND le2.analysis_report IS NOT NULL
+          AND json_valid(le2.analysis_report) = 1
+      )
+    ) as cs_score
+  `);
+
   const baseQuery = db('tasks as t')
     .join(latestHistorySubquery, function() {
       this.on('t.task_id', '=', 'h.task_id').andOn('h.rn', '=', db!.raw('?', [1]));
     })
     .leftJoin(processingStartSubquery, 'ps.task_id', 't.task_id')
-    .leftJoin(completionSubquery, 'cs.task_id', 't.task_id');
+    .leftJoin(completionSubquery, 'cs.task_id', 't.task_id')
+    .leftJoin(planIssueStatusSubquery, 'pi.task_id', 't.task_id')
+    .leftJoin(critiqueScoreSubquery, 'cs_score.task_id', 't.task_id');
 
   if (status && status !== 'all') {
     baseQuery.where('h.state', status);
@@ -306,7 +359,8 @@ async function getTasksFromDb(
 
   const dbTasks = await baseQuery
     .select('t.*', 'h.state', 'h.timestamp as state_timestamp', 'h.reason as failedReason',
-            'ps.processing_start_timestamp', 'cs.completion_timestamp')
+            'ps.processing_start_timestamp', 'cs.completion_timestamp',
+            'pi.plan_issue_status', 'cs_score.critique_score')
     .orderBy('t.created_at', 'desc')
     .limit(limit)
     .offset(offset);
@@ -376,6 +430,13 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
   const { title, subtitle, llmProvider, prNumber: jobDataPrNumber } = parseInitialJobData(row);
   const prNumber = jobDataPrNumber || extractPrNumberFromFinalResult(row);
 
+  // Parse critique_score - it may come as a number or string from JSON extraction
+  const critiqueScore = row.critique_score !== null && row.critique_score !== undefined
+    ? typeof row.critique_score === 'number'
+      ? row.critique_score
+      : parseFloat(row.critique_score as string)
+    : null;
+
   return {
     id: row.task_id,
     issueId: row.task_id,
@@ -395,7 +456,9 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
     attemptsMade: 1,
     modelName: row.model_name,
     model: row.model_name,
-    llmProvider: llmProvider
+    llmProvider: llmProvider,
+    planIssueStatus: row.plan_issue_status || null,
+    critiqueScore: critiqueScore !== null && !isNaN(critiqueScore) ? critiqueScore : null
   };
 }
 

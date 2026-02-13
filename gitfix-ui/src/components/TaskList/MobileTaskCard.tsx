@@ -1,8 +1,9 @@
 import React from 'react';
 import { ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
 import type { Task, TaskGroup } from './types';
-import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration } from './utils';
+import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration, shouldDimTask } from './utils';
 import { TaskTypeBadge } from './TaskTypeBadge';
+import { ScoreBadge } from './ScoreBadge';
 
 interface MobileTaskCardProps {
   group: TaskGroup;
@@ -18,6 +19,7 @@ const MobileTaskItemWithGroup: React.FC<{
   onRowClick: (taskId: string) => void;
 }> = ({ task, group, isChild = false, onRowClick }) => {
   const typeInfo = getTaskTypeInfo(task);
+  const isDimmed = shouldDimTask(task);
   const displayTitle = (() => {
     if (typeInfo.type === 'followup' && task.subtitle) {
       return task.subtitle;
@@ -49,6 +51,7 @@ const MobileTaskItemWithGroup: React.FC<{
             </>
           )}
           {getStatusPill(task.status)}
+          <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
         </div>
         <p className={`text-sm text-gray-900 line-clamp-2 ${isChild ? 'text-gray-600' : 'font-medium'}`}>
           {displayTitle}
