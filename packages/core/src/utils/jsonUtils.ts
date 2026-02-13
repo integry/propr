@@ -5,32 +5,67 @@ export class JsonParseError extends Error {
   }
 }
 
+/**
+ * Find the start of a JSON structure, preferring patterns that are more likely to be actual JSON
+ * rather than code snippets that happen to contain { or [
+ */
+function findJsonStart(text: string): { start: number; type: 'object' | 'array' } | null {
+  // Look for JSON-like patterns in order of likelihood
+  // These patterns are more specific than just { or [
+  const jsonPatterns = [
+    { pattern: /\[\s*\{/g, type: 'array' as const },      // [{ - array of objects (most common for plans)
+    { pattern: /\{\s*"/g, type: 'object' as const },      // {" - object with string key
+    { pattern: /\[\s*"/g, type: 'array' as const },       // [" - array of strings
+    { pattern: /\[\s*\[/g, type: 'array' as const },      // [[ - nested array
+    { pattern: /\{\s*\n/g, type: 'object' as const },     // {\n - object with newline
+    { pattern: /\[\s*\n/g, type: 'array' as const },      // [\n - array with newline
+  ];
+
+  for (const { pattern, type } of jsonPatterns) {
+    const match = pattern.exec(text);
+    if (match) {
+      return { start: match.index, type };
+    }
+  }
+
+  // Fallback to simple { or [ if no patterns matched
+  const arrayStart = text.indexOf('[');
+  const objectStart = text.indexOf('{');
+
+  if (objectStart !== -1 && (arrayStart === -1 || objectStart < arrayStart)) {
+    return { start: objectStart, type: 'object' };
+  } else if (arrayStart !== -1) {
+    return { start: arrayStart, type: 'array' };
+  }
+
+  return null;
+}
+
 export function parseLlmJson<T>(text: string): T {
   let clean = text.replace(/```json/g, '').replace(/```/g, '');
 
-  // Find the first JSON structure (object or array)
-  const arrayStart = clean.indexOf('[');
-  const objectStart = clean.indexOf('{');
+  // Find the JSON structure using smart pattern matching
+  const jsonLocation = findJsonStart(clean);
+
+  if (!jsonLocation) {
+    throw new JsonParseError('No JSON object or array found in LLM response');
+  }
 
   let start: number;
   let end: number;
 
-  if (objectStart !== -1 && (arrayStart === -1 || objectStart < arrayStart)) {
-    // Object comes first - extract the object
-    start = objectStart;
+  if (jsonLocation.type === 'object') {
+    start = jsonLocation.start;
     end = clean.lastIndexOf('}');
     if (end === -1) {
       throw new JsonParseError('No closing brace found for JSON object');
     }
-  } else if (arrayStart !== -1) {
-    // Array comes first - extract the array
-    start = arrayStart;
+  } else {
+    start = jsonLocation.start;
     end = clean.lastIndexOf(']');
     if (end === -1) {
       throw new JsonParseError('No closing bracket found for JSON array');
     }
-  } else {
-    throw new JsonParseError('No JSON object or array found in LLM response');
   }
 
   clean = clean.substring(start, end + 1);
