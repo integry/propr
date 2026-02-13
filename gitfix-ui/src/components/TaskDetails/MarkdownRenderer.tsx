@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { FileText } from 'lucide-react';
@@ -117,7 +118,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
   return (
     <div className={`markdown-body ${className}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkBreaks]}
         components={{
           // Code blocks with syntax highlighting - VS Code window style
           code({ inline, className, children, ...props }: { inline?: boolean; className?: string; children?: React.ReactNode }) {
