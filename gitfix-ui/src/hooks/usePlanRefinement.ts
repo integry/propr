@@ -242,92 +242,91 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
   }, [currentPlan, updatePlan]);
 
   const handleRefine = useCallback(async (instruction: string, signal?: AbortSignal): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }> => {
-    try {
-      // Check if already aborted
-      if (signal?.aborted) {
-        return { success: false, message: 'Refinement cancelled by user.', cancelled: true };
+    const cancelledResult = { success: false, message: 'Refinement cancelled by user.', cancelled: true };
+
+    const checkAborted = (): boolean => signal?.aborted ?? false;
+
+    const handleReviewStatus = (draft: { plan_json: unknown; refinement_result: unknown }): { success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean } | null => {
+      const refinementResult = parseRefinementResult(draft.refinement_result);
+
+      if (refinementResult?.action === 'cancelled') {
+        return { success: false, message: refinementResult.summary || 'Refinement cancelled by user.', cancelled: true };
       }
 
-      // Set initial refining state
+      const planJson = parsePlanJson(draft.plan_json);
+      if (!planJson) {
+        setRefinementProgress({ isRefining: false });
+        return { success: false, message: 'Refinement completed but no plan returned' };
+      }
+
+      updatePlan(planJson, 'ai');
+
+      const message = refinementResult?.summary || 'Plan processed successfully.';
+      const action = refinementResult?.action;
+
+      setRefinementProgress({ isRefining: false });
+      return { success: true, message, action };
+    };
+
+    const updateProgressFromResult = (draft: { refinement_result: unknown }, hasUpdatedProgress: boolean): boolean => {
+      if (hasUpdatedProgress || !draft.refinement_result) {
+        return hasUpdatedProgress;
+      }
+      const refinementResult = parseRefinementResult(draft.refinement_result) as RefinementResult | undefined;
+      if (refinementResult?.startedAt && refinementResult?.estimatedDuration) {
+        setRefinementProgress({
+          isRefining: true,
+          startedAt: refinementResult.startedAt,
+          estimatedDuration: refinementResult.estimatedDuration,
+          isHistoricalEstimate: refinementResult.isHistoricalEstimate
+        });
+        return true;
+      }
+      return hasUpdatedProgress;
+    };
+
+    try {
+      if (checkAborted()) {
+        return cancelledResult;
+      }
+
       setRefinementProgress({ isRefining: true });
 
-      // Start refinement - returns immediately with 202
       await refinePlan(draftId, currentPlan, instruction, signal);
 
-      // Poll for completion
-      const pollForCompletion = async (): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }> => {
-        const maxAttempts = 300; // 5 minutes max
-        let hasUpdatedProgress = false;
+      const maxAttempts = 300;
+      let hasUpdatedProgress = false;
 
-        for (let i = 0; i < maxAttempts; i++) {
-          // Check if aborted during polling
-          if (signal?.aborted) {
-            return { success: false, message: 'Refinement cancelled by user.', cancelled: true };
-          }
-
-          await new Promise(resolve => setTimeout(resolve, 1000));
-
-          // Check again after the wait
-          if (signal?.aborted) {
-            return { success: false, message: 'Refinement cancelled by user.', cancelled: true };
-          }
-
-          const draft = await getDraftWithPlan(draftId);
-
-          // Update progress from refinement_result if available
-          if (!hasUpdatedProgress && draft.refinement_result) {
-            const refinementResult = parseRefinementResult(draft.refinement_result) as RefinementResult | undefined;
-            if (refinementResult?.startedAt && refinementResult?.estimatedDuration) {
-              setRefinementProgress({
-                isRefining: true,
-                startedAt: refinementResult.startedAt,
-                estimatedDuration: refinementResult.estimatedDuration,
-                isHistoricalEstimate: refinementResult.isHistoricalEstimate
-              });
-              hasUpdatedProgress = true;
-            }
-          }
-
-          if (draft.status === 'review') {
-            // Extract refinement result first to check for cancellation
-            const refinementResult = parseRefinementResult(draft.refinement_result);
-
-            // Check if refinement was cancelled via the abort endpoint
-            if (refinementResult?.action === 'cancelled') {
-              return { success: false, message: refinementResult.summary || 'Refinement cancelled by user.', cancelled: true };
-            }
-
-            // Refinement complete - defensively parse plan_json if it's a string
-            const planJson = parsePlanJson(draft.plan_json);
-            if (!planJson) {
-              setRefinementProgress({ isRefining: false });
-              return { success: false, message: 'Refinement completed but no plan returned' };
-            }
-
-            updatePlan(planJson, 'ai');
-
-            const message = refinementResult?.summary || 'Plan processed successfully.';
-            const action = refinementResult?.action;
-
-            setRefinementProgress({ isRefining: false });
-            return { success: true, message, action };
-          }
-
-          if (draft.status !== 'refining') {
-            // Unexpected status
-            setRefinementProgress({ isRefining: false });
-            return { success: false, message: 'Refinement failed unexpectedly' };
-          }
+      for (let i = 0; i < maxAttempts; i++) {
+        if (checkAborted()) {
+          return cancelledResult;
         }
-        setRefinementProgress({ isRefining: false });
-        return { success: false, message: 'Refinement timed out. Please try again.' };
-      };
 
-      return await pollForCompletion();
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        if (checkAborted()) {
+          return cancelledResult;
+        }
+
+        const draft = await getDraftWithPlan(draftId);
+
+        hasUpdatedProgress = updateProgressFromResult(draft, hasUpdatedProgress);
+
+        if (draft.status === 'review') {
+          return handleReviewStatus(draft) ?? { success: false, message: 'Unexpected error processing result' };
+        }
+
+        if (draft.status !== 'refining') {
+          setRefinementProgress({ isRefining: false });
+          return { success: false, message: 'Refinement failed unexpectedly' };
+        }
+      }
+
+      setRefinementProgress({ isRefining: false });
+      return { success: false, message: 'Refinement timed out. Please try again.' };
     } catch (e) {
-      // Handle AbortError specifically
       if (e instanceof Error && e.name === 'AbortError') {
-        return { success: false, message: 'Refinement cancelled by user.', cancelled: true };
+        return cancelledResult;
       }
       console.error(e);
       setRefinementProgress({ isRefining: false });
