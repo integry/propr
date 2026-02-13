@@ -4,6 +4,8 @@ import logger from '../utils/logger.js';
 import { ensureRepoCloned } from '../git/repoManager.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { createPlanIssue } from '../config/planIssueManager.js';
+import fs from 'fs-extra';
+import path from 'path';
 
 export interface IssueLink {
   number: number;
@@ -30,17 +32,90 @@ interface TaskDraft {
   updated_at: Date;
 }
 
+interface PlanTaskAttachment {
+  id: string;
+  originalName: string;
+  storedPath: string;
+  mimeType: string;
+  size: number;
+  tokenEstimate: number;
+  type: 'image' | 'text';
+}
+
 interface PlanTask {
   id?: string;
   title: string;
   body: string;
   implementation: string;
   notes?: string;
+  attachments?: PlanTaskAttachment[];
   issue_number?: number;
   issue_url?: string;
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Build a user notes comment body with embedded attachments.
+ * Images are embedded as base64 inline images in markdown.
+ * Text files are included as code blocks.
+ */
+async function buildUserNotesCommentBody(
+  notes: string | undefined,
+  attachments: PlanTaskAttachment[] | undefined
+): Promise<string | null> {
+  if (!notes && (!attachments || attachments.length === 0)) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  parts.push('## 📝 User Notes\n');
+
+  if (notes && notes.trim()) {
+    parts.push(notes.trim());
+    parts.push('');
+  }
+
+  if (attachments && attachments.length > 0) {
+    parts.push('### Attachments\n');
+
+    for (const attachment of attachments) {
+      try {
+        const filePath = path.join(process.cwd(), attachment.storedPath);
+        const fileExists = await fs.pathExists(filePath);
+
+        if (!fileExists) {
+          parts.push(`- ⚠️ *${attachment.originalName}* (file not found)`);
+          continue;
+        }
+
+        if (attachment.type === 'image') {
+          // Embed image as base64 inline
+          const imageBuffer = await fs.readFile(filePath);
+          const base64Image = imageBuffer.toString('base64');
+          const mimeType = attachment.mimeType || 'image/webp';
+          parts.push(`**${attachment.originalName}:**`);
+          parts.push(`![${attachment.originalName}](data:${mimeType};base64,${base64Image})`);
+          parts.push('');
+        } else {
+          // Include text file content as a code block
+          const content = await fs.readFile(filePath, 'utf-8');
+          const ext = path.extname(attachment.originalName).slice(1) || 'txt';
+          parts.push(`**${attachment.originalName}:**`);
+          parts.push('```' + ext);
+          parts.push(content);
+          parts.push('```');
+          parts.push('');
+        }
+      } catch (err) {
+        parts.push(`- ⚠️ *${attachment.originalName}* (error reading file)`);
+      }
+    }
+  }
+
+  const body = parts.join('\n').trim();
+  return body || null;
+}
 
 interface GenerateTitleOptions {
   draftId: string;
@@ -228,6 +303,24 @@ export async function executeDraft(draftId: string, userId: string, correlationI
         draftId,
         issueNumber: response.data.number
       }, 'Implementation comment created');
+    }
+
+    // Post user notes and attachments as a separate comment if they exist
+    const userNotesCommentBody = await buildUserNotesCommentBody(task.notes, task.attachments);
+    if (userNotesCommentBody) {
+      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner,
+        repo: repoName,
+        issue_number: response.data.number,
+        body: userNotesCommentBody
+      });
+
+      correlatedLogger.info({
+        draftId,
+        issueNumber: response.data.number,
+        hasNotes: !!task.notes,
+        attachmentCount: task.attachments?.length || 0
+      }, 'User notes comment created');
     }
 
     if (i < planJson.length - 1) {
