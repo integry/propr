@@ -37,7 +37,7 @@ export function parseLlmJson<T>(text: string): T {
 
   try {
     return JSON.parse(clean);
-  } catch (firstError) {
+  } catch {
     // Try fixing common issues
     clean = clean
       .replace(/,\s*]/g, ']')
@@ -50,15 +50,25 @@ export function parseLlmJson<T>(text: string): T {
     } catch (secondError) {
       // Try to sanitize control characters that might be breaking JSON
       // Some LLMs output literal control characters instead of escape sequences
-      const sanitized = clean
-        .replace(/[\x00-\x1F\x7F]/g, (char) => {
+      let sanitized = '';
+      for (let i = 0; i < clean.length; i++) {
+        const charCode = clean.charCodeAt(i);
+        const char = clean[i];
+        // Check for control characters (0x00-0x1F and 0x7F)
+        if ((charCode >= 0 && charCode <= 31) || charCode === 127) {
           // Preserve escaped sequences that are valid in JSON strings
-          if (char === '\n') return '\\n';
-          if (char === '\r') return '\\r';
-          if (char === '\t') return '\\t';
-          // Remove other control characters
-          return '';
-        });
+          if (char === '\n') {
+            sanitized += '\\n';
+          } else if (char === '\r') {
+            sanitized += '\\r';
+          } else if (char === '\t') {
+            sanitized += '\\t';
+          }
+          // Remove other control characters (add nothing)
+        } else {
+          sanitized += char;
+        }
+      }
 
       try {
         return JSON.parse(sanitized);
