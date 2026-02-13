@@ -1,6 +1,15 @@
 import type { Task, TaskTypeInfo } from './types';
 
 /**
+ * Checks if a task should be visually dimmed based on its plan issue status.
+ * Tasks with 'merged' or 'closed' status are dimmed to indicate completion.
+ */
+export const shouldDimTask = (task: Task): boolean => {
+  const status = task.planIssueStatus?.toLowerCase();
+  return status === 'merged' || status === 'closed';
+};
+
+/**
  * Extracts a clean title for document/browser tab display.
  * Transforms titles like "Followup: [870 by Claude Opus] Update checkout..."
  * to "870: Update checkout..."

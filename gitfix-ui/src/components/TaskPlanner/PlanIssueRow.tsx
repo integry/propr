@@ -103,11 +103,13 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`border rounded-lg ${getContainerClassName(isMerged)} overflow-hidden ${hasExpandableContent ? 'cursor-pointer' : ''}`}
-      onClick={handleRowClick}
+      className={`border rounded-lg ${getContainerClassName(isMerged)} overflow-hidden`}
     >
       {/* High-Density Collapsed Row - Status, Title, and Actions on one line */}
-      <div className="px-4 py-2.5">
+      <div
+        className={`px-4 py-2.5 ${hasExpandableContent ? 'cursor-pointer' : ''}`}
+        onClick={handleRowClick}
+      >
         <div className="flex items-center justify-between gap-3">
           {/* Left: Issue Number + Status Badge + Title - All inline */}
           <div className="flex items-center gap-2 flex-1 min-w-0">

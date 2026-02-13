@@ -285,12 +285,13 @@ export interface RefineResponse {
   message: string;
 }
 
-export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instruction: string): Promise<RefineResponse> => {
+export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instruction: string, signal?: AbortSignal): Promise<RefineResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/refine`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draftId, plan: currentPlan, instruction }),
-    credentials: 'include'
+    credentials: 'include',
+    signal
   });
   await handleApiResponse(response);
   return response.json();
@@ -459,6 +460,20 @@ export const validateContextRepository = async (
  */
 export const abortGeneration = async (draftId: string): Promise<void> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/abort`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draftId }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+};
+
+/**
+ * Abort an in-progress plan refinement.
+ * Sets an abort signal in Redis and resets the draft status to 'review'.
+ */
+export const abortRefinement = async (draftId: string): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/abort-refinement`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draftId }),

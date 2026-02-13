@@ -809,8 +809,9 @@ export function createRefineHandler(deps: RefineDeps) {
       const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
+      // Clear any previous refinement_result (e.g., from cancelled operations) to avoid false positives when polling
       await deps.db('task_drafts').where({ draft_id: draftId }).update({
-        status: 'refining', updated_at: deps.db.fn.now()
+        status: 'refining', refinement_result: null, updated_at: deps.db.fn.now()
       });
       res.status(202).json({ success: true, status: 'refining', message: 'Plan refinement started' });
 

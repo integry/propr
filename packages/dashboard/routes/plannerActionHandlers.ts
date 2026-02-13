@@ -125,7 +125,7 @@ export function createRefineHandler(db: Knex) {
       const startedAt = new Date().toISOString();
 
       // Set status to 'refining' with initial refinement_result containing estimation data
-      // This allows the frontend to show progress immediately
+      // This allows the frontend to show progress immediately while also clearing any previous cancelled state
       const initialRefinementMeta = {
         status: 'in_progress',
         startedAt,
@@ -145,7 +145,24 @@ export function createRefineHandler(db: Knex) {
 
       // Run refinement in background
       (async () => {
+        // Helper to check if refinement was aborted
+        const checkAborted = async (): Promise<boolean> => {
+          const redis = new Redis({
+            host: process.env.REDIS_HOST || 'redis',
+            port: parseInt(process.env.REDIS_PORT || '6379', 10)
+          });
+          const aborted = await redis.get(`planner:abort:${draftId}`);
+          await redis.quit();
+          return !!aborted;
+        };
+
         try {
+          // Check if already aborted before starting
+          if (await checkAborted()) {
+            console.log(`[refine] Refinement aborted before starting for draft ${draftId}`);
+            return;
+          }
+
           const repoContext = await getRefineRepoContext(db, draftId, req.user?.accessToken || '');
 
           // Fetch original generated context from the draft for richer refinement
@@ -162,6 +179,12 @@ export function createRefineHandler(db: Knex) {
             originalContext: originalContext || undefined,
             draftId
           });
+
+          // Check if aborted before saving result (race condition protection)
+          if (await checkAborted()) {
+            console.log(`[refine] Refinement aborted after completion for draft ${draftId}, not saving result`);
+            return;
+          }
 
           // Store the refinement result including action, summary, and estimation data
           const refinementMeta = {
@@ -190,11 +213,13 @@ export function createRefineHandler(db: Knex) {
           const errorStack = error instanceof Error ? error.stack : undefined;
           console.error(`[refine] Plan refinement failed for draft ${draftId}:`, errorMessage);
           if (errorStack) console.error(`[refine] Stack trace:`, errorStack);
-          // Revert status to review on failure
-          await db('task_drafts').where({ draft_id: draftId }).update({
-            status: 'review',
-            updated_at: db.fn.now()
-          });
+          // Only revert status to review on failure if not aborted
+          if (!(await checkAborted())) {
+            await db('task_drafts').where({ draft_id: draftId }).update({
+              status: 'review',
+              updated_at: db.fn.now()
+            });
+          }
         }
       })();
     } catch (error) {
@@ -265,6 +290,50 @@ export function createAbortGenerationHandler(db: Knex) {
     } catch (error) {
       console.error('Abort generation error:', error);
       res.status(500).json({ error: 'Failed to abort generation' });
+    }
+  };
+}
+
+export function createAbortRefinementHandler(db: Knex) {
+  return async function abortRefinement(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    const { draftId } = req.body;
+    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
+
+    try {
+      const draft = await db('task_drafts').where({ draft_id: draftId, user_id: req.user!.id }).first();
+      if (!draft) { res.status(404).json({ error: 'Draft not found' }); return; }
+      if (draft.status !== 'refining') {
+        res.status(400).json({ error: 'Can only abort drafts that are currently refining' });
+        return;
+      }
+
+      // Set abort signal in Redis
+      const redis = new Redis({
+        host: process.env.REDIS_HOST || 'redis',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10)
+      });
+      await redis.setex(`planner:abort:${draftId}`, 300, '1'); // Expires in 5 minutes
+      await redis.quit();
+
+      // Update draft status back to review (ready for refinement again)
+      await db('task_drafts').where({ draft_id: draftId }).update({
+        status: 'review',
+        refinement_result: JSON.stringify({
+          action: 'cancelled',
+          summary: 'Refinement cancelled by user',
+          timestamp: new Date().toISOString()
+        }),
+        updated_at: db.fn.now()
+      });
+
+      console.log(`[abort] Plan refinement aborted for draft ${draftId}`);
+      res.json({ success: true, message: 'Refinement aborted' });
+    } catch (error) {
+      console.error('Abort refinement error:', error);
+      res.status(500).json({ error: 'Failed to abort refinement' });
     }
   };
 }

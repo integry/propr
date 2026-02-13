@@ -246,6 +246,7 @@ function setupRoutes(): void {
   app.post('/api/planner/generate', plannerRoutes.generate);
   app.post('/api/planner/abort', plannerRoutes.abortGeneration);
   app.post('/api/planner/refine', plannerRoutes.refine);
+  app.post('/api/planner/abort-refinement', plannerRoutes.abortRefinement);
   app.post('/api/planner/finalize', plannerRoutes.finalize);
   app.post('/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup);
   app.post('/api/planner/validate-context-repository', plannerRoutes.validateContextRepository);
