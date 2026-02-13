@@ -107,24 +107,62 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
   }
 
   try {
+    // Log query parameters for debugging
+    correlatedLogger.info(
+      {
+        queryParams: {
+          executionType,
+          originalModelName: modelName,
+          cleanModelName,
+          inputTokenCount,
+          historySampleSize: HISTORY_SAMPLE_SIZE
+        }
+      },
+      'Querying llm_logs for historical estimation data'
+    );
+
     // Query recent successful executions for the same type
     // Match model names: exact match OR model names containing the provided name
     // This handles both cases:
     // - Full model IDs (e.g., 'claude-opus-4-5-20251101')
     // - Aliases passed that need to match stored full IDs (e.g., 'opus' matches 'claude-opus-4-5-20251101')
+    //
+    // We prefer estimated_input_tokens (calculated from prompt, reliable for single-turn)
+    // over input_tokens (agent-reported, may be cumulative for multi-turn agents like Gemini)
     const recentLogs = await db('llm_logs')
-      .select('duration_ms', 'input_tokens')
+      .select('duration_ms', 'input_tokens', 'estimated_input_tokens')
       .where('execution_type', executionType)
       .where('success', true)
       .whereNotNull('duration_ms')
-      .whereNotNull('input_tokens')
-      .where('input_tokens', '>', 0)
+      .where(function() {
+        // Require at least one of the token fields to be valid
+        this.where(function() {
+          this.whereNotNull('estimated_input_tokens').where('estimated_input_tokens', '>', 0);
+        }).orWhere(function() {
+          this.whereNotNull('input_tokens').where('input_tokens', '>', 0);
+        });
+      })
       .where(function() {
         this.where('model_name', cleanModelName)
           .orWhere('model_name', 'like', `%${cleanModelName}%`);
       })
       .orderBy('start_time', 'desc')
       .limit(HISTORY_SAMPLE_SIZE);
+
+    // Log the raw query results for debugging
+    correlatedLogger.info(
+      {
+        executionType,
+        modelName: cleanModelName,
+        queryResultCount: recentLogs.length,
+        rawResults: recentLogs.slice(0, 5).map(log => ({
+          duration_ms: log.duration_ms,
+          input_tokens: log.input_tokens,
+          estimated_input_tokens: log.estimated_input_tokens
+        }))
+      },
+      'Historical LLM logs query results'
+    );
 
     if (recentLogs.length === 0) {
       const minDuration = getMinDuration(executionType);
@@ -145,16 +183,25 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
     }
 
     // Calculate average ms per token from historical data
+    // Prefer estimated_input_tokens (calculated from prompt) over input_tokens (agent-reported)
+    // because agent-reported tokens can be cumulative across internal retries/turns
     let totalMsPerToken = 0;
     let validSamples = 0;
+    const sampleDetails: Array<{ inputTokens: number; durationMs: number; msPerToken: number; source: string }> = [];
 
     for (const log of recentLogs) {
       const durationMs = log.duration_ms as number;
-      const tokens = log.input_tokens as number;
+      // Prefer estimated_input_tokens, fall back to input_tokens for older records
+      const estimatedTokens = log.estimated_input_tokens as number | null;
+      const reportedTokens = log.input_tokens as number | null;
+      const tokens = (estimatedTokens && estimatedTokens > 0) ? estimatedTokens : reportedTokens;
+      const tokenSource = (estimatedTokens && estimatedTokens > 0) ? 'estimated' : 'reported';
 
-      if (durationMs > 0 && tokens > 0) {
-        totalMsPerToken += durationMs / tokens;
+      if (durationMs > 0 && tokens && tokens > 0) {
+        const msPerToken = durationMs / tokens;
+        totalMsPerToken += msPerToken;
         validSamples++;
+        sampleDetails.push({ inputTokens: tokens, durationMs, msPerToken, source: tokenSource });
       }
     }
 
@@ -171,7 +218,8 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
     }
 
     const avgMsPerToken = totalMsPerToken / validSamples;
-    const estimatedDurationMs = Math.round(avgMsPerToken * inputTokenCount);
+    const rawEstimatedDurationMs = avgMsPerToken * inputTokenCount;
+    const estimatedDurationMs = Math.round(rawEstimatedDurationMs);
 
     // Clamp to reasonable bounds (using execution-type-specific minimum)
     const minDuration = getMinDuration(executionType);
@@ -180,16 +228,32 @@ export async function estimateLlmDuration(options: EstimationOptions): Promise<E
       MAX_ESTIMATED_DURATION_MS
     );
 
+    // Log detailed calculation breakdown for debugging
+    const estimatedCount = sampleDetails.filter(s => s.source === 'estimated').length;
+    const reportedCount = sampleDetails.filter(s => s.source === 'reported').length;
     correlatedLogger.info(
       {
         executionType,
         modelName: cleanModelName,
         inputTokenCount,
-        avgMsPerToken: avgMsPerToken.toFixed(3),
-        estimatedDurationMs: clampedDuration,
-        sampleCount: validSamples
+        sampleCount: validSamples,
+        tokenSources: { estimated: estimatedCount, reported: reportedCount },
+        sampleDetails: sampleDetails.slice(0, 5).map(s => ({
+          inputTokens: s.inputTokens,
+          durationMs: s.durationMs,
+          msPerToken: Number(s.msPerToken.toFixed(4)),
+          source: s.source
+        })),
+        calculation: {
+          avgMsPerToken: Number(avgMsPerToken.toFixed(4)),
+          rawEstimatedMs: Math.round(rawEstimatedDurationMs),
+          minDuration,
+          maxDuration: MAX_ESTIMATED_DURATION_MS,
+          finalEstimateMs: clampedDuration,
+          wasClamped: clampedDuration !== estimatedDurationMs
+        }
       },
-      'Estimated LLM duration from historical data'
+      'LLM duration estimation calculation breakdown'
     );
 
     return {

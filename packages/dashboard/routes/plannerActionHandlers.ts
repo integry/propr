@@ -11,7 +11,9 @@ import {
   ensureRepoCloned,
   generateCorrelationId,
   estimateLlmDuration,
-  loadSettings
+  loadSettings,
+  estimateTokens,
+  REFINER_SYSTEM_PROMPT
 } from '@gitfix/core';
 import type { Plan } from '@gitfix/core';
 import {
@@ -96,9 +98,19 @@ export function createRefineHandler(db: Knex) {
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       // Calculate estimation early so we can store it before the LLM call starts
-      // Estimate input token count based on current plan size and instruction
+      // Fetch original context to include in the token estimate (this is the bulk of the prompt)
+      const draftForContext = await db('task_drafts').where({ draft_id: draftId }).select('generated_context').first();
+      const originalContext = draftForContext?.generated_context as string | undefined;
+
+      // Build a close approximation of the full prompt for token estimation
+      // This matches the structure in taskPlanningService.refinePlan()
       const planJsonStr = JSON.stringify(currentPlan, null, 2);
-      const estimatedInputTokens = Math.ceil((planJsonStr.length + instruction.length + 2000) / 4); // +2000 for system prompt
+      const contextSection = originalContext
+        ? `\n\nOriginal Context (codebase details from initial plan generation):\n${originalContext}\n`
+        : '';
+      const roughPrompt = `${REFINER_SYSTEM_PROMPT}${contextSection}\n\nCurrent Plan:\n${planJsonStr}\n\nUser Request:\n"${instruction}"`;
+      // Use tiktoken for accurate token count
+      const estimatedInputTokens = estimateTokens(roughPrompt);
 
       const settings = await loadSettings();
       const generationModel = settings.planner_generation_model || 'opus';

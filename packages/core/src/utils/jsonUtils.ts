@@ -37,7 +37,8 @@ export function parseLlmJson<T>(text: string): T {
 
   try {
     return JSON.parse(clean);
-  } catch {
+  } catch (firstError) {
+    // Try fixing common issues
     clean = clean
       .replace(/,\s*]/g, ']')
       .replace(/,\s*}/g, '}')
@@ -46,8 +47,37 @@ export function parseLlmJson<T>(text: string): T {
 
     try {
       return JSON.parse(clean);
-    } catch (e) {
-      throw new JsonParseError(`Failed to parse JSON: ${(e as Error).message}`);
+    } catch (secondError) {
+      // Try to sanitize control characters that might be breaking JSON
+      // Some LLMs output literal control characters instead of escape sequences
+      const sanitized = clean
+        .replace(/[\x00-\x1F\x7F]/g, (char) => {
+          // Preserve escaped sequences that are valid in JSON strings
+          if (char === '\n') return '\\n';
+          if (char === '\r') return '\\r';
+          if (char === '\t') return '\\t';
+          // Remove other control characters
+          return '';
+        });
+
+      try {
+        return JSON.parse(sanitized);
+      } catch (thirdError) {
+        // Provide detailed error with context around the error position
+        const err = thirdError as SyntaxError;
+        const posMatch = err.message.match(/position (\d+)/);
+        let context = '';
+        if (posMatch) {
+          const pos = parseInt(posMatch[1], 10);
+          const start = Math.max(0, pos - 50);
+          const end = Math.min(sanitized.length, pos + 50);
+          const before = sanitized.substring(start, pos);
+          const after = sanitized.substring(pos, end);
+          const charCode = sanitized.charCodeAt(pos);
+          context = ` | Context: ...${before}>>>HERE(char=${charCode})<<<${after}...`;
+        }
+        throw new JsonParseError(`Failed to parse JSON: ${(secondError as Error).message}${context}`);
+      }
     }
   }
 }

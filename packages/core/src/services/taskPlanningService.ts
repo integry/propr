@@ -482,6 +482,15 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResul
   correlatedLogger.info({ tokenCount: validation.tokenCount, source: validation.source, modelHardLimit }, 'Token validation passed');
 
   // Estimate LLM execution duration based on historical data
+  correlatedLogger.info({
+    estimationInput: {
+      executionType: 'plan-generation',
+      modelName: model,
+      inputTokenCount: validation.tokenCount,
+      contextCharLength: fullContext.length
+    }
+  }, 'Calling estimateLlmDuration with parameters');
+
   const estimation = await estimateLlmDuration({
     executionType: 'plan-generation',
     modelName: model,
@@ -490,6 +499,18 @@ async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResul
   });
 
   const startedAt = new Date().toISOString();
+
+  correlatedLogger.info({
+    estimationResult: {
+      estimatedDurationMs: estimation.estimatedDurationMs,
+      estimatedDurationFormatted: `${Math.floor(estimation.estimatedDurationMs / 60000)}m ${Math.floor((estimation.estimatedDurationMs % 60000) / 1000)}s`,
+      isHistoricalEstimate: estimation.isHistoricalEstimate,
+      sampleCount: estimation.sampleCount,
+      avgMsPerToken: estimation.avgMsPerToken
+    },
+    inputTokenCount: validation.tokenCount,
+    startedAt
+  }, 'LLM duration estimation completed');
 
   // Update trace with pending status, estimated duration, and start time
   await updateTrace(draftId, 'llm', 'pending', {
