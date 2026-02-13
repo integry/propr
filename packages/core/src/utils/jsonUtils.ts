@@ -41,6 +41,33 @@ function findJsonStart(text: string): { start: number; type: 'object' | 'array' 
   return null;
 }
 
+/**
+ * Sanitize control characters in a string for JSON parsing.
+ * Replaces literal control characters with their escape sequences.
+ */
+function sanitizeControlCharacters(text: string): string {
+  let result = '';
+  for (let i = 0; i < text.length; i++) {
+    const charCode = text.charCodeAt(i);
+    const char = text[i];
+    // Check for control characters (0x00-0x1F and 0x7F)
+    if ((charCode >= 0 && charCode <= 31) || charCode === 127) {
+      // Preserve escaped sequences that are valid in JSON strings
+      if (char === '\n') {
+        result += '\\n';
+      } else if (char === '\r') {
+        result += '\\r';
+      } else if (char === '\t') {
+        result += '\\t';
+      }
+      // Remove other control characters (add nothing)
+    } else {
+      result += char;
+    }
+  }
+  return result;
+}
+
 export function parseLlmJson<T>(text: string): T {
   let clean = text.replace(/```json/g, '').replace(/```/g, '');
 
@@ -85,25 +112,7 @@ export function parseLlmJson<T>(text: string): T {
     } catch (secondError) {
       // Try to sanitize control characters that might be breaking JSON
       // Some LLMs output literal control characters instead of escape sequences
-      let sanitized = '';
-      for (let i = 0; i < clean.length; i++) {
-        const charCode = clean.charCodeAt(i);
-        const char = clean[i];
-        // Check for control characters (0x00-0x1F and 0x7F)
-        if ((charCode >= 0 && charCode <= 31) || charCode === 127) {
-          // Preserve escaped sequences that are valid in JSON strings
-          if (char === '\n') {
-            sanitized += '\\n';
-          } else if (char === '\r') {
-            sanitized += '\\r';
-          } else if (char === '\t') {
-            sanitized += '\\t';
-          }
-          // Remove other control characters (add nothing)
-        } else {
-          sanitized += char;
-        }
-      }
+      const sanitized = sanitizeControlCharacters(clean);
 
       try {
         return JSON.parse(sanitized);
