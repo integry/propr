@@ -1,6 +1,7 @@
 import { db } from '../db/connection.js';
 import { getAuthenticatedOctokit, getGitHubInstallationToken } from '../auth/githubAuth.js';
-import logger from '../utils/logger.js';
+import logger, { type EnhancedLogger } from '../utils/logger.js';
+import { type Logger } from 'pino';
 import { ensureRepoCloned } from '../git/repoManager.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { createPlanIssue } from '../config/planIssueManager.js';
@@ -132,7 +133,7 @@ interface CreateIssueOptions {
   repoName: string;
   task: PlanTask;
   draftId: string;
-  correlatedLogger: typeof logger;
+  correlatedLogger: Logger | EnhancedLogger;
 }
 
 interface CreatedIssue {
@@ -175,7 +176,7 @@ interface PostIssueCommentsOptions {
   issueNumber: number;
   task: PlanTask;
   draftId: string;
-  correlatedLogger: typeof logger;
+  correlatedLogger: Logger | EnhancedLogger;
 }
 
 async function postIssueComments(options: PostIssueCommentsOptions): Promise<void> {
