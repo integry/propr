@@ -5,6 +5,36 @@ import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration } fr
 import { TaskTypeBadge } from './TaskTypeBadge';
 import { ProviderLogo } from '../ui/ProviderLogo';
 
+// Helper component to render the critique score badge
+const ScoreBadge: React.FC<{ score: number | null | undefined }> = ({ score }) => {
+  if (score === null || score === undefined) return null;
+
+  // Determine color based on score
+  let colorClasses: string;
+  if (score >= 8) {
+    colorClasses = 'bg-green-500';
+  } else if (score <= 4) {
+    colorClasses = 'bg-red-500';
+  } else {
+    colorClasses = 'bg-yellow-500';
+  }
+
+  return (
+    <span
+      className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-xs font-bold ${colorClasses}`}
+      title={`Implementation Critique Score: ${score}/10`}
+    >
+      {score}
+    </span>
+  );
+};
+
+// Helper function to check if a task should be dimmed (merged or closed)
+const shouldDimTask = (task: Task): boolean => {
+  const status = task.planIssueStatus?.toLowerCase();
+  return status === 'merged' || status === 'closed';
+};
+
 interface ParentTaskRowProps {
   group: TaskGroup;
   task: Task;
@@ -14,10 +44,11 @@ interface ParentTaskRowProps {
 
 export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRowClick, isDuplicateRepo = false }) => {
   const typeInfo = getTaskTypeInfo(task);
+  const isDimmed = shouldDimTask(task);
 
   return (
     <tr
-      className="hover:bg-gray-50 transition-colors cursor-pointer group bg-white"
+      className={`hover:bg-gray-50 transition-colors cursor-pointer group bg-white ${isDimmed ? 'opacity-40' : ''}`}
       onClick={() => onRowClick(task.id)}
     >
       <td className="py-3 px-4 align-top">
@@ -72,7 +103,10 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
         </div>
       </td>
       <td className="py-3 px-4 align-top">
-        {getStatusPill(task.status)}
+        <div className="flex items-center gap-2">
+          {getStatusPill(task.status)}
+          <ScoreBadge score={task.critiqueScore} />
+        </div>
       </td>
       <td className="py-3 px-4 align-top">
         <div className="text-sm text-gray-800" title={new Date(task.createdAt).toLocaleString()}>
@@ -102,6 +136,7 @@ interface ChildTaskRowExtraProps extends ChildTaskRowProps {
 
 export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClick, isLastChild = false }) => {
   const childTypeInfo = getTaskTypeInfo(task);
+  const isDimmed = shouldDimTask(task);
   const childDisplayTitle = (() => {
     // For followup tasks, prefer subtitle if available
     if (childTypeInfo.type === 'followup' && task.subtitle) {
@@ -113,7 +148,7 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
 
   return (
     <tr
-      className="hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30 group"
+      className={`hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30 group ${isDimmed ? 'opacity-40' : ''}`}
       onClick={() => onRowClick(task.id)}
     >
       <td className="py-3 px-4 align-top relative">
@@ -149,7 +184,10 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
         </div>
       </td>
       <td className="py-3 px-4 align-top">
-        {getStatusPill(task.status)}
+        <div className="flex items-center gap-2">
+          {getStatusPill(task.status)}
+          <ScoreBadge score={task.critiqueScore} />
+        </div>
       </td>
       <td className="py-3 px-4 align-top">
         <div className="text-sm text-gray-800" title={new Date(task.createdAt).toLocaleString()}>

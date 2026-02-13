@@ -4,6 +4,36 @@ import type { Task, TaskGroup } from './types';
 import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration } from './utils';
 import { TaskTypeBadge } from './TaskTypeBadge';
 
+// Helper component to render the critique score badge
+const ScoreBadge: React.FC<{ score: number | null | undefined }> = ({ score }) => {
+  if (score === null || score === undefined) return null;
+
+  // Determine color based on score
+  let colorClasses: string;
+  if (score >= 8) {
+    colorClasses = 'bg-green-500';
+  } else if (score <= 4) {
+    colorClasses = 'bg-red-500';
+  } else {
+    colorClasses = 'bg-yellow-500';
+  }
+
+  return (
+    <span
+      className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-xs font-bold ${colorClasses}`}
+      title={`Implementation Critique Score: ${score}/10`}
+    >
+      {score}
+    </span>
+  );
+};
+
+// Helper function to check if a task should be dimmed (merged or closed)
+const shouldDimTask = (task: Task): boolean => {
+  const status = task.planIssueStatus?.toLowerCase();
+  return status === 'merged' || status === 'closed';
+};
+
 interface MobileTaskCardProps {
   group: TaskGroup;
   expandedGroups: Set<string>;
@@ -18,6 +48,7 @@ const MobileTaskItemWithGroup: React.FC<{
   onRowClick: (taskId: string) => void;
 }> = ({ task, group, isChild = false, onRowClick }) => {
   const typeInfo = getTaskTypeInfo(task);
+  const isDimmed = shouldDimTask(task);
   const displayTitle = (() => {
     if (typeInfo.type === 'followup' && task.subtitle) {
       return task.subtitle;
@@ -30,7 +61,7 @@ const MobileTaskItemWithGroup: React.FC<{
       onClick={() => onRowClick(task.id)}
       className={`flex items-start justify-between gap-2 py-3 cursor-pointer active:bg-gray-50 ${
         isChild ? 'pl-4 border-l-2 border-gray-200 ml-2' : ''
-      }`}
+      } ${isDimmed ? 'opacity-40' : ''}`}
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap mb-1">
@@ -49,6 +80,7 @@ const MobileTaskItemWithGroup: React.FC<{
             </>
           )}
           {getStatusPill(task.status)}
+          <ScoreBadge score={task.critiqueScore} />
         </div>
         <p className={`text-sm text-gray-900 line-clamp-2 ${isChild ? 'text-gray-600' : 'font-medium'}`}>
           {displayTitle}
