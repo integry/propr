@@ -1,5 +1,3 @@
-import fs from 'fs-extra';
-import path from 'path';
 import type { Logger } from 'pino';
 import type { EnhancedLogger } from '../utils/logger.js';
 
@@ -22,10 +20,16 @@ interface BuildUserNotesOptions {
 
 /**
  * Get the public base URL for attachments.
- * Uses WEB_UI_URL or FRONTEND_URL environment variable.
+ * Uses API_PUBLIC_URL since attachments are served by the API.
+ * Falls back to WEB_UI_URL or FRONTEND_URL with /api prefix for backwards compatibility.
  */
-function getPublicBaseUrl(): string {
-  return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
+function getAttachmentBaseUrl(): string {
+  // API_PUBLIC_URL is the public URL for the API (e.g., https://pr-741-api.gitfix.dev)
+  if (process.env.API_PUBLIC_URL) {
+    return process.env.API_PUBLIC_URL;
+  }
+  // Fallback to frontend URL (for local development where API is proxied)
+  return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://api.gitfix.dev';
 }
 
 /**
@@ -38,7 +42,7 @@ function embedImageAttachment(
   draftId: string,
   correlatedLogger: Logger | EnhancedLogger
 ): string {
-  const baseUrl = getPublicBaseUrl();
+  const baseUrl = getAttachmentBaseUrl();
   const attachmentUrl = `${baseUrl}/api/planner/drafts/${draftId}/attachments/${attachment.id}`;
 
   correlatedLogger.info({
@@ -56,29 +60,25 @@ function embedImageAttachment(
 }
 
 /**
- * Read and format a single text attachment as a code block.
- * Returns the markdown string or null if the file couldn't be read.
+ * Format a text attachment as a link.
+ * Returns a markdown link to the attachment instead of embedding content inline.
  */
-async function formatTextAttachment(
+function linkTextAttachment(
   attachment: PlanTaskAttachment,
+  draftId: string,
   correlatedLogger: Logger | EnhancedLogger
-): Promise<string | null> {
-  const filePath = path.join(process.cwd(), attachment.storedPath);
-  const fileExists = await fs.pathExists(filePath);
+): string {
+  const baseUrl = getAttachmentBaseUrl();
+  const attachmentUrl = `${baseUrl}/api/planner/drafts/${draftId}/attachments/${attachment.id}`;
 
-  if (!fileExists) {
-    correlatedLogger.warn({ attachmentId: attachment.id, originalName: attachment.originalName }, 'Text attachment file not found');
-    return null;
-  }
-
-  const content = await fs.readFile(filePath, 'utf-8');
-  const ext = path.extname(attachment.originalName).toLowerCase().replace('.', '') || 'txt';
+  correlatedLogger.info({
+    attachmentId: attachment.id,
+    originalName: attachment.originalName,
+    attachmentUrl
+  }, 'Linked text attachment in comment');
 
   const lines = [
-    `**${attachment.originalName}:**`,
-    '```' + ext,
-    content.trim(),
-    '```',
+    `**${attachment.originalName}:** [Download](${attachmentUrl})`,
     ''
   ];
   return lines.join('\n');
@@ -87,16 +87,16 @@ async function formatTextAttachment(
 /**
  * Process a single attachment and return its markdown representation.
  */
-async function processAttachment(
+function processAttachment(
   attachment: PlanTaskAttachment,
   draftId: string,
   correlatedLogger: Logger | EnhancedLogger
-): Promise<string | null> {
+): string | null {
   try {
     if (attachment.type === 'image') {
       return embedImageAttachment(attachment, draftId, correlatedLogger);
     }
-    return await formatTextAttachment(attachment, correlatedLogger);
+    return linkTextAttachment(attachment, draftId, correlatedLogger);
   } catch (err) {
     correlatedLogger.error({
       attachmentId: attachment.id,
@@ -110,9 +110,9 @@ async function processAttachment(
 /**
  * Build a user notes comment body with attachments.
  * Images are embedded using direct URLs to the attachment endpoint.
- * Text files are displayed with their content inline as code blocks.
+ * Text files are linked to the attachment endpoint for download.
  */
-export async function buildUserNotesCommentBody(options: BuildUserNotesOptions): Promise<string | null> {
+export function buildUserNotesCommentBody(options: BuildUserNotesOptions): string | null {
   const { notes, attachments, draftId, correlatedLogger } = options;
 
   if (!notes && attachments.length === 0) {
@@ -131,7 +131,7 @@ export async function buildUserNotesCommentBody(options: BuildUserNotesOptions):
     parts.push('### Attachments\n');
 
     for (const attachment of attachments) {
-      const attachmentMarkdown = await processAttachment(attachment, draftId, correlatedLogger);
+      const attachmentMarkdown = processAttachment(attachment, draftId, correlatedLogger);
       if (attachmentMarkdown) {
         parts.push(attachmentMarkdown);
       }

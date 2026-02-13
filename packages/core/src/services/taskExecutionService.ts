@@ -131,9 +131,9 @@ async function postIssueComments(options: PostIssueCommentsOptions): Promise<voi
   const hasAttachments = task.attachments && task.attachments.length > 0;
 
   if (hasNotes || hasAttachments) {
-    // Build comment body with images using direct URLs and inline text files
+    // Build comment body with images using direct URLs and linked text files
     // Files remain on the server and are not committed to the repository
-    const userNotesCommentBody = await buildUserNotesCommentBody({
+    const userNotesCommentBody = buildUserNotesCommentBody({
       notes: task.notes,
       attachments: task.attachments || [],
       draftId,
