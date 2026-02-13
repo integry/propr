@@ -81,4 +81,5 @@ const logger: EnhancedLogger = {
 };
 
 export { generateCorrelationId, createCorrelatedLogger };
+export type { EnhancedLogger };
 export default logger;

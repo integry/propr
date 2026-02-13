@@ -7,6 +7,7 @@ import { PlanTask } from '../../api/gitfixApi';
 interface TaskCardListProps {
   tasks: PlanTask[];
   highlightedIds: string[];
+  draftId: string;
   onTaskChange: (taskId: string, updates: Partial<PlanTask>) => void;
   onDeleteTask: (taskId: string) => void;
   onReorderTasks?: (activeId: string, overId: string) => void;
@@ -15,6 +16,7 @@ interface TaskCardListProps {
 export const TaskCardList: React.FC<TaskCardListProps> = ({
   tasks,
   highlightedIds,
+  draftId,
   onTaskChange,
   onDeleteTask,
   onReorderTasks,
@@ -135,6 +137,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                     task={task}
                     isHighlighted={isHighlighted}
                     stepNumber={index + 1}
+                    draftId={draftId}
                     onChange={(updatedTask) => onTaskChange(task.id, updatedTask)}
                     onDelete={() => {
                       // Explicitly capture and log the task.id for debugging

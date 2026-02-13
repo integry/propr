@@ -286,6 +286,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
               <TaskCardList
                 tasks={plan}
                 highlightedIds={highlightedIds}
+                draftId={draft.draft_id}
                 onTaskChange={updateTask}
                 onDeleteTask={handleDeleteTask}
                 onReorderTasks={reorderTasks}
