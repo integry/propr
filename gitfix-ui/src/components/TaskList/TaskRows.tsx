@@ -1,8 +1,9 @@
 import React from 'react';
 import { ChevronRight } from 'lucide-react';
 import type { Task, TaskGroup } from './types';
-import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration } from './utils.tsx';
+import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration, shouldDimTask } from './utils.tsx';
 import { TaskTypeBadge } from './TaskTypeBadge';
+import { ScoreBadge } from './ScoreBadge';
 import { ProviderLogo } from '../ui/ProviderLogo';
 
 interface ParentTaskRowProps {
@@ -14,6 +15,7 @@ interface ParentTaskRowProps {
 
 export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRowClick, isDuplicateRepo = false }) => {
   const typeInfo = getTaskTypeInfo(task);
+  const isDimmed = shouldDimTask(task);
 
   return (
     <tr
@@ -72,7 +74,10 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
         </div>
       </td>
       <td className="py-3 px-4 align-top">
-        {getStatusPill(task.status)}
+        <div className="flex items-center gap-2">
+          {getStatusPill(task.status)}
+          <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
+        </div>
       </td>
       <td className="py-3 px-4 align-top">
         <div className="text-sm text-gray-800" title={new Date(task.createdAt).toLocaleString()}>
@@ -102,6 +107,7 @@ interface ChildTaskRowExtraProps extends ChildTaskRowProps {
 
 export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClick, isLastChild = false }) => {
   const childTypeInfo = getTaskTypeInfo(task);
+  const isDimmed = shouldDimTask(task);
   const childDisplayTitle = (() => {
     // For followup tasks, prefer subtitle if available
     if (childTypeInfo.type === 'followup' && task.subtitle) {
@@ -149,7 +155,10 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
         </div>
       </td>
       <td className="py-3 px-4 align-top">
-        {getStatusPill(task.status)}
+        <div className="flex items-center gap-2">
+          {getStatusPill(task.status)}
+          <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
+        </div>
       </td>
       <td className="py-3 px-4 align-top">
         <div className="text-sm text-gray-800" title={new Date(task.createdAt).toLocaleString()}>

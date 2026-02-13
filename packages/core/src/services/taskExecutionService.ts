@@ -1,9 +1,11 @@
 import { db } from '../db/connection.js';
 import { getAuthenticatedOctokit, getGitHubInstallationToken } from '../auth/githubAuth.js';
-import logger from '../utils/logger.js';
+import logger, { type EnhancedLogger } from '../utils/logger.js';
+import { type Logger } from 'pino';
 import { ensureRepoCloned } from '../git/repoManager.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { createPlanIssue } from '../config/planIssueManager.js';
+import { buildUserNotesCommentBody, type PlanTaskAttachment } from './taskExecutionHelpers.js';
 
 export interface IssueLink {
   number: number;
@@ -36,6 +38,7 @@ interface PlanTask {
   body: string;
   implementation: string;
   notes?: string;
+  attachments?: PlanTaskAttachment[];
   issue_number?: number;
   issue_url?: string;
 }
@@ -49,6 +52,110 @@ interface GenerateTitleOptions {
   repoName: string;
   oldName: string;
   correlationId?: string;
+}
+
+interface CreateIssueOptions {
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+  owner: string;
+  repoName: string;
+  task: PlanTask;
+  draftId: string;
+  correlatedLogger: Logger | EnhancedLogger;
+}
+
+interface CreatedIssue {
+  number: number;
+  url: string;
+  title: string;
+}
+
+async function createGitHubIssue(options: CreateIssueOptions): Promise<CreatedIssue> {
+  const { octokit, owner, repoName, task, draftId, correlatedLogger } = options;
+
+  let issueBody = task.body || '';
+  issueBody += '\n\n---\n*Created by GitFix AI Planner*';
+
+  const response = await octokit.request('POST /repos/{owner}/{repo}/issues', {
+    owner,
+    repo: repoName,
+    title: task.title,
+    body: issueBody,
+    labels: ['gitfix-planned']
+  });
+
+  correlatedLogger.info({
+    draftId,
+    issueNumber: response.data.number,
+    issueUrl: response.data.html_url
+  }, 'Issue created');
+
+  return {
+    number: response.data.number,
+    url: response.data.html_url,
+    title: response.data.title
+  };
+}
+
+interface PostIssueCommentsOptions {
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+  owner: string;
+  repoName: string;
+  issueNumber: number;
+  task: PlanTask;
+  draftId: string;
+  correlatedLogger: Logger | EnhancedLogger;
+}
+
+async function postIssueComments(options: PostIssueCommentsOptions): Promise<void> {
+  const { octokit, owner, repoName, issueNumber, task, draftId, correlatedLogger } = options;
+
+  // Post implementation as a separate comment if it exists
+  if (task.implementation) {
+    const commentBody = '**Suggested Implementation:**\n\n' + task.implementation;
+
+    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+      owner,
+      repo: repoName,
+      issue_number: issueNumber,
+      body: commentBody
+    });
+
+    correlatedLogger.info({
+      draftId,
+      issueNumber
+    }, 'Implementation comment created');
+  }
+
+  // Post user notes and attachments as a separate comment if they exist
+  const hasNotes = task.notes && task.notes.trim();
+  const hasAttachments = task.attachments && task.attachments.length > 0;
+
+  if (hasNotes || hasAttachments) {
+    // Build comment body with images using direct URLs and linked text files
+    // Files remain on the server and are not committed to the repository
+    const userNotesCommentBody = buildUserNotesCommentBody({
+      notes: task.notes,
+      attachments: task.attachments || [],
+      draftId,
+      correlatedLogger
+    });
+
+    if (userNotesCommentBody) {
+      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner,
+        repo: repoName,
+        issue_number: issueNumber,
+        body: userNotesCommentBody
+      });
+
+      correlatedLogger.info({
+        draftId,
+        issueNumber,
+        hasNotes: !!task.notes,
+        attachmentCount: task.attachments?.length || 0
+      }, 'User notes comment created');
+    }
+  }
 }
 
 async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<void> {
@@ -160,75 +267,56 @@ export async function executeDraft(draftId: string, userId: string, correlationI
   for (let i = 0; i < planJson.length; i++) {
     const task = planJson[i];
 
-    let issueBody = task.body || '';
-
-    issueBody += '\n\n---\n*Created by GitFix AI Planner*';
-
     correlatedLogger.info({
       draftId,
       taskIndex: i + 1,
       taskTitle: task.title
     }, 'Creating issue');
 
-    const response = await octokit.request('POST /repos/{owner}/{repo}/issues', {
+    const createdIssue = await createGitHubIssue({
+      octokit,
       owner,
-      repo: repoName,
-      title: task.title,
-      body: issueBody,
-      labels: ['gitfix-planned']
+      repoName,
+      task,
+      draftId,
+      correlatedLogger
     });
 
-    results.push({
-      number: response.data.number,
-      url: response.data.html_url,
-      title: response.data.title
-    });
+    results.push(createdIssue);
 
     // Update the task with issue information
-    planJson[i].issue_number = response.data.number;
-    planJson[i].issue_url = response.data.html_url;
-
-    correlatedLogger.info({
-      draftId,
-      issueNumber: response.data.number,
-      issueUrl: response.data.html_url
-    }, 'Issue created');
+    planJson[i].issue_number = createdIssue.number;
+    planJson[i].issue_url = createdIssue.url;
 
     // Create plan_issue record to track this issue
     try {
       await createPlanIssue({
         draft_id: draftId,
         repository: draft.repository,
-        issue_number: response.data.number
+        issue_number: createdIssue.number
       });
       correlatedLogger.info({
         draftId,
-        issueNumber: response.data.number
+        issueNumber: createdIssue.number
       }, 'Plan issue record created');
     } catch (planIssueError) {
       correlatedLogger.warn({
         err: (planIssueError as Error).message,
         draftId,
-        issueNumber: response.data.number
+        issueNumber: createdIssue.number
       }, 'Failed to create plan issue record, continuing');
     }
 
-    // Post implementation as a separate comment if it exists
-    if (task.implementation) {
-      const commentBody = '**Suggested Implementation:**\n\n' + task.implementation;
-
-      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner,
-        repo: repoName,
-        issue_number: response.data.number,
-        body: commentBody
-      });
-
-      correlatedLogger.info({
-        draftId,
-        issueNumber: response.data.number
-      }, 'Implementation comment created');
-    }
+    // Post implementation and user notes comments
+    await postIssueComments({
+      octokit,
+      owner,
+      repoName,
+      issueNumber: createdIssue.number,
+      task,
+      draftId,
+      correlatedLogger
+    });
 
     if (i < planJson.length - 1) {
       await sleep(1000);

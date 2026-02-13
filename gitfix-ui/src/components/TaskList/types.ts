@@ -14,6 +14,8 @@ export interface Task {
   modelName?: string;
   model?: string;
   llmProvider?: string;
+  planIssueStatus?: string | null;
+  critiqueScore?: number | null;
 }
 
 export type TaskType = 'new-issue' | 'followup' | 'unknown';

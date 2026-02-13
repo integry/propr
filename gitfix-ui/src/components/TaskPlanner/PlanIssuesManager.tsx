@@ -205,6 +205,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
             onMultiToggle={(isMulti) => handleIssueMultiToggle(issue.issue_number, isMulti)}
             onMultiModelChange={(models) => handleIssueMultiModelChange(issue.issue_number, models)}
             task={issueTaskMap[issue.issue_number]}
+            draftId={draftId}
           />
         ))}
       </div>
@@ -239,6 +240,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                     onModelChange={handleModelChange}
                     implementing={false}
                     task={issueTaskMap[issue.issue_number]}
+                    draftId={draftId}
                   />
                 ))}
               </motion.div>

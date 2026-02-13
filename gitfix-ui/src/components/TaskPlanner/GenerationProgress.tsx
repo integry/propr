@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { GenerationTrace } from '../../api/gitfixApi';
 
 interface GenerationProgressProps {
@@ -8,6 +8,20 @@ interface GenerationProgressProps {
 
 const STEP_LABELS: Record<string, string> = {
   llm: 'Generating Plan'
+};
+
+/** Maximum progress percentage to show when execution takes longer than estimated */
+const MAX_PROGRESS_PERCENT = 98;
+
+/** Format duration for display (e.g., "1m 30s") */
+const formatDuration = (ms: number): string => {
+  if (ms < 1000) return `${Math.round(ms / 100) / 10}s`;
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds}s`;
+  if (seconds === 0) return `${minutes}m`;
+  return `${minutes}m ${seconds}s`;
 };
 
 const StatusIcon: React.FC<{ status: string }> = ({ status }) => {
@@ -49,6 +63,75 @@ const getStatusBadgeClass = (status: string): string => {
     default:
       return 'bg-gray-100 text-gray-600';
   }
+};
+
+interface ProgressBarProps {
+  estimatedDuration: number;
+  startedAt: string;
+  isCompleted: boolean;
+}
+
+const ProgressBar: React.FC<ProgressBarProps> = ({ estimatedDuration, startedAt, isCompleted }) => {
+  const [progress, setProgress] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+
+  const startTime = useMemo(() => new Date(startedAt).getTime(), [startedAt]);
+
+  useEffect(() => {
+    if (isCompleted) {
+      setProgress(100);
+      return;
+    }
+
+    const updateProgress = () => {
+      const now = Date.now();
+      const elapsedMs = now - startTime;
+      setElapsed(elapsedMs);
+
+      // Calculate progress percentage, capped at MAX_PROGRESS_PERCENT until completion
+      const rawProgress = (elapsedMs / estimatedDuration) * 100;
+      setProgress(Math.min(rawProgress, MAX_PROGRESS_PERCENT));
+    };
+
+    // Update immediately
+    updateProgress();
+
+    // Update every 500ms for smooth progress
+    const interval = setInterval(updateProgress, 500);
+
+    return () => clearInterval(interval);
+  }, [startTime, estimatedDuration, isCompleted]);
+
+  const remaining = Math.max(0, estimatedDuration - elapsed);
+  const isOverEstimate = elapsed > estimatedDuration;
+
+  return (
+    <div className="ml-8 mt-3">
+      {/* Progress bar */}
+      <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+        <div
+          className="h-full transition-all duration-500 ease-out rounded-full"
+          style={{
+            width: `${progress}%`,
+            backgroundColor: isOverEstimate ? 'rgb(234, 179, 8)' : 'rgb(29, 138, 138)'
+          }}
+        />
+      </div>
+      {/* Progress info */}
+      <div className="flex justify-between mt-1.5 text-xs text-gray-500">
+        <span>
+          {isCompleted ? (
+            'Complete'
+          ) : isOverEstimate ? (
+            <span className="text-yellow-600">Taking longer than expected...</span>
+          ) : (
+            `~${formatDuration(remaining)} remaining`
+          )}
+        </span>
+        <span>{Math.round(progress)}%</span>
+      </div>
+    </div>
+  );
 };
 
 export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, onAbort }) => {
@@ -107,33 +190,46 @@ export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, o
         )}
       </div>
       <div className="divide-y">
-        {visibleSteps.map((step) => (
-          <div key={step.name} className="p-4">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-3">
-                <StatusIcon status={step.status} />
-                <span className="font-medium text-gray-900">
-                  {STEP_LABELS[step.name] || step.name}
+        {visibleSteps.map((step) => {
+          const hasProgressData = step.data?.estimatedDuration && step.data?.startedAt;
+          const showProgressBar = step.name === 'llm' && (step.status === 'in_progress' || step.status === 'completed') && hasProgressData;
+
+          return (
+            <div key={step.name} className="p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-3">
+                  <StatusIcon status={step.status} />
+                  <span className="font-medium text-gray-900">
+                    {STEP_LABELS[step.name] || step.name}
+                  </span>
+                </div>
+                <span className={`text-xs px-2 py-1 rounded-full font-medium ${getStatusBadgeClass(step.status)}`}>
+                  {step.status === 'in_progress' ? 'In Progress' : step.status}
                 </span>
               </div>
-              <span className={`text-xs px-2 py-1 rounded-full font-medium ${getStatusBadgeClass(step.status)}`}>
-                {step.status === 'in_progress' ? 'In Progress' : step.status}
-              </span>
+
+              {step.name === 'llm' && step.status === 'in_progress' && !hasProgressData && (
+                <div className="text-sm text-gray-500 ml-8 italic">
+                  AI is analyzing the context and generating the implementation plan...
+                </div>
+              )}
+
+              {showProgressBar && (
+                <ProgressBar
+                  estimatedDuration={step.data!.estimatedDuration!}
+                  startedAt={step.data!.startedAt!}
+                  isCompleted={step.status === 'completed'}
+                />
+              )}
+
+              {step.status === 'failed' && (
+                 <div className="text-sm text-red-600 ml-8 mt-1">
+                   Generation failed. Please try again.
+                 </div>
+              )}
             </div>
-
-            {step.name === 'llm' && step.status === 'in_progress' && (
-              <div className="text-sm text-gray-500 ml-8 italic">
-                AI is analyzing the context and generating the implementation plan...
-              </div>
-            )}
-
-            {step.status === 'failed' && (
-               <div className="text-sm text-red-600 ml-8 mt-1">
-                 Generation failed. Please try again.
-               </div>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

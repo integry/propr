@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { debounce } from 'lodash';
-import { updateDraft, refinePlan, getDraftWithPlan, PlanTask } from '../api/gitfixApi';
+import { updateDraft, refinePlan, getDraftWithPlan, PlanTask, RefinementResult } from '../api/gitfixApi';
 
 export type SaveStatus = 'saved' | 'saving' | 'error';
 
@@ -73,12 +73,23 @@ const parsePlanJson = (planJson: unknown): PlanTask[] | null => {
 /**
  * Safely parses refinement result, handling both string and object inputs.
  */
-const parseRefinementResult = (result: unknown): { summary?: string; action?: 'modified' | 'answered' | 'both' } | undefined => {
+const parseRefinementResult = (result: unknown): { summary?: string; action?: 'modified' | 'answered' | 'both' | 'cancelled' } | undefined => {
   if (typeof result === 'string') {
     try { return JSON.parse(result); } catch { return undefined; }
   }
-  return result as { summary?: string; action?: 'modified' | 'answered' | 'both' } | undefined;
+  return result as { summary?: string; action?: 'modified' | 'answered' | 'both' | 'cancelled' } | undefined;
 };
+
+export interface RefinementProgress {
+  /** Whether refinement is in progress */
+  isRefining: boolean;
+  /** ISO timestamp when refinement started */
+  startedAt?: string;
+  /** Estimated duration in milliseconds */
+  estimatedDuration?: number;
+  /** Whether the estimate is based on historical data */
+  isHistoricalEstimate?: boolean;
+}
 
 interface UsePlanRefinementResult {
   plan: PlanTask[];
@@ -88,13 +99,15 @@ interface UsePlanRefinementResult {
   deleteTask: (taskId: string) => DeletedTask | null;
   restoreTask: (deleted: DeletedTask) => void;
   reorderTasks: (activeId: string, overId: string) => void;
-  handleRefine: (instruction: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }>;
+  handleRefine: (instruction: string, signal?: AbortSignal) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
   canRedo: boolean;
   saveStatus: SaveStatus;
   highlightedIds: string[];
+  /** Progress data for refinement operations */
+  refinementProgress: RefinementProgress;
 }
 
 export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): UsePlanRefinementResult => {
@@ -103,6 +116,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
   const [pointer, setPointer] = useState(0);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
+  const [refinementProgress, setRefinementProgress] = useState<RefinementProgress>({ isRefining: false });
   const saveRef = useRef<ReturnType<typeof debounce> | null>(null);
 
   const currentPlan = history[pointer];
@@ -227,46 +241,95 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     updatePlan(newPlan, 'user');
   }, [currentPlan, updatePlan]);
 
-  const handleRefine = useCallback(async (instruction: string): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }> => {
+  const handleRefine = useCallback(async (instruction: string, signal?: AbortSignal): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }> => {
+    const cancelledResult = { success: false, message: 'Refinement cancelled by user.', cancelled: true };
+
+    const checkAborted = (): boolean => signal?.aborted ?? false;
+
+    const handleReviewStatus = (draft: { plan_json: unknown; refinement_result: unknown }): { success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean } | null => {
+      const refinementResult = parseRefinementResult(draft.refinement_result);
+
+      if (refinementResult?.action === 'cancelled') {
+        return { success: false, message: refinementResult.summary || 'Refinement cancelled by user.', cancelled: true };
+      }
+
+      const planJson = parsePlanJson(draft.plan_json);
+      if (!planJson) {
+        setRefinementProgress({ isRefining: false });
+        return { success: false, message: 'Refinement completed but no plan returned' };
+      }
+
+      updatePlan(planJson, 'ai');
+
+      const message = refinementResult?.summary || 'Plan processed successfully.';
+      const action = refinementResult?.action;
+
+      setRefinementProgress({ isRefining: false });
+      return { success: true, message, action };
+    };
+
+    const updateProgressFromResult = (draft: { refinement_result: unknown }, hasUpdatedProgress: boolean): boolean => {
+      if (hasUpdatedProgress || !draft.refinement_result) {
+        return hasUpdatedProgress;
+      }
+      const refinementResult = parseRefinementResult(draft.refinement_result) as RefinementResult | undefined;
+      if (refinementResult?.startedAt && refinementResult?.estimatedDuration) {
+        setRefinementProgress({
+          isRefining: true,
+          startedAt: refinementResult.startedAt,
+          estimatedDuration: refinementResult.estimatedDuration,
+          isHistoricalEstimate: refinementResult.isHistoricalEstimate
+        });
+        return true;
+      }
+      return hasUpdatedProgress;
+    };
+
     try {
-      // Start refinement - returns immediately with 202
-      await refinePlan(draftId, currentPlan, instruction);
+      if (checkAborted()) {
+        return cancelledResult;
+      }
 
-      // Poll for completion
-      const pollForCompletion = async (): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }> => {
-        const maxAttempts = 300; // 5 minutes max
-        for (let i = 0; i < maxAttempts; i++) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          const draft = await getDraftWithPlan(draftId);
+      setRefinementProgress({ isRefining: true });
 
-          if (draft.status === 'review') {
-            // Refinement complete - defensively parse plan_json if it's a string
-            const planJson = parsePlanJson(draft.plan_json);
-            if (!planJson) {
-              return { success: false, message: 'Refinement completed but no plan returned' };
-            }
+      await refinePlan(draftId, currentPlan, instruction, signal);
 
-            updatePlan(planJson, 'ai');
+      const maxAttempts = 300;
+      let hasUpdatedProgress = false;
 
-            // Extract refinement result with summary
-            const refinementResult = parseRefinementResult(draft.refinement_result);
-            const message = refinementResult?.summary || 'Plan processed successfully.';
-            const action = refinementResult?.action;
-
-            return { success: true, message, action };
-          }
-
-          if (draft.status !== 'refining') {
-            // Unexpected status
-            return { success: false, message: 'Refinement failed unexpectedly' };
-          }
+      for (let i = 0; i < maxAttempts; i++) {
+        if (checkAborted()) {
+          return cancelledResult;
         }
-        return { success: false, message: 'Refinement timed out. Please try again.' };
-      };
 
-      return await pollForCompletion();
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        if (checkAborted()) {
+          return cancelledResult;
+        }
+
+        const draft = await getDraftWithPlan(draftId);
+
+        hasUpdatedProgress = updateProgressFromResult(draft, hasUpdatedProgress);
+
+        if (draft.status === 'review') {
+          return handleReviewStatus(draft) ?? { success: false, message: 'Unexpected error processing result' };
+        }
+
+        if (draft.status !== 'refining') {
+          setRefinementProgress({ isRefining: false });
+          return { success: false, message: 'Refinement failed unexpectedly' };
+        }
+      }
+
+      setRefinementProgress({ isRefining: false });
+      return { success: false, message: 'Refinement timed out. Please try again.' };
     } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        return cancelledResult;
+      }
       console.error(e);
+      setRefinementProgress({ isRefining: false });
       return { success: false, message: 'Failed to refine plan. Please try again.' };
     }
   }, [draftId, currentPlan, updatePlan]);
@@ -301,6 +364,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     canUndo: pointer > 0,
     canRedo: pointer < history.length - 1,
     saveStatus,
-    highlightedIds
+    highlightedIds,
+    refinementProgress
   };
 };

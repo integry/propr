@@ -5,6 +5,14 @@ export interface GenerationStepData {
   files?: Array<{ path: string; reason: string; score: number }>;
   includedFiles?: string[];
   tokenCount?: number;
+  /** Estimated duration in milliseconds for this step */
+  estimatedDuration?: number;
+  /** ISO timestamp when this step started */
+  startedAt?: string;
+  /** Whether the estimate is based on historical data */
+  isHistoricalEstimate?: boolean;
+  /** Number of historical samples used for estimation */
+  sampleCount?: number;
 }
 
 export interface GenerationStep {
@@ -198,6 +206,7 @@ export interface PlanTask {
   body: string;
   implementation: string;
   notes?: string;
+  attachments?: PlannerAttachment[];
   issue_number?: number;
   issue_url?: string;
 }
@@ -228,9 +237,19 @@ export interface DraftContextConfig {
 }
 
 export interface RefinementResult {
-  action: 'modified' | 'answered' | 'both';
-  summary: string;
-  timestamp: string;
+  /** Status of the refinement: 'in_progress' during processing, 'completed' when done */
+  status?: 'in_progress' | 'completed';
+  action?: 'modified' | 'answered' | 'both';
+  summary?: string;
+  timestamp?: string;
+  /** ISO timestamp when refinement started */
+  startedAt?: string;
+  /** Estimated duration in milliseconds */
+  estimatedDuration?: number;
+  /** Whether the estimate is based on historical data */
+  isHistoricalEstimate?: boolean;
+  /** Number of historical samples used for estimation */
+  sampleCount?: number;
 }
 
 export interface DraftWithPlan extends PlannerDraft {
@@ -267,12 +286,13 @@ export interface RefineResponse {
   message: string;
 }
 
-export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instruction: string): Promise<RefineResponse> => {
+export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instruction: string, signal?: AbortSignal): Promise<RefineResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/refine`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draftId, plan: currentPlan, instruction }),
-    credentials: 'include'
+    credentials: 'include',
+    signal
   });
   await handleApiResponse(response);
   return response.json();
@@ -441,6 +461,20 @@ export const validateContextRepository = async (
  */
 export const abortGeneration = async (draftId: string): Promise<void> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/abort`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draftId }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+};
+
+/**
+ * Abort an in-progress plan refinement.
+ * Sets an abort signal in Redis and resets the draft status to 'review'.
+ */
+export const abortRefinement = async (draftId: string): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/abort-refinement`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draftId }),

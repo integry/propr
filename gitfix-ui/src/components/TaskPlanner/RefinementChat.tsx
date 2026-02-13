@@ -1,6 +1,7 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Bot, User, Loader2 } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { Send, Bot, User, Loader2, Square } from 'lucide-react';
 import { ChatMessage } from '../../api/gitfixApi';
+import type { RefinementProgress } from '../../hooks/usePlanRefinement';
 
 interface Message {
   id: string;
@@ -10,12 +11,89 @@ interface Message {
 }
 
 interface RefinementChatProps {
-  onSendMessage: (message: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both' }>;
+  onSendMessage: (message: string, signal?: AbortSignal) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
   initialMessages?: ChatMessage[];
   onMessagesChange?: (messages: ChatMessage[]) => void;
+  refinementProgress?: RefinementProgress;
+  onStop?: () => Promise<void>;
 }
 
-export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange }) => {
+/** Maximum progress percentage to show when execution takes longer than estimated */
+const MAX_PROGRESS_PERCENT = 98;
+
+/** Format duration for display (e.g., "1m 30s") */
+const formatDuration = (ms: number): string => {
+  if (ms < 1000) return `${Math.round(ms / 100) / 10}s`;
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds}s`;
+  if (seconds === 0) return `${minutes}m`;
+  return `${minutes}m ${seconds}s`;
+};
+
+interface RefinementProgressBarProps {
+  startedAt: string;
+  estimatedDuration: number;
+}
+
+const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt, estimatedDuration }) => {
+  const [progress, setProgress] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+
+  const startTime = useMemo(() => new Date(startedAt).getTime(), [startedAt]);
+
+  useEffect(() => {
+    const updateProgress = () => {
+      const now = Date.now();
+      const elapsedMs = now - startTime;
+      setElapsed(elapsedMs);
+
+      // Calculate progress percentage, capped at MAX_PROGRESS_PERCENT until completion
+      const rawProgress = (elapsedMs / estimatedDuration) * 100;
+      setProgress(Math.min(rawProgress, MAX_PROGRESS_PERCENT));
+    };
+
+    // Update immediately
+    updateProgress();
+
+    // Update every 500ms for smooth progress
+    const interval = setInterval(updateProgress, 500);
+
+    return () => clearInterval(interval);
+  }, [startTime, estimatedDuration]);
+
+  const remaining = Math.max(0, estimatedDuration - elapsed);
+  const isOverEstimate = elapsed > estimatedDuration;
+
+  return (
+    <div className="mt-2 mb-1">
+      {/* Progress bar */}
+      <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
+        <div
+          className="h-full transition-all duration-500 ease-out rounded-full"
+          style={{
+            width: `${progress}%`,
+            backgroundColor: isOverEstimate ? 'rgb(234, 179, 8)' : 'rgb(29, 138, 138)'
+          }}
+        />
+      </div>
+      {/* Progress info */}
+      <div className="flex justify-between mt-1 text-xs text-gray-400">
+        <span>
+          {isOverEstimate ? (
+            <span className="text-yellow-600">Taking longer than expected...</span>
+          ) : (
+            `~${formatDuration(remaining)} remaining`
+          )}
+        </span>
+        <span>{Math.round(progress)}%</span>
+      </div>
+    </div>
+  );
+};
+
+export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop }) => {
   const [messages, setMessages] = useState<Message[]>(() => {
     if (initialMessages && initialMessages.length > 0) {
       // Filter out any legacy welcome messages stored in the database
@@ -35,6 +113,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Auto-resize textarea based on content
   const adjustTextareaHeight = useCallback(() => {
@@ -80,6 +159,21 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     }
   };
 
+  const handleStop = useCallback(async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    // Call the backend abort endpoint to stop server-side processing
+    if (onStop) {
+      try {
+        await onStop();
+      } catch (err) {
+        console.error('Failed to abort refinement:', err);
+      }
+    }
+  }, [onStop]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
@@ -103,15 +197,24 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     setInput('');
     setIsLoading(true);
 
+    // Create a new AbortController for this request
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     // Save user message immediately
     onMessagesChange?.(toChatMessages(messagesWithUser));
 
-    const result = await onSendMessage(userMessage.content);
+    const result = await onSendMessage(userMessage.content, abortController.signal);
+
+    // Clear the abort controller reference
+    abortControllerRef.current = null;
 
     const assistantMessage: Message = {
       id: `assistant-${Date.now()}`,
       role: 'assistant',
-      content: result.success ? result.message : `Error: ${result.message}`,
+      content: result.cancelled
+        ? 'Refinement cancelled by user.'
+        : (result.success ? result.message : `Error: ${result.message}`),
       timestamp: new Date()
     };
 
@@ -202,16 +305,23 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             <div className="flex-1 min-w-0 ml-3">
               <div
                 className={`
-                  rounded-lg inline-block
+                  rounded-lg
                   ${message.role === 'user'
-                    ? 'bg-white border border-teal-100 text-slate-800 shadow-sm px-4 py-2'
+                    ? 'bg-white border border-teal-100 text-slate-800 shadow-sm px-4 py-2 inline-block'
                     : message.role === 'thinking'
-                      ? 'bg-slate-200 text-gray-600 italic p-3'
-                      : 'bg-transparent text-gray-800'
+                      ? 'bg-slate-200 text-gray-600 italic p-3 w-full max-w-xs'
+                      : 'bg-transparent text-gray-800 inline-block'
                   }
                 `}
               >
                 <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                {/* Show progress bar for thinking messages when progress data is available */}
+                {message.role === 'thinking' && refinementProgress?.startedAt && refinementProgress?.estimatedDuration && (
+                  <RefinementProgressBar
+                    startedAt={refinementProgress.startedAt}
+                    estimatedDuration={refinementProgress.estimatedDuration}
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -235,20 +345,27 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
             />
             {/* Keyboard shortcut hint */}
             <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>
-            <button
-              type="submit"
-              disabled={!input.trim() || isLoading}
-              className="p-2 text-white rounded-md disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center flex-shrink-0"
-              style={{ backgroundColor: (!input.trim() || isLoading) ? undefined : 'rgb(29, 138, 138)' }}
-              onMouseEnter={(e) => { if (input.trim() && !isLoading) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
-              onMouseLeave={(e) => { if (input.trim() && !isLoading) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
-            >
-              {isLoading ? (
-                <Loader2 size={16} className="animate-spin" />
-              ) : (
+            {isLoading ? (
+              <button
+                type="button"
+                onClick={handleStop}
+                className="p-2 text-white rounded-md bg-red-500 hover:bg-red-600 transition-colors flex items-center justify-center flex-shrink-0"
+                title="Stop refinement"
+              >
+                <Square size={16} />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim()}
+                className="p-2 text-white rounded-md disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center flex-shrink-0"
+                style={{ backgroundColor: !input.trim() ? undefined : 'rgb(29, 138, 138)' }}
+                onMouseEnter={(e) => { if (input.trim()) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
+                onMouseLeave={(e) => { if (input.trim()) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
+              >
                 <Send size={16} />
-              )}
-            </button>
+              </button>
+            )}
           </div>
         </form>
       </div>

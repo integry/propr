@@ -1,140 +1,19 @@
-import { useState, forwardRef, useRef, useEffect } from 'react';
+import { useState, forwardRef, useRef, useCallback } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { MessageSquare, Trash2, Pencil, ChevronDown, AlertCircle, FileText } from 'lucide-react';
+import { MessageSquare, Trash2, Pencil, ChevronDown, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { PlanTask } from '../../api/gitfixApi';
+import { PlanTask, uploadAttachment, removeAttachment } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
-
-// Confirmation dialog component for clearing implementation
-interface ClearImplementationDialogProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onConfirm: () => void;
-  fileCount: number;
-}
-
-const ClearImplementationDialog: React.FC<ClearImplementationDialogProps> = ({ isOpen, onClose, onConfirm, fileCount }) => {
-  const dialogRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    document.body.style.overflow = 'hidden';
-    document.addEventListener('keydown', handleKeyDown);
-    dialogRef.current?.focus();
-
-    return () => {
-      document.body.style.overflow = '';
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isOpen, onClose]);
-
-  return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.15 }}
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              onClose();
-            }
-          }}
-        >
-          <motion.div
-            ref={dialogRef}
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            transition={{ duration: 0.15 }}
-            className="bg-white rounded-lg max-w-md w-full border border-gray-300 shadow-lg"
-            tabIndex={-1}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="clear-implementation-dialog-title"
-          >
-            <div className="p-6">
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
-                  <AlertCircle className="w-5 h-5 text-red-600" />
-                </div>
-                <div className="flex-1">
-                  <h3 id="clear-implementation-dialog-title" className="text-lg font-semibold text-gray-900 mb-2">
-                    Clear Implementation Details?
-                  </h3>
-                  <p className="text-sm text-gray-600 mb-4">
-                    This will remove the suggested implementation containing {fileCount} file{fileCount !== 1 ? 's' : ''}.
-                    This action cannot be undone.
-                  </p>
-                  <p className="text-sm text-gray-600">
-                    Are you sure you want to continue?
-                  </p>
-                </div>
-              </div>
-            </div>
-            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50 rounded-b-lg">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={onConfirm}
-                className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700 transition-colors"
-              >
-                Clear Implementation
-              </button>
-            </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  );
-};
-
-// Helper to extract file paths from implementation markdown
-const extractFilePaths = (implementation: string): string[] => {
-  if (!implementation) return [];
-
-  const filePaths: string[] = [];
-  const lines = implementation.split('\n');
-
-  for (const line of lines) {
-    // Match patterns like: "File: path", "**File: path**", "### File: `path`", etc.
-    const fileMatch = line.match(/^(?:#{1,6}\s+)?(?:\*\*)?File:\s*[`]?([^`\n]+?)[`]?(?:\*\*)?$/i);
-    if (fileMatch) {
-      filePaths.push(fileMatch[1].trim());
-    }
-  }
-
-  // If no File: patterns found, try to extract from code block language hints
-  if (filePaths.length === 0) {
-    const codeBlockMatches = implementation.matchAll(/```(\w+)/g);
-    for (const match of codeBlockMatches) {
-      // Count code blocks as generic files
-      filePaths.push(`(${match[1]} code block)`);
-    }
-  }
-
-  return filePaths;
-};
+import { AttachmentUploader } from './AttachmentUploader';
+import { resizeImage } from './imageUtils';
+import { ClearImplementationDialog } from './ClearImplementationDialog';
+import { extractFilePaths } from './taskCardUtils';
 
 interface TaskCardProps {
   task: PlanTask;
   isHighlighted: boolean;
   stepNumber: number;
+  draftId: string;
   onChange: (task: PlanTask) => void;
   onDelete: () => void;
 }
@@ -146,6 +25,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   task,
   isHighlighted,
   stepNumber,
+  draftId,
   onChange,
   onDelete,
 }, ref) => {
@@ -153,16 +33,72 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
   const [isImplementationCollapsed, setIsImplementationCollapsed] = useState(true);
   const [showClearDialog, setShowClearDialog] = useState(false);
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const notesTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Extract file paths from implementation for collapsed summary and count
   const filePaths = extractFilePaths(task.implementation);
   const fileCount = filePaths.length;
 
   const handleFieldClick = (field: EditableField) => {
-    if (viewMode === 'edit') {
+    // Allow direct editing of notes regardless of view mode
+    if (viewMode === 'edit' || field === 'notes') {
       setEditingField(field);
     }
   };
+
+  // Handle attachment upload
+  const handleAttachmentUpload = useCallback(async (file: File) => {
+    if (!draftId) return;
+
+    setIsUploadingAttachment(true);
+    try {
+      const attachment = await uploadAttachment(draftId, file);
+      const currentAttachments = task.attachments || [];
+      onChange({
+        ...task,
+        attachments: [...currentAttachments, attachment]
+      });
+    } catch (error) {
+      console.error('Failed to upload attachment:', error);
+    } finally {
+      setIsUploadingAttachment(false);
+    }
+  }, [draftId, task, onChange]);
+
+  // Handle attachment removal
+  const handleAttachmentRemove = useCallback(async (attachmentId: string) => {
+    if (!draftId) return;
+
+    try {
+      await removeAttachment(draftId, attachmentId);
+      const currentAttachments = task.attachments || [];
+      onChange({
+        ...task,
+        attachments: currentAttachments.filter(a => a.id !== attachmentId)
+      });
+    } catch (error) {
+      console.error('Failed to remove attachment:', error);
+    }
+  }, [draftId, task, onChange]);
+
+  // Handle paste in notes textarea for image upload
+  const handleNotesPaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          const processedFile = await resizeImage(file);
+          await handleAttachmentUpload(processedFile);
+        }
+        return;
+      }
+    }
+  }, [handleAttachmentUpload]);
 
   const handleBlur = () => {
     setEditingField(null);
@@ -175,15 +111,19 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     className: string,
     markdownClassName?: string
   ) => {
+    // For notes field, allow editing even in preview mode when editingField === 'notes'
     const isEditing = editingField === field || viewMode === 'edit';
+    const isNotesField = field === 'notes';
 
     if (isEditing) {
       return (
         <TextareaAutosize
+          ref={isNotesField ? notesTextareaRef : undefined}
           value={value}
           onChange={e => onChange({ ...task, [field as string]: e.target.value })}
           onBlur={handleBlur}
           onFocus={() => setEditingField(field)}
+          onPaste={isNotesField ? handleNotesPaste : undefined}
           autoFocus={editingField === field}
           className={`${className} resize-none focus:outline-none focus:bg-gray-50 rounded p-1 -ml-1 cursor-text`}
           placeholder={placeholder}
@@ -192,11 +132,14 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     }
 
     // Preview mode - render markdown
+    // For notes field, use cursor-text to indicate it's directly editable
+    const cursorClass = isNotesField ? 'cursor-text' : 'cursor-default';
+
     if (!value || value.trim() === '') {
       return (
         <div
           onClick={() => handleFieldClick(field)}
-          className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1 min-h-[24px] text-gray-400 italic`}
+          className={`${markdownClassName || className} ${cursorClass} hover:bg-gray-50 rounded p-1 -ml-1 min-h-[24px] text-gray-400 italic`}
         >
           {placeholder}
         </div>
@@ -206,7 +149,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     return (
       <div
         onClick={() => handleFieldClick(field)}
-        className={`${markdownClassName || className} cursor-default hover:bg-gray-50 rounded p-1 -ml-1 task-card-content`}
+        className={`${markdownClassName || className} ${cursorClass} hover:bg-gray-50 rounded p-1 -ml-1 task-card-content`}
       >
         <MarkdownRenderer text={value} className="prose prose-sm max-w-none [&_code]:bg-gray-100 [&_code]:text-gray-600 [&_code]:px-1 [&_code]:py-0 [&_code]:rounded-sm [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none" />
       </div>
@@ -394,6 +337,17 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 'w-full text-sm text-gray-800 bg-transparent placeholder-gray-400',
                 'w-full text-sm text-gray-800'
               )}
+              {/* Attachments section */}
+              <div className="mt-3">
+                <AttachmentUploader
+                  files={task.attachments || []}
+                  draftId={draftId}
+                  isUploading={isUploadingAttachment}
+                  onUpload={handleAttachmentUpload}
+                  onRemove={handleAttachmentRemove}
+                  compact
+                />
+              </div>
             </div>
           </div>
         </div>

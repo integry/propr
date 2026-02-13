@@ -3,8 +3,8 @@ import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Undo2, Redo2, Loader2, AlertCircle, GripVertical, Info, X, ArrowLeft, FileQuestion, Github, GitBranch } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { debounce } from 'lodash';
-import { usePlanRefinement } from '../../hooks/usePlanRefinement';
-import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, GranularityEnforcementMetadata, resetDraftToSetup } from '../../api/gitfixApi';
+import { usePlanRefinement, RefinementProgress } from '../../hooks/usePlanRefinement';
+import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, GranularityEnforcementMetadata, resetDraftToSetup, abortRefinement } from '../../api/gitfixApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
 import BackToSetupDialog from './BackToSetupDialog';
@@ -134,7 +134,8 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
     redo,
     canUndo,
     canRedo,
-    highlightedIds
+    highlightedIds,
+    refinementProgress
   } = usePlanRefinement(draft.draft_id, initialPlan);
 
   // Handle soft delete with undo toast
@@ -163,6 +164,10 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
 
   const handleChatMessagesChange = useCallback((messages: ChatMessage[]) => {
     saveChatHistoryRef.current(draft.draft_id, messages);
+  }, [draft.draft_id]);
+
+  const handleStopRefinement = useCallback(async () => {
+    await abortRefinement(draft.draft_id);
   }, [draft.draft_id]);
 
   const handleFinalize = async () => {
@@ -282,6 +287,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
               <TaskCardList
                 tasks={plan}
                 highlightedIds={highlightedIds}
+                draftId={draft.draft_id}
                 onTaskChange={updateTask}
                 onDeleteTask={handleDeleteTask}
                 onReorderTasks={reorderTasks}
@@ -300,6 +306,8 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
                 onSendMessage={handleRefine}
                 initialMessages={draft.chat_history}
                 onMessagesChange={handleChatMessagesChange}
+refinementProgress={refinementProgress}
+                onStop={handleStopRefinement}
               />
             </div>
           </Panel>
