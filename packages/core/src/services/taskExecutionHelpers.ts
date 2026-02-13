@@ -33,11 +33,12 @@ function getAttachmentBaseUrl(): string {
 }
 
 /**
- * Build a direct URL for an image attachment.
- * Returns the HTML img tag with the image embedded using the public URL.
- * Uses HTML img tags (like GitHub does) for better compatibility.
+ * Format an attachment as a download link.
+ * Returns a markdown link to the attachment.
+ * Note: Direct embedding of remote images doesn't work in GitHub, so all
+ * attachments (including images) are rendered as download links.
  */
-function embedImageAttachment(
+function linkAttachment(
   attachment: PlanTaskAttachment,
   draftId: string,
   correlatedLogger: Logger | EnhancedLogger
@@ -49,33 +50,7 @@ function embedImageAttachment(
     attachmentId: attachment.id,
     originalName: attachment.originalName,
     attachmentUrl
-  }, 'Embedded image with direct URL in comment');
-
-  const lines = [
-    `**${attachment.originalName}:**`,
-    `<img alt="${attachment.originalName}" src="${attachmentUrl}" />`,
-    ''
-  ];
-  return lines.join('\n');
-}
-
-/**
- * Format a text attachment as a link.
- * Returns a markdown link to the attachment instead of embedding content inline.
- */
-function linkTextAttachment(
-  attachment: PlanTaskAttachment,
-  draftId: string,
-  correlatedLogger: Logger | EnhancedLogger
-): string {
-  const baseUrl = getAttachmentBaseUrl();
-  const attachmentUrl = `${baseUrl}/api/planner/drafts/${draftId}/attachments/${attachment.id}`;
-
-  correlatedLogger.info({
-    attachmentId: attachment.id,
-    originalName: attachment.originalName,
-    attachmentUrl
-  }, 'Linked text attachment in comment');
+  }, 'Linked attachment in comment');
 
   const lines = [
     `**${attachment.originalName}:** [Download](${attachmentUrl})`,
@@ -86,6 +61,8 @@ function linkTextAttachment(
 
 /**
  * Process a single attachment and return its markdown representation.
+ * All attachments are rendered as download links since GitHub doesn't
+ * support direct embedding of remote images.
  */
 function processAttachment(
   attachment: PlanTaskAttachment,
@@ -93,10 +70,7 @@ function processAttachment(
   correlatedLogger: Logger | EnhancedLogger
 ): string | null {
   try {
-    if (attachment.type === 'image') {
-      return embedImageAttachment(attachment, draftId, correlatedLogger);
-    }
-    return linkTextAttachment(attachment, draftId, correlatedLogger);
+    return linkAttachment(attachment, draftId, correlatedLogger);
   } catch (err) {
     correlatedLogger.error({
       attachmentId: attachment.id,
@@ -109,8 +83,8 @@ function processAttachment(
 
 /**
  * Build a user notes comment body with attachments.
- * Images are embedded using direct URLs to the attachment endpoint.
- * Text files are linked to the attachment endpoint for download.
+ * All attachments are rendered as download links to the attachment endpoint.
+ * Note: Direct embedding of remote images doesn't work in GitHub.
  */
 export function buildUserNotesCommentBody(options: BuildUserNotesOptions): string | null {
   const { notes, attachments, draftId, correlatedLogger } = options;
