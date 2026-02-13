@@ -30,7 +30,8 @@ function getPublicBaseUrl(): string {
 
 /**
  * Build a direct URL for an image attachment.
- * Returns the markdown string with the image embedded using the public URL.
+ * Returns the HTML img tag with the image embedded using the public URL.
+ * Uses HTML img tags (like GitHub does) for better compatibility.
  */
 function embedImageAttachment(
   attachment: PlanTaskAttachment,
@@ -48,7 +49,7 @@ function embedImageAttachment(
 
   const lines = [
     `**${attachment.originalName}:**`,
-    `![${attachment.originalName}](${attachmentUrl})`,
+    `<img alt="${attachment.originalName}" src="${attachmentUrl}" />`,
     ''
   ];
   return lines.join('\n');
