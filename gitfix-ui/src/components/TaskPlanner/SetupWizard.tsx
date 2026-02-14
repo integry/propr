@@ -163,13 +163,14 @@ const SetupWizardContent: React.FC<{
   handleExportContext: () => void;
   handleGenerate: () => Promise<void>;
   agents: ReturnType<typeof useAgentsLoader>;
+  availableRepos: ReturnType<typeof useIndexedRepositoriesLoader>;
 }> = (props) => {
   const {
     isNewMode, draft, config, setConfig, repoLoader, newModeBranches, repoInfo,
     fileHandling, generationPolling, contextExport, contextRefresh, generationHandlers,
     autoResize, textareaRef, fileInputRef, error, branchError, isChangingRepo, isCreating,
     setIsChangingRepo, handleRepoChangeInEditMode, handleFileInputChange, handleExportContext,
-    handleGenerate, agents
+    handleGenerate, agents, availableRepos
   } = props;
 
   // Pre-computed values to reduce ternaries in JSX
@@ -189,6 +190,20 @@ const SetupWizardContent: React.FC<{
 
   const handleModelChange = (value: string | null) => {
     setConfig(prev => ({ ...prev, generationModel: value }));
+  };
+
+  const handleAddContextRepo = (repo: { repository: string; branch: string }) => {
+    setConfig(prev => ({
+      ...prev,
+      contextRepositories: [...prev.contextRepositories, repo]
+    }));
+  };
+
+  const handleRemoveContextRepo = (repository: string) => {
+    setConfig(prev => ({
+      ...prev,
+      contextRepositories: prev.contextRepositories.filter(r => r.repository !== repository)
+    }));
   };
 
   const isGenerating = generationPolling.isGenerating;
@@ -238,6 +253,16 @@ const SetupWizardContent: React.FC<{
           smartSelection={contextRefresh.preview.data?.smartSelection}
           isPreviewLoading={contextRefresh.preview.isLoading}
           stats={stats}
+          contextRepositories={config.contextRepositories}
+          availableRepos={availableRepos}
+          onAddContextRepo={handleAddContextRepo}
+          onRemoveContextRepo={handleRemoveContextRepo}
+          preview={contextRefresh.preview}
+          isContextStale={contextRefresh.isContextStale}
+          timeUntilRefresh={contextRefresh.timeUntilRefresh}
+          isPaused={contextRefresh.isPaused}
+          onTogglePause={contextRefresh.togglePause}
+          onManualRefresh={contextRefresh.handleManualRefresh}
         />
       </div>
 
@@ -396,8 +421,6 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   useEffect(() => { if (generationPolling.generationError) addToast({ type: 'error', message: `Plan generation failed: ${generationPolling.generationError}` }); }, [generationPolling.generationError, addToast]);
   useEffect(() => { if (repoLoader.loadError) setError(repoLoader.loadError); }, [repoLoader.loadError]);
 
-  void availableRepos; // Suppress unused variable warning
-
   return (
     <SetupWizardContent
       isNewMode={isNewMode} draft={draft} config={config} setConfig={setConfig}
@@ -409,6 +432,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       isChangingRepo={isChangingRepo} isCreating={isCreating} setIsChangingRepo={setIsChangingRepo}
       handleRepoChangeInEditMode={handleRepoChangeInEditMode} handleFileInputChange={handleFileInputChange}
       handleExportContext={handleExportContext} handleGenerate={handleGenerate} agents={agents}
+      availableRepos={availableRepos}
     />
   );
 };
