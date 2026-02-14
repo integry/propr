@@ -1,3 +1,4 @@
+// ScoreBadge component - displays code quality score with visual hierarchy
 import React from 'react';
 import { Triangle, Square, Diamond, Circle } from 'lucide-react';
 
