@@ -84,21 +84,6 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     setTimeUntilRefresh(null);
   }, []);
 
-  const startCountdown = useCallback(() => {
-    clearCountdown();
-    setIsContextStale(true);
-    setTimeUntilRefresh(SOURCE_REFRESH_DELAY / 1000);
-
-    countdownIntervalRef.current = setInterval(() => {
-      setTimeUntilRefresh(prev => (prev === null || prev <= 1) ? null : prev - 1);
-    }, 1000);
-
-    sourceRefreshTimerRef.current = setTimeout(() => {
-      clearCountdown();
-      setIsContextStale(false);
-    }, SOURCE_REFRESH_DELAY);
-  }, [clearCountdown]);
-
   const fetchPreview = useCallback(async () => {
     const currentConfig = configRef.current;
     // Skip preview if no draftId (new mode - draft not created yet)
@@ -141,6 +126,23 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       if (errorMessage.toLowerCase().includes('branch')) onBranchError(errorMessage);
     }
   }, [draftId, clearCountdown, onBranchError]);
+
+  const startCountdown = useCallback(() => {
+    clearCountdown();
+    setIsContextStale(true);
+    setTimeUntilRefresh(SOURCE_REFRESH_DELAY / 1000);
+
+    countdownIntervalRef.current = setInterval(() => {
+      setTimeUntilRefresh(prev => (prev === null || prev <= 1) ? null : prev - 1);
+    }, 1000);
+
+    sourceRefreshTimerRef.current = setTimeout(() => {
+      clearCountdown();
+      setIsContextStale(false);
+      // Trigger the fetch when countdown completes
+      fetchPreview();
+    }, SOURCE_REFRESH_DELAY);
+  }, [clearCountdown, fetchPreview]);
 
   // Initial sync
   useEffect(() => {
@@ -239,13 +241,15 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
           sourceRefreshTimerRef.current = setTimeout(() => {
             clearCountdown();
             setIsContextStale(false);
+            // Trigger the fetch when countdown completes
+            fetchPreview();
           }, remaining * 1000);
         }
         pausedTimeRemainingRef.current = null;
       }
       return newPaused;
     });
-  }, [timeUntilRefresh, isContextStale, clearCountdown]);
+  }, [timeUntilRefresh, isContextStale, clearCountdown, fetchPreview]);
 
   return {
     preview,
