@@ -101,6 +101,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
 
   const fetchPreview = useCallback(async () => {
     const currentConfig = configRef.current;
+    // Skip preview if no draftId (new mode - draft not created yet)
+    if (!draftId) return;
     if (!currentConfig.prompt.trim() || !currentConfig.baseBranch) return;
 
     if (!BRANCH_NAME_REGEX.test(currentConfig.baseBranch)) {
