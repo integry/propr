@@ -5,6 +5,7 @@ import TaskStatsChart from './TaskStatsChart';
 import RepositoryBreakdown from './RepositoryBreakdown';
 import TopModels from './TopModels';
 import TaskList from './TaskList';
+import ActivitySparkline from './ActivitySparkline';
 import { getQueueStats } from '../api/gitfixApi';
 import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
 import { Loader2, ChevronRight } from 'lucide-react';
@@ -83,6 +84,19 @@ const Dashboard: React.FC = () => {
     return Math.round((completed / total) * 100) + '%';
   };
 
+  // Format date for sparkline display
+  const formatDate = (dateStr: string): string => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  // Prepare sparkline data from dailyCounts
+  const sparklineData = taskStats?.dailyCounts?.map(item => ({
+    date: item.date,
+    displayDate: formatDate(item.date),
+    count: item.count,
+  })) || [];
+
   return (
     <div>
       {/* Metrics Strip - Subtle gray background */}
@@ -148,6 +162,9 @@ const Dashboard: React.FC = () => {
 
           {/* Right Column (30% - 3/10) - Analytics and Charts */}
           <div className="lg:col-span-3 space-y-6">
+            {/* Activity Sparkline - Minimalist trend chart at top */}
+            <ActivitySparkline data={sparklineData} />
+
             {/* Task Stats Distribution */}
             <TaskStatsChart data={taskStats} mode="distribution" />
 
