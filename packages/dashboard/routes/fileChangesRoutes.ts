@@ -25,7 +25,7 @@ export function createFileChangesRoutes(deps: FileChangesRoutesDeps) {
       console.log(`[file-changes] jobId: ${jobId}, taskId: ${taskId}`);
 
       // First try to get from Redis cache
-      let fileChangesData = await getStoredFileChanges(taskId);
+      const fileChangesData = await getStoredFileChanges(taskId);
 
       if (fileChangesData) {
         console.log(`[file-changes] Found ${fileChangesData.files.length} files in cache for taskId: ${taskId}`);
