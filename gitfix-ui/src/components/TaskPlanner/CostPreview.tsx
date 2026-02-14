@@ -47,11 +47,41 @@ const ErrorState: React.FC<{ error: string }> = ({ error }) => (
   </div>
 );
 
-const EmptyState: React.FC = () => (
-  <div className="p-5 rounded-xl border border-gray-200 bg-gray-50">
-    <span className="text-gray-500">Enter a prompt to see cost estimate</span>
-  </div>
-);
+interface EmptyStateProps {
+  isContextStale?: boolean;
+  timeUntilRefresh?: number | null;
+  isPaused?: boolean;
+  onTogglePause?: () => void;
+  onManualRefresh?: () => void;
+}
+
+const EmptyState: React.FC<EmptyStateProps> = ({
+  isContextStale,
+  timeUntilRefresh,
+  isPaused,
+  onTogglePause,
+  onManualRefresh
+}) => {
+  const showRefreshIndicator = !!onManualRefresh;
+
+  return (
+    <div className="p-5 rounded-xl border border-gray-200 bg-gray-50">
+      <div className="flex items-center justify-between">
+        <span className="text-gray-500">Enter a prompt to see cost estimate</span>
+        {showRefreshIndicator && (
+          <RefreshIndicator
+            isContextStale={isContextStale}
+            timeUntilRefresh={timeUntilRefresh}
+            isPaused={isPaused}
+            onTogglePause={onTogglePause}
+            onManualRefresh={onManualRefresh}
+            isLoading={false}
+          />
+        )}
+      </div>
+    </div>
+  );
+};
 
 interface RefreshIndicatorProps {
   isContextStale?: boolean;
@@ -147,7 +177,15 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
 }) => {
   if (preview.isLoading) return <LoadingState />;
   if (preview.error) return <ErrorState error={preview.error} />;
-  if (!preview.data) return <EmptyState />;
+  if (!preview.data) return (
+    <EmptyState
+      isContextStale={isContextStale}
+      timeUntilRefresh={timeUntilRefresh}
+      isPaused={isPaused}
+      onTogglePause={onTogglePause}
+      onManualRefresh={onManualRefresh}
+    />
+  );
 
   const { stats, smartSelection, warnings } = preview.data;
 
