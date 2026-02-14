@@ -164,38 +164,62 @@ const Dashboard: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-10 gap-6">
           {/* Left Column (70% - 7/10) - Recent Activity Feed */}
           <div className="lg:col-span-7">
-            <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-bold text-slate-800">Recent Activity</h3>
+            <div className="bg-white border border-slate-200 rounded-lg shadow-sm">
+              {/* Header row with View All link */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Recent Activity</h3>
                 <Link
                   to="/tasks"
-                  className="flex items-center gap-1 text-sm font-medium text-teal-600 hover:text-teal-700 transition-colors"
+                  className="flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 transition-colors"
                 >
                   View All
-                  <ChevronRight className="w-4 h-4" />
+                  <ChevronRight className="w-3 h-3" />
                 </Link>
               </div>
-              <TaskList
-                limit={10}
-                showViewAll={false}
-                hideFilters={true}
-              />
+              {/* Task list content */}
+              <div className="p-4">
+                <TaskList
+                  limit={10}
+                  showViewAll={false}
+                  hideFilters={true}
+                />
+              </div>
             </div>
           </div>
 
-          {/* Right Column (30% - 3/10) - Analytics and Charts */}
-          <div className="lg:col-span-3 space-y-6">
-            {/* Activity Sparkline - Minimalist trend chart at top */}
-            <ActivitySparkline data={sparklineData} isLoading={statsLoading && !taskStats} />
+          {/* Right Column (30% - 3/10) - System Analytics Panel */}
+          <div className="lg:col-span-3">
+            {/* Single consolidated panel for all analytics */}
+            <div className="bg-white border border-slate-200 rounded-lg shadow-sm">
+              {/* Activity Sparkline Section */}
+              <div className="p-4">
+                <ActivitySparkline data={sparklineData} isLoading={statsLoading && !taskStats} />
+              </div>
 
-            {/* Task Stats Distribution */}
-            <TaskStatsChart data={taskStats} mode="distribution" isLoading={statsLoading && !taskStats} />
+              {/* Divider */}
+              <div className="border-t border-slate-200" />
 
-            {/* Repository Breakdown */}
-            <RepositoryBreakdown limit={5} />
+              {/* Task Stats Distribution Section */}
+              <div className="p-4">
+                <TaskStatsChart data={taskStats} mode="distribution" isLoading={statsLoading && !taskStats} />
+              </div>
 
-            {/* Top Models */}
-            <TopModels limit={5} />
+              {/* Divider */}
+              <div className="border-t border-slate-200" />
+
+              {/* Repository Breakdown Section */}
+              <div className="p-4">
+                <RepositoryBreakdown limit={5} />
+              </div>
+
+              {/* Divider */}
+              <div className="border-t border-slate-200" />
+
+              {/* Top Models Section */}
+              <div className="p-4">
+                <TopModels limit={5} />
+              </div>
+            </div>
           </div>
         </div>
       </div>

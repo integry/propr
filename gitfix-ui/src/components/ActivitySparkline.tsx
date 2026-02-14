@@ -69,9 +69,9 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
   const yAxisTicks = [yAxisMiddle, yAxisMax];
 
   return (
-    <div className="mb-6">
-      {/* Small uppercase header */}
-      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+    <div>
+      {/* Utility header style - small, uppercase, gray, bold */}
+      <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">
         Activity (30 Days)
       </h4>
 

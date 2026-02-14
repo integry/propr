@@ -83,8 +83,8 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
 
   // Loading skeleton for distribution mode (donut chart)
   const renderDistributionSkeleton = () => (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-      <h4 className="text-lg font-bold text-slate-800 mb-4">Task Status Distribution</h4>
+    <div>
+      <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Task Status</h4>
       <div className="h-64 flex flex-col items-center justify-center animate-pulse">
         {/* Donut chart skeleton */}
         <div className="relative w-44 h-44">
@@ -111,7 +111,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     }
     // Default loading state for other modes
     return (
-      <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)]">
+      <div>
         <div className="flex items-center justify-center h-64">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
           <span className="ml-3 text-slate-500">Loading statistics...</span>
@@ -122,7 +122,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
 
   if (error) {
     return (
-      <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)]">
+      <div>
         <div className="flex items-center justify-center h-64 text-red-500">
           <span>Failed to load statistics: {error}</span>
         </div>
@@ -158,8 +158,8 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   const renderTrends = () => {
     if (mode === 'trends') {
       return (
-        <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-          <h4 className="text-lg font-bold text-slate-800 mb-4">Tasks Processed (Last 30 Days)</h4>
+        <div>
+          <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Tasks Processed (Last 30 Days)</h4>
           {dailyData.length > 0 ? (
             <div className="h-64"><VolumeChart data={dailyData} /></div>
           ) : (
@@ -176,13 +176,13 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {dailyData.length > 0 && (
           <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-            <h4 className="text-lg font-bold text-slate-800 mb-4">Tasks Processed (Last 30 Days)</h4>
+            <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Tasks Processed (Last 30 Days)</h4>
             <div className="h-64"><VolumeChart data={dailyData} /></div>
           </div>
         )}
         {hasProcessingTimeData && (
           <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-            <h4 className="text-lg font-bold text-slate-800 mb-4">Average Processing Time (Minutes)</h4>
+            <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Average Processing Time (Minutes)</h4>
             <div className="h-64"><ProcessingTimeChart data={processingTimeData} showLegend /></div>
           </div>
         )}
@@ -194,8 +194,8 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   const renderDistribution = () => (
     <>
       {pieData.length > 0 && (
-        <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-          <h4 className="text-lg font-bold text-slate-800 mb-4">Task Status Distribution</h4>
+        <div>
+          <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Task Status</h4>
           <div className="h-64"><StatusPieChart data={pieData} /></div>
         </div>
       )}
@@ -205,7 +205,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   return (
     <div>
       {!hasData ? (
-        <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-sm">
+        <div>
           <div className="text-slate-500 text-center py-8">
             No task data available yet. Statistics will appear once tasks are processed.
           </div>
