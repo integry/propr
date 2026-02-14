@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   XAxis,
+  YAxis,
   Tooltip,
   ResponsiveContainer,
   AreaChart,
@@ -18,16 +19,53 @@ const formatDateShort = (dateStr: string): string => {
 };
 
 const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data }) => {
-  // Get first and last dates for minimal axis display
+  // Get first, middle and last dates for minimal axis display
   const startDate = data.length > 0 ? formatDateShort(data[0].date) : '';
   const endDate = data.length > 0 ? formatDateShort(data[data.length - 1].date) : '';
+  const middleIndex = Math.floor(data.length / 2);
+  const middleDate = data.length > 0 ? formatDateShort(data[middleIndex].date) : '';
 
-  // Custom tick formatter that only shows first and last dates
-  const formatTick = (value: string, index: number): string => {
-    if (index === 0) return startDate;
-    if (index === data.length - 1) return endDate;
-    return '';
+  // Calculate max value for Y axis
+  const maxCount = data.length > 0 ? Math.max(...data.map(d => d.count)) : 0;
+  const yAxisMax = Math.ceil(maxCount * 1.1) || 10; // Add 10% headroom
+  const yAxisMiddle = Math.round(yAxisMax / 2);
+
+  // Custom tick for X axis - shows first (left-aligned), middle (center), and last (right-aligned)
+  const renderXAxisTick = (props: { x: number; y: number; payload: { index: number } }) => {
+    const { x, y, payload } = props;
+    const index = payload.index;
+
+    let label = '';
+    let textAnchor: 'start' | 'middle' | 'end' = 'middle';
+
+    if (index === 0) {
+      label = startDate;
+      textAnchor = 'start';
+    } else if (index === data.length - 1) {
+      label = endDate;
+      textAnchor = 'end';
+    } else if (index === middleIndex) {
+      label = middleDate;
+      textAnchor = 'middle';
+    }
+
+    if (!label) return null;
+
+    return (
+      <text
+        x={x}
+        y={y + 12}
+        fill="#9CA3AF"
+        fontSize={10}
+        textAnchor={textAnchor}
+      >
+        {label}
+      </text>
+    );
   };
+
+  // Custom Y axis ticks - show only top and middle
+  const yAxisTicks = [yAxisMiddle, yAxisMax];
 
   return (
     <div className="mb-6">
@@ -40,7 +78,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data }) => {
       <div className="h-[120px]">
         {data.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+            <AreaChart data={data} margin={{ top: 5, right: 5, left: 25, bottom: 5 }}>
               <defs>
                 {/* Teal gradient fill - fading to transparent */}
                 <linearGradient id="sparklineGradient" x1="0" y1="0" x2="0" y2="1">
@@ -50,15 +88,23 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data }) => {
               </defs>
 
               {/* No CartesianGrid - removed for minimalist look */}
-              {/* No YAxis - removed for minimalist look */}
 
-              {/* Minimal X-Axis - only show start/end dates */}
+              {/* Minimal Y-Axis - only show top and middle values */}
+              <YAxis
+                axisLine={false}
+                tickLine={false}
+                tick={{ fill: '#9CA3AF', fontSize: 10 }}
+                ticks={yAxisTicks}
+                domain={[0, yAxisMax]}
+                width={20}
+              />
+
+              {/* Minimal X-Axis - show start (left-aligned), middle, and end (right-aligned) dates */}
               <XAxis
                 dataKey="displayDate"
                 axisLine={false}
                 tickLine={false}
-                tick={{ fill: '#9CA3AF', fontSize: 10 }}
-                tickFormatter={formatTick}
+                tick={renderXAxisTick}
                 interval={0}
                 tickMargin={8}
               />
