@@ -186,10 +186,10 @@ const Dashboard: React.FC = () => {
           {/* Right Column (30% - 3/10) - Analytics and Charts */}
           <div className="lg:col-span-3 space-y-6">
             {/* Activity Sparkline - Minimalist trend chart at top */}
-            <ActivitySparkline data={sparklineData} />
+            <ActivitySparkline data={sparklineData} isLoading={statsLoading && !taskStats} />
 
             {/* Task Stats Distribution */}
-            <TaskStatsChart data={taskStats} mode="distribution" />
+            <TaskStatsChart data={taskStats} mode="distribution" isLoading={statsLoading && !taskStats} />
 
             {/* Repository Breakdown */}
             <RepositoryBreakdown limit={5} />

@@ -41,15 +41,19 @@ const formatStatus = (status: string): string => {
 interface TaskStatsChartProps {
   data?: TaskStatsResponse | null;
   mode?: 'all' | 'trends' | 'distribution';
+  isLoading?: boolean;
 }
 
-const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mode = 'all' }) => {
+const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mode = 'all', isLoading: externalLoading }) => {
   const [internalStats, setInternalStats] = useState<TaskStatsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(!externalData);
   const [error, setError] = useState<string | null>(null);
 
   // Use external data if provided, otherwise fetch internally
   const stats = externalData !== undefined ? externalData : internalStats;
+
+  // Use external loading state if provided, otherwise use internal
+  const isLoading = externalLoading !== undefined ? externalLoading : loading;
 
   useEffect(() => {
     // Skip fetching if external data is provided
@@ -77,7 +81,35 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     return () => clearInterval(interval);
   }, [externalData]);
 
-  if (loading && !stats) {
+  // Loading skeleton for distribution mode (donut chart)
+  const renderDistributionSkeleton = () => (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+      <h4 className="text-lg font-bold text-slate-800 mb-4">Task Status Distribution</h4>
+      <div className="h-64 flex flex-col items-center justify-center animate-pulse">
+        {/* Donut chart skeleton */}
+        <div className="relative w-44 h-44">
+          <div className="absolute inset-0 rounded-full border-[20px] border-gray-200" />
+          <div className="absolute inset-[30px] rounded-full bg-white" />
+        </div>
+        {/* Legend skeleton */}
+        <div className="flex flex-wrap justify-center gap-3 mt-4">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-full bg-gray-200" />
+              <div className="h-3 w-14 bg-gray-200 rounded" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  if (isLoading && !stats) {
+    // For distribution mode, show donut skeleton
+    if (mode === 'distribution') {
+      return renderDistributionSkeleton();
+    }
+    // Default loading state for other modes
     return (
       <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)]">
         <div className="flex items-center justify-center h-64">

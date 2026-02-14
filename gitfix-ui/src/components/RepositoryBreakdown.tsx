@@ -31,11 +31,36 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit }) => {
 
   if (loading) {
     return (
-      <div className="dashboard-card">
-        <h3 className="section-header">Repository Breakdown</h3>
-        <div className="flex items-center justify-center h-32">
-          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-500"></div>
-          <span className="ml-3 text-slate-500">Loading repository stats...</span>
+      <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+        <h3 className="text-lg font-bold text-slate-800 mb-4">Top Repositories</h3>
+        <div className="overflow-x-auto animate-pulse">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-slate-200">
+                <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Repository</th>
+                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Total</th>
+                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Success</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...Array(5)].map((_, i) => (
+                <tr key={i} className="border-b border-slate-100">
+                  <td className="py-2 px-2">
+                    <div className="h-4 w-24 bg-gray-200 rounded" />
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    <div className="h-4 w-8 bg-gray-200 rounded ml-auto" />
+                  </td>
+                  <td className="py-2 px-2">
+                    <div className="flex items-center justify-end gap-2">
+                      <div className="w-12 h-1.5 bg-gray-200 rounded-full" />
+                      <div className="h-3 w-8 bg-gray-200 rounded" />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     );

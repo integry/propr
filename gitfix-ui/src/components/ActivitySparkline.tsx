@@ -11,6 +11,7 @@ import { tooltipStyle } from './chartConstants';
 
 interface ActivitySparklineProps {
   data: Array<{ date: string; displayDate: string; count: number }>;
+  isLoading?: boolean;
 }
 
 const formatDateShort = (dateStr: string): string => {
@@ -18,7 +19,7 @@ const formatDateShort = (dateStr: string): string => {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data }) => {
+const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false }) => {
   // Get first, middle and last dates for minimal axis display
   const startDate = data.length > 0 ? formatDateShort(data[0].date) : '';
   const endDate = data.length > 0 ? formatDateShort(data[data.length - 1].date) : '';
@@ -76,7 +77,27 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data }) => {
 
       {/* Sparkline container - no card styling, compact height */}
       <div className="h-[120px]">
-        {data.length > 0 ? (
+        {isLoading ? (
+          /* Loading skeleton placeholder for the graph */
+          <div className="h-full w-full flex flex-col justify-end pb-4 animate-pulse">
+            {/* Simulated bar chart skeleton */}
+            <div className="flex items-end justify-between gap-1 h-[80px] px-6">
+              {[...Array(15)].map((_, i) => (
+                <div
+                  key={i}
+                  className="flex-1 bg-gray-200 rounded-t"
+                  style={{ height: `${20 + Math.random() * 60}%` }}
+                />
+              ))}
+            </div>
+            {/* X-axis placeholder */}
+            <div className="flex justify-between px-6 mt-2">
+              <div className="h-2 w-12 bg-gray-200 rounded" />
+              <div className="h-2 w-12 bg-gray-200 rounded" />
+              <div className="h-2 w-12 bg-gray-200 rounded" />
+            </div>
+          </div>
+        ) : data.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={data} margin={{ top: 5, right: 5, left: 25, bottom: 5 }}>
               <defs>
