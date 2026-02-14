@@ -42,6 +42,65 @@ const MetricItem: React.FC<MetricItemProps> = ({ label, value, color = 'text-gra
   </div>
 );
 
+// Helper function to calculate success rate
+const calculateSuccessRate = (taskStats: TaskStatsResponse | null): string => {
+  if (!taskStats?.summary) return '0%';
+  const { completed, total } = taskStats.summary;
+  if (total === 0) return '0%';
+  return Math.round((completed / total) * 100) + '%';
+};
+
+// Helper function to format cost
+const formatCost = (overviewStats: StatsOverviewResponse | null): string => {
+  const cost = overviewStats?.usage?.total_cost_usd ?? 0;
+  return `$${cost.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+};
+
+// Metrics Strip component
+interface MetricsStripProps {
+  queueStats: QueueStats | null;
+  taskStats: TaskStatsResponse | null;
+  overviewStats: StatsOverviewResponse | null;
+  statsLoading: boolean;
+}
+
+const MetricsStrip: React.FC<MetricsStripProps> = ({ queueStats, taskStats, overviewStats, statsLoading }) => (
+  <div className="bg-gray-50 border-b border-gray-200 px-4 sm:px-8 py-4">
+    <div className="flex flex-wrap items-center gap-4 sm:gap-0 justify-start">
+      <MetricItem
+        label="Active"
+        value={queueStats?.active || 0}
+        color="text-green-600"
+        isLoading={statsLoading && !queueStats}
+      />
+      <MetricItem
+        label="Success"
+        value={calculateSuccessRate(taskStats)}
+        color="text-blue-600"
+        isLoading={statsLoading && !taskStats}
+      />
+      <MetricItem
+        label="Total"
+        value={taskStats?.summary?.total?.toLocaleString() || 0}
+        isLoading={statsLoading && !taskStats}
+      />
+      <MetricItem
+        label="Failed"
+        value={taskStats?.summary?.failed || 0}
+        color="text-red-500"
+        isLoading={statsLoading && !taskStats}
+      />
+      <MetricItem
+        label="Cost"
+        value={formatCost(overviewStats)}
+        color="text-violet-600"
+        isLoading={statsLoading && !overviewStats}
+        showSeparator={false}
+      />
+    </div>
+  </div>
+);
+
 const Dashboard: React.FC = () => {
   useDocumentTitle('Dashboard');
 
@@ -76,14 +135,6 @@ const Dashboard: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Calculate success rate
-  const getSuccessRate = (): string => {
-    if (!taskStats?.summary) return '0%';
-    const { completed, total } = taskStats.summary;
-    if (total === 0) return '0%';
-    return Math.round((completed / total) * 100) + '%';
-  };
-
   // Format date for sparkline display
   const formatDate = (dateStr: string): string => {
     const date = new Date(dateStr);
@@ -100,40 +151,12 @@ const Dashboard: React.FC = () => {
   return (
     <div>
       {/* Metrics Strip - Subtle gray background */}
-      <div className="bg-gray-50 border-b border-gray-200 px-4 sm:px-8 py-4">
-        <div className="flex flex-wrap items-center gap-4 sm:gap-0 justify-start">
-          <MetricItem
-            label="Active"
-            value={queueStats?.active || 0}
-            color="text-green-600"
-            isLoading={statsLoading && !queueStats}
-          />
-          <MetricItem
-            label="Success"
-            value={getSuccessRate()}
-            color="text-blue-600"
-            isLoading={statsLoading && !taskStats}
-          />
-          <MetricItem
-            label="Total"
-            value={taskStats?.summary?.total?.toLocaleString() || 0}
-            isLoading={statsLoading && !taskStats}
-          />
-          <MetricItem
-            label="Failed"
-            value={taskStats?.summary?.failed || 0}
-            color="text-red-500"
-            isLoading={statsLoading && !taskStats}
-          />
-          <MetricItem
-            label="Cost"
-            value={`$${(overviewStats?.usage?.total_cost_usd ?? 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`}
-            color="text-violet-600"
-            isLoading={statsLoading && !overviewStats}
-            showSeparator={false}
-          />
-        </div>
-      </div>
+      <MetricsStrip
+        queueStats={queueStats}
+        taskStats={taskStats}
+        overviewStats={overviewStats}
+        statsLoading={statsLoading}
+      />
 
       {/* Main Content */}
       <div className="p-4 sm:p-8">
