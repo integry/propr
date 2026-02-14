@@ -451,3 +451,5 @@ When contributing to this project:
 3. Update documentation as needed
 4. Use the structured logger for all output
 5. Handle errors consistently
+
+<!-- CI trigger -->
