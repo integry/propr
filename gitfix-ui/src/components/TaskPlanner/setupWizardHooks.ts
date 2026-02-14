@@ -58,13 +58,19 @@ async function loadRepositories(savedLastRepository: string | undefined): Promis
 }
 
 // Helper to load indexed repos for context
+// Includes both 'completed' and 'indexing' repositories so users can see repos that are being prepared
 async function loadIndexedRepositories(repoToExclude: string): Promise<IndexedRepository[]> {
   const data = await getRepositoriesIndexingStatus();
   return (data.repositories || [])
     .filter((repo: RepositoryIndexingStatus) =>
-      repo.indexing_status === 'completed' && repo.full_name !== repoToExclude
+      (repo.indexing_status === 'completed' || repo.indexing_status === 'indexing') &&
+      repo.full_name !== repoToExclude
     )
-    .map((repo: RepositoryIndexingStatus) => ({ full_name: repo.full_name, branch: repo.branch }));
+    .map((repo: RepositoryIndexingStatus) => ({
+      full_name: repo.full_name,
+      branch: repo.branch,
+      indexing_status: repo.indexing_status
+    }));
 }
 
 // Helper to process uploaded file (handles image resize)
