@@ -158,7 +158,7 @@ function setupRoutes(): void {
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
-  const fileChangesRoutes = createFileChangesRoutes({ redisClient, db });
+  const fileChangesRoutes = createFileChangesRoutes({ db });
   const configRoutes = createConfigRoutes({ redisClient });
   const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   const executionRoutes = createExecutionRoutes({ redisClient, db });
