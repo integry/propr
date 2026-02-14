@@ -314,9 +314,14 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             <MenuIcon className="w-6 h-6" />
           </button>
 
-          {/* Global Search Bar - Centered */}
-          <div className="hidden md:flex flex-1 justify-center px-4 max-w-2xl mx-auto">
-            <form onSubmit={handleSearch} className="w-full max-w-md">
+          {/* Spacer to push action cluster to the right */}
+          <div className="flex-1" />
+
+          {/* Action Cluster - Right-aligned: Search → New Plan | Status → Profile */}
+          <div className="flex items-center gap-3">
+            {/* Zone A: Tools (Search + Create) */}
+            {/* Compact Search Bar - 300px width */}
+            <form onSubmit={handleSearch} className="hidden md:block w-[300px]">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                 <input
@@ -324,14 +329,34 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search for tasks, repos, or plans... [⌘K]"
+                  placeholder="Search... [⌘K]"
                   className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 focus:bg-white transition-colors"
                 />
               </div>
             </form>
-          </div>
 
-          <div className="flex items-center gap-3">
+            {/* New Plan Button - Primary Action */}
+            <button
+              onClick={handleNewPlan}
+              className="hidden sm:flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              <span>New AI Plan</span>
+            </button>
+
+            {/* Mobile New Plan Button - Icon only */}
+            <button
+              onClick={handleNewPlan}
+              className="sm:hidden p-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors"
+              aria-label="New AI Plan"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+
+            {/* Vertical Divider - Separates Tools from Context */}
+            <div className="hidden md:block h-6 w-px bg-gray-300"></div>
+
+            {/* Zone B: Context (Status + Profile) */}
             {/* System Health Pulse Icon with Dropdown */}
             <div className="hidden md:block relative" ref={statusTooltipRef}>
               <button
@@ -372,61 +397,42 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               )}
             </div>
 
-            {/* New Plan Button */}
-            <button
-              onClick={handleNewPlan}
-              className="hidden sm:flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              <span className="hidden lg:inline">New AI Plan</span>
-            </button>
+            {/* Profile */}
+            {user && (
+              <a
+                href={`https://github.com/${user.username}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 hover:bg-gray-50 rounded-lg p-1 transition-colors group"
+              >
+                <div className="hidden lg:flex flex-col items-end">
+                  <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
+                    {user.displayName || user.username}
+                  </span>
+                  <span className="text-xs text-gray-500 group-hover:text-gray-700 transition-colors">@{user.username}</span>
+                </div>
 
-            {/* Mobile New Plan Button - Icon only */}
-            <button
-              onClick={handleNewPlan}
-              className="sm:hidden p-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors"
-              aria-label="New AI Plan"
-            >
-              <Plus className="w-5 h-5" />
-            </button>
+                {user.avatarUrl ? (
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.username}
+                    className="w-8 h-8 rounded-full border border-gray-200 group-hover:border-gray-300 transition-colors"
+                  />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs group-hover:bg-primary-200 transition-colors">
+                    {user.username.slice(0, 2).toUpperCase()}
+                  </div>
+                )}
+              </a>
+            )}
 
             {user && (
-              <>
-                <div className="h-6 w-px bg-gray-200 mx-1"></div>
-
-                <a
-                  href={`https://github.com/${user.username}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-3 hover:bg-gray-50 rounded-lg p-1 transition-colors group"
-                >
-                  <div className="hidden lg:flex flex-col items-end">
-                    <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
-                      {user.displayName || user.username}
-                    </span>
-                    <span className="text-xs text-gray-500 group-hover:text-gray-700 transition-colors">@{user.username}</span>
-                  </div>
-
-                  {user.avatarUrl ? (
-                    <img
-                      src={user.avatarUrl}
-                      alt={user.username}
-                      className="w-8 h-8 rounded-full border border-gray-200 group-hover:border-gray-300 transition-colors"
-                    />
-                  ) : (
-                    <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs group-hover:bg-primary-200 transition-colors">
-                      {user.username.slice(0, 2).toUpperCase()}
-                    </div>
-                  )}
-                </a>
-
-                <button
-                  onClick={logout}
-                  className="text-sm text-gray-500 hover:text-red-600 font-medium transition-colors"
-                >
-                  Logout
-                </button>
-              </>
+              <button
+                onClick={logout}
+                className="text-sm text-gray-500 hover:text-red-600 font-medium transition-colors"
+              >
+                Logout
+              </button>
             )}
           </div>
         </header>
