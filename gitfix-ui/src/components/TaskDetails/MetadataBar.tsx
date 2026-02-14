@@ -46,7 +46,10 @@ const formatTokenCount = (count: number | null | undefined): string => {
 const TokenUsageDisplay: React.FC<{ tokenUsage: TokenUsage | undefined }> = ({ tokenUsage }) => {
   if (!tokenUsage) return null;
 
-  const inputTokens = tokenUsage.input_tokens ?? 0;
+  // Total input includes: input_tokens + cache_creation + cache_read (per Claude billing)
+  const inputTokens = (tokenUsage.input_tokens ?? 0) +
+                      (tokenUsage.cache_creation_input_tokens ?? 0) +
+                      (tokenUsage.cache_read_input_tokens ?? 0);
   const outputTokens = tokenUsage.output_tokens ?? 0;
 
   // Don't show if no tokens
@@ -57,7 +60,7 @@ const TokenUsageDisplay: React.FC<{ tokenUsage: TokenUsage | undefined }> = ({ t
       <Divider />
       <span
         className="flex items-center gap-1.5 bg-amber-50 text-amber-700 px-2 py-0.5 rounded text-xs font-medium border border-amber-100 cursor-default"
-        title={`Input: ${tokenUsage.input_tokens ?? 0} | Output: ${tokenUsage.output_tokens ?? 0}${tokenUsage.cache_read_input_tokens ? ` | Cache Read: ${tokenUsage.cache_read_input_tokens}` : ''}`}
+        title={`Input: ${tokenUsage.input_tokens ?? 0} | Output: ${tokenUsage.output_tokens ?? 0}${tokenUsage.cache_read_input_tokens ? ` | Cache Read: ${tokenUsage.cache_read_input_tokens}` : ''}${tokenUsage.cache_creation_input_tokens ? ` | Cache Creation: ${tokenUsage.cache_creation_input_tokens}` : ''}`}
       >
         <Zap size={12} />
         In: {formatTokenCount(inputTokens)} | Out: {formatTokenCount(outputTokens)}

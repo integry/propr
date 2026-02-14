@@ -5,61 +5,8 @@ import os from 'os';
 import logger from '../logger.js';
 import { getModelPricing } from '../../services/pricingService.js';
 import { getOpenRouterId, getModelName } from '../../config/modelAliases.js';
-interface MessageUsage {
-    input_tokens?: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-    output_tokens?: number;
-}
-
-interface UsageStats {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-}
-
-function getUsageStats(claudeResult: ClaudeResult | null): UsageStats {
-    let inputTokens = 0;
-    let outputTokens = 0;
-
-    // First, check for direct tokenUsage from result message (authoritative per Claude docs)
-    // Total input = input_tokens + cache_creation + cache_read (per billing docs)
-    if (claudeResult?.tokenUsage) {
-        const usage = claudeResult.tokenUsage;
-        inputTokens = (usage.input_tokens ?? 0) +
-                      (usage.cache_creation_input_tokens ?? 0) +
-                      (usage.cache_read_input_tokens ?? 0);
-        outputTokens = usage.output_tokens ?? 0;
-    }
-
-    // Fall back to scanning conversationLog (deduplicate by message ID)
-    if (inputTokens === 0 && outputTokens === 0 && claudeResult?.conversationLog) {
-        const seenIds = new Set<string>();
-        claudeResult.conversationLog.forEach(msg => {
-            const message = msg.message as { id?: string; usage?: MessageUsage } | undefined;
-            if (message?.usage) {
-                // Skip if we've already counted this message ID
-                if (message.id && seenIds.has(message.id)) {
-                    return;
-                }
-                if (message.id) {
-                    seenIds.add(message.id);
-                }
-                const usage = message.usage;
-                inputTokens += (usage.input_tokens ?? 0);
-                inputTokens += (usage.cache_creation_input_tokens ?? 0);
-                inputTokens += (usage.cache_read_input_tokens ?? 0);
-                outputTokens += (usage.output_tokens ?? 0);
-            }
-        });
-    }
-
-    return {
-        inputTokens,
-        outputTokens,
-        totalTokens: inputTokens + outputTokens
-    };
-}
+import { getDetailedUsageStats, calculateCostWithCachePricing } from '../tokenCalculation.js';
+import type { DetailedUsageStats, ClaudeResult as TokenCalcClaudeResult } from '../tokenCalculation.js';
 
 interface IssueRef {
     number: number;
@@ -100,12 +47,10 @@ interface LogFiles {
 
 async function calculateExecutionCost(
     claudeResult: ClaudeResult,
-    inputTokens: number,
-    outputTokens: number,
-    totalTokens: number
+    detailedStats: DetailedUsageStats
 ): Promise<number> {
     const baseCost = claudeResult?.finalResult?.cost_usd || 0;
-    if (baseCost > 0 || totalTokens === 0 || !claudeResult?.model) {
+    if (baseCost > 0 || detailedStats.totalTokens === 0 || !claudeResult?.model) {
         return baseCost;
     }
 
@@ -113,7 +58,7 @@ async function calculateExecutionCost(
         const openRouterId = getOpenRouterId(claudeResult.model);
         const pricing = await getModelPricing(openRouterId);
         if (pricing) {
-            return (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
+            return calculateCostWithCachePricing(claudeResult.model, detailedStats, pricing);
         }
     } catch {
         // Fall back to base cost if pricing lookup fails
@@ -243,8 +188,9 @@ function buildOptionalDetails(claudeResult: ClaudeResult): string[] {
 async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, timestamp: string): Promise<string> {
     const isSuccess = claudeResult?.success || false;
     const executionTimeStr = formatDuration(claudeResult?.executionTime || 0);
-    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult);
-    const cost = await calculateExecutionCost(claudeResult, inputTokens, outputTokens, totalTokens);
+    const detailedStats = getDetailedUsageStats(claudeResult as unknown as TokenCalcClaudeResult);
+    const { totalInputWithCache: inputTokens, outputTokens, totalTokens } = detailedStats;
+    const cost = await calculateExecutionCost(claudeResult, detailedStats);
     const { header, status } = buildStatusText(isSuccess);
 
     const date = new Date(timestamp);

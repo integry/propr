@@ -8,7 +8,8 @@ import type { WorktreeInfo } from '@gitfix/core';
 import { formatResetTime } from '@gitfix/core';
 import type { ClaudeCodeResponse, AgentExecutionResult } from '@gitfix/core';
 import type { ClaudeResult } from '@gitfix/core';
-import { recordLLMMetrics, getUsageStats } from '@gitfix/core';
+import { recordLLMMetrics, getUsageStats, getDetailedUsageStats, calculateCostWithCachePricing } from '@gitfix/core';
+import type { DetailedUsageStats } from '@gitfix/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment } from '@gitfix/core';
 import { TaskStates } from '@gitfix/core';
 import type { WorkerStateManager } from '@gitfix/core';
@@ -385,18 +386,18 @@ function formatDuration(ms: number): string {
 
 async function calculateCost(
     claudeResult: ClaudeCodeResponse,
-    tokens: { total: number; input: number; output: number },
+    detailedStats: DetailedUsageStats,
     modelId: string | null | undefined
 ): Promise<number | undefined | null> {
-    // Calculate cost using OpenRouter pricing (same as DB metrics)
+    // Calculate cost using OpenRouter pricing with cache-aware multipliers
     const cost = claudeResult.finalResult?.cost_usd || (claudeResult.finalResult as { total_cost_usd?: number } | null)?.total_cost_usd;
-    
-    if ((cost === 0 || cost == null) && tokens.total > 0 && modelId) {
+
+    if ((cost === 0 || cost == null) && detailedStats.totalTokens > 0 && modelId) {
         try {
             const openRouterId = getOpenRouterId(modelId);
             const pricing = await getModelPricing(openRouterId);
             if (pricing) {
-                return (tokens.input * pricing.prompt) + (tokens.output * pricing.completion);
+                return calculateCostWithCachePricing(modelId, detailedStats, pricing);
             }
         } catch {
             // Fall back to finalResult.cost_usd if pricing lookup fails
@@ -417,9 +418,10 @@ export async function buildMetricsSection(
     const executionTime = claudeResult.executionTime ? formatDuration(claudeResult.executionTime) : null;
     const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
 
-    const { inputTokens, outputTokens, totalTokens } = getUsageStats({ conversationLog: claudeResult.conversationLog as ClaudeResult['conversationLog'] });
+    const detailedStats = getDetailedUsageStats({ conversationLog: claudeResult.conversationLog as ClaudeResult['conversationLog'] });
+    const { totalInputWithCache: inputTokens, outputTokens, totalTokens } = detailedStats;
 
-    const cost = await calculateCost(claudeResult, { total: totalTokens, input: inputTokens, output: outputTokens }, modelId);
+    const cost = await calculateCost(claudeResult, detailedStats, modelId);
 
     let section = `\n---\n`;
     section += `### 🤖 ${isAnalysis ? 'Analysis' : 'Implementation'} Details\n\n`;

@@ -1,4 +1,5 @@
-import { getUsageStats, getModelPricing, getOpenRouterId } from '@gitfix/core';
+import { getUsageStats, getDetailedUsageStats, getModelPricing, getOpenRouterId, calculateCostWithCachePricing } from '@gitfix/core';
+import type { DetailedUsageStats } from '@gitfix/core';
 
 const MAX_COMMENT_LENGTH = 65000;
 
@@ -45,12 +46,10 @@ export interface ClaudeResult {
 
 async function calculateApiCost(
     claudeResult: ClaudeResult | null,
-    inputTokens: number,
-    outputTokens: number,
-    totalTokens: number
+    detailedStats: DetailedUsageStats
 ): Promise<number> {
     const baseCost = claudeResult?.finalResult?.cost_usd || 0;
-    if (baseCost !== 0 || totalTokens === 0 || !claudeResult?.model) {
+    if (baseCost !== 0 || detailedStats.totalTokens === 0 || !claudeResult?.model) {
         return baseCost;
     }
 
@@ -58,7 +57,7 @@ async function calculateApiCost(
         const openRouterId = getOpenRouterId(claudeResult.model);
         const pricing = await getModelPricing(openRouterId);
         if (pricing) {
-            return (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
+            return calculateCostWithCachePricing(claudeResult.model, detailedStats, pricing);
         }
     } catch {
         // Fall back to baseCost if pricing lookup fails
@@ -70,12 +69,13 @@ export async function generatePRBody(issueNumber: number, issueTitle: string, co
     const timestamp = new Date().toISOString();
     const isSuccess = claudeResult?.success || false;
     const executionTime = Math.round((claudeResult?.executionTime || 0) / 1000);
-    const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as {
+    const detailedStats = getDetailedUsageStats(claudeResult as {
         tokenUsage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
         conversationLog?: Array<{ message?: { id?: string; usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }>
     } | null);
+    const { totalInputWithCache: inputTokens, outputTokens, totalTokens } = detailedStats;
 
-    const cost = await calculateApiCost(claudeResult, inputTokens, outputTokens, totalTokens);
+    const cost = await calculateApiCost(claudeResult, detailedStats);
 
     let body = `## 🤖 AI-Generated Solution\n\n`;
     body += `Resolves #${issueNumber}.\n\n`;
@@ -120,13 +120,14 @@ export async function generateClaudeLogsComment(claudeResult: ClaudeResult | nul
 
     if (claudeResult?.finalResult) {
         const result = claudeResult.finalResult;
-        const { inputTokens, outputTokens, totalTokens } = getUsageStats(claudeResult as {
+        const detailedStats = getDetailedUsageStats(claudeResult as {
         tokenUsage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
         conversationLog?: Array<{ message?: { id?: string; usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number; output_tokens?: number } } }>
     } | null);
+        const { totalInputWithCache: inputTokens, outputTokens, totalTokens } = detailedStats;
 
-        // Calculate cost using OpenRouter pricing
-        const cost = await calculateApiCost(claudeResult, inputTokens, outputTokens, totalTokens);
+        // Calculate cost using OpenRouter pricing with cache-aware multipliers
+        const cost = await calculateApiCost(claudeResult, detailedStats);
 
         comment += `### 📊 Execution Statistics\n\n`;
         comment += `- **Success**: ${claudeResult.success ? 'Yes' : 'No'}\n`;

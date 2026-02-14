@@ -28,6 +28,54 @@ interface UsageStats {
     totalTokens: number;
 }
 
+export interface DetailedUsageStats {
+    inputTokens: number;           // Base input tokens (non-cached)
+    outputTokens: number;
+    cacheCreationTokens: number;   // Cache write tokens (1.25x for Claude)
+    cacheReadTokens: number;       // Cache read tokens (0.1x for Claude)
+    totalInputWithCache: number;   // Sum of all input tokens (for display)
+    totalTokens: number;
+}
+
+export interface CachePricingMultipliers {
+    cacheReadMultiplier: number;
+    cacheCreationMultiplier: number;
+}
+
+/**
+ * Get cache pricing multipliers based on the model/provider.
+ * Different providers have different cache pricing structures:
+ * - Claude: cache_read = 0.1x, cache_creation = 1.25x
+ * - Gemini 2.5+: cache_read = 0.1x, cache_creation = 1.0x
+ * - Gemini 2.0: cache_read = 0.25x, cache_creation = 1.0x
+ * - OpenAI/Codex: cache_read = 0.25x, cache_creation = 1.0x
+ */
+export function getCachePricingMultipliers(model: string): CachePricingMultipliers {
+    const lowerModel = model.toLowerCase();
+
+    if (lowerModel.startsWith('claude')) {
+        // Anthropic: 90% discount on cache reads, 25% premium on cache creation
+        return { cacheReadMultiplier: 0.1, cacheCreationMultiplier: 1.25 };
+    }
+
+    if (lowerModel.startsWith('gemini')) {
+        // Gemini 2.5+ gets 90% discount, older versions get 75%
+        const is25OrNewer = lowerModel.includes('2.5') || lowerModel.includes('3');
+        return {
+            cacheReadMultiplier: is25OrNewer ? 0.1 : 0.25,
+            cacheCreationMultiplier: 1.0
+        };
+    }
+
+    if (lowerModel.startsWith('gpt') || lowerModel.includes('codex')) {
+        // OpenAI/Codex: 75% discount on cache reads
+        return { cacheReadMultiplier: 0.25, cacheCreationMultiplier: 1.0 };
+    }
+
+    // Default: no cache discount (treat cache tokens same as regular input)
+    return { cacheReadMultiplier: 1.0, cacheCreationMultiplier: 1.0 };
+}
+
 /**
  * Get token usage stats from Claude result.
  *
@@ -75,6 +123,76 @@ export function getUsageStats(claudeResult: ClaudeResult | null): UsageStats {
         outputTokens,
         totalTokens: inputTokens + outputTokens
     };
+}
+
+/**
+ * Get detailed token usage stats including separate cache token counts.
+ * Use this when you need to calculate costs with provider-specific cache pricing.
+ */
+export function getDetailedUsageStats(claudeResult: ClaudeResult | null): DetailedUsageStats {
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheCreationTokens = 0;
+    let cacheReadTokens = 0;
+
+    if (claudeResult?.tokenUsage) {
+        const usage = claudeResult.tokenUsage;
+        inputTokens = usage.input_tokens ?? 0;
+        outputTokens = usage.output_tokens ?? 0;
+        cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
+        cacheReadTokens = usage.cache_read_input_tokens ?? 0;
+    } else if (claudeResult?.conversationLog) {
+        const seenIds = new Set<string>();
+        claudeResult.conversationLog.forEach(msg => {
+            const msgObj = msg.message as { id?: string; usage?: MessageUsage } | undefined;
+            if (msgObj?.usage) {
+                if (msgObj.id && seenIds.has(msgObj.id)) {
+                    return;
+                }
+                if (msgObj.id) {
+                    seenIds.add(msgObj.id);
+                }
+                const usage = msgObj.usage;
+                inputTokens += usage.input_tokens ?? 0;
+                outputTokens += usage.output_tokens ?? 0;
+                cacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
+                cacheReadTokens += usage.cache_read_input_tokens ?? 0;
+            }
+        });
+    }
+
+    const totalInputWithCache = inputTokens + cacheCreationTokens + cacheReadTokens;
+
+    return {
+        inputTokens,
+        outputTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
+        totalInputWithCache,
+        totalTokens: totalInputWithCache + outputTokens
+    };
+}
+
+/**
+ * Calculate cost with proper cache pricing multipliers.
+ * @param model - The model ID to determine provider-specific pricing
+ * @param stats - Detailed usage stats with separate cache token counts
+ * @param pricing - Base pricing (prompt and completion per token)
+ * @returns Total cost in USD
+ */
+export function calculateCostWithCachePricing(
+    model: string,
+    stats: DetailedUsageStats,
+    pricing: { prompt: number; completion: number }
+): number {
+    const { cacheReadMultiplier, cacheCreationMultiplier } = getCachePricingMultipliers(model);
+
+    const inputCost = stats.inputTokens * pricing.prompt;
+    const cacheCreationCost = stats.cacheCreationTokens * pricing.prompt * cacheCreationMultiplier;
+    const cacheReadCost = stats.cacheReadTokens * pricing.prompt * cacheReadMultiplier;
+    const outputCost = stats.outputTokens * pricing.completion;
+
+    return inputCost + cacheCreationCost + cacheReadCost + outputCost;
 }
 
 // Anthropic client for accurate token counting via API

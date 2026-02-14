@@ -4,6 +4,7 @@ import { db } from '../db/connection.js';
 import { analysisQueue } from '../queue/taskQueue.js';
 import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
+import { getCachePricingMultipliers } from './tokenCalculation.js';
 import type {
     RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing,
     ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics,
@@ -83,15 +84,30 @@ async function calculateCost(model: string, conversationLogTokens: CumulativeTok
     const openRouterId = getOpenRouterId(model);
     const pricing = await getModelPricing(openRouterId) as ModelPricing | null;
 
-    // Use cumulative totals from conversation log (includes cache tokens for input)
-    const inputTokens = conversationLogTokens.totalInputWithCache;
-    const outputTokens = conversationLogTokens.outputTokens;
+    const { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens } = conversationLogTokens;
+    const { cacheReadMultiplier, cacheCreationMultiplier } = getCachePricingMultipliers(model);
 
-    logger.info({ model, openRouterId, pricingFound: !!pricing, pricing, inputTokens, outputTokens }, 'Cost calculation: looking up pricing');
+    logger.info({
+        model, openRouterId, pricingFound: !!pricing, pricing,
+        inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens,
+        cacheReadMultiplier, cacheCreationMultiplier
+    }, 'Cost calculation: looking up pricing');
 
-    if (pricing && (inputTokens > 0 || outputTokens > 0)) {
-        calculatedCostUsd = (inputTokens * pricing.prompt) + (outputTokens * pricing.completion);
-        logger.info({ model, openRouterId, pricing, inputTokens, outputTokens, calculatedCostUsd }, 'Calculated dynamic cost from OpenRouter pricing');
+    const hasTokens = inputTokens > 0 || outputTokens > 0 || cacheCreationTokens > 0 || cacheReadTokens > 0;
+
+    if (pricing && hasTokens) {
+        // Calculate cost with proper cache pricing multipliers
+        const inputCost = inputTokens * pricing.prompt;
+        const cacheCreationCost = cacheCreationTokens * pricing.prompt * cacheCreationMultiplier;
+        const cacheReadCost = cacheReadTokens * pricing.prompt * cacheReadMultiplier;
+        const outputCost = outputTokens * pricing.completion;
+
+        calculatedCostUsd = inputCost + cacheCreationCost + cacheReadCost + outputCost;
+
+        logger.info({
+            model, openRouterId, calculatedCostUsd,
+            breakdown: { inputCost, cacheCreationCost, cacheReadCost, outputCost }
+        }, 'Calculated dynamic cost with cache pricing');
     } else if (!pricing) {
         logger.warn({ model, openRouterId }, 'No pricing found for model - cost will be 0 or fallback');
     } else {

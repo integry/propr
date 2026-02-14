@@ -141,7 +141,13 @@ async function parseConversationFile(conversationPath: string): Promise<Conversa
 
   const events: Array<Record<string, unknown>> = [];
   let todos: Array<{ status: string; content: string }> = [];
-  let tokenUsage: TokenUsage | null = null;
+  // Accumulate token usage across all messages (not just the last one)
+  const tokenUsage: TokenUsage = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0
+  };
 
   for (const line of lines) {
     const parsed = parseLine(line, events);
@@ -149,14 +155,22 @@ async function parseConversationFile(conversationPath: string): Promise<Conversa
       todos = parsed.newTodos;
     }
     if (parsed.tokenUsage) {
-      tokenUsage = parsed.tokenUsage;
+      // Accumulate token usage from each message
+      tokenUsage.input_tokens += parsed.tokenUsage.input_tokens;
+      tokenUsage.output_tokens += parsed.tokenUsage.output_tokens;
+      tokenUsage.cache_creation_input_tokens += parsed.tokenUsage.cache_creation_input_tokens;
+      tokenUsage.cache_read_input_tokens += parsed.tokenUsage.cache_read_input_tokens;
     }
   }
 
   const inProgressTask = todos.find(t => t.status === 'in_progress');
   const currentTask = inProgressTask ? inProgressTask.content : null;
 
-  return { events, todos, currentTask, tokenUsage };
+  // Return null if no tokens were counted
+  const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0 ||
+                    tokenUsage.cache_creation_input_tokens > 0 || tokenUsage.cache_read_input_tokens > 0;
+
+  return { events, todos, currentTask, tokenUsage: hasTokens ? tokenUsage : null };
 }
 
 interface ParseLineResult {
