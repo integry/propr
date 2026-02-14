@@ -74,7 +74,7 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
         </div>
       </td>
       <td className="py-3 px-4 align-top">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between">
           {getStatusPill(task.status)}
           <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
         </div>
@@ -155,7 +155,7 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
         </div>
       </td>
       <td className="py-3 px-4 align-top">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between">
           {getStatusPill(task.status)}
           <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
         </div>

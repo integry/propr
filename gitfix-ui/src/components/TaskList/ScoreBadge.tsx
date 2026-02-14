@@ -33,10 +33,10 @@ export const ScoreBadge: React.FC<ScoreBadgeProps> = ({ score, dimmed = false })
 
   return (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${colorClasses} ${dimmed ? 'opacity-40' : ''}`}
+      className={`inline-flex justify-center items-center gap-1.5 w-12 py-0.5 rounded-full ${colorClasses} ${dimmed ? 'opacity-40' : ''}`}
       title={`Code Quality Score: ${score}/10`}
     >
-      <ShapeIcon size={12} fill="currentColor" />
+      <ShapeIcon size={10} fill="currentColor" />
       <span className="font-mono text-xs font-semibold">{score}</span>
     </span>
   );
