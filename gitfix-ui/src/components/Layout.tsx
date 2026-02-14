@@ -179,7 +179,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   return (
-    <div className="flex min-h-screen bg-light-100 relative">
+    <div className="flex h-screen overflow-hidden bg-light-100 relative">
       {/* Mobile Overlay */}
       {isSidebarOpen && (
         <div
