@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Link, useLocation } from 'react-router-dom';
-import { ScrollText, ListTodo, BookMarked, Bot, Cpu } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { ScrollText, ListTodo, BookMarked, Bot, Cpu, Search, Plus } from 'lucide-react';
 import { getQueueStats, getCurrentUser, logout, getSystemStatus } from '../api/gitfixApi';
 import { getGeneratingPlansCount } from '../api/taskStatsApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
@@ -32,12 +32,15 @@ interface User {
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
+  const navigate = useNavigate();
   const { addToast } = useToast();
   const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
   const [generatingPlansCount, setGeneratingPlansCount] = useState<number>(0);
   const [user, setUser] = useState<User | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatusData | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
   // Track repository indexing statuses for toast notifications
   const repoStatusesRef = useRef<Map<string, string>>(new Map());
 
@@ -178,6 +181,33 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     return 'bg-red-500';
   };
 
+  // Handle search submission
+  const handleSearch = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+    if (searchQuery.trim()) {
+      navigate(`/tasks?search=${encodeURIComponent(searchQuery.trim())}`);
+      setSearchQuery('');
+    }
+  }, [searchQuery, navigate]);
+
+  // Handle new plan navigation
+  const handleNewPlan = useCallback(() => {
+    navigate('/studio/new');
+  }, [navigate]);
+
+  // Keyboard shortcut for search (⌘K / Ctrl+K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   return (
     <div className="flex h-screen overflow-hidden bg-light-100 relative">
       {/* Mobile Overlay */}
@@ -247,35 +277,69 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             <MenuIcon className="w-6 h-6" />
           </button>
 
-          {/* Spacer for desktop when no hamburger is shown */}
-          <div className="hidden lg:block"></div>
+          {/* Global Search Bar - Centered */}
+          <div className="hidden md:flex flex-1 justify-center px-4 max-w-2xl mx-auto">
+            <form onSubmit={handleSearch} className="w-full max-w-md">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search for tasks, repos, or plans... [⌘K]"
+                  className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 focus:bg-white transition-colors"
+                />
+              </div>
+            </form>
+          </div>
 
-          <div className="flex items-center gap-4">
-            {/* System Status Indicators */}
-            <div className="hidden md:flex items-center gap-4 mr-4 border-r border-gray-200 pr-4">
-              <div className="flex items-center gap-2" title={`Daemon: ${systemStatus?.daemon || 'Unknown'}`}>
-                <div className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.daemon)}`} />
-                <span className="text-xs text-gray-500">Daemon</span>
-              </div>
-              <div className="flex items-center gap-2" title={`Redis: ${systemStatus?.redis || 'Unknown'}`}>
-                <div className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.redis)}`} />
-                <span className="text-xs text-gray-500">Redis</span>
-              </div>
-              <div className="flex items-center gap-2" title={`GitHub: ${systemStatus?.githubAuth || 'Unknown'}`}>
-                <div className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.githubAuth)}`} />
-                <span className="text-xs text-gray-500">GitHub</span>
-              </div>
+          <div className="flex items-center gap-3">
+            {/* Compact System Status Indicators - Dots only */}
+            <div className="hidden md:flex items-center gap-1.5 mr-2" title="System Status">
+              <div
+                className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.daemon)}`}
+                title={`Daemon: ${systemStatus?.daemon || 'Unknown'}`}
+              />
+              <div
+                className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.redis)}`}
+                title={`Redis: ${systemStatus?.redis || 'Unknown'}`}
+              />
+              <div
+                className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.githubAuth)}`}
+                title={`GitHub: ${systemStatus?.githubAuth || 'Unknown'}`}
+              />
             </div>
+
+            {/* New Plan Button */}
+            <button
+              onClick={handleNewPlan}
+              className="hidden sm:flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              <span className="hidden lg:inline">New AI Plan</span>
+            </button>
+
+            {/* Mobile New Plan Button - Icon only */}
+            <button
+              onClick={handleNewPlan}
+              className="sm:hidden p-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+              aria-label="New AI Plan"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
 
             {user && (
               <>
+                <div className="h-6 w-px bg-gray-200 mx-1"></div>
+
                 <a
                   href={`https://github.com/${user.username}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-3 hover:bg-gray-50 rounded-lg p-1 transition-colors group"
                 >
-                  <div className="hidden sm:flex flex-col items-end">
+                  <div className="hidden lg:flex flex-col items-end">
                     <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
                       {user.displayName || user.username}
                     </span>
@@ -294,8 +358,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                     </div>
                   )}
                 </a>
-
-                <div className="h-6 w-px bg-gray-200 mx-1"></div>
 
                 <button
                   onClick={logout}

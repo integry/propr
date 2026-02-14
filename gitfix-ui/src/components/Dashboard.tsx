@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import TaskStatsChart from './TaskStatsChart';
 import RepositoryBreakdown from './RepositoryBreakdown';
@@ -7,7 +6,7 @@ import TopModels from './TopModels';
 import TaskList from './TaskList';
 import { getQueueStats } from '../api/gitfixApi';
 import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
-import { KPICard } from './Dashboard/index';
+import { Loader2 } from 'lucide-react';
 
 interface QueueStats {
   active: number;
@@ -16,9 +15,27 @@ interface QueueStats {
   failed: number;
 }
 
+// Inline MetricItem component for the metrics strip
+interface MetricItemProps {
+  label: string;
+  value: string | number;
+  color?: string;
+  isLoading?: boolean;
+}
+
+const MetricItem: React.FC<MetricItemProps> = ({ label, value, color = 'text-gray-900', isLoading }) => (
+  <div className="flex items-center gap-2">
+    <span className="text-xs text-gray-500 uppercase tracking-wide">{label}:</span>
+    {isLoading ? (
+      <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+    ) : (
+      <span className={`text-sm font-semibold ${color}`}>{value}</span>
+    )}
+  </div>
+);
+
 const Dashboard: React.FC = () => {
   useDocumentTitle('Dashboard');
-  const navigate = useNavigate();
 
   // Lifted state for KPIs
   const [taskStats, setTaskStats] = useState<TaskStatsResponse | null>(null);
@@ -59,92 +76,70 @@ const Dashboard: React.FC = () => {
     return Math.round((completed / total) * 100) + '%';
   };
 
-  // Handler to navigate directly to new plan studio
-  const handleNewPlan = () => {
-    navigate('/studio/new');
-  };
-
   return (
-    <div className="p-4 sm:p-8">
-      {/* New Plan CTA */}
-      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8 shadow-md hover:shadow-lg transition-all duration-300 border-t-4 border-t-indigo-500">
-        <div className="flex justify-between items-center">
-          <div>
-            <h3 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-              <span>✨</span> Start New AI Plan
-            </h3>
-            <p className="text-gray-500 text-sm mt-1">Create an implementation plan for your next feature or task</p>
-          </div>
-          <button
-            onClick={handleNewPlan}
-            className="px-6 py-3 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors"
-          >
-            + New Plan
-          </button>
+    <div>
+      {/* Metrics Strip - Subtle gray background */}
+      <div className="bg-gray-50 border-b border-gray-200 px-4 sm:px-8 py-3">
+        <div className="flex flex-wrap items-center gap-4 sm:gap-6 justify-start">
+          <MetricItem
+            label="Active"
+            value={queueStats?.active || 0}
+            color="text-green-600"
+            isLoading={statsLoading && !queueStats}
+          />
+          <MetricItem
+            label="Success Rate"
+            value={getSuccessRate()}
+            color="text-blue-600"
+            isLoading={statsLoading && !taskStats}
+          />
+          <MetricItem
+            label="Total Tasks"
+            value={taskStats?.summary?.total || 0}
+            isLoading={statsLoading && !taskStats}
+          />
+          <MetricItem
+            label="Failed"
+            value={taskStats?.summary?.failed || 0}
+            color="text-red-500"
+            isLoading={statsLoading && !taskStats}
+          />
+          <MetricItem
+            label="Cost"
+            value={`$${(overviewStats?.usage?.total_cost_usd ?? 0).toFixed(2)}`}
+            color="text-violet-600"
+            isLoading={statsLoading && !overviewStats}
+          />
         </div>
       </div>
 
-      {/* KPI Bar */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
-        <KPICard
-          title="Active Tasks"
-          value={queueStats?.active || 0}
-          color="text-green-600"
-          isLoading={statsLoading && !queueStats}
-        />
-        <KPICard
-          title="Success Rate"
-          value={getSuccessRate()}
-          color="text-blue-600"
-          isLoading={statsLoading && !taskStats}
-        />
-        <KPICard
-          title="Total Tasks"
-          value={taskStats?.summary?.total || 0}
-          isLoading={statsLoading && !taskStats}
-        />
-        <KPICard
-          title="Failed"
-          value={taskStats?.summary?.failed || 0}
-          color="text-red-500"
-          isLoading={statsLoading && !taskStats}
-        />
-        <KPICard
-          title="Total Cost"
-          value={`$${(overviewStats?.usage?.total_cost_usd ?? 0).toFixed(2)}`}
-          color="text-violet-600"
-          isLoading={statsLoading && !overviewStats}
-        />
-      </div>
-
-      {/* Main Grid - 2 columns */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column (2/3 width) */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Trend Charts */}
-          <TaskStatsChart data={taskStats} mode="trends" />
-
-          {/* Recent Tasks */}
-          <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-            <h3 className="text-lg font-bold text-slate-800 mb-4">Recent Tasks</h3>
-            <TaskList
-              limit={5}
-              showViewAll={true}
-              hideFilters={true}
-            />
+      {/* Main Content */}
+      <div className="p-4 sm:p-8">
+        {/* 70/30 Split Layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-10 gap-6">
+          {/* Left Column (70% - 7/10) - Recent Activity Feed */}
+          <div className="lg:col-span-7">
+            <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
+              <h3 className="text-lg font-bold text-slate-800 mb-4">Recent Activity</h3>
+              <TaskList
+                limit={10}
+                showViewAll={true}
+                hideFilters={true}
+              />
+            </div>
           </div>
-        </div>
 
-        {/* Right Column (1/3 width) */}
-        <div className="space-y-6">
-          {/* Status Distribution */}
-          <TaskStatsChart data={taskStats} mode="distribution" />
+          {/* Right Column (30% - 3/10) - Analytics and Charts */}
+          <div className="lg:col-span-3 space-y-6">
+            {/* Task Stats Distribution */}
+            <TaskStatsChart data={taskStats} mode="distribution" />
 
-          {/* Top Repositories */}
-          <RepositoryBreakdown limit={5} />
+            {/* Repository Breakdown */}
+            <RepositoryBreakdown limit={5} />
 
-          {/* Top Models */}
-          <TopModels limit={5} />
+            {/* Top Models */}
+            <TopModels limit={5} />
+          </div>
         </div>
       </div>
     </div>
