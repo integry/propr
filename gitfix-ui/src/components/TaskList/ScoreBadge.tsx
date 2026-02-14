@@ -1,5 +1,5 @@
 import React from 'react';
-import { Star } from 'lucide-react';
+import { Triangle, Square, Diamond, Circle } from 'lucide-react';
 
 interface ScoreBadgeProps {
   score: number | null | undefined;
@@ -9,29 +9,35 @@ interface ScoreBadgeProps {
 export const ScoreBadge: React.FC<ScoreBadgeProps> = ({ score, dimmed = false }) => {
   if (score === null || score === undefined) return null;
 
-  // Determine color based on score using 4-tier grading scale
+  // Determine color and shape based on score using 4-tier grading scale
   let colorClasses: string;
+  let ShapeIcon: typeof Triangle;
+
   if (score >= 9) {
-    // Excellent / Perfect (9-10): Teal
-    colorClasses = 'bg-teal-50 text-teal-700 border-teal-200';
+    // Perfect (9-10): Teal with Circle (smooth, no friction)
+    colorClasses = 'bg-teal-50 text-teal-600';
+    ShapeIcon = Circle;
   } else if (score >= 7) {
-    // Good / Passable (7-8): Slate/Blue-Gray
-    colorClasses = 'bg-slate-100 text-slate-700 border-slate-200';
+    // Good (7-8): Slate with Diamond (edges, solid)
+    colorClasses = 'bg-slate-100 text-slate-600';
+    ShapeIcon = Diamond;
   } else if (score >= 5) {
-    // Needs Review (5-6): Amber/Orange
-    colorClasses = 'bg-amber-50 text-amber-700 border-amber-200';
+    // Needs Review (5-6): Amber with Square (edges, solid)
+    colorClasses = 'bg-amber-50 text-amber-600';
+    ShapeIcon = Square;
   } else {
-    // Critical Failure (0-4): Red
-    colorClasses = 'bg-red-50 text-red-700 border-red-200';
+    // Critical (0-4): Red with Triangle (pointy, hurts to touch)
+    colorClasses = 'bg-red-50 text-red-600';
+    ShapeIcon = Triangle;
   }
 
   return (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-xs font-semibold ${colorClasses} ${dimmed ? 'opacity-40' : ''}`}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${colorClasses} ${dimmed ? 'opacity-40' : ''}`}
       title={`Code Quality Score: ${score}/10`}
     >
-      <Star size={12} fill="currentColor" />
-      {score}
+      <ShapeIcon size={12} fill="currentColor" />
+      <span className="font-mono text-xs font-semibold">{score}</span>
     </span>
   );
 };
