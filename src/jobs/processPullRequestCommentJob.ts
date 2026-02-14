@@ -14,7 +14,7 @@ import type { ClaudeCodeResponse } from '@gitfix/core';
 import { recordLLMMetrics } from '@gitfix/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@gitfix/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, loadSettings } from '@gitfix/core';
+import { getDefaultModel, loadSettings, db } from '@gitfix/core';
 import { loadPrLabel } from '@gitfix/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
@@ -401,6 +401,18 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
         historyMetadata: { githubComment: { url: completionComment.data.html_url, body: completionComment.data.body } }
     });
+
+    // Persist commit hash to database for historic diff exploration
+    if (commitResult?.commitHash) {
+        try {
+            await db('tasks')
+                .where({ task_id: taskId })
+                .update({ commit_hash: commitResult.commitHash });
+            correlatedLogger.info({ taskId, commitHash: commitResult.commitHash }, 'Saved commit hash to tasks table');
+        } catch (dbError) {
+            correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
+        }
+    }
 
     return { status: 'complete', commit: commitResult?.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }
