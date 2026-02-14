@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import TaskStatsChart from './TaskStatsChart';
 import RepositoryBreakdown from './RepositoryBreakdown';
@@ -6,7 +7,7 @@ import TopModels from './TopModels';
 import TaskList from './TaskList';
 import { getQueueStats } from '../api/gitfixApi';
 import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
-import { Loader2 } from 'lucide-react';
+import { Loader2, ChevronRight } from 'lucide-react';
 
 interface QueueStats {
   active: number;
@@ -21,15 +22,21 @@ interface MetricItemProps {
   value: string | number;
   color?: string;
   isLoading?: boolean;
+  showSeparator?: boolean;
 }
 
-const MetricItem: React.FC<MetricItemProps> = ({ label, value, color = 'text-gray-900', isLoading }) => (
-  <div className="flex items-center gap-2">
-    <span className="text-xs text-gray-500 uppercase tracking-wide">{label}:</span>
-    {isLoading ? (
-      <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
-    ) : (
-      <span className={`text-sm font-semibold ${color}`}>{value}</span>
+const MetricItem: React.FC<MetricItemProps> = ({ label, value, color = 'text-gray-900', isLoading, showSeparator = true }) => (
+  <div className="flex items-center">
+    <div className="flex flex-col items-start">
+      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{label}</span>
+      {isLoading ? (
+        <Loader2 className="w-4 h-4 animate-spin text-gray-400 mt-0.5" />
+      ) : (
+        <span className={`text-sm font-bold ${color}`}>{value}</span>
+      )}
+    </div>
+    {showSeparator && (
+      <div className="h-8 w-px bg-gray-300 ml-6 mr-6 hidden sm:block" />
     )}
   </div>
 );
@@ -79,8 +86,8 @@ const Dashboard: React.FC = () => {
   return (
     <div>
       {/* Metrics Strip - Subtle gray background */}
-      <div className="bg-gray-50 border-b border-gray-200 px-4 sm:px-8 py-3">
-        <div className="flex flex-wrap items-center gap-4 sm:gap-6 justify-start">
+      <div className="bg-gray-50 border-b border-gray-200 px-4 sm:px-8 py-4">
+        <div className="flex flex-wrap items-center gap-4 sm:gap-0 justify-start">
           <MetricItem
             label="Active"
             value={queueStats?.active || 0}
@@ -88,14 +95,14 @@ const Dashboard: React.FC = () => {
             isLoading={statsLoading && !queueStats}
           />
           <MetricItem
-            label="Success Rate"
+            label="Success"
             value={getSuccessRate()}
             color="text-blue-600"
             isLoading={statsLoading && !taskStats}
           />
           <MetricItem
-            label="Total Tasks"
-            value={taskStats?.summary?.total || 0}
+            label="Total"
+            value={taskStats?.summary?.total?.toLocaleString() || 0}
             isLoading={statsLoading && !taskStats}
           />
           <MetricItem
@@ -106,9 +113,10 @@ const Dashboard: React.FC = () => {
           />
           <MetricItem
             label="Cost"
-            value={`$${(overviewStats?.usage?.total_cost_usd ?? 0).toFixed(2)}`}
+            value={`$${(overviewStats?.usage?.total_cost_usd ?? 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`}
             color="text-violet-600"
             isLoading={statsLoading && !overviewStats}
+            showSeparator={false}
           />
         </div>
       </div>
@@ -120,10 +128,19 @@ const Dashboard: React.FC = () => {
           {/* Left Column (70% - 7/10) - Recent Activity Feed */}
           <div className="lg:col-span-7">
             <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-              <h3 className="text-lg font-bold text-slate-800 mb-4">Recent Activity</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-bold text-slate-800">Recent Activity</h3>
+                <Link
+                  to="/tasks"
+                  className="flex items-center gap-1 text-sm font-medium text-teal-600 hover:text-teal-700 transition-colors"
+                >
+                  View All
+                  <ChevronRight className="w-4 h-4" />
+                </Link>
+              </div>
               <TaskList
                 limit={10}
-                showViewAll={true}
+                showViewAll={false}
                 hideFilters={true}
               />
             </div>

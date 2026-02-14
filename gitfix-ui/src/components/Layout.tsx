@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { ScrollText, ListTodo, BookMarked, Bot, Cpu, Search, Plus } from 'lucide-react';
+import { ScrollText, ListTodo, BookMarked, Bot, Cpu, Search, Plus, Activity } from 'lucide-react';
 import { getQueueStats, getCurrentUser, logout, getSystemStatus } from '../api/gitfixApi';
 import { getGeneratingPlansCount } from '../api/taskStatsApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
@@ -41,6 +41,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [systemStatus, setSystemStatus] = useState<SystemStatusData | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [isStatusTooltipOpen, setIsStatusTooltipOpen] = useState(false);
+  const statusTooltipRef = useRef<HTMLDivElement>(null);
   // Track repository indexing statuses for toast notifications
   const repoStatusesRef = useRef<Map<string, string>>(new Map());
 
@@ -181,6 +183,41 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     return 'bg-red-500';
   };
 
+  // Helper for overall system health color
+  const getOverallHealthColor = (): string => {
+    if (!systemStatus) return 'bg-gray-400';
+
+    const statuses = [systemStatus.daemon, systemStatus.redis, systemStatus.githubAuth];
+    const healthyStatuses = ['running', 'connected', 'authenticated'];
+
+    const allHealthy = statuses.every(s => s && healthyStatuses.includes(s.toLowerCase()));
+    const anyDown = statuses.some(s => s && !healthyStatuses.includes(s.toLowerCase()));
+
+    if (allHealthy) return 'bg-green-500';
+    if (anyDown) {
+      // Check if critical (daemon down = red)
+      if (systemStatus.daemon && !healthyStatuses.includes(systemStatus.daemon.toLowerCase())) {
+        return 'bg-red-500';
+      }
+      return 'bg-amber-500';
+    }
+    return 'bg-gray-400';
+  };
+
+  // Close status tooltip when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (statusTooltipRef.current && !statusTooltipRef.current.contains(event.target as Node)) {
+        setIsStatusTooltipOpen(false);
+      }
+    };
+
+    if (isStatusTooltipOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isStatusTooltipOpen]);
+
   // Handle search submission
   const handleSearch = useCallback((e: React.FormEvent) => {
     e.preventDefault();
@@ -295,26 +332,50 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Compact System Status Indicators - Dots only */}
-            <div className="hidden md:flex items-center gap-1.5 mr-2" title="System Status">
-              <div
-                className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.daemon)}`}
-                title={`Daemon: ${systemStatus?.daemon || 'Unknown'}`}
-              />
-              <div
-                className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.redis)}`}
-                title={`Redis: ${systemStatus?.redis || 'Unknown'}`}
-              />
-              <div
-                className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.githubAuth)}`}
-                title={`GitHub: ${systemStatus?.githubAuth || 'Unknown'}`}
-              />
+            {/* System Health Pulse Icon with Dropdown */}
+            <div className="hidden md:block relative" ref={statusTooltipRef}>
+              <button
+                onClick={() => setIsStatusTooltipOpen(!isStatusTooltipOpen)}
+                onMouseEnter={() => setIsStatusTooltipOpen(true)}
+                className="flex items-center gap-1.5 p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                aria-label="System Status"
+              >
+                <Activity className="w-4 h-4 text-gray-500" />
+                <span className={`w-2 h-2 rounded-full ${getOverallHealthColor()}`} />
+              </button>
+
+              {/* Status Dropdown Tooltip */}
+              {isStatusTooltipOpen && (
+                <div
+                  className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg py-2 px-3 min-w-[160px] z-50"
+                  onMouseLeave={() => setIsStatusTooltipOpen(false)}
+                >
+                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">System Status</div>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2 text-sm text-gray-700">
+                      <span className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.daemon)}`} />
+                      <span>Daemon:</span>
+                      <span className="ml-auto font-medium">{systemStatus?.daemon || 'Unknown'}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-gray-700">
+                      <span className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.redis)}`} />
+                      <span>Redis:</span>
+                      <span className="ml-auto font-medium">{systemStatus?.redis || 'Unknown'}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-gray-700">
+                      <span className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.githubAuth)}`} />
+                      <span>GitHub:</span>
+                      <span className="ml-auto font-medium">{systemStatus?.githubAuth || 'Unknown'}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* New Plan Button */}
             <button
               onClick={handleNewPlan}
-              className="hidden sm:flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition-colors"
+              className="hidden sm:flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 transition-colors"
             >
               <Plus className="w-4 h-4" />
               <span className="hidden lg:inline">New AI Plan</span>
@@ -323,7 +384,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             {/* Mobile New Plan Button - Icon only */}
             <button
               onClick={handleNewPlan}
-              className="sm:hidden p-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+              className="sm:hidden p-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors"
               aria-label="New AI Plan"
             >
               <Plus className="w-5 h-5" />
