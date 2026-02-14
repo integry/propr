@@ -25,9 +25,9 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data }) => {
   const middleIndex = Math.floor(data.length / 2);
   const middleDate = data.length > 0 ? formatDateShort(data[middleIndex].date) : '';
 
-  // Calculate max value for Y axis
+  // Calculate max value for Y axis - use exact max, no padding
   const maxCount = data.length > 0 ? Math.max(...data.map(d => d.count)) : 0;
-  const yAxisMax = Math.ceil(maxCount * 1.1) || 10; // Add 10% headroom
+  const yAxisMax = maxCount || 10;
   const yAxisMiddle = Math.round(yAxisMax / 2);
 
   // Custom tick for X axis - shows first (left-aligned), middle (center), and last (right-aligned)
@@ -115,8 +115,17 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data }) => {
                   padding: '6px 10px',
                   fontSize: '12px',
                 }}
-                formatter={(value: number) => [`${value} tasks`, '']}
-                labelFormatter={(label: string) => label}
+                content={({ active, payload, label }) => {
+                  if (active && payload && payload.length) {
+                    const value = payload[0].value;
+                    return (
+                      <div style={{ ...tooltipStyle, padding: '6px 10px', fontSize: '12px' }}>
+                        {label}: {value} tasks
+                      </div>
+                    );
+                  }
+                  return null;
+                }}
               />
 
               {/* Teal area with gradient fill */}
