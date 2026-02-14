@@ -94,6 +94,8 @@ async function findActiveWorktreePath(
   db: Knex,
   taskId: string
 ): Promise<string | null> {
+  const fs = await import('fs-extra');
+
   try {
     // Try to get worktree path from Redis state
     const stateKey = `worker:state:${taskId}`;
@@ -110,7 +112,10 @@ async function findActiveWorktreePath(
       // Find the processing entry with worktreePath
       for (const entry of state.history) {
         if (entry.metadata?.worktreePath) {
-          return entry.metadata.worktreePath;
+          // Verify the worktree directory actually exists
+          if (await fs.pathExists(entry.metadata.worktreePath)) {
+            return entry.metadata.worktreePath;
+          }
         }
       }
     }
@@ -122,7 +127,10 @@ async function findActiveWorktreePath(
       .first();
 
     if (llmExecution?.worktree_path) {
-      return llmExecution.worktree_path as string;
+      // Verify the worktree directory actually exists
+      if (await fs.pathExists(llmExecution.worktree_path)) {
+        return llmExecution.worktree_path as string;
+      }
     }
 
     // As a fallback, try to construct the path from task ID components
@@ -140,7 +148,6 @@ async function findActiveWorktreePath(
       ];
 
       // Check if any path exists
-      const fs = await import('fs-extra');
       for (const path of possiblePaths) {
         if (await fs.pathExists(path)) {
           return path;
