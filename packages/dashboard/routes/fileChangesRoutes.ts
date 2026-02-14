@@ -111,11 +111,12 @@ async function findActiveWorktreePath(
 
       // Find the processing entry with worktreePath
       for (const entry of state.history) {
-        if (entry.metadata?.worktreePath) {
-          // Verify the worktree directory actually exists
-          if (await fs.pathExists(entry.metadata.worktreePath)) {
-            return entry.metadata.worktreePath;
-          }
+        const worktreePath = entry.metadata?.worktreePath;
+        if (!worktreePath) continue;
+
+        // Verify the worktree directory actually exists
+        if (await fs.pathExists(worktreePath)) {
+          return worktreePath;
         }
       }
     }
