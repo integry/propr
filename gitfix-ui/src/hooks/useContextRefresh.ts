@@ -51,6 +51,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const [timeUntilRefresh, setTimeUntilRefresh] = useState<number | null>(null);
   const [isContextStale, setIsContextStale] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
+  // Track if countdown was started - prevents auto-fetch when context is stale but countdown hasn't begun
+  const [countdownStarted, setCountdownStarted] = useState<boolean>(false);
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -82,6 +84,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       countdownIntervalRef.current = null;
     }
     setTimeUntilRefresh(null);
+    setCountdownStarted(false);
   }, []);
 
   const fetchPreview = useCallback(async () => {
@@ -130,6 +133,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const startCountdown = useCallback(() => {
     clearCountdown();
     setIsContextStale(true);
+    setCountdownStarted(true);
     setTimeUntilRefresh(SOURCE_REFRESH_DELAY / 1000);
 
     countdownIntervalRef.current = setInterval(() => {
@@ -199,13 +203,15 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   }, [config.granularity, config.contextLevel, config.generationModel, initialSyncDone, isContextStale, fetchPreview]);
 
-  // Timer expiry - auto-fetch when countdown ends (only if not paused)
+  // Timer expiry - auto-fetch when countdown ends (only if not paused and countdown was started)
+  // Note: countdownStarted ensures we don't auto-fetch when context becomes stale but countdown hasn't begun
   useEffect(() => {
-    if (timeUntilRefresh === null && isContextStale && initialSyncDone && !isPaused) {
+    if (timeUntilRefresh === null && isContextStale && initialSyncDone && !isPaused && countdownStarted) {
       setIsContextStale(false);
+      setCountdownStarted(false);
       fetchPreview();
     }
-  }, [timeUntilRefresh, isContextStale, initialSyncDone, isPaused, fetchPreview]);
+  }, [timeUntilRefresh, isContextStale, initialSyncDone, isPaused, countdownStarted, fetchPreview]);
 
   const handleManualRefresh = useCallback(() => {
     clearCountdown();
