@@ -29,13 +29,8 @@ import {
   useAutoResize
 } from './setupWizardHooks';
 
-// Get estimated issue count based on granularity setting
 const getEstimatedIssueText = (granularity: Granularity): string => {
-  const counts: Record<Granularity, string> = {
-    single: '1',
-    balanced: '3-5',
-    granular: '5-10',
-  };
+  const counts: Record<Granularity, string> = { single: '1', balanced: '3-5', granular: '5-10' };
   const count = counts[granularity] || '1';
   return `${count} ${count === '1' ? 'issue' : 'issues'}`;
 };
@@ -392,13 +387,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     navigate
   });
 
-  // Show auto-create error via toast
-  useEffect(() => {
-    if (autoCreateError) {
-      addToast({ type: 'error', message: autoCreateError });
-    }
-  }, [autoCreateError, addToast]);
-
+  useEffect(() => { if (autoCreateError) addToast({ type: 'error', message: autoCreateError }); }, [autoCreateError, addToast]);
   const autoResize = useAutoResize(textareaRef);
 
   // Handlers
@@ -435,11 +424,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     await (isNewMode ? handleCreateDraftAndGenerate() : generationHandlers.handleGenerateForExistingDraft());
   }, [isNewMode, handleCreateDraftAndGenerate, generationHandlers]);
 
-  // Effects
   useEffect(() => { autoResize(); }, [config.prompt, autoResize]);
   useEffect(() => { if (generationPolling.generationError) addToast({ type: 'error', message: `Plan generation failed: ${generationPolling.generationError}` }); }, [generationPolling.generationError, addToast]);
   useEffect(() => { if (repoLoader.loadError) setError(repoLoader.loadError); }, [repoLoader.loadError]);
-
   return (
     <SetupWizardContent
       isNewMode={isNewMode} draft={draft} config={config} setConfig={setConfig}
