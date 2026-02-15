@@ -4,9 +4,9 @@ import { Search, Plus } from 'lucide-react';
 import { useHeaderStats } from '../hooks/useHeaderStats';
 import {
   MachineStatus,
-  HumanInbox,
   SystemHealth,
   ActivePlansButton,
+  TasksButton,
 } from './GlobalHeaderComponents';
 
 interface GlobalHeaderProps {
@@ -31,7 +31,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
   const {
     runningCount,
     activePlans,
-    reviewCount,
+    reviewGroups,
     systemHealth,
   } = useHeaderStats();
 
@@ -78,13 +78,21 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
         {/* Status Indicators */}
         <div className="hidden sm:flex items-center gap-2">
           <MachineStatus runningCount={runningCount} />
-          <HumanInbox reviewCount={reviewCount} />
         </div>
       </div>
 
       {/* Center Section: Planning Zone */}
       <div className="hidden md:flex items-center gap-3">
+        <TasksButton taskGroups={reviewGroups} />
         <ActivePlansButton activePlans={activePlans} />
+        {/* New Plan Button - next to plans badge */}
+        <button
+          onClick={handleNewPlan}
+          className="flex items-center gap-2 px-4 py-1.5 bg-teal-600 text-white text-sm font-medium rounded-full hover:bg-teal-700 transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          <span>New AI Plan</span>
+        </button>
       </div>
 
       {/* Right Section: Global Utilities */}
@@ -104,26 +112,14 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
           </div>
         </form>
 
-        {/* New Plan Button */}
+        {/* Mobile New Plan Button - only visible on smaller screens where Planning Zone is hidden */}
         <button
           onClick={handleNewPlan}
-          className="hidden sm:flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          <span>New AI Plan</span>
-        </button>
-
-        {/* Mobile New Plan Button */}
-        <button
-          onClick={handleNewPlan}
-          className="sm:hidden p-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors"
+          className="md:hidden p-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors"
           aria-label="New AI Plan"
         >
           <Plus className="w-5 h-5" />
         </button>
-
-        {/* Vertical Divider */}
-        <div className="hidden md:block h-6 w-px bg-gray-300" />
 
         {/* System Health */}
         <div className="hidden md:block">
