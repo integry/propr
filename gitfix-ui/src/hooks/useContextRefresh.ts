@@ -4,7 +4,7 @@ import { previewContext, PreviewResult, Granularity, PlannerAttachment } from '.
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
 const DEBOUNCE_DELAY = 800;
 /** Delay before auto-refreshing context after source changes (ms) */
-const SOURCE_REFRESH_DELAY = 60000;
+const SOURCE_REFRESH_DELAY = 20000;
 /** Slider debounce delay for context level changes (ms) */
 const SLIDER_DEBOUNCE_DELAY = 300;
 
@@ -148,7 +148,9 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     }, SOURCE_REFRESH_DELAY);
   }, [clearCountdown, fetchPreview]);
 
-  // Initial sync
+  // Initial setup - initialize tracking state but don't fetch immediately
+  // Context gathering should wait until the first debounce period completes
+  // (or when explicitly requested via refresh button)
   useEffect(() => {
     if (!initialSyncDone && config.baseBranch && config.prompt.trim()) {
       setInitialSyncDone(true);
@@ -158,9 +160,11 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         filesLength: config.files.length,
         compress: config.compress
       };
-      fetchPreview();
+      // Mark context as stale and start the countdown instead of fetching immediately
+      setIsContextStale(true);
+      startCountdown();
     }
-  }, [config.baseBranch, config.prompt, config.files.length, config.compress, initialSyncDone, fetchPreview]);
+  }, [config.baseBranch, config.prompt, config.files.length, config.compress, initialSyncDone, startCountdown]);
 
   // Source changes - start countdown (unless paused)
   useEffect(() => {
