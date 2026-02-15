@@ -103,7 +103,7 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
       <div className="space-y-2">
         <input
           type="range"
-          min={0}
+          min={10}
           max={100}
           step={10}
           value={value}
