@@ -149,8 +149,8 @@ const Dashboard: React.FC = () => {
   })) || [];
 
   return (
-    <div>
-      {/* Metrics Strip - Subtle gray background */}
+    <div className="bg-white min-h-full">
+      {/* Metrics Strip - Spans full width */}
       <MetricsStrip
         queueStats={queueStats}
         taskStats={taskStats}
@@ -158,68 +158,59 @@ const Dashboard: React.FC = () => {
         statsLoading={statsLoading}
       />
 
-      {/* Main Content */}
-      <div className="p-4 sm:p-8">
-        {/* 70/30 Split Layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-10 gap-6">
-          {/* Left Column (70% - 7/10) - Recent Activity Feed */}
-          <div className="lg:col-span-7">
-            <div className="bg-white border border-slate-200 rounded-lg shadow-sm">
-              {/* Header row with View All link */}
-              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
-                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Recent Activity</h3>
-                <Link
-                  to="/tasks"
-                  className="flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700 transition-colors"
-                >
-                  View All
-                  <ChevronRight className="w-3 h-3" />
-                </Link>
-              </div>
-              {/* Task list content */}
-              <div className="p-4">
-                <TaskList
-                  limit={10}
-                  showViewAll={false}
-                  hideFilters={true}
-                />
-              </div>
-            </div>
+      {/* Main Content - Studio Split Layout */}
+      <div className="flex flex-col lg:flex-row">
+        {/* Left Column (70%) - Activity Feed */}
+        <div className="flex-1 lg:w-[70%]">
+          {/* Header toolbar */}
+          <div className="flex items-center justify-between px-6 py-4">
+            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Recent Activity</h3>
+            <Link
+              to="/tasks"
+              className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-gray-700 transition-colors"
+            >
+              View All
+              <ChevronRight className="w-3 h-3" />
+            </Link>
+          </div>
+          {/* Task list content - no card, no border */}
+          <div className="px-6 pb-6">
+            <TaskList
+              limit={10}
+              showViewAll={false}
+              hideFilters={true}
+            />
+          </div>
+        </div>
+
+        {/* Vertical Divider - Studio Split */}
+        <div className="hidden lg:block w-px bg-gray-200" />
+
+        {/* Right Column (30%) - Analytics Panel */}
+        <div className="lg:w-[30%] border-t lg:border-t-0 border-gray-200">
+          {/* Analytics Header - aligned with left pane header */}
+          <div className="px-6 py-4">
+            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Analytics</h3>
           </div>
 
-          {/* Right Column (30% - 3/10) - System Analytics Panel */}
-          <div className="lg:col-span-3">
-            {/* Single consolidated panel for all analytics */}
-            <div className="bg-white border border-slate-200 rounded-lg shadow-sm">
-              {/* Activity Sparkline Section */}
-              <div className="p-4">
-                <ActivitySparkline data={sparklineData} isLoading={statsLoading && !taskStats} />
-              </div>
+          {/* Activity Sparkline Section */}
+          <div className="px-6 py-8 border-b border-gray-100">
+            <ActivitySparkline data={sparklineData} isLoading={statsLoading && !taskStats} />
+          </div>
 
-              {/* Divider */}
-              <div className="border-t border-slate-200" />
+          {/* Task Stats Distribution Section */}
+          <div className="px-6 py-8 border-b border-gray-100">
+            <TaskStatsChart data={taskStats} mode="distribution" isLoading={statsLoading && !taskStats} />
+          </div>
 
-              {/* Task Stats Distribution Section */}
-              <div className="p-4">
-                <TaskStatsChart data={taskStats} mode="distribution" isLoading={statsLoading && !taskStats} />
-              </div>
+          {/* Repository Breakdown Section */}
+          <div className="px-6 py-8 border-b border-gray-100">
+            <RepositoryBreakdown limit={5} />
+          </div>
 
-              {/* Divider */}
-              <div className="border-t border-slate-200" />
-
-              {/* Repository Breakdown Section */}
-              <div className="p-4">
-                <RepositoryBreakdown limit={5} />
-              </div>
-
-              {/* Divider */}
-              <div className="border-t border-slate-200" />
-
-              {/* Top Models Section */}
-              <div className="p-4">
-                <TopModels limit={5} />
-              </div>
-            </div>
+          {/* Top Models Section */}
+          <div className="px-6 py-8">
+            <TopModels limit={5} />
           </div>
         </div>
       </div>
