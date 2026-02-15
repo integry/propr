@@ -23,6 +23,7 @@ import {
   useFileHandling,
   useGenerationHandlers,
   useDraftCreation,
+  useAutoDraftCreation,
   computeIsGenerateDisabled,
   computeCanExport,
   useAutoResize
@@ -381,6 +382,23 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     onDraftCreated, navigate, setError, setIsCreating
   });
 
+  // Auto-create draft when user starts typing in new mode
+  const { isAutoCreating, autoCreateError } = useAutoDraftCreation({
+    isNewMode,
+    selectedRepo: repoLoader.selectedRepo,
+    prompt: config.prompt,
+    localFiles: fileHandling.localFiles,
+    onDraftCreated,
+    navigate
+  });
+
+  // Show auto-create error via toast
+  useEffect(() => {
+    if (autoCreateError) {
+      addToast({ type: 'error', message: autoCreateError });
+    }
+  }, [autoCreateError, addToast]);
+
   const autoResize = useAutoResize(textareaRef);
 
   // Handlers
@@ -430,7 +448,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       contextRefresh={contextRefresh} generationHandlers={generationHandlers}
       handleCreateDraftAndGenerate={handleCreateDraftAndGenerate} autoResize={autoResize}
       textareaRef={textareaRef} fileInputRef={fileInputRef} error={error} branchError={branchError}
-      isChangingRepo={isChangingRepo} isCreating={isCreating} setIsChangingRepo={setIsChangingRepo}
+      isChangingRepo={isChangingRepo} isCreating={isCreating || isAutoCreating} setIsChangingRepo={setIsChangingRepo}
       handleRepoChangeInEditMode={handleRepoChangeInEditMode} handleFileInputChange={handleFileInputChange}
       handleExportContext={handleExportContext} handleGenerate={handleGenerate} agents={agents}
       availableRepos={availableRepos}
