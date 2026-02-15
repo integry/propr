@@ -17,27 +17,21 @@ interface QueueStats {
   failed: number;
 }
 
-// Inline MetricItem component for the metrics strip
-interface MetricItemProps {
+// Micro-Card Stat Item for the sidebar stats grid
+interface StatItemProps {
   label: string;
   value: string | number;
   color?: string;
   isLoading?: boolean;
-  showSeparator?: boolean;
 }
 
-const MetricItem: React.FC<MetricItemProps> = ({ label, value, color = 'text-gray-900', isLoading, showSeparator = true }) => (
-  <div className="flex items-center">
-    <div className="flex flex-col items-start">
-      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{label}</span>
-      {isLoading ? (
-        <Loader2 className="w-4 h-4 animate-spin text-gray-400 mt-0.5" />
-      ) : (
-        <span className={`text-sm font-bold ${color}`}>{value}</span>
-      )}
-    </div>
-    {showSeparator && (
-      <div className="h-8 w-px bg-gray-300 ml-6 mr-6 hidden sm:block" />
+const StatItem: React.FC<StatItemProps> = ({ label, value, color = 'text-gray-900', isLoading }) => (
+  <div className="flex flex-col items-start">
+    <span className="text-[10px] font-bold text-gray-500 uppercase">{label}</span>
+    {isLoading ? (
+      <Loader2 className="w-4 h-4 animate-spin text-gray-400 mt-0.5" />
+    ) : (
+      <span className={`text-xl font-bold ${color}`}>{value}</span>
     )}
   </div>
 );
@@ -56,48 +50,49 @@ const formatCost = (overviewStats: StatsOverviewResponse | null): string => {
   return `$${cost.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 };
 
-// Metrics Strip component
-interface MetricsStripProps {
+// Stats Grid component for the right sidebar
+interface StatsGridProps {
   queueStats: QueueStats | null;
   taskStats: TaskStatsResponse | null;
   overviewStats: StatsOverviewResponse | null;
   statsLoading: boolean;
 }
 
-const MetricsStrip: React.FC<MetricsStripProps> = ({ queueStats, taskStats, overviewStats, statsLoading }) => (
-  <div className="bg-gray-50 border-b border-gray-200 px-4 sm:px-8 py-4">
-    <div className="flex flex-wrap items-center gap-4 sm:gap-0 justify-start">
-      <MetricItem
+const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, overviewStats, statsLoading }) => (
+  <div className="px-6 py-4 border-b border-gray-100">
+    {/* 2x2 Grid for Active/Success and Total/Failed */}
+    <div className="grid grid-cols-2 gap-4 mb-4">
+      <StatItem
         label="Active"
         value={queueStats?.active || 0}
         color="text-green-600"
         isLoading={statsLoading && !queueStats}
       />
-      <MetricItem
+      <StatItem
         label="Success"
         value={calculateSuccessRate(taskStats)}
         color="text-blue-600"
         isLoading={statsLoading && !taskStats}
       />
-      <MetricItem
+      <StatItem
         label="Total"
         value={taskStats?.summary?.total?.toLocaleString() || 0}
         isLoading={statsLoading && !taskStats}
       />
-      <MetricItem
+      <StatItem
         label="Failed"
         value={taskStats?.summary?.failed || 0}
         color="text-red-500"
         isLoading={statsLoading && !taskStats}
       />
-      <MetricItem
-        label="Cost"
-        value={formatCost(overviewStats)}
-        color="text-violet-600"
-        isLoading={statsLoading && !overviewStats}
-        showSeparator={false}
-      />
     </div>
+    {/* Cost - Full width row */}
+    <StatItem
+      label="Cost"
+      value={formatCost(overviewStats)}
+      color="text-violet-600"
+      isLoading={statsLoading && !overviewStats}
+    />
   </div>
 );
 
@@ -150,14 +145,6 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="bg-white min-h-full">
-      {/* Metrics Strip - Spans full width */}
-      <MetricsStrip
-        queueStats={queueStats}
-        taskStats={taskStats}
-        overviewStats={overviewStats}
-        statsLoading={statsLoading}
-      />
-
       {/* Main Content - Studio Split Layout */}
       <div className="flex flex-col lg:flex-row">
         {/* Left Column (70%) - Activity Feed */}
@@ -188,10 +175,13 @@ const Dashboard: React.FC = () => {
 
         {/* Right Column (30%) - Analytics Panel */}
         <div className="lg:w-[30%] border-t lg:border-t-0 border-gray-200">
-          {/* Analytics Header - aligned with left pane header */}
-          <div className="px-6 py-4">
-            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Analytics</h3>
-          </div>
+          {/* Stats Grid - Top of Analytics Column */}
+          <StatsGrid
+            queueStats={queueStats}
+            taskStats={taskStats}
+            overviewStats={overviewStats}
+            statsLoading={statsLoading}
+          />
 
           {/* Activity Sparkline Section */}
           <div className="px-6 py-8 border-b border-gray-100">
