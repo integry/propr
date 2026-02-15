@@ -116,21 +116,21 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
             onClick={() => handleLabelClick(20)}
             className={`transition-colors text-left ${levelType === 'focused' ? 'text-sky-400 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
-            Focused{levelType === 'focused' ? ` (${value}%)` : ''}
+            Focused
           </button>
           <button
             type="button"
             onClick={() => handleLabelClick(50)}
             className={`transition-colors text-center ${levelType === 'expanded' ? 'text-blue-500 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
-            Expanded{levelType === 'expanded' ? ` (${value}%)` : ''}
+            Expanded
           </button>
           <button
             type="button"
             onClick={() => handleLabelClick(90)}
             className={`transition-colors text-right ${levelType === 'fullscan' ? 'text-indigo-600 font-medium' : 'text-gray-400 hover:text-gray-600'}`}
           >
-            Full Scan{levelType === 'fullscan' ? ` (${value}%)` : ''}
+            Full Scan
           </button>
         </div>
       </div>
