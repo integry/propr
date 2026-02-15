@@ -18,6 +18,8 @@ interface CostPreviewProps {
   onManualRefresh?: () => void;
   isPaused?: boolean;
   onTogglePause?: () => void;
+  // Mode indicator
+  isNewMode?: boolean;
 }
 
 const getUsageColor = (percentage: number, actualPercentage: number): string => {
@@ -47,11 +49,47 @@ const ErrorState: React.FC<{ error: string }> = ({ error }) => (
   </div>
 );
 
-const EmptyState: React.FC = () => (
-  <div className="p-5 rounded-xl border border-gray-200 bg-gray-50">
-    <span className="text-gray-500">Enter a prompt to see cost estimate</span>
-  </div>
-);
+interface EmptyStateProps {
+  isContextStale?: boolean;
+  timeUntilRefresh?: number | null;
+  isPaused?: boolean;
+  onTogglePause?: () => void;
+  onManualRefresh?: () => void;
+  isNewMode?: boolean;
+}
+
+const EmptyState: React.FC<EmptyStateProps> = ({
+  isContextStale,
+  timeUntilRefresh,
+  isPaused,
+  onTogglePause,
+  onManualRefresh,
+  isNewMode
+}) => {
+  const showRefreshIndicator = !!onManualRefresh && !isNewMode;
+
+  return (
+    <div className="p-5 rounded-xl border border-gray-200 bg-gray-50">
+      <div className="flex items-center justify-between">
+        <span className="text-gray-500">
+          {isNewMode
+            ? 'Cost estimate will be available after clicking Generate'
+            : 'Enter a prompt to see cost estimate'}
+        </span>
+        {showRefreshIndicator && (
+          <RefreshIndicator
+            isContextStale={isContextStale}
+            timeUntilRefresh={timeUntilRefresh}
+            isPaused={isPaused}
+            onTogglePause={onTogglePause}
+            onManualRefresh={onManualRefresh}
+            isLoading={false}
+          />
+        )}
+      </div>
+    </div>
+  );
+};
 
 interface RefreshIndicatorProps {
   isContextStale?: boolean;
@@ -82,15 +120,16 @@ const RefreshIndicator: React.FC<RefreshIndicatorProps> = ({
 
   return (
     <div className="flex items-center gap-2 ml-4 flex-shrink-0 relative group/refresh">
-      {/* Countdown timer - show when not paused and countdown active */}
-      {timeUntilRefresh !== null && !isPaused && (
-        <span className="text-xs text-gray-400 flex items-center gap-1">
+      {/* Countdown timer - show when countdown active (both paused and not paused) */}
+      {timeUntilRefresh !== null && (
+        <span className={`text-xs flex items-center gap-1 ${isPaused ? 'text-amber-500' : 'text-gray-400'}`}>
           <Clock className="w-3 h-3" />
           {timeUntilRefresh}s
+          {isPaused && <span className="ml-1">(paused)</span>}
         </span>
       )}
-      {/* Paused indicator */}
-      {isPaused && isContextStale && (
+      {/* Paused indicator - only show when paused without active countdown */}
+      {isPaused && isContextStale && timeUntilRefresh === null && (
         <span className="text-xs text-amber-500 flex items-center gap-1">
           <Pause className="w-3 h-3" />
           paused
@@ -110,11 +149,16 @@ const RefreshIndicator: React.FC<RefreshIndicatorProps> = ({
           {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
         </button>
       )}
-      {/* Manual refresh button */}
+      {/* Manual refresh button - always enabled during countdown */}
       <button
         onClick={onManualRefresh}
         disabled={isLoading}
-        className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className={`p-1.5 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+          timeUntilRefresh !== null || isContextStale
+            ? 'text-indigo-500 hover:text-indigo-600 hover:bg-indigo-50'
+            : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+        }`}
+        title="Refresh context now"
       >
         <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
       </button>
@@ -137,11 +181,21 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   timeUntilRefresh,
   onManualRefresh,
   isPaused,
-  onTogglePause
+  onTogglePause,
+  isNewMode
 }) => {
   if (preview.isLoading) return <LoadingState />;
   if (preview.error) return <ErrorState error={preview.error} />;
-  if (!preview.data) return <EmptyState />;
+  if (!preview.data) return (
+    <EmptyState
+      isContextStale={isContextStale}
+      timeUntilRefresh={timeUntilRefresh}
+      isPaused={isPaused}
+      onTogglePause={onTogglePause}
+      onManualRefresh={onManualRefresh}
+      isNewMode={isNewMode}
+    />
+  );
 
   const { stats, smartSelection, warnings } = preview.data;
 
@@ -151,7 +205,8 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   const usagePercentage = Math.min(100, (stats.totalTokens / maxTokens) * 100);
   const actualPercentage = (stats.totalTokens / maxTokens) * 100;
   const usageColor = getUsageColor(usagePercentage, actualPercentage);
-  const showRefreshIndicator = (isContextStale || timeUntilRefresh !== null || isPaused) && onManualRefresh;
+  // Always show refresh indicator when manual refresh is available
+  const showRefreshIndicator = !!onManualRefresh;
 
   return (
     <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm space-y-4">

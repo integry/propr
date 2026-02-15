@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { BookOpen, X, Info, ChevronDown, Check, ChevronRight } from 'lucide-react';
+import { BookOpen, X, Info, ChevronDown, Check, ChevronRight, Loader2 } from 'lucide-react';
 import { ContextRepository } from '../../api/plannerApi';
 
 export interface IndexedRepository {
   full_name: string;
   branch: string;
+  indexing_status?: 'completed' | 'indexing' | string;
 }
 
 interface ContextRepositoriesSectionProps {
@@ -152,6 +153,7 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
                     filteredRepos.map((repo) => {
                       const isSelected = repositories.some(r => r.repository === repo.full_name);
                       const showBranch = !isDefaultBranch(repo.branch);
+                      const isIndexing = repo.indexing_status === 'indexing';
                       return (
                         <button
                           key={`${repo.full_name}:${repo.branch}`}
@@ -172,6 +174,12 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
                           {showBranch && (
                             <span className="text-xs text-gray-500 flex-shrink-0">
                               @{repo.branch}
+                            </span>
+                          )}
+                          {isIndexing && (
+                            <span className="text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded flex items-center gap-1 flex-shrink-0">
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              indexing
                             </span>
                           )}
                         </button>
