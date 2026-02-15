@@ -135,6 +135,13 @@ interface ConversationResult {
   tokenUsage: TokenUsage | null;
 }
 
+interface PendingSubagent {
+  toolUseId: string;
+  subagentType: string;
+  description: string;
+  startTimestamp: string;
+}
+
 async function parseConversationFile(conversationPath: string): Promise<ConversationResult> {
   const conversationContent = await fs.readFile(conversationPath, 'utf8');
   const lines = conversationContent.trim().split('\n').filter(line => line.trim());
@@ -148,9 +155,11 @@ async function parseConversationFile(conversationPath: string): Promise<Conversa
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0
   };
+  // Track pending subagent calls to generate summaries when they complete
+  const pendingSubagents: Map<string, PendingSubagent> = new Map();
 
   for (const line of lines) {
-    const parsed = parseLine(line, events);
+    const parsed = parseLine(line, events, pendingSubagents);
     if (parsed.newTodos) {
       todos = parsed.newTodos;
     }
@@ -198,17 +207,18 @@ interface Message {
 
 function parseLine(
   line: string,
-  events: Array<Record<string, unknown>>
+  events: Array<Record<string, unknown>>,
+  pendingSubagents: Map<string, PendingSubagent>
 ): ParseLineResult {
   try {
     const message = JSON.parse(line) as Message;
     const timestamp = message.timestamp || new Date().toISOString();
 
     if (message.type === 'assistant' && message.message?.content) {
-      return parseAssistantContent(message.message.content, events, timestamp);
+      return parseAssistantContent(message.message.content, events, timestamp, pendingSubagents);
     }
     if (message.type === 'user' && message.message?.content) {
-      parseUserContent(message.message.content, events, timestamp);
+      parseUserContent(message.message.content, events, timestamp, pendingSubagents);
     }
     // Extract token usage from result message or message.usage
     const usage = message.usage || message.message?.usage;
@@ -231,7 +241,8 @@ function parseLine(
 function parseAssistantContent(
   contentArray: MessageContent[],
   events: Array<Record<string, unknown>>,
-  timestamp: string
+  timestamp: string,
+  pendingSubagents: Map<string, PendingSubagent>
 ): ParseLineResult {
   let newTodos: Array<{ status: string; content: string }> | undefined;
 
@@ -243,6 +254,16 @@ function parseAssistantContent(
       if (content.name === 'TodoWrite' && content.input?.todos) {
         newTodos = content.input.todos;
       }
+      // Track Task tool calls (subagent spawns)
+      if (content.name === 'Task' && content.id) {
+        const input = content.input as { subagent_type?: string; description?: string } | undefined;
+        pendingSubagents.set(content.id, {
+          toolUseId: content.id,
+          subagentType: input?.subagent_type || 'unknown',
+          description: input?.description || '',
+          startTimestamp: timestamp
+        });
+      }
     }
   }
 
@@ -252,7 +273,8 @@ function parseAssistantContent(
 function parseUserContent(
   contentArray: MessageContent[],
   events: Array<Record<string, unknown>>,
-  timestamp: string
+  timestamp: string,
+  pendingSubagents: Map<string, PendingSubagent>
 ): void {
   for (const content of contentArray) {
     if (content.type === 'tool_result') {
@@ -263,6 +285,37 @@ function parseUserContent(
         isError: content.is_error || false,
         timestamp
       });
+
+      // Check if this is a subagent completing
+      if (content.tool_use_id && pendingSubagents.has(content.tool_use_id)) {
+        const subagent = pendingSubagents.get(content.tool_use_id)!;
+        const durationMs = new Date(timestamp).getTime() - new Date(subagent.startTimestamp).getTime();
+        const durationSecs = Math.round(durationMs / 1000);
+
+        // Add a summary thought event for the subagent
+        const subagentIcon = getSubagentIcon(subagent.subagentType);
+        events.push({
+          type: 'thought',
+          content: `${subagentIcon} **${subagent.subagentType}** subagent completed in ${durationSecs}s: ${subagent.description}`,
+          timestamp,
+          isSubagentSummary: true
+        });
+
+        pendingSubagents.delete(content.tool_use_id);
+      }
     }
+  }
+}
+
+function getSubagentIcon(subagentType: string): string {
+  switch (subagentType.toLowerCase()) {
+    case 'explore':
+      return '🔍';
+    case 'plan':
+      return '📋';
+    case 'bash':
+      return '⚡';
+    default:
+      return '🤖';
   }
 }
