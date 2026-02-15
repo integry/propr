@@ -42,6 +42,8 @@ interface SetupWizardRightPaneProps {
   isPaused?: boolean;
   onTogglePause?: () => void;
   onManualRefresh?: () => void;
+  // Mode indicator
+  isNewMode?: boolean;
 }
 
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
@@ -60,6 +62,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   isPaused,
   onTogglePause,
   onManualRefresh,
+  isNewMode,
 }) => {
   return (
     <div className="w-[35%] h-full flex flex-col bg-white border-l border-gray-300">
@@ -82,7 +85,9 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
         ) : (
           <div className="p-5 space-y-4">
             <p className="text-sm text-gray-400 italic">
-              Files will be selected after context analysis
+              {isNewMode
+                ? 'Context preview will be available after clicking Generate'
+                : 'Files will be selected after context analysis'}
             </p>
             {isPreviewLoading && <FileSelectionSkeleton />}
           </div>
@@ -108,6 +113,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
           isPaused={isPaused}
           onTogglePause={onTogglePause}
           onManualRefresh={onManualRefresh}
+          isNewMode={isNewMode}
         />
       </div>
     </div>

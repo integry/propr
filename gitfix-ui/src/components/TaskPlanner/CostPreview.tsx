@@ -18,6 +18,8 @@ interface CostPreviewProps {
   onManualRefresh?: () => void;
   isPaused?: boolean;
   onTogglePause?: () => void;
+  // Mode indicator
+  isNewMode?: boolean;
 }
 
 const getUsageColor = (percentage: number, actualPercentage: number): string => {
@@ -53,6 +55,7 @@ interface EmptyStateProps {
   isPaused?: boolean;
   onTogglePause?: () => void;
   onManualRefresh?: () => void;
+  isNewMode?: boolean;
 }
 
 const EmptyState: React.FC<EmptyStateProps> = ({
@@ -60,14 +63,19 @@ const EmptyState: React.FC<EmptyStateProps> = ({
   timeUntilRefresh,
   isPaused,
   onTogglePause,
-  onManualRefresh
+  onManualRefresh,
+  isNewMode
 }) => {
-  const showRefreshIndicator = !!onManualRefresh;
+  const showRefreshIndicator = !!onManualRefresh && !isNewMode;
 
   return (
     <div className="p-5 rounded-xl border border-gray-200 bg-gray-50">
       <div className="flex items-center justify-between">
-        <span className="text-gray-500">Enter a prompt to see cost estimate</span>
+        <span className="text-gray-500">
+          {isNewMode
+            ? 'Cost estimate will be available after clicking Generate'
+            : 'Enter a prompt to see cost estimate'}
+        </span>
         {showRefreshIndicator && (
           <RefreshIndicator
             isContextStale={isContextStale}
@@ -173,7 +181,8 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   timeUntilRefresh,
   onManualRefresh,
   isPaused,
-  onTogglePause
+  onTogglePause,
+  isNewMode
 }) => {
   if (preview.isLoading) return <LoadingState />;
   if (preview.error) return <ErrorState error={preview.error} />;
@@ -184,6 +193,7 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
       isPaused={isPaused}
       onTogglePause={onTogglePause}
       onManualRefresh={onManualRefresh}
+      isNewMode={isNewMode}
     />
   );
 

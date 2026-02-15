@@ -263,6 +263,7 @@ const SetupWizardContent: React.FC<{
           isPaused={contextRefresh.isPaused}
           onTogglePause={contextRefresh.togglePause}
           onManualRefresh={contextRefresh.handleManualRefresh}
+          isNewMode={isNewMode}
         />
       </div>
 
