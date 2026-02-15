@@ -837,8 +837,14 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   const { repomixContext, smartSummaries, autoFilePaths, includedFiles, smartSummaryTokens, fileTokenCounts, fileScores } = contextData;
   const combinedFiles = [...new Set([...manualFiles, ...autoFilePaths])];
+
+  // Reserve space for attachments and smart summaries BEFORE selecting files
+  // Convert from Claude-estimated tokens to tiktoken space for proper budget allocation
+  const reservedOverheadTiktokens = Math.ceil((attachmentTokens + smartSummaryTokens) / TIKTOKEN_TO_CLAUDE_RATIO);
+  const fileSelectionLimit = Math.max(0, targetTokenLimit - reservedOverheadTiktokens);
+
   const simulatedSelection = selectFilesWithinLimit(
-    fileTokenCounts, targetTokenLimit,
+    fileTokenCounts, fileSelectionLimit,
     compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined),
     compress ? combinedFiles : undefined
   );
@@ -849,7 +855,8 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   correlatedLogger.info({
     cachedFiles: includedFiles.length, cachedTokens: contextData.repomixTokens,
-    simulatedFiles: simulatedIncludedFiles.length, simulatedTokens, targetTokenLimit, strategy: simulatedSelection.strategy
+    simulatedFiles: simulatedIncludedFiles.length, simulatedTokens, targetTokenLimit, fileSelectionLimit,
+    reservedOverheadTiktokens, strategy: simulatedSelection.strategy
   }, 'Simulated file selection for context level');
 
   const costEstimate = await calculateCostEstimate(simulatedTokens, warnings, correlatedLogger);
@@ -874,13 +881,15 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   const estimatedActualTokens = Math.ceil(simulatedTokens * TIKTOKEN_TO_CLAUDE_RATIO);
   const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens;
+  // Convert maxTokens to same space as totalTokens for consistent display
+  const maxTokensEstimated = Math.ceil(targetTokenLimit * TIKTOKEN_TO_CLAUDE_RATIO);
   const { modelName, modelMaxContextTokens } = getModelDisplayInfo(generationModel);
 
-  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, totalTokens, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
+  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, totalTokens, maxTokensEstimated, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
 
   return {
     success: true,
-    stats: { totalTokens, tiktokenCount: simulatedTokens, costEstimate, contextLength: repomixContext.length, fileCount: simulatedIncludedFiles.length, attachmentTokens, maxTokens: targetTokenLimit, modelName, modelMaxContextTokens },
+    stats: { totalTokens, tiktokenCount: simulatedTokens, costEstimate, contextLength: repomixContext.length, fileCount: simulatedIncludedFiles.length, attachmentTokens, maxTokens: maxTokensEstimated, modelName, modelMaxContextTokens },
     smartSelection,
     warnings
   };
