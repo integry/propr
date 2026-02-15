@@ -41,15 +41,19 @@ const formatStatus = (status: string): string => {
 interface TaskStatsChartProps {
   data?: TaskStatsResponse | null;
   mode?: 'all' | 'trends' | 'distribution';
+  isLoading?: boolean;
 }
 
-const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mode = 'all' }) => {
+const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mode = 'all', isLoading: externalLoading }) => {
   const [internalStats, setInternalStats] = useState<TaskStatsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(!externalData);
   const [error, setError] = useState<string | null>(null);
 
   // Use external data if provided, otherwise fetch internally
   const stats = externalData !== undefined ? externalData : internalStats;
+
+  // Use external loading state if provided, otherwise use internal
+  const isLoading = externalLoading !== undefined ? externalLoading : loading;
 
   useEffect(() => {
     // Skip fetching if external data is provided
@@ -77,9 +81,37 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     return () => clearInterval(interval);
   }, [externalData]);
 
-  if (loading && !stats) {
+  // Loading skeleton for distribution mode (donut chart)
+  const renderDistributionSkeleton = () => (
+    <div>
+      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
+      <div className="h-64 flex flex-col items-center justify-center animate-pulse">
+        {/* Donut chart skeleton */}
+        <div className="relative w-44 h-44">
+          <div className="absolute inset-0 rounded-full border-[20px] border-gray-200" />
+          <div className="absolute inset-[30px] rounded-full bg-white" />
+        </div>
+        {/* Legend skeleton */}
+        <div className="flex flex-wrap justify-center gap-3 mt-4">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-full bg-gray-200" />
+              <div className="h-3 w-14 bg-gray-200 rounded" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  if (isLoading && !stats) {
+    // For distribution mode, show donut skeleton
+    if (mode === 'distribution') {
+      return renderDistributionSkeleton();
+    }
+    // Default loading state for other modes
     return (
-      <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)]">
+      <div>
         <div className="flex items-center justify-center h-64">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
           <span className="ml-3 text-slate-500">Loading statistics...</span>
@@ -90,7 +122,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
 
   if (error) {
     return (
-      <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1)]">
+      <div>
         <div className="flex items-center justify-center h-64 text-red-500">
           <span>Failed to load statistics: {error}</span>
         </div>
@@ -126,8 +158,8 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   const renderTrends = () => {
     if (mode === 'trends') {
       return (
-        <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-          <h4 className="text-lg font-bold text-slate-800 mb-4">Tasks Processed (Last 30 Days)</h4>
+        <div>
+          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Tasks Processed (Last 30 Days)</h4>
           {dailyData.length > 0 ? (
             <div className="h-64"><VolumeChart data={dailyData} /></div>
           ) : (
@@ -144,13 +176,13 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {dailyData.length > 0 && (
           <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-            <h4 className="text-lg font-bold text-slate-800 mb-4">Tasks Processed (Last 30 Days)</h4>
+            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Tasks Processed (Last 30 Days)</h4>
             <div className="h-64"><VolumeChart data={dailyData} /></div>
           </div>
         )}
         {hasProcessingTimeData && (
           <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-            <h4 className="text-lg font-bold text-slate-800 mb-4">Average Processing Time (Minutes)</h4>
+            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Average Processing Time (Minutes)</h4>
             <div className="h-64"><ProcessingTimeChart data={processingTimeData} showLegend /></div>
           </div>
         )}
@@ -162,8 +194,8 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   const renderDistribution = () => (
     <>
       {pieData.length > 0 && (
-        <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-          <h4 className="text-lg font-bold text-slate-800 mb-4">Task Status Distribution</h4>
+        <div>
+          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
           <div className="h-64"><StatusPieChart data={pieData} /></div>
         </div>
       )}
@@ -173,7 +205,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   return (
     <div>
       {!hasData ? (
-        <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-sm">
+        <div>
           <div className="text-slate-500 text-center py-8">
             No task data available yet. Statistics will appear once tasks are processed.
           </div>
