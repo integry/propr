@@ -82,6 +82,9 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
           <label className="text-sm font-medium text-gray-700">
             Context Scope
           </label>
+          <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${levelType === 'focused' ? 'bg-sky-100 text-sky-600' : levelType === 'expanded' ? 'bg-blue-100 text-blue-600' : 'bg-indigo-100 text-indigo-600'}`}>
+            {value}%
+          </span>
         </div>
         {/* Single line indicator with monotone icons - Ocean Depth color scale */}
         <div className={`flex items-center gap-2 text-xs ${levelType === 'focused' ? 'text-sky-400' : levelType === 'expanded' ? 'text-blue-500' : 'text-indigo-600'}`}>
