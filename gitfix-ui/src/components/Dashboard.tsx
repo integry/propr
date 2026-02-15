@@ -59,40 +59,50 @@ interface StatsGridProps {
 }
 
 const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, overviewStats, statsLoading }) => (
-  <div className="px-6 py-4 border-b border-gray-100">
-    {/* 2x2 Grid for Active/Success and Total/Failed */}
-    <div className="grid grid-cols-2 gap-4 mb-4">
-      <StatItem
-        label="Active"
-        value={queueStats?.active || 0}
-        color="text-green-600"
-        isLoading={statsLoading && !queueStats}
-      />
-      <StatItem
-        label="Success"
-        value={calculateSuccessRate(taskStats)}
-        color="text-blue-600"
-        isLoading={statsLoading && !taskStats}
-      />
-      <StatItem
-        label="Total"
-        value={taskStats?.summary?.total?.toLocaleString() || 0}
-        isLoading={statsLoading && !taskStats}
-      />
-      <StatItem
-        label="Failed"
-        value={taskStats?.summary?.failed || 0}
-        color="text-red-500"
-        isLoading={statsLoading && !taskStats}
-      />
+  <div className="px-6 py-6 border-b border-slate-100">
+    {/* 2x2 Grid for Active/Success and Total/Failed with crosshair borders */}
+    <div className="grid grid-cols-2">
+      <div className="border-r border-b border-slate-100 pr-4 pb-4">
+        <StatItem
+          label="Active"
+          value={queueStats?.active || 0}
+          color="text-green-600"
+          isLoading={statsLoading && !queueStats}
+        />
+      </div>
+      <div className="border-b border-slate-100 pl-4 pb-4">
+        <StatItem
+          label="Success"
+          value={calculateSuccessRate(taskStats)}
+          color="text-blue-600"
+          isLoading={statsLoading && !taskStats}
+        />
+      </div>
+      <div className="border-r border-slate-100 pr-4 pt-4">
+        <StatItem
+          label="Total"
+          value={taskStats?.summary?.total?.toLocaleString() || 0}
+          isLoading={statsLoading && !taskStats}
+        />
+      </div>
+      <div className="pl-4 pt-4">
+        <StatItem
+          label="Failed"
+          value={taskStats?.summary?.failed || 0}
+          color="text-red-500"
+          isLoading={statsLoading && !taskStats}
+        />
+      </div>
     </div>
     {/* Cost - Full width row */}
-    <StatItem
-      label="Cost"
-      value={formatCost(overviewStats)}
-      color="text-violet-600"
-      isLoading={statsLoading && !overviewStats}
-    />
+    <div className="pt-4 mt-4 border-t border-slate-100">
+      <StatItem
+        label="Total Cost"
+        value={formatCost(overviewStats)}
+        color="text-violet-600"
+        isLoading={statsLoading && !overviewStats}
+      />
+    </div>
   </div>
 );
 
@@ -173,8 +183,8 @@ const Dashboard: React.FC = () => {
         {/* Vertical Divider - Studio Split */}
         <div className="hidden lg:block w-px bg-gray-200" />
 
-        {/* Right Column (30%) - Analytics Panel */}
-        <div className="lg:w-[30%] border-t lg:border-t-0 border-gray-200">
+        {/* Right Column (30%) - Unified Analytics Rail */}
+        <div className="lg:w-[30%] border-t lg:border-t-0 border-gray-200 bg-[#F8FAFC]">
           {/* Stats Grid - Top of Analytics Column */}
           <StatsGrid
             queueStats={queueStats}
@@ -184,22 +194,22 @@ const Dashboard: React.FC = () => {
           />
 
           {/* Activity Sparkline Section */}
-          <div className="px-6 py-8 border-b border-gray-100">
+          <div className="px-6 py-6 border-b border-slate-100">
             <ActivitySparkline data={sparklineData} isLoading={statsLoading && !taskStats} />
           </div>
 
           {/* Task Stats Distribution Section */}
-          <div className="px-6 py-8 border-b border-gray-100">
+          <div className="px-6 py-6 border-b border-slate-100">
             <TaskStatsChart data={taskStats} mode="distribution" isLoading={statsLoading && !taskStats} />
           </div>
 
           {/* Repository Breakdown Section */}
-          <div className="px-6 py-8 border-b border-gray-100">
+          <div className="px-6 py-6 border-b border-slate-100">
             <RepositoryBreakdown limit={5} />
           </div>
 
-          {/* Top Models Section */}
-          <div className="px-6 py-8">
+          {/* Top Models Section - No bottom border (last section) */}
+          <div className="px-6 py-6">
             <TopModels limit={5} />
           </div>
         </div>

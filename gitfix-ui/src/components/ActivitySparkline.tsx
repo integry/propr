@@ -71,7 +71,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
   return (
     <div>
       {/* Utility header style - small, uppercase, gray, bold */}
-      <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">
+      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
         Activity (30 Days)
       </h4>
 

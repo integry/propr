@@ -60,7 +60,7 @@ const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
   if (loading) {
     return (
       <div>
-        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Models</h3>
+        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
         <div className="overflow-hidden animate-pulse">
           <table className="w-full table-fixed">
             <thead>
@@ -100,7 +100,7 @@ const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
   if (error) {
     return (
       <div>
-        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Models</h3>
+        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
         <div className="text-red-500 text-center py-4">{error}</div>
       </div>
     );
@@ -109,7 +109,7 @@ const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
   if (!metrics || Object.keys(metrics.usage.models).length === 0) {
     return (
       <div>
-        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Models</h3>
+        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
         <div className="text-slate-500 text-center py-4">No model data available yet.</div>
       </div>
     );
@@ -123,7 +123,7 @@ const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
 
   return (
     <div>
-      <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Models</h3>
+      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
       <div className="overflow-hidden">
         <table className="w-full table-fixed">
           <thead>

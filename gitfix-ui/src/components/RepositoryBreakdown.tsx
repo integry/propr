@@ -32,7 +32,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit }) => {
   if (loading) {
     return (
       <div>
-        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Repositories</h3>
+        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
         <div className="overflow-hidden animate-pulse">
           <table className="w-full">
             <thead>
@@ -69,7 +69,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit }) => {
   if (error) {
     return (
       <div>
-        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Repositories</h3>
+        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
         <div className="text-red-500 text-center py-4">{error}</div>
       </div>
     );
@@ -78,7 +78,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit }) => {
   if (repositories.length === 0) {
     return (
       <div>
-        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Repositories</h3>
+        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
         <div className="text-slate-500 text-center py-4">No repository data available yet.</div>
       </div>
     );
@@ -91,7 +91,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit }) => {
 
   return (
     <div>
-      <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Repositories</h3>
+      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
       <div className="overflow-hidden">
         <table className="w-full">
           <thead>

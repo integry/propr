@@ -84,7 +84,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   // Loading skeleton for distribution mode (donut chart)
   const renderDistributionSkeleton = () => (
     <div>
-      <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Task Status</h4>
+      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
       <div className="h-64 flex flex-col items-center justify-center animate-pulse">
         {/* Donut chart skeleton */}
         <div className="relative w-44 h-44">
@@ -159,7 +159,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     if (mode === 'trends') {
       return (
         <div>
-          <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Tasks Processed (Last 30 Days)</h4>
+          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Tasks Processed (Last 30 Days)</h4>
           {dailyData.length > 0 ? (
             <div className="h-64"><VolumeChart data={dailyData} /></div>
           ) : (
@@ -176,13 +176,13 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {dailyData.length > 0 && (
           <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-            <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Tasks Processed (Last 30 Days)</h4>
+            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Tasks Processed (Last 30 Days)</h4>
             <div className="h-64"><VolumeChart data={dailyData} /></div>
           </div>
         )}
         {hasProcessingTimeData && (
           <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-            <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Average Processing Time (Minutes)</h4>
+            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Average Processing Time (Minutes)</h4>
             <div className="h-64"><ProcessingTimeChart data={processingTimeData} showLegend /></div>
           </div>
         )}
@@ -195,7 +195,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
     <>
       {pieData.length > 0 && (
         <div>
-          <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Task Status</h4>
+          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Task Status</h4>
           <div className="h-64"><StatusPieChart data={pieData} /></div>
         </div>
       )}
