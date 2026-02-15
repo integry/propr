@@ -59,10 +59,10 @@ interface StatsGridProps {
 }
 
 const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, overviewStats, statsLoading }) => (
-  <div className="px-6 py-6 border-b border-slate-100">
+  <div className="px-6 py-6 border-b border-slate-200">
     {/* 2x2 Grid for Active/Success and Total/Failed with crosshair borders */}
     <div className="grid grid-cols-2">
-      <div className="border-r border-b border-slate-100 pr-4 pb-4">
+      <div className="border-r border-b border-slate-200 pr-4 pb-4">
         <StatItem
           label="Active"
           value={queueStats?.active || 0}
@@ -70,7 +70,7 @@ const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, overviewSt
           isLoading={statsLoading && !queueStats}
         />
       </div>
-      <div className="border-b border-slate-100 pl-4 pb-4">
+      <div className="border-b border-slate-200 pl-4 pb-4">
         <StatItem
           label="Success"
           value={calculateSuccessRate(taskStats)}
@@ -78,7 +78,7 @@ const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, overviewSt
           isLoading={statsLoading && !taskStats}
         />
       </div>
-      <div className="border-r border-slate-100 pr-4 pt-4">
+      <div className="border-r border-slate-200 pr-4 pt-4">
         <StatItem
           label="Total"
           value={taskStats?.summary?.total?.toLocaleString() || 0}
@@ -95,7 +95,7 @@ const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, overviewSt
       </div>
     </div>
     {/* Cost - Full width row */}
-    <div className="pt-4 mt-4 border-t border-slate-100">
+    <div className="pt-4 mt-4 border-t border-slate-200">
       <StatItem
         label="Total Cost"
         value={formatCost(overviewStats)}
@@ -194,17 +194,17 @@ const Dashboard: React.FC = () => {
           />
 
           {/* Activity Sparkline Section */}
-          <div className="px-6 py-6 border-b border-slate-100">
+          <div className="px-6 py-6 border-b border-slate-200">
             <ActivitySparkline data={sparklineData} isLoading={statsLoading && !taskStats} />
           </div>
 
           {/* Task Stats Distribution Section */}
-          <div className="px-6 py-6 border-b border-slate-100">
+          <div className="px-6 py-6 border-b border-slate-200">
             <TaskStatsChart data={taskStats} mode="distribution" isLoading={statsLoading && !taskStats} />
           </div>
 
           {/* Repository Breakdown Section */}
-          <div className="px-6 py-6 border-b border-slate-100">
+          <div className="px-6 py-6 border-b border-slate-200">
             <RepositoryBreakdown limit={5} />
           </div>
 
