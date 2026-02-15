@@ -59,11 +59,39 @@ const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
 
   if (loading) {
     return (
-      <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-        <h3 className="text-lg font-bold text-slate-800 mb-4">Top Models</h3>
-        <div className="flex items-center justify-center h-32">
-          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-500"></div>
-          <span className="ml-3 text-slate-500">Loading model stats...</span>
+      <div>
+        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
+        <div className="overflow-hidden animate-pulse">
+          <table className="w-full table-fixed">
+            <thead>
+              <tr className="border-b border-slate-200">
+                <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[55%]">Model</th>
+                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[20%]">Tasks</th>
+                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[25%]">Usage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...Array(5)].map((_, i) => (
+                <tr key={i} className="border-b border-slate-100">
+                  <td className="py-2 px-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded bg-gray-200 flex-shrink-0" />
+                      <div className="h-4 flex-1 bg-gray-200 rounded" />
+                    </div>
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    <div className="h-4 w-8 bg-gray-200 rounded ml-auto" />
+                  </td>
+                  <td className="py-2 px-2">
+                    <div className="flex items-center justify-end gap-2">
+                      <div className="w-12 h-1.5 bg-gray-200 rounded-full" />
+                      <div className="h-3 w-8 bg-gray-200 rounded" />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     );
@@ -71,8 +99,8 @@ const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
 
   if (error) {
     return (
-      <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-        <h3 className="text-lg font-bold text-slate-800 mb-4">Top Models</h3>
+      <div>
+        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
         <div className="text-red-500 text-center py-4">{error}</div>
       </div>
     );
@@ -80,8 +108,8 @@ const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
 
   if (!metrics || Object.keys(metrics.usage.models).length === 0) {
     return (
-      <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-        <h3 className="text-lg font-bold text-slate-800 mb-4">Top Models</h3>
+      <div>
+        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
         <div className="text-slate-500 text-center py-4">No model data available yet.</div>
       </div>
     );
@@ -94,26 +122,26 @@ const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
   const totalModelCount = modelEntries.reduce((sum, [, count]) => sum + count, 0);
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-      <h3 className="text-lg font-bold text-slate-800 mb-4">Top Models</h3>
-      <div className="overflow-x-auto">
-        <table className="w-full">
+    <div>
+      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
+      <div className="overflow-hidden">
+        <table className="w-full table-fixed">
           <thead>
             <tr className="border-b border-slate-200">
-              <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Model</th>
-              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Tasks</th>
-              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Usage</th>
+              <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[55%]">Model</th>
+              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[20%]">Tasks</th>
+              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[25%]">Usage</th>
             </tr>
           </thead>
           <tbody>
             {displayModels.map(([modelId, count]) => {
               const percentage = totalModelCount > 0 ? (count / totalModelCount) * 100 : 0;
               return (
-                <tr key={modelId} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                  <td className="py-2 px-2">
-                    <div className="flex items-center gap-2">
+                <tr key={modelId} className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50 transition-colors">
+                  <td className="py-2 px-2 min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
                       <ModelIcon modelId={modelId} />
-                      <span className="text-slate-800 font-medium text-sm truncate block max-w-[200px]" title={modelId}>
+                      <span className="text-slate-800 font-medium text-sm truncate" title={modelId}>
                         {modelId}
                       </span>
                     </div>
@@ -123,13 +151,13 @@ const TopModels: React.FC<TopModelsProps> = ({ limit }) => {
                   </td>
                   <td className="py-2 px-2 text-right">
                     <div className="flex items-center justify-end gap-2">
-                      <div className="w-12 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                      <div className="w-12 h-1.5 bg-slate-200 rounded-full overflow-hidden flex-shrink-0">
                         <div
                           className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500"
                           style={{ width: `${Math.max(percentage, 2)}%` }}
                         />
                       </div>
-                      <span className="text-xs font-medium text-slate-600 w-10 text-right">
+                      <span className="text-xs font-medium text-slate-600 w-10 text-right flex-shrink-0">
                         {percentage.toFixed(0)}%
                       </span>
                     </div>

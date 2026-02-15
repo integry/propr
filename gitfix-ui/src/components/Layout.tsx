@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Link, useLocation } from 'react-router-dom';
-import { ScrollText, ListTodo, BookMarked, Bot, Cpu } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { ScrollText, ListTodo, BookMarked, Bot, Cpu, Search, Plus, Activity } from 'lucide-react';
 import { getQueueStats, getCurrentUser, logout, getSystemStatus } from '../api/gitfixApi';
 import { getGeneratingPlansCount } from '../api/taskStatsApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
 import { useToast } from './ui/useToast';
+import { HomeIcon, SettingsIcon, MenuIcon, CloseIcon } from './icons/LayoutIcons';
 
 interface SystemStatusData {
   daemon: string;
@@ -32,12 +33,17 @@ interface User {
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
+  const navigate = useNavigate();
   const { addToast } = useToast();
   const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
   const [generatingPlansCount, setGeneratingPlansCount] = useState<number>(0);
   const [user, setUser] = useState<User | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatusData | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [isStatusTooltipOpen, setIsStatusTooltipOpen] = useState(false);
+  const statusTooltipRef = useRef<HTMLDivElement>(null);
   // Track repository indexing statuses for toast notifications
   const repoStatusesRef = useRef<Map<string, string>>(new Map());
 
@@ -178,6 +184,68 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     return 'bg-red-500';
   };
 
+  // Helper for overall system health color
+  const getOverallHealthColor = (): string => {
+    if (!systemStatus) return 'bg-gray-400';
+
+    const statuses = [systemStatus.daemon, systemStatus.redis, systemStatus.githubAuth];
+    const healthyStatuses = ['running', 'connected', 'authenticated'];
+
+    const allHealthy = statuses.every(s => s && healthyStatuses.includes(s.toLowerCase()));
+    const anyDown = statuses.some(s => s && !healthyStatuses.includes(s.toLowerCase()));
+
+    if (allHealthy) return 'bg-green-500';
+    if (anyDown) {
+      // Check if critical (daemon down = red)
+      if (systemStatus.daemon && !healthyStatuses.includes(systemStatus.daemon.toLowerCase())) {
+        return 'bg-red-500';
+      }
+      return 'bg-amber-500';
+    }
+    return 'bg-gray-400';
+  };
+
+  // Close status tooltip when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (statusTooltipRef.current && !statusTooltipRef.current.contains(event.target as Node)) {
+        setIsStatusTooltipOpen(false);
+      }
+    };
+
+    if (isStatusTooltipOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isStatusTooltipOpen]);
+
+  // Handle search submission
+  const handleSearch = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+    if (searchQuery.trim()) {
+      navigate(`/tasks?search=${encodeURIComponent(searchQuery.trim())}`);
+      setSearchQuery('');
+    }
+  }, [searchQuery, navigate]);
+
+  // Handle new plan navigation
+  const handleNewPlan = useCallback(() => {
+    navigate('/studio/new');
+  }, [navigate]);
+
+  // Keyboard shortcut for search (⌘K / Ctrl+K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   return (
     <div className="flex h-screen overflow-hidden bg-light-100 relative">
       {/* Mobile Overlay */}
@@ -247,63 +315,125 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             <MenuIcon className="w-6 h-6" />
           </button>
 
-          {/* Spacer for desktop when no hamburger is shown */}
-          <div className="hidden lg:block"></div>
+          {/* Spacer to push action cluster to the right */}
+          <div className="flex-1" />
 
-          <div className="flex items-center gap-4">
-            {/* System Status Indicators */}
-            <div className="hidden md:flex items-center gap-4 mr-4 border-r border-gray-200 pr-4">
-              <div className="flex items-center gap-2" title={`Daemon: ${systemStatus?.daemon || 'Unknown'}`}>
-                <div className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.daemon)}`} />
-                <span className="text-xs text-gray-500">Daemon</span>
+          {/* Action Cluster - Right-aligned: Search → New Plan | Status → Profile */}
+          <div className="flex items-center gap-3">
+            {/* Zone A: Tools (Search + Create) */}
+            {/* Compact Search Bar - 300px width */}
+            <form onSubmit={handleSearch} className="hidden md:block w-[300px]">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search... [⌘K]"
+                  className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 focus:bg-white transition-colors"
+                />
               </div>
-              <div className="flex items-center gap-2" title={`Redis: ${systemStatus?.redis || 'Unknown'}`}>
-                <div className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.redis)}`} />
-                <span className="text-xs text-gray-500">Redis</span>
-              </div>
-              <div className="flex items-center gap-2" title={`GitHub: ${systemStatus?.githubAuth || 'Unknown'}`}>
-                <div className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.githubAuth)}`} />
-                <span className="text-xs text-gray-500">GitHub</span>
-              </div>
+            </form>
+
+            {/* New Plan Button - Primary Action */}
+            <button
+              onClick={handleNewPlan}
+              className="hidden sm:flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              <span>New AI Plan</span>
+            </button>
+
+            {/* Mobile New Plan Button - Icon only */}
+            <button
+              onClick={handleNewPlan}
+              className="sm:hidden p-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors"
+              aria-label="New AI Plan"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+
+            {/* Vertical Divider - Separates Tools from Context */}
+            <div className="hidden md:block h-6 w-px bg-gray-300"></div>
+
+            {/* Zone B: Context (Status + Profile) */}
+            {/* System Health Pulse Icon with Dropdown */}
+            <div className="hidden md:block relative" ref={statusTooltipRef}>
+              <button
+                onClick={() => setIsStatusTooltipOpen(!isStatusTooltipOpen)}
+                onMouseEnter={() => setIsStatusTooltipOpen(true)}
+                className="flex items-center gap-1.5 p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                aria-label="System Status"
+              >
+                <Activity className="w-4 h-4 text-gray-500" />
+                <span className={`w-2 h-2 rounded-full ${getOverallHealthColor()}`} />
+              </button>
+
+              {/* Status Dropdown Tooltip */}
+              {isStatusTooltipOpen && (
+                <div
+                  className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg py-2 px-3 min-w-[160px] z-50"
+                  onMouseLeave={() => setIsStatusTooltipOpen(false)}
+                >
+                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">System Status</div>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2 text-sm text-gray-700">
+                      <span className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.daemon)}`} />
+                      <span>Daemon:</span>
+                      <span className="ml-auto font-medium">{systemStatus?.daemon || 'Unknown'}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-gray-700">
+                      <span className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.redis)}`} />
+                      <span>Redis:</span>
+                      <span className="ml-auto font-medium">{systemStatus?.redis || 'Unknown'}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-gray-700">
+                      <span className={`w-2 h-2 rounded-full ${getStatusColor(systemStatus?.githubAuth)}`} />
+                      <span>GitHub:</span>
+                      <span className="ml-auto font-medium">{systemStatus?.githubAuth || 'Unknown'}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
+            {/* Profile */}
             {user && (
-              <>
-                <a
-                  href={`https://github.com/${user.username}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-3 hover:bg-gray-50 rounded-lg p-1 transition-colors group"
-                >
-                  <div className="hidden sm:flex flex-col items-end">
-                    <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
-                      {user.displayName || user.username}
-                    </span>
-                    <span className="text-xs text-gray-500 group-hover:text-gray-700 transition-colors">@{user.username}</span>
+              <a
+                href={`https://github.com/${user.username}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 hover:bg-gray-50 rounded-lg p-1 transition-colors group"
+              >
+                <div className="hidden lg:flex flex-col items-end">
+                  <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
+                    {user.displayName || user.username}
+                  </span>
+                  <span className="text-xs text-gray-500 group-hover:text-gray-700 transition-colors">@{user.username}</span>
+                </div>
+
+                {user.avatarUrl ? (
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.username}
+                    className="w-8 h-8 rounded-full border border-gray-200 group-hover:border-gray-300 transition-colors"
+                  />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs group-hover:bg-primary-200 transition-colors">
+                    {user.username.slice(0, 2).toUpperCase()}
                   </div>
+                )}
+              </a>
+            )}
 
-                  {user.avatarUrl ? (
-                    <img
-                      src={user.avatarUrl}
-                      alt={user.username}
-                      className="w-8 h-8 rounded-full border border-gray-200 group-hover:border-gray-300 transition-colors"
-                    />
-                  ) : (
-                    <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-600 font-bold text-xs group-hover:bg-primary-200 transition-colors">
-                      {user.username.slice(0, 2).toUpperCase()}
-                    </div>
-                  )}
-                </a>
-
-                <div className="h-6 w-px bg-gray-200 mx-1"></div>
-
-                <button
-                  onClick={logout}
-                  className="text-sm text-gray-500 hover:text-red-600 font-medium transition-colors"
-                >
-                  Logout
-                </button>
-              </>
+            {user && (
+              <button
+                onClick={logout}
+                className="text-sm text-gray-500 hover:text-red-600 font-medium transition-colors"
+              >
+                Logout
+              </button>
             )}
           </div>
         </header>
@@ -315,35 +445,5 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     </div>
   );
 };
-
-// Icon components
-interface IconProps {
-  className?: string;
-}
-
-const HomeIcon: React.FC<IconProps> = ({ className }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-  </svg>
-);
-
-const SettingsIcon: React.FC<IconProps> = ({ className }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-  </svg>
-);
-
-const MenuIcon: React.FC<IconProps> = ({ className }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-  </svg>
-);
-
-const CloseIcon: React.FC<IconProps> = ({ className }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-  </svg>
-);
 
 export default Layout;

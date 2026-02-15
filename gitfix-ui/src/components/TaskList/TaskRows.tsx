@@ -32,15 +32,17 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
             {group.prNumber ? (
-              <span className="text-sm font-bold text-primary-600 hover:text-primary-700">
-                PR #{group.prNumber}
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
+                #{group.prNumber}
               </span>
             ) : task.issueNumber ? (
-              <span className="text-sm font-bold text-primary-600 hover:text-primary-700">
-                Issue #{task.issueNumber}
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
+                #{task.issueNumber}
               </span>
             ) : (
-              <span className="text-sm font-bold text-gray-700">Task {task.id.substring(0, 8)}</span>
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
+                #{task.id.substring(0, 8)}
+              </span>
             )}
             <TaskTypeBadge type={typeInfo.type} />
           </div>
@@ -74,7 +76,7 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
         </div>
       </td>
       <td className="py-3 px-4 align-top">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between">
           {getStatusPill(task.status)}
           <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
         </div>
@@ -155,7 +157,7 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
         </div>
       </td>
       <td className="py-3 px-4 align-top">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between">
           {getStatusPill(task.status)}
           <ScoreBadge score={task.critiqueScore} dimmed={isDimmed} />
         </div>

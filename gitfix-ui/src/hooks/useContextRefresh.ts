@@ -4,7 +4,7 @@ import { previewContext, PreviewResult, Granularity, PlannerAttachment } from '.
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
 const DEBOUNCE_DELAY = 800;
 /** Delay before auto-refreshing context after source changes (ms) */
-const SOURCE_REFRESH_DELAY = 60000;
+const SOURCE_REFRESH_DELAY = 20000;
 /** Slider debounce delay for context level changes (ms) */
 const SLIDER_DEBOUNCE_DELAY = 300;
 
@@ -51,6 +51,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const [timeUntilRefresh, setTimeUntilRefresh] = useState<number | null>(null);
   const [isContextStale, setIsContextStale] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
+  // Track if countdown was started - prevents auto-fetch when context is stale but countdown hasn't begun
+  const [countdownStarted, setCountdownStarted] = useState<boolean>(false);
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -82,25 +84,13 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       countdownIntervalRef.current = null;
     }
     setTimeUntilRefresh(null);
+    setCountdownStarted(false);
   }, []);
-
-  const startCountdown = useCallback(() => {
-    clearCountdown();
-    setIsContextStale(true);
-    setTimeUntilRefresh(SOURCE_REFRESH_DELAY / 1000);
-
-    countdownIntervalRef.current = setInterval(() => {
-      setTimeUntilRefresh(prev => (prev === null || prev <= 1) ? null : prev - 1);
-    }, 1000);
-
-    sourceRefreshTimerRef.current = setTimeout(() => {
-      clearCountdown();
-      setIsContextStale(false);
-    }, SOURCE_REFRESH_DELAY);
-  }, [clearCountdown]);
 
   const fetchPreview = useCallback(async () => {
     const currentConfig = configRef.current;
+    // Skip preview if no draftId (new mode - draft not created yet)
+    if (!draftId) return;
     if (!currentConfig.prompt.trim() || !currentConfig.baseBranch) return;
 
     if (!BRANCH_NAME_REGEX.test(currentConfig.baseBranch)) {
@@ -140,7 +130,27 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     }
   }, [draftId, clearCountdown, onBranchError]);
 
-  // Initial sync
+  const startCountdown = useCallback(() => {
+    clearCountdown();
+    setIsContextStale(true);
+    setCountdownStarted(true);
+    setTimeUntilRefresh(SOURCE_REFRESH_DELAY / 1000);
+
+    countdownIntervalRef.current = setInterval(() => {
+      setTimeUntilRefresh(prev => (prev === null || prev <= 1) ? null : prev - 1);
+    }, 1000);
+
+    sourceRefreshTimerRef.current = setTimeout(() => {
+      clearCountdown();
+      setIsContextStale(false);
+      // Trigger the fetch when countdown completes
+      fetchPreview();
+    }, SOURCE_REFRESH_DELAY);
+  }, [clearCountdown, fetchPreview]);
+
+  // Initial setup - initialize tracking state but don't fetch immediately
+  // Context gathering should wait until the first debounce period completes
+  // (or when explicitly requested via refresh button)
   useEffect(() => {
     if (!initialSyncDone && config.baseBranch && config.prompt.trim()) {
       setInitialSyncDone(true);
@@ -150,9 +160,11 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         filesLength: config.files.length,
         compress: config.compress
       };
-      fetchPreview();
+      // Mark context as stale and start the countdown instead of fetching immediately
+      setIsContextStale(true);
+      startCountdown();
     }
-  }, [config.baseBranch, config.prompt, config.files.length, config.compress, initialSyncDone, fetchPreview]);
+  }, [config.baseBranch, config.prompt, config.files.length, config.compress, initialSyncDone, startCountdown]);
 
   // Source changes - start countdown (unless paused)
   useEffect(() => {
@@ -195,13 +207,15 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
   }, [config.granularity, config.contextLevel, config.generationModel, initialSyncDone, isContextStale, fetchPreview]);
 
-  // Timer expiry - auto-fetch when countdown ends (only if not paused)
+  // Timer expiry - auto-fetch when countdown ends (only if not paused and countdown was started)
+  // Note: countdownStarted ensures we don't auto-fetch when context becomes stale but countdown hasn't begun
   useEffect(() => {
-    if (timeUntilRefresh === null && isContextStale && initialSyncDone && !isPaused) {
+    if (timeUntilRefresh === null && isContextStale && initialSyncDone && !isPaused && countdownStarted) {
       setIsContextStale(false);
+      setCountdownStarted(false);
       fetchPreview();
     }
-  }, [timeUntilRefresh, isContextStale, initialSyncDone, isPaused, fetchPreview]);
+  }, [timeUntilRefresh, isContextStale, initialSyncDone, isPaused, countdownStarted, fetchPreview]);
 
   const handleManualRefresh = useCallback(() => {
     clearCountdown();
@@ -237,13 +251,15 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
           sourceRefreshTimerRef.current = setTimeout(() => {
             clearCountdown();
             setIsContextStale(false);
+            // Trigger the fetch when countdown completes
+            fetchPreview();
           }, remaining * 1000);
         }
         pausedTimeRemainingRef.current = null;
       }
       return newPaused;
     });
-  }, [timeUntilRefresh, isContextStale, clearCountdown]);
+  }, [timeUntilRefresh, isContextStale, clearCountdown, fetchPreview]);
 
   return {
     preview,

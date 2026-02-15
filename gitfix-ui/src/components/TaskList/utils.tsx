@@ -71,8 +71,8 @@ export const getStatusPill = (status: string) => {
   switch (status) {
     case 'completed':
       return (
-        <span className={`${baseClasses} bg-green-50 text-green-700 border border-green-200`}>
-           <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+        <span className={`${baseClasses} bg-gray-100 text-gray-600 border border-gray-200`}>
+           <span className="w-1.5 h-1.5 rounded-full bg-gray-400"></span>
            Completed
         </span>
       );
@@ -94,8 +94,8 @@ export const getStatusPill = (status: string) => {
     case 'claude_execution':
     case 'processing':
       return (
-        <span className={`${baseClasses} bg-blue-50 text-blue-700 border border-blue-200`}>
-           <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+        <span className={`${baseClasses} bg-teal-50 text-teal-700 border border-teal-200`}>
+           <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse"></span>
            Implementing
         </span>
       );
