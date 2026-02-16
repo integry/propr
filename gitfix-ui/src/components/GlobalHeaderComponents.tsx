@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, Users, AlertTriangle, RefreshCw, X, Inbox } from 'lucide-react';
+import { Activity, Users, AlertTriangle, RefreshCw, X, Inbox, CornerDownRight } from 'lucide-react';
 import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle } from './headerUtils';
@@ -36,10 +36,18 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
     return parts.length > 1 ? parts[1] : repository;
   };
 
-  // Get truncated plan name
-  const getPlanName = (plan: DraftListItem): string => {
-    const name = plan.name || plan.initial_prompt;
-    return name.length > 35 ? name.slice(0, 35) + '...' : name;
+  // Format time ago
+  const formatTimeAgo = (dateString: string): string => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
   };
 
   return (
@@ -50,7 +58,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
         </span>
       </div>
 
-      <div className="max-h-80 overflow-y-auto">
+      <div className="max-h-80 overflow-y-auto scrollbar-stealth">
         {displayPlans.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-gray-500">
             No active plans
@@ -59,41 +67,38 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
           displayPlans.map((plan, index) => (
             <div
               key={plan.draft_id}
-              className={`flex items-center gap-2 px-4 py-2.5 hover:bg-gray-50 transition-colors group ${
-                index < displayPlans.length - 1 ? 'border-b border-gray-100' : ''
+              className={`px-4 py-3 hover:bg-gray-50 transition-colors group cursor-pointer ${
+                index < displayPlans.length - 1 ? 'border-b border-gray-50' : ''
               }`}
+              onClick={() => handlePlanClick(plan.draft_id)}
             >
-              {/* Vertical thread indicator */}
-              <div className="w-0.5 h-full self-stretch bg-gray-200 rounded-full flex-shrink-0" />
-
-              <button
-                onClick={() => handlePlanClick(plan.draft_id)}
-                className="flex-1 min-w-0 flex items-center gap-2"
-              >
-                {/* Repo name */}
-                <span className="text-xs font-medium text-gray-600 flex-shrink-0">
+              {/* Top Row: Repo • Status • Time */}
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs text-gray-500">
                   {getRepoName(plan.repository)}
                 </span>
-
-                {/* Status badge */}
-                <span className={`px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0 ${getStatusBadgeStyle(plan.status)}`}>
+                <span className="text-gray-300">•</span>
+                <span className={`px-1.5 py-0.5 rounded text-xs font-mono ${getStatusBadgeStyle(plan.status)}`}>
                   {plan.status}
                 </span>
-
-                {/* Plan name - truncated */}
-                <span className="text-sm text-gray-900 truncate group-hover:text-primary-600">
-                  {getPlanName(plan)}
+                <span className="text-xs text-gray-400 ml-auto">
+                  {formatTimeAgo(plan.updated_at || plan.created_at)}
                 </span>
-              </button>
-
-              {/* Dismiss button */}
-              <button
-                onClick={(e) => handleDismiss(e, plan.draft_id)}
-                className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
-                title="Dismiss"
-              >
-                <X className="w-4 h-4 text-gray-400 hover:text-gray-600" />
-              </button>
+                {/* Dismiss button */}
+                <button
+                  onClick={(e) => handleDismiss(e, plan.draft_id)}
+                  className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
+                  title="Dismiss"
+                >
+                  <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
+                </button>
+              </div>
+              {/* Bottom Row: Title (Bold, Truncated) */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-medium text-gray-900 truncate group-hover:text-primary-600">
+                  {plan.name || plan.initial_prompt}
+                </span>
+              </div>
             </div>
           ))
         )}
@@ -165,10 +170,23 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
     return '';
   };
 
-  // Get truncated title
-  const getTitle = (group: TaskGroup): string => {
-    const title = group.latestTask.title || 'Untitled';
-    return title.length > 30 ? title.slice(0, 30) + '...' : title;
+  // Format time ago
+  const formatTimeAgo = (dateString: string): string => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
+  };
+
+  // Check if this is a follow-up task (PR task, not issue)
+  const isFollowUp = (group: TaskGroup): boolean => {
+    return !!group.prNumber;
   };
 
   return (
@@ -179,7 +197,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
         </span>
       </div>
 
-      <div className="max-h-80 overflow-y-auto">
+      <div className="max-h-80 overflow-y-auto scrollbar-stealth">
         {displayGroups.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-gray-500">
             No tasks needing review
@@ -188,43 +206,45 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
           displayGroups.map((group, index) => (
             <div
               key={group.key}
-              className={`flex items-center gap-2 px-4 py-2.5 hover:bg-gray-50 transition-colors group ${
-                index < displayGroups.length - 1 ? 'border-b border-gray-100' : ''
+              className={`px-4 py-3 hover:bg-gray-50 transition-colors group cursor-pointer ${
+                index < displayGroups.length - 1 ? 'border-b border-gray-50' : ''
               }`}
+              onClick={() => handleTaskClick(group)}
             >
-              {/* Vertical thread indicator */}
-              <div className="w-0.5 h-full self-stretch bg-gray-200 rounded-full flex-shrink-0" />
-
-              <button
-                onClick={() => handleTaskClick(group)}
-                className="flex-1 min-w-0 flex items-center gap-2"
-              >
-                {/* Repo name */}
-                <span className="text-xs font-medium text-gray-600 flex-shrink-0">
+              {/* Top Row: Repo • ID (Chip) • Time */}
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs text-gray-500">
                   {group.repoName}
                 </span>
-
-                {/* Issue/PR ID as monospace chip */}
                 {getIssueId(group) && (
-                  <span className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-xs font-mono text-gray-700 flex-shrink-0">
-                    {getIssueId(group)}
-                  </span>
+                  <>
+                    <span className="text-gray-300">•</span>
+                    <span className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-xs font-mono text-gray-700">
+                      {getIssueId(group)}
+                    </span>
+                  </>
                 )}
-
-                {/* Title - truncated */}
-                <span className="text-sm text-gray-900 truncate group-hover:text-primary-600">
-                  {getTitle(group)}
+                <span className="text-xs text-gray-400 ml-auto">
+                  {formatTimeAgo(group.latestTask.createdAt)}
                 </span>
-              </button>
-
-              {/* Dismiss button */}
-              <button
-                onClick={(e) => handleDismiss(e, group.latestTask.id)}
-                className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
-                title="Dismiss"
-              >
-                <X className="w-4 h-4 text-gray-400 hover:text-gray-600" />
-              </button>
+                {/* Dismiss button */}
+                <button
+                  onClick={(e) => handleDismiss(e, group.latestTask.id)}
+                  className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
+                  title="Dismiss"
+                >
+                  <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
+                </button>
+              </div>
+              {/* Bottom Row: Icon (if followup) + Title (Bold, Truncated) */}
+              <div className="flex items-center gap-1.5">
+                {isFollowUp(group) && (
+                  <CornerDownRight className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                )}
+                <span className="text-sm font-medium text-gray-900 truncate group-hover:text-primary-600">
+                  {group.latestTask.title || 'Untitled'}
+                </span>
+              </div>
             </div>
           ))
         )}
@@ -261,9 +281,9 @@ export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissT
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 px-3 py-1.5 border border-amber-200 text-amber-700 bg-amber-50 rounded-full text-xs font-medium hover:bg-amber-100 transition-colors"
+        className="flex items-center gap-1.5 px-3 py-1 text-amber-600 border border-amber-200 bg-transparent rounded-full text-xs font-medium hover:bg-amber-50 transition-colors"
       >
-        <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+        <AlertTriangle className="w-3.5 h-3.5" />
         <span>{reviewCount} Review</span>
       </button>
 
@@ -359,9 +379,9 @@ export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlan
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-teal-50 text-teal-700 border border-teal-100 rounded-full text-xs font-medium hover:bg-teal-100 transition-colors"
+        className="flex items-center gap-1.5 px-3 py-1 text-teal-600 border border-teal-200 bg-transparent rounded-full text-xs font-medium hover:bg-teal-50 transition-colors"
       >
-        <RefreshCw className={`w-3.5 h-3.5 text-teal-600 ${activePlans.length > 0 ? 'animate-spin' : ''}`} style={{ animationDuration: '3s' }} />
+        <RefreshCw className={`w-3.5 h-3.5 ${activePlans.length > 0 ? 'animate-spin' : ''}`} style={{ animationDuration: '3s' }} />
         <span>{activePlans.length} Active</span>
       </button>
 
