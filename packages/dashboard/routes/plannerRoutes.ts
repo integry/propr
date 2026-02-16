@@ -151,7 +151,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
     try {
       const draftId = crypto.randomUUID();
-      const name = prompt ? prompt.substring(0, 50) + (prompt.length > 50 ? '...' : '') : 'Untitled Plan';
+      // Store full prompt as name - truncation should happen on frontend via CSS only
+      const name = prompt || 'Untitled Plan';
       await db!('task_drafts')
         .insert({ draft_id: draftId, user_id: req.user!.id, repository, initial_prompt: prompt, name });
 
