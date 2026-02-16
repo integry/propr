@@ -82,12 +82,11 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
           <MachineStatus runningCount={runningCount} />
         </div>
 
-        {/* Vertical Divider - "Pipe" separator */}
-        <div className="hidden md:block w-px h-6 bg-gray-300" />
-
-        {/* Nav Blocks: Plans + Tasks (Left-aligned after logo) */}
+        {/* Nav Blocks: Plans + Divider + Tasks (Left-aligned after logo) */}
         <div className="hidden md:flex items-center gap-4">
           <ActivePlansButton activePlans={activePlans} onDismissPlan={dismissPlan} />
+          {/* Vertical Divider - "Pipe" separator between Plans and Tasks */}
+          <div className="w-px h-6 bg-gray-300" />
           <TasksButton taskGroups={reviewGroups} onDismissTask={dismissTask} />
         </div>
       </div>

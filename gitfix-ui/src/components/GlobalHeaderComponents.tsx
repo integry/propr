@@ -51,7 +51,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   };
 
   return (
-    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
+    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-gray-200 rounded-lg shadow-xl z-[100] overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Active Plans ({activePlans.length})
@@ -201,7 +201,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   };
 
   return (
-    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
+    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-gray-200 rounded-lg shadow-xl z-[100] overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Tasks Needing Review ({taskGroups.length})
@@ -343,7 +343,7 @@ export const SystemHealth: React.FC<SystemHealthProps> = ({ systemHealth }) => {
 
       {isOpen && (
         <div
-          className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg py-2 px-3 min-w-[160px] z-50"
+          className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg py-2 px-3 min-w-[160px] z-[100]"
           onMouseLeave={() => setIsOpen(false)}
         >
           <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">System Status</div>
