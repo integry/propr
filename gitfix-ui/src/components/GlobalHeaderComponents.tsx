@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, Users, AlertTriangle, RefreshCw, X, Inbox, CornerDownRight } from 'lucide-react';
+import { Activity, Users, AlertTriangle, X, Inbox, CornerDownRight, Sparkles } from 'lucide-react';
 import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle } from './headerUtils';
@@ -93,9 +93,9 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
                   <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
                 </button>
               </div>
-              {/* Bottom Row: Title (Bold, Truncated) */}
+              {/* Bottom Row: Title (Semi-Bold, Truncated) */}
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-medium text-gray-900 truncate group-hover:text-primary-600">
+                <span className="text-sm font-semibold text-gray-900 truncate group-hover:text-primary-600">
                   {plan.name || plan.initial_prompt}
                 </span>
               </div>
@@ -123,7 +123,7 @@ interface MachineStatusProps { runningCount: number; }
 export const MachineStatus: React.FC<MachineStatusProps> = ({ runningCount }) => {
   if (runningCount === 0) return null;
   return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 border border-blue-200 rounded-full">
+    <div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 border border-blue-200 rounded-md">
       <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
       <Users className="w-3.5 h-3.5 text-blue-600" />
       <span className="text-xs font-medium text-blue-700">{runningCount}</span>
@@ -136,7 +136,7 @@ interface HumanInboxProps { reviewCount: number; }
 export const HumanInbox: React.FC<HumanInboxProps> = ({ reviewCount }) => {
   if (reviewCount === 0) return null;
   return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200 rounded-full">
+    <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200 rounded-md">
       <Inbox className="w-3.5 h-3.5 text-amber-600" />
       <span className="text-xs font-medium text-amber-700">{reviewCount}</span>
     </div>
@@ -189,6 +189,17 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
     return !!group.prNumber;
   };
 
+  // Clean task title by removing "Followup:" prefix and similar noise
+  // Since we already show the ↳ icon for follow-ups, the text prefix is redundant
+  const cleanTaskTitle = (title?: string): string => {
+    if (!title) return '';
+    // Remove "Followup:" or "Followup: [..." prefixes
+    let cleaned = title.replace(/^Followup:\s*/i, '');
+    // Remove bracketed references like "[766 by Claude Opus]" or "[#123]"
+    cleaned = cleaned.replace(/^\[.*?\]\s*/g, '');
+    return cleaned.trim();
+  };
+
   return (
     <div className="absolute right-0 top-full mt-2 w-96 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
@@ -236,13 +247,13 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
                   <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
                 </button>
               </div>
-              {/* Bottom Row: Icon (if followup) + Title (Bold, Truncated) */}
+              {/* Bottom Row: Icon (if followup) + Title (Semi-Bold, Truncated) */}
               <div className="flex items-center gap-1.5">
                 {isFollowUp(group) && (
                   <CornerDownRight className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
                 )}
-                <span className="text-sm font-medium text-gray-900 truncate group-hover:text-primary-600">
-                  {group.latestTask.title || 'Untitled'}
+                <span className="text-sm font-semibold text-gray-900 truncate group-hover:text-primary-600">
+                  {cleanTaskTitle(group.latestTask.title) || 'Untitled'}
                 </span>
               </div>
             </div>
@@ -281,7 +292,7 @@ export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissT
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 px-3 py-1 text-amber-600 border border-amber-200 bg-transparent rounded-full text-xs font-medium hover:bg-amber-50 transition-colors"
+        className="flex items-center gap-1.5 px-3 py-1 text-amber-600 border border-amber-200 bg-transparent rounded-md text-xs font-medium hover:bg-amber-50 transition-colors"
       >
         <AlertTriangle className="w-3.5 h-3.5" />
         <span>{reviewCount} Review</span>
@@ -379,10 +390,10 @@ export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlan
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 px-3 py-1 text-teal-600 border border-teal-200 bg-transparent rounded-full text-xs font-medium hover:bg-teal-50 transition-colors"
+        className="flex items-center gap-1.5 px-3 py-1 text-slate-700 border border-slate-200 bg-slate-100 rounded-md text-xs font-medium hover:bg-slate-200 transition-colors"
       >
-        <RefreshCw className={`w-3.5 h-3.5 ${activePlans.length > 0 ? 'animate-spin' : ''}`} style={{ animationDuration: '3s' }} />
-        <span>{activePlans.length} Active</span>
+        <Sparkles className="w-3.5 h-3.5" />
+        <span>{activePlans.length} Plans</span>
       </button>
 
       <PlansDropdown activePlans={activePlans} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissPlan} />
