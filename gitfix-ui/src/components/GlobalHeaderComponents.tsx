@@ -93,9 +93,9 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
                   <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
                 </button>
               </div>
-              {/* Bottom Row: Title (Semi-Bold, Truncated) */}
+              {/* Bottom Row: Title (Medium weight, Truncated) */}
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-semibold text-gray-900 truncate group-hover:text-primary-600">
+                <span className="text-sm font-medium text-gray-900 truncate group-hover:text-primary-600">
                   {plan.name || plan.initial_prompt}
                 </span>
               </div>
@@ -247,12 +247,12 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
                   <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
                 </button>
               </div>
-              {/* Bottom Row: Icon (if followup) + Title (Semi-Bold, Truncated) */}
+              {/* Bottom Row: Icon (if followup) + Title (Medium weight, Truncated) */}
               <div className="flex items-center gap-1.5">
                 {isFollowUp(group) && (
                   <CornerDownRight className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
                 )}
-                <span className="text-sm font-semibold text-gray-900 truncate group-hover:text-primary-600">
+                <span className="text-sm font-medium text-gray-900 truncate group-hover:text-primary-600">
                   {cleanTaskTitle(group.latestTask.title) || 'Untitled'}
                 </span>
               </div>
@@ -294,13 +294,13 @@ export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissT
         onClick={() => setIsOpen(!isOpen)}
         className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
           isOpen
-            ? 'text-amber-700 bg-amber-50'
-            : 'text-amber-600 hover:text-amber-700 hover:bg-gray-50'
+            ? 'bg-slate-50'
+            : 'hover:bg-slate-50'
         }`}
       >
-        <ListTodo className="w-4 h-4" />
-        <span className="font-bold">{reviewCount}</span>
-        <span>Review</span>
+        <ListTodo className="w-4 h-4 text-slate-600" />
+        <span className="font-bold text-slate-900">{reviewCount}</span>
+        <span className="text-slate-600">Review</span>
       </button>
 
       <TasksDropdown taskGroups={taskGroups} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissTask} />
@@ -397,13 +397,13 @@ export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlan
         onClick={() => setIsOpen(!isOpen)}
         className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
           isOpen
-            ? 'text-slate-900 bg-gray-100'
-            : 'text-slate-600 hover:text-slate-900 hover:bg-gray-50'
+            ? 'bg-slate-50'
+            : 'hover:bg-slate-50'
         }`}
       >
-        <ScrollText className="w-4 h-4" />
-        <span className="font-bold">{activePlans.length}</span>
-        <span>Plans</span>
+        <ScrollText className="w-4 h-4 text-slate-600" />
+        <span className="font-bold text-slate-900">{activePlans.length}</span>
+        <span className="text-slate-600">Plans</span>
       </button>
 
       <PlansDropdown activePlans={activePlans} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissPlan} />

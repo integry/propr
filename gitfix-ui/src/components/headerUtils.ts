@@ -1,21 +1,21 @@
 // Utility functions for header components
 // Separated to allow React Fast Refresh to work properly
 
-// Status badge colors based on plan status
+// Status badge colors based on plan status - using outline pill style
 export const getStatusBadgeStyle = (status: string): string => {
   switch (status) {
     case 'generating':
     case 'refining':
-      return 'bg-blue-100 text-blue-700';
+      return 'border border-blue-200 text-blue-600 bg-transparent';
     case 'review':
-      return 'bg-amber-100 text-amber-700';
+      return 'border border-amber-200 text-amber-600 bg-transparent';
     case 'approved':
-      return 'bg-green-100 text-green-700';
+      return 'border border-green-200 text-green-600 bg-transparent';
     case 'executing':
-      return 'bg-purple-100 text-purple-700';
+      return 'border border-purple-200 text-purple-600 bg-transparent';
     case 'draft':
     default:
-      return 'bg-gray-100 text-gray-700';
+      return 'border border-gray-200 text-gray-600 bg-transparent';
   }
 };
 
