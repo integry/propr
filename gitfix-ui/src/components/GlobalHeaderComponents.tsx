@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, ScrollText, Users, Inbox, ChevronDown, ListTodo, X } from 'lucide-react';
+import { Activity, Users, AlertTriangle, RefreshCw, X, Inbox } from 'lucide-react';
 import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
-import { getStatusBadgeStyle, formatRelativeTime } from './headerUtils';
+import { getStatusBadgeStyle } from './headerUtils';
 
 interface TaskGroup {
   key: string;
@@ -30,48 +30,66 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   const handleDismiss = (e: React.MouseEvent, planId: string) => { e.stopPropagation(); onDismiss(planId); };
   if (!isOpen) return null;
 
+  // Extract repo name from repository string (e.g., "owner/repo" -> "repo")
+  const getRepoName = (repository: string): string => {
+    const parts = repository.split('/');
+    return parts.length > 1 ? parts[1] : repository;
+  };
+
+  // Get truncated plan name
+  const getPlanName = (plan: DraftListItem): string => {
+    const name = plan.name || plan.initial_prompt;
+    return name.length > 35 ? name.slice(0, 35) + '...' : name;
+  };
+
   return (
-    <div className="absolute right-0 top-full mt-2 w-80 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-semibold text-gray-700">Active Plans</span>
-          <span className="text-xs text-gray-500">{activePlans.length} total</span>
-        </div>
+    <div className="absolute right-0 top-full mt-2 w-96 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          Active Plans ({activePlans.length})
+        </span>
       </div>
 
-      <div className="max-h-96 overflow-y-auto">
+      <div className="max-h-80 overflow-y-auto">
         {displayPlans.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-gray-500">
             No active plans
           </div>
         ) : (
-          displayPlans.map((plan) => (
+          displayPlans.map((plan, index) => (
             <div
               key={plan.draft_id}
-              className="w-full px-4 py-3 text-left hover:bg-gray-50 border-b border-gray-100 last:border-b-0 transition-colors group flex items-start justify-between gap-2"
+              className={`flex items-center gap-2 px-4 py-2.5 hover:bg-gray-50 transition-colors group ${
+                index < displayPlans.length - 1 ? 'border-b border-gray-100' : ''
+              }`}
             >
+              {/* Vertical thread indicator */}
+              <div className="w-0.5 h-full self-stretch bg-gray-200 rounded-full flex-shrink-0" />
+
               <button
                 onClick={() => handlePlanClick(plan.draft_id)}
-                className="flex-1 min-w-0 text-left"
+                className="flex-1 min-w-0 flex items-center gap-2"
               >
-                <div className="font-medium text-sm text-gray-900 truncate group-hover:text-primary-600">
-                  {plan.name || plan.initial_prompt.slice(0, 50) + (plan.initial_prompt.length > 50 ? '...' : '')}
-                </div>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${getStatusBadgeStyle(plan.status)}`}>
-                    {plan.status}
-                  </span>
-                  <span className="text-xs text-gray-500 truncate">
-                    {plan.repository}
-                  </span>
-                </div>
-                <div className="text-xs text-gray-400 mt-1">
-                  Updated {formatRelativeTime(plan.updated_at)}
-                </div>
+                {/* Repo name */}
+                <span className="text-xs font-medium text-gray-600 flex-shrink-0">
+                  {getRepoName(plan.repository)}
+                </span>
+
+                {/* Status badge */}
+                <span className={`px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0 ${getStatusBadgeStyle(plan.status)}`}>
+                  {plan.status}
+                </span>
+
+                {/* Plan name - truncated */}
+                <span className="text-sm text-gray-900 truncate group-hover:text-primary-600">
+                  {getPlanName(plan)}
+                </span>
               </button>
+
+              {/* Dismiss button */}
               <button
                 onClick={(e) => handleDismiss(e, plan.draft_id)}
-                className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0"
+                className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
                 title="Dismiss"
               >
                 <X className="w-4 h-4 text-gray-400 hover:text-gray-600" />
@@ -82,12 +100,12 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
       </div>
 
       {activePlans.length > 0 && (
-        <div className="px-4 py-2 border-t border-gray-100 bg-gray-50">
+        <div className="px-4 py-2.5 border-t border-gray-200 bg-gray-50">
           <button
             onClick={handleViewAll}
-            className="w-full text-center text-sm font-medium text-primary-600 hover:text-primary-700 py-1"
+            className="w-full text-center text-sm font-medium text-primary-600 hover:text-primary-700"
           >
-            View All Plans
+            View All Plans &rarr;
           </button>
         </div>
       )}
@@ -140,52 +158,69 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   const handleDismiss = (e: React.MouseEvent, taskId: string) => { e.stopPropagation(); onDismiss(taskId); };
   if (!isOpen) return null;
 
+  // Get the issue/PR number for display
+  const getIssueId = (group: TaskGroup): string => {
+    if (group.prNumber) return `#${group.prNumber}`;
+    if (group.issueNumber) return `#${group.issueNumber}`;
+    return '';
+  };
+
+  // Get truncated title
+  const getTitle = (group: TaskGroup): string => {
+    const title = group.latestTask.title || 'Untitled';
+    return title.length > 30 ? title.slice(0, 30) + '...' : title;
+  };
+
   return (
-    <div className="absolute right-0 top-full mt-2 w-80 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-semibold text-gray-700">Tasks Needing Review</span>
-          <span className="text-xs text-gray-500">{taskGroups.length} total</span>
-        </div>
+    <div className="absolute right-0 top-full mt-2 w-96 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          Tasks Needing Review ({taskGroups.length})
+        </span>
       </div>
 
-      <div className="max-h-96 overflow-y-auto">
+      <div className="max-h-80 overflow-y-auto">
         {displayGroups.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-gray-500">
             No tasks needing review
           </div>
         ) : (
-          displayGroups.map((group) => (
+          displayGroups.map((group, index) => (
             <div
               key={group.key}
-              className="w-full px-4 py-3 text-left hover:bg-gray-50 border-b border-gray-100 last:border-b-0 transition-colors group flex items-start justify-between gap-2"
+              className={`flex items-center gap-2 px-4 py-2.5 hover:bg-gray-50 transition-colors group ${
+                index < displayGroups.length - 1 ? 'border-b border-gray-100' : ''
+              }`}
             >
+              {/* Vertical thread indicator */}
+              <div className="w-0.5 h-full self-stretch bg-gray-200 rounded-full flex-shrink-0" />
+
               <button
                 onClick={() => handleTaskClick(group)}
-                className="flex-1 min-w-0 text-left"
+                className="flex-1 min-w-0 flex items-center gap-2"
               >
-                <div className="font-medium text-sm text-gray-900 truncate group-hover:text-primary-600">
-                  {group.latestTask.title || `${group.repoOwner}/${group.repoName}`}
-                </div>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${
-                    group.latestTask.status === 'failed'
-                      ? 'bg-red-100 text-red-700'
-                      : 'bg-green-100 text-green-700'
-                  }`}>
-                    {group.latestTask.status}
+                {/* Repo name */}
+                <span className="text-xs font-medium text-gray-600 flex-shrink-0">
+                  {group.repoName}
+                </span>
+
+                {/* Issue/PR ID as monospace chip */}
+                {getIssueId(group) && (
+                  <span className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-xs font-mono text-gray-700 flex-shrink-0">
+                    {getIssueId(group)}
                   </span>
-                  <span className="text-xs text-gray-500 truncate">
-                    {group.prNumber ? `PR #${group.prNumber}` : group.issueNumber ? `Issue #${group.issueNumber}` : ''}
-                  </span>
-                </div>
-                <div className="text-xs text-gray-400 mt-1">
-                  {group.repoOwner}/{group.repoName}
-                </div>
+                )}
+
+                {/* Title - truncated */}
+                <span className="text-sm text-gray-900 truncate group-hover:text-primary-600">
+                  {getTitle(group)}
+                </span>
               </button>
+
+              {/* Dismiss button */}
               <button
                 onClick={(e) => handleDismiss(e, group.latestTask.id)}
-                className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0"
+                className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
                 title="Dismiss"
               >
                 <X className="w-4 h-4 text-gray-400 hover:text-gray-600" />
@@ -196,12 +231,12 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
       </div>
 
       {taskGroups.length > 0 && (
-        <div className="px-4 py-2 border-t border-gray-100 bg-gray-50">
+        <div className="px-4 py-2.5 border-t border-gray-200 bg-gray-50">
           <button
             onClick={handleViewAll}
-            className="w-full text-center text-sm font-medium text-primary-600 hover:text-primary-700 py-1"
+            className="w-full text-center text-sm font-medium text-primary-600 hover:text-primary-700"
           >
-            View All Tasks
+            View All Tasks &rarr;
           </button>
         </div>
       )}
@@ -226,19 +261,10 @@ export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissT
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-colors ${
-          reviewCount > 0
-            ? 'bg-amber-50 border-amber-200 hover:bg-amber-100'
-            : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
-        }`}
+        className="flex items-center gap-1.5 px-3 py-1.5 border border-amber-200 text-amber-700 bg-amber-50 rounded-full text-xs font-medium hover:bg-amber-100 transition-colors"
       >
-        <ListTodo className={`w-4 h-4 ${reviewCount > 0 ? 'text-amber-600' : 'text-gray-500'}`} />
-        <span className={`text-sm font-medium ${reviewCount > 0 ? 'text-amber-700' : 'text-gray-600'}`}>
-          {reviewCount}
-        </span>
-        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${
-          reviewCount > 0 ? 'text-amber-600' : 'text-gray-500'
-        } ${isOpen ? 'rotate-180' : ''}`} />
+        <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+        <span>{reviewCount} Review</span>
       </button>
 
       <TasksDropdown taskGroups={taskGroups} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissTask} />
@@ -333,19 +359,10 @@ export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlan
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-colors ${
-          activePlans.length > 0
-            ? 'bg-teal-50 border-teal-200 hover:bg-teal-100'
-            : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
-        }`}
+        className="flex items-center gap-1.5 px-3 py-1.5 bg-teal-50 text-teal-700 border border-teal-100 rounded-full text-xs font-medium hover:bg-teal-100 transition-colors"
       >
-        <ScrollText className={`w-4 h-4 ${activePlans.length > 0 ? 'text-teal-600' : 'text-gray-500'}`} />
-        <span className={`text-sm font-medium ${activePlans.length > 0 ? 'text-teal-700' : 'text-gray-600'}`}>
-          {activePlans.length}
-        </span>
-        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${
-          activePlans.length > 0 ? 'text-teal-600' : 'text-gray-500'
-        } ${isOpen ? 'rotate-180' : ''}`} />
+        <RefreshCw className={`w-3.5 h-3.5 text-teal-600 ${activePlans.length > 0 ? 'animate-spin' : ''}`} style={{ animationDuration: '3s' }} />
+        <span>{activePlans.length} Active</span>
       </button>
 
       <PlansDropdown activePlans={activePlans} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissPlan} />
