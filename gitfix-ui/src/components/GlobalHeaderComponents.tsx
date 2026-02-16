@@ -46,21 +46,20 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
       }}
     >
       {/* Header with View All link moved to top-right */}
-      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-base">✨</span>
-            <span className="text-slate-500 font-bold text-[10px] uppercase tracking-wider leading-none">
+      <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200">
+        <div className="flex items-baseline justify-between">
+          <div className="flex items-baseline gap-2">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
               PLANS IN FOCUS
             </span>
-            <span className="px-1.5 py-0.5 bg-slate-200 text-slate-600 text-[10px] font-bold rounded-sm leading-none">
-              {activePlans.length}
+            <span className="text-[10px] font-bold text-slate-400">
+              ({activePlans.length})
             </span>
           </div>
           {activePlans.length > 0 && (
             <button
               onClick={handleViewAll}
-              className="text-xs text-gray-500 hover:text-primary-600 transition-colors"
+              className="text-[10px] text-slate-400 hover:text-primary-600 transition-colors"
             >
               View All &rarr;
             </button>
@@ -78,21 +77,21 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
           displayPlans.map((plan, index) => (
             <div
               key={plan.draft_id}
-              className={`px-4 py-3 hover:bg-slate-100 transition-colors group cursor-pointer ${
-                index < displayPlans.length - 1 ? 'border-b border-slate-100' : ''
+              className={`px-4 py-2.5 hover:bg-slate-50 transition-colors group cursor-pointer border-b border-slate-50 ${
+                index === displayPlans.length - 1 ? 'border-b-0' : ''
               }`}
               onClick={() => handlePlanClick(plan.draft_id)}
             >
               {/* Line 1 (Meta): Repo • Status Badge ... Time Ago (right-aligned) */}
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-xs text-gray-500">
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="text-xs font-normal text-slate-500">
                   {getRepoName(plan.repository)}
                 </span>
-                <span className="text-gray-300">•</span>
-                <span className={`px-1.5 py-0.5 text-xs font-mono ${getStatusBadgeStyle(plan.status)}`}>
+                <span className="text-slate-300">•</span>
+                <span className={`px-1.5 py-0.5 text-xs font-mono font-normal ${getStatusBadgeStyle(plan.status)}`}>
                   {plan.status}
                 </span>
-                <span className="text-xs text-gray-400 ml-auto">
+                <span className="text-xs font-normal text-slate-500 ml-auto">
                   {formatTimeAgo(plan.updated_at || plan.created_at)}
                 </span>
                 {/* Dismiss button */}
@@ -101,12 +100,12 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
                   className="p-1 hover:bg-slate-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
                   title="Dismiss"
                 >
-                  <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
+                  <X className="w-3.5 h-3.5 text-slate-400 hover:text-slate-600" />
                 </button>
               </div>
-              {/* Line 2 (Content): Full-width Bold Title with ellipsis */}
-              <div className="w-full">
-                <span className="text-sm font-semibold text-gray-900 truncate block w-full group-hover:text-primary-600">
+              {/* Line 2 (Content): Full-width Semi-bold Title with ellipsis */}
+              <div className="block w-full overflow-hidden">
+                <span className="text-sm font-semibold text-slate-900 block truncate w-full group-hover:text-primary-600">
                   {plan.name || plan.initial_prompt}
                 </span>
               </div>
@@ -150,21 +149,20 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
       }}
     >
       {/* Header with View All link moved to top-right */}
-      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-base">📦</span>
-            <span className="text-slate-500 font-bold text-[10px] uppercase tracking-wider leading-none">
+      <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200">
+        <div className="flex items-baseline justify-between">
+          <div className="flex items-baseline gap-2">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
               TASKS IN FOCUS
             </span>
-            <span className="px-1.5 py-0.5 bg-slate-200 text-slate-600 text-[10px] font-bold rounded-sm leading-none">
-              {taskGroups.length}
+            <span className="text-[10px] font-bold text-slate-400">
+              ({taskGroups.length})
             </span>
           </div>
           {taskGroups.length > 0 && (
             <button
               onClick={handleViewAll}
-              className="text-xs text-gray-500 hover:text-primary-600 transition-colors"
+              className="text-[10px] text-slate-400 hover:text-primary-600 transition-colors"
             >
               View All &rarr;
             </button>
@@ -182,25 +180,25 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
           displayGroups.map((group, index) => (
             <div
               key={group.key}
-              className={`px-4 py-3 hover:bg-slate-100 transition-colors group cursor-pointer ${
-                index < displayGroups.length - 1 ? 'border-b border-slate-100' : ''
+              className={`px-4 py-2.5 hover:bg-slate-50 transition-colors group cursor-pointer border-b border-slate-50 ${
+                index === displayGroups.length - 1 ? 'border-b-0' : ''
               }`}
               onClick={() => handleTaskClick(group)}
             >
               {/* Line 1 (Meta): Repo • ID (Chip) ... Time Ago (right-aligned) */}
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-xs text-gray-500">
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="text-xs font-normal text-slate-500">
                   {group.repoName}
                 </span>
                 {getIssueId(group) && (
                   <>
-                    <span className="text-gray-300">•</span>
-                    <span className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 text-xs font-mono text-gray-700">
+                    <span className="text-slate-300">•</span>
+                    <span className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 text-xs font-mono font-normal text-slate-500">
                       {getIssueId(group)}
                     </span>
                   </>
                 )}
-                <span className="text-xs text-gray-400 ml-auto">
+                <span className="text-xs font-normal text-slate-500 ml-auto">
                   {formatTimeAgo(group.latestTask.createdAt)}
                 </span>
                 {/* Dismiss button */}
@@ -209,15 +207,15 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
                   className="p-1 hover:bg-slate-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
                   title="Dismiss"
                 >
-                  <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
+                  <X className="w-3.5 h-3.5 text-slate-400 hover:text-slate-600" />
                 </button>
               </div>
-              {/* Line 2 (Content): Full-width Bold Title with ellipsis */}
-              <div className="w-full flex items-center gap-1.5">
+              {/* Line 2 (Content): Full-width Semi-bold Title with ellipsis */}
+              <div className="w-full flex items-center gap-1.5 overflow-hidden">
                 {isFollowUp(group) && (
-                  <CornerDownRight className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                  <CornerDownRight className="w-3.5 h-3.5 text-slate-300 flex-shrink-0" />
                 )}
-                <span className="text-sm font-semibold text-gray-900 truncate block flex-1 group-hover:text-primary-600">
+                <span className="text-sm font-semibold text-slate-900 truncate block flex-1 group-hover:text-primary-600">
                   {cleanTaskTitle(group.latestTask.title) || 'Untitled'}
                 </span>
               </div>
