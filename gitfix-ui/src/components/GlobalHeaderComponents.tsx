@@ -51,8 +51,8 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   };
 
   return (
-    <div className="absolute left-0 top-full mt-2 w-96 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Active Plans ({activePlans.length})
         </span>
@@ -68,11 +68,11 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
             <div
               key={plan.draft_id}
               className={`px-4 py-3 hover:bg-gray-50 transition-colors group cursor-pointer ${
-                index < displayPlans.length - 1 ? 'border-b border-gray-50' : ''
+                index < displayPlans.length - 1 ? 'border-b border-gray-100' : ''
               }`}
               onClick={() => handlePlanClick(plan.draft_id)}
             >
-              {/* Top Row: Repo • Status • Time */}
+              {/* Top Row: Repo • Status (right-aligned: Time) */}
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs text-gray-500">
                   {getRepoName(plan.repository)}
@@ -93,9 +93,9 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
                   <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
                 </button>
               </div>
-              {/* Bottom Row: Title (Medium weight, Truncated) */}
+              {/* Bottom Row: Plan Title (Normal weight, Truncated) */}
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-medium text-gray-900 truncate group-hover:text-primary-600">
+                <span className="text-sm text-gray-900 truncate group-hover:text-primary-600">
                   {plan.name || plan.initial_prompt}
                 </span>
               </div>
@@ -105,7 +105,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
       </div>
 
       {activePlans.length > 0 && (
-        <div className="px-4 py-2.5 border-t border-gray-200 bg-gray-50">
+        <div className="px-4 py-2.5 border-t border-gray-100">
           <button
             onClick={handleViewAll}
             className="w-full text-center text-sm font-medium text-primary-600 hover:text-primary-700"
@@ -201,8 +201,8 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   };
 
   return (
-    <div className="absolute left-0 top-full mt-2 w-96 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Tasks Needing Review ({taskGroups.length})
         </span>
@@ -218,11 +218,11 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
             <div
               key={group.key}
               className={`px-4 py-3 hover:bg-gray-50 transition-colors group cursor-pointer ${
-                index < displayGroups.length - 1 ? 'border-b border-gray-50' : ''
+                index < displayGroups.length - 1 ? 'border-b border-gray-100' : ''
               }`}
               onClick={() => handleTaskClick(group)}
             >
-              {/* Top Row: Repo • ID (Chip) • Time */}
+              {/* Top Row: Repo • ID (Chip) (right-aligned: Time) */}
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs text-gray-500">
                   {group.repoName}
@@ -247,12 +247,12 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
                   <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
                 </button>
               </div>
-              {/* Bottom Row: Icon (if followup) + Title (Medium weight, Truncated) */}
+              {/* Bottom Row: Icon (if followup) + Title (Normal weight, Truncated) */}
               <div className="flex items-center gap-1.5">
                 {isFollowUp(group) && (
                   <CornerDownRight className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
                 )}
-                <span className="text-sm font-medium text-gray-900 truncate group-hover:text-primary-600">
+                <span className="text-sm text-gray-900 truncate group-hover:text-primary-600">
                   {cleanTaskTitle(group.latestTask.title) || 'Untitled'}
                 </span>
               </div>
@@ -262,7 +262,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
       </div>
 
       {taskGroups.length > 0 && (
-        <div className="px-4 py-2.5 border-t border-gray-200 bg-gray-50">
+        <div className="px-4 py-2.5 border-t border-gray-100">
           <button
             onClick={handleViewAll}
             className="w-full text-center text-sm font-medium text-primary-600 hover:text-primary-700"
@@ -292,11 +292,7 @@ export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissT
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
-          isOpen
-            ? 'bg-slate-50'
-            : 'hover:bg-slate-50'
-        }`}
+        className="flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors hover:bg-slate-50"
       >
         <ListTodo className="w-4 h-4 text-slate-600" />
         <span className="font-bold text-slate-900">{reviewCount}</span>
@@ -395,11 +391,7 @@ export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlan
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
-          isOpen
-            ? 'bg-slate-50'
-            : 'hover:bg-slate-50'
-        }`}
+        className="flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors hover:bg-slate-50"
       >
         <ScrollText className="w-4 h-4 text-slate-600" />
         <span className="font-bold text-slate-900">{activePlans.length}</span>
