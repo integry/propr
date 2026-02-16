@@ -5,6 +5,7 @@ export interface Task {
   repositoryName?: string;
   issueNumber?: number;
   prNumber?: number;
+  linkedIssueNumber?: number | null;
   title?: string;
   subtitle?: string;
   status: string;

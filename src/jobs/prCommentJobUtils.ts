@@ -8,7 +8,7 @@ import type { WorktreeInfo } from '@gitfix/core';
 import { formatResetTime } from '@gitfix/core';
 import type { ClaudeCodeResponse, AgentExecutionResult } from '@gitfix/core';
 import type { ClaudeResult } from '@gitfix/core';
-import { recordLLMMetrics, getUsageStats, getDetailedUsageStats, calculateCostWithCachePricing } from '@gitfix/core';
+import { recordLLMMetrics, getDetailedUsageStats, calculateCostWithCachePricing } from '@gitfix/core';
 import type { DetailedUsageStats } from '@gitfix/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment } from '@gitfix/core';
 import { TaskStates } from '@gitfix/core';

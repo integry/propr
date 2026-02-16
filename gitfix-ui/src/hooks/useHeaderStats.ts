@@ -16,6 +16,7 @@ interface Task {
   repositoryName?: string;
   issueNumber?: number;
   prNumber?: number;
+  linkedIssueNumber?: number | null;
   title?: string;
   status: string;
   createdAt: string;
@@ -196,6 +197,9 @@ export function useHeaderStats(): HeaderStats {
       const currentDismissedTaskIds = getDismissedIds(DISMISSED_TASK_IDS_KEY);
 
       const groups: Record<string, TaskGroup> = {};
+      // Track issue-to-PR mapping: when a PR task has linkedIssueNumber,
+      // map that issue to the PR for merging groups
+      const issueToPrMap: Record<string, string> = {};
 
       // Track which issues have PR followup tasks
       // If a PR task exists for an issue, we should filter out the initial issue task
@@ -231,12 +235,22 @@ export function useHeaderStats(): HeaderStats {
           name = parts[1] || 'unknown';
         }
 
+        const repoPrefix = `${owner}/${name}`;
+
+        // If this task has a PR and a linkedIssueNumber, record the mapping
+        // This allows us to merge issue-based groups into PR-based groups
+        if (task.prNumber && task.linkedIssueNumber) {
+          const issueKey = `${repoPrefix}-issue-${task.linkedIssueNumber}`;
+          const prKey = `${repoPrefix}-pr-${task.prNumber}`;
+          issueToPrMap[issueKey] = prKey;
+        }
+
         // Create group key: prefer PR number, fallback to issue number
         let key: string;
         if (task.prNumber) {
-          key = `${owner}/${name}-pr-${task.prNumber}`;
+          key = `${repoPrefix}-pr-${task.prNumber}`;
         } else if (task.issueNumber) {
-          key = `${owner}/${name}-issue-${task.issueNumber}`;
+          key = `${repoPrefix}-issue-${task.issueNumber}`;
           // Skip initial issue tasks if a PR followup exists for this issue
           if (prTasksByIssue[key]) {
             return;
@@ -260,8 +274,18 @@ export function useHeaderStats(): HeaderStats {
         groups[key].allTasks.push(task);
       });
 
+      // Merge issue-based groups into their corresponding PR groups
+      Object.entries(issueToPrMap).forEach(([issueKey, prKey]) => {
+        if (groups[issueKey] && groups[prKey]) {
+          // Merge issue group tasks into PR group
+          groups[prKey].allTasks.push(...groups[issueKey].allTasks);
+          // Remove the issue group
+          delete groups[issueKey];
+        }
+      });
+
       // For each group, determine the latest task
-      // Since tasks are pre-filtered at DB level, we just need to organize by group
+      // Tasks are pre-filtered at DB level, we just need to organize by group
       const reviewableGroups: TaskGroup[] = [];
 
       Object.values(groups).forEach(group => {

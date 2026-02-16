@@ -1,4 +1,4 @@
-import { getUsageStats, getDetailedUsageStats, getModelPricing, getOpenRouterId, calculateCostWithCachePricing } from '@gitfix/core';
+import { getDetailedUsageStats, getModelPricing, getOpenRouterId, calculateCostWithCachePricing } from '@gitfix/core';
 import type { DetailedUsageStats } from '@gitfix/core';
 
 const MAX_COMMENT_LENGTH = 65000;

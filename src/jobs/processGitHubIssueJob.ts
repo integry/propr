@@ -489,27 +489,64 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     }
 }
 
+function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
+    if (!claudeResult?.success) {
+        return 'claude_processing_failed';
+    }
+    return postProcessingResult?.pr ? 'complete_with_pr' : 'claude_success_no_changes';
+}
+
+function buildTaskUpdateFields(
+    commitResult: CommitResult | null,
+    postProcessingResult: PostProcessingResult | null
+): { commit_hash?: string; pr_number?: number } {
+    const updateFields: { commit_hash?: string; pr_number?: number } = {};
+    if (commitResult?.commitHash) {
+        updateFields.commit_hash = commitResult.commitHash;
+    }
+    if (postProcessingResult?.pr?.number) {
+        updateFields.pr_number = postProcessingResult.pr.number;
+    }
+    return updateFields;
+}
+
+async function persistTaskUpdateFields(
+    taskId: string,
+    updateFields: { commit_hash?: string; pr_number?: number },
+    correlatedLogger: Logger
+): Promise<void> {
+    if (Object.keys(updateFields).length === 0) {
+        return;
+    }
+    try {
+        await db('tasks')
+            .where({ task_id: taskId })
+            .update(updateFields);
+        correlatedLogger.debug({ taskId, ...updateFields }, 'Saved task completion data to tasks table');
+    } catch (dbError) {
+        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save task completion data to database');
+    }
+}
+
 async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Promise<void> {
     const { stateManager, taskId, claudeResult, postProcessingResult, commitResult, correlatedLogger } = taskCompletionParams;
     try {
-        const status = claudeResult?.success ? (postProcessingResult?.pr ? 'complete_with_pr' : 'claude_success_no_changes') : 'claude_processing_failed';
+        const status = getTaskCompletionStatus(claudeResult, postProcessingResult);
+        const commitResultData = commitResult
+            ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage }
+            : null;
+
         await stateManager.markTaskCompleted(taskId, {
-            status, claudeSuccess: claudeResult?.success || false, prCreated: !!postProcessingResult?.pr,
-            prNumber: postProcessingResult?.pr?.number ?? undefined, prUrl: postProcessingResult?.pr?.url ?? undefined,
-            commitResult: commitResult ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage } : null
+            status,
+            claudeSuccess: claudeResult?.success || false,
+            prCreated: !!postProcessingResult?.pr,
+            prNumber: postProcessingResult?.pr?.number ?? undefined,
+            prUrl: postProcessingResult?.pr?.url ?? undefined,
+            commitResult: commitResultData
         });
 
-        // Persist commit hash to database for historic diff exploration
-        if (commitResult?.commitHash) {
-            try {
-                await db('tasks')
-                    .where({ task_id: taskId })
-                    .update({ commit_hash: commitResult.commitHash });
-                correlatedLogger.debug({ taskId, commitHash: commitResult.commitHash }, 'Saved commit hash to tasks table');
-            } catch (dbError) {
-                correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
-            }
-        }
+        const updateFields = buildTaskUpdateFields(commitResult, postProcessingResult);
+        await persistTaskUpdateFields(taskId, updateFields, correlatedLogger);
     } catch (stateError) {
         correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state to completed');
     }
