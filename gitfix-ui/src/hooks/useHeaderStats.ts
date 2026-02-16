@@ -157,11 +157,13 @@ export function useHeaderStats(): HeaderStats {
         setIsLoading(true);
       }
 
-      // Fetch all data in parallel
+      // Fetch all data in parallel with smart DB-level pre-filtering
       const [queueStats, draftsResponse, tasksResponse, statusResponse] = await Promise.all([
         getQueueStats(),
-        getDrafts({ limit: 100 }), // Fetch all drafts for client-side filtering
-        getTasks('all', 100, 0, 'all', ''), // Fetch recent tasks
+        // Fetch active plans only (exclude merged and executed at DB level)
+        getDrafts({ limit: 20, excludeStatuses: 'merged,executed' }),
+        // Fetch review-worthy tasks only (completed/failed, exclude merged at DB level)
+        getTasks({ limit: 30, forReview: true, excludeMerged: true }),
         getSystemStatus(),
       ]);
 
@@ -171,16 +173,14 @@ export function useHeaderStats(): HeaderStats {
       setRunningCount(queueStats.active);
 
       // 2. Process active plans
-      // Filter plans where status is NOT 'merged' and NOT 'closed'
-      // Also exclude manually dismissed plans
+      // Plans are already pre-filtered at DB level (excludes merged, executed)
+      // Only need to filter out manually dismissed plans
       const currentDismissedPlanIds = getDismissedIds(DISMISSED_PLAN_IDS_KEY);
       const filteredPlans = draftsResponse.drafts.filter(draft => {
-        const isActive = draft.status !== 'merged' && draft.status !== 'executed';
-        const isNotDismissed = !currentDismissedPlanIds.includes(draft.draft_id);
-        return isActive && isNotDismissed;
+        return !currentDismissedPlanIds.includes(draft.draft_id);
       });
 
-      // Sort by updated_at descending (newest first)
+      // Already sorted by updated_at desc from API, but ensure order
       filteredPlans.sort((a, b) => {
         const dateA = new Date(a.updated_at).getTime();
         const dateB = new Date(b.updated_at).getTime();
@@ -190,6 +190,7 @@ export function useHeaderStats(): HeaderStats {
       setActivePlans(filteredPlans);
 
       // 3. Process review items
+      // Tasks are pre-filtered at DB level (completed/failed only, merged excluded)
       // Group tasks by PR (or issue if no PR)
       const tasks = (tasksResponse as { tasks: Task[] }).tasks || [];
       const currentDismissedTaskIds = getDismissedIds(DISMISSED_TASK_IDS_KEY);
@@ -203,7 +204,6 @@ export function useHeaderStats(): HeaderStats {
       // First pass: identify issues that have PR followup tasks
       tasks.forEach(task => {
         if (task.prNumber && task.issueNumber) {
-          // Parse repository owner/name
           let owner = task.repositoryOwner;
           let name = task.repositoryName;
           if (!owner || !name) {
@@ -222,7 +222,6 @@ export function useHeaderStats(): HeaderStats {
           return;
         }
 
-        // Parse repository owner/name
         let owner = task.repositoryOwner;
         let name = task.repositoryName;
 
@@ -261,7 +260,8 @@ export function useHeaderStats(): HeaderStats {
         groups[key].allTasks.push(task);
       });
 
-      // For each group, determine the latest task and filter based on review criteria
+      // For each group, determine the latest task
+      // Since tasks are pre-filtered at DB level, we just need to organize by group
       const reviewableGroups: TaskGroup[] = [];
 
       Object.values(groups).forEach(group => {
@@ -275,21 +275,9 @@ export function useHeaderStats(): HeaderStats {
         const latestTask = group.allTasks[0];
         group.latestTask = latestTask;
 
-        // Auto-removal: If the latest task indicates merged status, exclude the group
-        const isMerged = latestTask.status === 'merged' || latestTask.planIssueStatus === 'merged';
-        if (isMerged) {
-          return; // Skip this group
-        }
-
-        // Inclusion criteria:
-        // - Include if latest task is 'failed'
-        // - Include if latest task is 'completed' AND PR is open (not merged)
-        const isFailed = latestTask.status === 'failed';
-        const isCompletedAndOpen = latestTask.status === 'completed' && latestTask.planIssueStatus !== 'merged';
-
-        if (isFailed || isCompletedAndOpen) {
-          reviewableGroups.push(group);
-        }
+        // Tasks are already pre-filtered at DB level to be completed/failed and not merged
+        // Just add to reviewable groups
+        reviewableGroups.push(group);
       });
 
       // Sort review groups by latest task's createdAt (newest first)

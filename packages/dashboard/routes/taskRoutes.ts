@@ -14,9 +14,18 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
   async function getTasks(req: Request, res: Response): Promise<void> {
     try {
-      const { status = 'all', limit = '50', offset = '0', repository = 'all', search = '' } = req.query as Record<string, string>;
+      const { status = 'all', limit = '50', offset = '0', repository = 'all', search = '', forReview = '', excludeMerged = '' } = req.query as Record<string, string>;
 
-      const result = await getTasksFromDb({ db, status, repository, limit: parseInt(limit), offset: parseInt(offset), search });
+      const result = await getTasksFromDb({
+        db,
+        status,
+        repository,
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        search,
+        forReview: forReview === 'true',
+        excludeMerged: excludeMerged === 'true'
+      });
       res.json(result);
     } catch (error) {
       console.error('Error in /api/tasks:', error);
@@ -242,12 +251,14 @@ interface TaskQuery {
   limit: number;
   offset: number;
   search?: string;
+  forReview?: boolean;
+  excludeMerged?: boolean;
 }
 
 async function getTasksFromDb(
   query: TaskQuery
 ): Promise<{ tasks: unknown[]; total: number; offset: number; limit: number }> {
-  const { db, status, repository, limit, offset, search } = query;
+  const { db, status, repository, limit, offset, search, forReview, excludeMerged } = query;
   const latestHistorySubquery = db('task_history')
     .select(
       'task_id',
@@ -351,6 +362,21 @@ async function getTasksFromDb(
       this.where('t.repository', 'like', searchTerm)
         .orWhere(db.raw('CAST(t.issue_number AS TEXT)'), 'like', searchTerm)
         .orWhere('t.initial_job_data', 'like', searchTerm);
+    });
+  }
+
+  // For review filter: only include completed or failed tasks that need review
+  // This filters at DB level to reduce post-processing
+  if (forReview) {
+    baseQuery.whereIn('h.state', ['completed', 'failed']);
+  }
+
+  // Exclude tasks where plan_issue_status is 'merged'
+  // This helps get more consistent results by filtering out merged items at DB level
+  if (excludeMerged) {
+    baseQuery.where(function() {
+      this.whereNull('pi.plan_issue_status')
+        .orWhereNot('pi.plan_issue_status', 'merged');
     });
   }
 

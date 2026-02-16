@@ -70,6 +70,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const repository = req.query.repository as string | undefined;
       const search = req.query.search as string | undefined;
       const status = req.query.status as string | undefined;
+      const excludeStatuses = req.query.excludeStatuses as string | undefined;
       const validStatuses = ['draft', 'review', 'generating', 'refining', 'executed', 'approved', 'merged'];
       // Build query with optional repository filter
       let query = db!('task_drafts').where({ user_id: req.user!.id });
@@ -80,6 +81,14 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       if (status && status !== 'all' && validStatuses.includes(status)) {
         query = query.andWhere('status', status);
+      }
+
+      // Exclude multiple statuses (comma-separated) - useful for header dropdown
+      if (excludeStatuses) {
+        const statusesToExclude = excludeStatuses.split(',').filter(s => validStatuses.includes(s.trim()));
+        if (statusesToExclude.length > 0) {
+          query = query.whereNotIn('status', statusesToExclude);
+        }
       }
 
       // Apply search filter to name and initial_prompt with partial word matching
