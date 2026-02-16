@@ -51,7 +51,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   };
 
   return (
-    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-slate-300 rounded-lg shadow-2xl ring-1 ring-black/5 z-[100] overflow-hidden">
+    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-slate-400 z-[100] overflow-hidden">
       <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Active Plans ({activePlans.length})
@@ -67,7 +67,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
           displayPlans.map((plan, index) => (
             <div
               key={plan.draft_id}
-              className={`px-4 py-3 hover:bg-gray-50 transition-colors group cursor-pointer ${
+              className={`px-4 py-3 hover:bg-slate-100 transition-colors group cursor-pointer ${
                 index < displayPlans.length - 1 ? 'border-b border-slate-200' : ''
               }`}
               onClick={() => handlePlanClick(plan.draft_id)}
@@ -78,7 +78,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
                   {getRepoName(plan.repository)}
                 </span>
                 <span className="text-gray-300">•</span>
-                <span className={`px-1.5 py-0.5 rounded text-xs font-mono ${getStatusBadgeStyle(plan.status)}`}>
+                <span className={`px-1.5 py-0.5 text-xs font-mono ${getStatusBadgeStyle(plan.status)}`}>
                   {plan.status}
                 </span>
                 <span className="text-xs text-gray-400 ml-auto">
@@ -87,7 +87,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
                 {/* Dismiss button */}
                 <button
                   onClick={(e) => handleDismiss(e, plan.draft_id)}
-                  className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
+                  className="p-1 hover:bg-slate-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
                   title="Dismiss"
                 >
                   <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
@@ -123,7 +123,7 @@ interface MachineStatusProps { runningCount: number; }
 export const MachineStatus: React.FC<MachineStatusProps> = ({ runningCount }) => {
   if (runningCount === 0) return null;
   return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 border border-blue-200 rounded-md">
+    <div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 border border-blue-200">
       <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
       <Users className="w-3.5 h-3.5 text-blue-600" />
       <span className="text-xs font-medium text-blue-700">{runningCount}</span>
@@ -136,7 +136,7 @@ interface HumanInboxProps { reviewCount: number; }
 export const HumanInbox: React.FC<HumanInboxProps> = ({ reviewCount }) => {
   if (reviewCount === 0) return null;
   return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200 rounded-md">
+    <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200">
       <Inbox className="w-3.5 h-3.5 text-amber-600" />
       <span className="text-xs font-medium text-amber-700">{reviewCount}</span>
     </div>
@@ -201,7 +201,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   };
 
   return (
-    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-slate-300 rounded-lg shadow-2xl ring-1 ring-black/5 z-[100] overflow-hidden">
+    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-slate-400 z-[100] overflow-hidden">
       <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Tasks Needing Review ({taskGroups.length})
@@ -217,7 +217,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
           displayGroups.map((group, index) => (
             <div
               key={group.key}
-              className={`px-4 py-3 hover:bg-gray-50 transition-colors group cursor-pointer ${
+              className={`px-4 py-3 hover:bg-slate-100 transition-colors group cursor-pointer ${
                 index < displayGroups.length - 1 ? 'border-b border-slate-200' : ''
               }`}
               onClick={() => handleTaskClick(group)}
@@ -230,7 +230,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
                 {getIssueId(group) && (
                   <>
                     <span className="text-gray-300">•</span>
-                    <span className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-xs font-mono text-gray-700">
+                    <span className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 text-xs font-mono text-gray-700">
                       {getIssueId(group)}
                     </span>
                   </>
@@ -241,7 +241,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
                 {/* Dismiss button */}
                 <button
                   onClick={(e) => handleDismiss(e, group.latestTask.id)}
-                  className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
+                  className="p-1 hover:bg-slate-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
                   title="Dismiss"
                 >
                   <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
@@ -292,7 +292,7 @@ export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissT
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors hover:bg-slate-50"
+        className="flex items-center gap-2 px-2 py-1.5 text-sm transition-colors hover:bg-slate-100"
       >
         <ListTodo className="w-4 h-4 text-slate-600" />
         <span className="font-bold text-slate-900">{reviewCount}</span>
@@ -334,7 +334,7 @@ export const SystemHealth: React.FC<SystemHealthProps> = ({ systemHealth }) => {
       <button
         onClick={() => setIsOpen(!isOpen)}
         onMouseEnter={() => setIsOpen(true)}
-        className="flex items-center gap-1.5 p-2 rounded-lg hover:bg-gray-100 transition-colors"
+        className="flex items-center gap-1.5 p-2 hover:bg-slate-100 transition-colors"
         aria-label="System Status"
       >
         <Activity className="w-4 h-4 text-gray-500" />
@@ -343,7 +343,7 @@ export const SystemHealth: React.FC<SystemHealthProps> = ({ systemHealth }) => {
 
       {isOpen && (
         <div
-          className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg py-2 px-3 min-w-[160px] z-[100]"
+          className="absolute right-0 top-full mt-1 bg-white border border-slate-400 py-2 px-3 min-w-[160px] z-[100]"
           onMouseLeave={() => setIsOpen(false)}
         >
           <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">System Status</div>
@@ -391,7 +391,7 @@ export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlan
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors hover:bg-slate-50"
+        className="flex items-center gap-2 px-2 py-1.5 text-sm transition-colors hover:bg-slate-100"
       >
         <ScrollText className="w-4 h-4 text-slate-600" />
         <span className="font-bold text-slate-900">{activePlans.length}</span>

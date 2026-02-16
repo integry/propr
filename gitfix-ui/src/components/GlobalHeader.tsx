@@ -106,7 +106,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search... [Cmd+K]"
-              className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 focus:bg-white transition-colors"
+              className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-slate-300 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 focus:bg-white transition-colors"
             />
           </div>
         </form>
@@ -117,7 +117,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
         {/* Primary Action: New AI Plan */}
         <button
           onClick={handleNewPlan}
-          className="hidden md:flex items-center gap-2 px-4 py-1.5 bg-teal-600 text-white text-sm font-medium rounded-full hover:bg-teal-700 transition-colors"
+          className="hidden md:flex items-center gap-2 px-4 py-1.5 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors"
         >
           <Plus className="w-4 h-4" />
           <span>New AI Plan</span>
@@ -126,7 +126,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
         {/* Mobile New Plan Button */}
         <button
           onClick={handleNewPlan}
-          className="md:hidden p-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors"
+          className="md:hidden p-2 bg-teal-600 text-white hover:bg-teal-700 transition-colors"
           aria-label="New AI Plan"
         >
           <Plus className="w-5 h-5" />
@@ -148,7 +148,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
               href={`https://github.com/${user.username}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-3 hover:bg-gray-50 rounded-lg p-1 transition-colors group"
+              className="flex items-center gap-3 hover:bg-slate-100 p-1 transition-colors group"
             >
               <div className="hidden lg:flex flex-col items-end">
                 <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
