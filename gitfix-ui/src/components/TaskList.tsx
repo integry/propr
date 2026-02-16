@@ -175,7 +175,11 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
   const groupedTasks = useMemo(() => {
     const groups: Record<string, TaskGroup> = {};
+    // Track issue-to-PR mapping: when a PR task has linkedIssueNumber,
+    // map that issue to the PR for merging groups
+    const issueToPrMap: Record<string, string> = {};
 
+    // First pass: create initial groups and build issue-to-PR mapping
     tasks.forEach(task => {
       // robustly handle owner/name splitting
       let owner = task.repositoryOwner;
@@ -187,17 +191,24 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         name = parts[1] || 'unknown';
       }
 
+      const repoPrefix = `${owner}/${name}`;
+
+      // If this task has a PR and a linkedIssueNumber, record the mapping
+      // This allows us to merge issue-based groups into PR-based groups
+      if (task.prNumber && task.linkedIssueNumber) {
+        const issueKey = `${repoPrefix}-issue-${task.linkedIssueNumber}`;
+        const prKey = `${repoPrefix}-pr-${task.prNumber}`;
+        issueToPrMap[issueKey] = prKey;
+      }
+
       // Group tasks by PR number if available, otherwise by issue number, or task ID
-      // Both new issue tasks and followup tasks should be grouped by their PR number
-      // since they all belong to the same PR (e.g., PR #380 for issue #379)
-      // For new issues without followups, group by issue number instead
       let key: string;
       if (task.prNumber) {
         // Group by PR number (preferred)
-        key = `${owner}/${name}-pr-${task.prNumber}`;
+        key = `${repoPrefix}-pr-${task.prNumber}`;
       } else if (task.issueNumber) {
         // Group by issue number if no PR number is available
-        key = `${owner}/${name}-issue-${task.issueNumber}`;
+        key = `${repoPrefix}-issue-${task.issueNumber}`;
       } else {
         // Fallback to task ID if neither PR nor issue number is available
         key = task.id;
@@ -213,6 +224,25 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         };
       }
       groups[key].tasks.push(task);
+    });
+
+    // Second pass: merge issue-based groups into their corresponding PR groups
+    Object.entries(issueToPrMap).forEach(([issueKey, prKey]) => {
+      if (groups[issueKey] && groups[prKey]) {
+        // Merge issue group tasks into PR group
+        groups[prKey].tasks.push(...groups[issueKey].tasks);
+        // Remove the issue group
+        delete groups[issueKey];
+      }
+    });
+
+    // Sort tasks within each group by creation date (newest first)
+    Object.values(groups).forEach(group => {
+      group.tasks.sort((a, b) => {
+        const dateA = new Date(a.createdAt).getTime();
+        const dateB = new Date(b.createdAt).getTime();
+        return dateB - dateA;
+      });
     });
 
     return Object.values(groups).sort((a, b) => {
