@@ -52,18 +52,20 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
 
   return (
     <div
-      className="fixed max-w-[600px] bg-white border border-slate-300 border-t-4 border-t-teal-500 z-50 overflow-hidden"
+      className="fixed max-w-[600px] bg-white border border-slate-200 border-t-4 border-t-teal-600 shadow-xl ring-1 ring-black/5 z-50 overflow-hidden"
       style={{
         top: '64px',
         left: '240px',
         right: '0',
-        boxShadow: '6px 6px 0px 0px #CBD5E1'
       }}
     >
-      <div className="px-4 py-3 bg-slate-100 border-b border-slate-200 flex items-center justify-between">
-        <span className="font-mono text-xs font-bold tracking-widest text-slate-500">
-          ACTIVE PLANS ({activePlans.length})
-        </span>
+      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-teal-600">✨</span>
+          <span className="font-mono text-xs font-bold tracking-widest text-teal-600">
+            ACTIVE PLANS ({activePlans.length})
+          </span>
+        </div>
       </div>
 
       <div className="max-h-80 overflow-y-auto scrollbar-stealth">
@@ -210,18 +212,20 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
 
   return (
     <div
-      className="fixed max-w-[600px] bg-white border border-slate-300 border-t-4 border-t-teal-500 z-50 overflow-hidden"
+      className="fixed max-w-[600px] bg-white border border-slate-200 border-t-4 border-t-amber-500 shadow-xl ring-1 ring-black/5 z-50 overflow-hidden"
       style={{
         top: '64px',
         left: '240px',
         right: '0',
-        boxShadow: '6px 6px 0px 0px #CBD5E1'
       }}
     >
-      <div className="px-4 py-3 bg-slate-100 border-b border-slate-200 flex items-center justify-between">
-        <span className="font-mono text-xs font-bold tracking-widest text-slate-500">
-          TASKS NEEDING REVIEW ({taskGroups.length})
-        </span>
+      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-amber-500">⚠️</span>
+          <span className="font-mono text-xs font-bold tracking-widest text-amber-600">
+            ATTENTION REQUIRED ({taskGroups.length})
+          </span>
+        </div>
       </div>
 
       <div className="max-h-80 overflow-y-auto scrollbar-stealth">
@@ -308,11 +312,13 @@ export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissT
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-2 py-1.5 text-sm transition-colors hover:bg-slate-100"
+        className={`flex items-center gap-2 px-2 py-1.5 text-sm transition-colors rounded-md ${
+          isOpen ? 'bg-slate-100' : 'hover:bg-slate-100'
+        }`}
       >
         <ListTodo className="w-4 h-4 text-slate-600" />
         <span className="font-bold text-slate-900">{reviewCount}</span>
-        <span className="text-slate-600">Review</span>
+        <span className="text-slate-600">Tasks</span>
       </button>
 
       <TasksDropdown taskGroups={taskGroups} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissTask} />
@@ -407,7 +413,9 @@ export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlan
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-2 py-1.5 text-sm transition-colors hover:bg-slate-100"
+        className={`flex items-center gap-2 px-2 py-1.5 text-sm transition-colors rounded-md ${
+          isOpen ? 'bg-slate-100' : 'hover:bg-slate-100'
+        }`}
       >
         <ScrollText className="w-4 h-4 text-slate-600" />
         <span className="font-bold text-slate-900">{activePlans.length}</span>
