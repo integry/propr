@@ -45,19 +45,31 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
         left: '240px',
       }}
     >
+      {/* Header with View All link moved to top-right */}
       <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-        <div className="flex items-center gap-2">
-          <ScrollText className="w-4 h-4 text-teal-600 flex-shrink-0" />
-          <span className="text-slate-500 font-bold text-[10px] uppercase tracking-wider leading-none">
-            ACTIVE PLANS
-          </span>
-          <span className="px-1.5 py-0.5 bg-slate-200 text-slate-600 text-[10px] font-bold rounded-sm leading-none">
-            {activePlans.length}
-          </span>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ScrollText className="w-4 h-4 text-teal-600 flex-shrink-0" />
+            <span className="text-slate-500 font-bold text-[10px] uppercase tracking-wider leading-none">
+              ACTIVE PLANS
+            </span>
+            <span className="px-1.5 py-0.5 bg-slate-200 text-slate-600 text-[10px] font-bold rounded-sm leading-none">
+              {activePlans.length}
+            </span>
+          </div>
+          {activePlans.length > 0 && (
+            <button
+              onClick={handleViewAll}
+              className="text-xs text-gray-500 hover:text-primary-600 transition-colors"
+            >
+              View All &rarr;
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="max-h-80 overflow-y-auto scrollbar-stealth">
+      {/* Scrollable content with increased max-height (600px) */}
+      <div className="max-h-[600px] overflow-y-auto scrollbar-stealth">
         {displayPlans.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-gray-500">
             No active plans
@@ -67,12 +79,12 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
             <div
               key={plan.draft_id}
               className={`px-4 py-3 hover:bg-slate-100 transition-colors group cursor-pointer ${
-                index < displayPlans.length - 1 ? 'border-b border-slate-200' : ''
+                index < displayPlans.length - 1 ? 'border-b border-slate-100' : ''
               }`}
               onClick={() => handlePlanClick(plan.draft_id)}
             >
-              {/* Top Row: Repo • Status (right-aligned: Time) */}
-              <div className="flex items-center gap-2 mb-1">
+              {/* Line 1 (Meta): Repo • Status Badge ... Time Ago (right-aligned) */}
+              <div className="flex items-center gap-2 mb-1.5">
                 <span className="text-xs text-gray-500">
                   {getRepoName(plan.repository)}
                 </span>
@@ -92,9 +104,9 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
                   <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
                 </button>
               </div>
-              {/* Bottom Row: Plan Title (Normal weight, Truncated) */}
-              <div className="flex items-center gap-1.5">
-                <span className="text-sm text-gray-900 truncate group-hover:text-primary-600">
+              {/* Line 2 (Content): Full-width Bold Title with ellipsis */}
+              <div className="w-full">
+                <span className="text-sm font-semibold text-gray-900 truncate block w-full group-hover:text-primary-600">
                   {plan.name || plan.initial_prompt}
                 </span>
               </div>
@@ -102,17 +114,6 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
           ))
         )}
       </div>
-
-      {activePlans.length > 0 && (
-        <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200">
-          <button
-            onClick={handleViewAll}
-            className="w-full text-center text-sm font-medium text-primary-600 hover:text-primary-700"
-          >
-            View All Plans &rarr;
-          </button>
-        </div>
-      )}
     </div>
   );
 };
@@ -148,18 +149,30 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
         left: '240px',
       }}
     >
+      {/* Header with View All link moved to top-right */}
       <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-        <div className="flex items-center gap-2">
-          <ListTodo className="w-4 h-4 text-blue-600 flex-shrink-0" />
-          <span className="text-slate-500 font-bold text-[10px] uppercase tracking-wider leading-none">
-            PENDING REVIEW
-          </span>
-          <span className="px-1.5 py-0.5 bg-slate-200 text-slate-600 text-[10px] font-bold rounded-sm leading-none">
-            {taskGroups.length}
-          </span>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ListTodo className="w-4 h-4 text-blue-600 flex-shrink-0" />
+            <span className="text-slate-500 font-bold text-[10px] uppercase tracking-wider leading-none">
+              PENDING REVIEW
+            </span>
+            <span className="px-1.5 py-0.5 bg-slate-200 text-slate-600 text-[10px] font-bold rounded-sm leading-none">
+              {taskGroups.length}
+            </span>
+          </div>
+          {taskGroups.length > 0 && (
+            <button
+              onClick={handleViewAll}
+              className="text-xs text-gray-500 hover:text-primary-600 transition-colors"
+            >
+              View All &rarr;
+            </button>
+          )}
         </div>
       </div>
 
+      {/* Scrollable content with max-height 600px */}
       <div className="max-h-[600px] overflow-y-auto scrollbar-stealth">
         {displayGroups.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-gray-500">
@@ -169,13 +182,13 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
           displayGroups.map((group, index) => (
             <div
               key={group.key}
-              className={`px-4 py-4 hover:bg-slate-100 transition-colors group cursor-pointer ${
-                index < displayGroups.length - 1 ? 'border-b border-slate-200' : ''
+              className={`px-4 py-3 hover:bg-slate-100 transition-colors group cursor-pointer ${
+                index < displayGroups.length - 1 ? 'border-b border-slate-100' : ''
               }`}
               onClick={() => handleTaskClick(group)}
             >
-              {/* Top Row: Repo • ID (Chip) (right-aligned: Time) */}
-              <div className="flex items-center gap-2 mb-1">
+              {/* Line 1 (Meta): Repo • ID (Chip) ... Time Ago (right-aligned) */}
+              <div className="flex items-center gap-2 mb-1.5">
                 <span className="text-xs text-gray-500">
                   {group.repoName}
                 </span>
@@ -199,12 +212,12 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
                   <X className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
                 </button>
               </div>
-              {/* Bottom Row: Icon (if followup) + Title (Normal weight, Truncated) */}
-              <div className="flex items-center gap-1.5">
+              {/* Line 2 (Content): Full-width Bold Title with ellipsis */}
+              <div className="w-full flex items-center gap-1.5">
                 {isFollowUp(group) && (
                   <CornerDownRight className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
                 )}
-                <span className="text-sm text-gray-900 truncate group-hover:text-primary-600">
+                <span className="text-sm font-semibold text-gray-900 truncate block flex-1 group-hover:text-primary-600">
                   {cleanTaskTitle(group.latestTask.title) || 'Untitled'}
                 </span>
               </div>
@@ -212,17 +225,6 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
           ))
         )}
       </div>
-
-      {taskGroups.length > 0 && (
-        <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200">
-          <button
-            onClick={handleViewAll}
-            className="w-full text-center text-sm font-medium text-primary-600 hover:text-primary-700"
-          >
-            View All Tasks &rarr;
-          </button>
-        </div>
-      )}
     </div>
   );
 };
