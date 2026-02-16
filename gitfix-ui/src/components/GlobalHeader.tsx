@@ -66,24 +66,26 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
 
   return (
     <header className="bg-white border-b border-gray-200 h-16 flex items-stretch shadow-sm z-20 sticky top-0">
-      {/* Left Section: Logo Bay (Mobile Toggle + Machine Status) */}
-      <div className="flex items-center px-4 border-r border-slate-200">
+      {/* Left Section: Mobile Toggle + Machine Status (no border if empty) */}
+      <div className="flex items-center lg:hidden px-4">
         {/* Mobile Toggle */}
         <button
           onClick={onMenuToggle}
-          className="lg:hidden p-2 -ml-2 text-gray-500 hover:text-gray-700"
+          className="p-2 -ml-2 text-gray-500 hover:text-gray-700"
           aria-label="Open menu"
         >
           <MenuIcon className="w-6 h-6" />
         </button>
-
-        {/* Machine Status - Running agents indicator */}
-        <div className="hidden sm:flex items-center">
-          <MachineStatus runningCount={runningCount} />
-        </div>
       </div>
 
-      {/* Plans Bay - Full height partition */}
+      {/* Machine Status - Running agents indicator (only shows when there are running agents) */}
+      {runningCount > 0 && (
+        <div className="hidden sm:flex items-center px-4 border-r border-slate-200">
+          <MachineStatus runningCount={runningCount} />
+        </div>
+      )}
+
+      {/* Plans Bay - Full height partition, starts immediately after logo divider */}
       <div className="hidden md:block border-r border-slate-200">
         <ActivePlansButton activePlans={activePlans} onDismissPlan={dismissPlan} />
       </div>
