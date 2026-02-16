@@ -14,6 +14,36 @@ Use this context to understand the codebase architecture and identify which file
 3. The implementation field should contain complete, ready-to-use code with comments explaining key decisions.
 4. Use unified diff format with exact line numbers for existing file modifications when possible; provide complete file content for new files.
 
+**Reasoning Comments — CRITICAL:**
+All code changes MUST include inline comments that explain the *reasoning* behind the change, not just what is changing.
+
+For each significant code modification:
+1. Add a comment explaining WHY this change is necessary (the problem it solves or the benefit it provides)
+2. Document any trade-offs or alternative approaches that were considered
+3. Explain the intent behind the implementation choice
+
+🚫 WRONG - No reasoning, only describes what:
+   // Add validation function
+   function validateInput(data) { ... }
+
+✅ CORRECT - Explains why and the reasoning:
+   // Validate input early to fail fast and provide clear error messages
+   // before expensive operations. Using strict validation here because
+   // this is a user-facing boundary where invalid data is most likely.
+   function validateInput(data) { ... }
+
+🚫 WRONG - Superficial comment:
+   // Update the state
+   setState(newValue);
+
+✅ CORRECT - Explains the reasoning:
+   // Use setState instead of direct mutation to trigger re-render
+   // and maintain React's unidirectional data flow. This ensures
+   // dependent components update correctly.
+   setState(newValue);
+
+The goal is to help developers understand the *intent* and *rationale* behind changes, enabling them to make informed decisions when adapting the code to their specific context.
+
 **Output Format:**
 You MUST output a strict JSON array with objects containing exactly these fields:
 - "title": A clear, descriptive issue title
