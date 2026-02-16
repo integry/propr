@@ -51,10 +51,17 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   };
 
   return (
-    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-slate-400 z-[100] overflow-hidden">
-      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-          Active Plans ({activePlans.length})
+    <div
+      className="fixed w-[600px] bg-white border border-slate-300 border-t-4 border-t-teal-500 z-50 overflow-hidden"
+      style={{
+        top: '64px',
+        left: '280px',
+        boxShadow: '6px 6px 0px 0px #CBD5E1'
+      }}
+    >
+      <div className="px-4 py-3 bg-slate-100 border-b border-slate-200 flex items-center justify-between">
+        <span className="font-mono text-xs font-bold tracking-widest text-slate-500">
+          ACTIVE PLANS ({activePlans.length})
         </span>
       </div>
 
@@ -201,10 +208,17 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   };
 
   return (
-    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-slate-400 z-[100] overflow-hidden">
-      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-          Tasks Needing Review ({taskGroups.length})
+    <div
+      className="fixed w-[600px] bg-white border border-slate-300 border-t-4 border-t-teal-500 z-50 overflow-hidden"
+      style={{
+        top: '64px',
+        left: '280px',
+        boxShadow: '6px 6px 0px 0px #CBD5E1'
+      }}
+    >
+      <div className="px-4 py-3 bg-slate-100 border-b border-slate-200 flex items-center justify-between">
+        <span className="font-mono text-xs font-bold tracking-widest text-slate-500">
+          TASKS NEEDING REVIEW ({taskGroups.length})
         </span>
       </div>
 
