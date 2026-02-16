@@ -70,13 +70,22 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
       {/* Scrollable content with increased max-height (600px) */}
       <div className="max-h-[600px] overflow-y-auto scrollbar-stealth">
         {displayPlans.length === 0 ? (
-          <div className="px-4 py-4 text-center">
-            <CheckCircle className="w-8 h-8 text-slate-100 mx-auto mb-2" />
-            <p className="text-sm font-normal text-slate-500">All caught up.</p>
-            <p className="text-xs text-slate-400 mt-0.5">No active plans currently in focus.</p>
+          <div className="px-4 py-8 text-center flex flex-col items-center gap-4">
+            <CheckCircle className="w-8 h-8 text-slate-200" />
+            <div>
+              <p className="text-sm font-medium text-slate-700">All caught up.</p>
+              <p className="text-xs text-slate-400 mt-0.5">You don't have any active implementation plans.</p>
+            </div>
+            <button
+              onClick={() => { onClose(); navigate('/studio/new'); }}
+              className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors"
+            >
+              <ScrollText className="w-4 h-4" />
+              <span>+ Generate AI Plan</span>
+            </button>
             <button
               onClick={handleViewAll}
-              className="text-xs text-teal-600 hover:text-teal-700 mt-3 inline-block transition-colors"
+              className="text-xs text-slate-500 hover:text-slate-700 transition-colors"
             >
               View plan history &rarr;
             </button>
@@ -182,13 +191,22 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
       {/* Scrollable content with max-height 600px */}
       <div className="max-h-[600px] overflow-y-auto scrollbar-stealth">
         {displayGroups.length === 0 ? (
-          <div className="px-4 py-4 text-center">
-            <CheckCircle className="w-8 h-8 text-slate-100 mx-auto mb-2" />
-            <p className="text-sm font-normal text-slate-500">All caught up.</p>
-            <p className="text-xs text-slate-400 mt-0.5">No active tasks currently in focus.</p>
+          <div className="px-4 py-8 text-center flex flex-col items-center gap-4">
+            <CheckCircle className="w-8 h-8 text-slate-200" />
+            <div>
+              <p className="text-sm font-medium text-slate-700">All caught up.</p>
+              <p className="text-xs text-slate-400 mt-0.5">You don't have any active tasks in focus.</p>
+            </div>
+            <button
+              onClick={() => { onClose(); navigate('/tasks/new'); }}
+              className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors"
+            >
+              <ListTodo className="w-4 h-4" />
+              <span>+ Create New Task</span>
+            </button>
             <button
               onClick={handleViewAll}
-              className="text-xs text-teal-600 hover:text-teal-700 mt-3 inline-block transition-colors"
+              className="text-xs text-slate-500 hover:text-slate-700 transition-colors"
             >
               View task history &rarr;
             </button>
