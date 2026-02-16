@@ -132,7 +132,7 @@ interface TasksDropdownProps { taskGroups: TaskGroup[]; isOpen: boolean; onClose
 const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClose, onDismiss }) => {
   const navigate = useNavigate();
   const displayGroups = taskGroups.slice(0, 10);
-  const handleTaskClick = (group: TaskGroup) => { onClose(); if (group.prNumber) navigate(`/tasks?pr=${group.prNumber}&repo=${group.repoOwner}/${group.repoName}`); else if (group.issueNumber) navigate(`/tasks?issue=${group.issueNumber}&repo=${group.repoOwner}/${group.repoName}`); else navigate(`/tasks/${group.latestTask.id}`); };
+  const handleTaskClick = (group: TaskGroup) => { onClose(); navigate(`/tasks/${group.latestTask.id}`); };
   const handleViewAll = () => { onClose(); navigate('/tasks'); };
   const handleDismiss = (e: React.MouseEvent, taskId: string) => { e.stopPropagation(); onDismiss(taskId); };
   if (!isOpen) return null;
@@ -233,7 +233,7 @@ export const TasksButton: React.FC<{ taskGroups: TaskGroup[]; onDismissTask: (ta
   return (
     <div className="relative h-full" ref={containerRef}>
       <button onClick={() => setIsOpen(!isOpen)} className={`relative flex items-center gap-1.5 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white' : 'hover:bg-slate-50'}`}>
-        <ListTodo className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{taskGroups.length}</span><span className="text-slate-600 text-sm">Tasks</span>
+        <ListTodo className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{taskGroups.length}</span><span className="text-slate-600 text-sm">{taskGroups.length === 1 ? 'Task' : 'Tasks'}</span>
         {isOpen && <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-blue-600" />}
       </button>
       <TasksDropdown taskGroups={taskGroups} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissTask} />
@@ -299,7 +299,7 @@ export const ActivePlansButton: React.FC<{ activePlans: DraftListItem[]; onDismi
   return (
     <div className="relative h-full" ref={containerRef}>
       <button onClick={() => setIsOpen(!isOpen)} className={`relative flex items-center gap-1.5 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white' : 'hover:bg-slate-50'}`}>
-        <ScrollText className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{activePlans.length}</span><span className="text-slate-600 text-sm">Plans</span>
+        <ScrollText className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{activePlans.length}</span><span className="text-slate-600 text-sm">{activePlans.length === 1 ? 'Plan' : 'Plans'}</span>
         {isOpen && <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-teal-600" />}
       </button>
       <PlansDropdown activePlans={activePlans} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissPlan} />
