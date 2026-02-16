@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronRight, ChevronDown, ChevronUp, GitPullRequest, CircleDot } from 'lucide-react';
 import type { Task, TaskGroup } from './types';
 import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration, shouldDimTask } from './utils';
 import { TaskTypeBadge } from './TaskTypeBadge';
@@ -38,15 +38,34 @@ const MobileTaskItemWithGroup: React.FC<{
         <div className="flex items-center gap-2 flex-wrap mb-1">
           {!isChild && (
             <>
-              {group.prNumber ? (
-                <span className="text-sm font-bold text-primary-600">
-                  PR #{group.prNumber}
-                </span>
-              ) : task.issueNumber ? (
-                <span className="text-sm font-bold text-primary-600">
-                  #{task.issueNumber}
-                </span>
-              ) : null}
+              {(() => {
+                const badges: React.ReactNode[] = [];
+
+                // Show PR badge if there's a PR number
+                if (group.prNumber) {
+                  badges.push(
+                    <span key="pr" className="inline-flex items-center gap-1 text-sm font-bold text-primary-600">
+                      <GitPullRequest size={14} className="text-purple-600" />
+                      #{group.prNumber}
+                    </span>
+                  );
+                }
+
+                // Determine the issue number to display
+                const issueToShow = task.linkedIssueNumber || task.issueNumber;
+
+                // Show Issue badge if it differs from PR number, or if there's no PR
+                if (issueToShow && issueToShow !== group.prNumber) {
+                  badges.push(
+                    <span key="issue" className="inline-flex items-center gap-1 text-sm font-bold text-primary-600">
+                      <CircleDot size={14} className="text-green-600" />
+                      #{issueToShow}
+                    </span>
+                  );
+                }
+
+                return badges;
+              })()}
               <TaskTypeBadge type={typeInfo.type} />
             </>
           )}

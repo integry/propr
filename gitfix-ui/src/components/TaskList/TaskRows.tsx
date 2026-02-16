@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, GitPullRequest, CircleDot } from 'lucide-react';
 import type { Task, TaskGroup } from './types';
 import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration, shouldDimTask } from './utils.tsx';
 import { TaskTypeBadge } from './TaskTypeBadge';
@@ -31,19 +31,43 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
       <td className="py-3 px-4 align-top">
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            {group.prNumber ? (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
-                #{group.prNumber}
-              </span>
-            ) : task.issueNumber ? (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
-                #{task.issueNumber}
-              </span>
-            ) : (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
-                #{task.id.substring(0, 8)}
-              </span>
-            )}
+            {(() => {
+              const badges: React.ReactNode[] = [];
+
+              // Show PR badge if there's a PR number
+              if (group.prNumber) {
+                badges.push(
+                  <span key="pr" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
+                    <GitPullRequest size={12} className="text-purple-600" />
+                    #{group.prNumber}
+                  </span>
+                );
+              }
+
+              // Determine the issue number to display
+              const issueToShow = task.linkedIssueNumber || task.issueNumber;
+
+              // Show Issue badge if it differs from PR number, or if there's no PR
+              if (issueToShow && issueToShow !== group.prNumber) {
+                badges.push(
+                  <span key="issue" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
+                    <CircleDot size={12} className="text-green-600" />
+                    #{issueToShow}
+                  </span>
+                );
+              }
+
+              // Fallback: if no badges, show task ID
+              if (badges.length === 0) {
+                badges.push(
+                  <span key="fallback" className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
+                    #{task.id.substring(0, 8)}
+                  </span>
+                );
+              }
+
+              return badges;
+            })()}
             <TaskTypeBadge type={typeInfo.type} />
           </div>
           <div className="text-sm text-gray-900 font-medium">
