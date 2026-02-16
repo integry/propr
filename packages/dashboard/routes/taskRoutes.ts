@@ -385,8 +385,9 @@ function parseInitialJobData(row: Record<string, unknown>): {
   subtitle: string | null;
   llmProvider: string | null;
   prNumber: number | null;
+  issueNumber: number | null;
 } {
-  const result = { title: null as string | null, subtitle: null as string | null, llmProvider: null as string | null, prNumber: null as number | null };
+  const result = { title: null as string | null, subtitle: null as string | null, llmProvider: null as string | null, prNumber: null as number | null, issueNumber: null as number | null };
 
   if (!row.initial_job_data) {
     return result;
@@ -401,6 +402,9 @@ function parseInitialJobData(row: Record<string, unknown>): {
     result.llmProvider = jobData.agentAlias || null;
     if (jobData.pullRequestNumber) {
       result.prNumber = jobData.pullRequestNumber;
+    }
+    if (jobData.issueNumber) {
+      result.issueNumber = jobData.issueNumber;
     }
   } catch (e) {
     console.error('Failed to parse initial_job_data', e);
@@ -427,8 +431,10 @@ function extractPrNumberFromFinalResult(row: Record<string, unknown>): number | 
 
 function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unknown> {
   const { owner: repositoryOwner, name: repositoryName } = parseRepositoryParts(row.repository);
-  const { title, subtitle, llmProvider, prNumber: jobDataPrNumber } = parseInitialJobData(row);
-  const prNumber = jobDataPrNumber || extractPrNumberFromFinalResult(row);
+  const { title, subtitle, llmProvider, prNumber: jobDataPrNumber, issueNumber: jobDataIssueNumber } = parseInitialJobData(row);
+  // Priority: 1) pr_number column (new field), 2) initial_job_data.pullRequestNumber, 3) final_result.postProcessing.pr.number
+  const prNumber = (row.pr_number as number | null) || jobDataPrNumber || extractPrNumberFromFinalResult(row);
+  const linkedIssueNumber = jobDataIssueNumber;
 
   // Parse critique_score - it may come as a number or string from JSON extraction
   const critiqueScore = row.critique_score !== null && row.critique_score !== undefined
@@ -445,6 +451,7 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
     repositoryName: repositoryName,
     issueNumber: row.issue_number,
     prNumber: prNumber,
+    linkedIssueNumber: linkedIssueNumber,
     title: title,
     subtitle: subtitle,
     status: row.state,
