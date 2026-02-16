@@ -432,7 +432,8 @@ function extractPrNumberFromFinalResult(row: Record<string, unknown>): number | 
 function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unknown> {
   const { owner: repositoryOwner, name: repositoryName } = parseRepositoryParts(row.repository);
   const { title, subtitle, llmProvider, prNumber: jobDataPrNumber, issueNumber: jobDataIssueNumber } = parseInitialJobData(row);
-  const prNumber = jobDataPrNumber || extractPrNumberFromFinalResult(row);
+  // Priority: 1) pr_number column (new field), 2) initial_job_data.pullRequestNumber, 3) final_result.postProcessing.pr.number
+  const prNumber = (row.pr_number as number | null) || jobDataPrNumber || extractPrNumberFromFinalResult(row);
   const linkedIssueNumber = jobDataIssueNumber;
 
   // Parse critique_score - it may come as a number or string from JSON extraction

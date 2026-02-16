@@ -499,15 +499,23 @@ async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Pro
             commitResult: commitResult ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage } : null
         });
 
-        // Persist commit hash to database for historic diff exploration
+        // Persist commit hash and PR number to database for easy querying
+        const updateFields: { commit_hash?: string; pr_number?: number } = {};
         if (commitResult?.commitHash) {
+            updateFields.commit_hash = commitResult.commitHash;
+        }
+        if (postProcessingResult?.pr?.number) {
+            updateFields.pr_number = postProcessingResult.pr.number;
+        }
+
+        if (Object.keys(updateFields).length > 0) {
             try {
                 await db('tasks')
                     .where({ task_id: taskId })
-                    .update({ commit_hash: commitResult.commitHash });
-                correlatedLogger.debug({ taskId, commitHash: commitResult.commitHash }, 'Saved commit hash to tasks table');
+                    .update(updateFields);
+                correlatedLogger.debug({ taskId, ...updateFields }, 'Saved task completion data to tasks table');
             } catch (dbError) {
-                correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
+                correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save task completion data to database');
             }
         }
     } catch (stateError) {
