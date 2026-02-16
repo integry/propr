@@ -3,7 +3,7 @@ import { Knex } from 'knex';
 import { Queue } from 'bullmq';
 import { generateCorrelationId, getAuthenticatedOctokit } from '@gitfix/core';
 import type { SystemTaskJobData } from '@gitfix/core';
-import { getTasksFromDb } from './taskHelpers';
+import { getTasksFromDb } from './taskHelpers.js';
 
 interface TaskRoutesDeps {
   db: Knex;
