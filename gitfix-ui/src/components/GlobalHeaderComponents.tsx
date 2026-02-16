@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo } from 'lucide-react';
+import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, CheckCircle } from 'lucide-react';
 import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle } from './headerUtils';
@@ -70,8 +70,16 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
       {/* Scrollable content with increased max-height (600px) */}
       <div className="max-h-[600px] overflow-y-auto scrollbar-stealth">
         {displayPlans.length === 0 ? (
-          <div className="px-4 py-6 text-center text-sm text-gray-500">
-            No active plans
+          <div className="px-4 py-4 text-center">
+            <CheckCircle className="w-8 h-8 text-slate-100 mx-auto mb-2" />
+            <p className="text-sm font-normal text-slate-500">All caught up.</p>
+            <p className="text-xs text-slate-400 mt-0.5">No active plans currently in focus.</p>
+            <button
+              onClick={handleViewAll}
+              className="text-xs text-teal-600 hover:text-teal-700 mt-3 inline-block transition-colors"
+            >
+              View plan history &rarr;
+            </button>
           </div>
         ) : (
           displayPlans.map((plan, index) => (
@@ -174,8 +182,16 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
       {/* Scrollable content with max-height 600px */}
       <div className="max-h-[600px] overflow-y-auto scrollbar-stealth">
         {displayGroups.length === 0 ? (
-          <div className="px-4 py-6 text-center text-sm text-gray-500">
-            No tasks needing review
+          <div className="px-4 py-4 text-center">
+            <CheckCircle className="w-8 h-8 text-slate-100 mx-auto mb-2" />
+            <p className="text-sm font-normal text-slate-500">All caught up.</p>
+            <p className="text-xs text-slate-400 mt-0.5">No active tasks currently in focus.</p>
+            <button
+              onClick={handleViewAll}
+              className="text-xs text-teal-600 hover:text-teal-700 mt-3 inline-block transition-colors"
+            >
+              View task history &rarr;
+            </button>
           </div>
         ) : (
           displayGroups.map((group, index) => (
