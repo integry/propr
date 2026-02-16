@@ -77,7 +77,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
           displayPlans.map((plan, index) => (
             <div
               key={plan.draft_id}
-              className={`px-4 py-2.5 hover:bg-slate-50 transition-colors group cursor-pointer border-b border-slate-50 ${
+              className={`px-4 py-2.5 hover:bg-slate-50 transition-colors group cursor-pointer border-b border-slate-50 overflow-hidden ${
                 index === displayPlans.length - 1 ? 'border-b-0' : ''
               }`}
               onClick={() => handlePlanClick(plan.draft_id)}
@@ -103,11 +103,11 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
                   <X className="w-3.5 h-3.5 text-slate-400 hover:text-slate-600" />
                 </button>
               </div>
-              {/* Line 2 (Content): Full-width Semi-bold Title with ellipsis */}
-              <div className="block w-full overflow-hidden">
-                <span className="text-sm font-semibold text-slate-900 block truncate w-full group-hover:text-primary-600">
+              {/* Line 2 (Content): Full-width Title with CSS ellipsis truncation */}
+              <div className="w-full min-w-0">
+                <p className="text-sm font-semibold text-slate-900 truncate group-hover:text-primary-600">
                   {plan.name || plan.initial_prompt}
-                </span>
+                </p>
               </div>
             </div>
           ))
@@ -180,7 +180,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
           displayGroups.map((group, index) => (
             <div
               key={group.key}
-              className={`px-4 py-2.5 hover:bg-slate-50 transition-colors group cursor-pointer border-b border-slate-50 ${
+              className={`px-4 py-2.5 hover:bg-slate-50 transition-colors group cursor-pointer border-b border-slate-50 overflow-hidden ${
                 index === displayGroups.length - 1 ? 'border-b-0' : ''
               }`}
               onClick={() => handleTaskClick(group)}
@@ -210,14 +210,14 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
                   <X className="w-3.5 h-3.5 text-slate-400 hover:text-slate-600" />
                 </button>
               </div>
-              {/* Line 2 (Content): Full-width Semi-bold Title with ellipsis */}
-              <div className="w-full flex items-center gap-1.5 overflow-hidden">
+              {/* Line 2 (Content): Full-width Title with CSS ellipsis truncation */}
+              <div className="flex items-center gap-1.5 min-w-0 w-full">
                 {isFollowUp(group) && (
                   <CornerDownRight className="w-3.5 h-3.5 text-slate-300 flex-shrink-0" />
                 )}
-                <span className="text-sm font-semibold text-slate-900 truncate block flex-1 group-hover:text-primary-600">
+                <p className="text-sm font-semibold text-slate-900 truncate flex-1 min-w-0 group-hover:text-primary-600">
                   {cleanTaskTitle(group.latestTask.title) || 'Untitled'}
-                </span>
+                </p>
               </div>
             </div>
           ))
