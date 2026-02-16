@@ -105,7 +105,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
               </div>
               {/* Line 2 (Content): Full-width Title with CSS ellipsis truncation */}
               <div className="w-full min-w-0">
-                <p className="text-sm font-semibold text-slate-900 truncate group-hover:text-primary-600">
+                <p className="text-sm font-medium text-slate-900 truncate group-hover:text-primary-600">
                   {plan.name || plan.initial_prompt}
                 </p>
               </div>
@@ -215,7 +215,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
                 {isFollowUp(group) && (
                   <CornerDownRight className="w-3.5 h-3.5 text-slate-300 flex-shrink-0" />
                 )}
-                <p className="text-sm font-semibold text-slate-900 truncate flex-1 min-w-0 group-hover:text-primary-600">
+                <p className="text-sm font-medium text-slate-900 truncate flex-1 min-w-0 group-hover:text-primary-600">
                   {cleanTaskTitle(group.latestTask.title) || 'Untitled'}
                 </p>
               </div>
