@@ -127,14 +127,15 @@ export const HumanInbox: React.FC<{ reviewCount: number }> = ({ reviewCount }) =
   return (<div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200"><Inbox className="w-3.5 h-3.5 text-amber-600" /><span className="text-xs font-medium text-amber-700">{reviewCount}</span></div>);
 };
 
-interface TasksDropdownProps { taskGroups: TaskGroup[]; isOpen: boolean; onClose: () => void; onDismiss: (taskId: string) => void; }
+interface TasksDropdownProps { taskGroups: TaskGroup[]; isOpen: boolean; onClose: () => void; onDismiss: (taskGroupKey: string, latestTaskCreatedAt: string) => void; }
 
 const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClose, onDismiss }) => {
   const navigate = useNavigate();
   const displayGroups = taskGroups.slice(0, 10);
   const handleTaskClick = (group: TaskGroup) => { onClose(); navigate(`/tasks/${group.latestTask.id}`); };
   const handleViewAll = () => { onClose(); navigate('/tasks'); };
-  const handleDismiss = (e: React.MouseEvent, taskId: string) => { e.stopPropagation(); onDismiss(taskId); };
+  // Pass the group key and latest task timestamp to auto-dismiss older followup tasks
+  const handleDismiss = (e: React.MouseEvent, group: TaskGroup) => { e.stopPropagation(); onDismiss(group.key, group.latestTask.createdAt); };
   if (!isOpen) return null;
   const getIssueId = (group: TaskGroup): string => { if (group.prNumber) return `#${group.prNumber}`; if (group.issueNumber) return `#${group.issueNumber}`; return ''; };
   const isFollowUp = (group: TaskGroup): boolean => !!group.prNumber;
@@ -203,7 +204,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
                 </span>
                 {/* Dismiss button */}
                 <button
-                  onClick={(e) => handleDismiss(e, group.latestTask.id)}
+                  onClick={(e) => handleDismiss(e, group)}
                   className="p-1 hover:bg-slate-200 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
                   title="Dismiss"
                 >
@@ -227,7 +228,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   );
 };
 
-export const TasksButton: React.FC<{ taskGroups: TaskGroup[]; onDismissTask: (taskId: string) => void }> = ({ taskGroups, onDismissTask }) => {
+export const TasksButton: React.FC<{ taskGroups: TaskGroup[]; onDismissTask: (taskGroupKey: string, latestTaskCreatedAt: string) => void }> = ({ taskGroups, onDismissTask }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useClickOutside(() => setIsOpen(false), isOpen);
   return (
