@@ -55,7 +55,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
       className="fixed w-[600px] bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 z-50 overflow-hidden"
       style={{
         top: '64px',
-        left: '0',
+        left: '240px',
       }}
     >
       {/* Teal accent line at top - flush with header bottom */}
@@ -216,7 +216,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
       className="fixed w-[600px] bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 z-50 overflow-hidden"
       style={{
         top: '64px',
-        left: '0',
+        left: '240px',
       }}
     >
       {/* Blue accent line at top - flush with header bottom */}
