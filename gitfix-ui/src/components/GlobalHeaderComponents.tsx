@@ -5,22 +5,28 @@ import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle } from './headerUtils';
 
-interface TaskGroup {
-  key: string;
-  repoOwner: string;
-  repoName: string;
-  prNumber?: number;
-  issueNumber?: number;
-  latestTask: { id: string; status: string; createdAt: string; title?: string; };
-  allTasks: unknown[];
-}
+interface TaskGroup { key: string; repoOwner: string; repoName: string; prNumber?: number; issueNumber?: number; latestTask: { id: string; status: string; createdAt: string; title?: string; }; allTasks: unknown[]; }
 
-interface PlansDropdownProps {
-  activePlans: DraftListItem[];
-  isOpen: boolean;
-  onClose: () => void;
-  onDismiss: (planId: string) => void;
-}
+// Shared utility functions
+const formatTimeAgo = (dateString: string): string => {
+  const diffMins = Math.floor((Date.now() - new Date(dateString).getTime()) / 60000);
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return `${Math.floor(diffHours / 24)}d ago`;
+};
+const useClickOutside = (onClose: () => void, isOpen: boolean) => {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
+    if (isOpen) document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [isOpen, onClose]);
+  return ref;
+};
+
+interface PlansDropdownProps { activePlans: DraftListItem[]; isOpen: boolean; onClose: () => void; onDismiss: (planId: string) => void; }
 
 const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onClose, onDismiss }) => {
   const navigate = useNavigate();
@@ -29,26 +35,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   const handleViewAll = () => { onClose(); navigate('/plans'); };
   const handleDismiss = (e: React.MouseEvent, planId: string) => { e.stopPropagation(); onDismiss(planId); };
   if (!isOpen) return null;
-
-  // Extract repo name from repository string (e.g., "owner/repo" -> "repo")
-  const getRepoName = (repository: string): string => {
-    const parts = repository.split('/');
-    return parts.length > 1 ? parts[1] : repository;
-  };
-
-  // Format time ago
-  const formatTimeAgo = (dateString: string): string => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    if (diffMins < 1) return 'just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours}h ago`;
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays}d ago`;
-  };
+  const getRepoName = (repository: string): string => { const parts = repository.split('/'); return parts.length > 1 ? parts[1] : repository; };
 
   return (
     <div
@@ -130,87 +117,28 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   );
 };
 
-interface MachineStatusProps { runningCount: number; }
-
-export const MachineStatus: React.FC<MachineStatusProps> = ({ runningCount }) => {
+export const MachineStatus: React.FC<{ runningCount: number }> = ({ runningCount }) => {
   if (runningCount === 0) return null;
-  return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 border border-blue-200">
-      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-      <Users className="w-3.5 h-3.5 text-blue-600" />
-      <span className="text-xs font-medium text-blue-700">{runningCount}</span>
-    </div>
-  );
+  return (<div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 border border-blue-200"><div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" /><Users className="w-3.5 h-3.5 text-blue-600" /><span className="text-xs font-medium text-blue-700">{runningCount}</span></div>);
 };
 
-interface HumanInboxProps { reviewCount: number; }
-
-export const HumanInbox: React.FC<HumanInboxProps> = ({ reviewCount }) => {
+export const HumanInbox: React.FC<{ reviewCount: number }> = ({ reviewCount }) => {
   if (reviewCount === 0) return null;
-  return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200">
-      <Inbox className="w-3.5 h-3.5 text-amber-600" />
-      <span className="text-xs font-medium text-amber-700">{reviewCount}</span>
-    </div>
-  );
+  return (<div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200"><Inbox className="w-3.5 h-3.5 text-amber-600" /><span className="text-xs font-medium text-amber-700">{reviewCount}</span></div>);
 };
 
-interface TasksDropdownProps {
-  taskGroups: TaskGroup[];
-  isOpen: boolean;
-  onClose: () => void;
-  onDismiss: (taskId: string) => void;
-}
+interface TasksDropdownProps { taskGroups: TaskGroup[]; isOpen: boolean; onClose: () => void; onDismiss: (taskId: string) => void; }
 
 const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClose, onDismiss }) => {
   const navigate = useNavigate();
   const displayGroups = taskGroups.slice(0, 10);
-  const handleTaskClick = (group: TaskGroup) => {
-    onClose();
-    if (group.prNumber) navigate(`/tasks?pr=${group.prNumber}&repo=${group.repoOwner}/${group.repoName}`);
-    else if (group.issueNumber) navigate(`/tasks?issue=${group.issueNumber}&repo=${group.repoOwner}/${group.repoName}`);
-    else navigate(`/tasks/${group.latestTask.id}`);
-  };
+  const handleTaskClick = (group: TaskGroup) => { onClose(); if (group.prNumber) navigate(`/tasks?pr=${group.prNumber}&repo=${group.repoOwner}/${group.repoName}`); else if (group.issueNumber) navigate(`/tasks?issue=${group.issueNumber}&repo=${group.repoOwner}/${group.repoName}`); else navigate(`/tasks/${group.latestTask.id}`); };
   const handleViewAll = () => { onClose(); navigate('/tasks'); };
   const handleDismiss = (e: React.MouseEvent, taskId: string) => { e.stopPropagation(); onDismiss(taskId); };
   if (!isOpen) return null;
-
-  // Get the issue/PR number for display
-  const getIssueId = (group: TaskGroup): string => {
-    if (group.prNumber) return `#${group.prNumber}`;
-    if (group.issueNumber) return `#${group.issueNumber}`;
-    return '';
-  };
-
-  // Format time ago
-  const formatTimeAgo = (dateString: string): string => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    if (diffMins < 1) return 'just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours}h ago`;
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays}d ago`;
-  };
-
-  // Check if this is a follow-up task (PR task, not issue)
-  const isFollowUp = (group: TaskGroup): boolean => {
-    return !!group.prNumber;
-  };
-
-  // Clean task title by removing "Followup:" prefix and similar noise
-  // Since we already show the ↳ icon for follow-ups, the text prefix is redundant
-  const cleanTaskTitle = (title?: string): string => {
-    if (!title) return '';
-    // Remove "Followup:" or "Followup: [..." prefixes
-    let cleaned = title.replace(/^Followup:\s*/i, '');
-    // Remove bracketed references like "[766 by Claude Opus]" or "[#123]"
-    cleaned = cleaned.replace(/^\[.*?\]\s*/g, '');
-    return cleaned.trim();
-  };
+  const getIssueId = (group: TaskGroup): string => { if (group.prNumber) return `#${group.prNumber}`; if (group.issueNumber) return `#${group.issueNumber}`; return ''; };
+  const isFollowUp = (group: TaskGroup): boolean => !!group.prNumber;
+  const cleanTaskTitle = (title?: string): string => { if (!title) return ''; return title.replace(/^Followup:\s*/i, '').replace(/^\[.*?\]\s*/g, '').trim(); };
 
   return (
     <div
@@ -299,68 +227,24 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   );
 };
 
-interface TasksButtonProps { taskGroups: TaskGroup[]; onDismissTask: (taskId: string) => void; }
-
-export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissTask }) => {
+export const TasksButton: React.FC<{ taskGroups: TaskGroup[]; onDismissTask: (taskId: string) => void }> = ({ taskGroups, onDismissTask }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setIsOpen(false);
-    };
-    if (isOpen) document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isOpen]);
-  const reviewCount = taskGroups.length;
+  const containerRef = useClickOutside(() => setIsOpen(false), isOpen);
   return (
     <div className="relative h-full" ref={containerRef}>
-      {/* Full-height clickable bay partition */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-2 px-4 h-full text-sm transition-colors ${
-          isOpen
-            ? 'bg-white border-b-2 border-b-blue-600'
-            : 'hover:bg-slate-50'
-        }`}
-      >
-        <ListTodo className="w-4 h-4 text-slate-600" />
-        <span className="font-bold text-slate-900">{reviewCount}</span>
-        <span className="text-slate-600 uppercase text-xs tracking-wide">Tasks</span>
+      <button onClick={() => setIsOpen(!isOpen)} className={`flex items-center gap-2 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white border-b-2 border-b-blue-600' : 'hover:bg-slate-50'}`}>
+        <ListTodo className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{taskGroups.length}</span><span className="text-slate-600 uppercase text-xs tracking-wide">Tasks</span>
       </button>
-
       <TasksDropdown taskGroups={taskGroups} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissTask} />
     </div>
   );
 };
 
-interface SystemHealthProps { systemHealth: HeaderStats['systemHealth']; }
-
-export const SystemHealth: React.FC<SystemHealthProps> = ({ systemHealth }) => {
+export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] }> = ({ systemHealth }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setIsOpen(false);
-    };
-    if (isOpen) document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isOpen]);
-  const getStatusColor = (status?: string): string => {
-    if (!status) return 'bg-gray-400';
-    const lower = status.toLowerCase();
-    return (lower === 'running' || lower === 'connected' || lower === 'authenticated')
-      ? 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]'
-      : 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]';
-  };
-  const getOverallHealthColor = (): string => {
-    if (systemHealth.isHealthy) return 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]';
-    const statuses = [systemHealth.daemon, systemHealth.redis, systemHealth.githubAuth];
-    const anyDown = statuses.some(s => !['running', 'connected', 'authenticated'].includes(s?.toLowerCase() || ''));
-    if (anyDown) return systemHealth.daemon?.toLowerCase() !== 'running'
-      ? 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]'
-      : 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]';
-    return 'bg-gray-400';
-  };
+  const containerRef = useClickOutside(() => setIsOpen(false), isOpen);
+  const getStatusColor = (status?: string): string => { if (!status) return 'bg-gray-400'; const lower = status.toLowerCase(); return (lower === 'running' || lower === 'connected' || lower === 'authenticated') ? 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]' : 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]'; };
+  const getOverallHealthColor = (): string => { if (systemHealth.isHealthy) return 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]'; const statuses = [systemHealth.daemon, systemHealth.redis, systemHealth.githubAuth]; const anyDown = statuses.some(s => !['running', 'connected', 'authenticated'].includes(s?.toLowerCase() || '')); if (anyDown) return systemHealth.daemon?.toLowerCase() !== 'running' ? 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]' : 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]'; return 'bg-gray-400'; };
 
   return (
     <div className="relative" ref={containerRef}>
@@ -408,34 +292,14 @@ export const SystemHealth: React.FC<SystemHealthProps> = ({ systemHealth }) => {
   );
 };
 
-interface ActivePlansButtonProps { activePlans: DraftListItem[]; onDismissPlan: (planId: string) => void; }
-
-export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlans, onDismissPlan }) => {
+export const ActivePlansButton: React.FC<{ activePlans: DraftListItem[]; onDismissPlan: (planId: string) => void }> = ({ activePlans, onDismissPlan }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setIsOpen(false);
-    };
-    if (isOpen) document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isOpen]);
+  const containerRef = useClickOutside(() => setIsOpen(false), isOpen);
   return (
     <div className="relative h-full" ref={containerRef}>
-      {/* Full-height clickable bay partition */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-2 px-4 h-full text-sm transition-colors ${
-          isOpen
-            ? 'bg-white border-b-2 border-b-teal-600'
-            : 'hover:bg-slate-50'
-        }`}
-      >
-        <ScrollText className="w-4 h-4 text-slate-600" />
-        <span className="font-bold text-slate-900">{activePlans.length}</span>
-        <span className="text-slate-600 uppercase text-xs tracking-wide">Plans</span>
+      <button onClick={() => setIsOpen(!isOpen)} className={`flex items-center gap-2 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white border-b-2 border-b-teal-600' : 'hover:bg-slate-50'}`}>
+        <ScrollText className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{activePlans.length}</span><span className="text-slate-600 uppercase text-xs tracking-wide">Plans</span>
       </button>
-
       <PlansDropdown activePlans={activePlans} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissPlan} />
     </div>
   );
