@@ -5,23 +5,16 @@ import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle, formatRelativeTime } from './headerUtils';
 
-// Task group interface (matches useHeaderStats)
 interface TaskGroup {
   key: string;
   repoOwner: string;
   repoName: string;
   prNumber?: number;
   issueNumber?: number;
-  latestTask: {
-    id: string;
-    status: string;
-    createdAt: string;
-    title?: string;
-  };
+  latestTask: { id: string; status: string; createdAt: string; title?: string; };
   allTasks: unknown[];
 }
 
-// Plans Dropdown Component
 interface PlansDropdownProps {
   activePlans: DraftListItem[];
   isOpen: boolean;
@@ -31,25 +24,10 @@ interface PlansDropdownProps {
 
 const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onClose, onDismiss }) => {
   const navigate = useNavigate();
-
-  // Limit to top 10 most recently updated plans
   const displayPlans = activePlans.slice(0, 10);
-
-  const handlePlanClick = (draftId: string) => {
-    onClose();
-    navigate(`/studio/${draftId}`);
-  };
-
-  const handleViewAll = () => {
-    onClose();
-    navigate('/plans');
-  };
-
-  const handleDismiss = (e: React.MouseEvent, planId: string) => {
-    e.stopPropagation();
-    onDismiss(planId);
-  };
-
+  const handlePlanClick = (draftId: string) => { onClose(); navigate(`/studio/${draftId}`); };
+  const handleViewAll = () => { onClose(); navigate('/plans'); };
+  const handleDismiss = (e: React.MouseEvent, planId: string) => { e.stopPropagation(); onDismiss(planId); };
   if (!isOpen) return null;
 
   return (
@@ -117,14 +95,10 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   );
 };
 
-// Machine Status Pill (Blue - Running Agents)
-interface MachineStatusProps {
-  runningCount: number;
-}
+interface MachineStatusProps { runningCount: number; }
 
 export const MachineStatus: React.FC<MachineStatusProps> = ({ runningCount }) => {
   if (runningCount === 0) return null;
-
   return (
     <div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 border border-blue-200 rounded-full">
       <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
@@ -134,14 +108,10 @@ export const MachineStatus: React.FC<MachineStatusProps> = ({ runningCount }) =>
   );
 };
 
-// Human Inbox Pill (Amber - Review Items) - Now a simple indicator
-interface HumanInboxProps {
-  reviewCount: number;
-}
+interface HumanInboxProps { reviewCount: number; }
 
 export const HumanInbox: React.FC<HumanInboxProps> = ({ reviewCount }) => {
   if (reviewCount === 0) return null;
-
   return (
     <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200 rounded-full">
       <Inbox className="w-3.5 h-3.5 text-amber-600" />
@@ -150,7 +120,6 @@ export const HumanInbox: React.FC<HumanInboxProps> = ({ reviewCount }) => {
   );
 };
 
-// Tasks Dropdown Component
 interface TasksDropdownProps {
   taskGroups: TaskGroup[];
   isOpen: boolean;
@@ -160,32 +129,15 @@ interface TasksDropdownProps {
 
 const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClose, onDismiss }) => {
   const navigate = useNavigate();
-
-  // Limit to top 10 most recently updated task groups
   const displayGroups = taskGroups.slice(0, 10);
-
   const handleTaskClick = (group: TaskGroup) => {
     onClose();
-    // Navigate to tasks page with the specific task or PR
-    if (group.prNumber) {
-      navigate(`/tasks?pr=${group.prNumber}&repo=${group.repoOwner}/${group.repoName}`);
-    } else if (group.issueNumber) {
-      navigate(`/tasks?issue=${group.issueNumber}&repo=${group.repoOwner}/${group.repoName}`);
-    } else {
-      navigate(`/tasks/${group.latestTask.id}`);
-    }
+    if (group.prNumber) navigate(`/tasks?pr=${group.prNumber}&repo=${group.repoOwner}/${group.repoName}`);
+    else if (group.issueNumber) navigate(`/tasks?issue=${group.issueNumber}&repo=${group.repoOwner}/${group.repoName}`);
+    else navigate(`/tasks/${group.latestTask.id}`);
   };
-
-  const handleViewAll = () => {
-    onClose();
-    navigate('/tasks');
-  };
-
-  const handleDismiss = (e: React.MouseEvent, taskId: string) => {
-    e.stopPropagation();
-    onDismiss(taskId);
-  };
-
+  const handleViewAll = () => { onClose(); navigate('/tasks'); };
+  const handleDismiss = (e: React.MouseEvent, taskId: string) => { e.stopPropagation(); onDismiss(taskId); };
   if (!isOpen) return null;
 
   return (
@@ -257,43 +209,23 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   );
 };
 
-// Tasks Button with Dropdown
-interface TasksButtonProps {
-  taskGroups: TaskGroup[];
-  onDismissTask: (taskId: string) => void;
-}
+interface TasksButtonProps { taskGroups: TaskGroup[]; onDismissTask: (taskId: string) => void; }
 
 export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissTask }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setIsOpen(false);
     };
-
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
+    if (isOpen) document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
-
-  const handleToggle = () => {
-    setIsOpen(!isOpen);
-  };
-
-  const handleClose = () => {
-    setIsOpen(false);
-  };
-
   const reviewCount = taskGroups.length;
-
   return (
     <div className="relative" ref={containerRef}>
       <button
-        onClick={handleToggle}
+        onClick={() => setIsOpen(!isOpen)}
         className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-colors ${
           reviewCount > 0
             ? 'bg-amber-50 border-amber-200 hover:bg-amber-100'
@@ -309,62 +241,33 @@ export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissT
         } ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      <TasksDropdown
-        taskGroups={taskGroups}
-        isOpen={isOpen}
-        onClose={handleClose}
-        onDismiss={onDismissTask}
-      />
+      <TasksDropdown taskGroups={taskGroups} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissTask} />
     </div>
   );
 };
 
-// System Health Indicator
-interface SystemHealthProps {
-  systemHealth: HeaderStats['systemHealth'];
-}
+interface SystemHealthProps { systemHealth: HeaderStats['systemHealth']; }
 
 export const SystemHealth: React.FC<SystemHealthProps> = ({ systemHealth }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setIsOpen(false);
     };
-
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
+    if (isOpen) document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
-
   const getStatusColor = (status?: string): string => {
     if (!status) return 'bg-gray-400';
-    const lowerStatus = status.toLowerCase();
-    if (lowerStatus === 'running' || lowerStatus === 'connected' || lowerStatus === 'authenticated') {
-      return 'bg-green-500';
-    }
-    return 'bg-red-500';
+    const lower = status.toLowerCase();
+    return (lower === 'running' || lower === 'connected' || lower === 'authenticated') ? 'bg-green-500' : 'bg-red-500';
   };
-
   const getOverallHealthColor = (): string => {
     if (systemHealth.isHealthy) return 'bg-green-500';
-
     const statuses = [systemHealth.daemon, systemHealth.redis, systemHealth.githubAuth];
-    const anyDown = statuses.some(s => {
-      const lower = s?.toLowerCase() || '';
-      return !['running', 'connected', 'authenticated'].includes(lower);
-    });
-
-    if (anyDown) {
-      if (systemHealth.daemon?.toLowerCase() !== 'running') {
-        return 'bg-red-500';
-      }
-      return 'bg-amber-500';
-    }
+    const anyDown = statuses.some(s => !['running', 'connected', 'authenticated'].includes(s?.toLowerCase() || ''));
+    if (anyDown) return systemHealth.daemon?.toLowerCase() !== 'running' ? 'bg-red-500' : 'bg-amber-500';
     return 'bg-gray-400';
   };
 
@@ -414,41 +317,22 @@ export const SystemHealth: React.FC<SystemHealthProps> = ({ systemHealth }) => {
   );
 };
 
-// Active Plans Button with Dropdown
-interface ActivePlansButtonProps {
-  activePlans: DraftListItem[];
-  onDismissPlan: (planId: string) => void;
-}
+interface ActivePlansButtonProps { activePlans: DraftListItem[]; onDismissPlan: (planId: string) => void; }
 
 export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlans, onDismissPlan }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setIsOpen(false);
     };
-
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
+    if (isOpen) document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
-
-  const handleToggle = () => {
-    setIsOpen(!isOpen);
-  };
-
-  const handleClose = () => {
-    setIsOpen(false);
-  };
-
   return (
     <div className="relative" ref={containerRef}>
       <button
-        onClick={handleToggle}
+        onClick={() => setIsOpen(!isOpen)}
         className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-colors ${
           activePlans.length > 0
             ? 'bg-teal-50 border-teal-200 hover:bg-teal-100'
@@ -464,12 +348,7 @@ export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlan
         } ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      <PlansDropdown
-        activePlans={activePlans}
-        isOpen={isOpen}
-        onClose={handleClose}
-        onDismiss={onDismissPlan}
-      />
+      <PlansDropdown activePlans={activePlans} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissPlan} />
     </div>
   );
 };
