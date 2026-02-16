@@ -58,13 +58,14 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
         left: '240px',
       }}
     >
-      {/* Teal accent line at top - flush with header bottom */}
-      <div className="h-0.5 bg-teal-600" />
       <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ScrollText className="w-4 h-4 text-teal-600" />
-          <span className="font-mono text-xs font-bold tracking-widest text-teal-600">
-            ACTIVE PLANS ({activePlans.length})
+          <span className="text-slate-500 font-bold text-[10px] uppercase tracking-wider">
+            ACTIVE PLANS
+          </span>
+          <span className="font-bold text-slate-700">
+            ({activePlans.length})
           </span>
         </div>
       </div>
@@ -219,13 +220,14 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
         left: '240px',
       }}
     >
-      {/* Blue accent line at top - flush with header bottom */}
-      <div className="h-0.5 bg-blue-600" />
       <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ListTodo className="w-4 h-4 text-blue-600" />
-          <span className="font-mono text-xs font-bold tracking-widest text-blue-600">
-            PENDING REVIEW ({taskGroups.length})
+          <span className="text-slate-500 font-bold text-[10px] uppercase tracking-wider">
+            PENDING REVIEW
+          </span>
+          <span className="font-bold text-slate-700">
+            ({taskGroups.length})
           </span>
         </div>
       </div>
@@ -346,13 +348,17 @@ export const SystemHealth: React.FC<SystemHealthProps> = ({ systemHealth }) => {
   const getStatusColor = (status?: string): string => {
     if (!status) return 'bg-gray-400';
     const lower = status.toLowerCase();
-    return (lower === 'running' || lower === 'connected' || lower === 'authenticated') ? 'bg-green-500' : 'bg-red-500';
+    return (lower === 'running' || lower === 'connected' || lower === 'authenticated')
+      ? 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]'
+      : 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]';
   };
   const getOverallHealthColor = (): string => {
-    if (systemHealth.isHealthy) return 'bg-green-500';
+    if (systemHealth.isHealthy) return 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]';
     const statuses = [systemHealth.daemon, systemHealth.redis, systemHealth.githubAuth];
     const anyDown = statuses.some(s => !['running', 'connected', 'authenticated'].includes(s?.toLowerCase() || ''));
-    if (anyDown) return systemHealth.daemon?.toLowerCase() !== 'running' ? 'bg-red-500' : 'bg-amber-500';
+    if (anyDown) return systemHealth.daemon?.toLowerCase() !== 'running'
+      ? 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]'
+      : 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]';
     return 'bg-gray-400';
   };
 

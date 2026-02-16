@@ -98,14 +98,14 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
         {/* Search Bar - centered in the flexible space */}
         <form onSubmit={handleSearch} className="hidden md:block w-full max-w-md">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
               ref={searchInputRef}
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search... [Cmd+K]"
-              className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-slate-300 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 focus:bg-white transition-colors"
+              placeholder="Search... ⌘K"
+              className="w-full pl-12 pr-4 py-2 bg-gray-50 border border-slate-300 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 focus:bg-white transition-colors"
             />
           </div>
         </form>
