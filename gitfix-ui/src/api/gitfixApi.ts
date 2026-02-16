@@ -93,9 +93,43 @@ export const getQueueStats = async (): Promise<QueueStats> => {
   };
 };
 
-export const getTasks = async (status = 'all', limit = 50, offset = 0, repository = 'all', search = ''): Promise<unknown> => {
-  const params = new URLSearchParams({ status, limit: limit.toString(), offset: offset.toString(), repository });
-  if (search) params.append('search', search);
+export interface GetTasksOptions {
+  status?: string;
+  limit?: number;
+  offset?: number;
+  repository?: string;
+  search?: string;
+  /** Filter to only include tasks that need review (completed or failed) */
+  forReview?: boolean;
+  /** Exclude tasks where plan_issue_status is 'merged' */
+  excludeMerged?: boolean;
+}
+
+export const getTasks = async (
+  statusOrOptions: string | GetTasksOptions = 'all',
+  limit = 50,
+  offset = 0,
+  repository = 'all',
+  search = ''
+): Promise<unknown> => {
+  // Support both old signature (positional args) and new options object
+  let options: GetTasksOptions;
+  if (typeof statusOrOptions === 'object') {
+    options = statusOrOptions;
+  } else {
+    options = { status: statusOrOptions, limit, offset, repository, search };
+  }
+
+  const params = new URLSearchParams({
+    status: options.status || 'all',
+    limit: (options.limit ?? 50).toString(),
+    offset: (options.offset ?? 0).toString(),
+    repository: options.repository || 'all'
+  });
+  if (options.search) params.append('search', options.search);
+  if (options.forReview) params.append('forReview', 'true');
+  if (options.excludeMerged) params.append('excludeMerged', 'true');
+
   const response = await fetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();

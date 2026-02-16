@@ -340,6 +340,8 @@ export interface GetDraftsOptions {
   repository?: string;
   search?: string;
   status?: string;
+  /** Comma-separated list of statuses to exclude (e.g., 'merged,executed') */
+  excludeStatuses?: string;
 }
 
 export interface PaginatedDraftsResponse {
@@ -357,6 +359,7 @@ export const getDrafts = async (options: GetDraftsOptions = {}): Promise<Paginat
   if (options.repository && options.repository !== 'all') params.append('repository', options.repository);
   if (options.search && options.search.trim()) params.append('search', options.search.trim());
   if (options.status && options.status !== 'all') params.append('status', options.status);
+  if (options.excludeStatuses) params.append('excludeStatuses', options.excludeStatuses);
 
   const queryString = params.toString();
   const url = queryString

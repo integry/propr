@@ -5,6 +5,10 @@ import { getDrafts, DraftListItem } from '../api/plannerApi';
 // LocalStorage keys for dismissal tracking
 const DISMISSED_PLAN_IDS_KEY = 'dismissed_plan_ids';
 const DISMISSED_TASK_IDS_KEY = 'dismissed_task_ids';
+// New key for tracking PR-based dismissal timestamps
+// When a task is dismissed, we store the timestamp for that PR/issue key
+// All tasks created before that timestamp for that PR/issue are auto-dismissed
+const DISMISSED_TASK_TIMESTAMPS_KEY = 'dismissed_task_timestamps';
 
 // Polling interval in milliseconds
 const POLLING_INTERVAL = 5000;
@@ -22,6 +26,12 @@ interface Task {
   createdAt: string;
   completedAt?: string;
   planIssueStatus?: string | null;
+}
+
+// Map of PR/issue keys to dismissal timestamps
+// When a task group is dismissed, all tasks created before that timestamp are hidden
+interface DismissedTaskTimestamps {
+  [key: string]: number; // key format: "owner/repo-pr-123" or "owner/repo-issue-456", value: timestamp in ms
 }
 
 interface TaskGroup {
@@ -66,7 +76,8 @@ export interface HeaderStats {
 
   // Dismissal functions
   dismissPlan: (planId: string) => void;
-  dismissTask: (taskId: string) => void;
+  // Dismiss a task group - stores timestamp to auto-dismiss older followup tasks
+  dismissTask: (taskGroupKey: string, latestTaskCreatedAt: string) => void;
 
   // Get dismissed IDs
   dismissedPlanIds: string[];
@@ -99,6 +110,36 @@ const saveDismissedIds = (key: string, ids: string[]): void => {
   }
 };
 
+// Helper to get dismissed task timestamps from localStorage
+const getDismissedTaskTimestamps = (): DismissedTaskTimestamps => {
+  try {
+    const stored = localStorage.getItem(DISMISSED_TASK_TIMESTAMPS_KEY);
+    return stored ? JSON.parse(stored) : {};
+  } catch {
+    return {};
+  }
+};
+
+// Helper to save dismissed task timestamps to localStorage
+const saveDismissedTaskTimestamps = (timestamps: DismissedTaskTimestamps): void => {
+  try {
+    localStorage.setItem(DISMISSED_TASK_TIMESTAMPS_KEY, JSON.stringify(timestamps));
+  } catch {
+    console.error('Failed to save dismissed task timestamps');
+  }
+};
+
+// Helper to create a task group key for dismissal tracking
+const getTaskGroupKey = (repoOwner: string, repoName: string, prNumber?: number, issueNumber?: number): string => {
+  const repoPrefix = `${repoOwner}/${repoName}`;
+  if (prNumber) {
+    return `${repoPrefix}-pr-${prNumber}`;
+  } else if (issueNumber) {
+    return `${repoPrefix}-issue-${issueNumber}`;
+  }
+  return '';
+};
+
 export function useHeaderStats(): HeaderStats {
   const [runningCount, setRunningCount] = useState<number>(0);
   const [activePlans, setActivePlans] = useState<DraftListItem[]>([]);
@@ -117,6 +158,8 @@ export function useHeaderStats(): HeaderStats {
   // Dismissed IDs state
   const [dismissedPlanIds, setDismissedPlanIds] = useState<string[]>(() => getDismissedIds(DISMISSED_PLAN_IDS_KEY));
   const [dismissedTaskIds, setDismissedTaskIds] = useState<string[]>(() => getDismissedIds(DISMISSED_TASK_IDS_KEY));
+  // Track dismissal timestamps per PR/issue key for auto-dismissing older followup tasks
+  const [dismissedTaskTimestamps, setDismissedTaskTimestamps] = useState<DismissedTaskTimestamps>(() => getDismissedTaskTimestamps());
 
   // Track if component is mounted
   const isMountedRef = useRef(true);
@@ -130,10 +173,22 @@ export function useHeaderStats(): HeaderStats {
     });
   }, []);
 
-  // Dismiss a task
-  const dismissTask = useCallback((taskId: string) => {
+  // Dismiss a task group - stores both the task ID and a timestamp for the PR/issue key
+  // This ensures older followup tasks are automatically dismissed
+  const dismissTask = useCallback((taskGroupKey: string, latestTaskCreatedAt: string) => {
+    // Store the timestamp for this PR/issue key
+    // Any tasks created at or before this timestamp for this key will be auto-dismissed
+    const dismissTimestamp = new Date(latestTaskCreatedAt).getTime();
+
+    setDismissedTaskTimestamps(prev => {
+      const newTimestamps = { ...prev, [taskGroupKey]: dismissTimestamp };
+      saveDismissedTaskTimestamps(newTimestamps);
+      return newTimestamps;
+    });
+
+    // Also store the task group key in dismissedTaskIds for backwards compatibility
     setDismissedTaskIds(prev => {
-      const newIds = [...prev, taskId];
+      const newIds = [...prev, taskGroupKey];
       saveDismissedIds(DISMISSED_TASK_IDS_KEY, newIds);
       return newIds;
     });
@@ -145,10 +200,12 @@ export function useHeaderStats(): HeaderStats {
     saveDismissedIds(DISMISSED_PLAN_IDS_KEY, []);
   }, []);
 
-  // Clear all dismissed tasks
+  // Clear all dismissed tasks (including timestamps)
   const clearDismissedTasks = useCallback(() => {
     setDismissedTaskIds([]);
     saveDismissedIds(DISMISSED_TASK_IDS_KEY, []);
+    setDismissedTaskTimestamps({});
+    saveDismissedTaskTimestamps({});
   }, []);
 
   // Main fetch function
@@ -158,11 +215,13 @@ export function useHeaderStats(): HeaderStats {
         setIsLoading(true);
       }
 
-      // Fetch all data in parallel
+      // Fetch all data in parallel with smart DB-level pre-filtering
       const [queueStats, draftsResponse, tasksResponse, statusResponse] = await Promise.all([
         getQueueStats(),
-        getDrafts({ limit: 100 }), // Fetch all drafts for client-side filtering
-        getTasks('all', 100, 0, 'all', ''), // Fetch recent tasks
+        // Fetch active plans only (exclude merged and executed at DB level)
+        getDrafts({ limit: 20, excludeStatuses: 'merged,executed' }),
+        // Fetch review-worthy tasks only (completed/failed, exclude merged at DB level)
+        getTasks({ limit: 30, forReview: true, excludeMerged: true }),
         getSystemStatus(),
       ]);
 
@@ -172,16 +231,14 @@ export function useHeaderStats(): HeaderStats {
       setRunningCount(queueStats.active);
 
       // 2. Process active plans
-      // Filter plans where status is NOT 'merged' and NOT 'closed'
-      // Also exclude manually dismissed plans
+      // Plans are already pre-filtered at DB level (excludes merged, executed)
+      // Only need to filter out manually dismissed plans
       const currentDismissedPlanIds = getDismissedIds(DISMISSED_PLAN_IDS_KEY);
       const filteredPlans = draftsResponse.drafts.filter(draft => {
-        const isActive = draft.status !== 'merged' && draft.status !== 'executed';
-        const isNotDismissed = !currentDismissedPlanIds.includes(draft.draft_id);
-        return isActive && isNotDismissed;
+        return !currentDismissedPlanIds.includes(draft.draft_id);
       });
 
-      // Sort by updated_at descending (newest first)
+      // Already sorted by updated_at desc from API, but ensure order
       filteredPlans.sort((a, b) => {
         const dateA = new Date(a.updated_at).getTime();
         const dateB = new Date(b.updated_at).getTime();
@@ -191,22 +248,37 @@ export function useHeaderStats(): HeaderStats {
       setActivePlans(filteredPlans);
 
       // 3. Process review items
+      // Tasks are pre-filtered at DB level (completed/failed only, merged excluded)
       // Group tasks by PR (or issue if no PR)
       const tasks = (tasksResponse as { tasks: Task[] }).tasks || [];
       const currentDismissedTaskIds = getDismissedIds(DISMISSED_TASK_IDS_KEY);
+      const currentDismissedTimestamps = getDismissedTaskTimestamps();
 
       const groups: Record<string, TaskGroup> = {};
       // Track issue-to-PR mapping: when a PR task has linkedIssueNumber,
       // map that issue to the PR for merging groups
       const issueToPrMap: Record<string, string> = {};
 
-      tasks.forEach(task => {
-        // Skip dismissed tasks
-        if (currentDismissedTaskIds.includes(task.id)) {
-          return;
-        }
+      // Track which issues have PR followup tasks
+      // If a PR task exists for an issue, we should filter out the initial issue task
+      const prTasksByIssue: Record<string, boolean> = {};
 
-        // Parse repository owner/name
+      // First pass: identify issues that have PR followup tasks
+      tasks.forEach(task => {
+        if (task.prNumber && task.issueNumber) {
+          let owner = task.repositoryOwner;
+          let name = task.repositoryName;
+          if (!owner || !name) {
+            const parts = (task.repository || 'unknown/unknown').split('/');
+            owner = parts[0] || 'unknown';
+            name = parts[1] || 'unknown';
+          }
+          const issueKey = `${owner}/${name}-issue-${task.issueNumber}`;
+          prTasksByIssue[issueKey] = true;
+        }
+      });
+
+      tasks.forEach(task => {
         let owner = task.repositoryOwner;
         let name = task.repositoryName;
 
@@ -218,6 +290,25 @@ export function useHeaderStats(): HeaderStats {
 
         const repoPrefix = `${owner}/${name}`;
 
+        // Create group key: prefer PR number, fallback to issue number
+        const taskGroupKey = getTaskGroupKey(owner, name, task.prNumber, task.issueNumber) || task.id;
+
+        // Skip dismissed tasks using timestamp-based filtering
+        // If this PR/issue key has a dismissal timestamp, only show tasks created AFTER that timestamp
+        const dismissedTimestamp = currentDismissedTimestamps[taskGroupKey];
+        if (dismissedTimestamp) {
+          const taskCreatedAt = new Date(task.createdAt).getTime();
+          // Skip tasks created at or before the dismissal timestamp
+          if (taskCreatedAt <= dismissedTimestamp) {
+            return;
+          }
+        }
+
+        // Also check legacy dismissal by task ID for backwards compatibility
+        if (currentDismissedTaskIds.includes(task.id)) {
+          return;
+        }
+
         // If this task has a PR and a linkedIssueNumber, record the mapping
         // This allows us to merge issue-based groups into PR-based groups
         if (task.prNumber && task.linkedIssueNumber) {
@@ -226,14 +317,12 @@ export function useHeaderStats(): HeaderStats {
           issueToPrMap[issueKey] = prKey;
         }
 
-        // Create group key: prefer PR number, fallback to issue number
-        let key: string;
-        if (task.prNumber) {
-          key = `${repoPrefix}-pr-${task.prNumber}`;
-        } else if (task.issueNumber) {
-          key = `${repoPrefix}-issue-${task.issueNumber}`;
-        } else {
-          key = task.id;
+        // Use the already-computed group key (taskGroupKey is already computed above)
+        const key = taskGroupKey;
+
+        // Skip initial issue tasks if a PR followup exists for this issue
+        if (!task.prNumber && task.issueNumber && prTasksByIssue[key]) {
+          return;
         }
 
         if (!groups[key]) {
@@ -261,7 +350,8 @@ export function useHeaderStats(): HeaderStats {
         }
       });
 
-      // For each group, determine the latest task and filter based on review criteria
+      // For each group, determine the latest task
+      // Tasks are pre-filtered at DB level, we just need to organize by group
       const reviewableGroups: TaskGroup[] = [];
 
       Object.values(groups).forEach(group => {
@@ -275,21 +365,9 @@ export function useHeaderStats(): HeaderStats {
         const latestTask = group.allTasks[0];
         group.latestTask = latestTask;
 
-        // Auto-removal: If the latest task indicates merged status, exclude the group
-        const isMerged = latestTask.status === 'merged' || latestTask.planIssueStatus === 'merged';
-        if (isMerged) {
-          return; // Skip this group
-        }
-
-        // Inclusion criteria:
-        // - Include if latest task is 'failed'
-        // - Include if latest task is 'completed' AND PR is open (not merged)
-        const isFailed = latestTask.status === 'failed';
-        const isCompletedAndOpen = latestTask.status === 'completed' && latestTask.planIssueStatus !== 'merged';
-
-        if (isFailed || isCompletedAndOpen) {
-          reviewableGroups.push(group);
-        }
+        // Tasks are already pre-filtered at DB level to be completed/failed and not merged
+        // Just add to reviewable groups
+        reviewableGroups.push(group);
       });
 
       // Sort review groups by latest task's createdAt (newest first)
@@ -351,14 +429,14 @@ export function useHeaderStats(): HeaderStats {
     };
   }, [fetchStats]);
 
-  // Re-filter when dismissed IDs change
+  // Re-filter when dismissed IDs or timestamps change
   useEffect(() => {
     // Trigger a refresh when dismissal state changes
     // This ensures the lists are updated when items are dismissed
     if (!isLoading) {
       fetchStats(false);
     }
-  }, [dismissedPlanIds.length, dismissedTaskIds.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dismissedPlanIds.length, dismissedTaskIds.length, Object.keys(dismissedTaskTimestamps).length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
     runningCount,

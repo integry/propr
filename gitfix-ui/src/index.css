@@ -52,6 +52,39 @@ body {
   background: #9ca3af;
 }
 
+/* Stealth scrollbar - invisible until hovered */
+.scrollbar-stealth {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.scrollbar-stealth::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-stealth::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-stealth::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+
+.scrollbar-stealth:hover {
+  scrollbar-color: #d1d5db transparent;
+}
+
+.scrollbar-stealth:hover::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+}
+
+.scrollbar-stealth::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
 /* Context Level Slider - Custom gradient slider styling */
 .context-slider {
   -webkit-appearance: none;
