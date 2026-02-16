@@ -49,9 +49,9 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
       <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <ScrollText className="w-4 h-4 text-teal-600 flex-shrink-0" />
+            <span className="text-base">✨</span>
             <span className="text-slate-500 font-bold text-[10px] uppercase tracking-wider leading-none">
-              ACTIVE PLANS
+              PLANS IN FOCUS
             </span>
             <span className="px-1.5 py-0.5 bg-slate-200 text-slate-600 text-[10px] font-bold rounded-sm leading-none">
               {activePlans.length}
@@ -153,9 +153,9 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
       <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <ListTodo className="w-4 h-4 text-blue-600 flex-shrink-0" />
+            <span className="text-base">📦</span>
             <span className="text-slate-500 font-bold text-[10px] uppercase tracking-wider leading-none">
-              PENDING REVIEW
+              TASKS IN FOCUS
             </span>
             <span className="px-1.5 py-0.5 bg-slate-200 text-slate-600 text-[10px] font-bold rounded-sm leading-none">
               {taskGroups.length}
@@ -234,8 +234,8 @@ export const TasksButton: React.FC<{ taskGroups: TaskGroup[]; onDismissTask: (ta
   const containerRef = useClickOutside(() => setIsOpen(false), isOpen);
   return (
     <div className="relative h-full" ref={containerRef}>
-      <button onClick={() => setIsOpen(!isOpen)} className={`relative flex items-center gap-2 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white' : 'hover:bg-slate-50'}`}>
-        <ListTodo className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{taskGroups.length}</span><span className="text-slate-600 uppercase text-xs tracking-wide">Tasks</span>
+      <button onClick={() => setIsOpen(!isOpen)} className={`relative flex items-center gap-1.5 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white' : 'hover:bg-slate-50'}`}>
+        <ListTodo className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{taskGroups.length}</span><span className="text-slate-600 text-sm">Tasks</span>
         {isOpen && <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-blue-600" />}
       </button>
       <TasksDropdown taskGroups={taskGroups} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissTask} />
@@ -300,8 +300,8 @@ export const ActivePlansButton: React.FC<{ activePlans: DraftListItem[]; onDismi
   const containerRef = useClickOutside(() => setIsOpen(false), isOpen);
   return (
     <div className="relative h-full" ref={containerRef}>
-      <button onClick={() => setIsOpen(!isOpen)} className={`relative flex items-center gap-2 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white' : 'hover:bg-slate-50'}`}>
-        <ScrollText className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{activePlans.length}</span><span className="text-slate-600 uppercase text-xs tracking-wide">Plans</span>
+      <button onClick={() => setIsOpen(!isOpen)} className={`relative flex items-center gap-1.5 px-4 h-full text-sm transition-colors ${isOpen ? 'bg-white' : 'hover:bg-slate-50'}`}>
+        <ScrollText className="w-4 h-4 text-slate-600" /><span className="font-bold text-slate-900">{activePlans.length}</span><span className="text-slate-600 text-sm">Plans</span>
         {isOpen && <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-teal-600" />}
       </button>
       <PlansDropdown activePlans={activePlans} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissPlan} />
