@@ -1,6 +1,6 @@
 import { useState, forwardRef, useRef, useCallback } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { MessageSquare, Trash2, Pencil, ChevronDown, FileText } from 'lucide-react';
+import { MessageSquare, Trash2, Pencil, ChevronDown, FileText, Maximize2, Minimize2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PlanTask, uploadAttachment, removeAttachment } from '../../api/gitfixApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
@@ -32,6 +32,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   const [editingField, setEditingField] = useState<EditableField>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
   const [isImplementationCollapsed, setIsImplementationCollapsed] = useState(true);
+  const [isCodeExpanded, setIsCodeExpanded] = useState(false);
   const [showClearDialog, setShowClearDialog] = useState(false);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const notesTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -146,12 +147,18 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
       );
     }
 
+    // For implementation field, don't override code block styling to allow syntax highlighter theme
+    const isImplementationField = field === 'implementation';
+    const markdownStyles = isImplementationField
+      ? "prose prose-sm max-w-none [&_code]:px-1 [&_code]:py-0 [&_code]:rounded-sm [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none"
+      : "prose prose-sm max-w-none [&_code]:bg-gray-100 [&_code]:text-gray-600 [&_code]:px-1 [&_code]:py-0 [&_code]:rounded-sm [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none";
+
     return (
       <div
         onClick={() => handleFieldClick(field)}
         className={`${markdownClassName || className} ${cursorClass} hover:bg-gray-50 rounded p-1 -ml-1 task-card-content`}
       >
-        <MarkdownRenderer text={value} className="prose prose-sm max-w-none [&_code]:bg-gray-100 [&_code]:text-gray-600 [&_code]:px-1 [&_code]:py-0 [&_code]:rounded-sm [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none" />
+        <MarkdownRenderer text={value} className={markdownStyles} />
       </div>
     );
   };
@@ -262,16 +269,30 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
               </motion.div>
             </div>
             {task.implementation && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowClearDialog(true);
-                }}
-                className="opacity-0 group-hover/impl:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-500 hover:bg-gray-100 rounded transition-colors"
-                title="Clear implementation"
-              >
-                <Trash2 size={14} />
-              </button>
+              <div className="flex items-center gap-1">
+                {!isImplementationCollapsed && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsCodeExpanded(prev => !prev);
+                    }}
+                    className="opacity-0 group-hover/impl:opacity-100 transition-opacity p-1 text-gray-400 hover:text-teal-600 hover:bg-gray-100 rounded transition-colors"
+                    title={isCodeExpanded ? 'Collapse code' : 'Expand code'}
+                  >
+                    {isCodeExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                  </button>
+                )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowClearDialog(true);
+                  }}
+                  className="opacity-0 group-hover/impl:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-500 hover:bg-gray-100 rounded transition-colors"
+                  title="Clear implementation"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             )}
           </div>
 
@@ -314,8 +335,8 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                   'implementation',
                   task.implementation,
                   'Implementation details...',
-                  'w-full font-mono text-sm text-gray-700 bg-transparent transition-colors placeholder-gray-400',
-                  'w-full font-mono text-sm text-gray-700 [&_code]:bg-gray-100 [&_code]:text-gray-700'
+                  'w-full font-mono text-sm bg-transparent transition-colors placeholder-gray-400',
+                  `w-full font-mono text-sm ${isCodeExpanded ? '' : 'max-h-96 overflow-y-auto'}`
                 )}
               </motion.div>
             )}
