@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, CheckCircle } from 'lucide-react';
+import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, CheckCircle, Rocket } from 'lucide-react';
 import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle } from './headerUtils';
@@ -192,17 +192,17 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
       <div className="max-h-[600px] overflow-y-auto scrollbar-stealth">
         {displayGroups.length === 0 ? (
           <div className="px-4 py-8 text-center flex flex-col items-center gap-4">
-            <CheckCircle className="w-8 h-8 text-slate-200" />
+            <CheckCircle className="w-8 h-8 text-slate-100" />
             <div>
-              <p className="text-sm font-medium text-slate-700">All caught up.</p>
-              <p className="text-xs text-slate-400 mt-0.5">You don't have any active tasks in focus.</p>
+              <p className="text-sm font-medium text-slate-500">All tasks completed.</p>
+              <p className="text-xs text-slate-400 mt-0.5">Ready for the next implementation?</p>
             </div>
             <button
-              onClick={() => { onClose(); navigate('/tasks/new'); }}
+              onClick={() => { onClose(); navigate('/plans'); }}
               className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors"
             >
-              <ListTodo className="w-4 h-4" />
-              <span>+ Create New Task</span>
+              <Rocket className="w-4 h-4" />
+              <span>Implement a Plan</span>
             </button>
             <button
               onClick={handleViewAll}
