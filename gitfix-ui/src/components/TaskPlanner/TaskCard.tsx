@@ -1,4 +1,4 @@
-import { useState, forwardRef, useRef, useCallback } from 'react';
+import { useState, forwardRef, useRef, useCallback, RefObject } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
 import { MessageSquare, Trash2, Pencil, ChevronDown, FileText, Maximize2, Minimize2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -20,6 +20,91 @@ interface TaskCardProps {
 
 type EditableField = 'title' | 'body' | 'implementation' | 'notes' | null;
 type ViewMode = 'preview' | 'edit';
+
+// Get markdown styles based on field type
+function getMarkdownStyles(field: EditableField): string {
+  if (field === 'implementation') {
+    return "prose prose-sm max-w-none [&_code]:px-1 [&_code]:py-0 [&_code]:rounded-sm [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none";
+  }
+  return "prose prose-sm max-w-none [&_code]:bg-gray-100 [&_code]:text-gray-600 [&_code]:px-1 [&_code]:py-0 [&_code]:rounded-sm [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none";
+}
+
+interface RenderEditableContentProps {
+  field: EditableField;
+  value: string;
+  placeholder: string;
+  className: string;
+  markdownClassName?: string;
+  editingField: EditableField;
+  viewMode: ViewMode;
+  task: PlanTask;
+  onChange: (task: PlanTask) => void;
+  onBlur: () => void;
+  setEditingField: (field: EditableField) => void;
+  handleFieldClick: (field: EditableField) => void;
+  handleNotesPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
+  notesTextareaRef: RefObject<HTMLTextAreaElement | null>;
+}
+
+function RenderEditableContent({
+  field,
+  value,
+  placeholder,
+  className,
+  markdownClassName,
+  editingField,
+  viewMode,
+  task,
+  onChange,
+  onBlur,
+  setEditingField,
+  handleFieldClick,
+  handleNotesPaste,
+  notesTextareaRef,
+}: RenderEditableContentProps) {
+  const isEditing = editingField === field || viewMode === 'edit';
+  const isNotesField = field === 'notes';
+
+  if (isEditing) {
+    return (
+      <TextareaAutosize
+        ref={isNotesField ? notesTextareaRef : undefined}
+        value={value}
+        onChange={e => onChange({ ...task, [field as string]: e.target.value })}
+        onBlur={onBlur}
+        onFocus={() => setEditingField(field)}
+        onPaste={isNotesField ? handleNotesPaste : undefined}
+        autoFocus={editingField === field}
+        className={`${className} resize-none focus:outline-none focus:bg-gray-50 rounded p-1 -ml-1 cursor-text`}
+        placeholder={placeholder}
+      />
+    );
+  }
+
+  const cursorClass = isNotesField ? 'cursor-text' : 'cursor-default';
+
+  if (!value || value.trim() === '') {
+    return (
+      <div
+        onClick={() => handleFieldClick(field)}
+        className={`${markdownClassName || className} ${cursorClass} hover:bg-gray-50 rounded p-1 -ml-1 min-h-[24px] text-gray-400 italic`}
+      >
+        {placeholder}
+      </div>
+    );
+  }
+
+  const markdownStyles = getMarkdownStyles(field);
+
+  return (
+    <div
+      onClick={() => handleFieldClick(field)}
+      className={`${markdownClassName || className} ${cursorClass} hover:bg-gray-50 rounded p-1 -ml-1 task-card-content`}
+    >
+      <MarkdownRenderer text={value} className={markdownStyles} />
+    </div>
+  );
+}
 
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   task,
@@ -105,62 +190,17 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
     setEditingField(null);
   };
 
-  const renderEditableContent = (
-    field: EditableField,
-    value: string,
-    placeholder: string,
-    className: string,
-    markdownClassName?: string
-  ) => {
-    // For notes field, allow editing even in preview mode when editingField === 'notes'
-    const isEditing = editingField === field || viewMode === 'edit';
-    const isNotesField = field === 'notes';
-
-    if (isEditing) {
-      return (
-        <TextareaAutosize
-          ref={isNotesField ? notesTextareaRef : undefined}
-          value={value}
-          onChange={e => onChange({ ...task, [field as string]: e.target.value })}
-          onBlur={handleBlur}
-          onFocus={() => setEditingField(field)}
-          onPaste={isNotesField ? handleNotesPaste : undefined}
-          autoFocus={editingField === field}
-          className={`${className} resize-none focus:outline-none focus:bg-gray-50 rounded p-1 -ml-1 cursor-text`}
-          placeholder={placeholder}
-        />
-      );
-    }
-
-    // Preview mode - render markdown
-    // For notes field, use cursor-text to indicate it's directly editable
-    const cursorClass = isNotesField ? 'cursor-text' : 'cursor-default';
-
-    if (!value || value.trim() === '') {
-      return (
-        <div
-          onClick={() => handleFieldClick(field)}
-          className={`${markdownClassName || className} ${cursorClass} hover:bg-gray-50 rounded p-1 -ml-1 min-h-[24px] text-gray-400 italic`}
-        >
-          {placeholder}
-        </div>
-      );
-    }
-
-    // For implementation field, don't override code block styling to allow syntax highlighter theme
-    const isImplementationField = field === 'implementation';
-    const markdownStyles = isImplementationField
-      ? "prose prose-sm max-w-none [&_code]:px-1 [&_code]:py-0 [&_code]:rounded-sm [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none"
-      : "prose prose-sm max-w-none [&_code]:bg-gray-100 [&_code]:text-gray-600 [&_code]:px-1 [&_code]:py-0 [&_code]:rounded-sm [&_code]:font-mono [&_code]:text-xs [&_code]:before:content-none [&_code]:after:content-none";
-
-    return (
-      <div
-        onClick={() => handleFieldClick(field)}
-        className={`${markdownClassName || className} ${cursorClass} hover:bg-gray-50 rounded p-1 -ml-1 task-card-content`}
-      >
-        <MarkdownRenderer text={value} className={markdownStyles} />
-      </div>
-    );
+  // Helper to create common props for RenderEditableContent
+  const editableContentProps = {
+    editingField,
+    viewMode,
+    task,
+    onChange,
+    onBlur: handleBlur,
+    setEditingField,
+    handleFieldClick,
+    handleNotesPaste,
+    notesTextareaRef,
   };
 
   const toggleImplementationCollapse = () => {
@@ -236,13 +276,14 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
             </div>
             <div className="mt-1">
               <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Specification</span>
-              {renderEditableContent(
-                'body',
-                task.body,
-                'Describe the context...',
-                'w-full mt-1.5 text-gray-700 leading-relaxed text-sm',
-                'w-full mt-1.5 text-gray-700 leading-relaxed text-sm'
-              )}
+              <RenderEditableContent
+                {...editableContentProps}
+                field="body"
+                value={task.body}
+                placeholder="Describe the context..."
+                className="w-full mt-1.5 text-gray-700 leading-relaxed text-sm"
+                markdownClassName="w-full mt-1.5 text-gray-700 leading-relaxed text-sm"
+              />
             </div>
           </div>
         </div>
@@ -331,13 +372,14 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ duration: 0.2 }}
               >
-                {renderEditableContent(
-                  'implementation',
-                  task.implementation,
-                  'Implementation details...',
-                  'w-full font-mono text-sm bg-transparent transition-colors placeholder-gray-400',
-                  `w-full font-mono text-sm ${isCodeExpanded ? '' : 'max-h-96 overflow-y-auto'}`
-                )}
+                <RenderEditableContent
+                  {...editableContentProps}
+                  field="implementation"
+                  value={task.implementation}
+                  placeholder="Implementation details..."
+                  className="w-full font-mono text-sm bg-transparent transition-colors placeholder-gray-400"
+                  markdownClassName={`w-full font-mono text-sm ${isCodeExpanded ? '' : 'max-h-96 overflow-y-auto'}`}
+                />
               </motion.div>
             )}
           </AnimatePresence>
@@ -351,13 +393,14 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
             </div>
             <div className="flex-1">
               <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-1">User Notes</span>
-              {renderEditableContent(
-                'notes',
-                task.notes || '',
-                'Add specific constraints, API keys, or reminders for the implementation phase...',
-                'w-full text-sm text-gray-800 bg-transparent placeholder-gray-400',
-                'w-full text-sm text-gray-800'
-              )}
+              <RenderEditableContent
+                {...editableContentProps}
+                field="notes"
+                value={task.notes || ''}
+                placeholder="Add specific constraints, API keys, or reminders for the implementation phase..."
+                className="w-full text-sm text-gray-800 bg-transparent placeholder-gray-400"
+                markdownClassName="w-full text-sm text-gray-800"
+              />
               {/* Attachments section */}
               <div className="mt-3">
                 <AttachmentUploader
