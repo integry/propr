@@ -52,16 +52,17 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
 
   return (
     <div
-      className="fixed max-w-[600px] bg-white border border-slate-200 border-t-4 border-t-teal-600 shadow-xl ring-1 ring-black/5 z-50 overflow-hidden"
+      className="fixed w-[600px] bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 z-50 overflow-hidden"
       style={{
         top: '64px',
-        left: '240px',
-        right: '0',
+        left: '0',
       }}
     >
+      {/* Teal accent line at top - flush with header bottom */}
+      <div className="h-0.5 bg-teal-600" />
       <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-teal-600">✨</span>
+          <ScrollText className="w-4 h-4 text-teal-600" />
           <span className="font-mono text-xs font-bold tracking-widest text-teal-600">
             ACTIVE PLANS ({activePlans.length})
           </span>
@@ -212,17 +213,18 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
 
   return (
     <div
-      className="fixed max-w-[600px] bg-white border border-slate-200 border-t-4 border-t-amber-500 shadow-xl ring-1 ring-black/5 z-50 overflow-hidden"
+      className="fixed w-[600px] bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 z-50 overflow-hidden"
       style={{
         top: '64px',
-        left: '240px',
-        right: '0',
+        left: '0',
       }}
     >
+      {/* Blue accent line at top - flush with header bottom */}
+      <div className="h-0.5 bg-blue-600" />
       <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <ListTodo className="w-4 h-4 text-slate-500" />
-          <span className="font-mono text-xs font-bold tracking-widest text-slate-500">
+          <ListTodo className="w-4 h-4 text-blue-600" />
+          <span className="font-mono text-xs font-bold tracking-widest text-blue-600">
             PENDING REVIEW ({taskGroups.length})
           </span>
         </div>
@@ -309,16 +311,19 @@ export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissT
   }, [isOpen]);
   const reviewCount = taskGroups.length;
   return (
-    <div className="relative" ref={containerRef}>
+    <div className="relative h-full" ref={containerRef}>
+      {/* Full-height clickable bay partition */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-2 px-2 py-1.5 text-sm transition-colors rounded-md ${
-          isOpen ? 'bg-slate-100' : 'hover:bg-slate-100'
+        className={`flex items-center gap-2 px-4 h-full text-sm transition-colors ${
+          isOpen
+            ? 'bg-white border-b-2 border-b-blue-600'
+            : 'hover:bg-slate-50'
         }`}
       >
         <ListTodo className="w-4 h-4 text-slate-600" />
         <span className="font-bold text-slate-900">{reviewCount}</span>
-        <span className="text-slate-600">Tasks</span>
+        <span className="text-slate-600 uppercase text-xs tracking-wide">Tasks</span>
       </button>
 
       <TasksDropdown taskGroups={taskGroups} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissTask} />
@@ -410,16 +415,19 @@ export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlan
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
   return (
-    <div className="relative" ref={containerRef}>
+    <div className="relative h-full" ref={containerRef}>
+      {/* Full-height clickable bay partition */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-2 px-2 py-1.5 text-sm transition-colors rounded-md ${
-          isOpen ? 'bg-slate-100' : 'hover:bg-slate-100'
+        className={`flex items-center gap-2 px-4 h-full text-sm transition-colors ${
+          isOpen
+            ? 'bg-white border-b-2 border-b-teal-600'
+            : 'hover:bg-slate-50'
         }`}
       >
         <ScrollText className="w-4 h-4 text-slate-600" />
         <span className="font-bold text-slate-900">{activePlans.length}</span>
-        <span className="text-slate-600">Plans</span>
+        <span className="text-slate-600 uppercase text-xs tracking-wide">Plans</span>
       </button>
 
       <PlansDropdown activePlans={activePlans} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissPlan} />
