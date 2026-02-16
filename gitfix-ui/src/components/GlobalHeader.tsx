@@ -66,7 +66,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
 
   return (
     <header className="bg-white border-b border-gray-200 h-16 flex items-center px-4 sm:px-8 shadow-sm z-10 sticky top-0">
-      {/* Left Section: Mobile Toggle + MachineStatus */}
+      {/* Left Section: Mobile Toggle + Machine Status + Vertical Divider + Nav Blocks */}
       <div className="flex items-center gap-4">
         {/* Mobile Toggle */}
         <button
@@ -81,12 +81,21 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
         <div className="hidden sm:flex items-center">
           <MachineStatus runningCount={runningCount} />
         </div>
+
+        {/* Vertical Divider - "Pipe" separator */}
+        <div className="hidden md:block w-px h-6 bg-gray-300" />
+
+        {/* Nav Blocks: Plans + Tasks (Left-aligned after logo) */}
+        <div className="hidden md:flex items-center gap-4">
+          <ActivePlansButton activePlans={activePlans} onDismissPlan={dismissPlan} />
+          <TasksButton taskGroups={reviewGroups} onDismissTask={dismissTask} />
+        </div>
       </div>
 
       {/* Spacer - pushes everything to the right */}
       <div className="flex-1" />
 
-      {/* Right Section: All controls grouped together */}
+      {/* Right Section: Search + New Plan + Status/Profile */}
       <div className="flex items-center gap-4">
         {/* Search Bar */}
         <form onSubmit={handleSearch} className="hidden md:block w-64">
@@ -102,12 +111,6 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
             />
           </div>
         </form>
-
-        {/* Live Counters: Active Plans + Tasks Needing Review */}
-        <div className="hidden md:flex items-center gap-2">
-          <ActivePlansButton activePlans={activePlans} onDismissPlan={dismissPlan} />
-          <TasksButton taskGroups={reviewGroups} onDismissTask={dismissTask} />
-        </div>
 
         {/* Divider */}
         <div className="hidden md:block w-px h-6 bg-gray-200" />

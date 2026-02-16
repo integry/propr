@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, Users, AlertTriangle, X, Inbox, CornerDownRight, Sparkles } from 'lucide-react';
+import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo } from 'lucide-react';
 import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle } from './headerUtils';
@@ -51,7 +51,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   };
 
   return (
-    <div className="absolute right-0 top-full mt-2 w-96 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
+    <div className="absolute left-0 top-full mt-2 w-96 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Active Plans ({activePlans.length})
@@ -201,7 +201,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   };
 
   return (
-    <div className="absolute right-0 top-full mt-2 w-96 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
+    <div className="absolute left-0 top-full mt-2 w-96 bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Tasks Needing Review ({taskGroups.length})
@@ -292,10 +292,15 @@ export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissT
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 px-3 py-1 text-amber-600 border border-amber-200 bg-transparent rounded-md text-xs font-medium hover:bg-amber-50 transition-colors"
+        className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
+          isOpen
+            ? 'text-amber-700 bg-amber-50'
+            : 'text-amber-600 hover:text-amber-700 hover:bg-gray-50'
+        }`}
       >
-        <AlertTriangle className="w-3.5 h-3.5" />
-        <span>{reviewCount} Review</span>
+        <ListTodo className="w-4 h-4" />
+        <span className="font-bold">{reviewCount}</span>
+        <span>Review</span>
       </button>
 
       <TasksDropdown taskGroups={taskGroups} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissTask} />
@@ -390,10 +395,15 @@ export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlan
     <div className="relative" ref={containerRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 px-3 py-1 text-slate-700 border border-slate-200 bg-slate-100 rounded-md text-xs font-medium hover:bg-slate-200 transition-colors"
+        className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
+          isOpen
+            ? 'text-slate-900 bg-gray-100'
+            : 'text-slate-600 hover:text-slate-900 hover:bg-gray-50'
+        }`}
       >
-        <Sparkles className="w-3.5 h-3.5" />
-        <span>{activePlans.length} Plans</span>
+        <ScrollText className="w-4 h-4" />
+        <span className="font-bold">{activePlans.length}</span>
+        <span>Plans</span>
       </button>
 
       <PlansDropdown activePlans={activePlans} isOpen={isOpen} onClose={() => setIsOpen(false)} onDismiss={onDismissPlan} />
