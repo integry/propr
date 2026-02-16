@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Plus } from 'lucide-react';
+import { Search, ScrollText } from 'lucide-react';
 import { useHeaderStats } from '../hooks/useHeaderStats';
 import {
   MachineStatus,
@@ -117,8 +117,8 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
           onClick={handleNewPlan}
           className="flex items-center gap-2 px-4 py-1.5 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors"
         >
-          <Plus className="w-4 h-4" />
-          <span>New +</span>
+          <ScrollText className="w-4 h-4" />
+          <span>New Plan</span>
         </button>
       </div>
 
@@ -126,9 +126,9 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       <button
         onClick={handleNewPlan}
         className="md:hidden flex items-center px-4 border-l border-slate-200 bg-teal-600 text-white hover:bg-teal-700 transition-colors"
-        aria-label="New AI Plan"
+        aria-label="New Plan"
       >
-        <Plus className="w-5 h-5" />
+        <ScrollText className="w-5 h-5" />
       </button>
 
       {/* System/Profile Section */}
