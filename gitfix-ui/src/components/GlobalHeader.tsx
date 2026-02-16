@@ -33,6 +33,8 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
     activePlans,
     reviewGroups,
     systemHealth,
+    dismissPlan,
+    dismissTask,
   } = useHeaderStats();
 
   // Handle search submission
@@ -83,8 +85,8 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
 
       {/* Center Section: Planning Zone */}
       <div className="hidden md:flex items-center gap-3">
-        <TasksButton taskGroups={reviewGroups} />
-        <ActivePlansButton activePlans={activePlans} />
+        <TasksButton taskGroups={reviewGroups} onDismissTask={dismissTask} />
+        <ActivePlansButton activePlans={activePlans} onDismissPlan={dismissPlan} />
         {/* New Plan Button - next to plans badge */}
         <button
           onClick={handleNewPlan}

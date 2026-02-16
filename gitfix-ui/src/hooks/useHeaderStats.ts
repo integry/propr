@@ -196,6 +196,26 @@ export function useHeaderStats(): HeaderStats {
 
       const groups: Record<string, TaskGroup> = {};
 
+      // Track which issues have PR followup tasks
+      // If a PR task exists for an issue, we should filter out the initial issue task
+      const prTasksByIssue: Record<string, boolean> = {};
+
+      // First pass: identify issues that have PR followup tasks
+      tasks.forEach(task => {
+        if (task.prNumber && task.issueNumber) {
+          // Parse repository owner/name
+          let owner = task.repositoryOwner;
+          let name = task.repositoryName;
+          if (!owner || !name) {
+            const parts = (task.repository || 'unknown/unknown').split('/');
+            owner = parts[0] || 'unknown';
+            name = parts[1] || 'unknown';
+          }
+          const issueKey = `${owner}/${name}-issue-${task.issueNumber}`;
+          prTasksByIssue[issueKey] = true;
+        }
+      });
+
       tasks.forEach(task => {
         // Skip dismissed tasks
         if (currentDismissedTaskIds.includes(task.id)) {
@@ -218,6 +238,10 @@ export function useHeaderStats(): HeaderStats {
           key = `${owner}/${name}-pr-${task.prNumber}`;
         } else if (task.issueNumber) {
           key = `${owner}/${name}-issue-${task.issueNumber}`;
+          // Skip initial issue tasks if a PR followup exists for this issue
+          if (prTasksByIssue[key]) {
+            return;
+          }
         } else {
           key = task.id;
         }

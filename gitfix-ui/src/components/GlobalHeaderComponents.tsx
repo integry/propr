@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, ScrollText, Users, Inbox, ChevronDown, ExternalLink, ListTodo } from 'lucide-react';
+import { Activity, ScrollText, Users, Inbox, ChevronDown, ListTodo, X } from 'lucide-react';
 import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle, formatRelativeTime } from './headerUtils';
@@ -26,9 +26,10 @@ interface PlansDropdownProps {
   activePlans: DraftListItem[];
   isOpen: boolean;
   onClose: () => void;
+  onDismiss: (planId: string) => void;
 }
 
-const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onClose }) => {
+const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onClose, onDismiss }) => {
   const navigate = useNavigate();
 
   // Limit to top 10 most recently updated plans
@@ -42,6 +43,11 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   const handleViewAll = () => {
     onClose();
     navigate('/plans');
+  };
+
+  const handleDismiss = (e: React.MouseEvent, planId: string) => {
+    e.stopPropagation();
+    onDismiss(planId);
   };
 
   if (!isOpen) return null;
@@ -62,31 +68,37 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
           </div>
         ) : (
           displayPlans.map((plan) => (
-            <button
+            <div
               key={plan.draft_id}
-              onClick={() => handlePlanClick(plan.draft_id)}
-              className="w-full px-4 py-3 text-left hover:bg-gray-50 border-b border-gray-100 last:border-b-0 transition-colors group"
+              className="w-full px-4 py-3 text-left hover:bg-gray-50 border-b border-gray-100 last:border-b-0 transition-colors group flex items-start justify-between gap-2"
             >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm text-gray-900 truncate group-hover:text-primary-600">
-                    {plan.name || plan.initial_prompt.slice(0, 50) + (plan.initial_prompt.length > 50 ? '...' : '')}
-                  </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${getStatusBadgeStyle(plan.status)}`}>
-                      {plan.status}
-                    </span>
-                    <span className="text-xs text-gray-500 truncate">
-                      {plan.repository}
-                    </span>
-                  </div>
-                  <div className="text-xs text-gray-400 mt-1">
-                    Updated {formatRelativeTime(plan.updated_at)}
-                  </div>
+              <button
+                onClick={() => handlePlanClick(plan.draft_id)}
+                className="flex-1 min-w-0 text-left"
+              >
+                <div className="font-medium text-sm text-gray-900 truncate group-hover:text-primary-600">
+                  {plan.name || plan.initial_prompt.slice(0, 50) + (plan.initial_prompt.length > 50 ? '...' : '')}
                 </div>
-                <ExternalLink className="w-4 h-4 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
-              </div>
-            </button>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${getStatusBadgeStyle(plan.status)}`}>
+                    {plan.status}
+                  </span>
+                  <span className="text-xs text-gray-500 truncate">
+                    {plan.repository}
+                  </span>
+                </div>
+                <div className="text-xs text-gray-400 mt-1">
+                  Updated {formatRelativeTime(plan.updated_at)}
+                </div>
+              </button>
+              <button
+                onClick={(e) => handleDismiss(e, plan.draft_id)}
+                className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0"
+                title="Dismiss"
+              >
+                <X className="w-4 h-4 text-gray-400 hover:text-gray-600" />
+              </button>
+            </div>
           ))
         )}
       </div>
@@ -143,9 +155,10 @@ interface TasksDropdownProps {
   taskGroups: TaskGroup[];
   isOpen: boolean;
   onClose: () => void;
+  onDismiss: (taskId: string) => void;
 }
 
-const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClose }) => {
+const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClose, onDismiss }) => {
   const navigate = useNavigate();
 
   // Limit to top 10 most recently updated task groups
@@ -168,6 +181,11 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
     navigate('/tasks');
   };
 
+  const handleDismiss = (e: React.MouseEvent, taskId: string) => {
+    e.stopPropagation();
+    onDismiss(taskId);
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -186,35 +204,41 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
           </div>
         ) : (
           displayGroups.map((group) => (
-            <button
+            <div
               key={group.key}
-              onClick={() => handleTaskClick(group)}
-              className="w-full px-4 py-3 text-left hover:bg-gray-50 border-b border-gray-100 last:border-b-0 transition-colors group"
+              className="w-full px-4 py-3 text-left hover:bg-gray-50 border-b border-gray-100 last:border-b-0 transition-colors group flex items-start justify-between gap-2"
             >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm text-gray-900 truncate group-hover:text-primary-600">
-                    {group.latestTask.title || `${group.repoOwner}/${group.repoName}`}
-                  </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${
-                      group.latestTask.status === 'failed'
-                        ? 'bg-red-100 text-red-700'
-                        : 'bg-green-100 text-green-700'
-                    }`}>
-                      {group.latestTask.status}
-                    </span>
-                    <span className="text-xs text-gray-500 truncate">
-                      {group.prNumber ? `PR #${group.prNumber}` : group.issueNumber ? `Issue #${group.issueNumber}` : ''}
-                    </span>
-                  </div>
-                  <div className="text-xs text-gray-400 mt-1">
-                    {group.repoOwner}/{group.repoName}
-                  </div>
+              <button
+                onClick={() => handleTaskClick(group)}
+                className="flex-1 min-w-0 text-left"
+              >
+                <div className="font-medium text-sm text-gray-900 truncate group-hover:text-primary-600">
+                  {group.latestTask.title || `${group.repoOwner}/${group.repoName}`}
                 </div>
-                <ExternalLink className="w-4 h-4 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
-              </div>
-            </button>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${
+                    group.latestTask.status === 'failed'
+                      ? 'bg-red-100 text-red-700'
+                      : 'bg-green-100 text-green-700'
+                  }`}>
+                    {group.latestTask.status}
+                  </span>
+                  <span className="text-xs text-gray-500 truncate">
+                    {group.prNumber ? `PR #${group.prNumber}` : group.issueNumber ? `Issue #${group.issueNumber}` : ''}
+                  </span>
+                </div>
+                <div className="text-xs text-gray-400 mt-1">
+                  {group.repoOwner}/{group.repoName}
+                </div>
+              </button>
+              <button
+                onClick={(e) => handleDismiss(e, group.latestTask.id)}
+                className="p-1 rounded hover:bg-gray-200 transition-colors flex-shrink-0"
+                title="Dismiss"
+              >
+                <X className="w-4 h-4 text-gray-400 hover:text-gray-600" />
+              </button>
+            </div>
           ))
         )}
       </div>
@@ -236,9 +260,10 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
 // Tasks Button with Dropdown
 interface TasksButtonProps {
   taskGroups: TaskGroup[];
+  onDismissTask: (taskId: string) => void;
 }
 
-export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups }) => {
+export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups, onDismissTask }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -288,6 +313,7 @@ export const TasksButton: React.FC<TasksButtonProps> = ({ taskGroups }) => {
         taskGroups={taskGroups}
         isOpen={isOpen}
         onClose={handleClose}
+        onDismiss={onDismissTask}
       />
     </div>
   );
@@ -391,9 +417,10 @@ export const SystemHealth: React.FC<SystemHealthProps> = ({ systemHealth }) => {
 // Active Plans Button with Dropdown
 interface ActivePlansButtonProps {
   activePlans: DraftListItem[];
+  onDismissPlan: (planId: string) => void;
 }
 
-export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlans }) => {
+export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlans, onDismissPlan }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -441,6 +468,7 @@ export const ActivePlansButton: React.FC<ActivePlansButtonProps> = ({ activePlan
         activePlans={activePlans}
         isOpen={isOpen}
         onClose={handleClose}
+        onDismiss={onDismissPlan}
       />
     </div>
   );
