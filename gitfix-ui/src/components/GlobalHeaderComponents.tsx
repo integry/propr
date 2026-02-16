@@ -192,9 +192,9 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
       <div className="max-h-[600px] overflow-y-auto scrollbar-stealth">
         {displayGroups.length === 0 ? (
           <div className="px-4 py-8 text-center flex flex-col items-center gap-4">
-            <CheckCircle className="w-8 h-8 text-slate-100" />
+            <CheckCircle className="w-8 h-8 text-slate-200" />
             <div>
-              <p className="text-sm font-medium text-slate-500">All tasks completed.</p>
+              <p className="text-sm font-medium text-slate-700">All tasks completed.</p>
               <p className="text-xs text-slate-400 mt-0.5">Ready for the next implementation?</p>
             </div>
             <button
