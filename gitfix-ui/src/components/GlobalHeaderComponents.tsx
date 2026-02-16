@@ -51,8 +51,8 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
   };
 
   return (
-    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-gray-200 rounded-lg shadow-xl z-[100] overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-slate-300 rounded-lg shadow-2xl ring-1 ring-black/5 z-[100] overflow-hidden">
+      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Active Plans ({activePlans.length})
         </span>
@@ -68,7 +68,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
             <div
               key={plan.draft_id}
               className={`px-4 py-3 hover:bg-gray-50 transition-colors group cursor-pointer ${
-                index < displayPlans.length - 1 ? 'border-b border-gray-100' : ''
+                index < displayPlans.length - 1 ? 'border-b border-slate-200' : ''
               }`}
               onClick={() => handlePlanClick(plan.draft_id)}
             >
@@ -105,7 +105,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
       </div>
 
       {activePlans.length > 0 && (
-        <div className="px-4 py-2.5 border-t border-gray-100">
+        <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200">
           <button
             onClick={handleViewAll}
             className="w-full text-center text-sm font-medium text-primary-600 hover:text-primary-700"
@@ -201,8 +201,8 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   };
 
   return (
-    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-gray-200 rounded-lg shadow-xl z-[100] overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+    <div className="absolute left-0 top-full mt-2 w-[600px] bg-white border border-slate-300 rounded-lg shadow-2xl ring-1 ring-black/5 z-[100] overflow-hidden">
+      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           Tasks Needing Review ({taskGroups.length})
         </span>
@@ -218,7 +218,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
             <div
               key={group.key}
               className={`px-4 py-3 hover:bg-gray-50 transition-colors group cursor-pointer ${
-                index < displayGroups.length - 1 ? 'border-b border-gray-100' : ''
+                index < displayGroups.length - 1 ? 'border-b border-slate-200' : ''
               }`}
               onClick={() => handleTaskClick(group)}
             >
@@ -262,7 +262,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
       </div>
 
       {taskGroups.length > 0 && (
-        <div className="px-4 py-2.5 border-t border-gray-100">
+        <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200">
           <button
             onClick={handleViewAll}
             className="w-full text-center text-sm font-medium text-primary-600 hover:text-primary-700"
