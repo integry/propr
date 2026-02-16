@@ -221,14 +221,14 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
     >
       <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-amber-500">⚠️</span>
-          <span className="font-mono text-xs font-bold tracking-widest text-amber-600">
-            ATTENTION REQUIRED ({taskGroups.length})
+          <ListTodo className="w-4 h-4 text-slate-500" />
+          <span className="font-mono text-xs font-bold tracking-widest text-slate-500">
+            PENDING REVIEW ({taskGroups.length})
           </span>
         </div>
       </div>
 
-      <div className="max-h-80 overflow-y-auto scrollbar-stealth">
+      <div className="max-h-[600px] overflow-y-auto scrollbar-stealth">
         {displayGroups.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-gray-500">
             No tasks needing review
@@ -237,7 +237,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
           displayGroups.map((group, index) => (
             <div
               key={group.key}
-              className={`px-4 py-3 hover:bg-slate-100 transition-colors group cursor-pointer ${
+              className={`px-4 py-4 hover:bg-slate-100 transition-colors group cursor-pointer ${
                 index < displayGroups.length - 1 ? 'border-b border-slate-200' : ''
               }`}
               onClick={() => handleTaskClick(group)}
