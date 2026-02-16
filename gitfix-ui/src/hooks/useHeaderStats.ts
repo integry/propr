@@ -291,14 +291,7 @@ export function useHeaderStats(): HeaderStats {
         const repoPrefix = `${owner}/${name}`;
 
         // Create group key: prefer PR number, fallback to issue number
-        let taskGroupKey: string;
-        if (task.prNumber) {
-          taskGroupKey = `${repoPrefix}-pr-${task.prNumber}`;
-        } else if (task.issueNumber) {
-          taskGroupKey = `${repoPrefix}-issue-${task.issueNumber}`;
-        } else {
-          taskGroupKey = task.id;
-        }
+        const taskGroupKey = getTaskGroupKey(owner, name, task.prNumber, task.issueNumber) || task.id;
 
         // Skip dismissed tasks using timestamp-based filtering
         // If this PR/issue key has a dismissal timestamp, only show tasks created AFTER that timestamp
@@ -324,18 +317,12 @@ export function useHeaderStats(): HeaderStats {
           issueToPrMap[issueKey] = prKey;
         }
 
-        // Use the already-computed group key
-        let key: string;
-        if (task.prNumber) {
-          key = `${repoPrefix}-pr-${task.prNumber}`;
-        } else if (task.issueNumber) {
-          key = `${repoPrefix}-issue-${task.issueNumber}`;
-          // Skip initial issue tasks if a PR followup exists for this issue
-          if (prTasksByIssue[key]) {
-            return;
-          }
-        } else {
-          key = task.id;
+        // Use the already-computed group key (taskGroupKey is already computed above)
+        const key = taskGroupKey;
+
+        // Skip initial issue tasks if a PR followup exists for this issue
+        if (!task.prNumber && task.issueNumber && prTasksByIssue[key]) {
+          return;
         }
 
         if (!groups[key]) {
