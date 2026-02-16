@@ -138,8 +138,20 @@ export function createKnexConfigForMigrations(): Record<KnexEnvironment, Knex.Co
 export async function runMigrations(): Promise<void> {
     try {
         logger.info('Running database migrations...');
-        await db.migrate.latest();
-        logger.info('Database migrations completed successfully');
+
+        // Disable foreign keys during migrations to prevent cascade deletes
+        // when tables are recreated (common in SQLite ALTER TABLE operations)
+        await db.raw('PRAGMA foreign_keys = OFF');
+        logger.info('Disabled foreign keys for migration safety');
+
+        try {
+            await db.migrate.latest();
+            logger.info('Database migrations completed successfully');
+        } finally {
+            // Re-enable foreign keys after migrations
+            await db.raw('PRAGMA foreign_keys = ON');
+            logger.info('Re-enabled foreign keys after migrations');
+        }
     } catch (error) {
         const err = error as Error;
         logger.error({
