@@ -52,10 +52,11 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
 
   return (
     <div
-      className="fixed w-[600px] bg-white border border-slate-300 border-t-4 border-t-teal-500 z-50 overflow-hidden"
+      className="fixed max-w-[600px] bg-white border border-slate-300 border-t-4 border-t-teal-500 z-50 overflow-hidden"
       style={{
         top: '64px',
-        left: '280px',
+        left: '240px',
+        right: '0',
         boxShadow: '6px 6px 0px 0px #CBD5E1'
       }}
     >
@@ -209,10 +210,11 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
 
   return (
     <div
-      className="fixed w-[600px] bg-white border border-slate-300 border-t-4 border-t-teal-500 z-50 overflow-hidden"
+      className="fixed max-w-[600px] bg-white border border-slate-300 border-t-4 border-t-teal-500 z-50 overflow-hidden"
       style={{
         top: '64px',
-        left: '280px',
+        left: '240px',
+        right: '0',
         boxShadow: '6px 6px 0px 0px #CBD5E1'
       }}
     >
