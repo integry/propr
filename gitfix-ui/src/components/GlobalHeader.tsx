@@ -148,7 +148,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
         {/* Subtle divider at 60-70% height */}
         <div className="absolute left-0 top-[20%] h-[60%] w-px bg-slate-200" />
         {/* System Health */}
-        <div className="hidden md:block">
+        <div className="hidden md:flex h-full">
           <SystemHealth systemHealth={systemHealth} />
         </div>
 
