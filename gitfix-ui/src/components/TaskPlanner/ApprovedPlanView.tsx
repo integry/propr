@@ -1,10 +1,13 @@
 import React, { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw } from 'lucide-react';
-import { DraftWithPlan } from '../../api/gitfixApi';
+import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2 } from 'lucide-react';
+import { DraftWithPlan, deleteDraft } from '../../api/gitfixApi';
+import DeletePlanDialog from './DeletePlanDialog';
 import PlanIssuesManager from './PlanIssuesManager';
 import { PlanTask } from '../../api/plannerApi';
 import { PlanIssue } from '../../api/planIssuesApi';
+import { useToast } from '../ui/useToast';
 
 interface ApprovedPlanViewProps {
   draft: DraftWithPlan;
@@ -69,9 +72,40 @@ const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt })
 
 
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => {
+  const navigate = useNavigate();
+  const { addToast } = useToast();
+
   // State to hold issues data for footer stats
   const [issues, setIssues] = useState<PlanIssue[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // Plan name: prefer draft.name, fall back to initial_prompt
+  const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
+
+  // Handle delete plan confirmation
+  const handleDeletePlanConfirm = async () => {
+    setIsDeleting(true);
+    try {
+      await deleteDraft(draft.draft_id);
+      setShowDeleteDialog(false);
+      addToast({
+        type: 'success',
+        message: 'Plan deleted successfully',
+        duration: 3000
+      });
+      navigate('/plans');
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: (err as Error).message || 'Failed to delete plan',
+        duration: 5000
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Defensively ensure plan_json is an array
   const tasks: PlanTask[] = (() => {
@@ -122,12 +156,17 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
       className="h-full bg-white overflow-hidden flex flex-col"
     >
       {/* Pro Studio Header - Anchored with gray background */}
-      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0">
-        <div className="flex items-center gap-4">
+      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-4">
+        <div className="flex items-center gap-4 min-w-0 flex-1">
+          {/* Plan Name - responsive width based on available space */}
+          <h1 className="text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
+            {planName}
+          </h1>
+          <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
           {/* Repository and Branch Breadcrumb */}
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex items-center gap-2 text-sm flex-shrink-0">
             <Github size={16} className="text-gray-500" />
-            <span className="font-medium text-gray-900">{repository}</span>
+            <span className="font-medium text-gray-900 truncate max-w-[200px]" title={repository}>{repository}</span>
             <span className="text-gray-400">/</span>
             <GitBranch size={14} className="text-gray-500" />
             <span className="text-gray-600">{baseBranch}</span>
@@ -135,13 +174,15 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
           {/* Original Prompt - styled like Step 2 (Review Plan) */}
           {draft.initial_prompt && (
             <>
-              <div className="h-4 w-px bg-gray-300" />
-              <OriginalPromptPopover prompt={draft.initial_prompt} />
+              <div className="h-4 w-px bg-gray-300 flex-shrink-0 hidden lg:block" />
+              <div className="hidden lg:block">
+                <OriginalPromptPopover prompt={draft.initial_prompt} />
+              </div>
             </>
           )}
           {draft.status === 'merged' && (
             <>
-              <div className="h-4 w-px bg-gray-300" />
+              <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
               <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1">
                 <GitMerge size={12} />
                 Merged
@@ -150,18 +191,34 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Delete Plan */}
+          <button
+            onClick={() => setShowDeleteDialog(true)}
+            disabled={isDeleting}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Delete Plan"
+          >
+            {isDeleting ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <Trash2 size={16} />
+            )}
+          </button>
           {repoUrl && (
-            <a
-              href={repoUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm"
-            >
-              <Github size={16} />
-              View Issues on GitHub
-              <ExternalLink size={14} />
-            </a>
+            <>
+              <div className="h-6 w-px bg-gray-300 mx-1" />
+              <a
+                href={repoUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm"
+              >
+                <Github size={16} />
+                View Issues on GitHub
+                <ExternalLink size={14} />
+              </a>
+            </>
           )}
         </div>
       </div>
@@ -214,6 +271,13 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
           <RefreshCw size={16} />
         </button>
       </div>
+
+      <DeletePlanDialog
+        isOpen={showDeleteDialog}
+        onClose={() => setShowDeleteDialog(false)}
+        onConfirm={handleDeletePlanConfirm}
+        isLoading={isDeleting}
+      />
     </motion.div>
   );
 };

@@ -1,14 +1,16 @@
 import React, { useState, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Undo2, Redo2, Loader2, AlertCircle, GripVertical, Info, X, ArrowLeft, FileQuestion, Github, GitBranch } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { Undo2, Redo2, Loader2, AlertCircle, GripVertical, ArrowLeft, Github, GitBranch, Trash2 } from 'lucide-react';
 import { debounce } from 'lodash';
-import { usePlanRefinement, RefinementProgress } from '../../hooks/usePlanRefinement';
-import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, GranularityEnforcementMetadata, resetDraftToSetup, abortRefinement } from '../../api/gitfixApi';
+import { usePlanRefinement } from '../../hooks/usePlanRefinement';
+import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, resetDraftToSetup, abortRefinement, deleteDraft } from '../../api/gitfixApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
 import BackToSetupDialog from './BackToSetupDialog';
+import DeletePlanDialog from './DeletePlanDialog';
 import { useToast } from '../ui/useToast';
+import { OriginalPromptPopover, GranularityEnforcementNotice } from './PlanEditorComponents';
 
 interface PlanEditorProps {
   draft: DraftWithPlan;
@@ -17,95 +19,150 @@ interface PlanEditorProps {
   onBackToSetup?: () => void;
 }
 
-interface OriginalPromptPopoverProps {
-  prompt: string;
+interface PlanEditorHeaderProps {
+  planName: string;
+  repository: string;
+  baseBranch: string;
+  originalPrompt?: string;
+  isDeleting: boolean;
+  isFinalizing: boolean;
+  isResettingToSetup: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  onDelete: () => void;
+  onBackToSetup: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
 }
 
-const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt }) => {
-  const [isOpen, setIsOpen] = useState(false);
-
+const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
+  planName,
+  repository,
+  baseBranch,
+  originalPrompt,
+  isDeleting,
+  isFinalizing,
+  isResettingToSetup,
+  canUndo,
+  canRedo,
+  onDelete,
+  onBackToSetup,
+  onUndo,
+  onRedo
+}) => {
   return (
-    <div className="relative">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors"
-        style={{ color: 'rgb(29, 138, 138)' }}
-        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(29, 138, 138, 0.1)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
-        title="View original prompt"
-      >
-        <FileQuestion size={14} />
-        <span className="hidden sm:inline font-medium">Prompt</span>
-      </button>
-      <AnimatePresence>
-        {isOpen && (
+    <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-4">
+      <div className="flex items-center gap-4 min-w-0 flex-1">
+        {/* Plan Name - responsive width based on available space */}
+        <h1 className="text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
+          {planName}
+        </h1>
+        <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
+        {/* Repository and Branch Breadcrumb */}
+        <div className="flex items-center gap-2 text-sm flex-shrink-0">
+          <Github size={16} className="text-gray-500" />
+          <span className="font-medium text-gray-900 truncate max-w-[200px]" title={repository}>{repository}</span>
+          <span className="text-gray-400">/</span>
+          <GitBranch size={14} className="text-gray-500" />
+          <span className="text-gray-600">{baseBranch}</span>
+        </div>
+        {/* Original Prompt - moved to header */}
+        {originalPrompt && (
           <>
-            {/* Backdrop */}
-            <div
-              className="fixed inset-0 z-40"
-              onClick={() => setIsOpen(false)}
-            />
-            {/* Popover */}
-            <motion.div
-              initial={{ opacity: 0, y: -10, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -10, scale: 0.95 }}
-              transition={{ duration: 0.15 }}
-              className="absolute top-full left-0 mt-2 z-50 w-80 max-w-[calc(100vw-2rem)] bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
-            >
-              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Original Prompt</span>
-                <button
-                  onClick={() => setIsOpen(false)}
-                  className="p-1 hover:bg-gray-200 rounded transition-colors"
-                >
-                  <X size={14} className="text-gray-400" />
-                </button>
-              </div>
-              <div className="p-3 max-h-60 overflow-y-auto">
-                <p className="text-sm text-gray-700 whitespace-pre-wrap">{prompt}</p>
-              </div>
-            </motion.div>
+            <div className="h-4 w-px bg-gray-300 flex-shrink-0 hidden lg:block" />
+            <div className="hidden lg:block">
+              <OriginalPromptPopover prompt={originalPrompt} />
+            </div>
           </>
         )}
-      </AnimatePresence>
-    </div>
-  );
-};
-
-interface GranularityEnforcementNoticeProps {
-  enforcement: GranularityEnforcementMetadata;
-  onDismiss: () => void;
-}
-
-const GranularityEnforcementNotice: React.FC<GranularityEnforcementNoticeProps> = ({ enforcement, onDismiss }) => {
-  if (!enforcement.enforced) return null;
-
-  return (
-    <div className="px-4 py-2 bg-blue-50 border-b border-blue-200 text-blue-700 text-sm flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        <Info size={14} />
-        <span>{enforcement.message || `${enforcement.originalTaskCount} tasks merged into ${enforcement.finalTaskCount} per your Single Task setting`}</span>
       </div>
-      <button
-        onClick={onDismiss}
-        className="p-1 hover:bg-blue-100 rounded transition-colors"
-        title="Dismiss"
-        aria-label="Dismiss granularity enforcement notice"
-      >
-        <X size={14} />
-      </button>
+
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {/* Delete Plan */}
+        <button
+          onClick={onDelete}
+          disabled={isFinalizing || isResettingToSetup || isDeleting}
+          className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Delete Plan"
+        >
+          {isDeleting ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : (
+            <Trash2 size={16} />
+          )}
+        </button>
+        <div className="h-6 w-px bg-gray-300 mx-1" />
+        {/* Back to Setup */}
+        <button
+          onClick={onBackToSetup}
+          disabled={isFinalizing || isResettingToSetup || isDeleting}
+          className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Back to Setup"
+        >
+          <ArrowLeft size={16} />
+          Back to Setup
+        </button>
+        <div className="h-6 w-px bg-gray-300 mx-1" />
+        {/* Undo/Redo */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onUndo}
+            disabled={!canUndo}
+            className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            title="Undo"
+          >
+            <Undo2 size={18} className="text-gray-600" />
+          </button>
+          <button
+            onClick={onRedo}
+            disabled={!canRedo}
+            className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            title="Redo"
+          >
+            <Redo2 size={18} className="text-gray-600" />
+          </button>
+        </div>
+      </div>
     </div>
   );
 };
 
 export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, onFinalize, onBackToSetup }) => {
+  const navigate = useNavigate();
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const [enforcementNoticeDismissed, setEnforcementNoticeDismissed] = useState(false);
   const [showBackToSetupDialog, setShowBackToSetupDialog] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isResettingToSetup, setIsResettingToSetup] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const { addToast } = useToast();
+
+  // Plan name: prefer draft.name, fall back to initial_prompt
+  const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
+
+  // Handle delete plan confirmation
+  const handleDeletePlanConfirm = async () => {
+    setIsDeleting(true);
+    try {
+      await deleteDraft(draft.draft_id);
+      setShowDeleteDialog(false);
+      addToast({
+        type: 'success',
+        message: 'Plan deleted successfully',
+        duration: 3000
+      });
+      navigate('/plans');
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: (err as Error).message || 'Failed to delete plan',
+        duration: 5000
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Extract granularity enforcement metadata from context_config
   const granularityEnforcement = draft.context_config?.granularityEnforcement;
@@ -210,58 +267,21 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden">
       {/* Pro Studio Header - Gray background with repo/branch breadcrumb */}
-      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0">
-        <div className="flex items-center gap-4">
-          {/* Repository and Branch Breadcrumb */}
-          <div className="flex items-center gap-2 text-sm">
-            <Github size={16} className="text-gray-500" />
-            <span className="font-medium text-gray-900">{repository}</span>
-            <span className="text-gray-400">/</span>
-            <GitBranch size={14} className="text-gray-500" />
-            <span className="text-gray-600">{baseBranch}</span>
-          </div>
-          {/* Original Prompt - moved to header */}
-          {originalPrompt && (
-            <>
-              <div className="h-4 w-px bg-gray-300" />
-              <OriginalPromptPopover prompt={originalPrompt} />
-            </>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          {/* Back to Setup */}
-          <button
-            onClick={() => setShowBackToSetupDialog(true)}
-            disabled={isFinalizing || isResettingToSetup}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Back to Setup"
-          >
-            <ArrowLeft size={16} />
-            Back to Setup
-          </button>
-          <div className="h-6 w-px bg-gray-300 mx-1" />
-          {/* Undo/Redo */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={undo}
-              disabled={!canUndo}
-              className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title="Undo"
-            >
-              <Undo2 size={18} className="text-gray-600" />
-            </button>
-            <button
-              onClick={redo}
-              disabled={!canRedo}
-              className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title="Redo"
-            >
-              <Redo2 size={18} className="text-gray-600" />
-            </button>
-          </div>
-        </div>
-      </div>
+      <PlanEditorHeader
+        planName={planName}
+        repository={repository}
+        baseBranch={baseBranch}
+        originalPrompt={originalPrompt}
+        isDeleting={isDeleting}
+        isFinalizing={isFinalizing}
+        isResettingToSetup={isResettingToSetup}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onDelete={() => setShowDeleteDialog(true)}
+        onBackToSetup={() => setShowBackToSetupDialog(true)}
+        onUndo={undo}
+        onRedo={redo}
+      />
 
       {/* Error and Notice Banners */}
       {finalizeError && (
@@ -346,6 +366,13 @@ refinementProgress={refinementProgress}
         onClose={() => setShowBackToSetupDialog(false)}
         onConfirm={handleBackToSetup}
         isLoading={isResettingToSetup}
+      />
+
+      <DeletePlanDialog
+        isOpen={showDeleteDialog}
+        onClose={() => setShowDeleteDialog(false)}
+        onConfirm={handleDeletePlanConfirm}
+        isLoading={isDeleting}
       />
     </div>
   );
