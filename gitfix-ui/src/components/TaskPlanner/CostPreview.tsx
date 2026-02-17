@@ -1,6 +1,7 @@
 import React from 'react';
 import { Loader2, DollarSign, Zap, Info, BookOpen, RefreshCw, Clock, Pause, Play } from 'lucide-react';
-import { PreviewResult, ContextRepository } from '../../api/gitfixApi';
+import { PreviewResult, ContextRepository, GenerationTrace } from '../../api/gitfixApi';
+import { GenerationProgress } from './GenerationProgress';
 
 interface PreviewState {
   isLoading: boolean;
@@ -20,6 +21,8 @@ interface CostPreviewProps {
   onTogglePause?: () => void;
   // Mode indicator
   isNewMode?: boolean;
+  // Preview trace for progress display during loading
+  previewTrace?: GenerationTrace;
 }
 
 const getUsageColor = (percentage: number, actualPercentage: number): string => {
@@ -31,17 +34,38 @@ const getUsageColor = (percentage: number, actualPercentage: number): string => 
   return 'bg-indigo-400';
 };
 
-const LoadingState: React.FC = () => (
-  <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm">
-    <div className="flex items-center gap-3 text-gray-500">
-      <Loader2 className="w-5 h-5 animate-spin" />
-      <div>
-        <span className="font-medium text-gray-700">Analyzing source code and gathering context...</span>
-        <p className="text-sm text-gray-500 mt-0.5">This may take a couple of minutes.</p>
+interface LoadingStateProps {
+  previewTrace?: GenerationTrace;
+}
+
+const LoadingState: React.FC<LoadingStateProps> = ({ previewTrace }) => {
+  // If we have trace data with visible steps, show the progress component
+  const hasVisibleSteps = previewTrace?.steps?.some(step =>
+    ['relevance', 'context', 'llm'].includes(step.name) &&
+    ['in_progress', 'completed'].includes(step.status)
+  );
+
+  if (hasVisibleSteps) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+        <GenerationProgress trace={previewTrace} />
+      </div>
+    );
+  }
+
+  // Default loading state without trace data
+  return (
+    <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div className="flex items-center gap-3 text-gray-500">
+        <Loader2 className="w-5 h-5 animate-spin" />
+        <div>
+          <span className="font-medium text-gray-700">Analyzing source code and gathering context...</span>
+          <p className="text-sm text-gray-500 mt-0.5">This may take a couple of minutes.</p>
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
+};
 
 const ErrorState: React.FC<{ error: string }> = ({ error }) => (
   <div className="p-5 rounded-xl border border-red-200 bg-red-50">
@@ -182,9 +206,10 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   onManualRefresh,
   isPaused,
   onTogglePause,
-  isNewMode
+  isNewMode,
+  previewTrace
 }) => {
-  if (preview.isLoading) return <LoadingState />;
+  if (preview.isLoading) return <LoadingState previewTrace={previewTrace} />;
   if (preview.error) return <ErrorState error={preview.error} />;
   if (!preview.data) return (
     <EmptyState

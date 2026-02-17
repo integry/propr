@@ -1,5 +1,5 @@
 import React from 'react';
-import { SmartFileSelection as SmartFileInfo, ContextRepository } from '../../api/gitfixApi';
+import { SmartFileSelection as SmartFileInfo, ContextRepository, GenerationTrace } from '../../api/gitfixApi';
 import { ContextLevelSlider } from './ContextLevelSlider';
 import { SmartFileSelection } from './SmartFileSelection';
 import { FileSelectionSkeleton } from './SkeletonLoader';
@@ -44,6 +44,8 @@ interface SetupWizardRightPaneProps {
   onManualRefresh?: () => void;
   // Mode indicator
   isNewMode?: boolean;
+  // Preview trace for progress display
+  previewTrace?: GenerationTrace;
 }
 
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
@@ -63,6 +65,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   onTogglePause,
   onManualRefresh,
   isNewMode,
+  previewTrace,
 }) => {
   return (
     <div className="w-[35%] h-full flex flex-col bg-white border-l border-gray-300">
@@ -114,6 +117,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
           onTogglePause={onTogglePause}
           onManualRefresh={onManualRefresh}
           isNewMode={isNewMode}
+          previewTrace={previewTrace}
         />
       </div>
     </div>

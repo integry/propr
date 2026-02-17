@@ -7,7 +7,15 @@ interface GenerationProgressProps {
 }
 
 const STEP_LABELS: Record<string, string> = {
+  relevance: 'Analyzing Relevance',
+  context: 'Gathering Context',
   llm: 'Generating Plan'
+};
+
+const STEP_DESCRIPTIONS: Record<string, string> = {
+  relevance: 'Identifying relevant files and analyzing codebase structure...',
+  context: 'Compiling source code context from selected files...',
+  llm: 'AI is analyzing the context and generating the implementation plan...'
 };
 
 /** Maximum progress percentage to show when execution takes longer than estimated */
@@ -139,7 +147,7 @@ export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, o
 
   if (!trace || !trace.steps || trace.steps.length === 0) return null;
 
-  const visibleSteps = trace.steps.filter(step => step.name === 'llm');
+  const visibleSteps = trace.steps.filter(step => ['relevance', 'context', 'llm'].includes(step.name));
 
   if (visibleSteps.length === 0) return null;
 
@@ -192,7 +200,7 @@ export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, o
       <div className="divide-y">
         {visibleSteps.map((step) => {
           const hasProgressData = step.data?.estimatedDuration && step.data?.startedAt;
-          const showProgressBar = step.name === 'llm' && (step.status === 'in_progress' || step.status === 'completed') && hasProgressData;
+          const showProgressBar = ['relevance', 'context', 'llm'].includes(step.name) && (step.status === 'in_progress' || step.status === 'completed') && hasProgressData;
 
           return (
             <div key={step.name} className="p-4">
@@ -208,9 +216,9 @@ export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, o
                 </span>
               </div>
 
-              {step.name === 'llm' && step.status === 'in_progress' && !hasProgressData && (
+              {step.status === 'in_progress' && !hasProgressData && (
                 <div className="text-sm text-gray-500 ml-8 italic">
-                  AI is analyzing the context and generating the implementation plan...
+                  {STEP_DESCRIPTIONS[step.name] || 'Processing...'}
                 </div>
               )}
 

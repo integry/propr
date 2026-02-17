@@ -737,8 +737,18 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId, contextModel });
 
-  await updateTrace(draftId, 'context', 'pending');
-  correlatedLogger.info({ fileCount: relevantFilePaths.length, compress: config.compress }, 'Generating context');
+  // Calculate estimated duration for context gathering based on file count
+  // Heuristic: 3 seconds base + 100ms per file
+  const estimatedContextDuration = 3000 + (relevantFilePaths.length * 100);
+  const contextStartedAt = new Date().toISOString();
+
+  // Update trace with in_progress status and estimated duration
+  await updateTrace(draftId, 'context', 'in_progress', {
+    estimatedDuration: estimatedContextDuration,
+    startedAt: contextStartedAt,
+    fileCount: relevantFilePaths.length
+  });
+  correlatedLogger.info({ fileCount: relevantFilePaths.length, compress: config.compress, estimatedDurationMs: estimatedContextDuration }, 'Generating context');
 
   // Load and prepare file summaries
   const allSummaries = await loadFileSummaries();

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Download, Loader2, Sparkles, ChevronDown } from 'lucide-react';
-import { PlannerDraft, createDraft, Granularity } from '../../api/gitfixApi';
+import { PlannerDraft, createDraft, Granularity, GenerationTrace, getDraft } from '../../api/gitfixApi';
 import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
@@ -162,13 +162,14 @@ const SetupWizardContent: React.FC<{
   handleGenerate: () => Promise<void>;
   agents: ReturnType<typeof useAgentsLoader>;
   availableRepos: ReturnType<typeof useIndexedRepositoriesLoader>;
+  previewTrace?: GenerationTrace;
 }> = (props) => {
   const {
     isNewMode, draft, config, setConfig, repoLoader, newModeBranches, repoInfo,
     fileHandling, generationPolling, contextExport, contextRefresh, generationHandlers,
     autoResize, textareaRef, fileInputRef, error, branchError, isChangingRepo, isCreating,
     setIsChangingRepo, handleRepoChangeInEditMode, handleFileInputChange, handleExportContext,
-    handleGenerate, agents, availableRepos
+    handleGenerate, agents, availableRepos, previewTrace
   } = props;
 
   // Pre-computed values to reduce ternaries in JSX
@@ -262,6 +263,7 @@ const SetupWizardContent: React.FC<{
           onTogglePause={contextRefresh.togglePause}
           onManualRefresh={contextRefresh.handleManualRefresh}
           isNewMode={isNewMode}
+          previewTrace={previewTrace}
         />
       </div>
 
@@ -368,6 +370,40 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const contextExport = useContextExport(setError);
   const contextRefresh = useContextRefresh({ draftId, config, onBranchError: setBranchError });
 
+  // Preview trace polling state for context preview progress
+  const [previewTrace, setPreviewTrace] = useState<GenerationTrace | undefined>(undefined);
+
+  // Poll for preview trace when context preview is loading
+  useEffect(() => {
+    if (!draftId || !contextRefresh.preview.isLoading) {
+      // Clear trace when not loading
+      if (!contextRefresh.preview.isLoading) {
+        setPreviewTrace(undefined);
+      }
+      return;
+    }
+
+    const pollTrace = async () => {
+      try {
+        const draftData = await getDraft(draftId);
+        if (draftData.generation_trace) {
+          setPreviewTrace(draftData.generation_trace);
+        }
+      } catch (err) {
+        // Ignore errors during polling - this is best-effort
+        console.debug('Preview trace polling error:', err);
+      }
+    };
+
+    // Poll immediately
+    pollTrace();
+
+    // Set up polling interval (every 1 second)
+    const intervalId = setInterval(pollTrace, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [draftId, contextRefresh.preview.isLoading]);
+
   const generationHandlers = useGenerationHandlers({
     draft, config, branchError,
     contextHelpers: { isContextStale: contextRefresh.isContextStale, clearCountdown: contextRefresh.clearCountdown, fetchPreview: contextRefresh.fetchPreview },
@@ -441,7 +477,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       isChangingRepo={isChangingRepo} isCreating={isCreating || isAutoCreating} setIsChangingRepo={setIsChangingRepo}
       handleRepoChangeInEditMode={handleRepoChangeInEditMode} handleFileInputChange={handleFileInputChange}
       handleExportContext={handleExportContext} handleGenerate={handleGenerate} agents={agents}
-      availableRepos={availableRepos}
+      availableRepos={availableRepos} previewTrace={previewTrace}
     />
   );
 };
