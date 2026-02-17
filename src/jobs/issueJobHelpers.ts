@@ -286,7 +286,13 @@ ${commitResult ? `Closes #${issueRef.number}` : `Addresses #${issueRef.number}`}
 
 ---
 
-${completionComment}`;
+${completionComment}
+
+---
+
+### 💡 Need changes?
+
+Comment on this PR to request refinements — the AI agent monitors comments and will update the implementation based on your feedback. Keep iterating until you're satisfied!`;
 
     try {
         const prResponse = await octokit.request<{ data: { number: number; html_url: string; title: string } }>('POST /repos/{owner}/{repo}/pulls', {
