@@ -302,7 +302,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
                 className={`
                   rounded-lg
                   ${message.role === 'user'
-                    ? 'bg-white border border-teal-100 text-slate-800 shadow-sm px-4 py-2 inline-block'
+                    ? 'bg-white border border-indigo-100 text-slate-800 shadow-sm px-4 py-2 inline-block'
                     : message.role === 'thinking'
                       ? 'bg-slate-200 text-gray-600 italic p-3 w-full max-w-xs'
                       : 'bg-transparent text-gray-800 inline-block'
@@ -353,10 +353,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
               <button
                 type="submit"
                 disabled={!input.trim()}
-                className="p-2 text-white rounded-md disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center flex-shrink-0"
-                style={{ backgroundColor: !input.trim() ? undefined : 'rgb(29, 138, 138)' }}
-                onMouseEnter={(e) => { if (input.trim()) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
-                onMouseLeave={(e) => { if (input.trim()) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
+                className="p-2 rounded-md disabled:text-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center flex-shrink-0 text-indigo-600 hover:bg-indigo-50"
               >
                 <Send size={16} />
               </button>
