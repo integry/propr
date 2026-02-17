@@ -191,10 +191,10 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             <Link
               key={item.name}
               to={item.href}
-              className={`flex items-center px-4 py-3 text-sm font-medium transition-all duration-200 ${
+              className={`flex items-center px-4 py-3 text-sm font-medium transition-all duration-200 border-r-2 ${
                 isActive(item.href)
-                  ? 'bg-red-50 text-primary-600 border-r-2 border-primary-600 font-medium'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                  ? 'bg-red-50 text-primary-600 border-primary-600 font-medium'
+                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900 border-transparent'
               }`}
             >
               <item.icon className="w-5 h-5 mr-3" />
