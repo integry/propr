@@ -262,7 +262,8 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                   value={task.implementation}
                   placeholder="Implementation details..."
                   className="w-full font-mono text-sm bg-transparent transition-colors placeholder-gray-400"
-                  markdownClassName={`w-full font-mono text-sm ${isCodeExpanded ? '' : 'max-h-96 overflow-y-auto'}`}
+                  markdownClassName="w-full font-mono text-sm"
+                  isCodeExpanded={isCodeExpanded}
                 />
               </motion.div>
             )}

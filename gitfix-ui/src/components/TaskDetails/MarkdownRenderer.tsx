@@ -9,6 +9,7 @@ import { FileText } from 'lucide-react';
 interface MarkdownRendererProps {
   text: unknown;
   className?: string;
+  isCodeExpanded?: boolean;
 }
 
 // Helper to check if a line starts a code block (supports both ``` and ~~~)
@@ -91,7 +92,7 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
   return { processedText: processedLines.join('\n'), filePathMap };
 };
 
-const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '' }) => {
+const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '', isCodeExpanded = false }) => {
   if (!text) return null;
 
   // Handle non-string content (JSON objects)
@@ -175,8 +176,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                       margin: 0,
                       padding: '0.75rem 0',
                       backgroundColor: '#1E1E1E',
-                      maxHeight: '300px',
-                      overflowY: 'auto',
+                      ...(isCodeExpanded ? {} : { maxHeight: '300px', overflowY: 'auto' as const }),
                     }}
                     codeTagProps={{
                       style: {

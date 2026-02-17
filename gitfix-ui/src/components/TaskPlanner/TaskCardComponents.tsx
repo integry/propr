@@ -22,6 +22,7 @@ export interface RenderEditableContentProps {
   placeholder: string;
   className: string;
   markdownClassName?: string;
+  isCodeExpanded?: boolean;
   editingField: EditableField;
   viewMode: ViewMode;
   task: PlanTask;
@@ -39,6 +40,7 @@ export function RenderEditableContent({
   placeholder,
   className,
   markdownClassName,
+  isCodeExpanded,
   editingField,
   viewMode,
   task,
@@ -88,7 +90,7 @@ export function RenderEditableContent({
       onClick={() => handleFieldClick(field)}
       className={`${markdownClassName || className} ${cursorClass} hover:bg-gray-50 rounded p-1 -ml-1 task-card-content`}
     >
-      <MarkdownRenderer text={value} className={markdownStyles} />
+      <MarkdownRenderer text={value} className={markdownStyles} isCodeExpanded={isCodeExpanded} />
     </div>
   );
 }
