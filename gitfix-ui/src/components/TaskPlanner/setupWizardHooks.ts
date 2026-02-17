@@ -12,7 +12,8 @@ import {
   createDraft as apiCreateDraft,
   PlannerDraft,
   PlannerAttachment,
-  AgentConfig
+  AgentConfig,
+  DraftWithPlan
 } from '../../api/gitfixApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
@@ -315,13 +316,24 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
   return { handleGenerateForExistingDraft, handleAbortGeneration };
 }
 
+// Helper to construct a DraftWithPlan from a PlannerDraft for router state
+function constructDraftWithPlan(draft: PlannerDraft): DraftWithPlan {
+  return {
+    ...draft,
+    plan_json: [],
+    chat_history: [],
+    context_config: undefined,
+    refinement_result: undefined
+  };
+}
+
 // Hook: Draft creation and upload for new mode
 interface DraftCreationParams {
   selectedRepo: string;
   config: PlannerConfig;
   localFiles: File[];
   onDraftCreated?: (draftId: string) => void;
-  navigate: (path: string, options?: { replace?: boolean }) => void;
+  navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
   setIsCreating: React.Dispatch<React.SetStateAction<boolean>>;
 }
@@ -343,7 +355,9 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
         catch (uploadErr) { console.error('Failed to upload attachment:', uploadErr); }
       }
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
-      navigate(`/studio/${newDraft.draft_id}`, { replace: true });
+      // Pass the draft data via router state to avoid re-fetch and UI flicker
+      const draftWithPlan = constructDraftWithPlan(newDraft);
+      navigate(`/studio/${newDraft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan } });
     } catch (err) {
       setError((err as Error).message || 'Failed to create draft');
       setIsCreating(false);
@@ -399,7 +413,7 @@ interface AutoDraftCreationParams {
   prompt: string;
   localFiles: File[];
   onDraftCreated?: (draftId: string) => void;
-  navigate: (path: string, options?: { replace?: boolean }) => void;
+  navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void;
 }
 
 export function useAutoDraftCreation({
@@ -444,7 +458,9 @@ export function useAutoDraftCreation({
       }
 
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
-      navigate(`/studio/${newDraft.draft_id}`, { replace: true });
+      // Pass the draft data via router state to avoid re-fetch and UI flicker
+      const draftWithPlan = constructDraftWithPlan(newDraft);
+      navigate(`/studio/${newDraft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan } });
     } catch (err) {
       setAutoCreateError((err as Error).message || 'Failed to auto-save draft');
       setIsAutoCreating(false);

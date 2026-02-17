@@ -1,5 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { getDraft, PlannerDraft } from '../api/gitfixApi';
+
+interface UseDraftOptions {
+  initialData?: PlannerDraft | null;
+}
 
 interface UseDraftResult {
   draft: PlannerDraft | null;
@@ -26,10 +30,31 @@ function parseJsonFields<T extends Record<string, unknown>>(data: T): T {
   return result;
 }
 
-export const useDraft = (draftId: string): UseDraftResult => {
-  const [draft, setDraft] = useState<PlannerDraft | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDraftResult => {
+  const { initialData } = options;
+
+  // Track whether we've used initial data for this specific draftId
+  const initialDataUsedForDraftIdRef = useRef<string | null>(null);
+
+  // Determine if we should use initial data:
+  // - initialData must be provided
+  // - initialData's draft_id must match the current draftId
+  // - we haven't already used initial data for this draftId
+  const shouldUseInitialData =
+    initialData &&
+    initialData.draft_id === draftId &&
+    initialDataUsedForDraftIdRef.current !== draftId;
+
+  const [draft, setDraft] = useState<PlannerDraft | null>(
+    shouldUseInitialData ? initialData : null
+  );
+  const [loading, setLoading] = useState<boolean>(!shouldUseInitialData);
   const [error, setError] = useState<string | null>(null);
+
+  // Mark initial data as used for this draftId
+  if (shouldUseInitialData) {
+    initialDataUsedForDraftIdRef.current = draftId;
+  }
 
   const fetchDraft = useCallback(async (isPolling = false) => {
     if (!draftId) return;
@@ -53,8 +78,13 @@ export const useDraft = (draftId: string): UseDraftResult => {
   }, [draftId]);
 
   useEffect(() => {
+    // Skip initial fetch if we have valid initial data for this draftId
+    if (initialData && initialData.draft_id === draftId && initialDataUsedForDraftIdRef.current === draftId) {
+      // We already have the data, no need to fetch
+      return;
+    }
     fetchDraft();
-  }, [fetchDraft]);
+  }, [fetchDraft, draftId, initialData]);
 
   useEffect(() => {
     if (draft?.status !== 'generating') return;

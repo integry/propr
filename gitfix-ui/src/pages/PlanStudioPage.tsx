@@ -1,5 +1,5 @@
 import React from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDraft } from '../hooks/useDraft';
@@ -9,6 +9,10 @@ import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import SkeletonLoader from '../components/TaskPlanner/SkeletonLoader';
 import StudioStepper, { StudioStage } from '../components/TaskPlanner/StudioStepper';
 import { PlannerDraft, DraftWithPlan } from '../api/plannerApi';
+
+interface LocationState {
+  initialDraft?: DraftWithPlan;
+}
 
 interface PlanStudioPageProps {
   isNew?: boolean;
@@ -201,7 +205,14 @@ const NewDraftView: React.FC = () => (
 
 const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
   const { draftId } = useParams<{ draftId: string }>();
-  const { draft, loading, error, refetch } = useDraft(isNew ? '' : (draftId || ''));
+  const location = useLocation();
+  const locationState = location.state as LocationState | undefined;
+  const initialDraft = locationState?.initialDraft;
+
+  const { draft, loading, error, refetch } = useDraft(
+    isNew ? '' : (draftId || ''),
+    { initialData: initialDraft }
+  );
 
   useDocumentTitle(isNew ? 'New Plan' : getDocumentTitle(draft));
 
