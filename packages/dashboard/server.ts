@@ -7,7 +7,7 @@ import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis } from 'ioredis';
 import { setupAuth, ensureAuthenticated } from './auth.js';
-import { initSocketService, closeSocketService, getSocketService } from './services/socketService.js';
+import { initSocketService, closeSocketService } from './services/socketService.js';
 import {
   createStatusRoutes,
   createTaskRoutes,
