@@ -334,31 +334,36 @@ refinementProgress={refinementProgress}
         </PanelGroup>
       </div>
 
-      {/* Pro Studio Footer - Gray background with primary action and extra vertical padding for "gravity" */}
+      {/* Pro Studio Footer - Gray background with primary action aligned to right of left column */}
       <div className="flex items-center justify-between px-6 py-5 border-t border-gray-200 bg-gray-100 flex-shrink-0">
-        <div className="text-sm text-gray-500">
-          {plan.length} {plan.length === 1 ? 'task' : 'tasks'} in plan
+        {/* Left column area (60% width to match left panel) - task count on left, button on right */}
+        <div className="flex items-center justify-between" style={{ width: 'calc(60% - 4px)' }}>
+          <div className="text-sm text-gray-500">
+            {plan.length} {plan.length === 1 ? 'task' : 'tasks'} in plan
+          </div>
+          <button
+            onClick={handleFinalize}
+            disabled={isFinalizing || plan.length === 0}
+            className="flex items-center gap-2 px-5 py-2.5 text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
+            style={{ backgroundColor: isFinalizing || plan.length === 0 ? undefined : 'rgb(29, 138, 138)' }}
+            onMouseEnter={(e) => { if (!isFinalizing && plan.length > 0) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
+            onMouseLeave={(e) => { if (!isFinalizing && plan.length > 0) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
+          >
+            {isFinalizing ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                Creating Issues...
+              </>
+            ) : (
+              <>
+                <Github size={16} />
+                Create {plan.length} GitHub {plan.length === 1 ? 'Issue' : 'Issues'}
+              </>
+            )}
+          </button>
         </div>
-        <button
-          onClick={handleFinalize}
-          disabled={isFinalizing || plan.length === 0}
-          className="flex items-center gap-2 px-5 py-2.5 text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
-          style={{ backgroundColor: isFinalizing || plan.length === 0 ? undefined : 'rgb(29, 138, 138)' }}
-          onMouseEnter={(e) => { if (!isFinalizing && plan.length > 0) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
-          onMouseLeave={(e) => { if (!isFinalizing && plan.length > 0) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
-        >
-          {isFinalizing ? (
-            <>
-              <Loader2 size={16} className="animate-spin" />
-              Creating Issues...
-            </>
-          ) : (
-            <>
-              <Github size={16} />
-              Create {plan.length} GitHub {plan.length === 1 ? 'Issue' : 'Issues'}
-            </>
-          )}
-        </button>
+        {/* Right side: Empty space for separation from chat interface */}
+        <div />
       </div>
 
       <BackToSetupDialog
