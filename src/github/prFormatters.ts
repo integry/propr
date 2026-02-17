@@ -106,7 +106,8 @@ export async function generatePRBody(issueNumber: number, issueTitle: string, co
     body += `- Review the changes carefully before merging\n`;
     body += `- Test the implementation in your development environment\n`;
     body += `- Check that the solution addresses the original issue requirements\n`;
-    body += `- Verify that no unintended changes were introduced\n\n`;
+    body += `- Verify that no unintended changes were introduced\n`;
+    body += `- **Need changes?** Comment on this PR to request refinements — the AI agent will update the implementation based on your feedback\n\n`;
     body += `---\n*This PR was generated automatically by [ProPR](https://propr.dev). Full execution logs are available in the comments.*`;
 
     return body;
