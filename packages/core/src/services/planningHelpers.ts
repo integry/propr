@@ -777,10 +777,40 @@ async function regenerateContext(params: RegenerateContextParams): Promise<Regen
     if (selectedAgent) agent = selectedAgent;
   }
 
+  // Estimate duration for relevance analysis (uses LLM for semantic scoring)
+  const estimatedInputTokens = estimateTokens(prompt);
+  const relevanceEstimation = await estimateLlmDuration({
+    executionType: 'context-analysis',
+    modelName: contextModel || 'haiku',
+    inputTokenCount: estimatedInputTokens,
+    correlationId
+  });
+
+  const relevanceStartedAt = new Date().toISOString();
+  correlatedLogger.info({
+    estimatedDurationMs: relevanceEstimation.estimatedDurationMs,
+    isHistoricalEstimate: relevanceEstimation.isHistoricalEstimate,
+    sampleCount: relevanceEstimation.sampleCount
+  }, 'Estimated relevance analysis duration for preview');
+
+  // Update trace with relevance step in_progress status and estimated duration
+  await updateTrace(draftId, 'relevance', 'in_progress', {
+    estimatedDuration: relevanceEstimation.estimatedDurationMs,
+    startedAt: relevanceStartedAt,
+    isHistoricalEstimate: relevanceEstimation.isHistoricalEstimate,
+    sampleCount: relevanceEstimation.sampleCount
+  });
+
   // Find relevant files
   const relevanceResult = await findRelevantFiles(worktreePath, fileRefResult.cleanedPrompt || prompt, {
     correlationId, useSummaryScoring: !!agent, useLLMKeywords: true, agent,
     repoName: draft.repository, branch: baseBranch, modelId: contextModel
+  });
+
+  // Mark relevance step as completed
+  await updateTrace(draftId, 'relevance', 'completed', {
+    keywords: relevanceResult.keywordsDetected || [],
+    candidates: relevanceResult.files.map(f => ({ path: f.path, reason: f.reason, score: f.score }))
   });
 
   const autoFilePaths = relevanceResult.files.map(f => f.path);
@@ -873,6 +903,9 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   let contextData: ContextData;
   if (canUseCache) {
     correlatedLogger.info({ contentHash }, 'Using cached context (only settings changed)');
+    // Mark both steps as completed immediately since work was done previously
+    await updateTrace(draftId, 'relevance', 'completed', { source: 'cache' });
+    await updateTrace(draftId, 'context', 'completed', { source: 'cache' });
     contextData = extractContextFromCache(cache);
   } else {
     const reason = getCacheInvalidationReason(cache, contentHash, cacheHasSufficientLimit, maxTokenLimit);
