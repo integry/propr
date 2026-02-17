@@ -1,5 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { getDraft, PlannerDraft } from '../api/gitfixApi';
+
+interface UseDraftOptions {
+  initialData?: PlannerDraft | null;
+}
 
 interface UseDraftResult {
   draft: PlannerDraft | null;
@@ -26,42 +30,71 @@ function parseJsonFields<T extends Record<string, unknown>>(data: T): T {
   return result;
 }
 
-export const useDraft = (draftId: string): UseDraftResult => {
-  const [draft, setDraft] = useState<PlannerDraft | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDraftResult => {
+  const { initialData } = options;
+
+  // Check if initialData is valid for this draftId
+  const hasValidInitialData = Boolean(initialData && initialData.draft_id === draftId);
+
+  // Track whether we've already consumed the initial data for this draftId
+  // This prevents re-using stale initial data on subsequent renders
+  const consumedInitialDataRef = useRef<string | null>(null);
+  const isInitialDataConsumed = consumedInitialDataRef.current === draftId;
+
+  // Use initial data if it's valid and hasn't been consumed yet
+  const useInitialData = hasValidInitialData && !isInitialDataConsumed;
+
+  // Initialize state - only use initialData on first mount when valid
+  const [draft, setDraft] = useState<PlannerDraft | null>(() => {
+    if (useInitialData) {
+      consumedInitialDataRef.current = draftId;
+      return initialData;
+    }
+    return null;
+  });
+  const [loading, setLoading] = useState<boolean>(() => !useInitialData);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchDraft = useCallback(async (isPolling = false) => {
+  // Fetch function - only sets loading for explicit refetch, not background refresh
+  const fetchDraft = useCallback(async (showLoading = true) => {
     if (!draftId) return;
 
     try {
-      // Only show loading state on initial fetch, not during polling
-      if (!isPolling) {
+      if (showLoading) {
         setLoading(true);
       }
       setError(null);
       const data = await getDraft(draftId);
-      // Defensively parse JSON fields in case backend returns strings
       setDraft(parseJsonFields(data as unknown as Record<string, unknown>) as unknown as PlannerDraft);
     } catch (err) {
       setError((err as Error).message || 'Failed to fetch draft');
     } finally {
-      if (!isPolling) {
+      if (showLoading) {
         setLoading(false);
       }
     }
   }, [draftId]);
 
+  // Initial fetch effect - skip if we used initial data
   useEffect(() => {
-    fetchDraft();
-  }, [fetchDraft]);
+    // If we already have draft data (from initialData), skip the fetch
+    // The draft state was set during initialization
+    if (draft && draft.draft_id === draftId) {
+      return;
+    }
+    // Only fetch if we don't have data
+    if (!draft) {
+      fetchDraft(true);
+    }
+  }, [draftId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Polling effect for generating status
   useEffect(() => {
     if (draft?.status !== 'generating') return;
 
-    const interval = setInterval(() => fetchDraft(true), 3000);
+    const interval = setInterval(() => fetchDraft(false), 3000);
     return () => clearInterval(interval);
   }, [draft?.status, fetchDraft]);
 
-  return { draft, loading, error, refetch: () => fetchDraft(false) };
+  return { draft, loading, error, refetch: () => fetchDraft(true) };
 };

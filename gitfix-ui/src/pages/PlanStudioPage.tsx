@@ -1,5 +1,5 @@
-import React from 'react';
-import { useParams, Link } from 'react-router-dom';
+import React, { useState, useCallback } from 'react';
+import { useParams, Link, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDraft } from '../hooks/useDraft';
@@ -9,6 +9,10 @@ import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import SkeletonLoader from '../components/TaskPlanner/SkeletonLoader';
 import StudioStepper, { StudioStage } from '../components/TaskPlanner/StudioStepper';
 import { PlannerDraft, DraftWithPlan } from '../api/plannerApi';
+
+interface LocationState {
+  initialDraft?: DraftWithPlan;
+}
 
 interface PlanStudioPageProps {
   isNew?: boolean;
@@ -185,7 +189,12 @@ const isReviewStatus = (status: string | undefined): boolean => {
 };
 
 // New Draft View - for /studio/new route
-const NewDraftView: React.FC = () => (
+// Now accepts optional draft and callbacks to support seamless auto-save without navigation
+const NewDraftView: React.FC<{
+  draft?: PlannerDraft;
+  onDraftCreated?: (draft: PlannerDraft) => void;
+  onRefetch?: () => void;
+}> = ({ draft, onDraftCreated, onRefetch }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
     <div className="bg-gray-100 px-6 py-4 border-b border-gray-300">
@@ -194,20 +203,58 @@ const NewDraftView: React.FC = () => (
 
     {/* Scrollable Canvas */}
     <div className="flex-1 overflow-auto bg-white">
-      <SetupWizard onGenerateComplete={() => {}} />
+      <SetupWizard
+        draft={draft}
+        onGenerateComplete={onRefetch || (() => {})}
+        onDraftCreatedInPlace={onDraftCreated}
+      />
     </div>
   </div>
 );
 
 const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
   const { draftId } = useParams<{ draftId: string }>();
-  const { draft, loading, error, refetch } = useDraft(isNew ? '' : (draftId || ''));
+  const location = useLocation();
+  const locationState = location.state as LocationState | undefined;
+  const initialDraft = locationState?.initialDraft;
 
-  useDocumentTitle(isNew ? 'New Plan' : getDocumentTitle(draft));
+  // For /studio/new: track draft created in-place (without navigation)
+  const [inPlaceDraft, setInPlaceDraft] = useState<PlannerDraft | null>(null);
+
+  // Handle draft created in-place (auto-save in new mode)
+  // This updates the URL without navigation, preserving focus and avoiding flicker
+  const handleDraftCreatedInPlace = useCallback((draft: PlannerDraft) => {
+    setInPlaceDraft(draft);
+    // Update URL without triggering navigation - this keeps the component mounted
+    window.history.replaceState(null, '', `/studio/${draft.draft_id}`);
+  }, []);
+
+  // Determine the effective draft ID for useDraft
+  // When in new mode with an in-place draft, use that draft's ID
+  const effectiveDraftId = isNew
+    ? (inPlaceDraft?.draft_id || '')
+    : (draftId || '');
+
+  const { draft, loading, error, refetch } = useDraft(
+    effectiveDraftId,
+    { initialData: isNew ? inPlaceDraft : initialDraft }
+  );
+
+  // The actual draft to use - prefer the in-place draft when available
+  const activeDraft = inPlaceDraft || draft;
+
+  useDocumentTitle(isNew && !inPlaceDraft ? 'New Plan' : getDocumentTitle(activeDraft));
 
   // Show the new draft setup page for /studio/new
+  // Even after auto-save creates a draft, stay in this view to preserve focus
   if (isNew) {
-    return <NewDraftView />;
+    return (
+      <NewDraftView
+        draft={inPlaceDraft || undefined}
+        onDraftCreated={handleDraftCreatedInPlace}
+        onRefetch={refetch}
+      />
+    );
   }
 
   const currentStage = getStageFromStatus(draft?.status);

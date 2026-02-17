@@ -128,6 +128,8 @@ interface SetupWizardProps {
   draft?: PlannerDraft;
   onGenerateComplete: () => void;
   onDraftCreated?: (draftId: string) => void;
+  // Called when a draft is created in-place (without navigation) to preserve focus
+  onDraftCreatedInPlace?: (draft: PlannerDraft) => void;
 }
 
 // Content component handles rendering while SetupWizard handles state/hooks
@@ -317,7 +319,7 @@ const SetupWizardContent: React.FC<{
 };
 
 // Main component - handles state and hooks
-export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete, onDraftCreated }) => {
+export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete, onDraftCreated, onDraftCreatedInPlace }) => {
   const navigate = useNavigate();
   const savedSettings = useMemo(() => getPlannerSettings(), []);
   const { addToast } = useToast();
@@ -384,6 +386,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     prompt: config.prompt,
     localFiles: fileHandling.localFiles,
     onDraftCreated,
+    onDraftCreatedInPlace,
     navigate
   });
 
