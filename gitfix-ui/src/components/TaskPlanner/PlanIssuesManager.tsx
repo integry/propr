@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
@@ -31,6 +31,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
   const [pendingImplementIssue, setPendingImplementIssue] = useState<number | null>(null);
   const [pendingImplementModels, setPendingImplementModels] = useState<AgentModelPair[] | undefined>(undefined);
+
+  // Track if the initial merged view expansion check has run (for fully merged plans)
+  const hasInitializedMergedView = useRef(false);
 
   const {
     issues,
@@ -104,6 +107,18 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
       handleRefresh();
     }
   }, [refreshKey, handleRefresh]);
+
+  // Auto-expand merged issues when plan is fully merged (no active issues)
+  useEffect(() => {
+    // Only run once when loading completes and issues are available
+    if (!loading && issues.length > 0 && !hasInitializedMergedView.current) {
+      hasInitializedMergedView.current = true;
+      // If there are no active issues but there are merged issues, auto-expand
+      if (activeIssues.length === 0 && mergedIssues.length > 0) {
+        setShowMerged(true);
+      }
+    }
+  }, [loading, issues.length, activeIssues.length, mergedIssues.length]);
 
   if (loading) {
     return (
