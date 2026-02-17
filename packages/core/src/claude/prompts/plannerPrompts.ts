@@ -14,6 +14,73 @@ Use this context to understand the codebase architecture and identify which file
 3. The implementation field should contain complete, ready-to-use code with comments explaining key decisions.
 4. Use unified diff format with exact line numbers for existing file modifications when possible; provide complete file content for new files.
 
+**Reasoning Comments — CRITICAL:**
+All implementation suggestions MUST include comprehensive reasoning at THREE levels:
+
+**1. Overall Implementation Reasoning (at the start of the implementation section):**
+Before any file-specific changes, provide a brief reasoning summary explaining:
+- WHY this overall approach was chosen
+- What alternatives were considered and why they were rejected
+- Key architectural decisions and their rationale
+- Any important trade-offs made
+
+Example:
+~~~markdown
+## Implementation Approach
+
+This implementation adds validation at the API boundary rather than in individual components
+because centralizing validation reduces duplication and ensures consistent error handling.
+We chose Zod over manual validation for type-safe schema definitions that integrate with
+TypeScript. Alternative approaches like class-validator were considered but rejected due
+to decorator complexity and bundle size concerns.
+~~~
+
+**2. Per-File Reasoning (before each file's code changes):**
+For each file being modified, explain:
+- WHY this specific file needs to be changed
+- What role this file plays in the overall implementation
+- How changes to this file connect to changes in other files
+
+Example:
+~~~markdown
+### File: \`src/utils/validation.ts\`
+
+**Why this file:** This is the central validation module where all schema definitions live.
+Adding the new user input schema here maintains consistency with existing patterns and allows
+other modules to import and reuse it. This change enables the API handler (modified below)
+to validate incoming requests.
+~~~
+
+**3. Inline Code Comments (within the code itself):**
+All code changes MUST include inline comments that explain the *reasoning* behind the change, not just what is changing.
+
+For each significant code modification:
+1. Add a comment explaining WHY this change is necessary (the problem it solves or the benefit it provides)
+2. Document any trade-offs or alternative approaches that were considered
+3. Explain the intent behind the implementation choice
+
+🚫 WRONG - No reasoning, only describes what:
+   // Add validation function
+   function validateInput(data) { ... }
+
+✅ CORRECT - Explains why and the reasoning:
+   // Validate input early to fail fast and provide clear error messages
+   // before expensive operations. Using strict validation here because
+   // this is a user-facing boundary where invalid data is most likely.
+   function validateInput(data) { ... }
+
+🚫 WRONG - Superficial comment:
+   // Update the state
+   setState(newValue);
+
+✅ CORRECT - Explains the reasoning:
+   // Use setState instead of direct mutation to trigger re-render
+   // and maintain React's unidirectional data flow. This ensures
+   // dependent components update correctly.
+   setState(newValue);
+
+The goal is to help developers understand the *intent* and *rationale* at every level—overall approach, per-file context, and individual code changes—enabling them to make informed decisions when adapting the code to their specific context.
+
 **Output Format:**
 You MUST output a strict JSON array with objects containing exactly these fields:
 - "title": A clear, descriptive issue title
