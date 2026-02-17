@@ -54,6 +54,40 @@ interface GenerateTitleOptions {
   correlationId?: string;
 }
 
+/**
+ * Cleans a generated title by removing markdown formatting, quotes, and prefixes.
+ * Ensures the title is plain text suitable for display.
+ */
+function cleanGeneratedTitle(title: string): string {
+  let cleaned = title;
+
+  // Remove leading markdown header symbols (e.g., "# Title" or "## Title")
+  cleaned = cleaned.replace(/^#+\s*/, '');
+
+  // Remove "Title:" prefix (case-insensitive)
+  cleaned = cleaned.replace(/^title:\s*/i, '');
+
+  // Remove wrapping quotes (single, double, or backticks)
+  cleaned = cleaned.replace(/^["'`]|["'`]$/g, '');
+
+  // Remove markdown bold formatting (**text** or __text__)
+  cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
+  cleaned = cleaned.replace(/__([^_]+)__/g, '$1');
+
+  // Remove markdown italic formatting (*text* or _text_)
+  // Be careful not to remove underscores in the middle of words
+  cleaned = cleaned.replace(/(?<!\w)\*([^*]+)\*(?!\w)/g, '$1');
+  cleaned = cleaned.replace(/(?<!\w)_([^_]+)_(?!\w)/g, '$1');
+
+  // Remove any remaining standalone markdown symbols at start/end
+  cleaned = cleaned.replace(/^[*_#`]+|[*_#`]+$/g, '');
+
+  // Trim whitespace
+  cleaned = cleaned.trim();
+
+  return cleaned;
+}
+
 interface CreateIssueOptions {
   octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
   owner: string;
@@ -173,7 +207,19 @@ async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<
   });
 
   const planSummary = JSON.stringify(planJson).substring(0, 3000);
-  const prompt = `Generate a short, descriptive title (5-8 words) for this task based on the following plan:\n\n${planSummary}\n\nTitle:`;
+  const prompt = `Generate a short, descriptive title (5-8 words) for this task based on the following plan.
+
+STRICT FORMATTING RULES:
+- Output ONLY the title text, nothing else
+- Do NOT use markdown formatting (no **, __, *, _, or # symbols)
+- Do NOT wrap the title in quotes
+- Do NOT prefix with "Title:" or any other label
+- Plain text only
+
+Plan:
+${planSummary}
+
+Title (plain text only):`;
 
   correlatedLogger.info({ draftId }, 'Generating task title via LLM');
 
@@ -195,7 +241,7 @@ async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<
     metadata: titleGenerationMetadata
   });
 
-  const cleanTitle = generatedTitle.replace(/^"|"$/g, '').trim();
+  const cleanTitle = cleanGeneratedTitle(generatedTitle);
   if (cleanTitle && db) {
     await db('task_drafts')
       .where({ draft_id: draftId })
