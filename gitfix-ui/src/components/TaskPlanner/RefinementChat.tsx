@@ -96,16 +96,11 @@ const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt
 export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop }) => {
   const [messages, setMessages] = useState<Message[]>(() => {
     if (initialMessages && initialMessages.length > 0) {
-      // Filter out any legacy welcome messages stored in the database
-      const filteredMessages = initialMessages.filter(m =>
-        !(m.role === 'assistant' && m.content.includes('I can help you refine this plan'))
-      );
-      if (filteredMessages.length > 0) {
-        return filteredMessages.map(m => ({
-          ...m,
-          timestamp: new Date(m.timestamp)
-        }));
-      }
+      // Map initial messages directly to internal format - seeded messages from backend should be displayed
+      return initialMessages.map(m => ({
+        ...m,
+        timestamp: new Date(m.timestamp)
+      }));
     }
     return [];
   });
