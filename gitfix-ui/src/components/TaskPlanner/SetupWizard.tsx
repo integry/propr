@@ -10,7 +10,8 @@ import { useToast } from '../ui/useToast';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
 import { GranularityPills } from './ComposerControls';
-import { getEstimatedIssueText, GenerateButtonContent, ModelSelector } from './SetupWizardComponents';
+import { GenerateButtonContent, ModelSelector } from './SetupWizardComponents';
+import { getEstimatedIssueText } from './setupWizardUtils';
 import {
   PlannerConfig,
   useRepositoryLoader,

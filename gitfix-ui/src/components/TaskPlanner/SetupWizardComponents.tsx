@@ -1,15 +1,8 @@
 import React from 'react';
 import { Sparkles, ChevronDown } from 'lucide-react';
-import { Granularity } from '../../api/gitfixApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 import { useAgentsLoader } from './setupWizardHooks';
-
-export const getEstimatedIssueText = (granularity: Granularity): string => {
-  const counts: Record<Granularity, string> = { single: '1', balanced: '3-5', granular: '5-10' };
-  const count = counts[granularity] || '1';
-  return `${count} ${count === '1' ? 'issue' : 'issues'}`;
-};
 
 // Generate button content - extracted to reduce cyclomatic complexity
 export const GenerateButtonContent: React.FC<{
