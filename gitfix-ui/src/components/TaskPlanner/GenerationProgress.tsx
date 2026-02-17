@@ -18,6 +18,12 @@ const STEP_DESCRIPTIONS: Record<string, string> = {
   llm: 'AI is analyzing the context and generating the implementation plan...'
 };
 
+const STEP_PENDING_DESCRIPTIONS: Record<string, string> = {
+  relevance: 'Will analyze codebase to identify relevant files',
+  context: 'Will compile source code from selected files',
+  llm: 'Will analyze context and generate implementation plan'
+};
+
 /** Maximum progress percentage to show when execution takes longer than estimated */
 const MAX_PROGRESS_PERCENT = 98;
 
@@ -212,9 +218,15 @@ export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, o
                   </span>
                 </div>
                 <span className={`text-xs px-2 py-1 rounded-full font-medium ${getStatusBadgeClass(step.status)}`}>
-                  {step.status === 'in_progress' ? 'In Progress' : step.status}
+                  {step.status === 'in_progress' ? 'In Progress' : step.status === 'pending' ? 'Pending' : step.status}
                 </span>
               </div>
+
+              {step.status === 'pending' && (
+                <div className="text-sm text-gray-400 ml-8 italic">
+                  {STEP_PENDING_DESCRIPTIONS[step.name] || 'Waiting to start...'}
+                </div>
+              )}
 
               {step.status === 'in_progress' && !hasProgressData && (
                 <div className="text-sm text-gray-500 ml-8 italic">

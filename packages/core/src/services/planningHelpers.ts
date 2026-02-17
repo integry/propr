@@ -850,6 +850,11 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
 
+  // Initialize all expected steps as pending at the start for consistent UI display
+  // This prevents the UI from switching between default spinner and progress bar
+  await updateTrace(draftId, 'relevance', 'pending');
+  await updateTrace(draftId, 'context', 'pending');
+
   const attachments = parseDraftAttachments(draft.attachments);
   const existingConfig = parseExistingContextConfig(draft.context_config);
   const manualFiles = [...new Set([...(files || [])])];
