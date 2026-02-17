@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Undo2, Redo2, Loader2, AlertCircle, GripVertical, Info, X, ArrowLeft, FileQuestion, Github, GitBranch } from 'lucide-react';
+import { Undo2, Redo2, Loader2, AlertCircle, GripVertical, Info, X, ArrowLeft, FileQuestion, Github, GitBranch, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { debounce } from 'lodash';
 import { usePlanRefinement, RefinementProgress } from '../../hooks/usePlanRefinement';
-import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, GranularityEnforcementMetadata, resetDraftToSetup, abortRefinement } from '../../api/gitfixApi';
+import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, GranularityEnforcementMetadata, resetDraftToSetup, abortRefinement, deleteDraft } from '../../api/gitfixApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
 import BackToSetupDialog from './BackToSetupDialog';
@@ -100,12 +101,42 @@ const GranularityEnforcementNotice: React.FC<GranularityEnforcementNoticeProps> 
 };
 
 export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, onFinalize, onBackToSetup }) => {
+  const navigate = useNavigate();
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const [enforcementNoticeDismissed, setEnforcementNoticeDismissed] = useState(false);
   const [showBackToSetupDialog, setShowBackToSetupDialog] = useState(false);
   const [isResettingToSetup, setIsResettingToSetup] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const { addToast } = useToast();
+
+  // Plan name: prefer draft.name, fall back to initial_prompt
+  const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
+
+  // Handle delete plan
+  const handleDeletePlan = async () => {
+    if (!confirm('Are you sure you want to delete this plan? This action cannot be undone.')) {
+      return;
+    }
+    setIsDeleting(true);
+    try {
+      await deleteDraft(draft.draft_id);
+      addToast({
+        type: 'success',
+        message: 'Plan deleted successfully',
+        duration: 3000
+      });
+      navigate('/plans');
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: (err as Error).message || 'Failed to delete plan',
+        duration: 5000
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Extract granularity enforcement metadata from context_config
   const granularityEnforcement = draft.context_config?.granularityEnforcement;
@@ -211,9 +242,14 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
     <div className="h-full flex flex-col bg-white overflow-hidden">
       {/* Pro Studio Header - Gray background with repo/branch breadcrumb */}
       <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 min-w-0">
+          {/* Plan Name */}
+          <h1 className="text-lg font-semibold text-gray-900 truncate max-w-xs" title={planName}>
+            {planName}
+          </h1>
+          <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
           {/* Repository and Branch Breadcrumb */}
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex items-center gap-2 text-sm flex-shrink-0">
             <Github size={16} className="text-gray-500" />
             <span className="font-medium text-gray-900">{repository}</span>
             <span className="text-gray-400">/</span>
@@ -223,17 +259,31 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
           {/* Original Prompt - moved to header */}
           {originalPrompt && (
             <>
-              <div className="h-4 w-px bg-gray-300" />
+              <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
               <OriginalPromptPopover prompt={originalPrompt} />
             </>
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Delete Plan */}
+          <button
+            onClick={handleDeletePlan}
+            disabled={isFinalizing || isResettingToSetup || isDeleting}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Delete Plan"
+          >
+            {isDeleting ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <Trash2 size={16} />
+            )}
+          </button>
+          <div className="h-6 w-px bg-gray-300 mx-1" />
           {/* Back to Setup */}
           <button
             onClick={() => setShowBackToSetupDialog(true)}
-            disabled={isFinalizing || isResettingToSetup}
+            disabled={isFinalizing || isResettingToSetup || isDeleting}
             className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             title="Back to Setup"
           >
