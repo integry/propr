@@ -38,8 +38,8 @@ export interface SemanticMiningOptions {
 
 const MAX_COMMITS_PER_KEYWORD = 50;
 const RECENCY_DECAY_FACTOR = 0.95;
-const MAX_COMMIT_LOG_CHARS = 50000;
-const INITIAL_COMMIT_LIMIT = 500;
+const MAX_COMMIT_LOG_CHARS = 200000;
+const INITIAL_COMMIT_LIMIT = 1000;
 
 export async function getCommitHistory(repoPath: string, limit: number = INITIAL_COMMIT_LIMIT): Promise<CommitInfo[]> {
   const git: SimpleGit = simpleGit(repoPath);
