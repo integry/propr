@@ -245,9 +245,15 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
 
   useDocumentTitle(isNew && !inPlaceDraft ? 'New Plan' : getDocumentTitle(activeDraft));
 
+  // Determine effective draft and status for rendering decisions
+  // After refetch, 'draft' from useDraft contains the latest status
+  const effectiveDraft = draft || inPlaceDraft;
+  const currentStage = getStageFromStatus(effectiveDraft?.status);
+
   // Show the new draft setup page for /studio/new
-  // Even after auto-save creates a draft, stay in this view to preserve focus
-  if (isNew) {
+  // Stay in setup view only while status is 'draft' - transition when plan is generated
+  // Check effectiveDraft status to allow auto-transition after plan generation completes
+  if (isNew && (!effectiveDraft || effectiveDraft.status === 'draft')) {
     return (
       <NewDraftView
         draft={inPlaceDraft || undefined}
@@ -256,8 +262,6 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
       />
     );
   }
-
-  const currentStage = getStageFromStatus(draft?.status);
 
   if (loading) {
     return <LoadingView isNew={false} />;
