@@ -65,8 +65,17 @@ export function createGenerateHandler(db: Knex) {
 
       await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel });
 
+      // Clear any previous abort signal to allow immediate retry after abort
+      const redis = new Redis({
+        host: process.env.REDIS_HOST || 'redis',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10)
+      });
+      await redis.del(`planner:abort:${draftId}`);
+      await redis.quit();
+
       await db('task_drafts').where({ draft_id: draftId }).update({
         status: 'generating',
+        generation_trace: JSON.stringify({ steps: [], startedAt: new Date().toISOString() }),
         updated_at: db.fn.now()
       });
 
@@ -133,6 +142,14 @@ export function createRefineHandler(db: Knex) {
         isHistoricalEstimate: estimation.isHistoricalEstimate,
         sampleCount: estimation.sampleCount
       };
+
+      // Clear any previous abort signal to allow immediate retry after abort
+      const redisForClear = new Redis({
+        host: process.env.REDIS_HOST || 'redis',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10)
+      });
+      await redisForClear.del(`planner:abort:${draftId}`);
+      await redisForClear.quit();
 
       await db('task_drafts').where({ draft_id: draftId }).update({
         status: 'refining',
