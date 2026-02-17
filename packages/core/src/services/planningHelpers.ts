@@ -18,6 +18,7 @@ import { buildSummaryContext } from './relevance/contextBuilder.js';
 import fs from 'fs-extra';
 import path from 'path';
 import crypto from 'crypto';
+import { getEventPublisher } from '../utils/eventPublisher.js';
 
 /**
  * Compute a hash of content-affecting parameters to determine if regeneration is needed.
@@ -191,6 +192,15 @@ export async function updateTrace(
   await db('task_drafts')
     .where({ draft_id: draftId })
     .update({ generation_trace: JSON.stringify(trace) });
+
+  // Publish real-time event for draft generation progress
+  const eventPublisher = getEventPublisher();
+  await eventPublisher.publishDraftUpdate({
+    draftId,
+    step,
+    status,
+    data
+  });
 }
 
 export interface TokenValidationResult {

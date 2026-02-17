@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@gitfix/core": "*",
+    "@gitfix/shared": "*",
     "@types/multer": "^2.0.0",
     "bullmq": "^5.53.0",
     "connect-redis": "^9.0.0",
@@ -27,7 +28,8 @@
     "node-fetch": "^3.3.0",
     "passport": "^0.7.0",
     "passport-github2": "^0.1.12",
-    "redis": "^4.6.5"
+    "redis": "^4.6.5",
+    "socket.io": "^4.8.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.1",
