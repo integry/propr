@@ -75,6 +75,7 @@ export function createGenerateHandler(db: Knex) {
 
       await db('task_drafts').where({ draft_id: draftId }).update({
         status: 'generating',
+        generation_trace: JSON.stringify({ steps: [], startedAt: new Date().toISOString() }),
         updated_at: db.fn.now()
       });
 
