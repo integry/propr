@@ -60,14 +60,15 @@ interface ChatHistoryMessage {
 }
 
 /**
- * Truncate a prompt to approximately 2 sentences for the chat history summary.
+ * Truncate a prompt to the first 2 sentences for the chat history summary.
  * Looks for sentence-ending punctuation (.!?) to find natural break points.
  */
-function truncateToSentences(text: string, maxSentences = 2): string {
+function truncateToSentences(text: string): string {
   const trimmed = text.trim();
+  const maxSentences = 2;
 
-  // Match sentences ending with .!? followed by space or end of string
-  const sentencePattern = /[^.!?]*[.!?]+/g;
+  // Match sentences: one or more non-punctuation chars followed by sentence-ending punctuation
+  const sentencePattern = /[^.!?]+[.!?]+/g;
   const sentences: string[] = [];
   let match: RegExpExecArray | null;
 
@@ -96,15 +97,19 @@ function truncateToSentences(text: string, maxSentences = 2): string {
  * Creates a user message with the prompt summary and an assistant response
  * confirming plan generation with guidance on next steps.
  */
-function buildInitialChatHistory(prompt: string, taskCount: number): ChatHistoryMessage[] {
-  const promptSummary = truncateToSentences(prompt);
-  const timestamp = new Date().toISOString();
+function buildInitialChatHistory(prompt: string | null | undefined, taskCount: number): ChatHistoryMessage[] {
+  // Handle null/undefined/empty prompt
+  const safePrompt = prompt?.trim() || '';
+  const promptSummary = safePrompt ? truncateToSentences(safePrompt) : 'Plan generation request';
+  const userTimestamp = new Date();
+  // Offset assistant message by 1ms to ensure distinct timestamps for UI sorting
+  const assistantTimestamp = new Date(userTimestamp.getTime() + 1);
 
   const userMessage: ChatHistoryMessage = {
     id: crypto.randomUUID(),
     role: 'user',
     content: promptSummary,
-    timestamp
+    timestamp: userTimestamp.toISOString()
   };
 
   const taskWord = taskCount === 1 ? 'issue has' : 'issues have';
@@ -112,7 +117,7 @@ function buildInitialChatHistory(prompt: string, taskCount: number): ChatHistory
     id: crypto.randomUUID(),
     role: 'assistant',
     content: `${taskCount} ${taskWord} been planned.\n\nI can help you refine this plan. You can:\n\n**Ask questions:**\n- "Why is task #2 structured this way?"\n- "What would happen if we combined these tasks?"\n\n**Give instructions:**\n- "Make the testing task more detailed"\n- "Split the backend task into two"\n- "Add error handling to all tasks"`,
-    timestamp
+    timestamp: assistantTimestamp.toISOString()
   };
 
   return [userMessage, assistantMessage];
@@ -784,9 +789,18 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const chatHistory = buildInitialChatHistory(draft.initial_prompt, validatedPlan.length);
   correlatedLogger.info({ taskCount: validatedPlan.length, messageCount: chatHistory.length }, 'Built initial chat history for refinement');
 
+  // Serialize chat history with error handling
+  let chatHistoryJson: string;
+  try {
+    chatHistoryJson = JSON.stringify(chatHistory);
+  } catch (error) {
+    correlatedLogger.warn({ error: (error as Error).message }, 'Failed to serialize chat history, using empty array');
+    chatHistoryJson = '[]';
+  }
+
   await db('task_drafts').where({ draft_id: draftId }).update({
     plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
-    generated_context: fullContext, chat_history: JSON.stringify(chatHistory), status: 'review', updated_at: db.fn.now()
+    generated_context: fullContext, chat_history: chatHistoryJson, status: 'review', updated_at: db.fn.now()
   });
 
   return validatedPlan;
