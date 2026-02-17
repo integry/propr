@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Download, Loader2, Sparkles, ChevronDown } from 'lucide-react';
-import { PlannerDraft, createDraft, Granularity } from '../../api/gitfixApi';
+import { Download, Loader2 } from 'lucide-react';
+import { PlannerDraft, createDraft, GenerationTrace, getDraft } from '../../api/gitfixApi';
 import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
@@ -10,8 +10,8 @@ import { useToast } from '../ui/useToast';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
 import { GranularityPills } from './ComposerControls';
-import { ProviderLogo } from '../ui/ProviderLogo';
-import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
+import { GenerateButtonContent, ModelSelector } from './SetupWizardComponents';
+import { getEstimatedIssueText } from './setupWizardUtils';
 import {
   PlannerConfig,
   useRepositoryLoader,
@@ -28,101 +28,6 @@ import {
   computeCanExport,
   useAutoResize
 } from './setupWizardHooks';
-
-const getEstimatedIssueText = (granularity: Granularity): string => {
-  const counts: Record<Granularity, string> = { single: '1', balanced: '3-5', granular: '5-10' };
-  const count = counts[granularity] || '1';
-  return `${count} ${count === '1' ? 'issue' : 'issues'}`;
-};
-
-// Generate button content - extracted to reduce cyclomatic complexity
-const GenerateButtonContent: React.FC<{
-  isNewMode: boolean;
-  isCreating: boolean;
-  isGenerating: boolean;
-  issueCountText: string;
-}> = ({ isNewMode, isCreating, isGenerating, issueCountText }) => {
-  if (isNewMode && isCreating) {
-    return (
-      <>
-        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-        <span>Creating...</span>
-      </>
-    );
-  }
-  if (!isNewMode && isGenerating) {
-    return (
-      <>
-        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-        <span>Generating...</span>
-      </>
-    );
-  }
-  return (
-    <>
-      <Sparkles className="w-4 h-4" />
-      <span>Generate Plan ({issueCountText})</span>
-    </>
-  );
-};
-
-// Model selector component - extracted to reduce cyclomatic complexity
-const ModelSelector: React.FC<{
-  agents: ReturnType<typeof useAgentsLoader>;
-  generationModel: string | null;
-  onModelChange: (value: string | null) => void;
-  modelName?: string;
-}> = ({ agents, generationModel, onModelChange, modelName }) => {
-  const enabledAgents = agents.filter(agent => agent.enabled);
-
-  if (enabledAgents.length === 0) {
-    return null;
-  }
-
-  const selectedAgent = generationModel?.includes(':')
-    ? generationModel.split(':')[0]
-    : generationModel;
-
-  const modelOptions = enabledAgents.flatMap(agent =>
-    (agent.supportedModels || []).map(modelId => ({
-      value: `${agent.alias}:${modelId}`,
-      label: `${agent.alias} / ${MODEL_INFO_MAP[modelId]?.name || modelId}`,
-      agent: agent.alias
-    }))
-  );
-
-  const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    onModelChange(e.target.value || null);
-  };
-
-  return (
-    <div className="flex items-center gap-2 text-sm text-gray-600">
-      <span className="text-gray-500">Model:</span>
-      <div className="relative inline-flex items-center max-w-[200px]">
-        {selectedAgent && (
-          <ProviderLogo
-            provider={selectedAgent}
-            className="w-4 h-4 absolute left-2 pointer-events-none z-10"
-          />
-        )}
-        <select
-          value={generationModel || ''}
-          onChange={handleChange}
-          className={`appearance-none bg-white border border-gray-200 rounded-md text-sm py-1.5 pr-7 text-gray-700 hover:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate w-full ${selectedAgent ? 'pl-7' : 'pl-2.5'}`}
-          title="Select AI model for plan generation"
-        >
-          <option value="">{modelName ? `${modelName} (default)` : 'Default model'}</option>
-          {modelOptions.map(opt => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-        <ChevronDown className="w-4 h-4 text-gray-400 absolute right-2 pointer-events-none" />
-      </div>
-    </div>
-  );
-};
 
 interface SetupWizardProps {
   draft?: PlannerDraft;
@@ -162,13 +67,14 @@ const SetupWizardContent: React.FC<{
   handleGenerate: () => Promise<void>;
   agents: ReturnType<typeof useAgentsLoader>;
   availableRepos: ReturnType<typeof useIndexedRepositoriesLoader>;
+  previewTrace?: GenerationTrace;
 }> = (props) => {
   const {
     isNewMode, draft, config, setConfig, repoLoader, newModeBranches, repoInfo,
     fileHandling, generationPolling, contextExport, contextRefresh, generationHandlers,
     autoResize, textareaRef, fileInputRef, error, branchError, isChangingRepo, isCreating,
     setIsChangingRepo, handleRepoChangeInEditMode, handleFileInputChange, handleExportContext,
-    handleGenerate, agents, availableRepos
+    handleGenerate, agents, availableRepos, previewTrace
   } = props;
 
   // Pre-computed values to reduce ternaries in JSX
@@ -262,6 +168,7 @@ const SetupWizardContent: React.FC<{
           onTogglePause={contextRefresh.togglePause}
           onManualRefresh={contextRefresh.handleManualRefresh}
           isNewMode={isNewMode}
+          previewTrace={previewTrace}
         />
       </div>
 
@@ -368,6 +275,52 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const contextExport = useContextExport(setError);
   const contextRefresh = useContextRefresh({ draftId, config, onBranchError: setBranchError });
 
+  // Preview trace polling state for context preview progress
+  const [previewTrace, setPreviewTrace] = useState<GenerationTrace | undefined>(undefined);
+
+  // Poll for preview trace when context preview is loading
+  useEffect(() => {
+    if (!draftId || !contextRefresh.preview.isLoading) {
+      // Clear trace when not loading
+      if (!contextRefresh.preview.isLoading) {
+        setPreviewTrace(undefined);
+      }
+      return;
+    }
+
+    // Initialize with pending steps immediately to avoid UI flicker
+    // This ensures consistent UI from the start while waiting for backend to update
+    setPreviewTrace({
+      steps: [
+        { name: 'relevance', status: 'in_progress' },
+        { name: 'context', status: 'pending' }
+      ]
+    });
+
+    const pollTrace = async () => {
+      try {
+        const draftData = await getDraft(draftId);
+        if (draftData.generation_trace?.steps?.length) {
+          setPreviewTrace(draftData.generation_trace);
+        }
+      } catch (err) {
+        // Ignore errors during polling - this is best-effort
+        console.debug('Preview trace polling error:', err);
+      }
+    };
+
+    // Poll after a short delay to allow backend to initialize
+    const initialPollTimeout = setTimeout(pollTrace, 500);
+
+    // Set up polling interval (every 1 second)
+    const intervalId = setInterval(pollTrace, 1000);
+
+    return () => {
+      clearTimeout(initialPollTimeout);
+      clearInterval(intervalId);
+    };
+  }, [draftId, contextRefresh.preview.isLoading]);
+
   const generationHandlers = useGenerationHandlers({
     draft, config, branchError,
     contextHelpers: { isContextStale: contextRefresh.isContextStale, clearCountdown: contextRefresh.clearCountdown, fetchPreview: contextRefresh.fetchPreview },
@@ -441,7 +394,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       isChangingRepo={isChangingRepo} isCreating={isCreating || isAutoCreating} setIsChangingRepo={setIsChangingRepo}
       handleRepoChangeInEditMode={handleRepoChangeInEditMode} handleFileInputChange={handleFileInputChange}
       handleExportContext={handleExportContext} handleGenerate={handleGenerate} agents={agents}
-      availableRepos={availableRepos}
+      availableRepos={availableRepos} previewTrace={previewTrace}
     />
   );
 };

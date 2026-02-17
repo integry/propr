@@ -4,14 +4,36 @@ import { GenerationTrace } from '../../api/gitfixApi';
 interface GenerationProgressProps {
   trace?: GenerationTrace;
   onAbort?: () => Promise<void>;
+  /**
+   * When true, hides completed steps since the result will be shown immediately after.
+   * Used for cost preview context gathering where showing "completed" is redundant.
+   */
+  hideCompletedSteps?: boolean;
 }
 
 const STEP_LABELS: Record<string, string> = {
+  relevance: 'Analyzing Relevance',
+  context: 'Gathering Context',
   llm: 'Generating Plan'
 };
 
+const STEP_DESCRIPTIONS: Record<string, string> = {
+  relevance: 'Identifying relevant files and analyzing codebase structure...',
+  context: 'Compiling source code context from selected files...',
+  llm: 'AI is analyzing the context and generating the implementation plan...'
+};
+
+const STEP_PENDING_DESCRIPTIONS: Record<string, string> = {
+  relevance: 'Will analyze codebase to identify relevant files',
+  context: 'Will compile source code from selected files',
+  llm: 'Will analyze context and generate implementation plan'
+};
+
 /** Maximum progress percentage to show when execution takes longer than estimated */
-const MAX_PROGRESS_PERCENT = 98;
+const MAX_PROGRESS_PERCENT = 95;
+
+/** Minimum time to show a step before transitioning to completed (ms) */
+const MIN_VISIBLE_DURATION_MS = 500;
 
 /** Format duration for display (e.g., "1m 30s") */
 const formatDuration = (ms: number): string => {
@@ -74,14 +96,34 @@ interface ProgressBarProps {
 const ProgressBar: React.FC<ProgressBarProps> = ({ estimatedDuration, startedAt, isCompleted }) => {
   const [progress, setProgress] = useState(0);
   const [elapsed, setElapsed] = useState(0);
+  const [showComplete, setShowComplete] = useState(false);
 
   const startTime = useMemo(() => new Date(startedAt).getTime(), [startedAt]);
 
   useEffect(() => {
     if (isCompleted) {
-      setProgress(100);
+      // Ensure the progress bar is visible for at least MIN_VISIBLE_DURATION_MS
+      // before showing the completed state to avoid jarring transitions
+      const now = Date.now();
+      const elapsedMs = now - startTime;
+      const remainingVisibleTime = Math.max(0, MIN_VISIBLE_DURATION_MS - elapsedMs);
+
+      if (remainingVisibleTime > 0) {
+        // Show high progress while waiting
+        setProgress(95);
+        const timer = setTimeout(() => {
+          setProgress(100);
+          setShowComplete(true);
+        }, remainingVisibleTime);
+        return () => clearTimeout(timer);
+      } else {
+        setProgress(100);
+        setShowComplete(true);
+      }
       return;
     }
+
+    setShowComplete(false);
 
     const updateProgress = () => {
       const now = Date.now();
@@ -103,7 +145,8 @@ const ProgressBar: React.FC<ProgressBarProps> = ({ estimatedDuration, startedAt,
   }, [startTime, estimatedDuration, isCompleted]);
 
   const remaining = Math.max(0, estimatedDuration - elapsed);
-  const isOverEstimate = elapsed > estimatedDuration;
+  // Only show "Taking longer than expected" after exceeding estimate by 10%
+  const isOverEstimate = elapsed > estimatedDuration * 1.1;
 
   return (
     <div className="ml-8 mt-3">
@@ -120,7 +163,7 @@ const ProgressBar: React.FC<ProgressBarProps> = ({ estimatedDuration, startedAt,
       {/* Progress info */}
       <div className="flex justify-between mt-1.5 text-xs text-gray-500">
         <span>
-          {isCompleted ? (
+          {showComplete ? (
             'Complete'
           ) : isOverEstimate ? (
             <span className="text-yellow-600">Taking longer than expected...</span>
@@ -134,12 +177,114 @@ const ProgressBar: React.FC<ProgressBarProps> = ({ estimatedDuration, startedAt,
   );
 };
 
-export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, onAbort }) => {
+/**
+ * StepItem component that maintains stable progress state to prevent flickering.
+ * Uses local state to track progress data even when the step transitions to completed.
+ */
+const StepItem: React.FC<{
+  step: GenerationTrace['steps'][0];
+}> = ({ step }) => {
+  // Cache progress data to avoid flickering when step transitions to completed
+  // This ensures the progress bar smoothly transitions instead of disappearing
+  const [cachedProgressData, setCachedProgressData] = useState<{
+    estimatedDuration: number;
+    startedAt: string;
+  } | null>(null);
+
+  useEffect(() => {
+    // Update cached data when new progress data becomes available
+    if (step.data?.estimatedDuration && step.data?.startedAt) {
+      setCachedProgressData({
+        estimatedDuration: step.data.estimatedDuration as number,
+        startedAt: step.data.startedAt as string
+      });
+    }
+  }, [step.data?.estimatedDuration, step.data?.startedAt]);
+
+  const hasProgressData = cachedProgressData !== null;
+  const showProgressBar = ['relevance', 'context', 'llm'].includes(step.name) &&
+    (step.status === 'in_progress' || step.status === 'completed') &&
+    hasProgressData;
+
+  // For in_progress without data yet, show a simple indeterminate progress bar
+  // This provides consistent visual feedback without the jarring switch from description to progress bar
+  const showIndeterminateProgress = step.status === 'in_progress' && !hasProgressData;
+
+  return (
+    <div className="p-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-3">
+          <StatusIcon status={step.status} />
+          <span className="font-medium text-gray-900">
+            {STEP_LABELS[step.name] || step.name}
+          </span>
+        </div>
+        <span className={`text-xs px-2 py-1 rounded-full font-medium ${getStatusBadgeClass(step.status)}`}>
+          {step.status === 'in_progress' ? 'In Progress' : step.status === 'pending' ? 'Pending' : step.status}
+        </span>
+      </div>
+
+      {step.status === 'pending' && (
+        <div className="text-sm text-gray-400 ml-8 italic">
+          {STEP_PENDING_DESCRIPTIONS[step.name] || 'Waiting to start...'}
+        </div>
+      )}
+
+      {showIndeterminateProgress && (
+        <div className="ml-8 mt-3">
+          <div className="text-sm text-gray-500 mb-2 italic">
+            {STEP_DESCRIPTIONS[step.name] || 'Processing...'}
+          </div>
+          {/* Indeterminate progress bar animation */}
+          <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full animate-pulse"
+              style={{
+                width: '30%',
+                backgroundColor: 'rgb(29, 138, 138)',
+                animation: 'indeterminate 1.5s ease-in-out infinite'
+              }}
+            />
+          </div>
+          <style>{`
+            @keyframes indeterminate {
+              0% { margin-left: 0%; width: 30%; }
+              50% { margin-left: 35%; width: 30%; }
+              100% { margin-left: 70%; width: 30%; }
+            }
+          `}</style>
+        </div>
+      )}
+
+      {showProgressBar && (
+        <ProgressBar
+          estimatedDuration={cachedProgressData!.estimatedDuration}
+          startedAt={cachedProgressData!.startedAt}
+          isCompleted={step.status === 'completed'}
+        />
+      )}
+
+      {step.status === 'failed' && (
+        <div className="text-sm text-red-600 ml-8 mt-1">
+          Generation failed. Please try again.
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, onAbort, hideCompletedSteps = false }) => {
   const [isAborting, setIsAborting] = useState(false);
 
   if (!trace || !trace.steps || trace.steps.length === 0) return null;
 
-  const visibleSteps = trace.steps.filter(step => step.name === 'llm');
+  let visibleSteps = trace.steps.filter(step => ['relevance', 'context', 'llm'].includes(step.name));
+
+  // When hideCompletedSteps is true (used for preview), filter out completed steps
+  // This prevents showing a brief "completed" state before the result appears
+  if (hideCompletedSteps) {
+    visibleSteps = visibleSteps.filter(step => step.status !== 'completed');
+  }
 
   if (visibleSteps.length === 0) return null;
 
@@ -190,46 +335,9 @@ export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, o
         )}
       </div>
       <div className="divide-y">
-        {visibleSteps.map((step) => {
-          const hasProgressData = step.data?.estimatedDuration && step.data?.startedAt;
-          const showProgressBar = step.name === 'llm' && (step.status === 'in_progress' || step.status === 'completed') && hasProgressData;
-
-          return (
-            <div key={step.name} className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-3">
-                  <StatusIcon status={step.status} />
-                  <span className="font-medium text-gray-900">
-                    {STEP_LABELS[step.name] || step.name}
-                  </span>
-                </div>
-                <span className={`text-xs px-2 py-1 rounded-full font-medium ${getStatusBadgeClass(step.status)}`}>
-                  {step.status === 'in_progress' ? 'In Progress' : step.status}
-                </span>
-              </div>
-
-              {step.name === 'llm' && step.status === 'in_progress' && !hasProgressData && (
-                <div className="text-sm text-gray-500 ml-8 italic">
-                  AI is analyzing the context and generating the implementation plan...
-                </div>
-              )}
-
-              {showProgressBar && (
-                <ProgressBar
-                  estimatedDuration={step.data!.estimatedDuration!}
-                  startedAt={step.data!.startedAt!}
-                  isCompleted={step.status === 'completed'}
-                />
-              )}
-
-              {step.status === 'failed' && (
-                 <div className="text-sm text-red-600 ml-8 mt-1">
-                   Generation failed. Please try again.
-                 </div>
-              )}
-            </div>
-          );
-        })}
+        {visibleSteps.map((step) => (
+          <StepItem key={step.name} step={step} />
+        ))}
       </div>
     </div>
   );

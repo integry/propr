@@ -3,6 +3,7 @@ import { db } from '../db/connection.js';
 import { MODEL_LIMITS, TIKTOKEN_TO_CLAUDE_RATIO, getEffectiveTokenLimit, getModelHardLimit, ContextLevel, DEFAULT_CONTEXT_LEVEL, MAX_CONTEXT_LEVEL } from '../config/modelLimits.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { countTokens, estimateTokens } from '../utils/tokenCalculation.js';
+import { estimateLlmDuration } from '../utils/llmEstimation.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { getModelPricing } from './pricingService.js';
 import { getAgentRegistry } from '../agents/AgentRegistry.js';
@@ -362,6 +363,31 @@ export async function findFilesForPlan(opts: FindFilesOptions): Promise<string[]
     }
   }
 
+  // Estimate duration for relevance analysis (uses LLM for semantic scoring)
+  // Estimate tokens from prompt - relevance analysis typically uses the prompt to find related files
+  const estimatedInputTokens = estimateTokens(draft.initial_prompt);
+  const relevanceEstimation = await estimateLlmDuration({
+    executionType: 'context-analysis',
+    modelName: contextModel || 'haiku',
+    inputTokenCount: estimatedInputTokens,
+    correlationId
+  });
+
+  const startedAt = new Date().toISOString();
+  correlatedLogger.info({
+    estimatedDurationMs: relevanceEstimation.estimatedDurationMs,
+    isHistoricalEstimate: relevanceEstimation.isHistoricalEstimate,
+    sampleCount: relevanceEstimation.sampleCount
+  }, 'Estimated relevance analysis duration');
+
+  // Update trace with in_progress status and estimated duration
+  await updateTrace(draftId, 'relevance', 'in_progress', {
+    estimatedDuration: relevanceEstimation.estimatedDurationMs,
+    startedAt,
+    isHistoricalEstimate: relevanceEstimation.isHistoricalEstimate,
+    sampleCount: relevanceEstimation.sampleCount
+  });
+
   // Let semantic scorer default to HEAD branch
   // Pass modelId for context analysis if specified
   const relevanceResult = await findRelevantFiles(worktreePath, draft.initial_prompt, {
@@ -592,6 +618,7 @@ async function loadImagesFromAttachments(
 }
 
 interface RegenerateContextParams {
+  draftId: string;
   baseBranch: string;
   worktreePath: string;
   prompt: string;
@@ -708,10 +735,23 @@ interface RegenerateContextResult {
 }
 
 /**
+ * Calculate estimated duration for context gathering based on file count.
+ * Uses a heuristic: 5 seconds base + 50ms per file, capped at 30 seconds.
+ * Context gathering is generally fast, so we keep estimates conservative
+ * to avoid showing "Taking longer than expected" prematurely.
+ */
+function estimateContextGatheringDuration(fileCount: number): number {
+  const baseDurationMs = 5000; // 5 seconds base
+  const perFileDurationMs = 50; // 50ms per file
+  const maxDurationMs = 30000; // 30 seconds max
+  return Math.min(baseDurationMs + (fileCount * perFileDurationMs), maxDurationMs);
+}
+
+/**
  * Regenerate context when content has changed
  */
 async function regenerateContext(params: RegenerateContextParams): Promise<RegenerateContextResult> {
-  const { baseBranch, worktreePath, prompt, manualFiles, draft, contextModel, compress, previewTokenLimit, correlationId, correlatedLogger } = params;
+  const { draftId, baseBranch, worktreePath, prompt, manualFiles, draft, contextModel, compress, previewTokenLimit, correlationId, correlatedLogger } = params;
   const securityWarnings: string[] = [];
 
   try {
@@ -740,10 +780,40 @@ async function regenerateContext(params: RegenerateContextParams): Promise<Regen
     if (selectedAgent) agent = selectedAgent;
   }
 
+  // Estimate duration for relevance analysis (uses LLM for semantic scoring)
+  const estimatedInputTokens = estimateTokens(prompt);
+  const relevanceEstimation = await estimateLlmDuration({
+    executionType: 'context-analysis',
+    modelName: contextModel || 'haiku',
+    inputTokenCount: estimatedInputTokens,
+    correlationId
+  });
+
+  const relevanceStartedAt = new Date().toISOString();
+  correlatedLogger.info({
+    estimatedDurationMs: relevanceEstimation.estimatedDurationMs,
+    isHistoricalEstimate: relevanceEstimation.isHistoricalEstimate,
+    sampleCount: relevanceEstimation.sampleCount
+  }, 'Estimated relevance analysis duration for preview');
+
+  // Update trace with relevance step in_progress status and estimated duration
+  await updateTrace(draftId, 'relevance', 'in_progress', {
+    estimatedDuration: relevanceEstimation.estimatedDurationMs,
+    startedAt: relevanceStartedAt,
+    isHistoricalEstimate: relevanceEstimation.isHistoricalEstimate,
+    sampleCount: relevanceEstimation.sampleCount
+  });
+
   // Find relevant files
   const relevanceResult = await findRelevantFiles(worktreePath, fileRefResult.cleanedPrompt || prompt, {
     correlationId, useSummaryScoring: !!agent, useLLMKeywords: true, agent,
     repoName: draft.repository, branch: baseBranch, modelId: contextModel
+  });
+
+  // Mark relevance step as completed
+  await updateTrace(draftId, 'relevance', 'completed', {
+    keywords: relevanceResult.keywordsDetected || [],
+    candidates: relevanceResult.files.map(f => ({ path: f.path, reason: f.reason, score: f.score }))
   });
 
   const autoFilePaths = relevanceResult.files.map(f => f.path);
@@ -756,6 +826,17 @@ async function regenerateContext(params: RegenerateContextParams): Promise<Regen
 
   correlatedLogger.info({ manualFiles: { count: allManualFiles.length }, autoFiles: { count: autoFilePaths.length }, combinedCount: combinedFiles.length }, 'Preview file selection');
 
+  // Estimate context gathering duration based on file count
+  const estimatedContextDuration = estimateContextGatheringDuration(combinedFiles.length);
+  const contextStartedAt = new Date().toISOString();
+
+  // Update trace with context step in_progress
+  await updateTrace(draftId, 'context', 'in_progress', {
+    estimatedDuration: estimatedContextDuration,
+    startedAt: contextStartedAt,
+    fileCount: combinedFiles.length
+  });
+
   const filesToInclude = compress ? undefined : (combinedFiles.length > 0 ? combinedFiles : undefined);
   const priorityFiles = compress ? combinedFiles : undefined;
   const contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: previewTokenLimit, compress, correlationId });
@@ -763,6 +844,12 @@ async function regenerateContext(params: RegenerateContextParams): Promise<Regen
   // Build smart summary context
   const smartSummaryBudget = Math.floor(previewTokenLimit * 0.1);
   const smartSummaryResult = await buildSummaryContext({ tokenBudget: smartSummaryBudget, priorityPaths: combinedFiles, repoName: draft.repository as string, correlationId });
+
+  // Mark context step as completed
+  await updateTrace(draftId, 'context', 'completed', {
+    includedFiles: contextResult.includedFiles,
+    tokenCount: contextResult.totalTokens
+  });
 
   // Add warning if files were skipped due to security concerns
   if (contextResult.skippedSecurityFiles && contextResult.skippedSecurityFiles.length > 0) {
@@ -796,6 +883,11 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
   if (!draft) throw new PlanningFailedError(`Draft not found: ${draftId}`);
 
+  // Initialize all expected steps as pending at the start for consistent UI display
+  // This prevents the UI from switching between default spinner and progress bar
+  await updateTrace(draftId, 'relevance', 'pending');
+  await updateTrace(draftId, 'context', 'pending');
+
   const attachments = parseDraftAttachments(draft.attachments);
   const existingConfig = parseExistingContextConfig(draft.context_config);
   const manualFiles = [...new Set([...(files || [])])];
@@ -814,12 +906,15 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   let contextData: ContextData;
   if (canUseCache) {
     correlatedLogger.info({ contentHash }, 'Using cached context (only settings changed)');
+    // Mark both steps as completed immediately since work was done previously
+    await updateTrace(draftId, 'relevance', 'completed', { source: 'cache' });
+    await updateTrace(draftId, 'context', 'completed', { source: 'cache' });
     contextData = extractContextFromCache(cache);
   } else {
     const reason = getCacheInvalidationReason(cache, contentHash, cacheHasSufficientLimit, maxTokenLimit);
     correlatedLogger.info({ contentHash, hadCache: !!cache, reason }, 'Regenerating context at MAX_CONTEXT_LEVEL');
     const result = await regenerateContext({
-      baseBranch, worktreePath, prompt, manualFiles, draft, contextModel,
+      draftId, baseBranch, worktreePath, prompt, manualFiles, draft, contextModel,
       compress, previewTokenLimit: maxTokenLimit, correlationId, correlatedLogger
     });
     contextData = {
