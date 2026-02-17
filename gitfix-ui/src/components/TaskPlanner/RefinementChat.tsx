@@ -353,7 +353,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
               <button
                 type="submit"
                 disabled={!input.trim()}
-                className="p-2 rounded-md disabled:text-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center flex-shrink-0 text-indigo-600 hover:bg-indigo-50"
+                className="p-2 rounded-md transition-colors flex items-center justify-center flex-shrink-0 bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
               >
                 <Send size={16} />
               </button>

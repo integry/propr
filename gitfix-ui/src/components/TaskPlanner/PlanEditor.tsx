@@ -334,10 +334,10 @@ refinementProgress={refinementProgress}
         </PanelGroup>
       </div>
 
-      {/* Pro Studio Footer - Gray background with primary action on left for separation from chat */}
+      {/* Pro Studio Footer - Gray background with primary action aligned to right of left column */}
       <div className="flex items-center justify-between px-6 py-5 border-t border-gray-200 bg-gray-100 flex-shrink-0">
-        {/* Left side: Task count and primary action grouped together */}
-        <div className="flex items-center gap-4">
+        {/* Left column area (60% width to match left panel) - task count on left, button on right */}
+        <div className="flex items-center justify-between" style={{ width: 'calc(60% - 4px)' }}>
           <div className="text-sm text-gray-500">
             {plan.length} {plan.length === 1 ? 'task' : 'tasks'} in plan
           </div>
