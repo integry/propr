@@ -188,6 +188,14 @@ const isReviewStatus = (status: string | undefined): boolean => {
   return status === 'review' || status === 'refining';
 };
 
+const isDraftStatus = (status: string | undefined): boolean => {
+  return !status || status === 'draft';
+};
+
+const isGeneratingStatus = (status: string | undefined): boolean => {
+  return status === 'generating';
+};
+
 // New Draft View - for /studio/new route
 // Now accepts optional draft and callbacks to support seamless auto-save without navigation
 const NewDraftView: React.FC<{
@@ -211,6 +219,27 @@ const NewDraftView: React.FC<{
     </div>
   </div>
 );
+
+// Helper to render the appropriate view based on draft status
+const renderDraftView = (
+  draft: PlannerDraft,
+  currentStage: StudioStage,
+  refetch: () => void
+): React.ReactElement => {
+  if (isGeneratingStatus(draft.status)) {
+    return <GeneratingView currentStage={currentStage} taskTitle={getTaskTitle(draft)} />;
+  }
+
+  if (isApprovedStatus(draft.status)) {
+    return <ApprovedView currentStage={currentStage} draft={draft as DraftWithPlan} />;
+  }
+
+  if (isReviewStatus(draft.status)) {
+    return <ReviewView currentStage={currentStage} draft={draft as DraftWithPlan} onRefetch={refetch} />;
+  }
+
+  return <DraftView currentStage={currentStage} draft={draft} onRefetch={refetch} />;
+};
 
 const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
   const { draftId } = useParams<{ draftId: string }>();
@@ -253,7 +282,7 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
   // Show the new draft setup page for /studio/new
   // Stay in setup view only while status is 'draft' - transition when plan is generated
   // Check effectiveDraft status to allow auto-transition after plan generation completes
-  if (isNew && (!effectiveDraft || effectiveDraft.status === 'draft')) {
+  if (isNew && (!effectiveDraft || isDraftStatus(effectiveDraft.status))) {
     return (
       <NewDraftView
         draft={inPlaceDraft || undefined}
@@ -271,19 +300,7 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
     return <ErrorView error={error} />;
   }
 
-  if (draft.status === 'generating') {
-    return <GeneratingView currentStage={currentStage} taskTitle={getTaskTitle(draft)} />;
-  }
-
-  if (isApprovedStatus(draft.status)) {
-    return <ApprovedView currentStage={currentStage} draft={draft as DraftWithPlan} />;
-  }
-
-  if (isReviewStatus(draft.status)) {
-    return <ReviewView currentStage={currentStage} draft={draft as DraftWithPlan} onRefetch={refetch} />;
-  }
-
-  return <DraftView currentStage={currentStage} draft={draft} onRefetch={refetch} />;
+  return renderDraftView(draft, currentStage, refetch);
 };
 
 export default PlanStudioPage;
