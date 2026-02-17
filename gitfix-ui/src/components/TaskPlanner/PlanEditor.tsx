@@ -100,6 +100,112 @@ const GranularityEnforcementNotice: React.FC<GranularityEnforcementNoticeProps> 
   );
 };
 
+interface PlanEditorHeaderProps {
+  planName: string;
+  repository: string;
+  baseBranch: string;
+  originalPrompt?: string;
+  isDeleting: boolean;
+  isFinalizing: boolean;
+  isResettingToSetup: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  onDelete: () => void;
+  onBackToSetup: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+}
+
+const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
+  planName,
+  repository,
+  baseBranch,
+  originalPrompt,
+  isDeleting,
+  isFinalizing,
+  isResettingToSetup,
+  canUndo,
+  canRedo,
+  onDelete,
+  onBackToSetup,
+  onUndo,
+  onRedo
+}) => {
+  return (
+    <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0">
+      <div className="flex items-center gap-4 min-w-0">
+        {/* Plan Name */}
+        <h1 className="text-lg font-semibold text-gray-900 truncate max-w-xs" title={planName}>
+          {planName}
+        </h1>
+        <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
+        {/* Repository and Branch Breadcrumb */}
+        <div className="flex items-center gap-2 text-sm flex-shrink-0">
+          <Github size={16} className="text-gray-500" />
+          <span className="font-medium text-gray-900">{repository}</span>
+          <span className="text-gray-400">/</span>
+          <GitBranch size={14} className="text-gray-500" />
+          <span className="text-gray-600">{baseBranch}</span>
+        </div>
+        {/* Original Prompt - moved to header */}
+        {originalPrompt && (
+          <>
+            <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
+            <OriginalPromptPopover prompt={originalPrompt} />
+          </>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {/* Delete Plan */}
+        <button
+          onClick={onDelete}
+          disabled={isFinalizing || isResettingToSetup || isDeleting}
+          className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Delete Plan"
+        >
+          {isDeleting ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : (
+            <Trash2 size={16} />
+          )}
+        </button>
+        <div className="h-6 w-px bg-gray-300 mx-1" />
+        {/* Back to Setup */}
+        <button
+          onClick={onBackToSetup}
+          disabled={isFinalizing || isResettingToSetup || isDeleting}
+          className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Back to Setup"
+        >
+          <ArrowLeft size={16} />
+          Back to Setup
+        </button>
+        <div className="h-6 w-px bg-gray-300 mx-1" />
+        {/* Undo/Redo */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onUndo}
+            disabled={!canUndo}
+            className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            title="Undo"
+          >
+            <Undo2 size={18} className="text-gray-600" />
+          </button>
+          <button
+            onClick={onRedo}
+            disabled={!canRedo}
+            className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            title="Redo"
+          >
+            <Redo2 size={18} className="text-gray-600" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, onFinalize, onBackToSetup }) => {
   const navigate = useNavigate();
   const [isFinalizing, setIsFinalizing] = useState(false);
@@ -241,77 +347,21 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden">
       {/* Pro Studio Header - Gray background with repo/branch breadcrumb */}
-      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0">
-        <div className="flex items-center gap-4 min-w-0">
-          {/* Plan Name */}
-          <h1 className="text-lg font-semibold text-gray-900 truncate max-w-xs" title={planName}>
-            {planName}
-          </h1>
-          <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
-          {/* Repository and Branch Breadcrumb */}
-          <div className="flex items-center gap-2 text-sm flex-shrink-0">
-            <Github size={16} className="text-gray-500" />
-            <span className="font-medium text-gray-900">{repository}</span>
-            <span className="text-gray-400">/</span>
-            <GitBranch size={14} className="text-gray-500" />
-            <span className="text-gray-600">{baseBranch}</span>
-          </div>
-          {/* Original Prompt - moved to header */}
-          {originalPrompt && (
-            <>
-              <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
-              <OriginalPromptPopover prompt={originalPrompt} />
-            </>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {/* Delete Plan */}
-          <button
-            onClick={handleDeletePlan}
-            disabled={isFinalizing || isResettingToSetup || isDeleting}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Delete Plan"
-          >
-            {isDeleting ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <Trash2 size={16} />
-            )}
-          </button>
-          <div className="h-6 w-px bg-gray-300 mx-1" />
-          {/* Back to Setup */}
-          <button
-            onClick={() => setShowBackToSetupDialog(true)}
-            disabled={isFinalizing || isResettingToSetup || isDeleting}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Back to Setup"
-          >
-            <ArrowLeft size={16} />
-            Back to Setup
-          </button>
-          <div className="h-6 w-px bg-gray-300 mx-1" />
-          {/* Undo/Redo */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={undo}
-              disabled={!canUndo}
-              className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title="Undo"
-            >
-              <Undo2 size={18} className="text-gray-600" />
-            </button>
-            <button
-              onClick={redo}
-              disabled={!canRedo}
-              className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title="Redo"
-            >
-              <Redo2 size={18} className="text-gray-600" />
-            </button>
-          </div>
-        </div>
-      </div>
+      <PlanEditorHeader
+        planName={planName}
+        repository={repository}
+        baseBranch={baseBranch}
+        originalPrompt={originalPrompt}
+        isDeleting={isDeleting}
+        isFinalizing={isFinalizing}
+        isResettingToSetup={isResettingToSetup}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onDelete={handleDeletePlan}
+        onBackToSetup={() => setShowBackToSetupDialog(true)}
+        onUndo={undo}
+        onRedo={redo}
+      />
 
       {/* Error and Notice Banners */}
       {finalizeError && (
