@@ -736,12 +736,15 @@ interface RegenerateContextResult {
 
 /**
  * Calculate estimated duration for context gathering based on file count.
- * Uses a heuristic: 3 seconds base + 100ms per file.
+ * Uses a heuristic: 5 seconds base + 50ms per file, capped at 30 seconds.
+ * Context gathering is generally fast, so we keep estimates conservative
+ * to avoid showing "Taking longer than expected" prematurely.
  */
 function estimateContextGatheringDuration(fileCount: number): number {
-  const baseDurationMs = 3000; // 3 seconds base
-  const perFileDurationMs = 100; // 100ms per file
-  return baseDurationMs + (fileCount * perFileDurationMs);
+  const baseDurationMs = 5000; // 5 seconds base
+  const perFileDurationMs = 50; // 50ms per file
+  const maxDurationMs = 30000; // 30 seconds max
+  return Math.min(baseDurationMs + (fileCount * perFileDurationMs), maxDurationMs);
 }
 
 /**

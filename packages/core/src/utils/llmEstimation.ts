@@ -34,6 +34,7 @@ const DEFAULT_MS_PER_TOKEN = 8;
 const MIN_DURATION_BY_TYPE: Record<string, number> = {
   'plan-generation': 5000,     // 5 seconds minimum
   'plan-refinement': 5000,     // 5 seconds minimum
+  'context-analysis': 15000,   // 15 seconds minimum - relevance analysis typically takes longer
   'default': 3000              // 3 seconds fallback for unknown types
 };
 
