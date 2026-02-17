@@ -28,6 +28,8 @@ interface AutoDraftCreationParams {
   prompt: string;
   localFiles: File[];
   onDraftCreated?: (draftId: string) => void;
+  // Called to update draft in-place without navigation (preserves focus)
+  onDraftCreatedInPlace?: (draft: PlannerDraft) => void;
   navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void;
 }
 
@@ -37,6 +39,7 @@ export function useAutoDraftCreation({
   prompt,
   localFiles,
   onDraftCreated,
+  onDraftCreatedInPlace,
   navigate
 }: AutoDraftCreationParams) {
   const [isAutoCreating, setIsAutoCreating] = useState(false);
@@ -73,14 +76,19 @@ export function useAutoDraftCreation({
       }
 
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
-      // Pass the draft data via router state to avoid re-fetch and UI flicker
-      const draftWithPlan = constructDraftWithPlan(newDraft);
-      navigate(`/studio/${newDraft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan } });
+      // Use in-place update if callback provided (preserves focus, no navigation)
+      // Otherwise fall back to navigation with router state
+      if (onDraftCreatedInPlace) {
+        onDraftCreatedInPlace(newDraft);
+      } else {
+        const draftWithPlan = constructDraftWithPlan(newDraft);
+        navigate(`/studio/${newDraft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan } });
+      }
     } catch (err) {
       setAutoCreateError((err as Error).message || 'Failed to auto-save draft');
       setIsAutoCreating(false);
     }
-  }, [localFiles, onDraftCreated, navigate]);
+  }, [localFiles, onDraftCreated, onDraftCreatedInPlace, navigate]);
 
   // Debounced create draft
   const debouncedCreateDraft = useMemo(
