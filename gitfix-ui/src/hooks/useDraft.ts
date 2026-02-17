@@ -33,65 +33,68 @@ function parseJsonFields<T extends Record<string, unknown>>(data: T): T {
 export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDraftResult => {
   const { initialData } = options;
 
-  // Track whether we've used initial data for this specific draftId
-  const initialDataUsedForDraftIdRef = useRef<string | null>(null);
+  // Check if initialData is valid for this draftId
+  const hasValidInitialData = Boolean(initialData && initialData.draft_id === draftId);
 
-  // Determine if we should use initial data:
-  // - initialData must be provided
-  // - initialData's draft_id must match the current draftId
-  // - we haven't already used initial data for this draftId
-  const shouldUseInitialData =
-    initialData &&
-    initialData.draft_id === draftId &&
-    initialDataUsedForDraftIdRef.current !== draftId;
+  // Track whether we've already consumed the initial data for this draftId
+  // This prevents re-using stale initial data on subsequent renders
+  const consumedInitialDataRef = useRef<string | null>(null);
+  const isInitialDataConsumed = consumedInitialDataRef.current === draftId;
 
-  const [draft, setDraft] = useState<PlannerDraft | null>(
-    shouldUseInitialData ? initialData : null
-  );
-  const [loading, setLoading] = useState<boolean>(!shouldUseInitialData);
+  // Use initial data if it's valid and hasn't been consumed yet
+  const useInitialData = hasValidInitialData && !isInitialDataConsumed;
+
+  // Initialize state - only use initialData on first mount when valid
+  const [draft, setDraft] = useState<PlannerDraft | null>(() => {
+    if (useInitialData) {
+      consumedInitialDataRef.current = draftId;
+      return initialData;
+    }
+    return null;
+  });
+  const [loading, setLoading] = useState<boolean>(() => !useInitialData);
   const [error, setError] = useState<string | null>(null);
 
-  // Mark initial data as used for this draftId
-  if (shouldUseInitialData) {
-    initialDataUsedForDraftIdRef.current = draftId;
-  }
-
-  const fetchDraft = useCallback(async (isPolling = false) => {
+  // Fetch function - only sets loading for explicit refetch, not background refresh
+  const fetchDraft = useCallback(async (showLoading = true) => {
     if (!draftId) return;
 
     try {
-      // Only show loading state on initial fetch, not during polling
-      if (!isPolling) {
+      if (showLoading) {
         setLoading(true);
       }
       setError(null);
       const data = await getDraft(draftId);
-      // Defensively parse JSON fields in case backend returns strings
       setDraft(parseJsonFields(data as unknown as Record<string, unknown>) as unknown as PlannerDraft);
     } catch (err) {
       setError((err as Error).message || 'Failed to fetch draft');
     } finally {
-      if (!isPolling) {
+      if (showLoading) {
         setLoading(false);
       }
     }
   }, [draftId]);
 
+  // Initial fetch effect - skip if we used initial data
   useEffect(() => {
-    // Skip initial fetch if we have valid initial data for this draftId
-    if (initialData && initialData.draft_id === draftId && initialDataUsedForDraftIdRef.current === draftId) {
-      // We already have the data, no need to fetch
+    // If we already have draft data (from initialData), skip the fetch
+    // The draft state was set during initialization
+    if (draft && draft.draft_id === draftId) {
       return;
     }
-    fetchDraft();
-  }, [fetchDraft, draftId, initialData]);
+    // Only fetch if we don't have data
+    if (!draft) {
+      fetchDraft(true);
+    }
+  }, [draftId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Polling effect for generating status
   useEffect(() => {
     if (draft?.status !== 'generating') return;
 
-    const interval = setInterval(() => fetchDraft(true), 3000);
+    const interval = setInterval(() => fetchDraft(false), 3000);
     return () => clearInterval(interval);
   }, [draft?.status, fetchDraft]);
 
-  return { draft, loading, error, refetch: () => fetchDraft(false) };
+  return { draft, loading, error, refetch: () => fetchDraft(true) };
 };
