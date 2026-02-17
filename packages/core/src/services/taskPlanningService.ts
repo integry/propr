@@ -7,6 +7,7 @@ import { REFINER_SYSTEM_PROMPT, Plan, PlanItem, RefinementResponse } from '../cl
 import { parseLlmJson, JsonParseError } from '../utils/jsonUtils.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
+import crypto from 'crypto';
 import fs from 'fs-extra';
 import path from 'path';
 import {
@@ -46,6 +47,80 @@ function parseAttachments(draftAttachments: string | Attachment[] | undefined): 
 interface LoadedImages {
   images: Base64Image[];
   totalTokens: number;
+}
+
+/**
+ * Chat message structure for seeding refinement chat history
+ */
+interface ChatHistoryMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+}
+
+/**
+ * Truncate a prompt to the first 2 sentences for the chat history summary.
+ * Looks for sentence-ending punctuation (.!?) to find natural break points.
+ */
+function truncateToSentences(text: string): string {
+  const trimmed = text.trim();
+  const maxSentences = 2;
+
+  // Match sentences: one or more non-punctuation chars followed by sentence-ending punctuation
+  const sentencePattern = /[^.!?]+[.!?]+/g;
+  const sentences: string[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = sentencePattern.exec(trimmed)) !== null && sentences.length < maxSentences) {
+    sentences.push(match[0].trim());
+  }
+
+  if (sentences.length > 0) {
+    return sentences.join(' ');
+  }
+
+  // No sentence-ending punctuation found, truncate by character limit
+  const maxLength = 200;
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+
+  // Find last space before the limit to avoid breaking words
+  const truncated = trimmed.substring(0, maxLength);
+  const lastSpace = truncated.lastIndexOf(' ');
+  return (lastSpace > 0 ? truncated.substring(0, lastSpace) : truncated) + '...';
+}
+
+/**
+ * Build the initial chat history messages to seed the refinement chat.
+ * Creates a user message with the prompt summary and an assistant response
+ * confirming plan generation with guidance on next steps.
+ */
+function buildInitialChatHistory(prompt: string | null | undefined, taskCount: number): ChatHistoryMessage[] {
+  // Handle null/undefined/empty prompt
+  const safePrompt = prompt?.trim() || '';
+  const promptSummary = safePrompt ? truncateToSentences(safePrompt) : 'Plan generation request';
+  const userTimestamp = new Date();
+  // Offset assistant message by 1ms to ensure distinct timestamps for UI sorting
+  const assistantTimestamp = new Date(userTimestamp.getTime() + 1);
+
+  const userMessage: ChatHistoryMessage = {
+    id: crypto.randomUUID(),
+    role: 'user',
+    content: promptSummary,
+    timestamp: userTimestamp.toISOString()
+  };
+
+  const taskWord = taskCount === 1 ? 'issue has' : 'issues have';
+  const assistantMessage: ChatHistoryMessage = {
+    id: crypto.randomUUID(),
+    role: 'assistant',
+    content: `${taskCount} ${taskWord} been planned.\n\nI can help you refine this plan. You can:\n\n**Ask questions:**\n- "Why is task #2 structured this way?"\n- "What would happen if we combined these tasks?"\n\n**Give instructions:**\n- "Make the testing task more detailed"\n- "Split the backend task into two"\n- "Add error handling to all tasks"`,
+    timestamp: assistantTimestamp.toISOString()
+  };
+
+  return [userMessage, assistantMessage];
 }
 
 /**
@@ -710,9 +785,22 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   const updatedContextConfig = { ...parsedContextConfig, granularityEnforcement: enforcementMetadata };
 
+  // Build initial chat history with user prompt summary and assistant confirmation
+  const chatHistory = buildInitialChatHistory(draft.initial_prompt, validatedPlan.length);
+  correlatedLogger.info({ taskCount: validatedPlan.length, messageCount: chatHistory.length }, 'Built initial chat history for refinement');
+
+  // Serialize chat history with error handling
+  let chatHistoryJson: string;
+  try {
+    chatHistoryJson = JSON.stringify(chatHistory);
+  } catch (error) {
+    correlatedLogger.warn({ error: (error as Error).message }, 'Failed to serialize chat history, using empty array');
+    chatHistoryJson = '[]';
+  }
+
   await db('task_drafts').where({ draft_id: draftId }).update({
     plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
-    generated_context: fullContext, status: 'review', updated_at: db.fn.now()
+    generated_context: fullContext, chat_history: chatHistoryJson, status: 'review', updated_at: db.fn.now()
   });
 
   return validatedPlan;
