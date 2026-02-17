@@ -288,10 +288,19 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       return;
     }
 
+    // Initialize with pending steps immediately to avoid UI flicker
+    // This ensures consistent UI from the start while waiting for backend to update
+    setPreviewTrace({
+      steps: [
+        { name: 'relevance', status: 'in_progress' },
+        { name: 'context', status: 'pending' }
+      ]
+    });
+
     const pollTrace = async () => {
       try {
         const draftData = await getDraft(draftId);
-        if (draftData.generation_trace) {
+        if (draftData.generation_trace?.steps?.length) {
           setPreviewTrace(draftData.generation_trace);
         }
       } catch (err) {
@@ -300,13 +309,16 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
       }
     };
 
-    // Poll immediately
-    pollTrace();
+    // Poll after a short delay to allow backend to initialize
+    const initialPollTimeout = setTimeout(pollTrace, 500);
 
     // Set up polling interval (every 1 second)
     const intervalId = setInterval(pollTrace, 1000);
 
-    return () => clearInterval(intervalId);
+    return () => {
+      clearTimeout(initialPollTimeout);
+      clearInterval(intervalId);
+    };
   }, [draftId, contextRefresh.preview.isLoading]);
 
   const generationHandlers = useGenerationHandlers({

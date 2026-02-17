@@ -4,6 +4,11 @@ import { GenerationTrace } from '../../api/gitfixApi';
 interface GenerationProgressProps {
   trace?: GenerationTrace;
   onAbort?: () => Promise<void>;
+  /**
+   * When true, hides completed steps since the result will be shown immediately after.
+   * Used for cost preview context gathering where showing "completed" is redundant.
+   */
+  hideCompletedSteps?: boolean;
 }
 
 const STEP_LABELS: Record<string, string> = {
@@ -148,12 +153,18 @@ const ProgressBar: React.FC<ProgressBarProps> = ({ estimatedDuration, startedAt,
   );
 };
 
-export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, onAbort }) => {
+export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, onAbort, hideCompletedSteps = false }) => {
   const [isAborting, setIsAborting] = useState(false);
 
   if (!trace || !trace.steps || trace.steps.length === 0) return null;
 
-  const visibleSteps = trace.steps.filter(step => ['relevance', 'context', 'llm'].includes(step.name));
+  let visibleSteps = trace.steps.filter(step => ['relevance', 'context', 'llm'].includes(step.name));
+
+  // When hideCompletedSteps is true (used for preview), filter out completed steps
+  // This prevents showing a brief "completed" state before the result appears
+  if (hideCompletedSteps) {
+    visibleSteps = visibleSteps.filter(step => step.status !== 'completed');
+  }
 
   if (visibleSteps.length === 0) return null;
 

@@ -39,16 +39,17 @@ interface LoadingStateProps {
 }
 
 const LoadingState: React.FC<LoadingStateProps> = ({ previewTrace }) => {
-  // If we have trace data with any visible steps (including pending), show the progress component
+  // If we have trace data with non-completed steps, show the progress component
   // This ensures consistent UI without switching between spinner and progress bar
-  const hasVisibleSteps = previewTrace?.steps?.some(step =>
-    ['relevance', 'context'].includes(step.name)
+  // We only check for non-completed steps since completed steps will be hidden
+  const hasActiveSteps = previewTrace?.steps?.some(step =>
+    ['relevance', 'context'].includes(step.name) && step.status !== 'completed'
   );
 
-  if (hasVisibleSteps) {
+  if (hasActiveSteps) {
     return (
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-        <GenerationProgress trace={previewTrace} />
+        <GenerationProgress trace={previewTrace} hideCompletedSteps />
       </div>
     );
   }
