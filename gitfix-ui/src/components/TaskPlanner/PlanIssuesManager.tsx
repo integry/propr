@@ -17,6 +17,10 @@ interface PlanIssuesManagerProps {
   onIssuesChange?: (issues: PlanIssue[]) => void;
   /** Key to trigger refresh from parent */
   refreshKey?: number;
+  /** Whether to create an Epic PR to collect all issue PRs */
+  useEpic?: boolean;
+  /** Whether to auto-merge individual PRs into the Epic PR */
+  autoMerge?: boolean;
 }
 
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
@@ -25,7 +29,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   onRefresh,
   onViewPlanClick,
   onIssuesChange,
-  refreshKey
+  refreshKey,
+  useEpic,
+  autoMerge
 }) => {
   const [showMerged, setShowMerged] = useState(false);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
@@ -67,7 +73,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     handleIssueMultiModelChange,
     handleRefresh,
     getUnmergedIssuesBefore,
-  } = usePlanIssuesManager({ draftId, tasks, onRefresh });
+  } = usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge });
 
   const handleImplementWithWarning = useCallback((issueNumber: number, models?: AgentModelPair[]) => {
     setPendingImplementIssue(issueNumber);

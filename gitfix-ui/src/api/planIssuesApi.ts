@@ -46,6 +46,10 @@ export interface ImplementIssueOptions {
   model_name?: string;
   /** Multiple agent:model combinations for parallel implementation. */
   models?: AgentModelPair[];
+  /** Whether to create an Epic PR to collect all issue PRs */
+  useEpic?: boolean;
+  /** Whether to auto-merge individual PRs into the Epic PR */
+  autoMerge?: boolean;
 }
 
 /**
@@ -63,6 +67,10 @@ export interface UpdateIssueOptions {
 export interface ImplementAllIssuesOptions {
   agent_alias?: string;
   model_name?: string;
+  /** Whether to create an Epic PR to collect all issue PRs */
+  useEpic?: boolean;
+  /** Whether to auto-merge individual PRs into the Epic PR */
+  autoMerge?: boolean;
 }
 
 /**

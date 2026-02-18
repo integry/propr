@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2 } from 'lucide-react';
+import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2, Layers, ArrowDownToLine } from 'lucide-react';
 import { DraftWithPlan, deleteDraft } from '../../api/gitfixApi';
 import DeletePlanDialog from './DeletePlanDialog';
 import PlanIssuesManager from './PlanIssuesManager';
@@ -80,6 +80,18 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
   const [refreshKey, setRefreshKey] = useState(0);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Epic PR options state
+  const [useEpic, setUseEpic] = useState(false);
+  const [autoMerge, setAutoMerge] = useState(false);
+
+  // Handle useEpic toggle - reset autoMerge when Epic is disabled
+  const handleUseEpicChange = (checked: boolean) => {
+    setUseEpic(checked);
+    if (!checked) {
+      setAutoMerge(false);
+    }
+  };
 
   // Plan name: prefer draft.name, fall back to initial_prompt
   const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
@@ -231,6 +243,8 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
           repository={draft.repository}
           onIssuesChange={handleIssuesChange}
           refreshKey={refreshKey}
+          useEpic={useEpic}
+          autoMerge={autoMerge}
         />
       </div>
 
@@ -263,13 +277,39 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
             </>
           )}
         </div>
-        <button
-          onClick={handleRefresh}
-          className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors"
-          title="Refresh issues"
-        >
-          <RefreshCw size={16} />
-        </button>
+        <div className="flex items-center gap-4">
+          {/* Epic PR Options */}
+          <div className="flex items-center gap-4 border-r border-gray-300 pr-4">
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={useEpic}
+                onChange={(e) => handleUseEpicChange(e.target.checked)}
+                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+              />
+              <Layers size={14} className="text-gray-500" />
+              <span>Create Epic PR</span>
+            </label>
+            <label className={`flex items-center gap-2 text-sm cursor-pointer select-none ${useEpic ? 'text-gray-700' : 'text-gray-400 cursor-not-allowed'}`}>
+              <input
+                type="checkbox"
+                checked={autoMerge}
+                onChange={(e) => setAutoMerge(e.target.checked)}
+                disabled={!useEpic}
+                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+              />
+              <ArrowDownToLine size={14} className={useEpic ? 'text-gray-500' : 'text-gray-300'} />
+              <span>Auto-merge to Epic</span>
+            </label>
+          </div>
+          <button
+            onClick={handleRefresh}
+            className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors"
+            title="Refresh issues"
+          >
+            <RefreshCw size={16} />
+          </button>
+        </div>
       </div>
 
       <DeletePlanDialog
