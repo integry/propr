@@ -79,7 +79,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
     if (isNaN(issueNumber)) { res.status(400).json({ error: 'Invalid issue number' }); return; }
 
     try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
+      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const draft = ownership.draft!;
@@ -95,12 +95,39 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const implementLabel = processingLabels[0] || 'AI';
       const octokit = await getAuthenticatedOctokit();
 
-      // Check if multi-agent models array is provided
-      const { models } = req.body as { models?: Array<{ agent_alias: string; model_name: string }> };
+      // Check options from request body
+      const { models, autoMerge, useEpic } = req.body as {
+        models?: Array<{ agent_alias: string; model_name: string }>;
+        autoMerge?: boolean;
+        useEpic?: boolean;
+      };
+
+      const correlationId = `implement-${draftId}-${issueNumber}`;
+      const labelLogger = logger.withCorrelation(correlationId);
+
+      // Handle Epic PR creation if useEpic is true
+      let epicLabelName: string | null = null;
+      if (useEpic) {
+        const planName = (draft.name as string) || 'Unnamed Plan';
+        labelLogger.info({ owner, repo, planName, issueNumber }, 'Creating Epic PR for single issue implementation');
+        const epicResult = await ensureEpicPR({
+          owner,
+          repoName: repo,
+          firstIssueId: issueNumber,
+          planName,
+          correlationId
+        });
+
+        if (epicResult.success && epicResult.labelName) {
+          epicLabelName = epicResult.labelName;
+          labelLogger.info({ epicLabelName, prNumber: epicResult.prNumber }, 'Epic PR created successfully');
+        } else {
+          labelLogger.warn({ error: epicResult.error }, 'Failed to create Epic PR, continuing without epic labels');
+        }
+      }
 
       if (models && Array.isArray(models) && models.length > 0) {
         // Multi-agent mode: apply labels for all selected agent:model combinations
-        const labelLogger = logger.withCorrelation(`implement-multi-${draftId}-${issueNumber}`);
 
         // Collect all LLM labels from the old model (to remove) and new models (to add)
         const oldLlmLabel = getLlmLabel(planIssue.model_name);
@@ -113,6 +140,16 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
         // Remove old label only if it's not in the new set
         const labelsToRemove = (oldLlmLabel && !newLlmLabels.has(oldLlmLabel)) ? [oldLlmLabel] : [];
         const labelsToAdd = [implementLabel, ...Array.from(newLlmLabels)];
+
+        // Add epic label if created
+        if (epicLabelName) {
+          labelsToAdd.push(epicLabelName);
+        }
+
+        // Add auto-merge label if requested
+        if (autoMerge) {
+          labelsToAdd.push('auto-merge');
+        }
 
         await safeUpdateLabels(
           { octokit, owner, repo, issueNumber, logger: labelLogger },
@@ -129,24 +166,38 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
         });
 
         const labelList = Array.from(newLlmLabels).map(l => `'${l}'`).join(', ');
+        const autoMergeNote = autoMerge ? ' with auto-merge enabled' : '';
         res.json({
           success: true,
-          message: `Added '${implementLabel}' and ${labelList} labels to issue #${issueNumber} (${models.length} agents assigned)`
+          message: `Added '${implementLabel}' and ${labelList} labels to issue #${issueNumber} (${models.length} agents assigned)${autoMergeNote}`,
+          autoMergeEnabled: autoMerge || false,
+          epicLabel: epicLabelName
         });
       } else {
         // Single-agent mode (original behavior)
         const llmLabel = getLlmLabel(planIssue.model_name);
         const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
 
+        // Add epic label if created
+        if (epicLabelName) {
+          labelsToAdd.push(epicLabelName);
+        }
+
+        // Add auto-merge label if requested
+        if (autoMerge) {
+          labelsToAdd.push('auto-merge');
+        }
+
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
           owner, repo, issue_number: issueNumber, labels: labelsToAdd
         });
 
         await updatePlanIssue(draftId, issueNumber, { status: 'processing' });
+        const autoMergeNote = autoMerge ? ' with auto-merge enabled' : '';
         const labelMessage = llmLabel
-          ? `Added '${implementLabel}' and '${llmLabel}' labels to issue #${issueNumber}`
-          : `Added '${implementLabel}' label to issue #${issueNumber}`;
-        res.json({ success: true, message: labelMessage });
+          ? `Added '${implementLabel}' and '${llmLabel}' labels to issue #${issueNumber}${autoMergeNote}`
+          : `Added '${implementLabel}' label to issue #${issueNumber}${autoMergeNote}`;
+        res.json({ success: true, message: labelMessage, autoMergeEnabled: autoMerge || false, epicLabel: epicLabelName });
       }
     } catch (error) {
       console.error('Implement issue error:', error);
