@@ -14,7 +14,7 @@ import {
   updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, findFilesForPlan,
   GenerationTrace, RELEVANT_SUMMARY_COUNT, RESERVED_OVERHEAD_TOKENS, CHARS_PER_TOKEN,
   parseContextConfig, checkoutBaseBranch, TaskDraftConfig, Granularity, PlanningFailedError, buildFullContext,
-  Base64Image, MinimalLogger, ContextRepository, getModelHardLimit
+  Base64Image, MinimalLogger, ContextRepository, getModelHardLimit, truncateToSentences
 } from './planningHelpers.js';
 import { estimateLlmDuration } from '../utils/llmEstimation.js';
 import { estimateTokens } from '../utils/tokenCalculation.js';
@@ -57,39 +57,6 @@ interface ChatHistoryMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
-}
-
-/**
- * Truncate a prompt to the first 2 sentences for the chat history summary.
- * Looks for sentence-ending punctuation (.!?) to find natural break points.
- */
-function truncateToSentences(text: string): string {
-  const trimmed = text.trim();
-  const maxSentences = 2;
-
-  // Match sentences: one or more non-punctuation chars followed by sentence-ending punctuation
-  const sentencePattern = /[^.!?]+[.!?]+/g;
-  const sentences: string[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = sentencePattern.exec(trimmed)) !== null && sentences.length < maxSentences) {
-    sentences.push(match[0].trim());
-  }
-
-  if (sentences.length > 0) {
-    return sentences.join(' ');
-  }
-
-  // No sentence-ending punctuation found, truncate by character limit
-  const maxLength = 200;
-  if (trimmed.length <= maxLength) {
-    return trimmed;
-  }
-
-  // Find last space before the limit to avoid breaking words
-  const truncated = trimmed.substring(0, maxLength);
-  const lastSpace = truncated.lastIndexOf(' ');
-  return (lastSpace > 0 ? truncated.substring(0, lastSpace) : truncated) + '...';
 }
 
 /**
@@ -811,7 +778,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   await db('task_drafts').where({ draft_id: draftId }).update({
     plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
-    generated_context: fullContext, chat_history: chatHistoryJson, status: 'review', updated_at: db.fn.now()
+    generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
+    name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
   });
 
   return validatedPlan;

@@ -43,6 +43,39 @@ function computeContentHash(params: {
 /** Number of most relevant files to include summaries for */
 export const RELEVANT_SUMMARY_COUNT = 100;
 
+/**
+ * Truncate a prompt to the first 2 sentences for the plan name/summary.
+ * Looks for sentence-ending punctuation (.!?) to find natural break points.
+ */
+export function truncateToSentences(text: string): string {
+  const trimmed = text.trim();
+  const maxSentences = 2;
+
+  // Match sentences: one or more non-punctuation chars followed by sentence-ending punctuation
+  const sentencePattern = /[^.!?]+[.!?]+/g;
+  const sentences: string[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = sentencePattern.exec(trimmed)) !== null && sentences.length < maxSentences) {
+    sentences.push(match[0].trim());
+  }
+
+  if (sentences.length > 0) {
+    return sentences.join(' ');
+  }
+
+  // No sentence-ending punctuation found, truncate by character limit
+  const maxLength = 200;
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+
+  // Find last space before the limit to avoid breaking words
+  const truncated = trimmed.substring(0, maxLength);
+  const lastSpace = truncated.lastIndexOf(' ');
+  return (lastSpace > 0 ? truncated.substring(0, lastSpace) : truncated) + '...';
+}
+
 /** Reserved overhead for system prompts, XML structure, etc. */
 export const RESERVED_OVERHEAD_TOKENS = 5000;
 
@@ -969,6 +1002,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   await db('task_drafts').where({ draft_id: draftId }).update({
     initial_prompt: prompt,
+    name: truncateToSentences(prompt),
     context_config: JSON.stringify({ baseBranch, granularity, contextLevel, compress, manualFiles, autoFiles: autoFilePaths, contextCache: newCache }),
     generated_context: fullContext,
     updated_at: db.fn.now()
