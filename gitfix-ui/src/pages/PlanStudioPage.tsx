@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useParams, Link, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
@@ -249,6 +249,12 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
 
   // For /studio/new: track draft created in-place (without navigation)
   const [inPlaceDraft, setInPlaceDraft] = useState<PlannerDraft | null>(null);
+
+  // Reset in-place draft when navigation occurs (detected via location.key change)
+  // This ensures stale state doesn't persist when navigating between plans
+  useEffect(() => {
+    setInPlaceDraft(null);
+  }, [location.key]);
 
   // Handle draft created in-place (auto-save in new mode)
   // This updates the URL without navigation, preserving focus and avoiding flicker
