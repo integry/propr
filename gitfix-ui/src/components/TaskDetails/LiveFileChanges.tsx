@@ -3,6 +3,8 @@ import { GitBranch, RefreshCw, AlertCircle, Plus, Minus } from 'lucide-react';
 import FileTree from './FileTree';
 import DiffViewer from './DiffViewer';
 import { FileChange, FileChangesResponse, getFileChanges } from '../../api/fileChangesApi';
+import { useSocket } from '../../contexts/SocketContext';
+import { TaskUpdatePayload } from '@gitfix/shared';
 
 interface LiveFileChangesProps {
   taskId: string;
@@ -14,6 +16,7 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) =
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { subscribeToTask, unsubscribeFromTask, onTaskUpdate, isConnected } = useSocket();
 
   // Fetch file changes
   const fetchFileChanges = useCallback(async () => {
@@ -34,15 +37,34 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) =
     }
   }, [taskId, isActive]);
 
-  // Initial fetch and polling
+  // Handle task update from WebSocket - refetch file changes
+  const handleTaskUpdate = useCallback((payload: TaskUpdatePayload) => {
+    if (payload.taskId !== taskId) return;
+
+    console.log('[LiveFileChanges] Received task update, refreshing file changes:', payload);
+    fetchFileChanges();
+  }, [taskId, fetchFileChanges]);
+
+  // Initial fetch
   useEffect(() => {
     fetchFileChanges();
+  }, [fetchFileChanges]);
 
-    if (isActive) {
-      const interval = setInterval(fetchFileChanges, 2000);
-      return () => clearInterval(interval);
-    }
-  }, [fetchFileChanges, isActive]);
+  // Subscribe to WebSocket events for this task
+  useEffect(() => {
+    if (!isActive || !isConnected) return;
+
+    // Subscribe to this specific task's room
+    subscribeToTask(taskId);
+
+    // Listen for task updates
+    const unsubscribe = onTaskUpdate(handleTaskUpdate);
+
+    return () => {
+      unsubscribeFromTask(taskId);
+      unsubscribe();
+    };
+  }, [taskId, isActive, isConnected, subscribeToTask, unsubscribeFromTask, onTaskUpdate, handleTaskUpdate]);
 
   // Get selected file object
   const selectedFile = useMemo(() => {

@@ -14,6 +14,7 @@ import LlmLogsPage from './pages/LlmLogsPage'
 import LoginPage from './pages/LoginPage'
 import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
+import { SocketProvider } from './contexts/SocketContext'
 import './App.css'
 import { getCurrentUser } from './api/gitfixApi'
 
@@ -58,8 +59,9 @@ const App: React.FC = () => {
   }
 
   return (
-    <ToastProvider>
-      <Router>
+    <SocketProvider>
+      <ToastProvider>
+        <Router>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/revert" element={<RevertPage />} />
@@ -152,8 +154,9 @@ const App: React.FC = () => {
             }
           />
         </Routes>
-      </Router>
-    </ToastProvider>
+        </Router>
+      </ToastProvider>
+    </SocketProvider>
   )
 }
 
