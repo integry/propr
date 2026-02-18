@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   uploadAttachment,
   removeAttachment,
@@ -8,6 +8,7 @@ import {
   getAgents,
   getRepoConfig,
   getRepoBranches,
+  updateDraft,
   PlannerDraft,
   PlannerAttachment,
   AgentConfig
@@ -389,4 +390,92 @@ export function useAutoResize(textareaRef: React.RefObject<HTMLTextAreaElement |
       textarea.style.height = `${Math.max(textarea.scrollHeight, 160)}px`;
     }
   }, [textareaRef]);
+}
+
+/**
+ * Truncate a prompt to the first 2 sentences for the plan name/summary.
+ * Mirrors the backend truncateToSentences function in planningHelpers.ts.
+ */
+function truncateToSentences(text: string): string {
+  const trimmed = text.trim();
+  const maxSentences = 2;
+
+  // Match sentences: one or more non-punctuation chars followed by sentence-ending punctuation
+  const sentencePattern = /[^.!?]+[.!?]+/g;
+  const sentences: string[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = sentencePattern.exec(trimmed)) !== null && sentences.length < maxSentences) {
+    sentences.push(match[0].trim());
+  }
+
+  if (sentences.length > 0) {
+    return sentences.join(' ');
+  }
+
+  // No sentence endings found - truncate to reasonable length
+  const maxLength = 100;
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  // Find last word boundary before maxLength
+  const truncated = trimmed.slice(0, maxLength);
+  const lastSpace = truncated.lastIndexOf(' ');
+  return lastSpace > 0 ? truncated.slice(0, lastSpace) + '...' : truncated + '...';
+}
+
+// Hook: Persist prompt changes to database with debounce
+const PROMPT_SAVE_DEBOUNCE = 1000; // 1 second debounce
+
+export function usePromptPersistence(
+  draftId: string | undefined,
+  prompt: string,
+  initialPrompt: string | undefined
+) {
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSavedPromptRef = useRef<string>(initialPrompt || '');
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    // Skip if no draft (new mode without auto-created draft yet)
+    if (!draftId) return;
+
+    // Skip if prompt hasn't changed from last saved value
+    const trimmedPrompt = prompt.trim();
+    if (trimmedPrompt === lastSavedPromptRef.current) return;
+
+    // Clear any pending save
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    // Debounce the save
+    debounceTimerRef.current = setTimeout(async () => {
+      if (!isMountedRef.current) return;
+
+      try {
+        const name = truncateToSentences(trimmedPrompt);
+        await updateDraft(draftId, { initial_prompt: trimmedPrompt, name });
+        lastSavedPromptRef.current = trimmedPrompt;
+      } catch (err) {
+        console.error('Failed to persist prompt:', err);
+      }
+    }, PROMPT_SAVE_DEBOUNCE);
+
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, [draftId, prompt]);
 }
