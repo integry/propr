@@ -2,9 +2,9 @@ import React, { useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ScrollText } from 'lucide-react';
 import GlobalSearch from './GlobalSearch';
+import AIActivityMonitor from './AIActivityMonitor';
 import { useHeaderStats } from '../hooks/useHeaderStats';
 import {
-  MachineStatus,
   SystemHealth,
   ActivePlansButton,
   TasksButton,
@@ -30,6 +30,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
   // Use the centralized header stats hook
   const {
     runningCount,
+    runningItems,
     activePlans,
     reviewGroups,
     systemHealth,
@@ -69,10 +70,10 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
         </button>
       </div>
 
-      {/* Machine Status - Running agents indicator (only shows when there are running agents) */}
+      {/* AI Activity Monitor - Running agents indicator (only shows when there are running agents) */}
       {runningCount > 0 && (
-        <div className="hidden sm:flex items-center px-3 relative">
-          <MachineStatus runningCount={runningCount} />
+        <div className="hidden sm:flex items-center relative">
+          <AIActivityMonitor runningItems={runningItems} runningCount={runningCount} />
           {/* Subtle divider at 60-70% height */}
           <div className="absolute right-0 top-[20%] h-[60%] w-px bg-slate-200" />
         </div>
