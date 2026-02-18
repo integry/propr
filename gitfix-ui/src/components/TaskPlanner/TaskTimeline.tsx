@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { CheckCircle2, GripVertical } from 'lucide-react';
 import {
   DndContext,
@@ -16,6 +16,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { TaskStepsPreview } from './TaskStepsPreview';
 
 interface TaskTimelineProps {
   taskCount: number;
@@ -25,6 +26,7 @@ interface TaskTimelineProps {
   taskIds?: string[];
   completedIndices?: number[];
   onReorderTasks?: (activeId: string, overId: string) => void;
+  onScrollToTask?: (taskId: string, index: number) => void;
 }
 
 interface SortableStepProps {
@@ -33,9 +35,9 @@ interface SortableStepProps {
   isActive: boolean;
   isCompleted: boolean;
   isPast: boolean;
-  title: string;
   onStepClick: (index: number) => void;
   isLast: boolean;
+  stepRef?: (el: HTMLDivElement | null) => void;
 }
 
 const SortableStep: React.FC<SortableStepProps> = ({
@@ -44,9 +46,9 @@ const SortableStep: React.FC<SortableStepProps> = ({
   isActive,
   isCompleted,
   isPast,
-  title,
   onStepClick,
   isLast,
+  stepRef,
 }) => {
   const {
     attributes,
@@ -62,9 +64,15 @@ const SortableStep: React.FC<SortableStepProps> = ({
     transition,
   };
 
+  // Combine refs
+  const combinedRef = useCallback((el: HTMLDivElement | null) => {
+    setNodeRef(el);
+    if (stepRef) stepRef(el);
+  }, [setNodeRef, stepRef]);
+
   return (
     <div
-      ref={setNodeRef}
+      ref={combinedRef}
       style={style}
       className={`relative flex flex-col items-center ${isDragging ? 'z-50' : ''}`}
     >
@@ -102,18 +110,12 @@ const SortableStep: React.FC<SortableStepProps> = ({
               ? 'bg-indigo-100 text-indigo-500'
               : 'bg-gray-200 text-gray-500 hover:bg-gray-300'
           }`}
-          title={title}
         >
           {isCompleted ? (
             <CheckCircle2 size={16} />
           ) : (
             <span className="text-xs font-semibold">{index + 1}</span>
           )}
-
-          {/* Tooltip on hover */}
-          <div className="absolute left-full ml-3 px-3 py-1.5 bg-gray-900 text-white text-sm font-medium rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none max-w-[250px] whitespace-normal" style={{ zIndex: 9999 }}>
-            {title}
-          </div>
         </button>
       </div>
 
@@ -129,6 +131,11 @@ const SortableStep: React.FC<SortableStepProps> = ({
   );
 };
 
+interface StepPosition {
+  top: number;
+  height: number;
+}
+
 export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   taskCount,
   activeIndex,
@@ -137,7 +144,17 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   taskIds = [],
   completedIndices = [],
   onReorderTasks,
+  onScrollToTask,
 }) => {
+  const [isHovered, setIsHovered] = useState(false);
+  const [timelineRect, setTimelineRect] = useState<DOMRect | null>(null);
+  const [stepsTop, setStepsTop] = useState<number>(0);
+  const [stepPositions, setStepPositions] = useState<StepPosition[]>([]);
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const stepsContainerRef = useRef<HTMLDivElement>(null);
+  const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -157,13 +174,83 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
     }
   };
 
+  const handleMouseEnter = useCallback(() => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    if (timelineRef.current) {
+      setTimelineRect(timelineRef.current.getBoundingClientRect());
+    }
+    if (stepsContainerRef.current) {
+      const containerRect = stepsContainerRef.current.getBoundingClientRect();
+      setStepsTop(containerRect.top);
+
+      // Calculate positions for each step relative to container
+      const positions: StepPosition[] = stepRefs.current.map((ref) => {
+        if (ref) {
+          const rect = ref.getBoundingClientRect();
+          return {
+            top: rect.top - containerRect.top,
+            height: rect.height,
+          };
+        }
+        return { top: 0, height: 40 };
+      });
+      setStepPositions(positions);
+    }
+    setIsHovered(true);
+  }, []);
+
+  const handleMouseLeave = useCallback(() => {
+    hoverTimeoutRef.current = setTimeout(() => {
+      setIsHovered(false);
+      setTimelineRect(null);
+    }, 150);
+  }, []);
+
+  const handlePreviewMouseEnter = useCallback(() => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+  }, []);
+
+  const handlePreviewMouseLeave = useCallback(() => {
+    hoverTimeoutRef.current = setTimeout(() => {
+      setIsHovered(false);
+      setTimelineRect(null);
+    }, 150);
+  }, []);
+
+  const handleScrollTo = useCallback((taskId: string, index: number) => {
+    if (onScrollToTask) {
+      onScrollToTask(taskId, index);
+    } else {
+      onStepClick(index);
+    }
+    setIsHovered(false);
+    setTimelineRect(null);
+  }, [onScrollToTask, onStepClick]);
+
   if (taskCount === 0) return null;
 
   // Generate IDs if not provided
   const ids = taskIds.length > 0 ? taskIds : Array.from({ length: taskCount }, (_, i) => `step-${i}`);
 
+  // Build tasks array for preview
+  const tasks = ids.map((id, index) => ({
+    id,
+    title: taskTitles[index] || `Step ${index + 1}`,
+  }));
+
   return (
-    <div className="sticky top-0 h-full w-24 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 pl-4">
+    <div
+      ref={timelineRef}
+      className="sticky top-0 h-full w-24 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 pl-4"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
       <div className="flex flex-col items-center">
         {/* Timeline header */}
         <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">
@@ -180,12 +267,11 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
             items={ids}
             strategy={verticalListSortingStrategy}
           >
-            <div className="relative flex flex-col items-center gap-0">
+            <div ref={stepsContainerRef} className="relative flex flex-col items-center gap-0">
               {ids.map((id, index) => {
                 const isActive = index === activeIndex;
                 const isCompleted = completedIndices.includes(index);
                 const isPast = index < activeIndex;
-                const title = taskTitles[index] || `Step ${index + 1}`;
 
                 return (
                   <SortableStep
@@ -195,9 +281,11 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
                     isActive={isActive}
                     isCompleted={isCompleted}
                     isPast={isPast}
-                    title={title}
                     onStepClick={onStepClick}
                     isLast={index === taskCount - 1}
+                    stepRef={(el) => {
+                      stepRefs.current[index] = el;
+                    }}
                   />
                 );
               })}
@@ -211,6 +299,21 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
           <span> / {taskCount}</span>
         </div>
       </div>
+
+      {/* Task Steps Preview Portal */}
+      {isHovered && timelineRect && (
+        <TaskStepsPreview
+          tasks={tasks}
+          activeIndex={activeIndex}
+          completedIndices={completedIndices}
+          timelineRect={timelineRect}
+          stepsTop={stepsTop}
+          stepPositions={stepPositions}
+          onScrollTo={handleScrollTo}
+          onMouseEnter={handlePreviewMouseEnter}
+          onMouseLeave={handlePreviewMouseLeave}
+        />
+      )}
     </div>
   );
 };

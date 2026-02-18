@@ -1,6 +1,6 @@
 import React from 'react';
 import { TaskInfo, HistoryItem, TokenUsage } from './types';
-import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban, GitCommit, Trash2, Zap } from 'lucide-react';
+import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban, GitCommit, Trash2, Zap, MessageSquarePlus } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { ProviderLogo } from '../ui/ProviderLogo';
 
@@ -166,6 +166,92 @@ const CommitInfoLink: React.FC<{ commitInfo: { shortHash: string; url: string } 
   );
 };
 
+// Duration display component
+const DurationDisplay: React.FC<{ duration?: number | null }> = ({ duration }) => {
+  if (duration === null || duration === undefined) return null;
+  return (
+    <>
+      <Divider />
+      <span className="flex items-center gap-1 text-gray-600 text-xs sm:text-sm">
+        <Clock size={14} />
+        {formatRelativeTime(duration)}
+      </span>
+    </>
+  );
+};
+
+// Stats display component
+const StatsDisplay: React.FC<{ stats?: { filesChanged?: number; linesChanged?: number } }> = ({ stats }) => {
+  if (!stats) return null;
+  return (
+    <>
+      <Divider />
+      <div className="flex items-center gap-3 text-xs text-gray-500">
+        <span>Files: {stats.filesChanged ?? '-'}</span>
+        <span>Lines: {stats.linesChanged ?? '-'}</span>
+      </div>
+    </>
+  );
+};
+
+// Cancelled badge component
+const CancelledBadge: React.FC<{ isCancelled: boolean }> = ({ isCancelled }) => {
+  if (!isCancelled) return null;
+  return (
+    <span
+      className="flex items-center gap-1.5 bg-orange-50 text-orange-700 px-2 py-1 rounded text-xs font-medium border border-orange-200"
+      title="Task was cancelled by user"
+    >
+      <Ban size={14} />
+      Cancelled
+    </span>
+  );
+};
+
+// Stop execution button component
+const StopExecutionButton: React.FC<{
+  isActive: boolean;
+  stoppingExecution: boolean;
+  onStopExecution: () => void;
+}> = ({ isActive, stoppingExecution, onStopExecution }) => {
+  if (!isActive) return null;
+  return (
+    <button
+      onClick={onStopExecution}
+      disabled={stoppingExecution}
+      title={stoppingExecution ? 'Stopping execution...' : 'Stop Execution'}
+      className={`flex items-center gap-1.5 p-1.5 sm:p-2 rounded transition-colors ${
+        stoppingExecution
+          ? 'bg-red-50 text-red-400 cursor-not-allowed border border-red-200'
+          : 'bg-red-100 hover:bg-red-200 text-red-600 hover:text-red-700 border border-red-200'
+      }`}
+    >
+      {stoppingExecution ? (
+        <>
+          <Loader2 size={16} className="sm:w-[18px] sm:h-[18px] animate-spin" />
+          <span className="text-xs font-medium hidden sm:inline">Stopping...</span>
+        </>
+      ) : (
+        <Square size={16} className="sm:w-[18px] sm:h-[18px]" />
+      )}
+    </button>
+  );
+};
+
+// Follow up button component
+const FollowUpButton: React.FC<{ onFollowUp?: () => void; isActive: boolean }> = ({ onFollowUp, isActive }) => {
+  if (!onFollowUp || isActive) return null;
+  return (
+    <button
+      onClick={onFollowUp}
+      title="Follow Up - Post a follow-up comment to the GitHub issue"
+      className="flex items-center gap-1.5 p-1.5 sm:p-2 rounded transition-colors hover:bg-purple-50 text-purple-600 hover:text-purple-700 border border-transparent hover:border-purple-200"
+    >
+      <MessageSquarePlus size={16} className="sm:w-[18px] sm:h-[18px]" />
+    </button>
+  );
+};
+
 // Delete button component
 const DeleteButton: React.FC<{
   isActive: boolean;
@@ -224,6 +310,7 @@ interface MetadataBarProps {
   deletingTask?: boolean;
   onDeleteTask?: () => void;
   tokenUsage?: TokenUsage;
+  onFollowUp?: () => void;
 }
 
 const MetadataBar: React.FC<MetadataBarProps> = ({
@@ -242,11 +329,11 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   stats,
   deletingTask = false,
   onDeleteTask,
-  tokenUsage
+  tokenUsage,
+  onFollowUp
 }) => {
   const isActive = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
   const isCancelled = currentStatus === 'CANCELLED';
-  const hasDuration = duration !== null && duration !== undefined;
 
   return (
     <div className="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm px-3 sm:px-4 py-2 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-3">
@@ -273,73 +360,17 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
           {getDisplayModelName(modelName)}
         </span>
 
-        {/* PR info if available */}
         <PRInfoLink prInfo={prInfo} />
-
-        {/* Commit info if available */}
         <CommitInfoLink commitInfo={commitInfo} />
-
-        {/* Duration/Timestamps */}
-        {hasDuration && (
-          <>
-            <Divider />
-            <span className="flex items-center gap-1 text-gray-600 text-xs sm:text-sm">
-              <Clock size={14} />
-              {formatRelativeTime(duration)}
-            </span>
-          </>
-        )}
-
-        {/* Token Usage Display */}
+        <DurationDisplay duration={duration} />
         <TokenUsageDisplay tokenUsage={tokenUsage} />
-
-        {/* Stats Display (from RealTimeStats) */}
-        {stats && (
-          <>
-            <Divider />
-            <div className="flex items-center gap-3 text-xs text-gray-500">
-              <span>Files: {stats.filesChanged ?? '-'}</span>
-              <span>Lines: {stats.linesChanged ?? '-'}</span>
-            </div>
-          </>
-        )}
+        <StatsDisplay stats={stats} />
       </div>
 
       {/* Right: Actions */}
       <div className="flex items-center gap-2 self-end sm:self-auto">
-        {/* Cancelled Badge - shown when task was cancelled by user */}
-        {isCancelled && (
-          <span
-            className="flex items-center gap-1.5 bg-orange-50 text-orange-700 px-2 py-1 rounded text-xs font-medium border border-orange-200"
-            title="Task was cancelled by user"
-          >
-            <Ban size={14} />
-            Cancelled
-          </span>
-        )}
-
-        {/* Stop Execution Button - Red background to distinguish from navigation */}
-        {isActive && (
-          <button
-            onClick={onStopExecution}
-            disabled={stoppingExecution}
-            title={stoppingExecution ? 'Stopping execution...' : 'Stop Execution'}
-            className={`flex items-center gap-1.5 p-1.5 sm:p-2 rounded transition-colors ${
-              stoppingExecution
-                ? 'bg-red-50 text-red-400 cursor-not-allowed border border-red-200'
-                : 'bg-red-100 hover:bg-red-200 text-red-600 hover:text-red-700 border border-red-200'
-            }`}
-          >
-            {stoppingExecution ? (
-              <>
-                <Loader2 size={16} className="sm:w-[18px] sm:h-[18px] animate-spin" />
-                <span className="text-xs font-medium hidden sm:inline">Stopping...</span>
-              </>
-            ) : (
-              <Square size={16} className="sm:w-[18px] sm:h-[18px]" />
-            )}
-          </button>
-        )}
+        <CancelledBadge isCancelled={isCancelled} />
+        <StopExecutionButton isActive={isActive} stoppingExecution={stoppingExecution} onStopExecution={onStopExecution} />
 
         {/* View Prompt Button */}
         {historyItemWithPaths?.promptPath && (
@@ -362,6 +393,8 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
             <Terminal size={16} className="sm:w-[18px] sm:h-[18px]" />
           </button>
         )}
+
+        <FollowUpButton onFollowUp={onFollowUp} isActive={isActive} />
 
         {/* Delete Button */}
         {onDeleteTask && (

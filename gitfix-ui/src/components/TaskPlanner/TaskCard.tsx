@@ -15,6 +15,7 @@ interface TaskCardProps {
   draftId: string;
   onChange: (task: PlanTask) => void;
   onDelete: () => void;
+  id?: string;
 }
 
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
@@ -24,6 +25,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   draftId,
   onChange,
   onDelete,
+  id,
 }, ref) => {
   const [editingField, setEditingField] = useState<EditableField>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
@@ -121,6 +123,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   return (
     <div
       ref={ref}
+      id={id}
       className={
         'group relative transition-all duration-500 ' +
         (isHighlighted ? 'ring-2 ring-indigo-400 ring-offset-4 ring-offset-white' : '')
