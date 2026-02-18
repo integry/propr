@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, ScrollText } from 'lucide-react';
+import { ScrollText } from 'lucide-react';
+import GlobalSearch from './GlobalSearch';
 import { useHeaderStats } from '../hooks/useHeaderStats';
 import {
   MachineStatus,
@@ -25,7 +26,6 @@ interface GlobalHeaderProps {
 const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon }) => {
   const navigate = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const [searchQuery, setSearchQuery] = useState('');
 
   // Use the centralized header stats hook
   const {
@@ -36,15 +36,6 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
     dismissPlan,
     dismissTask,
   } = useHeaderStats();
-
-  // Handle search submission
-  const handleSearch = useCallback((e: React.FormEvent) => {
-    e.preventDefault();
-    if (searchQuery.trim()) {
-      navigate(`/tasks?search=${encodeURIComponent(searchQuery.trim())}`);
-      setSearchQuery('');
-    }
-  }, [searchQuery, navigate]);
 
   // Handle new plan navigation
   const handleNewPlan = useCallback(() => {
@@ -103,20 +94,10 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
 
       {/* Spacer - pushes everything to the right */}
       <div className="flex-1 flex items-center justify-center px-4">
-        {/* Search Bar - centered in the flexible space */}
-        <form onSubmit={handleSearch} className="hidden md:block w-full max-w-md">
-          <div className="relative">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              ref={searchInputRef}
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search... ⌘K"
-              className="w-full pl-12 pr-4 py-2 bg-gray-50 border border-slate-300 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 focus:bg-white transition-colors"
-            />
-          </div>
-        </form>
+        {/* Global Search - centered in the flexible space */}
+        <div className="hidden md:block w-full max-w-md">
+          <GlobalSearch inputRef={searchInputRef} />
+        </div>
       </div>
 
       {/* New AI Plan Bay - Full height partition */}
