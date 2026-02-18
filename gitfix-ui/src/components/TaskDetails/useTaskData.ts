@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   getTaskHistory,
   getTaskLiveDetails,
@@ -14,6 +14,8 @@ import {
   AnalysisData
 } from './types';
 import { useToast } from '../ui/useToast';
+import { useSocket } from '../../contexts/useSocket';
+import { TaskUpdatePayload } from '@gitfix/shared';
 
 export const useTaskData = (taskId: string | undefined) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -27,60 +29,72 @@ export const useTaskData = (taskId: string | undefined) => {
   const [stopFailed, setStopFailed] = useState<boolean>(false);
   const [deletingTask, setDeletingTask] = useState<boolean>(false);
   const { addToast } = useToast();
+  const { subscribeToTask, unsubscribeFromTask, onTaskUpdate, isConnected } = useSocket();
   // Track the last notified terminal state to avoid duplicate toasts
   const lastNotifiedStateRef = useRef<string | null>(null);
 
+  // Fetch task history data
+  const fetchTaskHistory = useCallback(async () => {
+    if (!taskId) return;
+
+    try {
+      const data = await getTaskHistory(taskId);
+      setHistory(data.history || []);
+      setTaskInfo(data.taskInfo || null);
+      return data;
+    } catch (err) {
+      console.error('Error fetching task history:', err);
+      throw err;
+    }
+  }, [taskId]);
+
+  // Fetch live details data
+  const fetchLiveDetails = useCallback(async () => {
+    if (!taskId) return;
+
+    try {
+      const data = await getTaskLiveDetails(taskId);
+      setLiveDetails(data);
+    } catch (err) {
+      console.error('Error fetching live task details:', err);
+    }
+  }, [taskId]);
+
+  // Handle task update from WebSocket
+  const handleTaskUpdate = useCallback(async (payload: TaskUpdatePayload) => {
+    if (payload.taskId !== taskId) return;
+
+    console.log('[useTaskData] Received task update via WebSocket:', payload);
+
+    // Refresh data when we receive an update
+    await fetchTaskHistory();
+    await fetchLiveDetails();
+
+    // Check for terminal states and show toast notifications
+    const state = payload.state?.toUpperCase() || '';
+    if (state === 'COMPLETED' && lastNotifiedStateRef.current !== 'COMPLETED') {
+      lastNotifiedStateRef.current = 'COMPLETED';
+      addToast({
+        type: 'success',
+        message: 'Task completed successfully',
+      });
+    } else if (state === 'FAILED' && lastNotifiedStateRef.current !== 'FAILED') {
+      lastNotifiedStateRef.current = 'FAILED';
+      addToast({
+        type: 'error',
+        message: 'Task execution failed',
+      });
+    }
+  }, [taskId, fetchTaskHistory, fetchLiveDetails, addToast]);
+
+  // Initial data fetch
   useEffect(() => {
-    const fetchHistory = async () => {
+    const fetchInitialData = async () => {
       if (!taskId) return;
-      
+
       try {
         setLoading(true);
-        const data = await getTaskHistory(taskId);
-        setHistory(data.history || []);
-        setTaskInfo(data.taskInfo || null);
-        
-        const isTaskActive = data.history && data.history.length > 0 && 
-          ['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(
-            data.history[data.history.length - 1]?.state?.toUpperCase()
-          );
-        
-        if (isTaskActive) {
-          const interval = setInterval(async () => {
-            try {
-              const updatedData = await getTaskHistory(taskId);
-              setHistory(updatedData.history || []);
-              setTaskInfo(updatedData.taskInfo || null);
-
-              const latestState = updatedData.history?.[updatedData.history.length - 1]?.state?.toUpperCase() || '';
-              const stillActive = updatedData.history && updatedData.history.length > 0 &&
-                ['PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(latestState);
-
-              if (!stillActive) {
-                clearInterval(interval);
-
-                // Show toast notification for task completion or failure
-                if (latestState === 'COMPLETED' && lastNotifiedStateRef.current !== 'COMPLETED') {
-                  lastNotifiedStateRef.current = 'COMPLETED';
-                  addToast({
-                    type: 'success',
-                    message: 'Task completed successfully',
-                  });
-                } else if (latestState === 'FAILED' && lastNotifiedStateRef.current !== 'FAILED') {
-                  lastNotifiedStateRef.current = 'FAILED';
-                  addToast({
-                    type: 'error',
-                    message: 'Task execution failed',
-                  });
-                }
-              }
-            } catch (err) {
-              console.error('Error polling task history:', err);
-            }
-          }, 3000);
-
-          return () => clearInterval(interval);
-        }
+        await fetchTaskHistory();
       } catch (err) {
         setError((err as Error).message);
         console.error('Error fetching task history:', err);
@@ -89,13 +103,30 @@ export const useTaskData = (taskId: string | undefined) => {
       }
     };
 
-    fetchHistory();
-  }, [taskId, addToast]);
+    fetchInitialData();
+  }, [taskId, fetchTaskHistory]);
 
+  // Subscribe to WebSocket events for this task
+  useEffect(() => {
+    if (!taskId || !isConnected) return;
+
+    // Subscribe to this specific task's room
+    subscribeToTask(taskId);
+
+    // Listen for task updates
+    const unsubscribe = onTaskUpdate(handleTaskUpdate);
+
+    return () => {
+      unsubscribeFromTask(taskId);
+      unsubscribe();
+    };
+  }, [taskId, isConnected, subscribeToTask, unsubscribeFromTask, onTaskUpdate, handleTaskUpdate]);
+
+  // Fetch analysis data (separate from task updates, typically only needed once)
   useEffect(() => {
     const fetchAnalysis = async () => {
       if (!taskId) return;
-      
+
       try {
         setAnalysisLoading(true);
         const analysisData = await getTaskAnalysis(taskId);
@@ -110,28 +141,12 @@ export const useTaskData = (taskId: string | undefined) => {
     fetchAnalysis();
   }, [taskId]);
 
+  // Fetch live details initially and when history changes
   useEffect(() => {
     if (!taskId || history.length === 0) return;
 
-    const lastHistoryItem = history[history.length - 1];
-    const isTaskActive = lastHistoryItem && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(lastHistoryItem.state?.toUpperCase() || '');
-
-    const fetchLiveDetails = async () => {
-      try {
-        const data = await getTaskLiveDetails(taskId);
-        setLiveDetails(data);
-      } catch (err) {
-        console.error('Error fetching live task details:', err);
-      }
-    };
-
     fetchLiveDetails();
-
-    if (isTaskActive) {
-      const interval = setInterval(fetchLiveDetails, 3000);
-      return () => clearInterval(interval);
-    }
-  }, [taskId, history]);
+  }, [taskId, history.length, fetchLiveDetails]);
 
   const handleStopExecution = async () => {
     if (!taskId) return;
@@ -144,18 +159,7 @@ export const useTaskData = (taskId: string | undefined) => {
       const result: StopExecutionResponse = await stopTaskExecution(taskId);
 
       // Immediately refresh task history to show the new state
-      const refreshHistory = async () => {
-        try {
-          const data = await getTaskHistory(taskId);
-          setHistory(data.history || []);
-          setTaskInfo(data.taskInfo || null);
-        } catch (err) {
-          console.error('Error refreshing task history after stop:', err);
-        }
-      };
-
-      // Refresh immediately
-      await refreshHistory();
+      await fetchTaskHistory();
 
       // If container was stopped successfully, clear stopping state immediately
       // Otherwise, poll a couple more times to wait for state to update
@@ -166,11 +170,10 @@ export const useTaskData = (taskId: string | undefined) => {
         let pollCount = 0;
         const pollInterval = setInterval(async () => {
           pollCount++;
-          await refreshHistory();
+          const updatedData = await fetchTaskHistory();
 
           // Check if task is now in a terminal state
-          const updatedData = await getTaskHistory(taskId);
-          const latestState = updatedData.history?.[updatedData.history.length - 1]?.state?.toUpperCase();
+          const latestState = updatedData?.history?.[updatedData.history.length - 1]?.state?.toUpperCase();
           const isTerminal = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(latestState || '');
 
           if (isTerminal || pollCount >= 5) {

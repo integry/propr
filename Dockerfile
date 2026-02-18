@@ -2,13 +2,17 @@ FROM node:20-slim
 
 WORKDIR /usr/src/app
 
-# Install git, sudo, and docker client
+# Install git, sudo, docker client, and build tools for native modules (better-sqlite3)
 # Git is required for simple-git operations in the application
 # Sudo is required for changing file ownership in worktrees
+# python3, make, g++ are required for building native Node.js modules like better-sqlite3
 RUN apt-get update && apt-get install -y \
     git \
     sudo \
     docker.io \
+    python3 \
+    make \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package files (including workspace packages)
