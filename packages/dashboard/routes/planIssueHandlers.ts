@@ -10,7 +10,8 @@ import {
   MODEL_INFO_MAP,
   getDefaultModel,
   safeUpdateLabels,
-  logger
+  logger,
+  ensureEpicPR
 } from '@gitfix/core';
 import type { PlanIssueStatus } from '@gitfix/core';
 import type { OwnershipResult } from './plannerHelpers.js';
@@ -224,7 +225,7 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
     const draftId = req.params.id;
 
     try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
+      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const draft = ownership.draft!;
@@ -233,7 +234,7 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
 
       if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
 
-      const { agent_alias, model_name } = req.body;
+      const { agent_alias, model_name, useEpic, autoMerge } = req.body;
 
       if (agent_alias !== undefined || model_name !== undefined) {
         await batchUpdatePlanIssueConfig(draftId, agent_alias, model_name);
@@ -251,6 +252,32 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const implementLabel = processingLabels[0] || 'AI';
 
       const octokit = await getAuthenticatedOctokit();
+      const correlationId = `implement-all-${draftId}`;
+      const labelLogger = logger.withCorrelation(correlationId);
+
+      // Handle Epic PR creation if useEpic is true
+      let epicLabelName: string | null = null;
+      if (useEpic) {
+        const planName = (draft.name as string) || 'Unnamed Plan';
+        const firstIssueId = pendingIssues[0].issue_number;
+
+        labelLogger.info({ owner, repo, planName, firstIssueId }, 'Creating Epic PR for batch implementation');
+        const epicResult = await ensureEpicPR({
+          owner,
+          repoName: repo,
+          firstIssueId,
+          planName,
+          correlationId
+        });
+
+        if (epicResult.success && epicResult.labelName) {
+          epicLabelName = epicResult.labelName;
+          labelLogger.info({ epicLabelName, prNumber: epicResult.prNumber }, 'Epic PR created successfully');
+        } else {
+          labelLogger.warn({ error: epicResult.error }, 'Failed to create Epic PR, continuing without epic labels');
+        }
+      }
+
       const results: { issueNumber: number; success: boolean; error?: string }[] = [];
 
       for (const issue of pendingIssues) {
@@ -258,6 +285,16 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
           // Get LLM label based on the issue's model (or default model)
           const llmLabel = getLlmLabel(issue.model_name);
           const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
+
+          // Add epic base branch label if useEpic was successful
+          if (epicLabelName) {
+            labelsToAdd.push(epicLabelName);
+          }
+
+          // Add auto-merge label if autoMerge is true
+          if (autoMerge) {
+            labelsToAdd.push('auto-merge');
+          }
 
           await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
             owner, repo, issue_number: issue.issue_number, labels: labelsToAdd
@@ -278,7 +315,9 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
         message: `Implemented ${successCount} issues${failedCount > 0 ? `, ${failedCount} failed` : ''}`,
         implemented: successCount,
         failed: failedCount,
-        results
+        results,
+        epicLabel: epicLabelName,
+        autoMergeEnabled: autoMerge || false
       });
     } catch (error) {
       console.error('Implement all issues error:', error);
