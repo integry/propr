@@ -220,6 +220,43 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
   };
 }
 
+interface ProcessIssueParams {
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+  owner: string;
+  repo: string;
+  draftId: string;
+  issue: { issue_number: number; model_name: string | null };
+  implementLabel: string;
+  epicLabelName: string | null;
+  autoMerge: boolean;
+}
+
+async function processIssueForImplementation(params: ProcessIssueParams): Promise<{ issueNumber: number; success: boolean; error?: string }> {
+  const { octokit, owner, repo, draftId, issue, implementLabel, epicLabelName, autoMerge } = params;
+
+  try {
+    const llmLabel = getLlmLabel(issue.model_name);
+    const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
+
+    if (epicLabelName) {
+      labelsToAdd.push(epicLabelName);
+    }
+
+    if (autoMerge) {
+      labelsToAdd.push('auto-merge');
+    }
+
+    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+      owner, repo, issue_number: issue.issue_number, labels: labelsToAdd
+    });
+    await updatePlanIssue(draftId, issue.issue_number, { status: 'processing' });
+    return { issueNumber: issue.issue_number, success: true };
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : 'Unknown error';
+    return { issueNumber: issue.issue_number, success: false, error: errMsg };
+  }
+}
+
 export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
   return async function implementAllIssues(req: Request, res: Response): Promise<void> {
     const draftId = req.params.id;
@@ -281,30 +318,10 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
       const results: { issueNumber: number; success: boolean; error?: string }[] = [];
 
       for (const issue of pendingIssues) {
-        try {
-          // Get LLM label based on the issue's model (or default model)
-          const llmLabel = getLlmLabel(issue.model_name);
-          const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
-
-          // Add epic base branch label if useEpic was successful
-          if (epicLabelName) {
-            labelsToAdd.push(epicLabelName);
-          }
-
-          // Add auto-merge label if autoMerge is true
-          if (autoMerge) {
-            labelsToAdd.push('auto-merge');
-          }
-
-          await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner, repo, issue_number: issue.issue_number, labels: labelsToAdd
-          });
-          await updatePlanIssue(draftId, issue.issue_number, { status: 'processing' });
-          results.push({ issueNumber: issue.issue_number, success: true });
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : 'Unknown error';
-          results.push({ issueNumber: issue.issue_number, success: false, error: errMsg });
-        }
+        const result = await processIssueForImplementation({
+          octokit, owner, repo, draftId, issue, implementLabel, epicLabelName, autoMerge: autoMerge || false
+        });
+        results.push(result);
       }
 
       const successCount = results.filter(r => r.success).length;
