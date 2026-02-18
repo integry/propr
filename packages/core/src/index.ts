@@ -116,8 +116,8 @@ export type { GeneratePlanOptions, RefinePlanOptions, RefinePlanResult, RefinePl
 export { estimateLlmDuration } from './utils/llmEstimation.js';
 export type { EstimationResult, EstimationOptions } from './utils/llmEstimation.js';
 export type { Base64Image, ContextRepository } from './services/planningHelpers.js';
-export { executeDraft } from './services/taskExecutionService.js';
-export type { IssueLink, ExecutionResult } from './services/taskExecutionService.js';
+export { executeDraft, ensureEpicPR, generateEpicBranchName, isEpicBranch, EPIC_BRANCH_PATTERN } from './services/taskExecutionService.js';
+export type { IssueLink, ExecutionResult, EpicPRResult, EnsureEpicPROptions } from './services/taskExecutionService.js';
 export { AttachmentService } from './services/attachmentService.js';
 export type { Attachment, MulterFile } from './services/attachmentService.js';
 export { PLANNER_SYSTEM_PROMPT, GRANULARITY_INSTRUCTIONS, getPlannerPrompt, REFINER_SYSTEM_PROMPT } from './claude/prompts/plannerPrompts.js';

@@ -82,6 +82,24 @@ function processAttachment(
 }
 
 /**
+ * Cleans a generated title by removing markdown formatting, quotes, and prefixes.
+ * Ensures the title is plain text suitable for display.
+ */
+export function cleanGeneratedTitle(title: string): string {
+  let cleaned = title;
+  cleaned = cleaned.replace(/^#+\s*/, '');
+  cleaned = cleaned.replace(/^title:\s*/i, '');
+  cleaned = cleaned.replace(/^["'`]|["'`]$/g, '');
+  cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
+  cleaned = cleaned.replace(/__([^_]+)__/g, '$1');
+  cleaned = cleaned.replace(/(?<!\w)\*([^*]+)\*(?!\w)/g, '$1');
+  cleaned = cleaned.replace(/(?<!\w)_([^_]+)_(?!\w)/g, '$1');
+  cleaned = cleaned.replace(/^[*_#`]+|[*_#`]+$/g, '');
+  cleaned = cleaned.trim();
+  return cleaned;
+}
+
+/**
  * Build a user notes comment body with attachments.
  * All attachments are rendered as download links to the attachment endpoint.
  * Note: Direct embedding of remote images doesn't work in GitHub.

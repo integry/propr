@@ -5,7 +5,17 @@ import { type Logger } from 'pino';
 import { ensureRepoCloned } from '../git/repoManager.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { createPlanIssue } from '../config/planIssueManager.js';
-import { buildUserNotesCommentBody, type PlanTaskAttachment } from './taskExecutionHelpers.js';
+import { buildUserNotesCommentBody, cleanGeneratedTitle, type PlanTaskAttachment } from './taskExecutionHelpers.js';
+
+// Re-export Epic PR functions from separate module
+export {
+  ensureEpicPR,
+  generateEpicBranchName,
+  isEpicBranch,
+  EPIC_BRANCH_PATTERN,
+  type EpicPRResult,
+  type EnsureEpicPROptions
+} from './epicPRService.js';
 
 export interface IssueLink {
   number: number;
@@ -52,40 +62,6 @@ interface GenerateTitleOptions {
   repoName: string;
   oldName: string;
   correlationId?: string;
-}
-
-/**
- * Cleans a generated title by removing markdown formatting, quotes, and prefixes.
- * Ensures the title is plain text suitable for display.
- */
-function cleanGeneratedTitle(title: string): string {
-  let cleaned = title;
-
-  // Remove leading markdown header symbols (e.g., "# Title" or "## Title")
-  cleaned = cleaned.replace(/^#+\s*/, '');
-
-  // Remove "Title:" prefix (case-insensitive)
-  cleaned = cleaned.replace(/^title:\s*/i, '');
-
-  // Remove wrapping quotes (single, double, or backticks)
-  cleaned = cleaned.replace(/^["'`]|["'`]$/g, '');
-
-  // Remove markdown bold formatting (**text** or __text__)
-  cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
-  cleaned = cleaned.replace(/__([^_]+)__/g, '$1');
-
-  // Remove markdown italic formatting (*text* or _text_)
-  // Be careful not to remove underscores in the middle of words
-  cleaned = cleaned.replace(/(?<!\w)\*([^*]+)\*(?!\w)/g, '$1');
-  cleaned = cleaned.replace(/(?<!\w)_([^_]+)_(?!\w)/g, '$1');
-
-  // Remove any remaining standalone markdown symbols at start/end
-  cleaned = cleaned.replace(/^[*_#`]+|[*_#`]+$/g, '');
-
-  // Trim whitespace
-  cleaned = cleaned.trim();
-
-  return cleaned;
 }
 
 interface CreateIssueOptions {
@@ -386,9 +362,9 @@ export async function executeDraft(draftId: string, userId: string, correlationI
       updated_at: db.fn.now()
     });
 
-  correlatedLogger.info({ 
-    draftId, 
-    issuesCreated: results.length 
+  correlatedLogger.info({
+    draftId,
+    issuesCreated: results.length
   }, 'Draft execution completed');
 
   return { success: true, results };
