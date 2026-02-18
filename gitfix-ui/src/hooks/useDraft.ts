@@ -75,15 +75,21 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     }
   }, [draftId]);
 
-  // Initial fetch effect - skip if we used initial data
+  // Initial fetch effect - handles both initial load and draftId changes
   useEffect(() => {
     // If we already have draft data (from initialData), skip the fetch
     // The draft state was set during initialization
     if (draft && draft.draft_id === draftId) {
       return;
     }
-    // Only fetch if we don't have data
-    if (!draft) {
+    // When draftId changes to a different value, reset state and fetch new data
+    // This handles navigation between saved plans (e.g., /studio/abc to /studio/xyz)
+    if (draft && draft.draft_id !== draftId && draftId) {
+      setDraft(null);
+      setError(null);
+    }
+    // Fetch if we don't have data or if draftId changed
+    if (!draft || (draft.draft_id !== draftId && draftId)) {
       fetchDraft(true);
     }
   }, [draftId]); // eslint-disable-line react-hooks/exhaustive-deps
