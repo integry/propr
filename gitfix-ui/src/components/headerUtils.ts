@@ -13,6 +13,10 @@ export const getStatusBadgeStyle = (status: string): string => {
       return 'border border-green-200 text-green-600 bg-transparent';
     case 'executing':
       return 'border border-purple-200 text-purple-600 bg-transparent';
+    case 'executed':
+      return 'border border-green-200 text-green-600 bg-transparent';
+    case 'pr_created':
+      return 'border border-cyan-200 text-cyan-600 bg-transparent';
     case 'draft':
     default:
       return 'border border-gray-200 text-gray-600 bg-transparent';

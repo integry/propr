@@ -29,7 +29,7 @@ export interface PlannerDraft {
   draft_id: string;
   repository: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed' | 'merged';
+  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed' | 'pr_created' | 'merged';
   attachments: PlannerAttachment[];
   created_at: string;
   generation_trace?: GenerationTrace;
@@ -328,7 +328,7 @@ export interface DraftListItem {
   repository: string;
   name?: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'executed' | 'generating' | 'refining' | 'approved' | 'merged';
+  status: 'draft' | 'review' | 'executed' | 'generating' | 'refining' | 'approved' | 'pr_created' | 'merged';
   updated_at: string;
   created_at: string;
   issue_summary?: IssueSummary | null;

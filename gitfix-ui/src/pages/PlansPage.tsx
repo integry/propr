@@ -306,6 +306,7 @@ const PlansPage: React.FC = () => {
               <option value="generating">Generating</option>
               <option value="refining">Refining</option>
               <option value="executed">Issues Created</option>
+              <option value="pr_created">PR Created</option>
               <option value="merged">Merged</option>
             </select>
           </div>
