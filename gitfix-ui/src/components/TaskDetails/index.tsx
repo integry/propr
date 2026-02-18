@@ -10,6 +10,7 @@ import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
+import FollowupModal from './FollowupModal';
 import MetadataBar from './MetadataBar';
 import TaskHeader from './TaskHeader';
 import ProgressBar from './ProgressBar';
@@ -18,6 +19,7 @@ import { useThinkingLog } from './useThinkingLog';
 import { getHistoryDerivedData } from './useHistoryData';
 import { getCleanDocumentTitle } from '../TaskList/utils';
 import { useToast } from '../ui/useToast';
+import { postTaskFollowup } from '../../api/gitfixApi';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();
@@ -47,6 +49,9 @@ const TaskDetails: React.FC = () => {
 
   // State for bi-directional highlighting between TodoList and ThinkingLog
   const [highlightedTodoId, setHighlightedTodoId] = useState<string | null>(null);
+
+  // State for follow-up modal
+  const [followupModalOpen, setFollowupModalOpen] = useState(false);
 
   // Calculate total duration from history
   const totalDuration = useMemo(() => {
@@ -97,6 +102,71 @@ const TaskDetails: React.FC = () => {
     return historyWithTokens?.metadata?.tokenUsage;
   }, [taskData.liveDetails, taskData.history]);
 
+  // Generate initial content for follow-up based on analysis data
+  const generateFollowupContent = useCallback(() => {
+    if (!taskData.analysis) {
+      return 'Please address the following based on the previous task execution:\n\n';
+    }
+
+    const analysis = taskData.analysis as {
+      recommendations?: string[];
+      error_analysis?: string;
+      implementation_critique?: string;
+      efficiency_notes?: string;
+    };
+
+    const parts: string[] = [];
+
+    // Check if task failed
+    const latestState = taskData.history?.[taskData.history.length - 1]?.state?.toUpperCase();
+    const isFailed = latestState === 'FAILED';
+
+    if (isFailed && analysis.error_analysis) {
+      parts.push('## Issue to Fix\n');
+      parts.push(analysis.error_analysis);
+      parts.push('\n');
+    }
+
+    if (analysis.recommendations && analysis.recommendations.length > 0) {
+      parts.push('## Recommendations to Address\n');
+      analysis.recommendations.forEach((rec, idx) => {
+        parts.push(`${idx + 1}. ${rec}`);
+      });
+      parts.push('\n');
+    }
+
+    if (analysis.implementation_critique) {
+      parts.push('## Implementation Feedback\n');
+      parts.push(analysis.implementation_critique);
+      parts.push('\n');
+    }
+
+    if (parts.length === 0) {
+      return 'Please address the following based on the previous task execution:\n\n';
+    }
+
+    return parts.join('\n');
+  }, [taskData.analysis, taskData.history]);
+
+  // Handle follow-up submission
+  const handleFollowupSubmit = useCallback(async (body: string) => {
+    if (!taskId) {
+      throw new Error('Task ID is required');
+    }
+
+    await postTaskFollowup(taskId, body);
+
+    addToast({
+      type: 'success',
+      message: 'Follow-up comment posted successfully'
+    });
+  }, [taskId, addToast]);
+
+  // Handle opening follow-up modal
+  const handleOpenFollowup = useCallback(() => {
+    setFollowupModalOpen(true);
+  }, []);
+
   if (taskData.loading) {
     return <div className="text-gray-600">Loading task details...</div>;
   }
@@ -130,6 +200,7 @@ const TaskDetails: React.FC = () => {
         deletingTask={taskData.deletingTask}
         onDeleteTask={handleDeleteTask}
         tokenUsage={tokenUsage}
+        onFollowUp={handleOpenFollowup}
       />
 
       {/* Progress Bar */}
@@ -220,6 +291,14 @@ const TaskDetails: React.FC = () => {
         onPrevMatch={() => logFilesData.setCurrentMatchIndex((prev) => (prev - 1 + logFilesData.searchMatches.length) % logFilesData.searchMatches.length)}
         onNextMatch={() => logFilesData.setCurrentMatchIndex((prev) => (prev + 1) % logFilesData.searchMatches.length)}
         logContentRef={logFilesData.logContentRef}
+      />
+
+      <FollowupModal
+        isOpen={followupModalOpen}
+        onClose={() => setFollowupModalOpen(false)}
+        onSubmit={handleFollowupSubmit}
+        initialContent={generateFollowupContent()}
+        taskInfo={taskData.taskInfo}
       />
     </div>
   );

@@ -446,6 +446,23 @@ export const triggerReindexAll = async (): Promise<TriggerReindexAllResponse> =>
   await handleApiResponse(response);
   return response.json();
 };
+
+export interface PostFollowupResponse {
+  success: boolean;
+  message: string;
+}
+
+export const postTaskFollowup = async (taskId: string, body: string): Promise<PostFollowupResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/followup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export * from './plannerApi';
 export * from './taskStatsApi';
 export * from './agentChatApi';

@@ -10,6 +10,13 @@ interface TaskRoutesDeps {
   taskQueue?: Queue;
 }
 
+interface TaskRecord {
+  task_id: string;
+  repository: string;
+  issue_number: number;
+  task_type: string;
+}
+
 export function createTaskRoutes(deps: TaskRoutesDeps) {
   const { db, taskQueue } = deps;
 
@@ -210,5 +217,56 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
     }
   }
 
-  return { getTasks, revertChanges, getRevertPreview, deleteTask };
+  async function postFollowup(req: Request, res: Response): Promise<void> {
+    try {
+      const { taskId } = req.params;
+      const { body } = req.body;
+
+      if (!taskId) {
+        res.status(400).json({ error: 'Task ID is required' });
+        return;
+      }
+
+      if (!body || typeof body !== 'string' || body.trim().length === 0) {
+        res.status(400).json({ error: 'Comment body is required' });
+        return;
+      }
+
+      // Get task info from database
+      const task = await db('tasks').where({ task_id: taskId }).first() as TaskRecord | undefined;
+      if (!task) {
+        res.status(404).json({ error: 'Task not found' });
+        return;
+      }
+
+      const [repoOwner, repoName] = (task.repository as string).split('/');
+      const issueNumber = task.issue_number;
+
+      if (!repoOwner || !repoName || !issueNumber) {
+        res.status(400).json({ error: 'Task does not have valid GitHub issue information' });
+        return;
+      }
+
+      // Post comment to GitHub
+      const octokit = await getAuthenticatedOctokit();
+      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: repoOwner,
+        repo: repoName,
+        issue_number: issueNumber,
+        body: body.trim()
+      });
+
+      console.log(`[followup] Posted follow-up comment to ${repoOwner}/${repoName}#${issueNumber}`);
+
+      res.json({
+        success: true,
+        message: `Comment posted to ${repoOwner}/${repoName}#${issueNumber}`
+      });
+    } catch (error) {
+      console.error('Error posting follow-up comment:', error);
+      res.status(500).json({ error: 'Failed to post follow-up comment' });
+    }
+  }
+
+  return { getTasks, revertChanges, getRevertPreview, deleteTask, postFollowup };
 }

@@ -1,6 +1,6 @@
 import React from 'react';
 import { TaskInfo, HistoryItem, TokenUsage } from './types';
-import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban, GitCommit, Trash2, Zap } from 'lucide-react';
+import { FileText, Terminal, Square, Clock, ExternalLink, GitPullRequest, Loader2, Ban, GitCommit, Trash2, Zap, MessageSquarePlus } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { ProviderLogo } from '../ui/ProviderLogo';
 
@@ -224,6 +224,7 @@ interface MetadataBarProps {
   deletingTask?: boolean;
   onDeleteTask?: () => void;
   tokenUsage?: TokenUsage;
+  onFollowUp?: () => void;
 }
 
 const MetadataBar: React.FC<MetadataBarProps> = ({
@@ -242,7 +243,8 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
   stats,
   deletingTask = false,
   onDeleteTask,
-  tokenUsage
+  tokenUsage,
+  onFollowUp
 }) => {
   const isActive = ['PENDING', 'QUEUED', 'PROCESSING', 'CLAUDE_EXECUTION', 'POST_PROCESSING'].includes(currentStatus);
   const isCancelled = currentStatus === 'CANCELLED';
@@ -360,6 +362,17 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
             className="p-1.5 sm:p-2 hover:bg-green-50 rounded text-green-600 hover:text-green-700 transition-colors"
           >
             <Terminal size={16} className="sm:w-[18px] sm:h-[18px]" />
+          </button>
+        )}
+
+        {/* Follow Up Button */}
+        {onFollowUp && !isActive && (
+          <button
+            onClick={onFollowUp}
+            title="Follow Up - Post a follow-up comment to the GitHub issue"
+            className="flex items-center gap-1.5 p-1.5 sm:p-2 rounded transition-colors hover:bg-purple-50 text-purple-600 hover:text-purple-700 border border-transparent hover:border-purple-200"
+          >
+            <MessageSquarePlus size={16} className="sm:w-[18px] sm:h-[18px]" />
           </button>
         )}
 
