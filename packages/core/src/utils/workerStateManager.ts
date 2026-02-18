@@ -6,6 +6,7 @@ import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
     type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
+import { getEventPublisher } from './eventPublisher.js';
 
 export { TaskStates, type TaskState, type IssueRef };
 
@@ -73,6 +74,15 @@ export class WorkerStateManager {
             };
             await db('task_history').insert(historyData);
             correlatedLogger.debug({ taskId }, 'Task state persisted to database');
+
+            // Publish real-time event for task creation
+            const eventPublisher = getEventPublisher();
+            await eventPublisher.publishTaskUpdate({
+                taskId,
+                state: TaskStates.PENDING,
+                repository,
+                issueNumber: issueRef.number
+            });
         } catch (error) {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
         }
@@ -132,6 +142,20 @@ export class WorkerStateManager {
                 };
                 await db('task_history').insert(historyData);
             correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
+
+            // Publish real-time event for task state change
+            const eventPublisher = getEventPublisher();
+            await eventPublisher.publishTaskUpdate({
+                taskId,
+                state: newState,
+                previousState,
+                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                issueNumber: state.issueRef.number,
+                metadata: {
+                    attempts: state.attempts,
+                    reason: metadata.reason
+                }
+            });
         } catch (error) {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
         }

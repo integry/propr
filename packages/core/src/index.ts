@@ -8,6 +8,7 @@ export { persistLlmLog, createLlmLogFromAnalysis } from './utils/llmLogger.js';
 export type { LlmLogEntry } from './utils/llmLogger.js';
 export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, HighCostAlert, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
 export { WorkerStateManager, getStateManager, closeStateManager, TaskStates } from './utils/workerStateManager.js';
+export { getEventPublisher, closeEventPublisher, EventPublisher } from './utils/eventPublisher.js';
 export type { TaskState, IssueRef, HistoryEntry, LastError, ClaudeResultSummary, PRResult, TaskStateData, UpdateMetadata, TaskResult, ResumableTaskInfo, WorkerStateManagerOptions } from './utils/workerStateManager.types.js';
 export { validatePRCreation, generateEnhancedClaudePrompt, validateRepositoryInfo } from './utils/prValidation.js';
 export type { PRValidationResult, PRInfo, ValidatePRCreationOptions, CurrentIssueData, GenerateEnhancedClaudePromptOptions, RepoData, RepoValidationResult } from './utils/prValidation.js';
@@ -211,3 +212,19 @@ export type {
 } from './agents/types.js';
 export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
 export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath } from './config/configManager.js';
+
+// Re-export event definitions from shared package for convenience
+export {
+    TASK_UPDATE,
+    DRAFT_UPDATE,
+    PLAN_STEP_UPDATE,
+    INDEXING_UPDATE,
+    REDIS_CHANNELS
+} from '@gitfix/shared';
+export type {
+    TaskUpdatePayload,
+    DraftUpdatePayload,
+    PlanStepUpdatePayload,
+    IndexingUpdatePayload,
+    EventPayload
+} from '@gitfix/shared';

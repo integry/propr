@@ -1,4 +1,5 @@
 import express, { Request, Response } from 'express';
+import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
 import crypto from 'crypto';
 import { createClient, RedisClientType } from 'redis';
@@ -6,6 +7,7 @@ import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis } from 'ioredis';
 import { setupAuth, ensureAuthenticated } from './auth.js';
+import { initSocketService, closeSocketService } from './services/socketService.js';
 import {
   createStatusRoutes,
   createTaskRoutes,
@@ -88,28 +90,31 @@ const cookieDomain = process.env.COOKIE_DOMAIN || '.gitfix.dev';
 // Remove leading dot if present for hostname matching
 const baseDomain = cookieDomain.startsWith('.') ? cookieDomain.slice(1) : cookieDomain;
 
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (e.g., mobile apps, curl, etc.)
-    if (!origin) {
+// CORS origin validation function - shared between Express and Socket.IO
+function validateCorsOrigin(origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void): void {
+  // Allow requests with no origin (e.g., mobile apps, curl, etc.)
+  if (!origin) {
+    callback(null, true);
+    return;
+  }
+  try {
+    const url = new URL(origin);
+    // Allow the base domain and any subdomain
+    if (url.hostname === baseDomain || url.hostname.endsWith('.' + baseDomain)) {
       callback(null, true);
-      return;
+    } else if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
+      // Allow localhost for development
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
     }
-    try {
-      const url = new URL(origin);
-      // Allow the base domain and any subdomain
-      if (url.hostname === baseDomain || url.hostname.endsWith('.' + baseDomain)) {
-        callback(null, true);
-      } else if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
-        // Allow localhost for development
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    } catch {
-      callback(new Error('Invalid origin'));
-    }
-  },
+  } catch {
+    callback(new Error('Invalid origin'));
+  }
+}
+
+app.use(cors({
+  origin: validateCorsOrigin,
   credentials: true
 }));
 
@@ -307,6 +312,9 @@ app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok' });
 });
 
+// Create HTTP server to wrap Express app (required for Socket.IO)
+const httpServer: HttpServer = createServer(app);
+
 async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
@@ -318,10 +326,17 @@ async function start(): Promise<void> {
     }
     await initRedis();
     setupRoutes();
+
+    // Initialize Socket.IO with the HTTP server and shared CORS configuration
+    initSocketService(httpServer, validateCorsOrigin);
+    console.log('[WebSocket] Socket.IO server initialized');
+
     try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
     try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
-    app.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT}`); });
+
+    // Use httpServer.listen instead of app.listen for Socket.IO support
+    httpServer.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT} (with WebSocket support)`); });
 
     // Start background job to check for scheduled delayed reindex (every 30 seconds)
     setInterval(async () => {
@@ -331,6 +346,16 @@ async function start(): Promise<void> {
         console.error('Error checking for delayed reindex:', error);
       }
     }, 30 * 1000);
+
+    // Handle graceful shutdown
+    process.on('SIGTERM', async () => {
+      console.log('SIGTERM received, shutting down gracefully...');
+      await closeSocketService();
+      httpServer.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+      });
+    });
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
