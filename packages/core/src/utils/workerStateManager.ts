@@ -221,6 +221,23 @@ export class WorkerStateManager {
             await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
             const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
             correlatedLogger.debug({ taskId, historyState, metadata }, 'Updated history metadata');
+
+            // Publish real-time event for metadata update so UI can refresh
+            try {
+                const eventPublisher = getEventPublisher();
+                await eventPublisher.publishTaskUpdate({
+                    taskId,
+                    state: state.state,
+                    repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                    issueNumber: state.issueRef.number,
+                    metadata: {
+                        metadataUpdate: true,
+                        updatedFields: Object.keys(metadata)
+                    }
+                });
+            } catch (error) {
+                correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish metadata update event');
+            }
         } else {
             logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');
         }
