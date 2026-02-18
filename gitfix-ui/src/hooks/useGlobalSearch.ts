@@ -1,3 +1,4 @@
+// CI trigger: 2026-02-18
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getTasks, getRepoConfig, MonitoredRepo } from '../api/gitfixApi';
 import { getDrafts, DraftListItem } from '../api/plannerApi';
