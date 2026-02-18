@@ -24,6 +24,7 @@ import {
   useGenerationHandlers,
   useDraftCreation,
   useAutoDraftCreation,
+  usePromptPersistence,
   computeIsGenerateDisabled,
   computeCanExport,
   useAutoResize
@@ -261,6 +262,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
 
   // Persistence and file handling
   usePlannerSettingsPersistence(config, draft?.repository, repoLoader.selectedRepo);
+  usePromptPersistence(draft?.draft_id, config.prompt, draft?.initial_prompt);
   const fileHandling = useFileHandling(isNewMode, draft, setConfig, setError);
 
   // Generation complete callback

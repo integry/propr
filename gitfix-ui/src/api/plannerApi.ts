@@ -271,7 +271,7 @@ export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
   return response.json();
 };
 
-export const updateDraft = async (draftId: string, data: { plan_json?: PlanTask[]; chat_history?: ChatMessage[] }): Promise<void> => {
+export const updateDraft = async (draftId: string, data: { plan_json?: PlanTask[]; chat_history?: ChatMessage[]; initial_prompt?: string; name?: string }): Promise<void> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

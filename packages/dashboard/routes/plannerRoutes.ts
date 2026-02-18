@@ -194,13 +194,14 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
-      const { plan_json, context_config, status, name, chat_history } = req.body;
+      const { plan_json, context_config, status, name, chat_history, initial_prompt } = req.body;
       const updateData: Record<string, unknown> = { updated_at: db!.fn.now() };
       if (plan_json !== undefined) updateData.plan_json = JSON.stringify(plan_json);
       if (context_config !== undefined) updateData.context_config = JSON.stringify(context_config);
       if (status !== undefined) updateData.status = status;
       if (name !== undefined) updateData.name = name;
       if (chat_history !== undefined) updateData.chat_history = JSON.stringify(chat_history);
+      if (initial_prompt !== undefined) updateData.initial_prompt = initial_prompt;
 
       await db!('task_drafts').where({ draft_id: req.params.id }).update(updateData);
       // Fetch the updated draft (SQLite doesn't support returning() properly)
