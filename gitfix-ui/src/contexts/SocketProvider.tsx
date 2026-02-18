@@ -15,14 +15,16 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
 
   useEffect(() => {
     // Connect to the backend WebSocket server
-    // The socket.io-client will automatically use the same origin as the page
-    // unless we specify a different URL
-    const socketUrl = import.meta.env.VITE_API_URL || window.location.origin;
+    // Use the same API base URL as REST API calls
+    // When empty or undefined, socket.io-client connects to the same origin
+    const socketUrl = import.meta.env.VITE_API_BASE_URL || undefined;
 
     const newSocket = io(socketUrl, {
       transports: ['websocket', 'polling'],
       withCredentials: true,
       autoConnect: true,
+      // Use path for socket.io which is the standard /socket.io/
+      path: '/socket.io/',
     });
 
     newSocket.on('connect', () => {
