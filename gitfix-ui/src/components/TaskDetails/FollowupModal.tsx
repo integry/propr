@@ -101,11 +101,6 @@ const FollowupModal: React.FC<FollowupModalProps> = ({
               </div>
             )}
 
-            <div className="bg-gray-50 rounded-md p-3 border border-gray-200">
-              <p className="text-xs text-gray-500">
-                This comment will be posted to the GitHub {issueType.toLowerCase()} and will trigger the standard GitFix processing workflow.
-              </p>
-            </div>
           </div>
         </div>
 
