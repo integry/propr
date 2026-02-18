@@ -52,6 +52,16 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
     setActiveTaskIndex(index);
   };
 
+  const handleScrollToTask = useCallback((taskId: string, index: number) => {
+    const taskCard = document.getElementById(`task-card-${taskId}`);
+    if (taskCard) {
+      taskCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setActiveTaskIndex(index);
+    } else {
+      handleTimelineClick(index);
+    }
+  }, []);
+
   if (tasks.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-gray-500 p-8">
@@ -77,6 +87,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
           taskTitles={tasks.map(t => t.title)}
           taskIds={tasks.map(t => t.id)}
           onReorderTasks={onReorderTasks}
+          onScrollToTask={handleScrollToTask}
         />
       )}
 
@@ -145,6 +156,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                       console.log(`[TaskCardList] Deleting task: id="${taskIdToDelete}", title="${task.title}"`);
                       onDeleteTask(taskIdToDelete);
                     }}
+                    id={`task-card-${task.id}`}
                   />
                   {/* Horizontal divider between tasks */}
                   {!isLastTask && (
