@@ -230,7 +230,7 @@ export function useHeaderStats(): HeaderStats {
       }
 
       // Fetch all data in parallel with smart DB-level pre-filtering
-      const [queueStats, draftsResponse, tasksResponse, processingTasksResponse, statusResponse] = await Promise.all([
+      const [_queueStats, draftsResponse, tasksResponse, processingTasksResponse, statusResponse] = await Promise.all([
         getQueueStats(),
         // Fetch active plans only (exclude merged and executed at DB level)
         getDrafts({ limit: 20, excludeStatuses: 'merged,executed' }),
