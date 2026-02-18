@@ -1,19 +1,7 @@
-import React, { createContext, useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { TASK_UPDATE, DRAFT_UPDATE, TaskUpdatePayload, DraftUpdatePayload } from '@gitfix/shared';
-
-export interface SocketContextValue {
-  socket: Socket | null;
-  isConnected: boolean;
-  subscribeToTask: (taskId: string) => void;
-  unsubscribeFromTask: (taskId: string) => void;
-  subscribeToDraft: (draftId: string) => void;
-  unsubscribeFromDraft: (draftId: string) => void;
-  onTaskUpdate: (callback: (payload: TaskUpdatePayload) => void) => () => void;
-  onDraftUpdate: (callback: (payload: DraftUpdatePayload) => void) => () => void;
-}
-
-export const SocketContext = createContext<SocketContextValue | null>(null);
+import { SocketContext, SocketContextValue } from './SocketContext';
 
 interface SocketProviderProps {
   children: React.ReactNode;

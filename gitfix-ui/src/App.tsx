@@ -14,7 +14,7 @@ import LlmLogsPage from './pages/LlmLogsPage'
 import LoginPage from './pages/LoginPage'
 import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
-import { SocketProvider } from './contexts/SocketContext'
+import { SocketProvider } from './contexts/SocketProvider'
 import './App.css'
 import { getCurrentUser } from './api/gitfixApi'
 
