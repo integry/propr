@@ -1,6 +1,6 @@
 import { createContext } from 'react';
 import { Socket } from 'socket.io-client';
-import { TaskUpdatePayload, DraftUpdatePayload } from '@gitfix/shared';
+import { TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload } from '@gitfix/shared';
 
 export interface SocketContextValue {
   socket: Socket | null;
@@ -9,8 +9,13 @@ export interface SocketContextValue {
   unsubscribeFromTask: (taskId: string) => void;
   subscribeToDraft: (draftId: string) => void;
   unsubscribeFromDraft: (draftId: string) => void;
+  subscribeToIndexing: (repository: string) => void;
+  unsubscribeFromIndexing: (repository: string) => void;
+  subscribeToIndexingUpdates: () => void;
+  unsubscribeFromIndexingUpdates: () => void;
   onTaskUpdate: (callback: (payload: TaskUpdatePayload) => void) => () => void;
   onDraftUpdate: (callback: (payload: DraftUpdatePayload) => void) => () => void;
+  onIndexingUpdate: (callback: (payload: IndexingUpdatePayload) => void) => () => void;
 }
 
 export const SocketContext = createContext<SocketContextValue | null>(null);

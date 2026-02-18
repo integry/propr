@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { TASK_UPDATE, DRAFT_UPDATE, TaskUpdatePayload, DraftUpdatePayload } from '@gitfix/shared';
+import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload } from '@gitfix/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
 
 interface SocketProviderProps {
@@ -12,6 +12,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
   const [isConnected, setIsConnected] = useState(false);
   const taskUpdateCallbacksRef = useRef<Set<(payload: TaskUpdatePayload) => void>>(new Set());
   const draftUpdateCallbacksRef = useRef<Set<(payload: DraftUpdatePayload) => void>>(new Set());
+  const indexingUpdateCallbacksRef = useRef<Set<(payload: IndexingUpdatePayload) => void>>(new Set());
 
   useEffect(() => {
     // Connect to the backend WebSocket server
@@ -52,6 +53,11 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
       draftUpdateCallbacksRef.current.forEach((callback) => callback(payload));
     });
 
+    newSocket.on(INDEXING_UPDATE, (payload: IndexingUpdatePayload) => {
+      console.log('[SocketContext] Received indexing update:', payload);
+      indexingUpdateCallbacksRef.current.forEach((callback) => callback(payload));
+    });
+
     setSocket(newSocket);
 
     return () => {
@@ -88,6 +94,34 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     }
   }, [socket, isConnected]);
 
+  const subscribeToIndexing = useCallback((repository: string) => {
+    if (socket && isConnected) {
+      socket.emit('subscribe:indexing', repository);
+      console.log(`[SocketContext] Subscribed to indexing: ${repository}`);
+    }
+  }, [socket, isConnected]);
+
+  const unsubscribeFromIndexing = useCallback((repository: string) => {
+    if (socket && isConnected) {
+      socket.emit('unsubscribe:indexing', repository);
+      console.log(`[SocketContext] Unsubscribed from indexing: ${repository}`);
+    }
+  }, [socket, isConnected]);
+
+  const subscribeToIndexingUpdates = useCallback(() => {
+    if (socket && isConnected) {
+      socket.emit('subscribe:indexing:updates');
+      console.log('[SocketContext] Subscribed to indexing:updates');
+    }
+  }, [socket, isConnected]);
+
+  const unsubscribeFromIndexingUpdates = useCallback(() => {
+    if (socket && isConnected) {
+      socket.emit('unsubscribe:indexing:updates');
+      console.log('[SocketContext] Unsubscribed from indexing:updates');
+    }
+  }, [socket, isConnected]);
+
   const onTaskUpdate = useCallback((callback: (payload: TaskUpdatePayload) => void) => {
     taskUpdateCallbacksRef.current.add(callback);
     return () => {
@@ -102,6 +136,13 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     };
   }, []);
 
+  const onIndexingUpdate = useCallback((callback: (payload: IndexingUpdatePayload) => void) => {
+    indexingUpdateCallbacksRef.current.add(callback);
+    return () => {
+      indexingUpdateCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
   const value: SocketContextValue = {
     socket,
     isConnected,
@@ -109,8 +150,13 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     unsubscribeFromTask,
     subscribeToDraft,
     unsubscribeFromDraft,
+    subscribeToIndexing,
+    unsubscribeFromIndexing,
+    subscribeToIndexingUpdates,
+    unsubscribeFromIndexingUpdates,
     onTaskUpdate,
     onDraftUpdate,
+    onIndexingUpdate,
   };
 
   return (
