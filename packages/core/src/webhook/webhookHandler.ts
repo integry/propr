@@ -2,13 +2,14 @@ import logger from '../utils/logger.js';
 import { fetch } from 'undici';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { getGitHubInstallationToken } from '../auth/githubAuth.js';
+import { getGitHubInstallationToken, getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import {
     handlePlanIssueStatusUpdate,
     handlePlanPRUpdate,
     handlePlanPRCommentTracking,
     type CommentEventType
 } from './planIssueTracking.js';
+import { isEpicBranch } from '../services/taskExecutionService.js';
 import type {
     IssuesEvent,
     IssuesLabeledEvent,
@@ -359,6 +360,74 @@ async function handlePlanIssueTracking(
 }
 
 /**
+ * Handles Epic PR label cleanup when an Epic PR is merged.
+ * When a PR with an Epic branch name pattern is closed and merged,
+ * this function automatically deletes the corresponding `base-{branchName}` label
+ * from the repository.
+ */
+async function handleEpicPRLabelCleanup(
+    payload: PullRequestEvent,
+    correlationId: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    // Only process closed PRs that were merged
+    if (payload.action !== 'closed' || !payload.pull_request.merged) {
+        return;
+    }
+
+    const branchName = payload.pull_request.head.ref;
+
+    // Check if this is an Epic branch
+    if (!isEpicBranch(branchName)) {
+        return;
+    }
+
+    const [owner, repo] = payload.repository.full_name.split('/');
+    const labelName = `base-${branchName}`;
+
+    correlatedLogger.info({
+        prNumber: payload.pull_request.number,
+        branchName,
+        labelName,
+        owner,
+        repo
+    }, 'Epic PR merged, cleaning up base label');
+
+    try {
+        const octokit = await getAuthenticatedOctokit();
+
+        // Delete the label from the repository
+        await octokit.request('DELETE /repos/{owner}/{repo}/labels/{name}', {
+            owner,
+            repo,
+            name: labelName
+        });
+
+        correlatedLogger.info({
+            labelName,
+            owner,
+            repo
+        }, 'Epic label deleted successfully');
+    } catch (error) {
+        const err = error as Error & { status?: number };
+        if (err.status === 404) {
+            correlatedLogger.debug({
+                labelName,
+                owner,
+                repo
+            }, 'Epic label not found, may have already been deleted');
+        } else {
+            correlatedLogger.warn({
+                error: err.message,
+                labelName,
+                owner,
+                repo
+            }, 'Failed to delete Epic label');
+        }
+    }
+}
+
+/**
  * Processes standard webhook events locally.
  */
 async function processStandardWebhookEvent(
@@ -417,6 +486,11 @@ export async function processWebhookEvent(
     // 4. Plan Issue Tracking (runs before standard processing to update status)
     await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);
 
-    // 5. Standard Local Processing
+    // 5. Epic PR Label Cleanup (delete base-{branchName} label when Epic PR is merged)
+    if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
+        await handleEpicPRLabelCleanup(payload, correlationId, correlatedLogger);
+    }
+
+    // 6. Standard Local Processing
     await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger);
 }
