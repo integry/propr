@@ -102,18 +102,62 @@ const TaskDetails: React.FC = () => {
     return historyWithTokens?.metadata?.tokenUsage;
   }, [taskData.liveDetails, taskData.history]);
 
-  // Generate initial content for follow-up based on analysis data
-  const generateFollowupContent = useCallback(() => {
-    if (!taskData.analysis) {
-      return 'Please address the following based on the previous task execution:\n\n';
+  // Helper to parse analysis data (same logic as DeepDiveAnalysis)
+  const parseAnalysisData = useCallback((rawAnalysis: unknown): {
+    recommendations?: string[];
+    error_analysis?: string;
+    implementation_critique?: string;
+    efficiency_notes?: string;
+  } | null => {
+    if (!rawAnalysis) return null;
+
+    // First, parse if it's a string (might be double-encoded JSON)
+    let parsed = rawAnalysis;
+    if (typeof parsed === 'string') {
+      try {
+        parsed = JSON.parse(parsed);
+        // Handle double-encoded JSON
+        if (typeof parsed === 'string') {
+          parsed = JSON.parse(parsed);
+        }
+      } catch {
+        return null;
+      }
     }
 
-    const analysis = taskData.analysis as {
+    // Check if we have a 'report' field that contains the actual data
+    if (typeof parsed === 'object' && parsed !== null && 'report' in parsed) {
+      const analysisObj = parsed as { report?: string };
+      if (analysisObj.report) {
+        try {
+          let reportText = analysisObj.report;
+          // Extract JSON from markdown code blocks if present
+          const jsonMatch = reportText.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+          if (jsonMatch) {
+            reportText = jsonMatch[1].trim();
+          }
+          return JSON.parse(reportText);
+        } catch {
+          return null;
+        }
+      }
+    }
+
+    return parsed as {
       recommendations?: string[];
       error_analysis?: string;
       implementation_critique?: string;
       efficiency_notes?: string;
     };
+  }, []);
+
+  // Generate initial content for follow-up based on analysis data
+  const generateFollowupContent = useCallback(() => {
+    const analysis = parseAnalysisData(taskData.analysis);
+
+    if (!analysis) {
+      return 'Please address the following based on the previous task execution:\n\n';
+    }
 
     const parts: string[] = [];
 
@@ -146,7 +190,7 @@ const TaskDetails: React.FC = () => {
     }
 
     return parts.join('\n');
-  }, [taskData.analysis, taskData.history]);
+  }, [taskData.analysis, taskData.history, parseAnalysisData]);
 
   // Handle follow-up submission
   const handleFollowupSubmit = useCallback(async (body: string) => {

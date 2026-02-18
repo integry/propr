@@ -25,18 +25,14 @@ const FollowupModal: React.FC<FollowupModalProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Update content when initialContent changes
-  useEffect(() => {
-    setContent(initialContent);
-  }, [initialContent]);
-
-  // Reset state when modal opens
+  // Reset content and state when modal opens - ensures fresh content each time
   useEffect(() => {
     if (isOpen) {
+      setContent(initialContent);
       setError(null);
       setSubmitting(false);
     }
-  }, [isOpen]);
+  }, [isOpen, initialContent]);
 
   if (!isOpen) return null;
 
