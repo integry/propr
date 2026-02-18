@@ -85,14 +85,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
   const [useEpic, setUseEpic] = useState(false);
   const [autoMerge, setAutoMerge] = useState(false);
 
-  // Handle useEpic toggle - reset autoMerge when Epic is disabled
-  const handleUseEpicChange = (checked: boolean) => {
-    setUseEpic(checked);
-    if (!checked) {
-      setAutoMerge(false);
-    }
-  };
-
   // Plan name: prefer draft.name, fall back to initial_prompt
   const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
 
@@ -127,6 +119,9 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
     }
     return Array.isArray(planJson) ? planJson : [];
   })();
+
+  // Determine if epic PR option should be shown (only for multi-task plans)
+  const showEpicOption = tasks.length >= 2;
 
   // Extract repository URL from draft
   const getRepositoryUrl = () => {
@@ -278,29 +273,30 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
           )}
         </div>
         <div className="flex items-center gap-4">
-          {/* Epic PR Options */}
+          {/* PR Options */}
           <div className="flex items-center gap-4 border-r border-gray-300 pr-4">
             <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
               <input
                 type="checkbox"
-                checked={useEpic}
-                onChange={(e) => handleUseEpicChange(e.target.checked)}
-                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
-              />
-              <Layers size={14} className="text-gray-500" />
-              <span>Create Epic PR</span>
-            </label>
-            <label className={`flex items-center gap-2 text-sm cursor-pointer select-none ${useEpic ? 'text-gray-700' : 'text-gray-400 cursor-not-allowed'}`}>
-              <input
-                type="checkbox"
                 checked={autoMerge}
                 onChange={(e) => setAutoMerge(e.target.checked)}
-                disabled={!useEpic}
-                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
               />
-              <ArrowDownToLine size={14} className={useEpic ? 'text-gray-500' : 'text-gray-300'} />
-              <span>Auto-merge to Epic</span>
+              <ArrowDownToLine size={14} className="text-gray-500" />
+              <span>Merge the PR automatically if Github checks pass</span>
             </label>
+            {showEpicOption && (
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={useEpic}
+                  onChange={(e) => setUseEpic(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+                />
+                <Layers size={14} className="text-gray-500" />
+                <span>Merge to epic PR</span>
+              </label>
+            )}
           </div>
           <button
             onClick={handleRefresh}
