@@ -36,12 +36,24 @@ export const TaskStepsPreview: React.FC<TaskStepsPreviewProps> = ({
 }) => {
   if (tasks.length === 0) return null;
 
+  // Title row height should match total step height (button + lines)
+  const getTitleRowHeight = (index: number, isLast: boolean): number => {
+    const lineHeight = 16; // h-4 = 16px
+    const buttonHeight = 32; // h-8 = 32px
+    const hasLineAbove = index > 0;
+    const hasLineBelow = !isLast;
+    return (hasLineAbove ? lineHeight : 0) + buttonHeight + (hasLineBelow ? lineHeight : 0);
+  };
+
+  // Padding for visual breathing room
+  const verticalPadding = 8; // py-2 equivalent
+
   const previewContent = (
     <div
-      className="fixed bg-white border border-slate-200 shadow-xl ring-1 ring-black/5 z-[10000] overflow-hidden"
+      className="fixed bg-white border border-slate-200 shadow-xl ring-1 ring-black/5 z-[10000] overflow-hidden rounded-r-lg"
       style={{
         left: timelineRect.right,
-        top: stepsTop,
+        top: stepsTop - verticalPadding, // Offset top to account for padding
         minWidth: 280,
         maxWidth: 400,
       }}
@@ -49,26 +61,30 @@ export const TaskStepsPreview: React.FC<TaskStepsPreviewProps> = ({
       onMouseLeave={onMouseLeave}
     >
       {/* Step titles - aligned with step numbers */}
-      <div className="max-h-[600px] overflow-y-auto scrollbar-stealth">
+      <div
+        className="max-h-[600px] overflow-y-auto scrollbar-stealth"
+        style={{ paddingTop: verticalPadding, paddingBottom: verticalPadding }}
+      >
         {tasks.map((task, index) => {
           const isActive = index === activeIndex;
           const isCompleted = completedIndices.includes(index);
           const isPast = index < activeIndex;
+          const isLast = index === tasks.length - 1;
           const stepPos = stepPositions[index];
 
-          // Calculate the height to match the step item height in the navigation
-          const itemHeight = stepPos ? stepPos.height : 40;
+          // Use measured height if available, otherwise calculate
+          const itemHeight = stepPos ? stepPos.height : getTitleRowHeight(index, isLast);
 
           return (
             <button
               key={task.id}
               onClick={() => onScrollTo(task.id, index)}
-              className={`w-full px-4 flex items-center text-left transition-colors hover:bg-slate-50 border-b border-slate-50 ${
+              className={`w-full px-4 flex items-center text-left transition-colors hover:bg-slate-50 ${
                 isActive ? 'bg-indigo-50/50' : ''
               }`}
               style={{
                 height: `${itemHeight}px`,
-                minHeight: '40px',
+                minHeight: '32px',
               }}
             >
               {/* Task title - no duplicate step number */}
