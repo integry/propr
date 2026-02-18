@@ -946,9 +946,10 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
 export { checkoutBranch } from './planningHelpers.js';
 
 /**
- * Checks if all plan issues for a draft are merged and updates the draft status accordingly.
+ * Checks plan issue statuses and updates the draft status accordingly.
  * - If all issues are merged, sets draft status to 'merged'
- * - If not all issues are merged (e.g., one is reopened), reverts draft status to 'executed'
+ * - If any issue has an active PR (under_review, in_refinement, refinement_processing), sets to 'pr_created'
+ * - Otherwise reverts to 'executed' (Issues Created)
  *
  * @param draftId - The ID of the draft to check and update
  */
@@ -972,6 +973,10 @@ export async function checkAndUpdateDraftStatus(draftId: string): Promise<void> 
     // Check if all issues are merged
     const allMerged = planIssues.every(issue => issue.status === 'merged');
 
+    // Check if any issue has an active PR (under_review, in_refinement, or refinement_processing)
+    const activePrStatuses = ['under_review', 'in_refinement', 'refinement_processing'];
+    const hasActivePr = planIssues.some(issue => activePrStatuses.includes(issue.status));
+
     // Get current draft status
     const draft = await db('task_drafts')
       .where({ draft_id: draftId })
@@ -983,13 +988,17 @@ export async function checkAndUpdateDraftStatus(draftId: string): Promise<void> 
       return;
     }
 
-    // Determine the new status
+    // Determine the new status based on issue statuses
     let newStatus: string | null = null;
 
     if (allMerged && draft.status !== 'merged') {
+      // All issues merged - set to merged
       newStatus = 'merged';
-    } else if (!allMerged && draft.status === 'merged') {
-      // Revert to 'executed' if not all issues are merged (e.g., one was reopened)
+    } else if (!allMerged && hasActivePr && draft.status !== 'pr_created') {
+      // Has active PRs but not all merged - set to pr_created
+      newStatus = 'pr_created';
+    } else if (!allMerged && !hasActivePr && (draft.status === 'merged' || draft.status === 'pr_created')) {
+      // No active PRs and not all merged - revert to executed (Issues Created)
       newStatus = 'executed';
     }
 
@@ -1002,7 +1011,7 @@ export async function checkAndUpdateDraftStatus(draftId: string): Promise<void> 
         });
 
       logger.info(
-        { draftId, oldStatus: draft.status, newStatus, totalIssues: planIssues.length, allMerged },
+        { draftId, oldStatus: draft.status, newStatus, totalIssues: planIssues.length, allMerged, hasActivePr },
         'Updated draft status based on plan issue statuses'
       );
     }

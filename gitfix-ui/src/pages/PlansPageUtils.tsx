@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, GitMerge } from 'lucide-react';
+import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, GitMerge, GitPullRequestArrow } from 'lucide-react';
 import { IssueSummary } from '../api/gitfixApi';
 
 /**
@@ -38,6 +38,8 @@ export const getStatusBadge = (status: string): string => {
       return 'bg-purple-100 text-purple-800';
     case 'executed':
       return 'bg-green-100 text-green-800';
+    case 'pr_created':
+      return 'bg-cyan-100 text-cyan-800';
     case 'review':
       return 'bg-blue-100 text-blue-800';
     case 'generating':
@@ -54,6 +56,8 @@ export const getStatusLabel = (status: string): string => {
       return 'Merged';
     case 'executed':
       return 'Issues created';
+    case 'pr_created':
+      return 'PR Created';
     case 'review':
       return 'Ready for Review';
     case 'generating':
@@ -73,6 +77,8 @@ export const getStatusIcon = (status: string): React.ReactNode => {
       return <GitMerge size={12} className="text-purple-600" />;
     case 'executed':
       return <CheckCircle size={12} className="text-green-600" />;
+    case 'pr_created':
+      return <GitPullRequestArrow size={12} className="text-cyan-600" />;
     case 'review':
       return <Settings2 size={12} className="text-blue-600" />;
     case 'generating':

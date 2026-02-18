@@ -71,7 +71,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const search = req.query.search as string | undefined;
       const status = req.query.status as string | undefined;
       const excludeStatuses = req.query.excludeStatuses as string | undefined;
-      const validStatuses = ['draft', 'review', 'generating', 'refining', 'executed', 'approved', 'merged'];
+      const validStatuses = ['draft', 'review', 'generating', 'refining', 'executed', 'approved', 'merged', 'pr_created'];
       // Build query with optional repository filter
       let query = db!('task_drafts').where({ user_id: req.user!.id });
 
