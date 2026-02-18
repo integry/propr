@@ -61,7 +61,7 @@ const FollowupModal: React.FC<FollowupModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg max-w-2xl w-full max-h-[80vh] flex flex-col border border-gray-300 shadow-lg">
+      <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] flex flex-col border border-gray-300 shadow-lg">
         <div className="flex justify-between items-center p-4 border-b border-gray-200">
           <div>
             <h3 className="text-lg font-semibold text-gray-900">Follow Up on Task</h3>
@@ -88,7 +88,7 @@ const FollowupModal: React.FC<FollowupModalProps> = ({
                 id="followup-content"
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
-                rows={12}
+                rows={18}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm resize-y"
                 placeholder="Enter your follow-up request..."
                 disabled={submitting}

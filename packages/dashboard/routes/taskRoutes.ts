@@ -1,8 +1,8 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Queue } from 'bullmq';
-import { generateCorrelationId, getAuthenticatedOctokit } from '@gitfix/core';
-import type { SystemTaskJobData } from '@gitfix/core';
+import { generateCorrelationId, getAuthenticatedOctokit, issueQueue, COMMENT_BATCH_DELAY_MS } from '@gitfix/core';
+import type { SystemTaskJobData, CommentJobData, UnprocessedComment } from '@gitfix/core';
 import { getTasksFromDb } from './taskHelpers.js';
 
 interface TaskRoutesDeps {
@@ -249,18 +249,72 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
       // Post comment to GitHub
       const octokit = await getAuthenticatedOctokit();
-      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+      const commentResponse = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner,
         repo: repoName,
         issue_number: issueNumber,
         body: body.trim()
       });
 
-      console.log(`[followup] Posted follow-up comment to ${repoOwner}/${repoName}#${issueNumber}`);
+      const commentId = commentResponse.data.id;
+      const commentAuthor = commentResponse.data.user?.login || 'unknown';
+
+      console.log(`[followup] Posted follow-up comment (ID: ${commentId}) to ${repoOwner}/${repoName}#${issueNumber}`);
+
+      // Get branch name for PR-based tasks
+      let branchName: string | undefined;
+      if (task.task_type === 'pr-comment') {
+        try {
+          const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+            owner: repoOwner,
+            repo: repoName,
+            pull_number: issueNumber
+          });
+          branchName = prData.head.ref;
+        } catch (branchErr) {
+          console.warn(`[followup] Could not fetch PR branch: ${(branchErr as Error).message}`);
+        }
+      }
+
+      // Add comment directly to the processing queue (bypassing bot filter)
+      const correlationId = generateCorrelationId();
+      const unprocessedComment: UnprocessedComment = {
+        id: commentId,
+        body: body.trim(),
+        author: commentAuthor,
+        type: 'issue',
+        hasCodeContext: false
+      };
+
+      const jobData: CommentJobData = {
+        pullRequestNumber: issueNumber,
+        comments: [unprocessedComment],
+        repoOwner,
+        repoName,
+        branchName,
+        correlationId
+      };
+
+      const timestamp = Date.now();
+      const jobId = `pr-comments-batch-${repoOwner}-${repoName}-${issueNumber}-${timestamp}`;
+
+      try {
+        await issueQueue.add('processPullRequestComment', jobData, { jobId, delay: COMMENT_BATCH_DELAY_MS });
+        console.log(`[followup] Queued follow-up comment for processing (jobId: ${jobId}, delay: ${COMMENT_BATCH_DELAY_MS}ms)`);
+      } catch (queueErr) {
+        const err = queueErr as Error;
+        if (err.message?.includes('Job already exists')) {
+          console.log(`[followup] Comment job already in queue, skipping`);
+        } else {
+          console.warn(`[followup] Failed to queue comment for processing: ${err.message}`);
+        }
+      }
 
       res.json({
         success: true,
-        message: `Comment posted to ${repoOwner}/${repoName}#${issueNumber}`
+        message: `Comment posted to ${repoOwner}/${repoName}#${issueNumber}`,
+        commentId,
+        jobId
       });
     } catch (error) {
       console.error('Error posting follow-up comment:', error);
