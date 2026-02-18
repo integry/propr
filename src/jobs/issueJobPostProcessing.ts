@@ -11,6 +11,7 @@ import { linkPRToPlanIssue } from '@gitfix/core';
 import type { RepoValidationResult, PRValidationResult } from '@gitfix/core';
 import type { IssueJobData } from '@gitfix/core';
 import { createPullRequest, type PostProcessingResult } from './issueJobHelpers.js';
+import { enableAutoMerge } from '../github/autoMergeOperations.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
@@ -27,7 +28,7 @@ export interface PostProcessOptions {
     octokit: Octokit;
     issueRef: IssueJobData;
     worktreeInfo: WorktreeInfo;
-    currentIssueData: { data: { title: string } };
+    currentIssueData: { data: { title: string; labels: Array<{ name: string }> } };
     claudeResult: ClaudeCodeResponse;
     modelName: string;
     repoValidation: RepoValidation;
@@ -78,6 +79,23 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
             await linkPRToPlanIssue(repository, issueRef.number, postProcessingResult.pr.number);
             correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber: postProcessingResult.pr.number }, 'Linked PR to plan issue');
+
+            // Check for auto-merge label and enable auto-merge on the PR
+            const currentLabels = currentIssueData.data.labels.map(label => label.name);
+            const hasAutoMergeLabel = currentLabels.some(label => label === 'auto-merge');
+            if (hasAutoMergeLabel) {
+                correlatedLogger.info({ prNumber: postProcessingResult.pr.number }, 'Auto-merge label detected, enabling auto-merge on PR');
+                const autoMergeResult = await enableAutoMerge({
+                    owner: issueRef.repoOwner,
+                    repoName: issueRef.repoName,
+                    prNumber: postProcessingResult.pr.number
+                });
+                if (autoMergeResult.success) {
+                    correlatedLogger.info({ prNumber: postProcessingResult.pr.number, autoMergeEnabled: autoMergeResult.autoMergeEnabled }, 'Auto-merge enabled successfully');
+                } else {
+                    correlatedLogger.warn({ prNumber: postProcessingResult.pr.number, error: autoMergeResult.error }, 'Failed to enable auto-merge on PR');
+                }
+            }
         }
 
         await safeUpdateLabels(
