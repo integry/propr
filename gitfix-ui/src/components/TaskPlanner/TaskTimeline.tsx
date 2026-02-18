@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { CheckCircle2, GripVertical } from 'lucide-react';
 import {
   DndContext,
@@ -16,6 +16,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { TaskStepsPreview } from './TaskStepsPreview';
 
 interface TaskTimelineProps {
   taskCount: number;
@@ -25,6 +26,7 @@ interface TaskTimelineProps {
   taskIds?: string[];
   completedIndices?: number[];
   onReorderTasks?: (activeId: string, overId: string) => void;
+  onScrollToTask?: (taskId: string, index: number) => void;
 }
 
 interface SortableStepProps {
@@ -137,7 +139,13 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   taskIds = [],
   completedIndices = [],
   onReorderTasks,
+  onScrollToTask,
 }) => {
+  const [isHovered, setIsHovered] = useState(false);
+  const [timelineRect, setTimelineRect] = useState<DOMRect | null>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -157,13 +165,66 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
     }
   };
 
+  const handleMouseEnter = useCallback(() => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    if (timelineRef.current) {
+      setTimelineRect(timelineRef.current.getBoundingClientRect());
+    }
+    setIsHovered(true);
+  }, []);
+
+  const handleMouseLeave = useCallback(() => {
+    hoverTimeoutRef.current = setTimeout(() => {
+      setIsHovered(false);
+      setTimelineRect(null);
+    }, 150);
+  }, []);
+
+  const handlePreviewMouseEnter = useCallback(() => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+  }, []);
+
+  const handlePreviewMouseLeave = useCallback(() => {
+    hoverTimeoutRef.current = setTimeout(() => {
+      setIsHovered(false);
+      setTimelineRect(null);
+    }, 150);
+  }, []);
+
+  const handleScrollTo = useCallback((taskId: string, index: number) => {
+    if (onScrollToTask) {
+      onScrollToTask(taskId, index);
+    } else {
+      onStepClick(index);
+    }
+    setIsHovered(false);
+    setTimelineRect(null);
+  }, [onScrollToTask, onStepClick]);
+
   if (taskCount === 0) return null;
 
   // Generate IDs if not provided
   const ids = taskIds.length > 0 ? taskIds : Array.from({ length: taskCount }, (_, i) => `step-${i}`);
 
+  // Build tasks array for preview
+  const tasks = ids.map((id, index) => ({
+    id,
+    title: taskTitles[index] || `Step ${index + 1}`,
+  }));
+
   return (
-    <div className="sticky top-0 h-full w-24 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 pl-4">
+    <div
+      ref={timelineRef}
+      className="sticky top-0 h-full w-24 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 pl-4"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
       <div className="flex flex-col items-center">
         {/* Timeline header */}
         <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">
@@ -211,6 +272,19 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
           <span> / {taskCount}</span>
         </div>
       </div>
+
+      {/* Task Steps Preview Portal */}
+      {isHovered && timelineRect && (
+        <TaskStepsPreview
+          tasks={tasks}
+          activeIndex={activeIndex}
+          completedIndices={completedIndices}
+          timelineRect={timelineRect}
+          onScrollTo={handleScrollTo}
+          onMouseEnter={handlePreviewMouseEnter}
+          onMouseLeave={handlePreviewMouseLeave}
+        />
+      )}
     </div>
   );
 };
