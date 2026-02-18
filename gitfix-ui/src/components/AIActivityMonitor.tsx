@@ -84,7 +84,7 @@ const AIActivityMonitor: React.FC<AIActivityMonitorProps> = ({ runningItems, run
           className="fixed w-[400px] bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 z-50 overflow-hidden"
           style={{
             top: '64px',
-            left: '0px',
+            left: '240px',
           }}
         >
           {/* Header */}

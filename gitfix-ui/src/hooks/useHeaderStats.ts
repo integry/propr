@@ -243,10 +243,7 @@ export function useHeaderStats(): HeaderStats {
 
       if (!isMountedRef.current) return;
 
-      // 1. Running count from queue
-      setRunningCount(queueStats.active);
-
-      // 1.5. Build running items list for AI Activity Monitor
+      // 1. Build running items list for AI Activity Monitor
       const runningItemsList: RunningItem[] = [];
 
       // Add generating/refining plans
@@ -283,6 +280,8 @@ export function useHeaderStats(): HeaderStats {
       });
 
       setRunningItems(runningItemsList);
+      // Running count should match the actual running items to ensure consistency
+      setRunningCount(runningItemsList.length);
 
       // 2. Process active plans
       // Plans are already pre-filtered at DB level (excludes merged, executed)
