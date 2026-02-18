@@ -4,8 +4,10 @@ import {
   REDIS_CHANNELS,
   TASK_UPDATE,
   DRAFT_UPDATE,
+  INDEXING_UPDATE,
   type TaskUpdatePayload,
   type DraftUpdatePayload,
+  type IndexingUpdatePayload,
   type EventPayload
 } from '@gitfix/shared';
 
@@ -108,6 +110,29 @@ class EventPublisher {
       data: params.data
     };
     await this.publish(REDIS_CHANNELS.DRAFTS, payload);
+  }
+
+  /**
+   * Publish an indexing progress event.
+   * Called when repository indexing progress changes.
+   */
+  async publishIndexingUpdate(params: {
+    repository: string;
+    phase: string;
+    progress?: number;
+    totalFiles?: number;
+    processedFiles?: number;
+  }): Promise<void> {
+    const payload: IndexingUpdatePayload = {
+      eventType: INDEXING_UPDATE,
+      repository: params.repository,
+      phase: params.phase,
+      progress: params.progress,
+      totalFiles: params.totalFiles,
+      processedFiles: params.processedFiles,
+      timestamp: new Date().toISOString()
+    };
+    await this.publish(REDIS_CHANNELS.INDEXING, payload);
   }
 
   /**

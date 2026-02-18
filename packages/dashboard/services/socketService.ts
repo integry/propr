@@ -5,9 +5,11 @@ import {
   REDIS_CHANNELS,
   TASK_UPDATE,
   DRAFT_UPDATE,
+  INDEXING_UPDATE,
   type EventPayload,
   type TaskUpdatePayload,
-  type DraftUpdatePayload
+  type DraftUpdatePayload,
+  type IndexingUpdatePayload
 } from '@gitfix/shared';
 
 /** CORS origin validation function type compatible with Socket.IO */
@@ -79,6 +81,27 @@ export class SocketService {
         console.log(`[SocketService] Client ${socket.id} unsubscribed from draft:${draftId}`);
       });
 
+      socket.on('subscribe:indexing', (repository: string) => {
+        socket.join(`indexing:${repository}`);
+        console.log(`[SocketService] Client ${socket.id} subscribed to indexing:${repository}`);
+      });
+
+      socket.on('unsubscribe:indexing', (repository: string) => {
+        socket.leave(`indexing:${repository}`);
+        console.log(`[SocketService] Client ${socket.id} unsubscribed from indexing:${repository}`);
+      });
+
+      // Allow clients to subscribe to all indexing updates (global room)
+      socket.on('subscribe:indexing:updates', () => {
+        socket.join('indexing:updates');
+        console.log(`[SocketService] Client ${socket.id} subscribed to indexing:updates`);
+      });
+
+      socket.on('unsubscribe:indexing:updates', () => {
+        socket.leave('indexing:updates');
+        console.log(`[SocketService] Client ${socket.id} unsubscribed from indexing:updates`);
+      });
+
       // Handle client disconnect
       socket.on('disconnect', (reason: string) => {
         console.log(`[SocketService] Client disconnected: ${socket.id}, reason: ${reason}`);
@@ -138,6 +161,16 @@ export class SocketService {
         // Also broadcast to the general drafts channel
         this.io.emit(DRAFT_UPDATE, draftPayload);
         console.log(`[SocketService] Broadcasted ${DRAFT_UPDATE} for draft ${draftPayload.draftId}, step: ${draftPayload.step}`);
+        break;
+      }
+
+      case INDEXING_UPDATE: {
+        const indexingPayload = payload as IndexingUpdatePayload;
+        // Broadcast to clients watching this specific repository's indexing
+        this.io.to(`indexing:${indexingPayload.repository}`).emit(INDEXING_UPDATE, indexingPayload);
+        // Also broadcast to the general indexing:updates room for global listeners
+        this.io.to('indexing:updates').emit(INDEXING_UPDATE, indexingPayload);
+        console.log(`[SocketService] Broadcasted ${INDEXING_UPDATE} for repository ${indexingPayload.repository}, phase: ${indexingPayload.phase}`);
         break;
       }
 
