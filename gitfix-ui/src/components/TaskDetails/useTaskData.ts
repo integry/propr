@@ -14,7 +14,7 @@ import {
   AnalysisData
 } from './types';
 import { useToast } from '../ui/useToast';
-import { useSocket } from '../../contexts/SocketContext';
+import { useSocket } from '../../contexts/useSocket';
 import { TaskUpdatePayload } from '@gitfix/shared';
 
 export const useTaskData = (taskId: string | undefined) => {

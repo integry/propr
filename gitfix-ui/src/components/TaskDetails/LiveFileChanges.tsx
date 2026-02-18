@@ -3,7 +3,7 @@ import { GitBranch, RefreshCw, AlertCircle, Plus, Minus } from 'lucide-react';
 import FileTree from './FileTree';
 import DiffViewer from './DiffViewer';
 import { FileChange, FileChangesResponse, getFileChanges } from '../../api/fileChangesApi';
-import { useSocket } from '../../contexts/SocketContext';
+import { useSocket } from '../../contexts/useSocket';
 import { TaskUpdatePayload } from '@gitfix/shared';
 
 interface LiveFileChangesProps {
