@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import TaskStatsChart from './TaskStatsChart';
@@ -9,6 +9,7 @@ import ActivitySparkline from './ActivitySparkline';
 import { getQueueStats } from '../api/gitfixApi';
 import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
 import { Loader2, ChevronRight } from 'lucide-react';
+import { useSocket } from '../contexts/useSocket';
 
 interface QueueStats {
   active: number;
@@ -115,30 +116,51 @@ const Dashboard: React.FC = () => {
   const [overviewStats, setOverviewStats] = useState<StatsOverviewResponse | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(true);
 
-  // Fetch task stats, queue stats, and overview stats for KPIs
-  useEffect(() => {
-    const fetchAllStats = async () => {
-      try {
+  // WebSocket for real-time updates
+  const { onTaskUpdate, isConnected } = useSocket();
+
+  // Fetch all stats
+  const fetchAllStats = useCallback(async (isInitialLoad = false) => {
+    try {
+      if (isInitialLoad) {
         setStatsLoading(true);
-        const [tStats, qStats, oStats] = await Promise.all([
-          getTaskStats(),
-          getQueueStats(),
-          getStatsOverview()
-        ]);
-        setTaskStats(tStats);
-        setQueueStats(qStats as QueueStats);
-        setOverviewStats(oStats);
-      } catch (err) {
-        console.error('Failed to fetch stats:', err);
-      } finally {
-        setStatsLoading(false);
       }
+      const [tStats, qStats, oStats] = await Promise.all([
+        getTaskStats(),
+        getQueueStats(),
+        getStatsOverview()
+      ]);
+      setTaskStats(tStats);
+      setQueueStats(qStats as QueueStats);
+      setOverviewStats(oStats);
+    } catch (err) {
+      console.error('Failed to fetch stats:', err);
+    } finally {
+      setStatsLoading(false);
+    }
+  }, []);
+
+  // Initial load
+  useEffect(() => {
+    fetchAllStats(true);
+  }, [fetchAllStats]);
+
+  // Subscribe to WebSocket events for real-time updates
+  useEffect(() => {
+    if (!isConnected) return;
+
+    // Handle task updates - refresh stats when any task changes state
+    const handleTaskUpdate = () => {
+      console.log('[Dashboard] Received task update, refreshing stats');
+      fetchAllStats(false);
     };
 
-    fetchAllStats();
-    const interval = setInterval(fetchAllStats, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    const unsubscribe = onTaskUpdate(handleTaskUpdate);
+
+    return () => {
+      unsubscribe();
+    };
+  }, [isConnected, onTaskUpdate, fetchAllStats]);
 
   // Format date for sparkline display
   const formatDate = (dateStr: string): string => {

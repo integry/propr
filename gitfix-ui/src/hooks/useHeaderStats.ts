@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getQueueStats, getTasks, getSystemStatus } from '../api/gitfixApi';
 import { getDrafts, DraftListItem } from '../api/plannerApi';
+import { useSocket } from '../contexts/useSocket';
 
 // LocalStorage keys for dismissal tracking
 const DISMISSED_PLAN_IDS_KEY = 'dismissed_plan_ids';
@@ -9,9 +10,6 @@ const DISMISSED_TASK_IDS_KEY = 'dismissed_task_ids';
 // When a task is dismissed, we store the timestamp for that PR/issue key
 // All tasks created before that timestamp for that PR/issue are auto-dismissed
 const DISMISSED_TASK_TIMESTAMPS_KEY = 'dismissed_task_timestamps';
-
-// Polling interval in milliseconds
-const POLLING_INTERVAL = 5000;
 
 interface Task {
   id: string;
@@ -177,6 +175,9 @@ export function useHeaderStats(): HeaderStats {
 
   // Track if component is mounted
   const isMountedRef = useRef(true);
+
+  // WebSocket connection for real-time updates
+  const { onTaskUpdate, onDraftUpdate, isConnected } = useSocket();
 
   // Dismiss a plan
   const dismissPlan = useCallback((planId: string) => {
@@ -464,23 +465,43 @@ export function useHeaderStats(): HeaderStats {
     await fetchStats(false);
   }, [fetchStats]);
 
-  // Initial load and polling setup
+  // Initial load
   useEffect(() => {
     isMountedRef.current = true;
 
     // Initial fetch
     fetchStats(true);
 
-    // Set up polling
-    const intervalId = setInterval(() => {
-      fetchStats(false);
-    }, POLLING_INTERVAL);
-
     return () => {
       isMountedRef.current = false;
-      clearInterval(intervalId);
     };
   }, [fetchStats]);
+
+  // Subscribe to WebSocket events for real-time updates
+  useEffect(() => {
+    if (!isConnected) return;
+
+    // Handle task updates - refresh stats when any task changes state
+    const handleTaskUpdate = () => {
+      console.log('[useHeaderStats] Received task update, refreshing stats');
+      fetchStats(false);
+    };
+
+    // Handle draft updates - refresh stats when drafts change (affects active plans)
+    const handleDraftUpdate = () => {
+      console.log('[useHeaderStats] Received draft update, refreshing stats');
+      fetchStats(false);
+    };
+
+    // Subscribe to task and draft updates
+    const unsubscribeTask = onTaskUpdate(handleTaskUpdate);
+    const unsubscribeDraft = onDraftUpdate(handleDraftUpdate);
+
+    return () => {
+      unsubscribeTask();
+      unsubscribeDraft();
+    };
+  }, [isConnected, onTaskUpdate, onDraftUpdate, fetchStats]);
 
   // Re-filter when dismissed IDs or timestamps change
   useEffect(() => {
