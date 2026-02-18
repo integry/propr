@@ -28,6 +28,16 @@ interface Task {
   planIssueStatus?: string | null;
 }
 
+// Running item interface for AI Activity Monitor
+export interface RunningItem {
+  id: string;
+  type: 'plan' | 'task';
+  label: string;
+  repository: string;
+  status: string;
+  createdAt: string;
+}
+
 // Map of PR/issue keys to dismissal timestamps
 // When a task group is dismissed, all tasks created before that timestamp are hidden
 interface DismissedTaskTimestamps {
@@ -55,6 +65,9 @@ interface SystemHealth {
 export interface HeaderStats {
   // Running tasks count from queue
   runningCount: number;
+
+  // Running items for AI Activity Monitor dropdown
+  runningItems: RunningItem[];
 
   // Active plans (not merged, not closed), sorted by updated_at descending
   activePlans: DraftListItem[];
@@ -142,6 +155,7 @@ const getTaskGroupKey = (repoOwner: string, repoName: string, prNumber?: number,
 
 export function useHeaderStats(): HeaderStats {
   const [runningCount, setRunningCount] = useState<number>(0);
+  const [runningItems, setRunningItems] = useState<RunningItem[]>([]);
   const [activePlans, setActivePlans] = useState<DraftListItem[]>([]);
   const [reviewCount, setReviewCount] = useState<number>(0);
   const [reviewGroups, setReviewGroups] = useState<TaskGroup[]>([]);
@@ -216,19 +230,58 @@ export function useHeaderStats(): HeaderStats {
       }
 
       // Fetch all data in parallel with smart DB-level pre-filtering
-      const [queueStats, draftsResponse, tasksResponse, statusResponse] = await Promise.all([
+      const [_queueStats, draftsResponse, tasksResponse, processingTasksResponse, statusResponse] = await Promise.all([
         getQueueStats(),
         // Fetch active plans only (exclude merged and executed at DB level)
         getDrafts({ limit: 20, excludeStatuses: 'merged,executed' }),
         // Fetch review-worthy tasks only (completed/failed, exclude merged at DB level)
         getTasks({ limit: 30, forReview: true, excludeMerged: true }),
+        // Fetch processing tasks for the AI Activity Monitor
+        getTasks({ status: 'processing', limit: 20 }),
         getSystemStatus(),
       ]);
 
       if (!isMountedRef.current) return;
 
-      // 1. Running count from queue
-      setRunningCount(queueStats.active);
+      // 1. Build running items list for AI Activity Monitor
+      const runningItemsList: RunningItem[] = [];
+
+      // Add generating/refining plans
+      const generatingPlans = draftsResponse.drafts.filter(
+        (draft) => draft.status === 'generating' || draft.status === 'refining'
+      );
+      generatingPlans.forEach((plan) => {
+        runningItemsList.push({
+          id: plan.draft_id,
+          type: 'plan',
+          label: plan.name || plan.initial_prompt || 'Generating Plan',
+          repository: plan.repository,
+          status: plan.status === 'generating' ? 'Generating Spec' : 'Refining',
+          createdAt: plan.created_at,
+        });
+      });
+
+      // Add processing tasks
+      const processingTasks = (processingTasksResponse as { tasks: Task[] }).tasks || [];
+      processingTasks.forEach((task) => {
+        runningItemsList.push({
+          id: task.id,
+          type: 'task',
+          label: task.title || `Task ${task.id.slice(0, 8)}`,
+          repository: task.repository || `${task.repositoryOwner || 'unknown'}/${task.repositoryName || 'unknown'}`,
+          status: 'Implementing',
+          createdAt: task.createdAt,
+        });
+      });
+
+      // Sort by createdAt descending (newest first)
+      runningItemsList.sort((a, b) => {
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+
+      setRunningItems(runningItemsList);
+      // Running count should match the actual running items to ensure consistency
+      setRunningCount(runningItemsList.length);
 
       // 2. Process active plans
       // Plans are already pre-filtered at DB level (excludes merged, executed)
@@ -440,6 +493,7 @@ export function useHeaderStats(): HeaderStats {
 
   return {
     runningCount,
+    runningItems,
     activePlans,
     reviewCount,
     reviewGroups,
