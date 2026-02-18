@@ -12,6 +12,7 @@ interface TaskStepsPreviewProps {
   activeIndex: number;
   completedIndices: number[];
   timelineRect: DOMRect;
+  stepsTop: number;
   onScrollTo: (taskId: string, index: number) => void;
   onMouseEnter: () => void;
   onMouseLeave: () => void;
@@ -22,6 +23,7 @@ export const TaskStepsPreview: React.FC<TaskStepsPreviewProps> = ({
   activeIndex,
   completedIndices,
   timelineRect,
+  stepsTop,
   onScrollTo,
   onMouseEnter,
   onMouseLeave,
@@ -30,21 +32,16 @@ export const TaskStepsPreview: React.FC<TaskStepsPreviewProps> = ({
 
   const previewContent = (
     <div
-      className="fixed bg-white rounded-lg shadow-xl border border-gray-200 py-2 z-[10000] max-h-[80vh] overflow-y-auto"
+      className="fixed bg-white rounded-lg shadow-xl border border-gray-200 z-[10000] max-h-[80vh] overflow-y-auto"
       style={{
         left: timelineRect.right + 8,
-        top: timelineRect.top,
+        top: stepsTop,
         minWidth: 280,
         maxWidth: 400,
       }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      <div className="px-3 py-2 border-b border-gray-100">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-          All Steps ({tasks.length})
-        </h3>
-      </div>
       <div className="py-1">
         {tasks.map((task, index) => {
           const isActive = index === activeIndex;
@@ -89,7 +86,6 @@ export const TaskStepsPreview: React.FC<TaskStepsPreviewProps> = ({
                     ? 'text-indigo-600'
                     : 'text-gray-700'
                 }`}
-                title={task.title}
               >
                 {task.title || `Step ${index + 1}`}
               </span>

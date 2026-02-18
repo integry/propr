@@ -35,7 +35,6 @@ interface SortableStepProps {
   isActive: boolean;
   isCompleted: boolean;
   isPast: boolean;
-  title: string;
   onStepClick: (index: number) => void;
   isLast: boolean;
 }
@@ -46,7 +45,6 @@ const SortableStep: React.FC<SortableStepProps> = ({
   isActive,
   isCompleted,
   isPast,
-  title,
   onStepClick,
   isLast,
 }) => {
@@ -104,18 +102,12 @@ const SortableStep: React.FC<SortableStepProps> = ({
               ? 'bg-indigo-100 text-indigo-500'
               : 'bg-gray-200 text-gray-500 hover:bg-gray-300'
           }`}
-          title={title}
         >
           {isCompleted ? (
             <CheckCircle2 size={16} />
           ) : (
             <span className="text-xs font-semibold">{index + 1}</span>
           )}
-
-          {/* Tooltip on hover */}
-          <div className="absolute left-full ml-3 px-3 py-1.5 bg-gray-900 text-white text-sm font-medium rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none max-w-[250px] whitespace-normal" style={{ zIndex: 9999 }}>
-            {title}
-          </div>
         </button>
       </div>
 
@@ -143,7 +135,9 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [timelineRect, setTimelineRect] = useState<DOMRect | null>(null);
+  const [stepsTop, setStepsTop] = useState<number>(0);
   const timelineRef = useRef<HTMLDivElement>(null);
+  const stepsContainerRef = useRef<HTMLDivElement>(null);
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const sensors = useSensors(
@@ -172,6 +166,9 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
     }
     if (timelineRef.current) {
       setTimelineRect(timelineRef.current.getBoundingClientRect());
+    }
+    if (stepsContainerRef.current) {
+      setStepsTop(stepsContainerRef.current.getBoundingClientRect().top);
     }
     setIsHovered(true);
   }, []);
@@ -241,12 +238,11 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
             items={ids}
             strategy={verticalListSortingStrategy}
           >
-            <div className="relative flex flex-col items-center gap-0">
+            <div ref={stepsContainerRef} className="relative flex flex-col items-center gap-0">
               {ids.map((id, index) => {
                 const isActive = index === activeIndex;
                 const isCompleted = completedIndices.includes(index);
                 const isPast = index < activeIndex;
-                const title = taskTitles[index] || `Step ${index + 1}`;
 
                 return (
                   <SortableStep
@@ -256,7 +252,6 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
                     isActive={isActive}
                     isCompleted={isCompleted}
                     isPast={isPast}
-                    title={title}
                     onStepClick={onStepClick}
                     isLast={index === taskCount - 1}
                   />
@@ -280,6 +275,7 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
           activeIndex={activeIndex}
           completedIndices={completedIndices}
           timelineRect={timelineRect}
+          stepsTop={stepsTop}
           onScrollTo={handleScrollTo}
           onMouseEnter={handlePreviewMouseEnter}
           onMouseLeave={handlePreviewMouseLeave}
