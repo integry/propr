@@ -37,6 +37,7 @@ interface SortableStepProps {
   isPast: boolean;
   onStepClick: (index: number) => void;
   isLast: boolean;
+  stepRef?: (el: HTMLDivElement | null) => void;
 }
 
 const SortableStep: React.FC<SortableStepProps> = ({
@@ -47,6 +48,7 @@ const SortableStep: React.FC<SortableStepProps> = ({
   isPast,
   onStepClick,
   isLast,
+  stepRef,
 }) => {
   const {
     attributes,
@@ -62,9 +64,15 @@ const SortableStep: React.FC<SortableStepProps> = ({
     transition,
   };
 
+  // Combine refs
+  const combinedRef = useCallback((el: HTMLDivElement | null) => {
+    setNodeRef(el);
+    if (stepRef) stepRef(el);
+  }, [setNodeRef, stepRef]);
+
   return (
     <div
-      ref={setNodeRef}
+      ref={combinedRef}
       style={style}
       className={`relative flex flex-col items-center ${isDragging ? 'z-50' : ''}`}
     >
@@ -123,6 +131,11 @@ const SortableStep: React.FC<SortableStepProps> = ({
   );
 };
 
+interface StepPosition {
+  top: number;
+  height: number;
+}
+
 export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   taskCount,
   activeIndex,
@@ -136,8 +149,10 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   const [isHovered, setIsHovered] = useState(false);
   const [timelineRect, setTimelineRect] = useState<DOMRect | null>(null);
   const [stepsTop, setStepsTop] = useState<number>(0);
+  const [stepPositions, setStepPositions] = useState<StepPosition[]>([]);
   const timelineRef = useRef<HTMLDivElement>(null);
   const stepsContainerRef = useRef<HTMLDivElement>(null);
+  const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const sensors = useSensors(
@@ -168,7 +183,21 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
       setTimelineRect(timelineRef.current.getBoundingClientRect());
     }
     if (stepsContainerRef.current) {
-      setStepsTop(stepsContainerRef.current.getBoundingClientRect().top);
+      const containerRect = stepsContainerRef.current.getBoundingClientRect();
+      setStepsTop(containerRect.top);
+
+      // Calculate positions for each step relative to container
+      const positions: StepPosition[] = stepRefs.current.map((ref) => {
+        if (ref) {
+          const rect = ref.getBoundingClientRect();
+          return {
+            top: rect.top - containerRect.top,
+            height: rect.height,
+          };
+        }
+        return { top: 0, height: 40 };
+      });
+      setStepPositions(positions);
     }
     setIsHovered(true);
   }, []);
@@ -254,6 +283,9 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
                     isPast={isPast}
                     onStepClick={onStepClick}
                     isLast={index === taskCount - 1}
+                    stepRef={(el) => {
+                      stepRefs.current[index] = el;
+                    }}
                   />
                 );
               })}
@@ -276,6 +308,7 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
           completedIndices={completedIndices}
           timelineRect={timelineRect}
           stepsTop={stepsTop}
+          stepPositions={stepPositions}
           onScrollTo={handleScrollTo}
           onMouseEnter={handlePreviewMouseEnter}
           onMouseLeave={handlePreviewMouseLeave}
