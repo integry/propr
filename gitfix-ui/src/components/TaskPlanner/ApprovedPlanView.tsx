@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2, Layers, ArrowDownToLine } from 'lucide-react';
+import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2 } from 'lucide-react';
 import { DraftWithPlan, deleteDraft } from '../../api/gitfixApi';
 import DeletePlanDialog from './DeletePlanDialog';
 import PlanIssuesManager from './PlanIssuesManager';
@@ -120,9 +120,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
     return Array.isArray(planJson) ? planJson : [];
   })();
 
-  // Determine if epic PR option should be shown (only for multi-task plans)
-  const showEpicOption = tasks.length >= 2;
-
   // Extract repository URL from draft
   const getRepositoryUrl = () => {
     const repo = draft.repository;
@@ -235,11 +232,12 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
         <PlanIssuesManager
           draftId={draft.draft_id}
           tasks={tasks}
-          repository={draft.repository}
           onIssuesChange={handleIssuesChange}
           refreshKey={refreshKey}
           useEpic={useEpic}
           autoMerge={autoMerge}
+          onUseEpicChange={setUseEpic}
+          onAutoMergeChange={setAutoMerge}
         />
       </div>
 
@@ -272,40 +270,13 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
             </>
           )}
         </div>
-        <div className="flex items-center gap-4">
-          {/* PR Options */}
-          <div className="flex items-center gap-4 border-r border-gray-300 pr-4">
-            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={autoMerge}
-                onChange={(e) => setAutoMerge(e.target.checked)}
-                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
-              />
-              <ArrowDownToLine size={14} className="text-gray-500" />
-              <span>Merge the PR automatically if Github checks pass</span>
-            </label>
-            {showEpicOption && (
-              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={useEpic}
-                  onChange={(e) => setUseEpic(e.target.checked)}
-                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
-                />
-                <Layers size={14} className="text-gray-500" />
-                <span>Merge to epic PR</span>
-              </label>
-            )}
-          </div>
-          <button
-            onClick={handleRefresh}
-            className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors"
-            title="Refresh issues"
-          >
-            <RefreshCw size={16} />
-          </button>
-        </div>
+        <button
+          onClick={handleRefresh}
+          className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors"
+          title="Refresh issues"
+        >
+          <RefreshCw size={16} />
+        </button>
       </div>
 
       <DeletePlanDialog

@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle, Layers, ArrowDownToLine } from 'lucide-react';
 import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
@@ -21,6 +21,10 @@ interface PlanIssuesManagerProps {
   useEpic?: boolean;
   /** Whether to auto-merge individual PRs into the Epic PR */
   autoMerge?: boolean;
+  /** Callback when useEpic changes */
+  onUseEpicChange?: (value: boolean) => void;
+  /** Callback when autoMerge changes */
+  onAutoMergeChange?: (value: boolean) => void;
 }
 
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
@@ -31,7 +35,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   onIssuesChange,
   refreshKey,
   useEpic,
-  autoMerge
+  autoMerge,
+  onUseEpicChange,
+  onAutoMergeChange
 }) => {
   const [showMerged, setShowMerged] = useState(false);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
@@ -208,6 +214,38 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           )}
         </div>
       )}
+
+      {/* PR Options - visible controls for auto-merge and epic PR */}
+      {pendingCount > 0 && (
+        <div className="flex items-center gap-6 p-3 bg-blue-50 rounded-lg border border-blue-200">
+          <span className="text-sm font-medium text-blue-800">
+            PR Options:
+          </span>
+          <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoMerge || false}
+              onChange={(e) => onAutoMergeChange?.(e.target.checked)}
+              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+            />
+            <ArrowDownToLine size={14} className="text-blue-600" />
+            <span>Merge the PR automatically if Github checks pass</span>
+          </label>
+          {tasks.length >= 2 && (
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={useEpic || false}
+                onChange={(e) => onUseEpicChange?.(e.target.checked)}
+                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+              />
+              <Layers size={14} className="text-blue-600" />
+              <span>Merge to epic PR</span>
+            </label>
+          )}
+        </div>
+      )}
+
       <div className="space-y-2">
         {activeIssues.map(issue => (
           <PlanIssueRow
