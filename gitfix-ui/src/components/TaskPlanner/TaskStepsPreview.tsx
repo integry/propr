@@ -48,20 +48,6 @@ export const TaskStepsPreview: React.FC<TaskStepsPreviewProps> = ({
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      {/* Header following the in-focus dropdown pattern */}
-      <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200">
-        <div className="flex items-baseline justify-between">
-          <div className="flex items-baseline gap-2">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-              STEPS IN PLAN
-            </span>
-            <span className="text-[10px] font-bold text-slate-400">
-              ({tasks.length})
-            </span>
-          </div>
-        </div>
-      </div>
-
       {/* Step titles - aligned with step numbers */}
       <div className="max-h-[600px] overflow-y-auto scrollbar-stealth">
         {tasks.map((task, index) => {
