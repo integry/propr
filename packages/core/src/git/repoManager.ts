@@ -137,6 +137,12 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
         } else {
             logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Cloning repository...');
 
+            // If the directory exists but has no .git folder (e.g., from a failed clone),
+            // we need to remove it first because git clone fails on non-empty directories
+            if (await fs.pathExists(localRepoPath)) {
+                logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Directory exists without .git folder - removing before clone');
+                await fs.remove(localRepoPath);
+            }
             await fs.ensureDir(localRepoPath);
 
             const cloneOptions: string[] = [];
