@@ -58,7 +58,7 @@ export const TaskStepsPreview: React.FC<TaskStepsPreviewProps> = ({
       className="fixed bg-white border border-slate-200 shadow-xl ring-1 ring-black/5 z-[10000] overflow-hidden rounded-r-lg py-3"
       style={{
         left: timelineRect.right,
-        top: stepsTop - 6,
+        top: stepsTop - 9,
         minWidth: 280,
         maxWidth: 400,
       }}
