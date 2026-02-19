@@ -70,6 +70,31 @@ export async function mergePR(options: MergePROptions): Promise<MergePRResult> {
 }
 
 /**
+ * Gets the current HEAD SHA of a PR to verify checks are for the latest commit.
+ */
+async function getCurrentPRHead(owner: string, repoName: string, prNumber: number): Promise<string | null> {
+    try {
+        const octokit = await getAuthenticatedOctokit();
+
+        const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+            owner,
+            repo: repoName,
+            pull_number: prNumber
+        });
+
+        return prResponse.data.head.sha;
+    } catch (error) {
+        logger.warn({
+            owner,
+            repoName,
+            prNumber,
+            error: (error as Error).message
+        }, 'Failed to get current PR head');
+        return null;
+    }
+}
+
+/**
  * Checks if all check runs have passed for a PR.
  * Only checks GitHub Actions check runs (not legacy commit statuses).
  */
@@ -246,6 +271,20 @@ export async function handleCheckRunEvent(
 
             if (!prHasLabel && !issueHasLabel) {
                 log.debug({ owner, repoName, prNumber }, 'PR does not have auto-merge label, skipping');
+                continue;
+            }
+
+            // Verify the check_run SHA matches the current PR head
+            // This prevents merging unchecked commits pushed after checks started
+            const currentPrHead = await getCurrentPRHead(owner, repoName, prNumber);
+            if (currentPrHead !== headSha) {
+                log.debug({
+                    owner,
+                    repoName,
+                    prNumber,
+                    checkRunSha: headSha,
+                    currentPrHead
+                }, 'Check run SHA does not match current PR head, skipping (newer commits exist)');
                 continue;
             }
 
