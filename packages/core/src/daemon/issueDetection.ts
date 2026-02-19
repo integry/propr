@@ -105,7 +105,8 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     try {
         const timestamp = Date.now();
-        const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${timestamp}`;
+        // Use consistent jobId without timestamp for deduplication - BullMQ will reject duplicates
+        const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}`;
         const issueJob = {
             repoOwner: issue.repoOwner,
             repoName: issue.repoName,
