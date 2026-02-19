@@ -32,6 +32,7 @@ import {
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';
+import { handleCheckRunEvent } from './github/checkRunHandler.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -214,7 +215,8 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             issueProcessor: (issue: DetectedIssue, correlationId: string) => processDetectedIssue(issue, correlationId, redisClient),
             commentProcessor: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => processCommentEvent(payload, eventType, correlationId, commentConfig),
             commentDeletedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
-            commentEditedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig)
+            commentEditedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig),
+            checkRunProcessor: handleCheckRunEvent
         });
         logger.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');
     } else {

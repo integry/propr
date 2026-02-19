@@ -98,7 +98,7 @@ export type {
 } from './queue/taskQueue.js';
 
 export { processWebhookEvent, initializeWebhookHandler } from './webhook/webhookHandler.js';
-export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, WebhookHandlerOptions } from './webhook/webhookHandler.js';
+export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { handleCommentDeleted, handleCommentEdited, processCommentEvent } from './webhook/commentEventHandler.js';
 export type { CommentPayload, CommentEventConfig, CommentEventType } from './webhook/commentEventHandler.js';
 export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './webhook/commentEventHelpers.js';

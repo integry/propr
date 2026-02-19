@@ -23,12 +23,13 @@ import type {
     PullRequestReviewCommentEditedEvent,
     PullRequestEvent,
     PullRequestLabeledEvent,
-    PullRequestUnlabeledEvent
+    PullRequestUnlabeledEvent,
+    CheckRunEvent
 } from '@octokit/webhooks-types';
 
 const execAsync = promisify(exec);
 
-export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review_comment' | 'pull_request';
+export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review_comment' | 'pull_request' | 'check_run';
 
 // --- PREVIEW ENVIRONMENT CONFIGURATION ---
 // This implements the "Singleton Processor" pattern for webhook routing.
@@ -78,12 +79,14 @@ export type CommentProcessor = (payload: IssueCommentEvent | PullRequestReviewCo
 export type CommentDeletedHandler = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void>;
 export type CommentEditedHandler = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void>;
 export type PullRequestProcessor = (payload: PullRequestEvent, correlationId: string) => Promise<void>;
+export type CheckRunProcessor = (payload: CheckRunEvent, correlationId: string) => Promise<void>;
 
 let processDetectedIssue: IssueProcessor | null = null;
 let processCommentEvent: CommentProcessor | null = null;
 let handleCommentDeleted: CommentDeletedHandler | null = null;
 let handleCommentEdited: CommentEditedHandler | null = null;
 let processPullRequest: PullRequestProcessor | null = null;
+let processCheckRun: CheckRunProcessor | null = null;
 
 export interface WebhookHandlerOptions {
     issueProcessor: IssueProcessor;
@@ -91,6 +94,7 @@ export interface WebhookHandlerOptions {
     commentDeletedHandler: CommentDeletedHandler;
     commentEditedHandler: CommentEditedHandler;
     pullRequestProcessor?: PullRequestProcessor;
+    checkRunProcessor?: CheckRunProcessor;
 }
 
 export async function initializeWebhookHandler(options: WebhookHandlerOptions): Promise<void> {
@@ -99,6 +103,7 @@ export async function initializeWebhookHandler(options: WebhookHandlerOptions): 
     handleCommentDeleted = options.commentDeletedHandler;
     handleCommentEdited = options.commentEditedHandler;
     processPullRequest = options.pullRequestProcessor || null;
+    processCheckRun = options.checkRunProcessor || null;
     logger.info('Webhook handler initialized');
 }
 
@@ -152,6 +157,10 @@ function isPullRequestLabeledEvent(payload: PullRequestEvent): payload is PullRe
 
 function isPullRequestUnlabeledEvent(payload: PullRequestEvent): payload is PullRequestUnlabeledEvent {
     return payload.action === 'unlabeled';
+}
+
+function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
+    return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
 }
 
 // --- PROCESSOR LABEL MANAGEMENT: Track 'preview-env' label on gitfix repo PRs ---
@@ -453,6 +462,9 @@ async function processStandardWebhookEvent(
             break;
         case 'pull_request_review_comment':
             if (isPullRequestReviewCommentEvent(payload)) await handlePullRequestReviewCommentEvent(payload, correlationId);
+            break;
+        case 'check_run':
+            if (isCheckRunEvent(payload) && processCheckRun) await processCheckRun(payload, correlationId);
             break;
         default:
             correlatedLogger.debug({ event: eventType }, 'Ignoring webhook event');
