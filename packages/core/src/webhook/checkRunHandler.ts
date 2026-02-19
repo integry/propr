@@ -70,50 +70,37 @@ export async function mergePR(options: MergePROptions): Promise<MergePRResult> {
 }
 
 /**
- * Checks if all required status checks have passed for a PR.
+ * Checks if all check runs have passed for a PR.
+ * Only checks GitHub Actions check runs (not legacy commit statuses).
  */
 async function areAllChecksPassing(owner: string, repoName: string, ref: string): Promise<boolean> {
     try {
         const octokit = await getAuthenticatedOctokit();
 
-        // Get combined status for the ref
-        const statusResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/status', {
-            owner,
-            repo: repoName,
-            ref
-        });
-
-        // Also check check runs (GitHub Actions use check runs, not statuses)
+        // Check runs are used by GitHub Actions and modern CI systems
         const checkRunsResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
             owner,
             repo: repoName,
             ref
         });
 
-        const combinedState = statusResponse.data.state;
         const checkRuns = checkRunsResponse.data.check_runs;
 
         // All check runs must be completed and successful
-        const allCheckRunsPass = checkRuns.every(
+        const allCheckRunsPass = checkRuns.length > 0 && checkRuns.every(
             (run: { status: string; conclusion: string | null }) =>
                 run.status === 'completed' && (run.conclusion === 'success' || run.conclusion === 'skipped')
         );
-
-        // Combined status must be success (or pending if no statuses exist)
-        const statusPasses = combinedState === 'success' || statusResponse.data.total_count === 0;
 
         logger.debug({
             owner,
             repoName,
             ref,
-            combinedState,
-            totalStatuses: statusResponse.data.total_count,
             totalCheckRuns: checkRuns.length,
-            allCheckRunsPass,
-            statusPasses
+            allCheckRunsPass
         }, 'Checked PR status');
 
-        return allCheckRunsPass && statusPasses;
+        return allCheckRunsPass;
     } catch (error) {
         logger.warn({
             owner,
