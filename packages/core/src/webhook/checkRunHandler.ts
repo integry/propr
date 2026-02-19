@@ -70,6 +70,52 @@ export async function mergePR(options: MergePROptions): Promise<MergePRResult> {
 }
 
 /**
+ * Deletes the branch associated with a PR after merge.
+ */
+async function deleteBranch(
+    owner: string,
+    repoName: string,
+    prNumber: number,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    try {
+        const octokit = await getAuthenticatedOctokit();
+
+        // Get the PR to find the branch name
+        const prResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+            owner,
+            repo: repoName,
+            pull_number: prNumber
+        });
+
+        const branchName = prResponse.data.head.ref;
+        const branchOwner = prResponse.data.head.repo?.owner?.login;
+
+        // Only delete if the branch is in the same repo (not a fork)
+        if (branchOwner !== owner) {
+            log.debug({ owner, repoName, prNumber, branchOwner }, 'Branch is from a fork, not deleting');
+            return;
+        }
+
+        await octokit.request('DELETE /repos/{owner}/{repo}/git/refs/{ref}', {
+            owner,
+            repo: repoName,
+            ref: `heads/${branchName}`
+        });
+
+        log.info({ owner, repoName, prNumber, branchName }, 'Deleted PR branch after merge');
+    } catch (error) {
+        // Non-fatal - branch might already be deleted or protected
+        log.warn({
+            owner,
+            repoName,
+            prNumber,
+            error: (error as Error).message
+        }, 'Failed to delete PR branch');
+    }
+}
+
+/**
  * Gets the current HEAD SHA of a PR to verify checks are for the latest commit.
  */
 async function getCurrentPRHead(owner: string, repoName: string, prNumber: number): Promise<string | null> {
@@ -317,6 +363,9 @@ export async function handleCheckRunEvent(
                     prNumber,
                     sha: mergeResult.sha
                 }, 'PR auto-merged successfully');
+
+                // Delete the branch after successful merge
+                await deleteBranch(owner, repoName, prNumber, log);
 
                 // Update plan issue status if linked
                 const repository = `${owner}/${repoName}`;
