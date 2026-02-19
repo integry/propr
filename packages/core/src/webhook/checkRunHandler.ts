@@ -1,5 +1,6 @@
-import { getAuthenticatedOctokit, logger } from '@gitfix/core';
-import { findPlanIssueByRepoAndPR, updatePlanIssueByPR } from '@gitfix/core';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import logger from '../utils/logger.js';
+import { findPlanIssueByRepoAndPR, updatePlanIssueByPR } from '../config/planIssueManager.js';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
 
 export interface MergePROptions {

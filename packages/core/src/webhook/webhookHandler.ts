@@ -9,6 +9,7 @@ import {
     handlePlanPRCommentTracking,
     type CommentEventType
 } from './planIssueTracking.js';
+import { handleCheckRunEvent } from './checkRunHandler.js';
 import { isEpicBranch } from '../services/taskExecutionService.js';
 import type {
     IssuesEvent,
@@ -498,11 +499,20 @@ export async function processWebhookEvent(
     // 4. Plan Issue Tracking (runs before standard processing to update status)
     await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);
 
-    // 5. Epic PR Label Cleanup (delete base-{branchName} label when Epic PR is merged)
+    // 5. Auto-merge: Handle check_run events to merge PRs when all checks pass
+    if (eventType === 'check_run' && isCheckRunEvent(payload)) {
+        try {
+            await handleCheckRunEvent(payload, correlationId);
+        } catch (checkRunError) {
+            correlatedLogger.warn({ error: checkRunError }, 'Check run handler failed, continuing');
+        }
+    }
+
+    // 6. Epic PR Label Cleanup (delete base-{branchName} label when Epic PR is merged)
     if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
         await handleEpicPRLabelCleanup(payload, correlationId, correlatedLogger);
     }
 
-    // 6. Standard Local Processing
+    // 7. Standard Local Processing
     await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger);
 }
