@@ -35,7 +35,11 @@ export async function handlePlanIssueStatusUpdate(
         let newStatus: PlanIssueStatus | null = null;
 
         if (payload.action === 'closed') {
-            newStatus = 'closed';
+            // Don't downgrade from 'merged' to 'closed' - when a PR is merged,
+            // GitHub auto-closes the linked issue, but we want to keep 'merged' status
+            if (planIssue.status !== 'merged') {
+                newStatus = 'closed';
+            }
         } else if (payload.action === 'labeled') {
             const processingLabels = (process.env.PRIMARY_PROCESSING_LABELS || 'AI').split(',').map(l => l.trim());
             const hasProcessingLabel = labels.some(label => processingLabels.includes(label));
