@@ -246,13 +246,20 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     throw new Error('Unauthorized');
   }
 
-  if (draft.status === 'executed') {
-    correlatedLogger.info({ draftId }, 'Draft already executed');
-    return { success: true, alreadyExecuted: true };
+  // Allow re-finalization from completed/failed statuses
+  // Note: 'approved' is included for consistency with reviseDraft allowed statuses
+  const RE_FINALIZABLE_STATUSES = ['approved', 'executed', 'pr_created', 'merged', 'failed'];
+  const isReFinalization = RE_FINALIZABLE_STATUSES.includes(draft.status);
+
+  if (draft.status !== 'review' && !isReFinalization) {
+    throw new Error(`Draft must be in 'review' status to execute. Current status: ${draft.status}`);
   }
 
-  if (draft.status !== 'review') {
-    throw new Error(`Draft must be in 'review' status to execute. Current status: ${draft.status}`);
+  // For re-finalization, detach existing issues first
+  if (isReFinalization) {
+    correlatedLogger.info({ draftId, previousStatus: draft.status }, 'Re-finalizing draft, detaching existing issues');
+    const deletedCount = await db('plan_issues').where({ draft_id: draftId }).delete();
+    correlatedLogger.info({ draftId, deletedCount }, 'Detached existing plan issues');
   }
 
   const planJson: PlanTask[] = typeof draft.plan_json === 'string'
@@ -261,6 +268,14 @@ export async function executeDraft(draftId: string, userId: string, correlationI
 
   if (!Array.isArray(planJson) || planJson.length === 0) {
     throw new Error('Draft has no tasks to execute');
+  }
+
+  // For re-finalization, clear old issue references from plan tasks
+  if (isReFinalization) {
+    for (const task of planJson) {
+      delete task.issue_number;
+      delete task.issue_url;
+    }
   }
 
   const [owner, repoName] = draft.repository.split('/');
