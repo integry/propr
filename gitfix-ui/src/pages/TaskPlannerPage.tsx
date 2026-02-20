@@ -7,7 +7,59 @@ import SetupWizard from '../components/TaskPlanner/SetupWizard';
 import PlanEditor from '../components/TaskPlanner/PlanEditor';
 import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import SkeletonLoader from '../components/TaskPlanner/SkeletonLoader';
-import { DraftWithPlan } from '../api/gitfixApi';
+import { DraftWithPlan, Draft } from '../api/gitfixApi';
+
+const GeneratingView: React.FC<{ draft: Draft }> = ({ draft }) => (
+  <div className="h-[calc(100vh-120px)] p-4">
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="h-full bg-white rounded-lg shadow overflow-hidden"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
+        <div className="flex items-center gap-4">
+          <div className="text-sm text-gray-500 truncate max-w-md">{draft.task_title || draft.title || 'Untitled Task'}</div>
+          <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-700 flex items-center gap-1">
+            <motion.span
+              animate={{ opacity: [1, 0.5, 1] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
+              className="w-2 h-2 bg-yellow-500 rounded-full"
+            />
+            Generating
+          </span>
+        </div>
+      </div>
+
+      {/* Message overlay */}
+      <div className="relative h-[calc(100%-56px)]">
+        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.3 }}
+            className="bg-white/90 backdrop-blur-sm rounded-xl shadow-xl p-6 text-center max-w-md"
+          >
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+              className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto mb-4"
+            />
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Generating Your Plan</h3>
+            <p className="text-gray-600 text-sm">
+              The AI is analyzing your repository and creating an implementation plan...
+            </p>
+          </motion.div>
+        </div>
+
+        {/* Skeleton background */}
+        <div className="opacity-40">
+          <SkeletonLoader count={3} />
+        </div>
+      </div>
+    </motion.div>
+  </div>
+);
 
 const TaskPlannerPage: React.FC = () => {
   const { draftId } = useParams<{ draftId: string }>();
@@ -48,63 +100,13 @@ const TaskPlannerPage: React.FC = () => {
   }
 
   if (draft.status === 'generating') {
-    return (
-      <div className="h-[calc(100vh-120px)] p-4">
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="h-full bg-white rounded-lg shadow overflow-hidden"
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
-            <div className="flex items-center gap-4">
-              <div className="text-sm text-gray-500 truncate max-w-md">{draft.task_title || draft.title || 'Untitled Task'}</div>
-              <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-700 flex items-center gap-1">
-                <motion.span
-                  animate={{ opacity: [1, 0.5, 1] }}
-                  transition={{ duration: 1.5, repeat: Infinity }}
-                  className="w-2 h-2 bg-yellow-500 rounded-full"
-                />
-                Generating
-              </span>
-            </div>
-          </div>
-
-          {/* Message overlay */}
-          <div className="relative h-[calc(100%-56px)]">
-            <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-              <motion.div
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: 0.3 }}
-                className="bg-white/90 backdrop-blur-sm rounded-xl shadow-xl p-6 text-center max-w-md"
-              >
-                <motion.div
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                  className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto mb-4"
-                />
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">Generating Your Plan</h3>
-                <p className="text-gray-600 text-sm">
-                  The AI is analyzing your repository and creating an implementation plan...
-                </p>
-              </motion.div>
-            </div>
-
-            {/* Skeleton background */}
-            <div className="opacity-40">
-              <SkeletonLoader count={3} />
-            </div>
-          </div>
-        </motion.div>
-      </div>
-    );
+    return <GeneratingView draft={draft} />;
   }
 
-  if (draft.status === 'approved' || draft.status === 'executed') {
+  if (draft.status === 'approved' || draft.status === 'executed' || draft.status === 'pr_created' || draft.status === 'merged' || draft.status === 'failed') {
     return (
       <div className="h-[calc(100vh-120px)] p-4">
-        <ApprovedPlanView draft={draft as DraftWithPlan} />
+        <ApprovedPlanView draft={draft as DraftWithPlan} onRefetch={refetch} />
       </div>
     );
   }

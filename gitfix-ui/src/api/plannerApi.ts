@@ -29,7 +29,7 @@ export interface PlannerDraft {
   draft_id: string;
   repository: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed' | 'pr_created' | 'merged';
+  status: 'draft' | 'review' | 'generating' | 'refining' | 'approved' | 'executed' | 'pr_created' | 'merged' | 'failed';
   attachments: PlannerAttachment[];
   created_at: string;
   generation_trace?: GenerationTrace;
@@ -328,7 +328,7 @@ export interface DraftListItem {
   repository: string;
   name?: string;
   initial_prompt: string;
-  status: 'draft' | 'review' | 'executed' | 'generating' | 'refining' | 'approved' | 'pr_created' | 'merged';
+  status: 'draft' | 'review' | 'executed' | 'generating' | 'refining' | 'approved' | 'pr_created' | 'merged' | 'failed';
   updated_at: string;
   created_at: string;
   issue_summary?: IssueSummary | null;
@@ -484,4 +484,25 @@ export const abortRefinement = async (draftId: string): Promise<void> => {
     credentials: 'include'
   });
   await handleApiResponse(response);
+};
+
+export interface ReviseDraftResponse {
+  success: boolean;
+  message: string;
+  previousStatus: string;
+  issuesDetached: number;
+}
+
+/**
+ * Revise a draft plan - moves it from any active/completed status back to review,
+ * detaching existing issues but preserving plan data and chat history.
+ * This allows the user to iterate on a plan even after execution.
+ */
+export const reviseDraft = async (draftId: string): Promise<ReviseDraftResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/revise`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
 };

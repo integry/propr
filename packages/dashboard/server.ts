@@ -255,6 +255,7 @@ function setupRoutes(): void {
   app.post('/api/planner/abort-refinement', plannerRoutes.abortRefinement);
   app.post('/api/planner/finalize', plannerRoutes.finalize);
   app.post('/api/planner/drafts/:id/reset-to-setup', plannerRoutes.resetDraftToSetup);
+  app.post('/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft);
   app.post('/api/planner/validate-context-repository', plannerRoutes.validateContextRepository);
 
   app.post('/api/planner/relevance', relevanceRoutes.analyzeRelevance);

@@ -39,7 +39,8 @@ import {
   createRefineHandler,
   createFinalizeHandler,
   createAbortGenerationHandler,
-  createAbortRefinementHandler
+  createAbortRefinementHandler,
+  createReviseDraftHandler
 } from './plannerActionHandlers.js';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
@@ -283,6 +284,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const finalize = createFinalizeHandler(db);
   const abortGeneration = createAbortGenerationHandler(db);
   const abortRefinement = createAbortRefinementHandler(db);
+  const reviseDraft = createReviseDraftHandler(db);
 
   return {
     listDrafts,
@@ -307,6 +309,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     implementAllIssues,
     validateContextRepository,
     abortGeneration,
-    abortRefinement
+    abortRefinement,
+    reviseDraft
   };
 }

@@ -354,3 +354,55 @@ export function createAbortRefinementHandler(db: Knex) {
     }
   };
 }
+
+/**
+ * Revise a draft plan - moves it from any active/completed status back to review,
+ * detaching existing issues but preserving plan data and chat history.
+ */
+export function createReviseDraftHandler(db: Knex) {
+  const ALLOWED_STATUSES = ['approved', 'executed', 'pr_created', 'merged', 'failed'];
+
+  return async function reviseDraft(req: Request, res: Response): Promise<void> {
+    const check = checkDbAndAuth(db, req.user?.id);
+    if (!check.valid) { sendCheckError(res, check); return; }
+
+    const draftId = req.params.id;
+    if (!draftId) { res.status(400).json({ error: 'Draft ID is required' }); return; }
+
+    try {
+      // Verify ownership and get current status
+      const ownership = await verifyDraftOwnership(db, draftId, req.user!.id, ['user_id', 'status']);
+      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+
+      const currentStatus = ownership.draft!.status as string;
+
+      // Validate that the draft is in an allowed status
+      if (!ALLOWED_STATUSES.includes(currentStatus)) {
+        res.status(400).json({
+          error: `Cannot revise draft with status '${currentStatus}'. Allowed statuses: ${ALLOWED_STATUSES.join(', ')}`
+        });
+        return;
+      }
+
+      // Delete associated plan_issues (detach from GitHub issues)
+      const deletedCount = await db('plan_issues').where({ draft_id: draftId }).delete();
+
+      // Update draft status to 'review' while preserving plan_json and chat_history
+      await db('task_drafts').where({ draft_id: draftId }).update({
+        status: 'review',
+        updated_at: db.fn.now()
+      });
+
+      console.log(`[revise] Draft ${draftId} revised from '${currentStatus}' to 'review', ${deletedCount} issues detached`);
+      res.json({
+        success: true,
+        message: 'Plan revised successfully',
+        previousStatus: currentStatus,
+        issuesDetached: deletedCount
+      });
+    } catch (error) {
+      console.error('Revise draft error:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to revise draft' });
+    }
+  };
+}
