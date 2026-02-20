@@ -119,7 +119,7 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; taskTitle: string }>
   </div>
 );
 
-const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan }> = ({ currentStage, draft }) => (
+const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
     <div className="bg-gray-100 px-6 py-4 border-b border-gray-300">
@@ -128,7 +128,7 @@ const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan }
 
     {/* Scrollable Canvas */}
     <div className="flex-1 overflow-auto bg-white">
-      <ApprovedPlanView draft={draft} />
+      <ApprovedPlanView draft={draft} onRefetch={onRefetch} />
     </div>
   </div>
 );
@@ -182,7 +182,7 @@ const getDocumentTitle = (draft: PlannerDraft | null): string => {
 };
 
 const isApprovedStatus = (status: string | undefined): boolean => {
-  return status === 'approved' || status === 'executed' || status === 'pr_created' || status === 'merged';
+  return status === 'approved' || status === 'executed' || status === 'pr_created' || status === 'merged' || status === 'failed';
 };
 
 const isReviewStatus = (status: string | undefined): boolean => {
@@ -232,7 +232,7 @@ const renderDraftView = (
   }
 
   if (isApprovedStatus(draft.status)) {
-    return <ApprovedView currentStage={currentStage} draft={draft as DraftWithPlan} />;
+    return <ApprovedView currentStage={currentStage} draft={draft as DraftWithPlan} onRefetch={refetch} />;
   }
 
   if (isReviewStatus(draft.status)) {

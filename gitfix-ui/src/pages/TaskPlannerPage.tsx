@@ -101,10 +101,10 @@ const TaskPlannerPage: React.FC = () => {
     );
   }
 
-  if (draft.status === 'approved' || draft.status === 'executed') {
+  if (draft.status === 'approved' || draft.status === 'executed' || draft.status === 'pr_created' || draft.status === 'merged' || draft.status === 'failed') {
     return (
       <div className="h-[calc(100vh-120px)] p-4">
-        <ApprovedPlanView draft={draft as DraftWithPlan} />
+        <ApprovedPlanView draft={draft as DraftWithPlan} onRefetch={refetch} />
       </div>
     );
   }

@@ -1,16 +1,18 @@
 import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2 } from 'lucide-react';
+import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2, Edit3 } from 'lucide-react';
 import { DraftWithPlan, deleteDraft } from '../../api/gitfixApi';
 import DeletePlanDialog from './DeletePlanDialog';
+import RevisePlanDialog from './RevisePlanDialog';
 import PlanIssuesManager from './PlanIssuesManager';
-import { PlanTask } from '../../api/plannerApi';
+import { PlanTask, reviseDraft } from '../../api/plannerApi';
 import { PlanIssue } from '../../api/planIssuesApi';
 import { useToast } from '../ui/useToast';
 
 interface ApprovedPlanViewProps {
   draft: DraftWithPlan;
+  onRefetch?: () => void;
 }
 
 // Original Prompt Popover Component - styled like Step 2 (Review Plan)
@@ -71,7 +73,7 @@ const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt })
 };
 
 
-export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => {
+export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRefetch }) => {
   const navigate = useNavigate();
   const { addToast } = useToast();
 
@@ -80,6 +82,8 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
   const [refreshKey, setRefreshKey] = useState(0);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showReviseDialog, setShowReviseDialog] = useState(false);
+  const [isRevising, setIsRevising] = useState(false);
 
   // Epic PR options state
   const [useEpic, setUseEpic] = useState(false);
@@ -108,6 +112,34 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
       });
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  // Handle revise plan confirmation
+  const handleRevisePlanConfirm = async () => {
+    setIsRevising(true);
+    try {
+      const result = await reviseDraft(draft.draft_id);
+      setShowReviseDialog(false);
+      addToast({
+        type: 'success',
+        message: result.issuesDetached > 0
+          ? `Plan revised successfully. ${result.issuesDetached} issue(s) detached.`
+          : 'Plan revised successfully.',
+        duration: 3000
+      });
+      // Trigger refetch to reload the draft with updated status
+      if (onRefetch) {
+        onRefetch();
+      }
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: (err as Error).message || 'Failed to revise plan',
+        duration: 5000
+      });
+    } finally {
+      setIsRevising(false);
     }
   };
 
@@ -196,6 +228,20 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Revise Plan */}
+          <button
+            onClick={() => setShowReviseDialog(true)}
+            disabled={isRevising}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Revise Plan"
+          >
+            {isRevising ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <Edit3 size={16} />
+            )}
+            <span className="hidden sm:inline">Revise</span>
+          </button>
           {/* Delete Plan */}
           <button
             onClick={() => setShowDeleteDialog(true)}
@@ -284,6 +330,13 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
         onClose={() => setShowDeleteDialog(false)}
         onConfirm={handleDeletePlanConfirm}
         isLoading={isDeleting}
+      />
+
+      <RevisePlanDialog
+        isOpen={showReviseDialog}
+        onClose={() => setShowReviseDialog(false)}
+        onConfirm={handleRevisePlanConfirm}
+        isLoading={isRevising}
       />
     </motion.div>
   );
