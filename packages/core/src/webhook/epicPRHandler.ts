@@ -117,8 +117,7 @@ async function fetchIssueDetails(
  */
 function buildEpicPRBody(
     planName: string,
-    issueDetails: IssueDetails[],
-    epicBranchName: string
+    issueDetails: IssueDetails[]
 ): string {
     const issueList = issueDetails
         .map(issue => issue.title
@@ -202,7 +201,7 @@ export async function handleEpicPRCreationOnMerge(
             if (planDetails) {
                 const issueNumbers = planDetails.issues.map(i => i.issue_number);
                 const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
-                const newBody = buildEpicPRBody(planDetails.planName, issueDetails, baseBranch);
+                const newBody = buildEpicPRBody(planDetails.planName, issueDetails);
 
                 await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
                     owner,
@@ -237,7 +236,7 @@ export async function handleEpicPRCreationOnMerge(
             const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
 
             title = `[Epic] ${planDetails.planName}`;
-            body = buildEpicPRBody(planDetails.planName, issueDetails, baseBranch);
+            body = buildEpicPRBody(planDetails.planName, issueDetails);
         } else {
             // Fallback if plan details not found
             title = `[Epic] ${baseBranch}`;
