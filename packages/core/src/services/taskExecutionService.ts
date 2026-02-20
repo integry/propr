@@ -168,6 +168,134 @@ async function postIssueComments(options: PostIssueCommentsOptions): Promise<voi
   }
 }
 
+interface ValidatedDraftData {
+  draft: TaskDraft;
+  planJson: PlanTask[];
+  owner: string;
+  repoName: string;
+  isReFinalization: boolean;
+}
+
+const RE_FINALIZABLE_STATUSES = ['approved', 'executed', 'pr_created', 'merged', 'failed'];
+
+async function validateAndPrepareDraft(
+  draftId: string,
+  userId: string,
+  correlatedLogger: Logger | EnhancedLogger
+): Promise<ValidatedDraftData> {
+  if (!db) {
+    throw new Error('Database not available');
+  }
+
+  const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
+
+  if (!draft) {
+    throw new Error('Draft not found');
+  }
+
+  if (draft.user_id !== userId) {
+    throw new Error('Unauthorized');
+  }
+
+  const isReFinalization = RE_FINALIZABLE_STATUSES.includes(draft.status);
+
+  if (draft.status !== 'review' && !isReFinalization) {
+    throw new Error(`Draft must be in 'review' status to execute. Current status: ${draft.status}`);
+  }
+
+  // For re-finalization, detach existing issues first
+  if (isReFinalization) {
+    correlatedLogger.info({ draftId, previousStatus: draft.status }, 'Re-finalizing draft, detaching existing issues');
+    const deletedCount = await db('plan_issues').where({ draft_id: draftId }).delete();
+    correlatedLogger.info({ draftId, deletedCount }, 'Detached existing plan issues');
+  }
+
+  const planJson: PlanTask[] = typeof draft.plan_json === 'string'
+    ? JSON.parse(draft.plan_json)
+    : draft.plan_json;
+
+  if (!Array.isArray(planJson) || planJson.length === 0) {
+    throw new Error('Draft has no tasks to execute');
+  }
+
+  // For re-finalization, clear old issue references from plan tasks
+  if (isReFinalization) {
+    for (const task of planJson) {
+      delete task.issue_number;
+      delete task.issue_url;
+    }
+  }
+
+  const [owner, repoName] = draft.repository.split('/');
+  if (!owner || !repoName) {
+    throw new Error(`Invalid repository format: ${draft.repository}`);
+  }
+
+  return { draft, planJson, owner, repoName, isReFinalization };
+}
+
+interface ProcessTaskOptions {
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+  owner: string;
+  repoName: string;
+  task: PlanTask;
+  taskIndex: number;
+  draftId: string;
+  repository: string;
+  correlatedLogger: Logger | EnhancedLogger;
+}
+
+async function processTaskAndCreateIssue(options: ProcessTaskOptions): Promise<CreatedIssue> {
+  const { octokit, owner, repoName, task, taskIndex, draftId, repository, correlatedLogger } = options;
+
+  correlatedLogger.info({
+    draftId,
+    taskIndex: taskIndex + 1,
+    taskTitle: task.title
+  }, 'Creating issue');
+
+  const createdIssue = await createGitHubIssue({
+    octokit,
+    owner,
+    repoName,
+    task,
+    draftId,
+    correlatedLogger
+  });
+
+  // Create plan_issue record to track this issue
+  try {
+    await createPlanIssue({
+      draft_id: draftId,
+      repository,
+      issue_number: createdIssue.number
+    });
+    correlatedLogger.info({
+      draftId,
+      issueNumber: createdIssue.number
+    }, 'Plan issue record created');
+  } catch (planIssueError) {
+    correlatedLogger.warn({
+      err: (planIssueError as Error).message,
+      draftId,
+      issueNumber: createdIssue.number
+    }, 'Failed to create plan issue record, continuing');
+  }
+
+  // Post implementation and user notes comments
+  await postIssueComments({
+    octokit,
+    owner,
+    repoName,
+    issueNumber: createdIssue.number,
+    task,
+    draftId,
+    correlatedLogger
+  });
+
+  return createdIssue;
+}
+
 async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<void> {
   const { draftId, planJson, owner, repoName, oldName, correlationId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -230,58 +358,9 @@ Title (plain text only):`;
 export async function executeDraft(draftId: string, userId: string, correlationId?: string): Promise<ExecutionResult> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
-  if (!db) {
-    throw new Error('Database not available');
-  }
-
   correlatedLogger.info({ draftId }, 'Starting draft execution');
 
-  const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
-
-  if (!draft) {
-    throw new Error('Draft not found');
-  }
-
-  if (draft.user_id !== userId) {
-    throw new Error('Unauthorized');
-  }
-
-  // Allow re-finalization from completed/failed statuses
-  // Note: 'approved' is included for consistency with reviseDraft allowed statuses
-  const RE_FINALIZABLE_STATUSES = ['approved', 'executed', 'pr_created', 'merged', 'failed'];
-  const isReFinalization = RE_FINALIZABLE_STATUSES.includes(draft.status);
-
-  if (draft.status !== 'review' && !isReFinalization) {
-    throw new Error(`Draft must be in 'review' status to execute. Current status: ${draft.status}`);
-  }
-
-  // For re-finalization, detach existing issues first
-  if (isReFinalization) {
-    correlatedLogger.info({ draftId, previousStatus: draft.status }, 'Re-finalizing draft, detaching existing issues');
-    const deletedCount = await db('plan_issues').where({ draft_id: draftId }).delete();
-    correlatedLogger.info({ draftId, deletedCount }, 'Detached existing plan issues');
-  }
-
-  const planJson: PlanTask[] = typeof draft.plan_json === 'string'
-    ? JSON.parse(draft.plan_json)
-    : draft.plan_json;
-
-  if (!Array.isArray(planJson) || planJson.length === 0) {
-    throw new Error('Draft has no tasks to execute');
-  }
-
-  // For re-finalization, clear old issue references from plan tasks
-  if (isReFinalization) {
-    for (const task of planJson) {
-      delete task.issue_number;
-      delete task.issue_url;
-    }
-  }
-
-  const [owner, repoName] = draft.repository.split('/');
-  if (!owner || !repoName) {
-    throw new Error(`Invalid repository format: ${draft.repository}`);
-  }
+  const { draft, planJson, owner, repoName } = await validateAndPrepareDraft(draftId, userId, correlatedLogger);
 
   try {
     await generateAndSaveTaskTitle({
@@ -304,18 +383,14 @@ export async function executeDraft(draftId: string, userId: string, correlationI
   for (let i = 0; i < planJson.length; i++) {
     const task = planJson[i];
 
-    correlatedLogger.info({
-      draftId,
-      taskIndex: i + 1,
-      taskTitle: task.title
-    }, 'Creating issue');
-
-    const createdIssue = await createGitHubIssue({
+    const createdIssue = await processTaskAndCreateIssue({
       octokit,
       owner,
       repoName,
       task,
+      taskIndex: i,
       draftId,
+      repository: draft.repository,
       correlatedLogger
     });
 
@@ -324,36 +399,6 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     // Update the task with issue information
     planJson[i].issue_number = createdIssue.number;
     planJson[i].issue_url = createdIssue.url;
-
-    // Create plan_issue record to track this issue
-    try {
-      await createPlanIssue({
-        draft_id: draftId,
-        repository: draft.repository,
-        issue_number: createdIssue.number
-      });
-      correlatedLogger.info({
-        draftId,
-        issueNumber: createdIssue.number
-      }, 'Plan issue record created');
-    } catch (planIssueError) {
-      correlatedLogger.warn({
-        err: (planIssueError as Error).message,
-        draftId,
-        issueNumber: createdIssue.number
-      }, 'Failed to create plan issue record, continuing');
-    }
-
-    // Post implementation and user notes comments
-    await postIssueComments({
-      octokit,
-      owner,
-      repoName,
-      issueNumber: createdIssue.number,
-      task,
-      draftId,
-      correlatedLogger
-    });
 
     if (i < planJson.length - 1) {
       await sleep(1000);
@@ -364,7 +409,7 @@ export async function executeDraft(draftId: string, userId: string, correlationI
     ? JSON.parse(draft.context_config)
     : (draft.context_config || {});
 
-  await db('task_drafts')
+  await db!('task_drafts')
     .where({ draft_id: draftId })
     .update({
       status: 'executed',
@@ -374,7 +419,7 @@ export async function executeDraft(draftId: string, userId: string, correlationI
         executionResults: results,
         executedAt: new Date().toISOString()
       }),
-      updated_at: db.fn.now()
+      updated_at: db!.fn.now()
     });
 
   correlatedLogger.info({
