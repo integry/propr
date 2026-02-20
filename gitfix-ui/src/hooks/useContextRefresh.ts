@@ -7,6 +7,32 @@ const DEBOUNCE_DELAY = 800;
 const SOURCE_REFRESH_DELAY = 20000;
 /** Slider debounce delay for context level changes (ms) */
 const SLIDER_DEBOUNCE_DELAY = 300;
+const WORD_OVERLAP_THRESHOLD = 0.5;
+
+const extractWords = (prompt: string) => (prompt.toLowerCase().match(/\b[\w'-]+\b/g) ?? []);
+
+/**
+ * Determine if a prompt change is significant enough to warrant auto-refresh.
+ * Considers length delta and word overlap to filter out small typo/punctuation tweaks.
+ */
+const isSignificantPromptChange = (prevPrompt: string, nextPrompt: string): boolean => {
+  if (prevPrompt === nextPrompt) return false;
+
+  const lengthDiff = Math.abs(prevPrompt.length - nextPrompt.length);
+  const baseLength = Math.max(prevPrompt.length, 1);
+  if (lengthDiff > 20 || (lengthDiff / baseLength) > 0.2) return true;
+
+  const prevWords = new Set(extractWords(prevPrompt));
+  const nextWords = new Set(extractWords(nextPrompt));
+
+  if (!prevWords.size && !nextWords.size) return false;
+
+  let overlap = 0;
+  prevWords.forEach(word => { if (nextWords.has(word)) overlap += 1; });
+  const overlapRatio = overlap / Math.max(prevWords.size, nextWords.size, 1);
+
+  return overlapRatio < WORD_OVERLAP_THRESHOLD;
+};
 
 export interface PreviewState {
   isLoading: boolean;
@@ -59,7 +85,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const configRef = useRef(config);
   const sourceRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const prevSourceRef = useRef<SourceConfig | null>(null);
+  const lastFetchedSourceRef = useRef<SourceConfig | null>(null);
   const pausedTimeRemainingRef = useRef<number | null>(null);
 
   // Keep config ref up to date
@@ -121,6 +147,13 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         generationModel: currentConfig.generationModel || undefined
       }, controller.signal);
 
+      lastFetchedSourceRef.current = {
+        prompt: currentConfig.prompt,
+        baseBranch: currentConfig.baseBranch,
+        filesLength: currentConfig.files.length,
+        compress: currentConfig.compress
+      };
+
       setPreview({ isLoading: false, data: result, error: null, lastSynced: new Date() });
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
@@ -154,12 +187,6 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   useEffect(() => {
     if (!initialSyncDone && config.baseBranch && config.prompt.trim()) {
       setInitialSyncDone(true);
-      prevSourceRef.current = {
-        prompt: config.prompt,
-        baseBranch: config.baseBranch,
-        filesLength: config.files.length,
-        compress: config.compress
-      };
       // Mark context as stale and start the countdown instead of fetching immediately
       setIsContextStale(true);
       startCountdown();
@@ -170,33 +197,47 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   useEffect(() => {
     if (!initialSyncDone) return;
 
-    const prev = prevSourceRef.current;
-    const sourceChanged = prev && (
-      prev.prompt !== config.prompt ||
-      prev.baseBranch !== config.baseBranch ||
-      prev.filesLength !== config.files.length ||
-      prev.compress !== config.compress
-    );
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
 
-    prevSourceRef.current = {
+    const lastFetched = lastFetchedSourceRef.current;
+    const currentSource: SourceConfig = {
       prompt: config.prompt,
       baseBranch: config.baseBranch,
       filesLength: config.files.length,
       compress: config.compress
     };
 
-    if (sourceChanged) {
-      // Mark context as stale even when paused
-      setIsContextStale(true);
+    const isStrictlyStale = !lastFetched || (
+      lastFetched.prompt !== currentSource.prompt ||
+      lastFetched.baseBranch !== currentSource.baseBranch ||
+      lastFetched.filesLength !== currentSource.filesLength ||
+      lastFetched.compress !== currentSource.compress
+    );
 
-      // Only start countdown if not paused
-      if (!isPaused) {
-        if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-        debounceTimerRef.current = setTimeout(() => startCountdown(), DEBOUNCE_DELAY);
-        return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
-      }
+    const isSignificant = !lastFetched ||
+      lastFetched.baseBranch !== currentSource.baseBranch ||
+      lastFetched.filesLength !== currentSource.filesLength ||
+      lastFetched.compress !== currentSource.compress ||
+      isSignificantPromptChange(lastFetched.prompt, currentSource.prompt);
+
+    if (!isStrictlyStale) {
+      clearCountdown();
+      if (isContextStale) setIsContextStale(false);
+      return;
     }
-  }, [config.prompt, config.baseBranch, config.files.length, config.compress, initialSyncDone, isPaused, startCountdown]);
+
+    setIsContextStale(true);
+
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+
+    if (!isSignificant || isPaused) {
+      clearCountdown();
+      return;
+    }
+
+    debounceTimerRef.current = setTimeout(() => startCountdown(), DEBOUNCE_DELAY);
+    return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
+  }, [config.prompt, config.baseBranch, config.files.length, config.compress, initialSyncDone, isPaused, isContextStale, clearCountdown, startCountdown]);
 
   // View changes - fetch immediately (granularity, contextLevel, generationModel)
   useEffect(() => {
