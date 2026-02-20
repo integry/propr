@@ -5,8 +5,11 @@ import {
     updatePlanIssueStatus,
     linkPRToPlanIssue,
     updatePlanIssueByPR,
+    getPlanIssuesByDraft,
     type PlanIssueStatus
 } from '../config/planIssueManager.js';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
 import type {
     IssuesEvent,
     IssueCommentEvent,
@@ -116,9 +119,103 @@ export async function handlePlanPRUpdate(
         if (newStatus) {
             await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
             log.info({ repository, prNumber, newStatus }, 'Updated plan issue status from PR event');
+
+            // When a PR is merged, trigger the next pending issue in the same plan
+            // Only if the merged issue had auto-merge enabled (indicated by auto-merge label)
+            if (newStatus === 'merged' && planIssue.draft_id) {
+                const hasAutoMerge = await checkIssueHasAutoMergeLabel(repository, planIssue.issue_number, log);
+                if (hasAutoMerge) {
+                    await triggerNextPendingIssue(planIssue.draft_id, repository, log);
+                }
+            }
         }
     } catch (error) {
         log.error({ error, repository, prNumber }, 'Failed to handle plan PR update');
+    }
+}
+
+/**
+ * Checks if an issue has the auto-merge label.
+ */
+async function checkIssueHasAutoMergeLabel(
+    repository: string,
+    issueNumber: number,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<boolean> {
+    try {
+        const [owner, repo] = repository.split('/');
+        const octokit = await getAuthenticatedOctokit();
+
+        const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+            owner,
+            repo,
+            issue_number: issueNumber
+        });
+
+        const labels = response.data.labels as Array<{ name: string } | string>;
+        return labels.some(label =>
+            (typeof label === 'string' ? label : label.name) === 'auto-merge'
+        );
+    } catch (error) {
+        log.warn({
+            repository,
+            issueNumber,
+            error: (error as Error).message
+        }, 'Failed to check auto-merge label');
+        return false;
+    }
+}
+
+/**
+ * Triggers the next pending issue in a plan by adding processing labels.
+ */
+async function triggerNextPendingIssue(
+    draftId: string,
+    repository: string,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    try {
+        // Get all issues in the same plan
+        const planIssues = await getPlanIssuesByDraft(draftId);
+
+        // Find the next pending issue
+        const nextPending = planIssues.find(issue => issue.status === 'pending');
+        if (!nextPending) {
+            log.debug({ draftId }, 'No more pending issues in plan');
+            return;
+        }
+
+        const [owner, repo] = repository.split('/');
+        const processingLabels = getPrimaryProcessingLabels();
+        const primaryLabel = processingLabels[0] || 'AI';
+
+        log.info({
+            draftId,
+            nextIssueNumber: nextPending.issue_number,
+            label: primaryLabel
+        }, 'Triggering next pending issue in plan');
+
+        const octokit = await getAuthenticatedOctokit();
+
+        // Add the processing label and auto-merge label to trigger the issue
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+            owner,
+            repo,
+            issue_number: nextPending.issue_number,
+            labels: [primaryLabel, 'auto-merge']
+        });
+
+        log.info({
+            draftId,
+            issueNumber: nextPending.issue_number,
+            labels: [primaryLabel, 'auto-merge']
+        }, 'Added processing labels to next pending issue');
+
+    } catch (error) {
+        log.warn({
+            draftId,
+            error: (error as Error).message
+        }, 'Failed to trigger next pending issue');
     }
 }
 
