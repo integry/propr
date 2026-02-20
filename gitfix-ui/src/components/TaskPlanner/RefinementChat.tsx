@@ -169,6 +169,50 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     }
   }, [onStop]);
 
+  /**
+   * Build an enriched message for the AI that includes:
+   * 1. Recent conversation history for context
+   * 2. The user's current instruction
+   * 3. Safety instructions to preserve unmodified task data
+   */
+  const buildEnrichedMessage = useCallback((userInstruction: string, conversationHistory: Message[]): string => {
+    const parts: string[] = [];
+
+    // Get the last 10 messages (excluding thinking messages) for context
+    const recentMessages = conversationHistory
+      .filter(m => m.role !== 'thinking')
+      .slice(-10);
+
+    if (recentMessages.length > 0) {
+      parts.push('## Recent Conversation Context');
+      parts.push('The following is the recent conversation history for context:');
+      parts.push('');
+      for (const msg of recentMessages) {
+        const roleLabel = msg.role === 'user' ? 'User' : 'Assistant';
+        parts.push(`**${roleLabel}:** ${msg.content}`);
+      }
+      parts.push('');
+      parts.push('---');
+      parts.push('');
+    }
+
+    // Add the current user instruction
+    parts.push('## Current Instruction');
+    parts.push(userInstruction);
+    parts.push('');
+
+    // Add safety instructions to preserve unmodified task data
+    parts.push('---');
+    parts.push('');
+    parts.push('## IMPORTANT: Data Preservation Rules');
+    parts.push('When updating the plan, you MUST follow these rules:');
+    parts.push('1. **Preserve `id` fields**: Every task has a unique `id` field. Do NOT change or remove `id` values for tasks that are not being modified.');
+    parts.push('2. **Preserve `implementation` code**: If a task has an `implementation` field with code, do NOT remove or truncate it unless the user specifically asks to modify that task\'s implementation.');
+    parts.push('3. **Only modify what is requested**: Only change the specific tasks or fields that the user has asked you to modify. Leave all other tasks and their data intact.');
+
+    return parts.join('\n');
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
@@ -199,7 +243,9 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     // Save user message immediately
     onMessagesChange?.(toChatMessages(messagesWithUser));
 
-    const result = await onSendMessage(userMessage.content, abortController.signal);
+    // Build enriched message with context and safety instructions
+    const enrichedMessage = buildEnrichedMessage(userMessage.content, messages);
+    const result = await onSendMessage(enrichedMessage, abortController.signal);
 
     // Clear the abort controller reference
     abortControllerRef.current = null;
