@@ -572,7 +572,7 @@ interface ExecuteWorktreeResult {
 
 async function executeWorktreeOperations(params: ExecuteWorktreeParams): Promise<ExecuteWorktreeResult> {
     const { job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl, localRepoPath } = params;
-    const { issueRef, agentAlias, modelName, taskId, correlatedLogger, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
+    const { issueRef, agentAlias, modelName, taskId, correlatedLogger, stateManager, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
 
     const worktreeInfo = await createWorktreeForIssue(localRepoPath, { issueId: issueRef.number, issueTitle: currentIssueData.data.title, owner: issueRef.repoOwner, repoName: issueRef.repoName }, { baseBranch: issueRef.baseBranch || null, octokit, modelName });
     await job.updateProgress(75);
@@ -592,7 +592,14 @@ async function executeWorktreeOperations(params: ExecuteWorktreeParams): Promise
     const issueComments = await fetchIssueComments(octokit, issueRef, correlatedLogger);
     const claudeResult = await executeAgentAndRecordMetrics({ octokit, worktreeInfo, issueRef, githubToken, currentIssueData, issueComments }, context);
 
-    const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId: context.jobId, correlatedLogger });
+    // Check for cancellation after agent execution and before post-processing
+    const currentState = await stateManager.getTaskState(taskId);
+    if (currentState?.state === TaskStates.CANCELLED) {
+        correlatedLogger.info({ taskId }, 'Task was cancelled by user after agent execution, skipping post-processing');
+        throw new Error('Execution aborted by user request');
+    }
+
+    const postProcessResult = await performPostProcessing({ octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId: context.jobId, correlatedLogger, taskId, stateManager });
     const commitResult = postProcessResult.commitResult;
     const postProcessingResult = postProcessResult.postProcessingResult;
 

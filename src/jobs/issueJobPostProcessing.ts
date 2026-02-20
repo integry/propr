@@ -1,8 +1,8 @@
 import type { Logger } from 'pino';
 import { setTimeout } from 'timers/promises';
 import type { ClaudeCodeResponse } from '@gitfix/core';
-import type { WorktreeInfo, CommitResult } from '@gitfix/core';
-import { cleanupWorktree, commitChanges, pushBranch } from '@gitfix/core';
+import type { WorktreeInfo, CommitResult, WorkerStateManager } from '@gitfix/core';
+import { cleanupWorktree, commitChanges, pushBranch, TaskStates } from '@gitfix/core';
 import { safeUpdateLabels } from '@gitfix/core';
 import { generateCompletionComment } from '@gitfix/core';
 import { executeClaudeCode } from '@gitfix/core';
@@ -39,6 +39,8 @@ export interface PostProcessOptions {
     AI_DONE_TAG: string;
     jobId: string | undefined;
     correlatedLogger: Logger;
+    taskId?: string;
+    stateManager?: WorkerStateManager;
 }
 
 export interface PostProcessResult {
@@ -47,7 +49,7 @@ export interface PostProcessResult {
 }
 
 export async function performPostProcessing(options: PostProcessOptions): Promise<PostProcessResult> {
-    const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId, correlatedLogger } = options;
+    const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, githubToken, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, jobId, correlatedLogger, taskId, stateManager } = options;
     let commitResult: CommitResult | null = null;
     let postProcessingResult: PostProcessingResult | null = null;
 
@@ -68,6 +70,15 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
 
         correlatedLogger.debug('Waiting for branch propagation...');
         await setTimeout(3000);
+
+        // Check for cancellation before creating PR
+        if (taskId && stateManager) {
+            const currentState = await stateManager.getTaskState(taskId);
+            if (currentState?.state === TaskStates.CANCELLED) {
+                correlatedLogger.info({ taskId }, 'Task was cancelled by user, skipping PR creation');
+                throw new Error('Execution aborted by user request');
+            }
+        }
 
         postProcessingResult = await createPullRequest(
             octokit, issueRef, worktreeInfo,
