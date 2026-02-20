@@ -123,9 +123,12 @@ export async function handlePlanPRUpdate(
             // When a PR is merged, trigger the next pending issue in the same plan
             // Only if the merged issue had auto-merge enabled (indicated by auto-merge label)
             if (newStatus === 'merged' && planIssue.draft_id) {
-                const hasAutoMerge = await checkIssueHasAutoMergeLabel(repository, planIssue.issue_number, log);
+                const issueLabels = await getIssueLabels(repository, planIssue.issue_number, log);
+                const hasAutoMerge = issueLabels.includes('auto-merge');
                 if (hasAutoMerge) {
-                    await triggerNextPendingIssue(planIssue.draft_id, repository, log);
+                    // Find epic label to pass to next issue (format: base-{epicBranchName})
+                    const epicLabel = issueLabels.find(label => label.startsWith('base-'));
+                    await triggerNextPendingIssue(planIssue.draft_id, repository, epicLabel, log);
                 }
             }
         }
@@ -135,13 +138,13 @@ export async function handlePlanPRUpdate(
 }
 
 /**
- * Checks if an issue has the auto-merge label.
+ * Gets all labels from an issue.
  */
-async function checkIssueHasAutoMergeLabel(
+async function getIssueLabels(
     repository: string,
     issueNumber: number,
     log: ReturnType<typeof logger.withCorrelation>
-): Promise<boolean> {
+): Promise<string[]> {
     try {
         const [owner, repo] = repository.split('/');
         const octokit = await getAuthenticatedOctokit();
@@ -153,16 +156,14 @@ async function checkIssueHasAutoMergeLabel(
         });
 
         const labels = response.data.labels as Array<{ name: string } | string>;
-        return labels.some(label =>
-            (typeof label === 'string' ? label : label.name) === 'auto-merge'
-        );
+        return labels.map(label => typeof label === 'string' ? label : label.name);
     } catch (error) {
         log.warn({
             repository,
             issueNumber,
             error: (error as Error).message
-        }, 'Failed to check auto-merge label');
-        return false;
+        }, 'Failed to get issue labels');
+        return [];
     }
 }
 
@@ -172,6 +173,7 @@ async function checkIssueHasAutoMergeLabel(
 async function triggerNextPendingIssue(
     draftId: string,
     repository: string,
+    epicLabel: string | undefined,
     log: ReturnType<typeof logger.withCorrelation>
 ): Promise<void> {
     try {
@@ -189,26 +191,32 @@ async function triggerNextPendingIssue(
         const processingLabels = getPrimaryProcessingLabels();
         const primaryLabel = processingLabels[0] || 'AI';
 
+        // Build labels list: processing label, auto-merge, and epic label if present
+        const labelsToAdd = [primaryLabel, 'auto-merge'];
+        if (epicLabel) {
+            labelsToAdd.push(epicLabel);
+        }
+
         log.info({
             draftId,
             nextIssueNumber: nextPending.issue_number,
-            label: primaryLabel
+            labels: labelsToAdd
         }, 'Triggering next pending issue in plan');
 
         const octokit = await getAuthenticatedOctokit();
 
-        // Add the processing label and auto-merge label to trigger the issue
+        // Add the processing labels to trigger the issue
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
             owner,
             repo,
             issue_number: nextPending.issue_number,
-            labels: [primaryLabel, 'auto-merge']
+            labels: labelsToAdd
         });
 
         log.info({
             draftId,
             issueNumber: nextPending.issue_number,
-            labels: [primaryLabel, 'auto-merge']
+            labels: labelsToAdd
         }, 'Added processing labels to next pending issue');
 
     } catch (error) {
