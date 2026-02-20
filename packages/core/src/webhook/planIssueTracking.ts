@@ -5,8 +5,11 @@ import {
     updatePlanIssueStatus,
     linkPRToPlanIssue,
     updatePlanIssueByPR,
+    getPlanIssuesByDraft,
     type PlanIssueStatus
 } from '../config/planIssueManager.js';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
 import type {
     IssuesEvent,
     IssueCommentEvent,
@@ -35,7 +38,11 @@ export async function handlePlanIssueStatusUpdate(
         let newStatus: PlanIssueStatus | null = null;
 
         if (payload.action === 'closed') {
-            newStatus = 'closed';
+            // Don't downgrade from 'merged' to 'closed' - when a PR is merged,
+            // GitHub auto-closes the linked issue, but we want to keep 'merged' status
+            if (planIssue.status !== 'merged') {
+                newStatus = 'closed';
+            }
         } else if (payload.action === 'labeled') {
             const processingLabels = (process.env.PRIMARY_PROCESSING_LABELS || 'AI').split(',').map(l => l.trim());
             const hasProcessingLabel = labels.some(label => processingLabels.includes(label));
@@ -112,9 +119,111 @@ export async function handlePlanPRUpdate(
         if (newStatus) {
             await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
             log.info({ repository, prNumber, newStatus }, 'Updated plan issue status from PR event');
+
+            // When a PR is merged, trigger the next pending issue in the same plan
+            // Only if the merged issue had auto-merge enabled (indicated by auto-merge label)
+            if (newStatus === 'merged' && planIssue.draft_id) {
+                const issueLabels = await getIssueLabels(repository, planIssue.issue_number, log);
+                const hasAutoMerge = issueLabels.includes('auto-merge');
+                if (hasAutoMerge) {
+                    // Find epic label to pass to next issue (format: base-{epicBranchName})
+                    const epicLabel = issueLabels.find(label => label.startsWith('base-'));
+                    await triggerNextPendingIssue(planIssue.draft_id, repository, epicLabel, log);
+                }
+            }
         }
     } catch (error) {
         log.error({ error, repository, prNumber }, 'Failed to handle plan PR update');
+    }
+}
+
+/**
+ * Gets all labels from an issue.
+ */
+async function getIssueLabels(
+    repository: string,
+    issueNumber: number,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<string[]> {
+    try {
+        const [owner, repo] = repository.split('/');
+        const octokit = await getAuthenticatedOctokit();
+
+        const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+            owner,
+            repo,
+            issue_number: issueNumber
+        });
+
+        const labels = response.data.labels as Array<{ name: string } | string>;
+        return labels.map(label => typeof label === 'string' ? label : label.name);
+    } catch (error) {
+        log.warn({
+            repository,
+            issueNumber,
+            error: (error as Error).message
+        }, 'Failed to get issue labels');
+        return [];
+    }
+}
+
+/**
+ * Triggers the next pending issue in a plan by adding processing labels.
+ */
+async function triggerNextPendingIssue(
+    draftId: string,
+    repository: string,
+    epicLabel: string | undefined,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    try {
+        // Get all issues in the same plan
+        const planIssues = await getPlanIssuesByDraft(draftId);
+
+        // Find the next pending issue
+        const nextPending = planIssues.find(issue => issue.status === 'pending');
+        if (!nextPending) {
+            log.debug({ draftId }, 'No more pending issues in plan');
+            return;
+        }
+
+        const [owner, repo] = repository.split('/');
+        const processingLabels = getPrimaryProcessingLabels();
+        const primaryLabel = processingLabels[0] || 'AI';
+
+        // Build labels list: processing label, auto-merge, and epic label if present
+        const labelsToAdd = [primaryLabel, 'auto-merge'];
+        if (epicLabel) {
+            labelsToAdd.push(epicLabel);
+        }
+
+        log.info({
+            draftId,
+            nextIssueNumber: nextPending.issue_number,
+            labels: labelsToAdd
+        }, 'Triggering next pending issue in plan');
+
+        const octokit = await getAuthenticatedOctokit();
+
+        // Add the processing labels to trigger the issue
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+            owner,
+            repo,
+            issue_number: nextPending.issue_number,
+            labels: labelsToAdd
+        });
+
+        log.info({
+            draftId,
+            issueNumber: nextPending.issue_number,
+            labels: labelsToAdd
+        }, 'Added processing labels to next pending issue');
+
+    } catch (error) {
+        log.warn({
+            draftId,
+            error: (error as Error).message
+        }, 'Failed to trigger next pending issue');
     }
 }
 

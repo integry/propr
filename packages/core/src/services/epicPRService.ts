@@ -200,6 +200,15 @@ export async function ensureEpicPR(options: EnsureEpicPROptions): Promise<EpicPR
         } else {
           throw new Error('Epic PR creation failed and no existing PR found');
         }
+      } else if (err.status === 422 && err.message?.includes('No commits between')) {
+        // No commits yet - branch and label are ready, PR will be created when first child PR merges
+        correlatedLogger.info({ branchName, labelName }, 'Epic branch ready, PR will be created when commits are added');
+        return {
+          success: true,
+          branchName,
+          labelName
+          // prNumber and prUrl are undefined - PR will be created later
+        };
       } else {
         throw prError;
       }

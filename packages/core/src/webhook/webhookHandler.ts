@@ -2,14 +2,15 @@ import logger from '../utils/logger.js';
 import { fetch } from 'undici';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { getGitHubInstallationToken, getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { getGitHubInstallationToken } from '../auth/githubAuth.js';
 import {
     handlePlanIssueStatusUpdate,
     handlePlanPRUpdate,
     handlePlanPRCommentTracking,
     type CommentEventType
 } from './planIssueTracking.js';
-import { isEpicBranch } from '../services/taskExecutionService.js';
+import { handleCheckRunEvent } from './checkRunHandler.js';
+import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
 import type {
     IssuesEvent,
     IssuesLabeledEvent,
@@ -23,12 +24,13 @@ import type {
     PullRequestReviewCommentEditedEvent,
     PullRequestEvent,
     PullRequestLabeledEvent,
-    PullRequestUnlabeledEvent
+    PullRequestUnlabeledEvent,
+    CheckRunEvent
 } from '@octokit/webhooks-types';
 
 const execAsync = promisify(exec);
 
-export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review_comment' | 'pull_request';
+export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review_comment' | 'pull_request' | 'check_run';
 
 // --- PREVIEW ENVIRONMENT CONFIGURATION ---
 // This implements the "Singleton Processor" pattern for webhook routing.
@@ -78,12 +80,14 @@ export type CommentProcessor = (payload: IssueCommentEvent | PullRequestReviewCo
 export type CommentDeletedHandler = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void>;
 export type CommentEditedHandler = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void>;
 export type PullRequestProcessor = (payload: PullRequestEvent, correlationId: string) => Promise<void>;
+export type CheckRunProcessor = (payload: CheckRunEvent, correlationId: string) => Promise<void>;
 
 let processDetectedIssue: IssueProcessor | null = null;
 let processCommentEvent: CommentProcessor | null = null;
 let handleCommentDeleted: CommentDeletedHandler | null = null;
 let handleCommentEdited: CommentEditedHandler | null = null;
 let processPullRequest: PullRequestProcessor | null = null;
+let processCheckRun: CheckRunProcessor | null = null;
 
 export interface WebhookHandlerOptions {
     issueProcessor: IssueProcessor;
@@ -91,6 +95,7 @@ export interface WebhookHandlerOptions {
     commentDeletedHandler: CommentDeletedHandler;
     commentEditedHandler: CommentEditedHandler;
     pullRequestProcessor?: PullRequestProcessor;
+    checkRunProcessor?: CheckRunProcessor;
 }
 
 export async function initializeWebhookHandler(options: WebhookHandlerOptions): Promise<void> {
@@ -99,6 +104,7 @@ export async function initializeWebhookHandler(options: WebhookHandlerOptions): 
     handleCommentDeleted = options.commentDeletedHandler;
     handleCommentEdited = options.commentEditedHandler;
     processPullRequest = options.pullRequestProcessor || null;
+    processCheckRun = options.checkRunProcessor || null;
     logger.info('Webhook handler initialized');
 }
 
@@ -152,6 +158,10 @@ function isPullRequestLabeledEvent(payload: PullRequestEvent): payload is PullRe
 
 function isPullRequestUnlabeledEvent(payload: PullRequestEvent): payload is PullRequestUnlabeledEvent {
     return payload.action === 'unlabeled';
+}
+
+function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
+    return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
 }
 
 // --- PROCESSOR LABEL MANAGEMENT: Track 'preview-env' label on gitfix repo PRs ---
@@ -360,74 +370,6 @@ async function handlePlanIssueTracking(
 }
 
 /**
- * Handles Epic PR label cleanup when an Epic PR is merged.
- * When a PR with an Epic branch name pattern is closed and merged,
- * this function automatically deletes the corresponding `base-{branchName}` label
- * from the repository.
- */
-async function handleEpicPRLabelCleanup(
-    payload: PullRequestEvent,
-    correlationId: string,
-    correlatedLogger: ReturnType<typeof logger.withCorrelation>
-): Promise<void> {
-    // Only process closed PRs that were merged
-    if (payload.action !== 'closed' || !payload.pull_request.merged) {
-        return;
-    }
-
-    const branchName = payload.pull_request.head.ref;
-
-    // Check if this is an Epic branch
-    if (!isEpicBranch(branchName)) {
-        return;
-    }
-
-    const [owner, repo] = payload.repository.full_name.split('/');
-    const labelName = `base-${branchName}`;
-
-    correlatedLogger.info({
-        prNumber: payload.pull_request.number,
-        branchName,
-        labelName,
-        owner,
-        repo
-    }, 'Epic PR merged, cleaning up base label');
-
-    try {
-        const octokit = await getAuthenticatedOctokit();
-
-        // Delete the label from the repository
-        await octokit.request('DELETE /repos/{owner}/{repo}/labels/{name}', {
-            owner,
-            repo,
-            name: labelName
-        });
-
-        correlatedLogger.info({
-            labelName,
-            owner,
-            repo
-        }, 'Epic label deleted successfully');
-    } catch (error) {
-        const err = error as Error & { status?: number };
-        if (err.status === 404) {
-            correlatedLogger.debug({
-                labelName,
-                owner,
-                repo
-            }, 'Epic label not found, may have already been deleted');
-        } else {
-            correlatedLogger.warn({
-                error: err.message,
-                labelName,
-                owner,
-                repo
-            }, 'Failed to delete Epic label');
-        }
-    }
-}
-
-/**
  * Processes standard webhook events locally.
  */
 async function processStandardWebhookEvent(
@@ -453,6 +395,9 @@ async function processStandardWebhookEvent(
             break;
         case 'pull_request_review_comment':
             if (isPullRequestReviewCommentEvent(payload)) await handlePullRequestReviewCommentEvent(payload, correlationId);
+            break;
+        case 'check_run':
+            if (isCheckRunEvent(payload) && processCheckRun) await processCheckRun(payload, correlationId);
             break;
         default:
             correlatedLogger.debug({ event: eventType }, 'Ignoring webhook event');
@@ -486,11 +431,23 @@ export async function processWebhookEvent(
     // 4. Plan Issue Tracking (runs before standard processing to update status)
     await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);
 
-    // 5. Epic PR Label Cleanup (delete base-{branchName} label when Epic PR is merged)
+    // 5. Auto-merge: Handle check_run events to merge PRs when all checks pass
+    if (eventType === 'check_run' && isCheckRunEvent(payload)) {
+        try {
+            await handleCheckRunEvent(payload, correlationId);
+        } catch (checkRunError) {
+            correlatedLogger.warn({ error: checkRunError }, 'Check run handler failed, continuing');
+        }
+    }
+
+    // 6. Epic PR handling
     if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
+        // Create Epic PR when first child PR merges to epic branch
+        await handleEpicPRCreationOnMerge(payload, correlationId, correlatedLogger);
+        // Delete base-{branchName} label when Epic PR is merged to main
         await handleEpicPRLabelCleanup(payload, correlationId, correlatedLogger);
     }
 
-    // 6. Standard Local Processing
+    // 7. Standard Local Processing
     await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger);
 }

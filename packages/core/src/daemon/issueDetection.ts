@@ -105,7 +105,8 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     try {
         const timestamp = Date.now();
-        const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${timestamp}`;
+        // Use consistent jobId without timestamp for deduplication - BullMQ will reject duplicates
+        const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}`;
         const issueJob = {
             repoOwner: issue.repoOwner,
             repoName: issue.repoName,
@@ -119,6 +120,8 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
                 jobId,
                 attempts: 3,
                 backoff: { type: 'exponential', delay: 2000 },
+                removeOnComplete: true, // Allow new job with same ID after completion
+                removeOnFail: true,     // Allow retry by re-adding label after failure
             }),
             { ...retryConfigs.redis, correlationId },
             `add_issue_to_queue_${issue.number}`

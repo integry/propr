@@ -9,9 +9,13 @@ interface UsePlanIssuesManagerProps {
   draftId: string;
   tasks: PlanTask[];
   onRefresh?: () => void;
+  /** Whether to create an Epic PR to collect all issue PRs */
+  useEpic?: boolean;
+  /** Whether to auto-merge individual PRs into the Epic PR */
+  autoMerge?: boolean;
 }
 
-export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssuesManagerProps) {
+export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge }: UsePlanIssuesManagerProps) {
   const [issues, setIssues] = useState<PlanIssue[]>([]);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [loading, setLoading] = useState(true);
@@ -152,7 +156,11 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
   const handleImplementIssue = useCallback(async (issueNumber: number, models?: AgentModelPair[]) => {
     setImplementingIssue(issueNumber);
     try {
-      const options = models && models.length > 0 ? { models } : undefined;
+      const options = models && models.length > 0
+        ? { models, useEpic, autoMerge }
+        : useEpic || autoMerge
+          ? { useEpic, autoMerge }
+          : undefined;
       await implementIssue(draftId, issueNumber, options);
 
       // Preserve selected models for display during processing (if multi-agent)
@@ -169,7 +177,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh }: UsePlanIssue
     } finally {
       setImplementingIssue(null);
     }
-  }, [draftId, fetchIssues, onRefresh]);
+  }, [draftId, fetchIssues, onRefresh, useEpic, autoMerge]);
 
   const getDefaultModelForAgent = useCallback((agentAlias: string | null): string | null => {
     if (!agentAlias) return null;

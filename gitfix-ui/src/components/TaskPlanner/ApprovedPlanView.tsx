@@ -81,6 +81,10 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Epic PR options state
+  const [useEpic, setUseEpic] = useState(false);
+  const [autoMerge, setAutoMerge] = useState(false);
+
   // Plan name: prefer draft.name, fall back to initial_prompt
   const planName = draft.name || draft.initial_prompt || 'Untitled Plan';
 
@@ -228,9 +232,12 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft }) => 
         <PlanIssuesManager
           draftId={draft.draft_id}
           tasks={tasks}
-          repository={draft.repository}
           onIssuesChange={handleIssuesChange}
           refreshKey={refreshKey}
+          useEpic={useEpic}
+          autoMerge={autoMerge}
+          onUseEpicChange={setUseEpic}
+          onAutoMergeChange={setAutoMerge}
         />
       </div>
 

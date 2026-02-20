@@ -20,6 +20,146 @@ interface PlanIssueDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
 }
 
+interface ImplementIssueContext {
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  implementLabel: string;
+  epicLabelName: string | null;
+  autoMerge: boolean;
+  labelLogger: ReturnType<typeof logger.withCorrelation>;
+}
+
+interface MultiAgentParams extends ImplementIssueContext {
+  draftId: string;
+  planIssue: { model_name: string | null };
+  models: Array<{ agent_alias: string; model_name: string }>;
+}
+
+async function handleMultiAgentImplementation(params: MultiAgentParams): Promise<{
+  success: boolean;
+  message: string;
+  autoMergeEnabled: boolean;
+  epicLabel: string | null;
+}> {
+  const { octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge, labelLogger, draftId, planIssue, models } = params;
+
+  const oldLlmLabel = getLlmLabel(planIssue.model_name);
+  const newLlmLabels = new Set<string>();
+  for (const m of models) {
+    const label = getLlmLabel(m.model_name);
+    if (label) newLlmLabels.add(label);
+  }
+
+  const labelsToRemove = (oldLlmLabel && !newLlmLabels.has(oldLlmLabel)) ? [oldLlmLabel] : [];
+  const labelsToAdd = [implementLabel, ...Array.from(newLlmLabels)];
+
+  if (epicLabelName) {
+    labelsToAdd.push(epicLabelName);
+  }
+
+  if (autoMerge) {
+    labelsToAdd.push('auto-merge');
+  }
+
+  await safeUpdateLabels(
+    { octokit, owner, repo, issueNumber, logger: labelLogger },
+    labelsToRemove,
+    labelsToAdd
+  );
+
+  const primaryModel = models[0];
+  await updatePlanIssue(draftId, issueNumber, {
+    status: 'processing',
+    agent_alias: primaryModel.agent_alias,
+    model_name: primaryModel.model_name
+  });
+
+  const labelList = Array.from(newLlmLabels).map(l => `'${l}'`).join(', ');
+  const autoMergeNote = autoMerge ? ' with auto-merge enabled' : '';
+
+  return {
+    success: true,
+    message: `Added '${implementLabel}' and ${labelList} labels to issue #${issueNumber} (${models.length} agents assigned)${autoMergeNote}`,
+    autoMergeEnabled: autoMerge,
+    epicLabel: epicLabelName
+  };
+}
+
+interface SingleAgentParams extends ImplementIssueContext {
+  draftId: string;
+  planIssue: { model_name: string | null };
+}
+
+async function handleSingleAgentImplementation(params: SingleAgentParams): Promise<{
+  success: boolean;
+  message: string;
+  autoMergeEnabled: boolean;
+  epicLabel: string | null;
+}> {
+  const { octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge, draftId, planIssue } = params;
+
+  const llmLabel = getLlmLabel(planIssue.model_name);
+  const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
+
+  if (epicLabelName) {
+    labelsToAdd.push(epicLabelName);
+  }
+
+  if (autoMerge) {
+    labelsToAdd.push('auto-merge');
+  }
+
+  await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+    owner, repo, issue_number: issueNumber, labels: labelsToAdd
+  });
+
+  await updatePlanIssue(draftId, issueNumber, { status: 'processing' });
+
+  const autoMergeNote = autoMerge ? ' with auto-merge enabled' : '';
+  const labelMessage = llmLabel
+    ? `Added '${implementLabel}' and '${llmLabel}' labels to issue #${issueNumber}${autoMergeNote}`
+    : `Added '${implementLabel}' label to issue #${issueNumber}${autoMergeNote}`;
+
+  return {
+    success: true,
+    message: labelMessage,
+    autoMergeEnabled: autoMerge,
+    epicLabel: epicLabelName
+  };
+}
+
+interface EpicPRParams {
+  owner: string;
+  repo: string;
+  planName: string;
+  issueNumber: number;
+  correlationId: string;
+  labelLogger: ReturnType<typeof logger.withCorrelation>;
+}
+
+async function handleEpicPRCreation(params: EpicPRParams): Promise<string | null> {
+  const { owner, repo, planName, issueNumber, correlationId, labelLogger } = params;
+
+  labelLogger.info({ owner, repo, planName, issueNumber }, 'Creating Epic PR for single issue implementation');
+  const epicResult = await ensureEpicPR({
+    owner,
+    repoName: repo,
+    firstIssueId: issueNumber,
+    planName,
+    correlationId
+  });
+
+  if (epicResult.success && epicResult.labelName) {
+    labelLogger.info({ epicLabelName: epicResult.labelName, prNumber: epicResult.prNumber }, 'Epic PR created successfully');
+    return epicResult.labelName;
+  }
+
+  labelLogger.warn({ error: epicResult.error }, 'Failed to create Epic PR, continuing without epic labels');
+  return null;
+}
+
 /**
  * Gets the LLM GitHub label for a given model name.
  * Falls back to the default model's label if model_name is null.
@@ -79,7 +219,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
     if (isNaN(issueNumber)) { res.status(400).json({ error: 'Invalid issue number' }); return; }
 
     try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository']);
+      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const draft = ownership.draft!;
@@ -95,59 +235,35 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const implementLabel = processingLabels[0] || 'AI';
       const octokit = await getAuthenticatedOctokit();
 
-      // Check if multi-agent models array is provided
-      const { models } = req.body as { models?: Array<{ agent_alias: string; model_name: string }> };
+      const { models, autoMerge, useEpic } = req.body as {
+        models?: Array<{ agent_alias: string; model_name: string }>;
+        autoMerge?: boolean;
+        useEpic?: boolean;
+      };
 
-      if (models && Array.isArray(models) && models.length > 0) {
-        // Multi-agent mode: apply labels for all selected agent:model combinations
-        const labelLogger = logger.withCorrelation(`implement-multi-${draftId}-${issueNumber}`);
+      const correlationId = `implement-${draftId}-${issueNumber}`;
+      const labelLogger = logger.withCorrelation(correlationId);
 
-        // Collect all LLM labels from the old model (to remove) and new models (to add)
-        const oldLlmLabel = getLlmLabel(planIssue.model_name);
-        const newLlmLabels = new Set<string>();
-        for (const m of models) {
-          const label = getLlmLabel(m.model_name);
-          if (label) newLlmLabels.add(label);
-        }
+      const epicLabelName = useEpic
+        ? await handleEpicPRCreation({
+            owner,
+            repo,
+            planName: (draft.name as string) || 'Unnamed Plan',
+            issueNumber,
+            correlationId,
+            labelLogger
+          })
+        : null;
 
-        // Remove old label only if it's not in the new set
-        const labelsToRemove = (oldLlmLabel && !newLlmLabels.has(oldLlmLabel)) ? [oldLlmLabel] : [];
-        const labelsToAdd = [implementLabel, ...Array.from(newLlmLabels)];
+      const context: ImplementIssueContext = {
+        octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge: autoMerge || false, labelLogger
+      };
 
-        await safeUpdateLabels(
-          { octokit, owner, repo, issueNumber, logger: labelLogger },
-          labelsToRemove,
-          labelsToAdd
-        );
+      const result = (models && Array.isArray(models) && models.length > 0)
+        ? await handleMultiAgentImplementation({ ...context, draftId, planIssue, models })
+        : await handleSingleAgentImplementation({ ...context, draftId, planIssue });
 
-        // Update plan issue with the first model as primary
-        const primaryModel = models[0];
-        await updatePlanIssue(draftId, issueNumber, {
-          status: 'processing',
-          agent_alias: primaryModel.agent_alias,
-          model_name: primaryModel.model_name
-        });
-
-        const labelList = Array.from(newLlmLabels).map(l => `'${l}'`).join(', ');
-        res.json({
-          success: true,
-          message: `Added '${implementLabel}' and ${labelList} labels to issue #${issueNumber} (${models.length} agents assigned)`
-        });
-      } else {
-        // Single-agent mode (original behavior)
-        const llmLabel = getLlmLabel(planIssue.model_name);
-        const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
-
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-          owner, repo, issue_number: issueNumber, labels: labelsToAdd
-        });
-
-        await updatePlanIssue(draftId, issueNumber, { status: 'processing' });
-        const labelMessage = llmLabel
-          ? `Added '${implementLabel}' and '${llmLabel}' labels to issue #${issueNumber}`
-          : `Added '${implementLabel}' label to issue #${issueNumber}`;
-        res.json({ success: true, message: labelMessage });
-      }
+      res.json(result);
     } catch (error) {
       console.error('Implement issue error:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issue' });
