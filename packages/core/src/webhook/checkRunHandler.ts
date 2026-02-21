@@ -1,6 +1,7 @@
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
 import { findPlanIssueByRepoAndPR, updatePlanIssueByPR } from '../config/planIssueManager.js';
+import { isEpicBranch } from '../services/taskExecutionService.js';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
 
 export interface MergePROptions {
@@ -8,6 +9,8 @@ export interface MergePROptions {
     repoName: string;
     prNumber: number;
     mergeMethod?: 'merge' | 'squash' | 'rebase';
+    commitTitle?: string;
+    commitMessage?: string;
 }
 
 export interface MergePRResult {
@@ -23,18 +26,20 @@ export interface MergePRResult {
  * (e.g., when branch protection rules aren't configured).
  */
 export async function mergePR(options: MergePROptions): Promise<MergePRResult> {
-    const { owner, repoName, prNumber, mergeMethod = 'squash' } = options;
+    const { owner, repoName, prNumber, mergeMethod = 'squash', commitTitle, commitMessage } = options;
 
     try {
         const octokit = await getAuthenticatedOctokit();
 
-        logger.info({ owner, repoName, prNumber, mergeMethod }, 'Attempting to merge PR...');
+        logger.info({ owner, repoName, prNumber, mergeMethod, commitTitle }, 'Attempting to merge PR...');
 
         const response = await octokit.request('PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge', {
             owner,
             repo: repoName,
             pull_number: prNumber,
-            merge_method: mergeMethod
+            merge_method: mergeMethod,
+            ...(commitTitle && { commit_title: commitTitle }),
+            ...(commitMessage && { commit_message: commitMessage })
         });
 
         logger.info({
@@ -115,6 +120,58 @@ async function deleteBranch(
     }
 }
 
+interface FirstCommitInfo {
+    title: string;
+    message: string;
+}
+
+/**
+ * Gets the first commit message of a PR branch.
+ * This is useful for squash merges where we want to use the original
+ * descriptive commit message instead of the last commit (which is often just a lint fix).
+ */
+async function getFirstCommitMessage(
+    owner: string,
+    repoName: string,
+    prNumber: number
+): Promise<FirstCommitInfo | null> {
+    try {
+        const octokit = await getAuthenticatedOctokit();
+
+        // Get all commits in the PR, sorted by date (oldest first)
+        const commitsResponse = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/commits', {
+            owner,
+            repo: repoName,
+            pull_number: prNumber,
+            per_page: 100
+        });
+
+        const commits = commitsResponse.data;
+        if (commits.length === 0) {
+            return null;
+        }
+
+        // The first commit in the array is the oldest (first) commit
+        const firstCommit = commits[0];
+        const fullMessage = firstCommit.commit.message;
+
+        // Split into title (first line) and body (rest)
+        const lines = fullMessage.split('\n');
+        const title = lines[0];
+        const message = lines.slice(1).join('\n').trim();
+
+        return { title, message };
+    } catch (error) {
+        logger.warn({
+            owner,
+            repoName,
+            prNumber,
+            error: (error as Error).message
+        }, 'Failed to get first commit message');
+        return null;
+    }
+}
+
 /**
  * Gets the current HEAD SHA of a PR to verify checks are for the latest commit.
  */
@@ -183,10 +240,16 @@ async function areAllChecksPassing(owner: string, repoName: string, ref: string)
     }
 }
 
+interface PRAutoMergeInfo {
+    hasLabel: boolean;
+    isDraft: boolean;
+    baseBranch: string;
+}
+
 /**
- * Checks if a PR has the auto-merge label.
+ * Checks if a PR has the auto-merge label, if it's a draft, and gets the base branch.
  */
-async function hasAutoMergeLabel(owner: string, repoName: string, prNumber: number): Promise<boolean> {
+async function getPRAutoMergeInfo(owner: string, repoName: string, prNumber: number): Promise<PRAutoMergeInfo> {
     try {
         const octokit = await getAuthenticatedOctokit();
 
@@ -197,15 +260,19 @@ async function hasAutoMergeLabel(owner: string, repoName: string, prNumber: numb
         });
 
         const labels = prResponse.data.labels as Array<{ name: string }>;
-        return labels.some(label => label.name === 'auto-merge');
+        const hasLabel = labels.some(label => label.name === 'auto-merge');
+        const isDraft = prResponse.data.draft ?? false;
+        const baseBranch = prResponse.data.base.ref;
+
+        return { hasLabel, isDraft, baseBranch };
     } catch (error) {
         logger.warn({
             owner,
             repoName,
             prNumber,
             error: (error as Error).message
-        }, 'Failed to check PR labels');
-        return false;
+        }, 'Failed to check PR info');
+        return { hasLabel: false, isDraft: false, baseBranch: '' };
     }
 }
 
@@ -311,11 +378,17 @@ export async function handleCheckRunEvent(
         }, 'Processing check run completion for PR');
 
         try {
-            // Check if PR or linked issue has auto-merge label
-            const prHasLabel = await hasAutoMergeLabel(owner, repoName, prNumber);
+            // Check if PR is a draft or has auto-merge label
+            const prInfo = await getPRAutoMergeInfo(owner, repoName, prNumber);
+
+            if (prInfo.isDraft) {
+                log.debug({ owner, repoName, prNumber }, 'PR is a draft, skipping auto-merge');
+                continue;
+            }
+
             const issueHasLabel = await linkedIssueHasAutoMergeLabel(owner, repoName, prNumber);
 
-            if (!prHasLabel && !issueHasLabel) {
+            if (!prInfo.hasLabel && !issueHasLabel) {
                 log.debug({ owner, repoName, prNumber }, 'PR does not have auto-merge label, skipping');
                 continue;
             }
@@ -348,12 +421,34 @@ export async function handleCheckRunEvent(
                 headSha
             }, 'All checks passing for auto-merge PR, attempting to merge');
 
+            // For PRs targeting an epic branch, use the first commit message
+            // (the initial feature implementation) instead of the last commit
+            // (which is often just a lint fix)
+            let commitTitle: string | undefined;
+            let commitMessage: string | undefined;
+
+            if (isEpicBranch(prInfo.baseBranch)) {
+                const firstCommit = await getFirstCommitMessage(owner, repoName, prNumber);
+                if (firstCommit) {
+                    commitTitle = firstCommit.title;
+                    commitMessage = firstCommit.message;
+                    log.debug({
+                        owner,
+                        repoName,
+                        prNumber,
+                        commitTitle
+                    }, 'Using first commit message for epic branch merge');
+                }
+            }
+
             // Attempt to merge
             const mergeResult = await mergePR({
                 owner,
                 repoName,
                 prNumber,
-                mergeMethod: 'squash'
+                mergeMethod: 'squash',
+                commitTitle,
+                commitMessage
             });
 
             if (mergeResult.success && mergeResult.merged) {

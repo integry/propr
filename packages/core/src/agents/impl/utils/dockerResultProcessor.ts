@@ -12,6 +12,24 @@ import { getDefaultModel } from '../../../config/modelAliases.js';
 import { getCorrectedTokenUsage, ensurePromptInConversationLog } from './tokenUtils.js';
 
 /**
+ * Extracts a commit message from Claude's summary.
+ * Cleans up markdown formatting but preserves the full content.
+ */
+function extractCommitMessage(summary: string | undefined): string | null {
+    if (!summary || summary.trim().length === 0) {
+        return null;
+    }
+
+    // Clean up the summary - remove markdown headers and bold markers
+    const cleaned = summary
+        .replace(/^#+\s*/gm, '') // Remove markdown headers
+        .replace(/\*\*/g, '')    // Remove bold markers
+        .trim();
+
+    return cleaned || null;
+}
+
+/**
  * Result of processing a Docker execution result.
  */
 export interface ProcessedDockerResult {
@@ -62,6 +80,10 @@ export function processDockerResult(
         fullConversationLog
     );
 
+    // Extract commit message from Claude's summary
+    const summary = claudeOutput.finalResult?.result ?? undefined;
+    const commitMessage = extractCommitMessage(summary);
+
     // Build the agent execution response
     const response: AgentExecutionResult = {
         success: claudeOutput.success,
@@ -74,8 +96,8 @@ export function processDockerResult(
         modelUsed,
         cost: claudeOutput.finalResult?.total_cost_usd || claudeOutput.finalResult?.cost_usd,
         modifiedFiles: [],
-        commitMessage: null,
-        summary: claudeOutput.finalResult?.result ?? undefined,
+        commitMessage,
+        summary,
         prompt,
         conversationLog: fullConversationLog,
         tokenUsage: correctedTokenUsage
