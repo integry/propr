@@ -7,7 +7,8 @@ import { safeUpdateLabels } from '@gitfix/core';
 import { generateCompletionComment } from '@gitfix/core';
 import { executeClaudeCode } from '@gitfix/core';
 import { validatePRCreation } from '@gitfix/core';
-import { linkPRToPlanIssue } from '@gitfix/core';
+import { linkPRToPlanIssue, findPlanIssueByRepoAndNumber, getPlanIssuesByDraft, updatePlanIssueStatus } from '@gitfix/core';
+import { getAuthenticatedOctokit, getPrimaryProcessingLabels } from '@gitfix/core';
 import type { RepoValidationResult, PRValidationResult } from '@gitfix/core';
 import type { IssueJobData } from '@gitfix/core';
 import { createPullRequest, type PostProcessingResult } from './issueJobHelpers.js';
@@ -65,6 +66,28 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             { name: 'Claude Code', email: 'claude-code@anthropic.com' },
             { issueNumber: issueRef.number, issueTitle: currentIssueData.data.title }
         );
+
+        // Handle the case where no code changes were needed (work already complete)
+        if (commitResult === null && claudeResult?.success) {
+            correlatedLogger.info({ issueNumber: issueRef.number }, 'No code changes needed - work was already complete');
+
+            await safeUpdateLabels(
+                { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
+                [AI_PROCESSING_TAG], [AI_DONE_TAG]
+            );
+
+            const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
+            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
+                body: `✅ **No code changes needed - the implementation was already complete.**\n\n${completionComment}`,
+            });
+
+            // Trigger the next pending issue in the plan (if this is part of a plan)
+            await triggerNextPlanIssueIfNeeded(issueRef, currentIssueData, correlatedLogger);
+
+            postProcessingResult = { success: true, pr: null, updatedLabels: [AI_DONE_TAG] };
+            return { commitResult, postProcessingResult };
+        }
 
         await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
 
@@ -294,5 +317,83 @@ async function attemptEmergencyPRCreation(options: EmergencyPROptions): Promise<
             await linkPRToPlanIssue(repository, issueRef.number, emergencyValidation.pr.number);
             correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber: emergencyValidation.pr.number }, 'Linked PR to plan issue (emergency creation)');
         }
+    }
+}
+
+/**
+ * Triggers the next pending issue in a plan when the current issue completes without needing a PR.
+ * This handles the case where work was already complete and no code changes were needed.
+ */
+async function triggerNextPlanIssueIfNeeded(
+    issueRef: IssueJobData,
+    currentIssueData: { data: { title: string; labels: Array<{ name: string }> } },
+    log: Logger
+): Promise<void> {
+    try {
+        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+
+        // Check if this issue is part of a plan
+        const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
+        if (!planIssue || !planIssue.draft_id) {
+            log.debug({ issueNumber: issueRef.number }, 'Issue is not part of a plan, skipping next issue trigger');
+            return;
+        }
+
+        // Check if the issue has auto-merge label (indicates it's part of auto-processing flow)
+        const labels = currentIssueData.data.labels.map(l => l.name);
+        const hasAutoMerge = labels.includes('auto-merge');
+        if (!hasAutoMerge) {
+            log.debug({ issueNumber: issueRef.number }, 'Issue does not have auto-merge label, skipping next issue trigger');
+            return;
+        }
+
+        // Mark the current issue as completed (since no PR was needed)
+        await updatePlanIssueStatus(repository, issueRef.number, 'merged');
+        log.info({ repository, issueNumber: issueRef.number }, 'Marked plan issue as merged (no changes needed)');
+
+        // Find the next pending issue in the plan
+        const planIssues = await getPlanIssuesByDraft(planIssue.draft_id);
+        const nextPending = planIssues.find(issue => issue.status === 'pending');
+        if (!nextPending) {
+            log.debug({ draftId: planIssue.draft_id }, 'No more pending issues in plan');
+            return;
+        }
+
+        // Get the epic label if present
+        const epicLabel = labels.find(label => label.startsWith('base-'));
+
+        // Build labels to add to the next issue
+        const processingLabels = getPrimaryProcessingLabels();
+        const primaryLabel = processingLabels[0] || 'AI';
+        const labelsToAdd = [primaryLabel, 'auto-merge'];
+        if (epicLabel) {
+            labelsToAdd.push(epicLabel);
+        }
+
+        log.info({
+            draftId: planIssue.draft_id,
+            nextIssueNumber: nextPending.issue_number,
+            labels: labelsToAdd
+        }, 'Triggering next pending issue in plan (no-changes case)');
+
+        const octokit = await getAuthenticatedOctokit();
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+            owner: issueRef.repoOwner,
+            repo: issueRef.repoName,
+            issue_number: nextPending.issue_number,
+            labels: labelsToAdd
+        });
+
+        log.info({
+            draftId: planIssue.draft_id,
+            issueNumber: nextPending.issue_number,
+            labels: labelsToAdd
+        }, 'Added processing labels to next pending issue');
+
+    } catch (error) {
+        log.warn({
+            issueNumber: issueRef.number,
+            error: (error as Error).message
+        }, 'Failed to trigger next pending issue');
     }
 }
