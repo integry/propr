@@ -244,10 +244,11 @@ interface PRAutoMergeInfo {
     hasLabel: boolean;
     isDraft: boolean;
     baseBranch: string;
+    headBranch: string;
 }
 
 /**
- * Checks if a PR has the auto-merge label, if it's a draft, and gets the base branch.
+ * Checks if a PR has the auto-merge label, if it's a draft, and gets the base/head branches.
  */
 async function getPRAutoMergeInfo(owner: string, repoName: string, prNumber: number): Promise<PRAutoMergeInfo> {
     try {
@@ -263,8 +264,9 @@ async function getPRAutoMergeInfo(owner: string, repoName: string, prNumber: num
         const hasLabel = labels.some(label => label.name === 'auto-merge');
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
+        const headBranch = prResponse.data.head.ref;
 
-        return { hasLabel, isDraft, baseBranch };
+        return { hasLabel, isDraft, baseBranch, headBranch };
     } catch (error) {
         logger.warn({
             owner,
@@ -272,7 +274,7 @@ async function getPRAutoMergeInfo(owner: string, repoName: string, prNumber: num
             prNumber,
             error: (error as Error).message
         }, 'Failed to check PR info');
-        return { hasLabel: false, isDraft: false, baseBranch: '' };
+        return { hasLabel: false, isDraft: false, baseBranch: '', headBranch: '' };
     }
 }
 
@@ -383,6 +385,12 @@ export async function handleCheckRunEvent(
 
             if (prInfo.isDraft) {
                 log.debug({ owner, repoName, prNumber }, 'PR is a draft, skipping auto-merge');
+                continue;
+            }
+
+            // Skip Epic PRs - they should never be auto-merged
+            if (isEpicBranch(prInfo.headBranch)) {
+                log.debug({ owner, repoName, prNumber, headBranch: prInfo.headBranch }, 'PR is an Epic PR, skipping auto-merge');
                 continue;
             }
 
