@@ -388,17 +388,19 @@ export async function handleCheckRunEvent(
                 continue;
             }
 
-            // Skip Epic PRs - they should never be auto-merged
+            // For Epic PRs, only auto-merge if the PR itself has the label (not inherited from linked issues)
             if (isEpicBranch(prInfo.headBranch)) {
-                log.debug({ owner, repoName, prNumber, headBranch: prInfo.headBranch }, 'PR is an Epic PR, skipping auto-merge');
-                continue;
-            }
-
-            const issueHasLabel = await linkedIssueHasAutoMergeLabel(owner, repoName, prNumber);
-
-            if (!prInfo.hasLabel && !issueHasLabel) {
-                log.debug({ owner, repoName, prNumber }, 'PR does not have auto-merge label, skipping');
-                continue;
+                if (!prInfo.hasLabel) {
+                    log.debug({ owner, repoName, prNumber, headBranch: prInfo.headBranch }, 'Epic PR does not have auto-merge label, skipping');
+                    continue;
+                }
+            } else {
+                // For regular PRs, check both PR label and linked issue labels
+                const issueHasLabel = await linkedIssueHasAutoMergeLabel(owner, repoName, prNumber);
+                if (!prInfo.hasLabel && !issueHasLabel) {
+                    log.debug({ owner, repoName, prNumber }, 'PR does not have auto-merge label, skipping');
+                    continue;
+                }
             }
 
             // Verify the check_run SHA matches the current PR head
