@@ -167,14 +167,21 @@ Target: 2-4 tasks total.
 - Aim for 2-4 tasks that each represent a cohesive piece of work
 - Each task should be substantial enough to be meaningful but not overwhelming`,
   granular: `
-**Task Granularity: GRANULAR**
+**Task Granularity: GRANULAR — UNLIMITED TASK DECOMPOSITION**
 
-Target: 5+ tasks if the scope warrants it.
+Create as many tasks as the complexity demands. There is NO upper limit.
 
-- Break down the work into small, focused units
-- Each task should be independently reviewable and testable
-- Create separate issues for distinct logical concerns
-- Fine-grained tasks are preferred for complex requests`
+For simple requests: 5-10 tasks may suffice.
+For complex features: 20-50+ tasks are appropriate.
+For large specifications or epics: 100+ tasks are encouraged if warranted.
+
+Guidelines:
+- Break down the work into the smallest meaningful, atomic units
+- Each task should be independently reviewable, testable, and implementable
+- Create separate issues for every distinct logical concern, file change, or feature component
+- Prioritize comprehensive coverage over brevity — missing tasks is worse than having many tasks
+- When in doubt, create more granular tasks rather than fewer combined ones
+- Complex requests (e.g., full project specs, large features) should result in proportionally many tasks`
 };
 
 export function getPlannerPrompt(granularity: Granularity): string {
