@@ -353,6 +353,24 @@ async function triggerNextPlanIssueIfNeeded(
 
         // Find the next pending issue in the plan
         const planIssues = await getPlanIssuesByDraft(planIssue.draft_id);
+
+        // Check if there are any issues currently in progress (processing or under_review)
+        // These statuses indicate an active PR or processing that hasn't completed yet
+        const inProgressStatuses = ['processing', 'under_review', 'in_refinement', 'refinement_processing'];
+        const hasInProgressIssue = planIssues.some(issue =>
+            inProgressStatuses.includes(issue.status) && issue.issue_number !== issueRef.number
+        );
+        if (hasInProgressIssue) {
+            const inProgressIssues = planIssues.filter(issue =>
+                inProgressStatuses.includes(issue.status) && issue.issue_number !== issueRef.number
+            );
+            log.debug({
+                draftId: planIssue.draft_id,
+                inProgressIssues: inProgressIssues.map(i => ({ number: i.issue_number, status: i.status }))
+            }, 'Skipping next issue trigger - there are issues still in progress');
+            return;
+        }
+
         const nextPending = planIssues.find(issue => issue.status === 'pending');
         if (!nextPending) {
             log.debug({ draftId: planIssue.draft_id }, 'No more pending issues in plan');

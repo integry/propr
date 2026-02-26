@@ -169,6 +169,7 @@ async function getIssueLabels(
 
 /**
  * Triggers the next pending issue in a plan by adding processing labels.
+ * Only triggers if there are no issues currently being processed or under review.
  */
 async function triggerNextPendingIssue(
     draftId: string,
@@ -179,6 +180,19 @@ async function triggerNextPendingIssue(
     try {
         // Get all issues in the same plan
         const planIssues = await getPlanIssuesByDraft(draftId);
+
+        // Check if there are any issues currently in progress (processing or under_review)
+        // These statuses indicate an active PR or processing that hasn't completed yet
+        const inProgressStatuses = ['processing', 'under_review', 'in_refinement', 'refinement_processing'];
+        const hasInProgressIssue = planIssues.some(issue => inProgressStatuses.includes(issue.status));
+        if (hasInProgressIssue) {
+            const inProgressIssues = planIssues.filter(issue => inProgressStatuses.includes(issue.status));
+            log.debug({
+                draftId,
+                inProgressIssues: inProgressIssues.map(i => ({ number: i.issue_number, status: i.status }))
+            }, 'Skipping next issue trigger - there are issues still in progress');
+            return;
+        }
 
         // Find the next pending issue
         const nextPending = planIssues.find(issue => issue.status === 'pending');

@@ -433,7 +433,12 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
 
       const results: { issueNumber: number; success: boolean; error?: string }[] = [];
 
-      for (const issue of pendingIssues) {
+      // When auto-merge is enabled with an epic, only trigger the first issue.
+      // The rest will be triggered sequentially as each PR is merged.
+      // This prevents merge conflicts from parallel processing.
+      const issuesToProcess = (autoMerge && epicLabelName) ? [pendingIssues[0]] : pendingIssues;
+
+      for (const issue of issuesToProcess) {
         const result = await processIssueForImplementation({
           octokit, owner, repo, draftId, issue, implementLabel, epicLabelName, autoMerge: autoMerge || false
         });
@@ -442,12 +447,16 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
 
       const successCount = results.filter(r => r.success).length;
       const failedCount = results.filter(r => !r.success).length;
+      const queuedCount = (autoMerge && epicLabelName) ? pendingIssues.length - 1 : 0;
+
+      const queuedMessage = queuedCount > 0 ? ` (${queuedCount} more queued for sequential processing)` : '';
 
       res.json({
         success: failedCount === 0,
-        message: `Implemented ${successCount} issues${failedCount > 0 ? `, ${failedCount} failed` : ''}`,
+        message: `Implemented ${successCount} issues${failedCount > 0 ? `, ${failedCount} failed` : ''}${queuedMessage}`,
         implemented: successCount,
         failed: failedCount,
+        queued: queuedCount,
         results,
         epicLabel: epicLabelName,
         autoMergeEnabled: autoMerge || false
