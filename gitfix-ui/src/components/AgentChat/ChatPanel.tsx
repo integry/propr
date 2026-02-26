@@ -153,9 +153,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
             Clear
           </button>
         </div>
-        {/* Compact horizontal model selector with tiny chips */}
+        {/* Compact model selector with tiny chips - wraps to multiple rows */}
         <div className="mt-3 ml-[52px]">
-          <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent">
+          <div className="flex flex-wrap gap-1.5">
             {agentModelOptions.length === 0 ? (
               <p className="text-[10px] text-gray-500">No enabled models available.</p>
             ) : (
@@ -165,7 +165,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
                   <button
                     key={option.key}
                     onClick={() => toggleSelection(option.key)}
-                    className={`px-2 py-0.5 text-[10px] rounded-full border transition-all duration-200 flex items-center gap-1 whitespace-nowrap flex-shrink-0 ${
+                    className={`px-2 py-0.5 text-[10px] rounded-full border transition-all duration-200 flex items-center gap-1 whitespace-nowrap ${
                       isSelected
                         ? selectedBadgeColors[option.agentType]
                         : 'bg-gray-50 border-gray-200 text-gray-400 hover:bg-gray-100 hover:border-gray-300 hover:text-gray-600'
