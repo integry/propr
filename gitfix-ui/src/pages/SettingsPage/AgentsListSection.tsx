@@ -88,7 +88,7 @@ const ModelRow: React.FC<{
   isDefault: boolean;
   customLabel?: string;
 }> = ({ modelId, modelInfo, isDefault, customLabel }) => (
-  <div className="flex items-center py-1.5 px-3 hover:bg-gray-50 transition-colors text-sm">
+  <div className="flex items-start py-1.5 px-3 hover:bg-gray-50 transition-colors text-sm">
     {/* Name + Badge column */}
     <div className="flex items-center gap-2 flex-1 min-w-0">
       <span className={`truncate ${isDefault ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
@@ -107,21 +107,23 @@ const ModelRow: React.FC<{
     </div>
 
     {/* Context Limit column - fixed width for alignment */}
-    <div className="w-20 text-right flex-shrink-0 mr-4">
+    <div className="w-16 text-right flex-shrink-0 mr-4">
       {modelInfo?.contextWindow && (
         <span className="font-mono text-xs text-gray-600">{modelInfo.contextWindow}</span>
       )}
     </div>
 
-    {/* ID/Alias column */}
-    <div className="flex items-center gap-1.5 flex-shrink-0 min-w-[280px] justify-end">
-      <CodeChip className="bg-purple-50 text-purple-700 border-purple-200">{modelId}</CodeChip>
-      <CopyButton text={modelId} className="hover:text-purple-600" />
+    {/* ID/Alias column - allows wrapping to second line */}
+    <div className="flex flex-wrap items-center gap-1.5 flex-shrink-0 w-[240px] justify-end">
+      <span className="inline-flex items-center gap-1">
+        <CodeChip className="bg-purple-50 text-purple-700 border-purple-200">{modelId}</CodeChip>
+        <CopyButton text={modelId} className="hover:text-purple-600" />
+      </span>
       {modelInfo?.shortAlias && (
-        <>
+        <span className="inline-flex items-center gap-1">
           <CodeChip>{modelInfo.shortAlias}</CodeChip>
           <CopyButton text={modelInfo.shortAlias} />
-        </>
+        </span>
       )}
     </div>
   </div>
@@ -183,8 +185,8 @@ const AgentCard: React.FC<{
         {/* Header row */}
         <div className="flex items-center py-1 px-3 text-[10px] text-gray-500 uppercase tracking-wide font-medium border-b border-gray-100">
           <div className="flex-1">Model</div>
-          <div className="w-20 text-right flex-shrink-0 mr-4">Context</div>
-          <div className="flex items-center gap-1 min-w-[280px] justify-end">
+          <div className="w-16 text-right flex-shrink-0 mr-4">Context</div>
+          <div className="flex items-center gap-1 w-[240px] justify-end">
             <GitHubIcon className="w-3 h-3" />
             <span>ID / Alias</span>
           </div>
