@@ -106,15 +106,15 @@ const ModelRow: React.FC<{
       )}
     </div>
 
-    {/* Context Limit column */}
-    <div className="w-16 text-right flex-shrink-0">
+    {/* Context Limit column - fixed width for alignment */}
+    <div className="w-20 text-right flex-shrink-0 mr-4">
       {modelInfo?.contextWindow && (
         <span className="font-mono text-xs text-gray-600">{modelInfo.contextWindow}</span>
       )}
     </div>
 
     {/* ID/Alias column */}
-    <div className="flex items-center gap-1.5 ml-4 flex-shrink-0">
+    <div className="flex items-center gap-1.5 flex-shrink-0 min-w-[280px] justify-end">
       <CodeChip className="bg-purple-50 text-purple-700 border-purple-200">{modelId}</CodeChip>
       <CopyButton text={modelId} className="hover:text-purple-600" />
       {modelInfo?.shortAlias && (
@@ -183,8 +183,8 @@ const AgentCard: React.FC<{
         {/* Header row */}
         <div className="flex items-center py-1 px-3 text-[10px] text-gray-500 uppercase tracking-wide font-medium border-b border-gray-100">
           <div className="flex-1">Model</div>
-          <div className="w-16 text-right flex-shrink-0">Context</div>
-          <div className="ml-4 flex items-center gap-1">
+          <div className="w-20 text-right flex-shrink-0 mr-4">Context</div>
+          <div className="flex items-center gap-1 min-w-[280px] justify-end">
             <GitHubIcon className="w-3 h-3" />
             <span>ID / Alias</span>
           </div>
