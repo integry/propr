@@ -93,6 +93,73 @@ async function linkPRToReferencedPlanIssue(
 }
 
 /**
+ * Handles Epic PR opened events - adds auto-merge label if child issues have it.
+ * This allows users to post followup comments on Epic PRs for refinement.
+ */
+async function handleEpicPROpened(
+    payload: PullRequestEvent,
+    repository: string,
+    prNumber: number,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    try {
+        const [owner, repo] = repository.split('/');
+        const prBody = payload.pull_request.body || '';
+
+        // Find all issue references in the Epic PR body
+        const issueRefs = prBody.match(/#(\d+)/g);
+        if (!issueRefs || issueRefs.length === 0) {
+            log.debug({ repository, prNumber }, 'Epic PR has no issue references, skipping label sync');
+            return;
+        }
+
+        // Check if any referenced issue has the auto-merge label
+        const octokit = await getAuthenticatedOctokit();
+        let hasAutoMerge = false;
+
+        for (const ref of issueRefs) {
+            const issueNumber = parseInt(ref.replace('#', ''), 10);
+            if (isNaN(issueNumber)) continue;
+
+            try {
+                const issueResponse = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                    owner,
+                    repo,
+                    issue_number: issueNumber
+                });
+
+                const labels = issueResponse.data.labels as Array<{ name: string } | string>;
+                hasAutoMerge = labels.some(label =>
+                    (typeof label === 'string' ? label : label.name) === 'auto-merge'
+                );
+
+                if (hasAutoMerge) break;
+            } catch {
+                // Issue might not exist or be inaccessible, continue checking others
+                continue;
+            }
+        }
+
+        if (hasAutoMerge) {
+            // Add auto-merge label to the Epic PR
+            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+                owner,
+                repo,
+                issue_number: prNumber,
+                labels: ['auto-merge']
+            });
+            log.info({ repository, prNumber }, 'Added auto-merge label to Epic PR');
+        }
+    } catch (error) {
+        log.warn({
+            repository,
+            prNumber,
+            error: (error as Error).message
+        }, 'Failed to handle Epic PR opened event');
+    }
+}
+
+/**
  * Handles PR events to track PR associations with plan issues.
  */
 export async function handlePlanPRUpdate(
@@ -105,10 +172,12 @@ export async function handlePlanPRUpdate(
     const action = payload.action;
 
     try {
-        // Skip Epic PRs - they aggregate child PRs and shouldn't be linked to individual plan issues
+        // Handle Epic PRs separately - don't link to plan issues but do add auto-merge label
         const prTitle = payload.pull_request.title || '';
         if (prTitle.startsWith('[Epic]')) {
-            log.debug({ repository, prNumber, prTitle }, 'Skipping Epic PR - not linking to plan issues');
+            if (action === 'opened') {
+                await handleEpicPROpened(payload, repository, prNumber, log);
+            }
             return;
         }
 
