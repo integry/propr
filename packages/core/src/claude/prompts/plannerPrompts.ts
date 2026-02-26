@@ -167,14 +167,20 @@ Target: 2-4 tasks total.
 - Aim for 2-4 tasks that each represent a cohesive piece of work
 - Each task should be substantial enough to be meaningful but not overwhelming`,
   granular: `
-**Task Granularity: GRANULAR**
+**Task Granularity: GRANULAR — COMPREHENSIVE BREAKDOWN**
 
-Target: 5+ tasks if the scope warrants it.
+⚠️ NO ARBITRARY LIMITS: Create as many tasks as the complexity demands. For large feature requests, this may mean 30, 50, 100+ tasks.
 
-- Break down the work into small, focused units
-- Each task should be independently reviewable and testable
-- Create separate issues for distinct logical concerns
-- Fine-grained tasks are preferred for complex requests`
+- Break down the work into the smallest possible atomic units
+- Each task should represent a single, focused change that can be independently reviewed and tested
+- Create separate issues for every distinct logical concern, file modification, or feature component
+- Do NOT artificially limit the number of tasks — comprehensiveness is the priority
+- For complex specifications or large projects, exhaustively enumerate ALL required changes
+- Prefer many small, focused tasks over fewer large tasks
+- Each task should ideally touch only one file or one tightly-related set of changes
+
+✅ GOAL: A junior developer should be able to pick up any single task and complete it without needing to understand the broader context
+✅ GOAL: The complete task list should fully cover every aspect of the request with no gaps`
 };
 
 export function getPlannerPrompt(granularity: Granularity): string {
