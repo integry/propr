@@ -373,6 +373,70 @@ async function processIssueForImplementation(params: ProcessIssueParams): Promis
   }
 }
 
+interface BatchEpicParams {
+  owner: string;
+  repo: string;
+  planName: string;
+  firstIssueId: number;
+  correlationId: string;
+  labelLogger: ReturnType<typeof logger.withCorrelation>;
+}
+
+async function handleBatchEpicPRCreation(params: BatchEpicParams): Promise<string | null> {
+  const { owner, repo, planName, firstIssueId, correlationId, labelLogger } = params;
+
+  labelLogger.info({ owner, repo, planName, firstIssueId }, 'Creating Epic PR for batch implementation');
+  const epicResult = await ensureEpicPR({
+    owner,
+    repoName: repo,
+    firstIssueId,
+    planName,
+    correlationId
+  });
+
+  if (epicResult.success && epicResult.labelName) {
+    labelLogger.info({ epicLabelName: epicResult.labelName, prNumber: epicResult.prNumber }, 'Epic PR created successfully');
+    return epicResult.labelName;
+  }
+
+  labelLogger.warn({ error: epicResult.error }, 'Failed to create Epic PR, continuing without epic labels');
+  return null;
+}
+
+interface BatchProcessParams {
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+  owner: string;
+  repo: string;
+  draftId: string;
+  pendingIssues: Array<{ issue_number: number; model_name: string | null }>;
+  implementLabel: string;
+  epicLabelName: string | null;
+  autoMerge: boolean;
+}
+
+async function processBatchIssues(params: BatchProcessParams): Promise<{
+  results: Array<{ issueNumber: number; success: boolean; error?: string }>;
+  queuedCount: number;
+}> {
+  const { octokit, owner, repo, draftId, pendingIssues, implementLabel, epicLabelName, autoMerge } = params;
+  const results: Array<{ issueNumber: number; success: boolean; error?: string }> = [];
+
+  // When auto-merge is enabled with an epic, only trigger the first issue.
+  // The rest will be triggered sequentially as each PR is merged.
+  // This prevents merge conflicts from parallel processing.
+  const issuesToProcess = (autoMerge && epicLabelName) ? [pendingIssues[0]] : pendingIssues;
+
+  for (const issue of issuesToProcess) {
+    const result = await processIssueForImplementation({
+      octokit, owner, repo, draftId, issue, implementLabel, epicLabelName, autoMerge
+    });
+    results.push(result);
+  }
+
+  const queuedCount = (autoMerge && epicLabelName) ? pendingIssues.length - 1 : 0;
+  return { results, queuedCount };
+}
+
 export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
   return async function implementAllIssues(req: Request, res: Response): Promise<void> {
     const draftId = req.params.id;
@@ -403,52 +467,27 @@ export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
 
       const processingLabels = await loadPrimaryProcessingLabels();
       const implementLabel = processingLabels[0] || 'AI';
-
       const octokit = await getAuthenticatedOctokit();
       const correlationId = `implement-all-${draftId}`;
       const labelLogger = logger.withCorrelation(correlationId);
 
-      // Handle Epic PR creation if useEpic is true
-      let epicLabelName: string | null = null;
-      if (useEpic) {
-        const planName = (draft.name as string) || 'Unnamed Plan';
-        const firstIssueId = pendingIssues[0].issue_number;
+      const epicLabelName = useEpic
+        ? await handleBatchEpicPRCreation({
+            owner,
+            repo,
+            planName: (draft.name as string) || 'Unnamed Plan',
+            firstIssueId: pendingIssues[0].issue_number,
+            correlationId,
+            labelLogger
+          })
+        : null;
 
-        labelLogger.info({ owner, repo, planName, firstIssueId }, 'Creating Epic PR for batch implementation');
-        const epicResult = await ensureEpicPR({
-          owner,
-          repoName: repo,
-          firstIssueId,
-          planName,
-          correlationId
-        });
-
-        if (epicResult.success && epicResult.labelName) {
-          epicLabelName = epicResult.labelName;
-          labelLogger.info({ epicLabelName, prNumber: epicResult.prNumber }, 'Epic PR created successfully');
-        } else {
-          labelLogger.warn({ error: epicResult.error }, 'Failed to create Epic PR, continuing without epic labels');
-        }
-      }
-
-      const results: { issueNumber: number; success: boolean; error?: string }[] = [];
-
-      // When auto-merge is enabled with an epic, only trigger the first issue.
-      // The rest will be triggered sequentially as each PR is merged.
-      // This prevents merge conflicts from parallel processing.
-      const issuesToProcess = (autoMerge && epicLabelName) ? [pendingIssues[0]] : pendingIssues;
-
-      for (const issue of issuesToProcess) {
-        const result = await processIssueForImplementation({
-          octokit, owner, repo, draftId, issue, implementLabel, epicLabelName, autoMerge: autoMerge || false
-        });
-        results.push(result);
-      }
+      const { results, queuedCount } = await processBatchIssues({
+        octokit, owner, repo, draftId, pendingIssues, implementLabel, epicLabelName, autoMerge: autoMerge || false
+      });
 
       const successCount = results.filter(r => r.success).length;
       const failedCount = results.filter(r => !r.success).length;
-      const queuedCount = (autoMerge && epicLabelName) ? pendingIssues.length - 1 : 0;
-
       const queuedMessage = queuedCount > 0 ? ` (${queuedCount} more queued for sequential processing)` : '';
 
       res.json({
