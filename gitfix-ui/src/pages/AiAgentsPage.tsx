@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { GripVertical } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import {
   getAgents,
@@ -15,7 +17,6 @@ const AiAgentsPage: React.FC = () => {
   const [agentsSaving, setAgentsSaving] = useState<boolean>(false);
   const [agentsError, setAgentsError] = useState<string | null>(null);
   const [agentsSuccess, setAgentsSuccess] = useState<string | null>(null);
-  const [isAgentColumnCollapsed, setIsAgentColumnCollapsed] = useState<boolean>(false);
 
   useEffect(() => {
     const loadAgents = async () => {
@@ -50,14 +51,12 @@ const AiAgentsPage: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      {/* Split-Pane Container - 40/60 layout */}
-      <div className="flex-1 flex min-h-0">
-        {/* Left Pane (40%): Agent Configuration */}
-        <div className={`bg-white flex flex-col transition-all duration-300 ${
-          isAgentColumnCollapsed ? 'w-0 overflow-hidden' : 'w-2/5'
-        }`}>
-          {!isAgentColumnCollapsed && (
-            <>
+      {/* Split-Pane Container - Resizable 40/60 layout */}
+      <div className="flex-1 overflow-hidden">
+        <PanelGroup direction="horizontal">
+          {/* Left Panel (40%): Agent Configuration */}
+          <Panel defaultSize={40} minSize={25}>
+            <div className="h-full bg-white flex flex-col">
               <div className="p-6 pb-0 flex-shrink-0">
                 <h2 className="text-gray-900 text-2xl font-semibold mb-6">Agent Configuration</h2>
               </div>
@@ -71,39 +70,26 @@ const AiAgentsPage: React.FC = () => {
                   onSaveAgents={handleSaveAgents}
                 />
               </div>
-            </>
-          )}
-        </div>
+            </div>
+          </Panel>
 
-        {/* Collapse/Expand Button - positioned between panes */}
-        <div className="flex-shrink-0 flex items-center bg-gray-100 border-l border-r border-gray-200">
-          <button
-            onClick={() => setIsAgentColumnCollapsed(!isAgentColumnCollapsed)}
-            className="p-1.5 hover:bg-gray-200 transition-colors"
-            title={isAgentColumnCollapsed ? 'Show agent configuration' : 'Hide agent configuration'}
-          >
-            <svg
-              className={`w-4 h-4 text-gray-500 transition-transform duration-300 ${isAgentColumnCollapsed ? 'rotate-180' : ''}`}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
-            </svg>
-          </button>
-        </div>
+          {/* Resize Handle */}
+          <PanelResizeHandle className="w-2 bg-gray-200 hover:bg-teal-500 transition-colors flex items-center justify-center cursor-col-resize">
+            <GripVertical size={12} className="text-gray-400" />
+          </PanelResizeHandle>
 
-        {/* Right Pane (60%): Test Playground */}
-        <div className={`bg-slate-50 flex flex-col transition-all duration-300 ${
-          isAgentColumnCollapsed ? 'flex-1' : 'w-3/5'
-        }`}>
-          <div className="p-6 pb-0 flex-shrink-0">
-            <h2 className="text-gray-900 text-2xl font-semibold mb-6">Test Playground</h2>
-          </div>
-          <div className="flex-1 min-h-0 px-6 pb-6">
-            {!agentsLoading && <ChatPanel agents={agents} />}
-          </div>
-        </div>
+          {/* Right Panel (60%): Test Playground */}
+          <Panel defaultSize={60} minSize={30}>
+            <div className="h-full bg-slate-50 flex flex-col">
+              <div className="p-6 pb-0 flex-shrink-0">
+                <h2 className="text-gray-900 text-2xl font-semibold mb-6">Test Playground</h2>
+              </div>
+              <div className="flex-1 min-h-0 px-6 pb-6">
+                {!agentsLoading && <ChatPanel agents={agents} />}
+              </div>
+            </div>
+          </Panel>
+        </PanelGroup>
       </div>
     </div>
   );
