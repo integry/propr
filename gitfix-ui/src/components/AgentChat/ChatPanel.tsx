@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { AgentConfig, chatWithAgents, ChatResult, ChatQuery } from '../../api/gitfixApi';
 import { MODEL_INFO_MAP, AgentType } from '../../config/modelDefinitions';
 import { ProviderLogo } from '../ui/ProviderLogo';
+import { Bot, User, Send } from 'lucide-react';
 
 // Enhanced badge colors for selected state - more visually prominent
 const selectedBadgeColors: Record<AgentType, string> = {
@@ -131,22 +132,23 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-white rounded-lg shadow-sm border border-gray-200">
-      {/* Header & Controls */}
-      <div className="p-4 border-b border-gray-200 bg-white rounded-t-lg flex-shrink-0">
-        <div className="flex justify-between items-center mb-2">
-          <h3 className="font-semibold text-gray-700">Select Models</h3>
+    <div className="flex flex-col h-full bg-[#F8FAFC]">
+      {/* Compact model selector header */}
+      <div className="px-4 py-3 flex-shrink-0">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-gray-500 font-medium">Select models to test:</span>
           <button
             onClick={() => setMessages([])}
-            className="text-sm text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-200 transition-colors"
+            className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded hover:bg-white/50 transition-colors"
             title="Clear History"
           >
             Clear
           </button>
         </div>
-        <div className="flex gap-2 flex-wrap">
+        {/* Compact model selector with tiny chips - wraps to multiple rows */}
+        <div className="flex flex-wrap gap-1.5">
           {agentModelOptions.length === 0 ? (
-            <p className="text-sm text-gray-500">No enabled models available. Enable agents and models in the configuration.</p>
+            <p className="text-[10px] text-gray-500">No enabled models available.</p>
           ) : (
             agentModelOptions.map(option => {
               const isSelected = selectedKeys.includes(option.key);
@@ -154,13 +156,13 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
                 <button
                   key={option.key}
                   onClick={() => toggleSelection(option.key)}
-                  className={`px-3 py-1.5 text-xs rounded-full border transition-all duration-200 flex items-center gap-1.5 ${
+                  className={`px-2 py-0.5 text-[10px] rounded-full border transition-all duration-200 flex items-center gap-1 whitespace-nowrap ${
                     isSelected
                       ? selectedBadgeColors[option.agentType]
-                      : 'bg-gray-50 border-gray-200 text-gray-400 hover:bg-gray-100 hover:border-gray-300 hover:text-gray-600'
+                      : 'bg-white/70 border-gray-200 text-gray-400 hover:bg-white hover:border-gray-300 hover:text-gray-600'
                   }`}
                 >
-                  <ProviderLogo provider={option.agentAlias} className="w-3.5 h-3.5" />
+                  <ProviderLogo provider={option.agentAlias} className="w-3 h-3" />
                   {option.modelName}
                 </button>
               );
@@ -168,70 +170,111 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
           )}
         </div>
         {selectedKeys.length === 0 && agentModelOptions.length > 0 && (
-          <p className="text-xs text-amber-600 mt-2">Select at least one model to start chatting</p>
+          <p className="text-[10px] text-amber-600 mt-1.5">Select at least one model to start chatting</p>
         )}
       </div>
 
-      {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4" ref={scrollRef}>
+      {/* Messages Area - Studio Assistant styling */}
+      <div
+        className="flex-1 overflow-y-auto px-4 pb-4 space-y-4"
+        ref={scrollRef}
+        style={{
+          scrollbarWidth: 'thin',
+          scrollbarColor: '#d1d5db transparent'
+        }}
+      >
         {messages.length === 0 && (
-          <div className="text-center text-gray-400 py-8">
-            <p>No messages yet. Start a conversation to test your agents.</p>
+          <div className="px-2 py-4">
+            <p className="text-sm text-gray-500">
+              Test your agents by sending messages. Select one or more models above to compare responses side by side.
+            </p>
           </div>
         )}
         {messages.map((msg, idx) => (
-          <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+          <div key={idx} className="flex items-start">
             {msg.role === 'user' ? (
-              <div className="bg-blue-600 text-white px-4 py-2 rounded-lg max-w-[80%]">
-                {msg.content}
-              </div>
-            ) : (
-              <div className="flex gap-4 w-full overflow-x-auto pb-2">
-                {msg.results?.map((res, rIdx) => (
-                  <div key={rIdx} className="flex-1 min-w-[250px] bg-gray-100 rounded-lg p-3 border border-gray-200 relative flex flex-col">
-                    <div className="text-xs font-bold text-gray-500 mb-1 border-b border-gray-200 pb-1 flex justify-between">
-                      <span>{res.agentAlias}</span>
-                      <span className="text-gray-400">{res.model}</span>
-                    </div>
-                    <div className="text-sm text-gray-800 whitespace-pre-wrap flex-1 pb-6">
-                      {res.error ? <span className="text-red-500">{res.error}</span> : res.response}
-                    </div>
-                    <div className="absolute bottom-2 right-3 text-xs text-gray-400 bg-gray-100 px-1">
-                      {res.durationMs}ms
-                    </div>
+              <>
+                {/* Fixed 40px icon column for gutter alignment */}
+                <div className="w-10 flex-shrink-0 flex justify-center">
+                  <div className="w-8 h-8 rounded-full bg-white border border-slate-200 flex items-center justify-center">
+                    <User size={16} className="text-slate-600" />
                   </div>
-                ))}
-              </div>
+                </div>
+                {/* User message - white card with shadow */}
+                <div className="flex-1 min-w-0 ml-3">
+                  <div className="bg-white border border-indigo-100 text-slate-800 shadow-sm px-4 py-2 rounded-lg inline-block">
+                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Fixed 40px icon column for gutter alignment */}
+                <div className="w-10 flex-shrink-0 flex justify-center pt-1">
+                  <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
+                    <Bot size={16} className="text-white" />
+                  </div>
+                </div>
+                {/* AI responses - transparent background, horizontal scroll for multiple */}
+                <div className="flex-1 min-w-0 ml-3">
+                  <div className="flex gap-3 overflow-x-auto pb-2">
+                    {msg.results?.map((res, rIdx) => (
+                      <div key={rIdx} className={`flex-1 min-w-[220px] max-w-[300px] bg-transparent relative flex flex-col ${rIdx > 0 ? 'border-l border-slate-200 pl-3' : ''}`}>
+                        <div className="text-[10px] font-medium text-gray-500 mb-1 flex items-center gap-1.5">
+                          <ProviderLogo provider={res.agentAlias} className="w-3 h-3" />
+                          <span>{res.agentAlias}</span>
+                          <span className="text-gray-400">· {res.model}</span>
+                        </div>
+                        <div className="text-sm text-gray-800 whitespace-pre-wrap">
+                          {res.error ? <span className="text-red-500">{res.error}</span> : res.response}
+                        </div>
+                        <div className="text-[10px] text-gray-400 mt-1">
+                          {res.durationMs}ms
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
             )}
           </div>
         ))}
         {isLoading && (
-          <div className="flex justify-start">
-            <div className="bg-gray-100 rounded-lg p-3 border border-gray-200">
-              <div className="text-sm text-gray-500 animate-pulse">Thinking...</div>
+          <div className="flex items-start">
+            <div className="w-10 flex-shrink-0 flex justify-center">
+              <div className="w-8 h-8 rounded-full bg-gray-300 flex items-center justify-center">
+                <Bot size={16} className="text-gray-600 animate-pulse" />
+              </div>
+            </div>
+            <div className="flex-1 min-w-0 ml-3">
+              <div className="bg-slate-200 text-gray-600 italic p-3 rounded-lg inline-block">
+                <p className="text-sm animate-pulse">Thinking...</p>
+              </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* Input Area */}
-      <div className="p-4 border-t border-gray-200 flex-shrink-0">
-        <div className="flex gap-2">
+      {/* Floating Input Bar - visually detached from bottom */}
+      <div className="flex-shrink-0 p-4">
+        <div className="flex gap-2 items-end bg-white rounded-lg shadow-md border border-slate-200 p-4">
           <input
             type="text"
-            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="flex-1 bg-transparent px-3 py-2 focus:outline-none text-sm"
             placeholder="Type a message to test..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={isLoading || selectedKeys.length === 0}
           />
+          {/* Keyboard shortcut hint */}
+          <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>
           <button
             onClick={handleSend}
             disabled={isLoading || !input.trim() || selectedKeys.length === 0}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="p-2 rounded-md transition-colors flex items-center justify-center flex-shrink-0 bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
           >
-            Send
+            <Send size={16} />
           </button>
         </div>
       </div>
