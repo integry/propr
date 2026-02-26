@@ -72,6 +72,8 @@ interface AgentsListSectionProps {
   error: string | null;
   success: string | null;
   onSaveAgents: (agents: AgentConfig[]) => void;
+  showAddModal?: boolean;
+  onCloseAddModal?: () => void;
 }
 
 // Code Chip component for consistent styling of IDs, aliases, and paths
@@ -81,47 +83,47 @@ const CodeChip: React.FC<{ children: React.ReactNode; className?: string }> = ({
   </code>
 );
 
-// High-density model row component
+// High-density model row component - tighter padding for density
 const ModelRow: React.FC<{
   modelId: string;
   modelInfo: typeof MODEL_INFO_MAP[string] | undefined;
   isDefault: boolean;
   customLabel?: string;
 }> = ({ modelId, modelInfo, isDefault, customLabel }) => (
-  <div className="flex items-start py-1.5 px-3 hover:bg-gray-50 transition-colors text-sm">
+  <div className="flex items-center py-1 px-2 hover:bg-slate-50 transition-colors text-sm">
     {/* Name + Badge column */}
-    <div className="flex items-center gap-2 flex-1 min-w-0">
-      <span className={`truncate ${isDefault ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
+    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+      <span className={`truncate text-[13px] ${isDefault ? 'font-medium text-gray-900' : 'text-gray-700'}`}>
         {modelInfo?.name || modelId}
       </span>
       {customLabel && (
-        <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[10px] rounded font-medium flex-shrink-0">
+        <span className="px-1 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[9px] rounded font-medium flex-shrink-0">
           {customLabel}
         </span>
       )}
       {isDefault && (
-        <span className="px-1.5 py-0.5 bg-teal-50 text-teal-700 border border-teal-200 text-[9px] rounded uppercase font-semibold tracking-wide flex-shrink-0">
+        <span className="px-1 py-0.5 bg-teal-50 text-teal-700 border border-teal-200 text-[8px] rounded uppercase font-semibold tracking-wide flex-shrink-0">
           Default
         </span>
       )}
     </div>
 
     {/* Context Limit column - fixed width for alignment */}
-    <div className="w-16 text-right flex-shrink-0 mr-4">
+    <div className="w-14 text-right flex-shrink-0 mr-3">
       {modelInfo?.contextWindow && (
-        <span className="font-mono text-xs text-gray-600">{modelInfo.contextWindow}</span>
+        <span className="font-mono text-[11px] text-gray-500">{modelInfo.contextWindow}</span>
       )}
     </div>
 
     {/* ID/Alias column - allows wrapping to second line */}
-    <div className="flex flex-wrap items-center gap-1.5 flex-shrink-0 w-[240px] justify-end">
-      <span className="inline-flex items-center gap-1">
-        <CodeChip className="bg-purple-50 text-purple-700 border-purple-200">{modelId}</CodeChip>
+    <div className="flex flex-wrap items-center gap-1 flex-shrink-0 w-[220px] justify-end">
+      <span className="inline-flex items-center gap-0.5">
+        <CodeChip className="bg-purple-50 text-purple-700 border-purple-200 text-[10px]">{modelId}</CodeChip>
         <CopyButton text={modelId} className="hover:text-purple-600" />
       </span>
       {modelInfo?.shortAlias && (
-        <span className="inline-flex items-center gap-1">
-          <CodeChip>{modelInfo.shortAlias}</CodeChip>
+        <span className="inline-flex items-center gap-0.5">
+          <CodeChip className="text-[10px]">{modelInfo.shortAlias}</CodeChip>
           <CopyButton text={modelInfo.shortAlias} />
         </span>
       )}
@@ -136,19 +138,19 @@ const AgentCard: React.FC<{
   onToggle: () => void;
 }> = ({ agent, onEdit, onDelete, onToggle }) => {
   return (
-    <div className="border-b border-gray-200 py-3 last:border-b-0">
+    <div className="border-b border-slate-100 py-4 first:pt-0">
       {/* --- Agent Header: [Icon] [Bold Name] [Brand Badge] ... [Toggle] [Edit] --- */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ProviderLogo provider={agent.alias} className="w-5 h-5 text-gray-700 flex-shrink-0" />
-          <span className="font-bold text-gray-900">{agent.alias}</span>
-          <span className={`px-2 py-0.5 text-xs font-medium rounded border capitalize ${typeBadgeColors[agent.type]}`}>
+          <span className="font-semibold text-gray-900">{agent.alias}</span>
+          <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded border capitalize ${typeBadgeColors[agent.type]}`}>
             {agent.type}
           </span>
           <CodeChip>{agent.configPath}</CodeChip>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           {/* Toggle Switch */}
           <label className="relative inline-flex items-center cursor-pointer">
             <input
@@ -157,16 +159,16 @@ const AgentCard: React.FC<{
               onChange={onToggle}
               className="sr-only peer"
             />
-            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-600"></div>
+            <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary-600"></div>
           </label>
 
           {/* Edit Button */}
           <button
             onClick={onEdit}
-            className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
+            className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded transition-colors"
             title="Edit agent"
           >
-            <PencilIcon className="w-4 h-4" />
+            <PencilIcon className="w-3.5 h-3.5" />
           </button>
 
           {/* Delete Button */}
@@ -175,18 +177,18 @@ const AgentCard: React.FC<{
             className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
             title="Delete agent"
           >
-            <TrashIcon className="w-4 h-4" />
+            <TrashIcon className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {/* --- High-Density Model Rows --- */}
-      <div className="mt-2 ml-7 bg-gray-50 rounded-md border border-gray-100">
+      {/* --- High-Density Model Rows - tighter padding --- */}
+      <div className="mt-2 ml-7">
         {/* Header row */}
-        <div className="flex items-center py-1 px-3 text-[10px] text-gray-500 uppercase tracking-wide font-medium border-b border-gray-100">
+        <div className="flex items-center py-1 px-2 text-[10px] text-gray-400 uppercase tracking-wide font-medium border-b border-slate-100">
           <div className="flex-1">Model</div>
-          <div className="w-16 text-right flex-shrink-0 mr-4">Context</div>
-          <div className="flex items-center gap-1 w-[240px] justify-end">
+          <div className="w-14 text-right flex-shrink-0 mr-3">Context</div>
+          <div className="flex items-center gap-1 w-[220px] justify-end">
             <GitHubIcon className="w-3 h-3" />
             <span>ID / Alias</span>
           </div>
@@ -219,15 +221,20 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
   saving,
   error,
   success,
-  onSaveAgents
+  onSaveAgents,
+  showAddModal = false,
+  onCloseAddModal
 }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null);
 
-  const handleAddAgent = () => {
-    setEditingAgent(null);
-    setShowModal(true);
-  };
+  // Handle external trigger for add modal from header button
+  React.useEffect(() => {
+    if (showAddModal) {
+      setEditingAgent(null);
+      setShowModal(true);
+    }
+  }, [showAddModal]);
 
   const handleEditAgent = (agent: AgentConfig) => {
     setEditingAgent(agent);
@@ -272,23 +279,6 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-4">
-        <p className="text-gray-600">
-          Configure AI agents to process issues. Each agent represents a different LLM provider.
-        </p>
-        <button
-          onClick={handleAddAgent}
-          disabled={loading || saving}
-          className={`px-4 py-2 font-medium rounded-md transition-colors flex-shrink-0 ${
-            loading || saving
-              ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
-              : 'bg-green-600 text-white hover:bg-green-700 cursor-pointer'
-          }`}
-        >
-          Add Agent
-        </button>
-      </div>
-
       {error && <Alert message={error} type="error" />}
       {success && <Alert message={success} type="success" />}
 
@@ -306,10 +296,10 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
             />
           ))}
           {agents.length === 0 && (
-            <div className="text-center py-12 bg-gray-50 border border-gray-200 rounded-lg">
-              <p className="text-gray-600">No agents configured.</p>
-              <p className="text-gray-500 text-sm mt-1">
-                Click "Add Agent" to configure your first AI agent.
+            <div className="text-center py-8">
+              <p className="text-gray-500">No agents configured.</p>
+              <p className="text-gray-400 text-sm mt-1">
+                Click "+ Add Agent" to configure your first AI agent.
               </p>
             </div>
           )}
@@ -327,6 +317,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
           onClose={() => {
             setShowModal(false);
             setEditingAgent(null);
+            onCloseAddModal?.();
           }}
           onSave={handleSaveAgent}
         />

@@ -133,55 +133,45 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
 
   return (
     <div className="flex flex-col h-full bg-[#F8FAFC]">
-      {/* Header with Assistant styling */}
+      {/* Compact model selector header */}
       <div className="px-4 py-3 flex-shrink-0">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center">
-            {/* Fixed 40px icon column to match message gutter alignment */}
-            <div className="w-10 flex-shrink-0 flex justify-center">
-              <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
-                <Bot size={16} className="text-white" />
-              </div>
-            </div>
-            <h3 className="font-semibold text-gray-900 ml-3">Assistant</h3>
-          </div>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-gray-500 font-medium">Select models to test:</span>
           <button
             onClick={() => setMessages([])}
-            className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-200/50 transition-colors"
+            className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded hover:bg-white/50 transition-colors"
             title="Clear History"
           >
             Clear
           </button>
         </div>
         {/* Compact model selector with tiny chips - wraps to multiple rows */}
-        <div className="mt-3 ml-[52px]">
-          <div className="flex flex-wrap gap-1.5">
-            {agentModelOptions.length === 0 ? (
-              <p className="text-[10px] text-gray-500">No enabled models available.</p>
-            ) : (
-              agentModelOptions.map(option => {
-                const isSelected = selectedKeys.includes(option.key);
-                return (
-                  <button
-                    key={option.key}
-                    onClick={() => toggleSelection(option.key)}
-                    className={`px-2 py-0.5 text-[10px] rounded-full border transition-all duration-200 flex items-center gap-1 whitespace-nowrap ${
-                      isSelected
-                        ? selectedBadgeColors[option.agentType]
-                        : 'bg-gray-50 border-gray-200 text-gray-400 hover:bg-gray-100 hover:border-gray-300 hover:text-gray-600'
-                    }`}
-                  >
-                    <ProviderLogo provider={option.agentAlias} className="w-3 h-3" />
-                    {option.modelName}
-                  </button>
-                );
-              })
-            )}
-          </div>
-          {selectedKeys.length === 0 && agentModelOptions.length > 0 && (
-            <p className="text-[10px] text-amber-600 mt-1">Select at least one model to start chatting</p>
+        <div className="flex flex-wrap gap-1.5">
+          {agentModelOptions.length === 0 ? (
+            <p className="text-[10px] text-gray-500">No enabled models available.</p>
+          ) : (
+            agentModelOptions.map(option => {
+              const isSelected = selectedKeys.includes(option.key);
+              return (
+                <button
+                  key={option.key}
+                  onClick={() => toggleSelection(option.key)}
+                  className={`px-2 py-0.5 text-[10px] rounded-full border transition-all duration-200 flex items-center gap-1 whitespace-nowrap ${
+                    isSelected
+                      ? selectedBadgeColors[option.agentType]
+                      : 'bg-white/70 border-gray-200 text-gray-400 hover:bg-white hover:border-gray-300 hover:text-gray-600'
+                  }`}
+                >
+                  <ProviderLogo provider={option.agentAlias} className="w-3 h-3" />
+                  {option.modelName}
+                </button>
+              );
+            })
           )}
         </div>
+        {selectedKeys.length === 0 && agentModelOptions.length > 0 && (
+          <p className="text-[10px] text-amber-600 mt-1.5">Select at least one model to start chatting</p>
+        )}
       </div>
 
       {/* Messages Area - Studio Assistant styling */}
@@ -194,12 +184,10 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
         }}
       >
         {messages.length === 0 && (
-          <div className="ml-[52px]">
-            <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
-              <p className="text-sm text-gray-700">
-                Test your agents by sending messages. Select one or more models above to compare responses side by side.
-              </p>
-            </div>
+          <div className="px-2 py-4">
+            <p className="text-sm text-gray-500">
+              Test your agents by sending messages. Select one or more models above to compare responses side by side.
+            </p>
           </div>
         )}
         {messages.map((msg, idx) => (
