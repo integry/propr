@@ -88,7 +88,7 @@ const AiAgentsPage: React.FC = () => {
           {/* Right Header */}
           <Panel defaultSize={60} minSize={30}>
             <div className="h-14 px-6 flex items-center">
-              <h2 className="text-gray-900 text-lg font-semibold">Assistant</h2>
+              <h2 className="text-gray-900 text-lg font-semibold">Playground</h2>
             </div>
           </Panel>
         </PanelGroup>

@@ -164,8 +164,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] flex flex-col border border-gray-300 shadow-lg">
-        <div className="flex justify-between items-center p-4 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900">
+        <div className="flex justify-between items-center px-4 py-3 border-b border-gray-200">
+          <h3 className="text-base font-semibold text-gray-900">
             {isEditing ? 'Edit Agent' : 'Add New Agent'}
           </h3>
           <button
@@ -176,20 +176,20 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* Agent Type */}
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-3">
+          {/* Agent Type - Pill Toggle Style */}
           <div>
-            <label className="block text-gray-700 mb-2 font-medium">Agent Type</label>
-            <div className="flex gap-2">
+            <label className="block text-gray-700 mb-1.5 font-medium text-sm">Agent Type</label>
+            <div className="inline-flex bg-gray-100 rounded-full p-1">
               {(['claude', 'codex', 'gemini'] as AgentType[]).map(type => (
                 <button
                   key={type}
                   type="button"
                   onClick={() => handleTypeChange(type)}
-                  className={`px-4 py-2 rounded-md border font-medium capitalize transition-colors ${
+                  className={`px-4 py-1.5 rounded-full text-sm font-medium capitalize transition-all ${
                     formData.type === type
-                      ? typeBadgeColors[type]
-                      : 'bg-gray-50 text-gray-600 border-gray-300 hover:bg-gray-100'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
                   }`}
                 >
                   {type}
@@ -200,8 +200,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
           {/* Alias */}
           <div>
-            <label className="block text-gray-700 mb-2 font-medium" htmlFor="alias">
-              Alias
+            <label className="block text-gray-700 mb-1.5 font-medium text-sm" htmlFor="alias">
+              ID / Alias
             </label>
             <input
               type="text"
@@ -209,19 +209,19 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               value={formData.alias}
               onChange={(e) => setFormData(prev => ({ ...prev, alias: e.target.value.toLowerCase() }))}
               placeholder="e.g., primary-claude, fast-gemini"
-              className={`w-full px-3 py-2 bg-gray-50 text-gray-900 border rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 ${
+              className={`w-full px-3 py-1.5 bg-gray-50 text-gray-900 border rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm ${
                 errors.alias ? 'border-red-500' : 'border-gray-300'
               }`}
             />
-            {errors.alias && <p className="mt-1 text-sm text-red-600">{errors.alias}</p>}
-            <p className="mt-1 text-sm text-gray-600">
+            {errors.alias && <p className="mt-1 text-xs text-red-600">{errors.alias}</p>}
+            <p className="mt-1 text-xs text-gray-500">
               Unique identifier using lowercase letters, numbers, and hyphens only.
             </p>
           </div>
 
           {/* Config Path */}
           <div>
-            <label className="block text-gray-700 mb-2 font-medium" htmlFor="configPath">
+            <label className="block text-gray-700 mb-1.5 font-medium text-sm" htmlFor="configPath">
               Config Path
             </label>
             <input
@@ -230,17 +230,17 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               value={formData.configPath}
               onChange={(e) => setFormData(prev => ({ ...prev, configPath: e.target.value }))}
               placeholder={AGENT_DEFAULTS[formData.type].configPath}
-              className={`w-full px-3 py-2 bg-gray-50 text-gray-900 border rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm ${
+              className={`w-full px-3 py-1.5 bg-gray-50 text-gray-900 border rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm ${
                 errors.configPath ? 'border-red-500' : 'border-gray-300'
               }`}
             />
-            {errors.configPath && <p className="mt-1 text-sm text-red-600">{errors.configPath}</p>}
+            {errors.configPath && <p className="mt-1 text-xs text-red-600">{errors.configPath}</p>}
           </div>
 
           {/* Supported Models */}
           <div>
-            <div className="flex justify-between items-center mb-2">
-              <label className="block text-gray-700 font-medium">
+            <div className="flex justify-between items-center mb-1.5">
+              <label className="block text-gray-700 font-medium text-sm">
                 Supported Models
               </label>
               <div className="flex gap-2">
@@ -336,14 +336,14 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 );
               })}
             </div>
-            {errors.supportedModels && <p className="mt-1 text-sm text-red-600">{errors.supportedModels}</p>}
-            <p className="mt-1 text-sm text-gray-600">
-              Checkboxes enable models, radio buttons select the default. Custom labels (below GitHub label) allow alternative trigger names.
+            {errors.supportedModels && <p className="mt-1 text-xs text-red-600">{errors.supportedModels}</p>}
+            <p className="mt-1 text-xs text-gray-500">
+              Checkboxes enable models, radio buttons select the default. Custom labels allow alternative trigger names.
             </p>
           </div>
 
           {/* Enabled Toggle */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <label className="relative inline-flex items-center cursor-pointer">
               <input
                 type="checkbox"
@@ -351,24 +351,24 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 onChange={(e) => setFormData(prev => ({ ...prev, enabled: e.target.checked }))}
                 className="sr-only peer"
               />
-              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
+              <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-600"></div>
             </label>
-            <span className="text-gray-700 font-medium">Enabled</span>
+            <span className="text-gray-700 font-medium text-sm">Enabled</span>
           </div>
         </form>
 
-        <div className="flex justify-end gap-3 p-4 border-t border-gray-200">
+        <div className="flex justify-end gap-2 px-4 py-3 border-t border-gray-200">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
+            className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
           >
             Cancel
           </button>
           <button
             type="submit"
             onClick={handleSubmit}
-            className="px-4 py-2 font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
+            className="px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
           >
             {isEditing ? 'Save Changes' : 'Add Agent'}
           </button>
