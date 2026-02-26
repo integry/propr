@@ -219,7 +219,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
                 <div className="flex-1 min-w-0 ml-3">
                   <div className="flex gap-3 overflow-x-auto pb-2">
                     {msg.results?.map((res, rIdx) => (
-                      <div key={rIdx} className="flex-1 min-w-[220px] max-w-[300px] bg-transparent relative flex flex-col">
+                      <div key={rIdx} className={`flex-1 min-w-[220px] max-w-[300px] bg-transparent relative flex flex-col ${rIdx > 0 ? 'border-l border-slate-200 pl-3' : ''}`}>
                         <div className="text-[10px] font-medium text-gray-500 mb-1 flex items-center gap-1.5">
                           <ProviderLogo provider={res.agentAlias} className="w-3 h-3" />
                           <span>{res.agentAlias}</span>
