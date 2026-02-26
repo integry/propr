@@ -31,6 +31,7 @@ interface Task {
   task_id: string;
   repository: string;
   issue_number: number;
+  commit_hash?: string;
 }
 
 interface TaskHistory {
@@ -50,6 +51,9 @@ interface TaskHistoryMetadata {
   commitHash?: string;
   prResult?: {
     commitHash?: string;
+    commitResult?: {
+      commitHash?: string;
+    };
   };
   githubComment?: {
     body?: string;
@@ -110,6 +114,7 @@ function extractCommitHashFromMetadata(metadata: TaskHistoryMetadata): string | 
   if (metadata.historyMetadata?.commitResult?.commitHash) return metadata.historyMetadata.commitResult.commitHash;
   if (metadata.commitResult?.commitHash) return metadata.commitResult.commitHash;
   if (metadata.commitHash) return metadata.commitHash;
+  if (metadata.prResult?.commitResult?.commitHash) return metadata.prResult.commitResult.commitHash;
   if (metadata.prResult?.commitHash) return metadata.prResult.commitHash;
   if (metadata.githubComment?.body) {
     const match = metadata.githubComment.body.match(/\bcommit ([a-f0-9]{7,40})\b/i);
@@ -230,19 +235,26 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       });
     }
 
-    const taskHistory = await db('task_history')
-      .where({ task_id: execution.task_id })
-      .whereNotNull('metadata')
-      .orderBy('timestamp', 'desc') as TaskHistory[];
+    // Prioritize commit_hash directly from tasks table when available
+    let commitHash: string | null = task.commit_hash || null;
 
-    const commitHash = extractCommitHash(taskHistory, execution.task_id, correlatedLogger);
+    if (commitHash) {
+      correlatedLogger.info({ commitHash, taskId: execution.task_id }, 'Using commit hash from tasks table');
+    } else {
+      // Fallback to extracting from task history for older tasks
+      const taskHistory = await db('task_history')
+        .where({ task_id: execution.task_id })
+        .whereNotNull('metadata')
+        .orderBy('timestamp', 'desc') as TaskHistory[];
+
+      commitHash = extractCommitHash(taskHistory, execution.task_id, correlatedLogger);
+    }
 
     let localDiff: string | null = null;
     if (commitHash) {
-      correlatedLogger.info({ commitHash, taskId: execution.task_id }, 'Found commit hash in task history');
       localDiff = await getCommitDiff(worktreePath, commitHash, correlationId);
     } else {
-      correlatedLogger.warn({ taskId: execution.task_id }, 'No commit hash found in task history, commit diff will not be included');
+      correlatedLogger.warn({ taskId: execution.task_id }, 'No commit hash found, commit diff will not be included');
     }
 
     correlatedLogger.info({
