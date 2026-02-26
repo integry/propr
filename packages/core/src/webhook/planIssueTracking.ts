@@ -72,6 +72,17 @@ async function linkPRToReferencedPlanIssue(
             const linkedIssueNumber = parseInt(match[1], 10);
             const linkedPlanIssue = await findPlanIssueByRepoAndNumber(repository, linkedIssueNumber);
             if (linkedPlanIssue) {
+                // Don't overwrite existing PR link - this prevents Epic PRs from
+                // overwriting the implementation PR link when they reference issues
+                if (linkedPlanIssue.pr_number && linkedPlanIssue.pr_number !== prNumber) {
+                    log.debug({
+                        repository,
+                        prNumber,
+                        issueNumber: linkedIssueNumber,
+                        existingPrNumber: linkedPlanIssue.pr_number
+                    }, 'Skipping PR link - plan issue already has a different PR linked');
+                    continue;
+                }
                 await linkPRToPlanIssue(repository, linkedIssueNumber, prNumber);
                 log.info({ repository, prNumber, issueNumber: linkedIssueNumber }, 'Linked PR to plan issue');
                 return linkedPlanIssue;
@@ -94,6 +105,13 @@ export async function handlePlanPRUpdate(
     const action = payload.action;
 
     try {
+        // Skip Epic PRs - they aggregate child PRs and shouldn't be linked to individual plan issues
+        const prTitle = payload.pull_request.title || '';
+        if (prTitle.startsWith('[Epic]')) {
+            log.debug({ repository, prNumber, prTitle }, 'Skipping Epic PR - not linking to plan issues');
+            return;
+        }
+
         let planIssue = await findPlanIssueByRepoAndPR(repository, prNumber);
 
         if (!planIssue && action === 'opened') {
