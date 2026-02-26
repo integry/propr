@@ -86,8 +86,13 @@ const ModelRow: React.FC<{
     {/* Name + Badge column */}
     <div className="flex items-center gap-2 flex-1 min-w-0">
       <span className={`truncate ${isDefault ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
-        {customLabel || modelInfo?.name || modelId}
+        {modelInfo?.name || modelId}
       </span>
+      {customLabel && (
+        <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[10px] rounded font-medium flex-shrink-0">
+          {customLabel}
+        </span>
+      )}
       {isDefault && (
         <span className="px-1.5 py-0.5 bg-teal-50 text-teal-700 border border-teal-200 text-[9px] rounded uppercase font-semibold tracking-wide flex-shrink-0">
           Default
