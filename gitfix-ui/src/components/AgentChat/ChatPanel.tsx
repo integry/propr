@@ -131,11 +131,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agents }) => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-white rounded-lg shadow border border-gray-200">
+    <div className="flex flex-col h-full bg-white rounded-lg shadow-sm border border-gray-200">
       {/* Header & Controls */}
-      <div className="p-4 border-b border-gray-200 bg-gray-50 rounded-t-lg flex-shrink-0">
+      <div className="p-4 border-b border-gray-200 bg-white rounded-t-lg flex-shrink-0">
         <div className="flex justify-between items-center mb-2">
-          <h3 className="font-semibold text-gray-700">Test Agents</h3>
+          <h3 className="font-semibold text-gray-700">Select Models</h3>
           <button
             onClick={() => setMessages([])}
             className="text-sm text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-200 transition-colors"

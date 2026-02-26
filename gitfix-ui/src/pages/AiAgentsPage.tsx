@@ -49,35 +49,41 @@ const AiAgentsPage: React.FC = () => {
   };
 
   return (
-    <div className="h-full flex flex-col p-6">
-      <h2 className="text-gray-900 text-2xl font-semibold mb-8">AI Agents</h2>
-
-      <div className="flex-1 flex flex-col lg:flex-row gap-8 min-h-0">
-        {/* Left Column: Configuration */}
-        <div className={`lg:flex-shrink-0 overflow-y-auto transition-all duration-300 ${
-          isAgentColumnCollapsed ? 'lg:w-0 lg:overflow-hidden' : 'lg:w-[800px] lg:min-w-[800px]'
+    <div className="h-full flex flex-col overflow-hidden">
+      {/* Split-Pane Container - 40/60 layout */}
+      <div className="flex-1 flex min-h-0">
+        {/* Left Pane (40%): Agent Configuration */}
+        <div className={`bg-white flex flex-col transition-all duration-300 ${
+          isAgentColumnCollapsed ? 'w-0 overflow-hidden' : 'w-2/5'
         }`}>
           {!isAgentColumnCollapsed && (
-            <AgentsListSection
-              agents={agents}
-              loading={agentsLoading}
-              saving={agentsSaving}
-              error={agentsError}
-              success={agentsSuccess}
-              onSaveAgents={handleSaveAgents}
-            />
+            <>
+              <div className="p-6 pb-0 flex-shrink-0">
+                <h2 className="text-gray-900 text-2xl font-semibold mb-6">Agent Configuration</h2>
+              </div>
+              <div className="flex-1 overflow-y-auto px-6 pb-6">
+                <AgentsListSection
+                  agents={agents}
+                  loading={agentsLoading}
+                  saving={agentsSaving}
+                  error={agentsError}
+                  success={agentsSuccess}
+                  onSaveAgents={handleSaveAgents}
+                />
+              </div>
+            </>
           )}
         </div>
 
-        {/* Collapse/Expand Button */}
-        <div className="hidden lg:flex items-start pt-2">
+        {/* Collapse/Expand Button - positioned between panes */}
+        <div className="flex-shrink-0 flex items-center bg-gray-100 border-l border-r border-gray-200">
           <button
             onClick={() => setIsAgentColumnCollapsed(!isAgentColumnCollapsed)}
-            className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg border border-gray-300 transition-colors"
+            className="p-1.5 hover:bg-gray-200 transition-colors"
             title={isAgentColumnCollapsed ? 'Show agent configuration' : 'Hide agent configuration'}
           >
             <svg
-              className={`w-5 h-5 text-gray-600 transition-transform duration-300 ${isAgentColumnCollapsed ? 'rotate-180' : ''}`}
+              className={`w-4 h-4 text-gray-500 transition-transform duration-300 ${isAgentColumnCollapsed ? 'rotate-180' : ''}`}
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -87,9 +93,16 @@ const AiAgentsPage: React.FC = () => {
           </button>
         </div>
 
-        {/* Right Column: Chatbot - expands to fill remaining space */}
-        <div className="flex-1 min-w-0 min-h-0">
-          {!agentsLoading && <ChatPanel agents={agents} />}
+        {/* Right Pane (60%): Test Playground */}
+        <div className={`bg-slate-50 flex flex-col transition-all duration-300 ${
+          isAgentColumnCollapsed ? 'flex-1' : 'w-3/5'
+        }`}>
+          <div className="p-6 pb-0 flex-shrink-0">
+            <h2 className="text-gray-900 text-2xl font-semibold mb-6">Test Playground</h2>
+          </div>
+          <div className="flex-1 min-h-0 px-6 pb-6">
+            {!agentsLoading && <ChatPanel agents={agents} />}
+          </div>
         </div>
       </div>
     </div>

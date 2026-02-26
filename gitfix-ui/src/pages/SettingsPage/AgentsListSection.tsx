@@ -317,18 +317,15 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
     .map(a => a.alias);
 
   return (
-    <div className="mb-8">
+    <div>
       <div className="flex justify-between items-center mb-4">
-        <div>
-          <h3 className="text-gray-900 text-xl font-semibold">AI Agents</h3>
-          <p className="text-gray-600 mt-1">
-            Configure AI agents to process issues. Each agent represents a different LLM provider.
-          </p>
-        </div>
+        <p className="text-gray-600">
+          Configure AI agents to process issues. Each agent represents a different LLM provider.
+        </p>
         <button
           onClick={handleAddAgent}
           disabled={loading || saving}
-          className={`px-4 py-2 font-medium rounded-md transition-colors ${
+          className={`px-4 py-2 font-medium rounded-md transition-colors flex-shrink-0 ${
             loading || saving
               ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
               : 'bg-green-600 text-white hover:bg-green-700 cursor-pointer'
