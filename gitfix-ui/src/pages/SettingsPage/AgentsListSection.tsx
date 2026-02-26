@@ -7,12 +7,6 @@ import { ProviderLogo } from '../../components/ui/ProviderLogo';
 
 // --- Icons ---
 
-const GitHubIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
-  <svg className={className} fill="currentColor" viewBox="0 0 24 24">
-    <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd" />
-  </svg>
-);
-
 const CopyIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -22,12 +16,6 @@ const CopyIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) =
 const CheckIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-  </svg>
-);
-
-const TagIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
   </svg>
 );
 
@@ -80,66 +68,74 @@ interface AgentsListSectionProps {
   onSaveAgents: (agents: AgentConfig[]) => void;
 }
 
+// Code Chip component for consistent styling of IDs, aliases, and paths
+const CodeChip: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = "" }) => (
+  <code className={`px-1.5 py-0.5 bg-gray-100 text-gray-700 text-xs font-mono rounded-md border border-gray-200 ${className}`}>
+    {children}
+  </code>
+);
+
+// High-density model row component
+const ModelRow: React.FC<{
+  modelId: string;
+  modelInfo: typeof MODEL_INFO_MAP[string] | undefined;
+  isDefault: boolean;
+  customLabel?: string;
+}> = ({ modelId, modelInfo, isDefault, customLabel }) => (
+  <div className="flex items-center py-1.5 px-3 hover:bg-gray-50 transition-colors text-sm">
+    {/* Name + Badge column */}
+    <div className="flex items-center gap-2 flex-1 min-w-0">
+      <span className={`truncate ${isDefault ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
+        {modelInfo?.name || modelId}
+      </span>
+      {isDefault && (
+        <span className="px-1.5 py-0.5 bg-teal-50 text-teal-700 border border-teal-200 text-[9px] rounded uppercase font-semibold tracking-wide flex-shrink-0">
+          Default
+        </span>
+      )}
+    </div>
+
+    {/* Context Limit column */}
+    <div className="w-20 text-right flex-shrink-0">
+      {modelInfo?.contextWindow && (
+        <span className="font-mono text-xs text-gray-600">{modelInfo.contextWindow}</span>
+      )}
+    </div>
+
+    {/* ID/Alias column */}
+    <div className="flex items-center gap-1.5 ml-4 flex-shrink-0">
+      <CodeChip className="bg-purple-50 text-purple-700 border-purple-200">{modelId}</CodeChip>
+      <CopyButton text={modelId} className="hover:text-purple-600" />
+      {modelInfo?.shortAlias && (
+        <>
+          <CodeChip>{modelInfo.shortAlias}</CodeChip>
+          <CopyButton text={modelInfo.shortAlias} />
+        </>
+      )}
+    </div>
+  </div>
+);
+
 const AgentCard: React.FC<{
   agent: AgentConfig;
   onEdit: () => void;
   onDelete: () => void;
   onToggle: () => void;
 }> = ({ agent, onEdit, onDelete, onToggle }) => {
-  // Default agent trigger label pattern
-  const agentDefaultLabel = `llm-${agent.alias}`;
-
   return (
-    <div className="border rounded-lg p-4 bg-white shadow-sm">
-      {/* --- Header Section --- */}
-      <div className="flex justify-between items-start mb-4">
-        <div className="flex-1">
-          <div className="flex items-center gap-3 mb-2">
-             {/* Status Dot */}
-            <div className={`w-2.5 h-2.5 rounded-full ${agent.enabled ? 'bg-green-500' : 'bg-gray-300'}`} title={agent.enabled ? "Active" : "Disabled"} />
-
-            <ProviderLogo provider={agent.alias} className="w-5 h-5 text-gray-700" />
-            <span className="font-bold text-lg text-gray-900">{agent.alias}</span>
-            <span className={`px-2 py-0.5 text-xs font-medium rounded border capitalize ${typeBadgeColors[agent.type]}`}>
-              {agent.type}
-            </span>
-          </div>
-          <div className="text-sm text-gray-600 ml-5 space-y-1">
-            <div>
-              <span className="font-medium mr-2">Path:</span>
-              <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs text-gray-600 font-mono border border-gray-200">
-                {agent.configPath}
-              </code>
-            </div>
-            <div className="flex items-center gap-1">
-              <span className="font-medium mr-2">Default Trigger:</span>
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded font-mono border border-purple-200">
-                <GitHubIcon className="w-3 h-3" />
-                {agentDefaultLabel}
-              </span>
-            </div>
-          </div>
+    <div className="border-b border-gray-200 py-3 last:border-b-0">
+      {/* --- Agent Header: [Icon] [Bold Name] [Brand Badge] ... [Toggle] [Edit] --- */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <ProviderLogo provider={agent.alias} className="w-5 h-5 text-gray-700 flex-shrink-0" />
+          <span className="font-bold text-gray-900">{agent.alias}</span>
+          <span className={`px-2 py-0.5 text-xs font-medium rounded border capitalize ${typeBadgeColors[agent.type]}`}>
+            {agent.type}
+          </span>
+          <CodeChip>{agent.configPath}</CodeChip>
         </div>
 
-        <div className="flex items-center gap-3 ml-4">
-          {/* Action Buttons */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={onEdit}
-              className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
-              title="Edit agent"
-            >
-              <PencilIcon className="w-4 h-4" />
-            </button>
-            <button
-              onClick={onDelete}
-              className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
-              title="Delete agent"
-            >
-              <TrashIcon className="w-4 h-4" />
-            </button>
-          </div>
-
+        <div className="flex items-center gap-2">
           {/* Toggle Switch */}
           <label className="relative inline-flex items-center cursor-pointer">
             <input
@@ -148,112 +144,54 @@ const AgentCard: React.FC<{
               onChange={onToggle}
               className="sr-only peer"
             />
-            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
+            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-600"></div>
           </label>
+
+          {/* Edit Button */}
+          <button
+            onClick={onEdit}
+            className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
+            title="Edit agent"
+          >
+            <PencilIcon className="w-4 h-4" />
+          </button>
+
+          {/* Delete Button */}
+          <button
+            onClick={onDelete}
+            className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+            title="Delete agent"
+          >
+            <TrashIcon className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      {/* --- Capabilities List (Models) --- */}
-      <div className="ml-5 mt-4">
-        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Active models</h4>
-        <div className="overflow-x-auto border border-gray-200 rounded-md">
-          <table className="min-w-full text-sm text-left bg-white">
-            <thead className="bg-gray-50 text-xs text-gray-500 uppercase font-medium">
-              <tr>
-                <th className="px-4 py-2 border-b border-gray-200 w-1/3">Model Name</th>
-                <th className="px-4 py-2 border-b border-gray-200 w-24">Context</th>
-                <th className="px-4 py-2 border-b border-gray-200">ID / Alias</th>
-                <th className="px-4 py-2 border-b border-gray-200 text-right">
-                  <span className="inline-flex items-center gap-1.5 justify-end">
-                    <GitHubIcon className="w-3.5 h-3.5" />
-                    Issue labels
-                  </span>
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {agent.supportedModels.map(modelId => {
-                const modelInfo = MODEL_INFO_MAP[modelId];
-                const isDefault = agent.defaultModel === modelId;
-                const modelCustomLabel = agent.modelCustomLabels?.[modelId];
-
-                return (
-                  <tr key={modelId} className="hover:bg-gray-50 transition-colors">
-                    {/* Name Column */}
-                    <td className="px-4 py-3 align-top">
-                      <div className="flex items-center gap-2">
-                        <span className={`text-sm ${isDefault ? 'font-semibold text-gray-900' : 'font-medium text-gray-700'}`}>
-                          {modelInfo?.name || modelId}
-                        </span>
-                        {isDefault && (
-                          <span className="px-1.5 py-0.5 bg-teal-50 text-teal-700 border border-teal-200 text-[9px] rounded uppercase font-semibold tracking-wide">
-                            Default
-                          </span>
-                        )}
-                      </div>
-                    </td>
-
-                    {/* Context Column */}
-                    <td className="px-4 py-3 align-top">
-                      {modelInfo?.contextWindow && (
-                        <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 border border-gray-200 text-[10px] rounded font-medium">
-                          {modelInfo.contextWindow}
-                        </span>
-                      )}
-                    </td>
-
-                    {/* ID / Alias Column */}
-                    <td className="px-4 py-3 align-top">
-                      <div className="flex flex-col gap-1">
-                        <div className="flex items-center gap-2">
-                          <code className="text-xs text-purple-700 font-mono bg-purple-50 px-1 rounded">
-                            {modelId}
-                          </code>
-                          <CopyButton text={modelId} className="hover:text-purple-600" />
-                        </div>
-                        {modelInfo?.shortAlias && (
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-gray-500">
-                              alias: <span className="font-mono">{modelInfo.shortAlias}</span>
-                            </span>
-                            <CopyButton text={modelInfo.shortAlias} />
-                          </div>
-                        )}
-                      </div>
-                    </td>
-
-                    {/* Tags Column */}
-                    <td className="px-4 py-3 align-top text-right">
-                      <div className="flex flex-col gap-1 items-end">
-                        {modelInfo?.githubLabel && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-gray-500 hover:text-gray-900 border border-transparent hover:border-gray-200 rounded text-xs transition-all cursor-default opacity-70 hover:opacity-100">
-                            <TagIcon className="w-3 h-3" />
-                            {modelInfo.githubLabel}
-                          </span>
-                        )}
-                        {modelCustomLabel && (
-                          <span
-                            className="inline-flex items-center gap-1 px-2 py-0.5 text-orange-600 border border-transparent rounded text-xs font-mono cursor-default"
-                            title="Custom GitHub label"
-                          >
-                            <TagIcon className="w-3 h-3" />
-                            {modelCustomLabel}
-                          </span>
-                        )}
-                        {isDefault && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-teal-600 border border-transparent rounded text-xs opacity-70">
-                            <TagIcon className="w-3 h-3" />
-                            {agentDefaultLabel}
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      {/* --- High-Density Model Rows --- */}
+      <div className="mt-2 ml-7 bg-gray-50 rounded-md border border-gray-100">
+        {/* Header row */}
+        <div className="flex items-center py-1 px-3 text-[10px] text-gray-500 uppercase tracking-wide font-medium border-b border-gray-100">
+          <div className="flex-1">Model</div>
+          <div className="w-20 text-right">Context</div>
+          <div className="ml-4">ID / Alias</div>
         </div>
+
+        {/* Model rows */}
+        {agent.supportedModels.map(modelId => {
+          const modelInfo = MODEL_INFO_MAP[modelId];
+          const isDefault = agent.defaultModel === modelId;
+          const modelCustomLabel = agent.modelCustomLabels?.[modelId];
+
+          return (
+            <ModelRow
+              key={modelId}
+              modelId={modelId}
+              modelInfo={modelInfo}
+              isDefault={isDefault}
+              customLabel={modelCustomLabel}
+            />
+          );
+        })}
       </div>
     </div>
   );
@@ -341,7 +279,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
       {loading ? (
         <p className="text-gray-600">Loading agents...</p>
       ) : (
-        <div className="space-y-4">
+        <div>
           {agents.map(agent => (
             <AgentCard
               key={agent.id}
