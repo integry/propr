@@ -1,13 +1,14 @@
 import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
-import { createWorker, ANALYSIS_QUEUE_NAME } from '@gitfix/core';
-import type { AnalysisJobData, JobResult } from '@gitfix/core';
+import { createWorker, ANALYSIS_QUEUE_NAME, issueQueue } from '@gitfix/core';
+import type { AnalysisJobData, JobResult, IssueJobData } from '@gitfix/core';
 import { logger } from '@gitfix/core';
 import { generateCorrelationId } from '@gitfix/core';
 import { db } from '@gitfix/core';
 import { getExecutionAnalysis } from '@gitfix/core';
-import { loadSettings } from '@gitfix/core';
+import { loadSettings, loadAutoFollowupScoreThreshold } from '@gitfix/core';
 import { resolveModelAlias } from '@gitfix/core';
+import { getAuthenticatedOctokit } from '@gitfix/core';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in analysis worker');
@@ -21,6 +22,210 @@ process.on('unhandledRejection', (reason: unknown) => {
 
 interface AnalysisResult extends JobResult {
     success: boolean;
+}
+
+interface AnalysisReport {
+    generatedAt: string;
+    modelUsed: string;
+    report: string;
+}
+
+interface ParsedAnalysisReport {
+    implementation_critique_score?: number;
+    implementation_critique?: string;
+    recommendations?: string[];
+    efficiency_score?: number;
+    efficiency_notes?: string;
+    prompt_quality_score?: number;
+    prompt_improvements?: string;
+}
+
+interface TaskRecord {
+    task_id: string;
+    repository: string;
+    issue_number: number;
+    pr_number?: number;
+}
+
+/**
+ * Parse the implementation_critique_score from the analysis report.
+ * The report may be a JSON string or already parsed.
+ */
+function parseAnalysisReport(report: string): ParsedAnalysisReport | null {
+    try {
+        // The report field contains the LLM's JSON response as a string
+        return JSON.parse(report);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Generate a follow-up comment based on the analysis critique.
+ */
+function generateFollowupComment(parsedReport: ParsedAnalysisReport): string {
+    const score = parsedReport.implementation_critique_score ?? 'N/A';
+    const critique = parsedReport.implementation_critique || 'No critique available.';
+    const recommendations = parsedReport.recommendations || [];
+
+    let comment = `## Auto-Followup: Implementation Review\n\n`;
+    comment += `**Implementation Critique Score:** ${score}/10\n\n`;
+    comment += `### Critique\n${critique}\n\n`;
+
+    if (recommendations.length > 0) {
+        comment += `### Recommendations\n`;
+        recommendations.forEach((rec, index) => {
+            comment += `${index + 1}. ${rec}\n`;
+        });
+        comment += '\n';
+    }
+
+    comment += `---\n`;
+    comment += `*This automated follow-up was triggered because the implementation critique score (${score}) was at or below the configured threshold. Please address the issues identified above.*\n\n`;
+    comment += `**GITFIX** - Please review and address the critique above.`;
+
+    return comment;
+}
+
+/**
+ * Check the implementation critique score and trigger auto-followup if needed.
+ * Posts a comment to the related issue/PR and queues it for processing.
+ */
+async function checkAndTriggerAutoFollowup(
+    analysisReport: AnalysisReport,
+    executionId: string,
+    correlationId: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    try {
+        // Load the auto-followup threshold
+        const threshold = await loadAutoFollowupScoreThreshold();
+
+        // If threshold is 0, the feature is disabled
+        if (threshold === 0) {
+            correlatedLogger.debug({ executionId, threshold }, 'Auto-followup is disabled (threshold = 0)');
+            return;
+        }
+
+        // Parse the analysis report to get the score
+        const parsedReport = parseAnalysisReport(analysisReport.report);
+        if (!parsedReport) {
+            correlatedLogger.warn({ executionId }, 'Failed to parse analysis report for auto-followup check');
+            return;
+        }
+
+        const score = parsedReport.implementation_critique_score;
+        if (score === undefined || score === null) {
+            correlatedLogger.warn({ executionId }, 'No implementation_critique_score found in analysis report');
+            return;
+        }
+
+        correlatedLogger.info({
+            executionId,
+            score,
+            threshold
+        }, 'Checking auto-followup threshold');
+
+        // Check if score is at or below threshold
+        if (score > threshold) {
+            correlatedLogger.info({
+                executionId,
+                score,
+                threshold
+            }, 'Score above threshold, no auto-followup needed');
+            return;
+        }
+
+        correlatedLogger.info({
+            executionId,
+            score,
+            threshold
+        }, 'Score at or below threshold, triggering auto-followup');
+
+        // Get the task information from the execution
+        if (!db) {
+            correlatedLogger.error({ executionId }, 'Database not available for auto-followup');
+            return;
+        }
+
+        const execution = await db('llm_executions')
+            .where({ execution_id: executionId })
+            .first();
+
+        if (!execution?.task_id) {
+            correlatedLogger.error({ executionId }, 'No task_id found for execution');
+            return;
+        }
+
+        const task: TaskRecord | undefined = await db('tasks')
+            .where({ task_id: execution.task_id })
+            .first();
+
+        if (!task) {
+            correlatedLogger.error({ executionId, taskId: execution.task_id }, 'No task found for auto-followup');
+            return;
+        }
+
+        const [repoOwner, repoName] = task.repository.split('/');
+        // Use PR number if available, otherwise fall back to issue number
+        const targetNumber = task.pr_number || task.issue_number;
+
+        // Generate the follow-up comment
+        const commentBody = generateFollowupComment(parsedReport);
+
+        // Post the comment to GitHub
+        const octokit = await getAuthenticatedOctokit();
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: repoOwner,
+            repo: repoName,
+            issue_number: targetNumber,
+            body: commentBody
+        });
+
+        correlatedLogger.info({
+            executionId,
+            repository: task.repository,
+            targetNumber,
+            score,
+            threshold
+        }, 'Posted auto-followup comment to GitHub');
+
+        // Queue the issue for reprocessing by adding a job to issueQueue
+        // This bypasses the usual bot filter since the comment triggers reprocessing
+        const followupCorrelationId = generateCorrelationId();
+        const jobData: IssueJobData = {
+            repoOwner,
+            repoName,
+            number: targetNumber,
+            repository: task.repository,
+            correlationId: followupCorrelationId,
+            title: `Auto-followup for issue #${targetNumber}`,
+            subtitle: `Triggered by low implementation score (${score}/${threshold})`
+        };
+
+        await issueQueue.add('autoFollowupJob', jobData, {
+            priority: 5, // Medium priority
+            removeOnComplete: true
+        });
+
+        correlatedLogger.info({
+            executionId,
+            repository: task.repository,
+            targetNumber,
+            followupCorrelationId,
+            score,
+            threshold
+        }, 'Queued auto-followup job to issueQueue');
+
+    } catch (error) {
+        const err = error as Error;
+        correlatedLogger.error({
+            executionId,
+            error: err.message,
+            stack: err.stack
+        }, 'Failed to trigger auto-followup');
+        // Don't throw - auto-followup failure shouldn't fail the analysis job
+    }
 }
 
 async function processAnalysisJob(job: Job<AnalysisJobData>): Promise<AnalysisResult> {
@@ -47,6 +252,10 @@ async function processAnalysisJob(job: Job<AnalysisJobData>): Promise<AnalysisRe
         }
 
         correlatedLogger.info({ executionId }, 'Execution analysis complete and saved.');
+
+        // Check for auto-followup based on implementation critique score
+        await checkAndTriggerAutoFollowup(analysisReport as AnalysisReport, executionId, correlationId, correlatedLogger);
+
         return { status: 'completed', success: true };
     } catch (error) {
         const err = error as Error;

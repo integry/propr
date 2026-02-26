@@ -4,6 +4,7 @@ export interface Settings {
   planner_context_model: string;
   planner_generation_model: string;
   default_agent_alias: string;
+  auto_followup_score_threshold: number;
   // github_user_whitelist is now handled as string[] in main state
 }
 
