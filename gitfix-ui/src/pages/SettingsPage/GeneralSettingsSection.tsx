@@ -19,12 +19,12 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
   className
 }) => {
   return (
-    <div className={`bg-white shadow rounded-lg p-6 ${className || ''}`}>
-      <h3 className="text-gray-900 text-lg font-medium mb-4">General Configuration</h3>
+    <div className={className || ''}>
+      <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-4">General Configuration</h4>
 
       <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="worker_concurrency">
+        <div className="space-y-1.5">
+          <label className="block text-sm font-medium text-gray-700" htmlFor="worker_concurrency">
             Worker Concurrency
           </label>
           <input
@@ -34,16 +34,14 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             value={settings.worker_concurrency}
             onChange={onSettingChange}
             onBlur={onBlur}
-            placeholder="e.g., 2"
-            className="w-[100px] rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+            placeholder="2"
+            className="max-w-[80px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
           />
-          <p className="mt-1 text-sm text-gray-500">
-            Number of issues to process simultaneously.
-          </p>
+          <p className="text-xs text-gray-500">Number of issues to process simultaneously.</p>
         </div>
 
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="auto_followup_score_threshold">
+        <div className="space-y-1.5">
+          <label className="block text-sm font-medium text-gray-700" htmlFor="auto_followup_score_threshold">
             Auto-Followup Score Threshold
           </label>
           <select
@@ -52,7 +50,7 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             value={settings.auto_followup_score_threshold}
             onChange={onSettingChange}
             onBlur={onBlur}
-            className="w-[150px] rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+            className="max-w-[150px] rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1.5 border"
           >
             <option value={0}>Disabled</option>
             <option value={1}>1 (Very Low)</option>
@@ -65,7 +63,7 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             <option value={8}>8</option>
             <option value={9}>9 (High)</option>
           </select>
-          <p className="mt-1 text-sm text-gray-500">
+          <p className="text-xs text-gray-500">
             When an implementation critique score is at or below this threshold, automatically post a follow-up comment to trigger a retry. Set to 0 to disable.
           </p>
         </div>

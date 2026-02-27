@@ -156,24 +156,28 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   const hasAgents = agents.length > 0;
   const hasEnabledAgents = enabledAgents.length > 0;
 
-  return (
-    <div className={`bg-white shadow rounded-lg p-6 ${className || ''}`}>
-      <h3 className="text-gray-900 text-lg font-medium mb-2">AI Model Selection</h3>
-      <p className="text-sm text-gray-500 mb-4">
-        Configure which AI models to use for different tasks.
-      </p>
+  // Teal monospace chip for recommended badge
+  const RecommendedChip = () => (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium font-mono bg-teal-100 text-teal-700 uppercase tracking-wide">
+      REC
+    </span>
+  );
 
-      <div className="space-y-6">
+  return (
+    <div className={className || ''}>
+      <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-3">Model Selection</h4>
+
+      <div className="space-y-5">
         {/* Implementation Section */}
         <div>
-          <div className="flex items-center gap-2 mb-3">
-            <Cpu className="w-5 h-5 text-purple-600" />
-            <h4 className="text-sm font-semibold text-gray-900">Implementation</h4>
+          <div className="flex items-center gap-2 mb-2">
+            <Cpu className="w-4 h-4 text-purple-600" />
+            <h5 className="text-xs font-semibold text-gray-900 uppercase tracking-wide">Implementation</h5>
           </div>
-          <div className="space-y-4 pl-7">
+          <div className="space-y-3 pl-6">
             {/* Default Implementation Agent */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="default_agent_alias">
+              <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="default_agent_alias">
                 Default Implementation Agent
               </label>
               {hasEnabledAgents ? (
@@ -181,7 +185,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   id="default_agent_alias"
                   value={settings.default_agent_alias}
                   onChange={(e) => onDefaultAgentChange(e.target.value)}
-                  className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+                  className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
                 >
                   {implementationAgentOptions.map(opt => (
                     <option key={opt.value} value={opt.value}>
@@ -191,7 +195,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   ))}
                 </select>
               ) : (
-                <div className="text-sm text-gray-500 p-3 bg-gray-50 rounded-md border border-gray-200">
+                <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
                   No enabled agents available. Please enable an agent in the{' '}
                   <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
                     AI Agents
@@ -199,14 +203,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   page first.
                 </div>
               )}
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-xs text-gray-500">
                 The agent used for code implementation tasks when no specific agent is specified.
                 {hasEnabledAgents && (
-                  <span className="block mt-1">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
-                      Recommended
-                    </span>
-                    {' '}agents are optimized for code implementation tasks.
+                  <span className="flex items-center gap-1.5 mt-1">
+                    <RecommendedChip />
+                    <span>agents are optimized for code implementation tasks.</span>
                   </span>
                 )}
               </p>
@@ -216,14 +218,14 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
 
         {/* Planning Section */}
         <div>
-          <div className="flex items-center gap-2 mb-3">
-            <Brain className="w-5 h-5 text-blue-600" />
-            <h4 className="text-sm font-semibold text-gray-900">Planning</h4>
+          <div className="flex items-center gap-2 mb-2">
+            <Brain className="w-4 h-4 text-blue-600" />
+            <h5 className="text-xs font-semibold text-gray-900 uppercase tracking-wide">Planning</h5>
           </div>
-          <div className="space-y-4 pl-7">
+          <div className="space-y-3 pl-6">
             {/* Plan Context Analysis Model */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="planner_context_model">
+              <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="planner_context_model">
                 Plan Context Analysis Model
               </label>
               {hasEnabledAgents ? (
@@ -232,7 +234,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   name="planner_context_model"
                   value={settings.planner_context_model}
                   onChange={onSettingChange}
-                  className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+                  className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
                 >
                   <option value="">Select a model...</option>
                   {contextAnalysisOptions.map(opt => (
@@ -243,7 +245,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   ))}
                 </select>
               ) : (
-                <div className="text-sm text-gray-500 p-3 bg-gray-50 rounded-md border border-gray-200">
+                <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
                   No enabled agents available. Please enable an agent in the{' '}
                   <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
                     AI Agents
@@ -251,14 +253,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   page first.
                 </div>
               )}
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-xs text-gray-500">
                 Used for matching prompts to relevant files using semantic analysis.
                 {hasEnabledAgents && (
-                  <span className="block mt-1">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
-                      Recommended
-                    </span>
-                    {' '}models are fast and cost-effective for context analysis.
+                  <span className="flex items-center gap-1.5 mt-1">
+                    <RecommendedChip />
+                    <span>models are fast and cost-effective for context analysis.</span>
                   </span>
                 )}
               </p>
@@ -266,7 +266,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
 
             {/* Plan Generation Model */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="planner_generation_model">
+              <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="planner_generation_model">
                 Plan Generation Model
               </label>
               {hasEnabledAgents ? (
@@ -275,7 +275,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   name="planner_generation_model"
                   value={settings.planner_generation_model}
                   onChange={onSettingChange}
-                  className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+                  className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
                 >
                   <option value="">Select a model...</option>
                   {planGenerationOptions.map(opt => (
@@ -286,7 +286,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   ))}
                 </select>
               ) : (
-                <div className="text-sm text-gray-500 p-3 bg-gray-50 rounded-md border border-gray-200">
+                <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
                   No enabled agents available. Please enable an agent in the{' '}
                   <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
                     AI Agents
@@ -294,14 +294,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   page first.
                 </div>
               )}
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-xs text-gray-500">
                 Used for generating detailed implementation plans from context.
                 {hasEnabledAgents && (
-                  <span className="block mt-1">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
-                      Recommended
-                    </span>
-                    {' '}models are high-capability models best suited for complex planning tasks.
+                  <span className="flex items-center gap-1.5 mt-1">
+                    <RecommendedChip />
+                    <span>models are high-capability models best suited for complex planning tasks.</span>
                   </span>
                 )}
               </p>
@@ -309,7 +307,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
 
             {/* Summarization Model */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="summarization_model">
+              <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="summarization_model">
                 Summarization Model
               </label>
               {hasEnabledAgents ? (
@@ -317,7 +315,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   id="summarization_model"
                   value={summarizationSettings.agent_alias}
                   onChange={(e) => onSummarizationModelChange(e.target.value)}
-                  className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+                  className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
                 >
                   <option value="">Select a model...</option>
                   {summarizationOptions.map(opt => (
@@ -328,7 +326,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   ))}
                 </select>
               ) : (
-                <div className="text-sm text-gray-500 p-3 bg-gray-50 rounded-md border border-gray-200">
+                <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
                   No enabled agents available. Please enable an agent in the{' '}
                   <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
                     AI Agents
@@ -336,14 +334,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   page first.
                 </div>
               )}
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-xs text-gray-500">
                 Used to generate file and directory summaries for semantic search.
                 {hasEnabledAgents && (
-                  <span className="block mt-1">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
-                      Recommended
-                    </span>
-                    {' '}models are optimized for speed and cost-effectiveness.
+                  <span className="flex items-center gap-1.5 mt-1">
+                    <RecommendedChip />
+                    <span>models are optimized for speed and cost-effectiveness.</span>
                   </span>
                 )}
               </p>
@@ -353,14 +349,14 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
 
         {/* Review Section */}
         <div>
-          <div className="flex items-center gap-2 mb-3">
-            <ClipboardCheck className="w-5 h-5 text-green-600" />
-            <h4 className="text-sm font-semibold text-gray-900">Review</h4>
+          <div className="flex items-center gap-2 mb-2">
+            <ClipboardCheck className="w-4 h-4 text-green-600" />
+            <h5 className="text-xs font-semibold text-gray-900 uppercase tracking-wide">Review</h5>
           </div>
-          <div className="space-y-4 pl-7">
+          <div className="space-y-3 pl-6">
             {/* Post-implementation Analysis Model */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="analysis_model_fast">
+              <label className="block text-xs font-medium text-gray-600 mb-1" htmlFor="analysis_model_fast">
                 Post-implementation Analysis Model
               </label>
               {hasAgents ? (
@@ -369,7 +365,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   name="analysis_model_fast"
                   value={settings.analysis_model_fast}
                   onChange={onSettingChange}
-                  className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+                  className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
                 >
                   <option value="">Select a model...</option>
                   {enabledOptions.length > 0 && (
@@ -392,7 +388,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   )}
                 </select>
               ) : (
-                <div className="text-sm text-gray-500 p-3 bg-gray-50 rounded-md border border-gray-200">
+                <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
                   No agents configured. Please add an agent in the{' '}
                   <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
                     AI Agents
@@ -400,7 +396,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   page first.
                 </div>
               )}
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-xs text-gray-500">
                 Analyzes code changes after implementation.
               </p>
             </div>
