@@ -1,83 +1,24 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getTasks, getRepositoryStats } from '../api/gitfixApi';
-import type { Task, TaskListProps, LoadConfig, TaskGroup } from './TaskList/types';
+import type { TaskListProps, LoadConfig } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';
-import { ParentTaskRow, ChildTaskRow, CollapseToggleRow } from './TaskList/TaskRows';
-import { MobileTaskCard } from './TaskList/MobileTaskCard';
-
-/**
- * Groups tasks by PR number, issue number, or task ID for display.
- * Merges issue-based groups into PR-based groups when linked.
- */
-function groupTasksForDisplay(tasks: Task[]): TaskGroup[] {
-  const groups: Record<string, TaskGroup> = {};
-  const issueToPrMap: Record<string, string> = {};
-
-  // First pass: create initial groups and build issue-to-PR mapping
-  tasks.forEach(task => {
-    let owner = task.repositoryOwner;
-    let name = task.repositoryName;
-
-    if (!owner || !name) {
-      const parts = (task.repository || 'unknown/unknown').split('/');
-      owner = parts[0] || 'unknown';
-      name = parts[1] || 'unknown';
-    }
-
-    const repoPrefix = `${owner}/${name}`;
-
-    if (task.prNumber && task.linkedIssueNumber) {
-      const issueKey = `${repoPrefix}-issue-${task.linkedIssueNumber}`;
-      const prKey = `${repoPrefix}-pr-${task.prNumber}`;
-      issueToPrMap[issueKey] = prKey;
-    }
-
-    let key: string;
-    if (task.prNumber) {
-      key = `${repoPrefix}-pr-${task.prNumber}`;
-    } else if (task.issueNumber) {
-      key = `${repoPrefix}-issue-${task.issueNumber}`;
-    } else {
-      key = task.id;
-    }
-
-    if (!groups[key]) {
-      groups[key] = {
-        key,
-        repoOwner: owner,
-        repoName: name,
-        prNumber: task.prNumber,
-        tasks: []
-      };
-    }
-    groups[key].tasks.push(task);
-  });
-
-  // Second pass: merge issue-based groups into their corresponding PR groups
-  Object.entries(issueToPrMap).forEach(([issueKey, prKey]) => {
-    if (groups[issueKey] && groups[prKey]) {
-      groups[prKey].tasks.push(...groups[issueKey].tasks);
-      delete groups[issueKey];
-    }
-  });
-
-  // Sort tasks within each group by creation date (newest first)
-  Object.values(groups).forEach(group => {
-    group.tasks.sort((a, b) => {
-      const dateA = new Date(a.createdAt).getTime();
-      const dateB = new Date(b.createdAt).getTime();
-      return dateB - dateA;
-    });
-  });
-
-  return Object.values(groups).sort((a, b) => {
-    const dateA = new Date(a.tasks[0].createdAt).getTime();
-    const dateB = new Date(b.tasks[0].createdAt).getTime();
-    return dateB - dateA;
-  });
-}
+import {
+  DashboardLoadingState,
+  FullPageLoadingState,
+  DashboardErrorState,
+  FullPageErrorState,
+  TaskTableContent,
+} from './TaskList/StateComponents';
+import {
+  createToggleGroupHandler,
+  isDefaultParamValue,
+  createFilterSetter,
+  groupTasksForDisplay,
+  selectValue,
+} from './TaskList/utils';
+import { useDebouncedCallback } from './TaskList/hooks';
 
 const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -99,17 +40,17 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   const [localCurrentPage, setLocalCurrentPage] = useState<number>(0);
 
   // Get the effective filter values based on whether we use URL or local state
-  const filter = useUrlState ? urlFilter : localFilter;
-  const repoFilter = useUrlState ? urlRepoFilter : localRepoFilter;
-  const currentPage = useUrlState ? urlPage : localCurrentPage;
+  const filter = selectValue(useUrlState, urlFilter, localFilter);
+  const repoFilter = selectValue(useUrlState, urlRepoFilter, localRepoFilter);
+  const currentPage = selectValue(useUrlState, urlPage, localCurrentPage);
 
   // Search state - local input for typing, debounced for API/URL
-  const urlSearch = useUrlState ? urlSearchParam : '';
+  const urlSearch = selectValue(useUrlState, urlSearchParam, '');
   const [searchQuery, setSearchQuery] = useState<string>(urlSearch);
   const [debouncedSearch, setDebouncedSearch] = useState<string>(urlSearch);
   const isInitialMount = useRef(true);
 
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [tasks, setTasks] = useState<import('./TaskList/types').Task[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -127,10 +68,10 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     setSearchParams(prev => {
       const newParams = new URLSearchParams(prev);
       Object.entries(updates).forEach(([key, value]) => {
-        if (value === null || value === 'all' || value === '' || value === '1') {
+        if (isDefaultParamValue(value)) {
           newParams.delete(key);
         } else {
-          newParams.set(key, value);
+          newParams.set(key, value as string);
         }
       });
       return newParams;
@@ -138,23 +79,19 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   }, [useUrlState, setSearchParams]);
 
   // Unified setters that work with both URL and local state
-  const setFilter = useCallback((newFilter: string) => {
-    if (useUrlState) {
-      updateSearchParams({ status: newFilter, page: '1' });
-    } else {
-      setLocalFilter(newFilter);
-      setLocalCurrentPage(0);
-    }
-  }, [useUrlState, updateSearchParams]);
+  const setFilter = useMemo(() => createFilterSetter(
+    useUrlState,
+    (value) => updateSearchParams({ status: value, page: '1' }),
+    setLocalFilter,
+    () => setLocalCurrentPage(0)
+  ), [useUrlState, updateSearchParams]);
 
-  const setRepoFilter = useCallback((newRepo: string) => {
-    if (useUrlState) {
-      updateSearchParams({ repository: newRepo, page: '1' });
-    } else {
-      setLocalRepoFilter(newRepo);
-      setLocalCurrentPage(0);
-    }
-  }, [useUrlState, updateSearchParams]);
+  const setRepoFilter = useMemo(() => createFilterSetter(
+    useUrlState,
+    (value) => updateSearchParams({ repository: value, page: '1' }),
+    setLocalRepoFilter,
+    () => setLocalCurrentPage(0)
+  ), [useUrlState, updateSearchParams]);
 
   const setCurrentPage = useCallback((pageOrUpdater: number | ((prev: number) => number)) => {
     if (useUrlState) {
@@ -195,31 +132,16 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     }
   }, [useUrlState, urlSearchParam]);
 
-  // Debounce search query and update URL when applicable
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (searchQuery !== debouncedSearch) {
-        setDebouncedSearch(searchQuery);
-        if (useUrlState) {
-          // Update URL with search parameter and reset to page 1
-          setSearchParams(prev => {
-            const newParams = new URLSearchParams(prev);
-            if (searchQuery) {
-              newParams.set('search', searchQuery);
-            } else {
-              newParams.delete('search');
-            }
-            newParams.delete('page'); // Reset to page 1 (default, so delete it)
-            return newParams;
-          }, { replace: true });
-        } else {
-          setLocalCurrentPage(0); // Reset page when search changes
-        }
-      }
-    }, 400); // 400ms debounce
+  // Handler for when debounced search value changes
+  const handleSearchChange = useMemo(() => createFilterSetter(
+    useUrlState,
+    (value) => { setDebouncedSearch(value); updateSearchParams({ search: value || null, page: null }); },
+    (value) => { setDebouncedSearch(value); },
+    () => setLocalCurrentPage(0)
+  ), [useUrlState, updateSearchParams]);
 
-    return () => clearTimeout(timer);
-  }, [searchQuery, debouncedSearch, useUrlState, setSearchParams]);
+  // Debounce search query
+  useDebouncedCallback(searchQuery, handleSearchChange, 400);
 
   useEffect(() => {
     const fetchTasks = async (loadConfig?: LoadConfig) => {
@@ -247,161 +169,56 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
   const groupedTasks = useMemo(() => groupTasksForDisplay(tasks), [tasks]);
 
-  const toggleGroup = (groupKey: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setExpandedGroups(prev => {
-      const next = new Set(prev);
-      if (next.has(groupKey)) {
-        next.delete(groupKey);
-      } else {
-        next.add(groupKey);
-      }
-      return next;
-    });
-  };
+  const toggleGroup = useMemo(() => createToggleGroupHandler(setExpandedGroups), []);
 
-  const handleRowClick = (taskId: string) => {
+  const handleRowClick = useCallback((taskId: string) => {
     navigate(`/tasks/${taskId}`);
-  };
+  }, [navigate]);
 
   // Loading state
   if (loading && tasks.length === 0) {
-    // For dashboard integration (hideFilters), use simple layout
-    if (hideFilters) {
-      return <div className="text-gray-500 p-4">Loading tasks...</div>;
-    }
-    // For main Tasks page, use full-height layout with header
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-          <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>
-        </div>
-        <div className="flex-1 overflow-auto px-6 py-6">
-          <div className="text-gray-500">Loading tasks...</div>
-        </div>
-      </div>
-    );
+    return hideFilters ? <DashboardLoadingState /> : <FullPageLoadingState />;
   }
 
   // Error state
   if (error) {
-    if (hideFilters) {
-      return <div className="text-red-600 p-4">Error loading tasks: {error}</div>;
-    }
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-          <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>
-        </div>
-        <div className="flex-1 overflow-auto px-6 py-6">
-          <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">Error loading tasks: {error}</div>
-        </div>
-      </div>
-    );
+    return hideFilters ? <DashboardErrorState error={error} /> : <FullPageErrorState error={error} />;
   }
 
   const totalPages = Math.ceil(totalTasks / tasksPerPage);
 
-  // Render the table content
-  const renderTableContent = () => (
-    <>
-      {/* Mobile Card View */}
-      <div className="md:hidden space-y-3 px-4 py-4">
-        {groupedTasks.map((group) => (
-          <MobileTaskCard
-            key={group.key}
-            group={group}
-            expandedGroups={expandedGroups}
-            onRowClick={handleRowClick}
-            onToggleGroup={toggleGroup}
-          />
-        ))}
-      </div>
+  // Shared filter props
+  const filterProps = {
+    hideFilters,
+    showViewAll,
+    filter,
+    setFilter,
+    repoFilter,
+    setRepoFilter,
+    availableRepos,
+    reposLoading,
+    searchQuery,
+    setSearchQuery,
+  };
 
-      {/* Desktop Table View */}
-      <div className="hidden md:block">
-        <table className="w-full">
-          <thead className="sr-only">
-            <tr>
-              <th>Repository</th>
-              <th>Issue/Task</th>
-              <th>Status</th>
-              <th>Metadata</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white">
-            {groupedTasks.map((group, index) => {
-              const parentTask = group.tasks[0];
-              const allChildren = group.tasks.slice(1);
-
-              const isExpanded = expandedGroups.has(group.key);
-
-              // The "Last 3" Rule
-              // If group has many items (e.g. > 5 total, so > 4 children), collapse by default
-              // show collapse trigger if children > 3
-              const shouldCollapse = allChildren.length > 3;
-
-              let visibleChildren = allChildren;
-              let hiddenCount = 0;
-
-              if (shouldCollapse && !isExpanded) {
-                visibleChildren = allChildren.slice(0, 3);
-                hiddenCount = allChildren.length - 3;
-              }
-
-              // Check if this group's repository is the same as the previous one
-              const prevGroup = index > 0 ? groupedTasks[index - 1] : null;
-              const isDuplicateRepo = prevGroup
-                ? prevGroup.repoOwner === group.repoOwner && prevGroup.repoName === group.repoName
-                : false;
-
-              return (
-                <React.Fragment key={group.key}>
-                  <ParentTaskRow group={group} task={parentTask} onRowClick={handleRowClick} isDuplicateRepo={isDuplicateRepo} />
-
-                  {visibleChildren.map((child, childIndex) => (
-                    <ChildTaskRow
-                      key={child.id}
-                      task={child}
-                      onRowClick={handleRowClick}
-                      isLastChild={childIndex === visibleChildren.length - 1 && hiddenCount === 0}
-                    />
-                  ))}
-
-                  {hiddenCount > 0 && (
-                    <CollapseToggleRow groupKey={group.key} hiddenCount={hiddenCount} onToggle={toggleGroup} />
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </>
-  );
+  // Shared table content props
+  const tableContentProps = {
+    groupedTasks,
+    expandedGroups,
+    onRowClick: handleRowClick,
+    onToggleGroup: toggleGroup,
+  };
 
   // Dashboard integration: simpler layout without anchored header/footer
   if (hideFilters) {
     return (
       <div>
-        <Filters
-          hideFilters={hideFilters}
-          showViewAll={showViewAll}
-          filter={filter}
-          setFilter={setFilter}
-          repoFilter={repoFilter}
-          setRepoFilter={setRepoFilter}
-          availableRepos={availableRepos}
-          reposLoading={reposLoading}
-          searchQuery={searchQuery}
-          setSearchQuery={setSearchQuery}
-        />
+        <Filters {...filterProps} />
 
         {tasks.length === 0 ? (
           <p className="text-gray-500 text-center py-8">No tasks found</p>
         ) : (
-          renderTableContent()
+          <TaskTableContent {...tableContentProps} />
         )}
 
         <Pagination
@@ -420,18 +237,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     <>
       {/* Anchored Header */}
       <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-        <Filters
-          hideFilters={hideFilters}
-          showViewAll={showViewAll}
-          filter={filter}
-          setFilter={setFilter}
-          repoFilter={repoFilter}
-          setRepoFilter={setRepoFilter}
-          availableRepos={availableRepos}
-          reposLoading={reposLoading}
-          searchQuery={searchQuery}
-          setSearchQuery={setSearchQuery}
-        />
+        <Filters {...filterProps} />
       </div>
 
       {/* Scrollable Content Area */}
@@ -443,7 +249,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         ) : (
           <div className="flex flex-col h-full bg-white">
             <div className="flex-1 overflow-auto">
-              {renderTableContent()}
+              <TaskTableContent {...tableContentProps} />
             </div>
           </div>
         )}
