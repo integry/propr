@@ -1,5 +1,5 @@
-import { getAuthenticatedOctokit, handleError, getModelShortName } from '@gitfix/core';
-import { logger } from '@gitfix/core';
+import { getAuthenticatedOctokit, handleError, getModelShortName } from '@propr/core';
+import { logger } from '@propr/core';
 import { generatePRBody } from './github/prFormatters.js';
 import {
     createPullRequestRobust as createPullRequestRobustOps,

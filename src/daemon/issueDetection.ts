@@ -1,2 +1,2 @@
-export { processDetectedIssue, fetchIssuesForRepo } from '@gitfix/core';
-export type { DetectedIssue } from '@gitfix/core';
+export { processDetectedIssue, fetchIssuesForRepo } from '@propr/core';
+export type { DetectedIssue } from '@propr/core';

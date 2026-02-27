@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert';
-import { AgentRegistry } from '@gitfix/core';
+import { AgentRegistry } from '@propr/core';
 
 // Test 1: Singleton only
 test('AgentRegistry - singleton test only', async () => {
@@ -11,7 +11,7 @@ test('AgentRegistry - singleton test only', async () => {
     console.log('Singleton test passed');
 });
 
-// Force exit due to module-level initialization in @gitfix/core
+// Force exit due to module-level initialization in @propr/core
 after(async () => {
     console.log('Starting cleanup...');
     try {

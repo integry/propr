@@ -9,7 +9,7 @@ import {
   type DraftUpdatePayload,
   type IndexingUpdatePayload,
   type EventPayload
-} from '@gitfix/shared';
+} from '@propr/shared';
 
 /**
  * Event publisher for real-time updates via Redis pub/sub.

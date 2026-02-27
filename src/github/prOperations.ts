@@ -1,4 +1,4 @@
-import { getAuthenticatedOctokit, logger, ensureBranchAndPush, handleError, getModelShortName } from '@gitfix/core';
+import { getAuthenticatedOctokit, logger, ensureBranchAndPush, handleError, getModelShortName } from '@propr/core';
 import { generatePRBody, generateClaudeLogsComment } from './prFormatters.js';
 import { waitForBranchPropagation, compareBranches, createPRWithRetry, type PRInfo } from './prHelpers.js';
 

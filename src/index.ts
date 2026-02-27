@@ -1,5 +1,5 @@
-import { logger } from '@gitfix/core';
-import { getAuthenticatedOctokit, withErrorHandling } from '@gitfix/core';
+import { logger } from '@propr/core';
+import { getAuthenticatedOctokit, withErrorHandling } from '@propr/core';
 import config from '../config/index.js';
 
 process.on('uncaughtException', (error: Error) => {

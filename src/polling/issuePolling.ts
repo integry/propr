@@ -1,10 +1,10 @@
-import { logger } from '@gitfix/core';
-import { generateCorrelationId } from '@gitfix/core';
+import { logger } from '@propr/core';
+import { generateCorrelationId } from '@propr/core';
 import type { Logger } from 'pino';
-import { handleError } from '@gitfix/core';
-import { withRetry, retryConfigs } from '@gitfix/core';
-import { getDefaultModel, resolveLlmLabel } from '@gitfix/core';
-import { issueQueue, type IssueJobData } from '@gitfix/core';
+import { handleError } from '@propr/core';
+import { withRetry, retryConfigs } from '@propr/core';
+import { getDefaultModel, resolveLlmLabel } from '@propr/core';
+import { issueQueue, type IssueJobData } from '@propr/core';
 import { Redis } from 'ioredis';
 
 const AI_PRIMARY_TAG = process.env.AI_PRIMARY_TAG || 'AI';

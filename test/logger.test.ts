@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert';
-import { logger } from '@gitfix/core';
+import { logger } from '@propr/core';
 
 test('Logger exports a pino instance', () => {
     assert.ok(logger);
@@ -26,7 +26,7 @@ test('Logger can log objects', () => {
     });
 });
 
-// Force exit due to module-level initialization in @gitfix/core
+// Force exit due to module-level initialization in @propr/core
 after(() => {
     process.exit(0);
 });

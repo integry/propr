@@ -1,8 +1,8 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { randomUUID } from 'crypto';
-import * as configManager from '@gitfix/core';
-import { AgentRegistry, DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@gitfix/core';
+import * as configManager from '@propr/core';
+import { AgentRegistry, DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
 import { withConfigLock, validateAgentsConfig } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 

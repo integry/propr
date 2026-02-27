@@ -14,8 +14,8 @@ import {
   loadSettings,
   estimateTokens,
   REFINER_SYSTEM_PROMPT
-} from '@gitfix/core';
-import type { Plan } from '@gitfix/core';
+} from '@propr/core';
+import type { Plan } from '@propr/core';
 import {
   checkDbAndAuth,
   sendCheckError,

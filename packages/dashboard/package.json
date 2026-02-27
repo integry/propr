@@ -1,7 +1,7 @@
 {
-  "name": "@gitfix/dashboard-api",
+  "name": "@propr/dashboard",
   "version": "1.0.0",
-  "description": "Dashboard API for GitFix Web UI",
+  "description": "Dashboard API for ProPR Web UI",
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
@@ -12,8 +12,8 @@
     "dev": "tsx watch server.ts"
   },
   "dependencies": {
-    "@gitfix/core": "*",
-    "@gitfix/shared": "*",
+    "@propr/core": "*",
+    "@propr/shared": "*",
     "@types/multer": "^2.0.0",
     "bullmq": "^5.53.0",
     "connect-redis": "^9.0.0",

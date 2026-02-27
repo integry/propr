@@ -1,8 +1,8 @@
 import { Redis } from 'ioredis';
-import { logger } from '@gitfix/core';
-import { handleError } from '@gitfix/core';
-import { getAuthenticatedOctokit } from '@gitfix/core';
-import type { PaginatedOctokitInstance } from '@gitfix/core';
+import { logger } from '@propr/core';
+import { handleError } from '@propr/core';
+import { getAuthenticatedOctokit } from '@propr/core';
+import type { PaginatedOctokitInstance } from '@propr/core';
 import { getRepos, getPrimaryProcessingLabels } from './configLoader.js';
 
 interface GitHubIssue {

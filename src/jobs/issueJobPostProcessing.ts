@@ -1,16 +1,16 @@
 import type { Logger } from 'pino';
 import { setTimeout } from 'timers/promises';
-import type { ClaudeCodeResponse } from '@gitfix/core';
-import type { WorktreeInfo, CommitResult, WorkerStateManager } from '@gitfix/core';
-import { cleanupWorktree, commitChanges, pushBranch, TaskStates } from '@gitfix/core';
-import { safeUpdateLabels } from '@gitfix/core';
-import { generateCompletionComment } from '@gitfix/core';
-import { executeClaudeCode } from '@gitfix/core';
-import { validatePRCreation } from '@gitfix/core';
-import { linkPRToPlanIssue, findPlanIssueByRepoAndNumber, getPlanIssuesByDraft, updatePlanIssueStatus } from '@gitfix/core';
-import { getAuthenticatedOctokit, getPrimaryProcessingLabels } from '@gitfix/core';
-import type { RepoValidationResult, PRValidationResult } from '@gitfix/core';
-import type { IssueJobData } from '@gitfix/core';
+import type { ClaudeCodeResponse } from '@propr/core';
+import type { WorktreeInfo, CommitResult, WorkerStateManager } from '@propr/core';
+import { cleanupWorktree, commitChanges, pushBranch, TaskStates } from '@propr/core';
+import { safeUpdateLabels } from '@propr/core';
+import { generateCompletionComment } from '@propr/core';
+import { executeClaudeCode } from '@propr/core';
+import { validatePRCreation } from '@propr/core';
+import { linkPRToPlanIssue, findPlanIssueByRepoAndNumber, getPlanIssuesByDraft, updatePlanIssueStatus } from '@propr/core';
+import { getAuthenticatedOctokit, getPrimaryProcessingLabels } from '@propr/core';
+import type { RepoValidationResult, PRValidationResult } from '@propr/core';
+import type { IssueJobData } from '@propr/core';
 import { createPullRequest, type PostProcessingResult } from './issueJobHelpers.js';
 import { enableAutoMerge } from '../github/autoMergeOperations.js';
 

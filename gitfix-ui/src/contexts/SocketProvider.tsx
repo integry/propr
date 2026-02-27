@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload } from '@gitfix/shared';
+import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
 
 interface SocketProviderProps {

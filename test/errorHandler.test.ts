@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert';
-import { handleError, withErrorHandling, safeAsync } from '@gitfix/core';
+import { handleError, withErrorHandling, safeAsync } from '@propr/core';
 
 test('handleError logs errors without throwing', () => {
     const testError = new Error('Test error');
@@ -47,7 +47,7 @@ test('safeAsync returns result on success', async () => {
     assert.strictEqual(result, 10);
 });
 
-// Force exit due to module-level initialization in @gitfix/core
+// Force exit due to module-level initialization in @propr/core
 after(() => {
     process.exit(0);
 });

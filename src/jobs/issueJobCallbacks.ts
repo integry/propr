@@ -1,9 +1,9 @@
 import type { Logger } from 'pino';
-import type { WorkerStateManager } from '@gitfix/core';
-import { TaskStates } from '@gitfix/core';
+import type { WorkerStateManager } from '@propr/core';
+import { TaskStates } from '@propr/core';
 import fs from 'fs-extra';
 import type { Redis } from 'ioredis';
-import type { IssueJobData } from '@gitfix/core';
+import type { IssueJobData } from '@propr/core';
 
 export interface SessionIdCallback {
     (sessionId: string, conversationId?: string): Promise<void>;

@@ -16,9 +16,9 @@ import {
     handleCommentEdited,
     processCommentEvent,
     AgentRegistry
-} from '@gitfix/core';
-import type { CommentPayload, CommentEventConfig, CommentEventType } from '@gitfix/core';
-import { logger } from '@gitfix/core';
+} from '@propr/core';
+import type { CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
+import { logger } from '@propr/core';
 import { pollForPullRequestComments } from './polling/prCommentPolling.js';
 import {
     loadAllConfigs,

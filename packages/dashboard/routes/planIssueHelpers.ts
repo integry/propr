@@ -6,7 +6,7 @@ import {
   logger,
   ensureEpicPR,
   updatePlanIssue
-} from '@gitfix/core';
+} from '@propr/core';
 
 export interface ImplementIssueContext {
   octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;

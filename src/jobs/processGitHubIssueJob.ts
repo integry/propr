@@ -9,11 +9,11 @@ import {
     validateRepositoryInfo, getDefaultModel, loadPrLabel, loadPrimaryProcessingLabels, loadSettings,
     filterCommentByAuthor, AgentRegistry, generateClaudePrompt, resolveLlmLabel, updateFileChangesFromWorktree,
     updatePlanIssueTaskId, db
-} from '@gitfix/core';
+} from '@propr/core';
 import type {
     WorkerStateManager, IssueRef, WorktreeInfo, CommitResult, ClaudeCodeResponse, ClaudeResult,
     RepoValidationResult, AgentExecutionResult, IssueJobData, JobResult, Agent
-} from '@gitfix/core';
+} from '@propr/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult, localizeContentImages } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';

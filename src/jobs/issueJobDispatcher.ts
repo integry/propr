@@ -1,16 +1,16 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { logger } from '@gitfix/core';
-import { generateCorrelationId } from '@gitfix/core';
-import { getAuthenticatedOctokit } from '@gitfix/core';
-import { withRetry, retryConfigs } from '@gitfix/core';
-import { validateRepositoryInfo } from '@gitfix/core';
-import type { RepoValidationResult } from '@gitfix/core';
+import { logger } from '@propr/core';
+import { generateCorrelationId } from '@propr/core';
+import { getAuthenticatedOctokit } from '@propr/core';
+import { withRetry, retryConfigs } from '@propr/core';
+import { validateRepositoryInfo } from '@propr/core';
+import type { RepoValidationResult } from '@propr/core';
 
 type RepoValidation = RepoValidationResult;
-import { issueQueue, type IssueJobData, type JobResult } from '@gitfix/core';
-import { getDefaultModel, resolveLlmLabel, loadSettings, resolveCustomLabel, getAllCustomLabels } from '@gitfix/core';
-import { AgentRegistry } from '@gitfix/core';
+import { issueQueue, type IssueJobData, type JobResult } from '@propr/core';
+import { getDefaultModel, resolveLlmLabel, loadSettings, resolveCustomLabel, getAllCustomLabels } from '@propr/core';
+import { AgentRegistry } from '@propr/core';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 

@@ -220,11 +220,11 @@ export {
     PLAN_STEP_UPDATE,
     INDEXING_UPDATE,
     REDIS_CHANNELS
-} from '@gitfix/shared';
+} from '@propr/shared';
 export type {
     TaskUpdatePayload,
     DraftUpdatePayload,
     PlanStepUpdatePayload,
     IndexingUpdatePayload,
     EventPayload
-} from '@gitfix/shared';
+} from '@propr/shared';

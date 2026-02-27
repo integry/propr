@@ -1,14 +1,14 @@
 import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
-import { createWorker, ANALYSIS_QUEUE_NAME, issueQueue } from '@gitfix/core';
-import type { AnalysisJobData, JobResult, IssueJobData } from '@gitfix/core';
-import { logger } from '@gitfix/core';
-import { generateCorrelationId } from '@gitfix/core';
-import { db } from '@gitfix/core';
-import { getExecutionAnalysis } from '@gitfix/core';
-import { loadSettings, loadAutoFollowupScoreThreshold } from '@gitfix/core';
-import { resolveModelAlias } from '@gitfix/core';
-import { getAuthenticatedOctokit } from '@gitfix/core';
+import { createWorker, ANALYSIS_QUEUE_NAME, issueQueue } from '@propr/core';
+import type { AnalysisJobData, JobResult, IssueJobData } from '@propr/core';
+import { logger } from '@propr/core';
+import { generateCorrelationId } from '@propr/core';
+import { db } from '@propr/core';
+import { getExecutionAnalysis } from '@propr/core';
+import { loadSettings, loadAutoFollowupScoreThreshold } from '@propr/core';
+import { resolveModelAlias } from '@propr/core';
+import { getAuthenticatedOctokit } from '@propr/core';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in analysis worker');

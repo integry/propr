@@ -8,7 +8,7 @@ import {
   getGitHubInstallationToken,
   isValidCommitHash,
   FileChangesData
-} from '@gitfix/core';
+} from '@propr/core';
 
 interface FileChangesRoutesDeps {
   db: Knex;

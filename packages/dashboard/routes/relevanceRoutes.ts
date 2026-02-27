@@ -4,7 +4,7 @@ import {
   ensureRepoCloned,
   getGitHubInstallationToken,
   generateCorrelationId
-} from '@gitfix/core';
+} from '@propr/core';
 
 export function createRelevanceRoutes() {
   async function analyzeRelevance(req: Request, res: Response): Promise<void> {

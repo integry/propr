@@ -1,7 +1,7 @@
 import { RedisClientType } from 'redis';
-import * as configManager from '@gitfix/core';
-import { indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges } from '@gitfix/core';
-import type { IndexingJobData } from '@gitfix/core';
+import * as configManager from '@propr/core';
+import { indexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges } from '@propr/core';
+import type { IndexingJobData } from '@propr/core';
 
 interface AgentConfig {
   id: string;

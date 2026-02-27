@@ -1,4 +1,4 @@
-import { getAuthenticatedOctokit, logger, handleError } from '@gitfix/core';
+import { getAuthenticatedOctokit, logger, handleError } from '@propr/core';
 
 /**
  * Auto-merge method options supported by GitHub.

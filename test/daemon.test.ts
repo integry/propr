@@ -1,6 +1,6 @@
 import { test, mock, after } from 'node:test';
 import assert from 'node:assert';
-import { fetchIssuesForRepo } from '@gitfix/core';
+import { fetchIssuesForRepo } from '@propr/core';
 import { pollForIssues } from '../src/polling/issuePolling.js';
 
 // Mock environment variables for testing
@@ -243,7 +243,7 @@ test('daemon exports required functions', () => {
     assert.strictEqual(typeof pollForIssues, 'function');
 });
 
-// Force exit due to module-level initialization in @gitfix/core
+// Force exit due to module-level initialization in @propr/core
 after(() => {
     process.exit(0);
 });

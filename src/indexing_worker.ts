@@ -2,15 +2,15 @@ import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
 import type { Logger } from 'pino';
 import { simpleGit } from 'simple-git';
-import { createWorker, INDEXING_QUEUE_NAME, indexingQueue } from '@gitfix/core';
-import type { IndexingJobData, JobResult } from '@gitfix/core';
-import { logger } from '@gitfix/core';
-import { generateCorrelationId } from '@gitfix/core';
-import { db } from '@gitfix/core';
-import { indexRepo, updateRepositoryStatus } from '@gitfix/core';
-import { loadSummarizationSettings, loadMonitoredReposRaw } from '@gitfix/core';
-import type { RepoToMonitor } from '@gitfix/core';
-import { ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, fetchLatestChanges } from '@gitfix/core';
+import { createWorker, INDEXING_QUEUE_NAME, indexingQueue } from '@propr/core';
+import type { IndexingJobData, JobResult } from '@propr/core';
+import { logger } from '@propr/core';
+import { generateCorrelationId } from '@propr/core';
+import { db } from '@propr/core';
+import { indexRepo, updateRepositoryStatus } from '@propr/core';
+import { loadSummarizationSettings, loadMonitoredReposRaw } from '@propr/core';
+import type { RepoToMonitor } from '@propr/core';
+import { ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, fetchLatestChanges } from '@propr/core';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in indexing worker');

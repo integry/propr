@@ -1,5 +1,5 @@
 import { Octokit } from '@octokit/core';
-import { logger } from '@gitfix/core';
+import { logger } from '@propr/core';
 
 export interface PRInfo {
     number: number;

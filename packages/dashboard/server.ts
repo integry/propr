@@ -39,9 +39,9 @@ import {
   handleCommentDeleted,
   handleCommentEdited,
   processCommentEvent
-} from '@gitfix/core';
-import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@gitfix/core';
-import * as configManager from '@gitfix/core';
+} from '@propr/core';
+import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
+import * as configManager from '@propr/core';
 
 const ioRedisClient = new Redis({
   host: process.env.REDIS_HOST || '127.0.0.1',

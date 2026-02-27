@@ -1,9 +1,9 @@
 import { Job } from 'bullmq';
 import { simpleGit } from 'simple-git';
-import { logger } from '@gitfix/core';
-import { getAuthenticatedOctokit } from '@gitfix/core';
-import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, cleanupWorktree } from '@gitfix/core';
-import type { SystemTaskJobData, JobResult } from '@gitfix/core';
+import { logger } from '@propr/core';
+import { getAuthenticatedOctokit } from '@propr/core';
+import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, cleanupWorktree } from '@propr/core';
+import type { SystemTaskJobData, JobResult } from '@propr/core';
 
 interface IssueComment {
     id: number;

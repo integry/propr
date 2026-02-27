@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert';
-import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS } from '@gitfix/core';
+import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS } from '@propr/core';
 
 test('Model Aliases Configuration', async (t) => {
     await t.test('should resolve known aliases to full model IDs', () => {
@@ -49,7 +49,7 @@ test('Model Aliases Configuration', async (t) => {
     });
 });
 
-// Force exit due to module-level initialization in @gitfix/core
+// Force exit due to module-level initialization in @propr/core
 after(() => {
     process.exit(0);
 });

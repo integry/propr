@@ -1,7 +1,7 @@
 import type { Logger } from 'pino';
 import path from 'path';
 import fs from 'fs-extra';
-import { AttachmentService } from '@gitfix/core';
+import { AttachmentService } from '@propr/core';
 
 /**
  * Extracts a map of original image URLs to their signed versions from HTML content.
