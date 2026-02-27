@@ -1,4 +1,5 @@
 import React from 'react';
+import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, GitMerge, GitPullRequestArrow } from 'lucide-react';
 import { IssueSummary } from '../api/gitfixApi';
 
 /**
@@ -37,18 +38,14 @@ export const getStatusBadge = (status: string): string => {
       // Quiet Success: no background, just gray text - recedes into background
       return 'text-gray-500';
     case 'executed':
-      // Active status: Brand Teal
-      return 'bg-teal-100 text-teal-800';
+      return 'bg-green-100 text-green-800';
     case 'pr_created':
-      // Active status: Brand Teal
-      return 'bg-teal-100 text-teal-800';
+      return 'bg-cyan-100 text-cyan-800';
     case 'review':
-      // Active status: Brand Teal
-      return 'bg-teal-100 text-teal-800';
+      return 'bg-blue-100 text-blue-800';
     case 'generating':
     case 'refining':
-      // Active status: Brand Teal
-      return 'bg-teal-100 text-teal-800';
+      return 'bg-yellow-100 text-yellow-800';
     case 'draft':
       // Draft status: amber outline
       return 'bg-transparent border border-amber-400 text-amber-600';
@@ -84,18 +81,14 @@ export const getStatusIcon = (status: string): React.ReactNode => {
       // Quiet Success: no icon, checkmark is in the label
       return null;
     case 'executed':
-      // Active status: Brand Teal
-      return <CheckCircle size={12} className="text-teal-600" />;
+      return <CheckCircle size={12} className="text-green-600" />;
     case 'pr_created':
-      // Active status: Brand Teal
-      return <GitPullRequestArrow size={12} className="text-teal-600" />;
+      return <GitPullRequestArrow size={12} className="text-cyan-600" />;
     case 'review':
-      // Active status: Brand Teal
-      return <Settings2 size={12} className="text-teal-600" />;
+      return <Settings2 size={12} className="text-blue-600" />;
     case 'generating':
     case 'refining':
-      // Active status: Brand Teal
-      return <Loader2 size={12} className="text-teal-600 animate-spin" />;
+      return <Loader2 size={12} className="text-yellow-600 animate-spin" />;
     case 'draft':
       // Draft status: amber
       return <Clock size={12} className="text-amber-500" />;
@@ -106,64 +99,64 @@ export const getStatusIcon = (status: string): React.ReactNode => {
 
 export const renderIssueSummary = (summary: IssueSummary | null | undefined): React.ReactNode => {
   if (!summary || summary.total === 0) {
-    return null;
+    return <span className="text-gray-400 text-sm">No issues</span>;
   }
 
-  // Build metrics array for the Status Strip - using monospace code chip styling with bullet separators
-  const metricItems: string[] = [];
-
-  // Total issues - always shown
-  metricItems.push(`${summary.total} Issues`);
-
-  // Processing - shown if > 0, using ⟳ symbol
-  if (summary.processing > 0) {
-    metricItems.push(`${summary.processing} ⟳`);
-  }
-
-  // Pending - shown if > 0
-  if (summary.pending > 0) {
-    metricItems.push(`${summary.pending} pending`);
-  }
-
-  // Merged - shown if > 0, using ✓ symbol
-  if (summary.merged > 0) {
-    metricItems.push(`${summary.merged} ✓`);
-  }
-
-  // Closed - shown if > 0, using ✗ symbol
-  if (summary.closed > 0) {
-    metricItems.push(`${summary.closed} ✗`);
-  }
-
-  return metricItems;
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="flex items-center gap-1 text-gray-600">
+        <AlertCircle size={12} />
+        {summary.total}
+      </span>
+      {summary.processing > 0 && (
+        <span className="flex items-center gap-1 text-blue-600" title="Processing">
+          <Play size={12} />
+          {summary.processing}
+        </span>
+      )}
+      {summary.pending > 0 && (
+        <span className="flex items-center gap-1 text-yellow-600" title="Pending">
+          <Clock size={12} />
+          {summary.pending}
+        </span>
+      )}
+      {summary.merged > 0 && (
+        <span className="flex items-center gap-1 text-green-600" title="Merged">
+          <GitPullRequest size={12} />
+          {summary.merged}
+        </span>
+      )}
+      {summary.closed > 0 && (
+        <span className="flex items-center gap-1 text-red-600" title="Closed">
+          <XCircle size={12} />
+          {summary.closed}
+        </span>
+      )}
+    </div>
+  );
 };
 
 /**
  * Renders the unified Status Strip combining issue metrics, status, and time
- * Format: "3 Issues  •  3 ✓  •  Merged  •  2 hours ago"
  */
 export const renderStatusStrip = (
   summary: IssueSummary | null | undefined,
   effectiveStatus: string,
   updatedAt: string
 ): React.ReactNode => {
-  const stripItems: string[] = [];
-
-  // Add issue metrics if available
-  const metrics = renderIssueSummary(summary);
-  if (metrics && Array.isArray(metrics)) {
-    stripItems.push(...metrics);
-  }
-
-  // Add status label
-  stripItems.push(getStatusLabel(effectiveStatus));
-
-  // Add relative time
-  stripItems.push(formatRelativeTime(updatedAt));
-
   return (
-    <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-600 rounded">
-      {stripItems.join('  •  ')}
-    </span>
+    <div className="flex items-center gap-3">
+      {/* Issue summary with colorful icons */}
+      {renderIssueSummary(summary)}
+      {/* Status badge */}
+      <span className={`px-2 inline-flex items-center gap-1 text-xs leading-5 font-semibold rounded-full ${getStatusBadge(effectiveStatus)}`}>
+        {getStatusIcon(effectiveStatus)}
+        {getStatusLabel(effectiveStatus)}
+      </span>
+      {/* Relative time */}
+      <span className="text-xs text-gray-500">
+        {formatRelativeTime(updatedAt)}
+      </span>
+    </div>
   );
 };
