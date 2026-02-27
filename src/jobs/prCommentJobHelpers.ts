@@ -1,15 +1,15 @@
-import { logger } from '@gitfix/core';
+import { logger } from '@propr/core';
 import type { Logger } from 'pino';
 import fs from 'fs-extra';
 import type { Redis } from 'ioredis';
-import { TaskStates } from '@gitfix/core';
-import type { WorkerStateManager } from '@gitfix/core';
-import { db } from '@gitfix/core';
-import { filterCommentByAuthor } from '@gitfix/core';
-import type { UnprocessedComment, CommentJobData } from '@gitfix/core';
-import type { ClaudeCodeResponse } from '@gitfix/core';
-import type { CommitResult } from '@gitfix/core';
-import type { IssueRef } from '@gitfix/core';
+import { TaskStates } from '@propr/core';
+import type { WorkerStateManager } from '@propr/core';
+import { db } from '@propr/core';
+import { filterCommentByAuthor } from '@propr/core';
+import type { UnprocessedComment, CommentJobData } from '@propr/core';
+import type { ClaudeCodeResponse } from '@propr/core';
+import type { CommitResult } from '@propr/core';
+import type { IssueRef } from '@propr/core';
 import { buildMetricsSection } from './prCommentJobUtils.js';
 
 interface ValidationComment {

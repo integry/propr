@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 
-import { getAuthenticatedOctokit } from '@gitfix/core';
-import { logger } from '@gitfix/core';
+import { getAuthenticatedOctokit } from '@propr/core';
+import { logger } from '@propr/core';
 
 const AI_PROCESSING_TAG = process.env.AI_PROCESSING_TAG || 'AI-processing';
 const AI_DONE_TAG = process.env.AI_DONE_TAG || 'AI-done';

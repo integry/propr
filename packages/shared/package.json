@@ -1,7 +1,7 @@
 {
-  "name": "@gitfix/shared",
+  "name": "@propr/shared",
   "version": "1.0.0",
-  "description": "Shared constants and type definitions for GitFix",
+  "description": "Shared constants and type definitions for ProPR",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -1,7 +1,7 @@
 import { test, mock, beforeEach, afterEach, after } from 'node:test';
 import assert from 'node:assert';
-import { AgentRegistry, ClaudeAgent } from '@gitfix/core';
-import type { AgentConfig } from '@gitfix/core';
+import { AgentRegistry, ClaudeAgent } from '@propr/core';
+import type { AgentConfig } from '@propr/core';
 
 // Test if just the cleanup causes hanging
 test('Simple cleanup test', async () => {
@@ -201,7 +201,7 @@ test.skip('Agent Interface Contract', async (t) => {
 // Cleanup after all tests - force exit due to module-level initialization issue
 after(async () => {
     console.log('Tests completed. Forcing exit due to module-level connection initialization.');
-    // This is a workaround for the hanging issue caused by @gitfix/core module-level initialization
+    // This is a workaround for the hanging issue caused by @propr/core module-level initialization
     // The connections are properly closed, but Node.js doesn't exit due to active handles from module initialization
     process.exit(0);
 });

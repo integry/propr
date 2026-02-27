@@ -1,21 +1,21 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { logger } from '@gitfix/core';
-import { getAuthenticatedOctokit } from '@gitfix/core';
-import { withRetry, retryConfigs } from '@gitfix/core';
-import { getStateManager, TaskStates } from '@gitfix/core';
-import type { WorkerStateManager } from '@gitfix/core';
-import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitChanges, pushBranch } from '@gitfix/core';
-import type { WorktreeInfo } from '@gitfix/core';
-import { ensureGitRepository } from '@gitfix/core';
-import { createLogFiles } from '@gitfix/core';
-import { UsageLimitError, generateTaskSummary, AgentRegistry, resolveLlmLabel } from '@gitfix/core';
-import type { ClaudeCodeResponse } from '@gitfix/core';
-import { recordLLMMetrics } from '@gitfix/core';
-import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@gitfix/core';
+import { logger } from '@propr/core';
+import { getAuthenticatedOctokit } from '@propr/core';
+import { withRetry, retryConfigs } from '@propr/core';
+import { getStateManager, TaskStates } from '@propr/core';
+import type { WorkerStateManager } from '@propr/core';
+import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, commitChanges, pushBranch } from '@propr/core';
+import type { WorktreeInfo } from '@propr/core';
+import { ensureGitRepository } from '@propr/core';
+import { createLogFiles } from '@propr/core';
+import { UsageLimitError, generateTaskSummary, AgentRegistry, resolveLlmLabel } from '@propr/core';
+import type { ClaudeCodeResponse } from '@propr/core';
+import { recordLLMMetrics } from '@propr/core';
+import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, loadSettings, db } from '@gitfix/core';
-import { loadPrLabel } from '@gitfix/core';
+import { getDefaultModel, loadSettings, db } from '@propr/core';
+import { loadPrLabel } from '@propr/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
     buildCommentHistory, createSessionIdCallbackForPR, createContainerIdCallbackForPR, updateTaskTitleForPR, buildCompletionComment

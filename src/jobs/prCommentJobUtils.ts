@@ -1,20 +1,20 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { generateCorrelationId } from '@gitfix/core';
-import { handleError } from '@gitfix/core';
-import { getAuthenticatedOctokit } from '@gitfix/core';
-import { cleanupWorktree } from '@gitfix/core';
-import type { WorktreeInfo } from '@gitfix/core';
-import { formatResetTime } from '@gitfix/core';
-import type { ClaudeCodeResponse, AgentExecutionResult } from '@gitfix/core';
-import type { ClaudeResult } from '@gitfix/core';
-import { recordLLMMetrics, getDetailedUsageStats, calculateCostWithCachePricing } from '@gitfix/core';
-import type { DetailedUsageStats } from '@gitfix/core';
-import { issueQueue, type CommentJobData, type UnprocessedComment } from '@gitfix/core';
-import { TaskStates } from '@gitfix/core';
-import type { WorkerStateManager } from '@gitfix/core';
-import { getDefaultModel, resolveModelAlias, getModelName, getModelPricing, getOpenRouterId } from '@gitfix/core';
-import { getPendingPrCommentsKey } from '@gitfix/core';
+import { generateCorrelationId } from '@propr/core';
+import { handleError } from '@propr/core';
+import { getAuthenticatedOctokit } from '@propr/core';
+import { cleanupWorktree } from '@propr/core';
+import type { WorktreeInfo } from '@propr/core';
+import { formatResetTime } from '@propr/core';
+import type { ClaudeCodeResponse, AgentExecutionResult } from '@propr/core';
+import type { ClaudeResult } from '@propr/core';
+import { recordLLMMetrics, getDetailedUsageStats, calculateCostWithCachePricing } from '@propr/core';
+import type { DetailedUsageStats } from '@propr/core';
+import { issueQueue, type CommentJobData, type UnprocessedComment } from '@propr/core';
+import { TaskStates } from '@propr/core';
+import type { WorkerStateManager } from '@propr/core';
+import { getDefaultModel, resolveModelAlias, getModelName, getModelPricing, getOpenRouterId } from '@propr/core';
+import { getPendingPrCommentsKey } from '@propr/core';
 import type { Redis } from 'ioredis';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {

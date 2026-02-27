@@ -4,7 +4,7 @@ import FileTree from './FileTree';
 import DiffViewer from './DiffViewer';
 import { FileChange, FileChangesResponse, getFileChanges } from '../../api/fileChangesApi';
 import { useSocket } from '../../contexts/useSocket';
-import { TaskUpdatePayload } from '@gitfix/shared';
+import { TaskUpdatePayload } from '@propr/shared';
 
 interface LiveFileChangesProps {
   taskId: string;

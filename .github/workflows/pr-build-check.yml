@@ -100,7 +100,7 @@ jobs:
             echo -e "\n--- UI: Lint & Build ---" >> build_log.txt
             UI_FAILED=0
 
-            # Install root dependencies (needed for workspace resolution of @gitfix/shared)
+            # Install root dependencies (needed for workspace resolution of @propr/shared)
             INSTALL_OUTPUT=$(npm ci 2>&1) || {
               echo "❌ Root Dependency Install FAILED" >> build_log.txt
               echo "$INSTALL_OUTPUT" | tail -50 >> build_log.txt
@@ -109,9 +109,9 @@ jobs:
             }
 
             if [ $UI_FAILED -eq 0 ]; then
-              # Build @gitfix/shared first (UI depends on it)
-              echo "Building @gitfix/shared (dependency)..."
-              BUILD_OUTPUT=$(npm run build -w @gitfix/shared 2>&1) || {
+              # Build @propr/shared first (UI depends on it)
+              echo "Building @propr/shared (dependency)..."
+              BUILD_OUTPUT=$(npm run build -w @propr/shared 2>&1) || {
                 echo "❌ Shared Package Build FAILED (UI dependency)" >> build_log.txt
                 echo "$BUILD_OUTPUT" >> build_log.txt
                 UI_FAILED=1
@@ -196,9 +196,9 @@ jobs:
             }
 
             if [ $CORE_PKG_FAILED -eq 0 ]; then
-              # Build @gitfix/shared first (core depends on it)
-              echo "Building @gitfix/shared (dependency)..."
-              BUILD_OUTPUT=$(npm run build -w @gitfix/shared 2>&1) || {
+              # Build @propr/shared first (core depends on it)
+              echo "Building @propr/shared (dependency)..."
+              BUILD_OUTPUT=$(npm run build -w @propr/shared 2>&1) || {
                 echo "❌ Shared Package Build FAILED (core dependency)" >> build_log.txt
                 echo "$BUILD_OUTPUT" >> build_log.txt
                 CORE_PKG_FAILED=1
@@ -208,8 +208,8 @@ jobs:
 
             if [ $CORE_PKG_FAILED -eq 0 ]; then
               # 1. Build Verification
-              echo "Building @gitfix/core..."
-              BUILD_OUTPUT=$(npm run build -w @gitfix/core 2>&1) || {
+              echo "Building @propr/core..."
+              BUILD_OUTPUT=$(npm run build -w @propr/core 2>&1) || {
                 echo "❌ Core Package Build FAILED" >> build_log.txt
                 echo "$BUILD_OUTPUT" >> build_log.txt
                 CORE_PKG_FAILED=1
@@ -222,8 +222,8 @@ jobs:
 
             if [ $CORE_PKG_FAILED -eq 0 ]; then
               # 2. Lint Verification
-              echo "Linting @gitfix/core..."
-              LINT_OUTPUT=$(npm run lint -w @gitfix/core -- --max-warnings 0 2>&1) || {
+              echo "Linting @propr/core..."
+              LINT_OUTPUT=$(npm run lint -w @propr/core -- --max-warnings 0 2>&1) || {
                 echo "❌ Core Package Lint FAILED" >> build_log.txt
                 echo "$LINT_OUTPUT" >> build_log.txt
                 CORE_PKG_FAILED=1
@@ -249,9 +249,9 @@ jobs:
             }
 
             if [ $DASHBOARD_FAILED -eq 0 ]; then
-              # Build @gitfix/shared first (core and dashboard depend on it)
-              echo "Building @gitfix/shared (dependency)..."
-              BUILD_OUTPUT=$(npm run build -w @gitfix/shared 2>&1) || {
+              # Build @propr/shared first (core and dashboard depend on it)
+              echo "Building @propr/shared (dependency)..."
+              BUILD_OUTPUT=$(npm run build -w @propr/shared 2>&1) || {
                 echo "❌ Shared Package Build FAILED (dashboard dependency)" >> build_log.txt
                 echo "$BUILD_OUTPUT" >> build_log.txt
                 DASHBOARD_FAILED=1
@@ -260,9 +260,9 @@ jobs:
             fi
 
             if [ $DASHBOARD_FAILED -eq 0 ]; then
-              # 1. Build @gitfix/core first (dashboard depends on it)
-              echo "Building @gitfix/core (dependency)..."
-              BUILD_OUTPUT=$(npm run build -w @gitfix/core 2>&1) || {
+              # 1. Build @propr/core first (dashboard depends on it)
+              echo "Building @propr/core (dependency)..."
+              BUILD_OUTPUT=$(npm run build -w @propr/core 2>&1) || {
                 echo "❌ Core Package Build FAILED (dashboard dependency)" >> build_log.txt
                 echo "$BUILD_OUTPUT" >> build_log.txt
                 DASHBOARD_FAILED=1
@@ -272,8 +272,8 @@ jobs:
 
             if [ $DASHBOARD_FAILED -eq 0 ]; then
               # 2. Build Verification
-              echo "Building @gitfix/dashboard-api..."
-              BUILD_OUTPUT=$(npm run build -w @gitfix/dashboard-api 2>&1) || {
+              echo "Building @propr/dashboard..."
+              BUILD_OUTPUT=$(npm run build -w @propr/dashboard 2>&1) || {
                 echo "❌ Dashboard Build FAILED" >> build_log.txt
                 echo "$BUILD_OUTPUT" >> build_log.txt
                 DASHBOARD_FAILED=1
@@ -286,8 +286,8 @@ jobs:
 
             if [ $DASHBOARD_FAILED -eq 0 ]; then
               # 3. Lint Verification
-              echo "Linting @gitfix/dashboard-api..."
-              LINT_OUTPUT=$(npm run lint -w @gitfix/dashboard-api -- --max-warnings 0 2>&1) || {
+              echo "Linting @propr/dashboard..."
+              LINT_OUTPUT=$(npm run lint -w @propr/dashboard -- --max-warnings 0 2>&1) || {
                 echo "❌ Dashboard Lint FAILED" >> build_log.txt
                 echo "$LINT_OUTPUT" >> build_log.txt
                 DASHBOARD_FAILED=1

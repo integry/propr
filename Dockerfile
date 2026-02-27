@@ -25,10 +25,10 @@ RUN npm install
 
 COPY . .
 
-# Build shared package first (required for @gitfix/shared imports)
+# Build shared package first (required for @propr/shared imports)
 RUN cd packages/shared && npm run build
 
-# Build core package (required for @gitfix/core imports)
+# Build core package (required for @propr/core imports)
 RUN cd packages/core && npm run build
 
 # Build TypeScript to JavaScript

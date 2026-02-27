@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { execSync } from 'child_process';
-import { stopDockerContainer, getStateManager } from '@gitfix/core';
+import { stopDockerContainer, getStateManager } from '@propr/core';
 
 interface DockerRoutesDeps {
   redisClient: RedisClientType;

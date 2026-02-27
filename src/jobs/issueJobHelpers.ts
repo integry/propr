@@ -9,9 +9,9 @@ import {
     issueQueue,
     db,
     getModelShortName
-} from '@gitfix/core';
+} from '@propr/core';
 export { localizeContentImages, cleanupIssueAssets, type LocalizeContentImagesOptions } from './contentUtils.js';
-import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, CommitResult, RepoValidationResult } from '@gitfix/core';
+import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, CommitResult, RepoValidationResult } from '@propr/core';
 
 function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {

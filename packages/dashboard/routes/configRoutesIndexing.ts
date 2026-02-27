@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
-import * as configManager from '@gitfix/core';
+import * as configManager from '@propr/core';
 import { queueResummarizationForAllRepos, queueIndexingJob, scheduleDelayedReindex, cancelDelayedReindex, stopIndexingJob } from './configHelpers.js';
 
 interface IndexingRoutesDeps {

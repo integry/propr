@@ -1,8 +1,8 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Queue } from 'bullmq';
-import { generateCorrelationId, getAuthenticatedOctokit, issueQueue, COMMENT_BATCH_DELAY_MS } from '@gitfix/core';
-import type { SystemTaskJobData, CommentJobData, UnprocessedComment } from '@gitfix/core';
+import { generateCorrelationId, getAuthenticatedOctokit, issueQueue, COMMENT_BATCH_DELAY_MS } from '@propr/core';
+import type { SystemTaskJobData, CommentJobData, UnprocessedComment } from '@propr/core';
 import { getTasksFromDb } from './taskHelpers.js';
 
 interface TaskRoutesDeps {

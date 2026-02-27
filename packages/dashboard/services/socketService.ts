@@ -10,7 +10,7 @@ import {
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type IndexingUpdatePayload
-} from '@gitfix/shared';
+} from '@propr/shared';
 
 /** CORS origin validation function type compatible with Socket.IO */
 type CorsOriginCallback = (err: Error | null, allow?: boolean) => void;

@@ -1,7 +1,7 @@
 {
-  "name": "@gitfix/core",
+  "name": "@propr/core",
   "version": "1.0.0",
-  "description": "Shared utilities and modules for GitFix",
+  "description": "Shared utilities and modules for ProPR",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@gitfix/shared": "*",
+    "@propr/shared": "*",
     "@octokit/auth-app": "^8.0.1",
     "@octokit/core": "^7.0.2",
     "@octokit/plugin-paginate-rest": "^13.1.1",

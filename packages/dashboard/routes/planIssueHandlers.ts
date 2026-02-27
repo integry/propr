@@ -9,8 +9,8 @@ import {
   getAuthenticatedOctokit,
   safeUpdateLabels,
   logger
-} from '@gitfix/core';
-import type { PlanIssueStatus } from '@gitfix/core';
+} from '@propr/core';
+import type { PlanIssueStatus } from '@propr/core';
 import type { OwnershipResult } from './plannerHelpers.js';
 import {
   getLlmLabel,

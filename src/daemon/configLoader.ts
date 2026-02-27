@@ -12,4 +12,4 @@ export {
     loadPrimaryProcessingLabelsFromConfig,
     loadAllConfigs,
     reloadConfigs
-} from '@gitfix/core';
+} from '@propr/core';

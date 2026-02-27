@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { db } from '@gitfix/core';
+import { db } from '@propr/core';
 
 interface SummaryEntry {
   name: string;

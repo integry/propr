@@ -1,6 +1,6 @@
 import { createContext } from 'react';
 import { Socket } from 'socket.io-client';
-import { TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload } from '@gitfix/shared';
+import { TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload } from '@propr/shared';
 
 export interface SocketContextValue {
   socket: Socket | null;

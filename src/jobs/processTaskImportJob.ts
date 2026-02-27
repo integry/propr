@@ -1,23 +1,23 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { logger } from '@gitfix/core';
-import { getAuthenticatedOctokit } from '@gitfix/core';
-import { withRetry, retryConfigs } from '@gitfix/core';
-import { getStateManager, TaskStates } from '@gitfix/core';
+import { logger } from '@propr/core';
+import { getAuthenticatedOctokit } from '@propr/core';
+import { withRetry, retryConfigs } from '@propr/core';
+import { getStateManager, TaskStates } from '@propr/core';
 import {
     createWorktreeForIssue,
     cleanupWorktree,
     getRepoUrl,
     ensureRepoCloned
-} from '@gitfix/core';
-import type { WorktreeInfo } from '@gitfix/core';
-import { ensureGitRepository } from '@gitfix/core';
-import { executeClaudeCode, UsageLimitError } from '@gitfix/core';
-import type { ClaudeCodeResponse } from '@gitfix/core';
-import { generateTaskImportPrompt } from '@gitfix/core';
-import { handleError } from '@gitfix/core';
+} from '@propr/core';
+import type { WorktreeInfo } from '@propr/core';
+import { ensureGitRepository } from '@propr/core';
+import { executeClaudeCode, UsageLimitError } from '@propr/core';
+import type { ClaudeCodeResponse } from '@propr/core';
+import { generateTaskImportPrompt } from '@propr/core';
+import { handleError } from '@propr/core';
 import { handleSimpleUsageLimitError } from './issueJobHelpers.js';
-import type { TaskImportJobData, JobResult } from '@gitfix/core';
+import type { TaskImportJobData, JobResult } from '@propr/core';
 
 interface GitHubToken {
     token: string;

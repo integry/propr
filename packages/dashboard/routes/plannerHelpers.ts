@@ -10,9 +10,9 @@ import {
   BranchNotFoundError,
   AttachmentService,
   loadSettings
-} from '@gitfix/core';
+} from '@propr/core';
 import { Knex as KnexType } from 'knex';
-import type { Granularity, MulterFile } from '@gitfix/core';
+import type { Granularity, MulterFile } from '@propr/core';
 
 // Re-export plan issue handlers from separate module
 export {

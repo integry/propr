@@ -15,7 +15,7 @@ import {
 } from './types';
 import { useToast } from '../ui/useToast';
 import { useSocket } from '../../contexts/useSocket';
-import { TaskUpdatePayload } from '@gitfix/shared';
+import { TaskUpdatePayload } from '@propr/shared';
 
 export const useTaskData = (taskId: string | undefined) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);

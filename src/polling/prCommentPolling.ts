@@ -1,9 +1,9 @@
-import { logger } from '@gitfix/core';
-import { generateCorrelationId } from '@gitfix/core';
-import { handleError } from '@gitfix/core';
-import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '@gitfix/core';
-import { filterCommentByAuthor, checkCommentTrigger } from '@gitfix/core';
-import { resolveModelAlias } from '@gitfix/core';
+import { logger } from '@propr/core';
+import { generateCorrelationId } from '@propr/core';
+import { handleError } from '@propr/core';
+import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '@propr/core';
+import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
+import { resolveModelAlias } from '@propr/core';
 import type { Redis } from 'ioredis';
 
 type Octokit = {

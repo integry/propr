@@ -21,7 +21,7 @@ COPY config ./config
 # Install all dependencies (including linking workspaces)
 RUN npm ci
 
-# Build shared first (required for @gitfix/shared imports)
+# Build shared first (required for @propr/shared imports)
 WORKDIR /app/packages/shared
 RUN npm run build
 

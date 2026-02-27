@@ -1,7 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'assert';
 import Redis from 'ioredis';
-import { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } from '@gitfix/core';
+import { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } from '@propr/core';
 
 interface ClaudeResultLike {
     success: boolean;
@@ -201,7 +201,7 @@ describe('LLM Metrics Tests', () => {
     });
 });
 
-// Force exit due to module-level initialization in @gitfix/core
+// Force exit due to module-level initialization in @propr/core
 after(() => {
     process.exit(0);
 });

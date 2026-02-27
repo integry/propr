@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert';
-import { getGitHubInstallationToken, getAuthenticatedOctokit } from '@gitfix/core';
+import { getGitHubInstallationToken, getAuthenticatedOctokit } from '@propr/core';
 
 test('GitHub authentication module exports required functions', () => {
     assert.strictEqual(typeof getGitHubInstallationToken, 'function');
@@ -23,7 +23,7 @@ test('GitHub authentication fails without credentials', async (t) => {
     }
 });
 
-// Force exit due to module-level initialization in @gitfix/core
+// Force exit due to module-level initialization in @propr/core
 after(() => {
     process.exit(0);
 });

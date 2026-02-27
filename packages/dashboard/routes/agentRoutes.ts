@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getAgentRegistry } from '@gitfix/core';
+import { getAgentRegistry } from '@propr/core';
 
 interface AgentChatQuery {
   agentId: string;
