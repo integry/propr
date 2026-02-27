@@ -209,7 +209,7 @@ const PlansPage: React.FC = () => {
         <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
           <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
         </div>
-        <div className="flex-1 overflow-auto p-6">
+        <div className="flex-1 overflow-auto px-6 py-6">
           <div className="text-gray-500">Loading plans...</div>
         </div>
       </div>
@@ -222,7 +222,7 @@ const PlansPage: React.FC = () => {
         <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
           <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
         </div>
-        <div className="flex-1 overflow-auto p-6">
+        <div className="flex-1 overflow-auto px-6 py-6">
           <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
         </div>
       </div>
@@ -333,8 +333,8 @@ const PlansPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-auto p-6">
+      {/* Scrollable Content Area - no outer padding so rows touch edges */}
+      <div className="flex-1 overflow-auto">
         {renderContent()}
       </div>
 

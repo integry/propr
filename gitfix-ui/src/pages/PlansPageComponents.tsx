@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Filter, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, Filter, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
 import { DraftListItem } from '../api/gitfixApi';
 import {
   getEffectiveStatus,
@@ -24,7 +24,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 }) => {
   if (type === 'no-plans') {
     return (
-      <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+      <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
         <div className="mb-4">
           <svg className="w-16 h-16 mx-auto text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -43,7 +43,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 
   if (type === 'no-search-results') {
     return (
-      <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+      <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
         <div className="mb-4">
           <Search className="w-16 h-16 mx-auto text-gray-400" />
         </div>
@@ -59,7 +59,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   }
 
   return (
-    <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+    <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
       <div className="mb-4">
         <Filter className="w-16 h-16 mx-auto text-gray-400" />
       </div>
@@ -90,16 +90,21 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
   const effectiveStatus = getEffectiveStatus(draft.status, draft.issue_summary);
 
   return (
-    <tr className="hover:bg-gray-50 group">
-      {/* Main content cell - spans the content area */}
-      <td className="px-6 py-3">
+    <tr className="hover:bg-gray-50 group border-b border-slate-100">
+      {/* Repository column - fixed width for scanning axis alignment */}
+      <td className="px-6 py-3 w-[180px] min-w-[180px] max-w-[180px]">
         <Link to={`/studio/${draft.draft_id}`} className="block">
-          {/* Top line: Repo Chip + Title */}
-          <div className="flex items-center gap-2 mb-1">
-            <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded">
-              {draft.repository}
-            </span>
-            <span className="text-sm font-medium text-gray-900 truncate">
+          <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
+            {draft.repository}
+          </span>
+        </Link>
+      </td>
+      {/* Plan title and status cell */}
+      <td className="px-4 py-3">
+        <Link to={`/studio/${draft.draft_id}`} className="block">
+          {/* Plan Title */}
+          <div className="mb-1">
+            <span className="text-sm font-medium text-gray-900">
               {draft.name || draft.initial_prompt}
             </span>
           </div>
@@ -109,15 +114,17 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           </div>
         </Link>
       </td>
-      {/* Actions cell */}
-      <td className="px-6 py-3 whitespace-nowrap text-right text-sm font-medium">
+      {/* Actions cell - right-aligned with consistent width */}
+      <td className="px-6 py-3 whitespace-nowrap text-right text-sm font-medium w-[140px]">
         <div className="flex items-center justify-end gap-2">
-          <Link
-            to={`/studio/${draft.draft_id}`}
-            className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
+          {/* Ghost Delete button - icon only, gray, turns red on hover */}
+          <button
+            onClick={(e) => onDelete(draft.draft_id, e)}
+            className="inline-flex items-center justify-center w-8 h-8 text-gray-400 bg-transparent rounded-md hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+            title="Delete"
           >
-            {effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
-          </Link>
+            <Trash2 size={16} />
+          </button>
           {draft.status === 'generating' && (
             <button
               onClick={(e) => onAbort(draft.draft_id, e)}
@@ -127,12 +134,13 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
               {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
             </button>
           )}
-          <button
-            onClick={(e) => onDelete(draft.draft_id, e)}
-            className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-gray-500 bg-transparent rounded-md hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+          {/* Primary action button */}
+          <Link
+            to={`/studio/${draft.draft_id}`}
+            className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
           >
-            Delete
-          </button>
+            {effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
+          </Link>
         </div>
       </td>
     </tr>
@@ -204,20 +212,17 @@ export const PlansTable: React.FC<PlansTableProps> = ({
   onAbort
 }) => {
   return (
-    <div className="flex flex-col h-full bg-white shadow rounded-lg overflow-hidden">
+    <div className="flex flex-col h-full bg-white">
       <div className="flex-1 overflow-auto">
-        <table className="min-w-full divide-y divide-slate-100">
-          <thead className="bg-gray-50 sticky top-0">
+        <table className="min-w-full">
+          <thead className="sr-only">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Plan
-              </th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Actions
-              </th>
+              <th>Repository</th>
+              <th>Plan</th>
+              <th>Actions</th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-slate-100">
+          <tbody className="bg-white">
             {drafts.map((draft) => (
               <PlansTableRow
                 key={draft.draft_id}

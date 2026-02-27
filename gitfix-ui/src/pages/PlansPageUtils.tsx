@@ -35,10 +35,11 @@ export const formatRelativeTime = (dateString: string): string => {
 export const getStatusBadge = (status: string): string => {
   switch (status) {
     case 'merged':
-      // Quiet Success: no background, just gray text - recedes into background
-      return 'text-gray-500';
+      // Quiet Success: Medium gray text, recedes into background
+      return 'text-slate-500';
     case 'executed':
-      return 'bg-green-100 text-green-800';
+      // Active Teal: Brand color for "Issues Created" - should be the "light" on the row
+      return 'bg-teal-100 text-teal-700';
     case 'pr_created':
       return 'bg-cyan-100 text-cyan-800';
     case 'review':
@@ -81,7 +82,8 @@ export const getStatusIcon = (status: string): React.ReactNode => {
       // Quiet Success: no icon, checkmark is in the label
       return null;
     case 'executed':
-      return <CheckCircle size={12} className="text-green-600" />;
+      // Active Teal icon to match the badge
+      return <CheckCircle size={12} className="text-teal-600" />;
     case 'pr_created':
       return <GitPullRequestArrow size={12} className="text-cyan-600" />;
     case 'review':
@@ -99,36 +101,37 @@ export const getStatusIcon = (status: string): React.ReactNode => {
 
 export const renderIssueSummary = (summary: IssueSummary | null | undefined): React.ReactNode => {
   if (!summary || summary.total === 0) {
-    return <span className="text-gray-400 text-sm">No issues</span>;
+    return <span className="text-gray-400 text-xs">No issues</span>;
   }
 
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="flex items-center gap-1 text-gray-600">
-        <AlertCircle size={12} />
+    <div className="flex items-center gap-1.5 text-xs">
+      {/* Total issues - grouped tightly */}
+      <span className="flex items-center gap-0.5 text-gray-500">
+        <AlertCircle size={11} />
         {summary.total}
       </span>
       {summary.processing > 0 && (
-        <span className="flex items-center gap-1 text-blue-600" title="Processing">
-          <Play size={12} />
+        <span className="flex items-center gap-0.5 text-blue-600" title="Processing">
+          <Play size={11} />
           {summary.processing}
         </span>
       )}
       {summary.pending > 0 && (
-        <span className="flex items-center gap-1 text-yellow-600" title="Pending">
-          <Clock size={12} />
+        <span className="flex items-center gap-0.5 text-yellow-600" title="Pending">
+          <Clock size={11} />
           {summary.pending}
         </span>
       )}
       {summary.merged > 0 && (
-        <span className="flex items-center gap-1 text-green-600" title="Merged">
-          <GitPullRequest size={12} />
+        <span className="flex items-center gap-0.5 text-slate-500" title="Merged">
+          <GitMerge size={11} />
           {summary.merged}
         </span>
       )}
       {summary.closed > 0 && (
-        <span className="flex items-center gap-1 text-red-600" title="Closed">
-          <XCircle size={12} />
+        <span className="flex items-center gap-0.5 text-red-600" title="Closed">
+          <XCircle size={11} />
           {summary.closed}
         </span>
       )}
@@ -145,16 +148,20 @@ export const renderStatusStrip = (
   updatedAt: string
 ): React.ReactNode => {
   return (
-    <div className="flex items-center gap-3">
-      {/* Issue summary with colorful icons */}
+    <div className="flex items-center gap-2.5">
+      {/* Issue summary - grouped tightly */}
       {renderIssueSummary(summary)}
+      {/* Separator dot */}
+      <span className="text-slate-300">•</span>
       {/* Status badge */}
-      <span className={`px-2 inline-flex items-center gap-1 text-xs leading-5 font-semibold rounded-full ${getStatusBadge(effectiveStatus)}`}>
+      <span className={`px-2 py-0.5 inline-flex items-center gap-1 text-xs leading-5 font-medium rounded-full ${getStatusBadge(effectiveStatus)}`}>
         {getStatusIcon(effectiveStatus)}
         {getStatusLabel(effectiveStatus)}
       </span>
+      {/* Separator dot */}
+      <span className="text-slate-300">•</span>
       {/* Relative time */}
-      <span className="text-xs text-gray-500">
+      <span className="text-xs text-slate-400">
         {formatRelativeTime(updatedAt)}
       </span>
     </div>
