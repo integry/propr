@@ -37,7 +37,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         <p className="text-gray-500 mb-4">No plans found. Create your first plan!</p>
         <button
           onClick={onCreatePlan}
-          className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+          className="inline-block px-4 py-2 bg-teal-600 text-white rounded-md hover:bg-teal-700 transition-colors"
         >
           Create Your First Plan
         </button>
@@ -54,7 +54,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         <p className="text-gray-500 mb-4">No plans found matching "{searchQuery}"</p>
         <button
           onClick={onClearSearch}
-          className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+          className="inline-block px-4 py-2 bg-teal-600 text-white rounded-md hover:bg-teal-700 transition-colors"
         >
           Clear Search
         </button>
@@ -70,7 +70,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
       <p className="text-gray-500 mb-4">No plans found for the selected repository.</p>
       <button
         onClick={onClearFilter}
-        className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+        className="inline-block px-4 py-2 bg-teal-600 text-white rounded-md hover:bg-teal-700 transition-colors"
       >
         Show All Plans
       </button>
@@ -164,7 +164,7 @@ export const PaginationControls: React.FC<PaginationControlsProps> = ({
   if (totalPages <= 1) return null;
 
   return (
-    <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-50">
+    <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-slate-50">
       <span className="text-sm text-gray-600">
         Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, totalDrafts)} of {totalDrafts} plans
       </span>
@@ -221,39 +221,41 @@ export const PlansTable: React.FC<PlansTableProps> = ({
   onPageChange
 }) => {
   return (
-    <div className="bg-white shadow rounded-lg overflow-hidden">
-      <table className="min-w-full divide-y divide-gray-200">
-        <thead className="bg-gray-50">
-          <tr>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Repository / Prompt
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Status
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Issues
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Last Updated
-            </th>
-            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Actions
-            </th>
-          </tr>
-        </thead>
-        <tbody className="bg-white divide-y divide-gray-200">
-          {drafts.map((draft) => (
-            <PlansTableRow
-              key={draft.draft_id}
-              draft={draft}
-              abortingId={abortingId}
-              onDelete={onDelete}
-              onAbort={onAbort}
-            />
-          ))}
-        </tbody>
-      </table>
+    <div className="flex flex-col h-full bg-white shadow rounded-lg overflow-hidden">
+      <div className="flex-1 overflow-auto">
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead className="bg-gray-50 sticky top-0">
+            <tr>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Repository / Prompt
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Status
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Issues
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Last Updated
+              </th>
+              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Actions
+              </th>
+            </tr>
+          </thead>
+          <tbody className="bg-white divide-y divide-gray-200">
+            {drafts.map((draft) => (
+              <PlansTableRow
+                key={draft.draft_id}
+                draft={draft}
+                abortingId={abortingId}
+                onDelete={onDelete}
+                onAbort={onAbort}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
       <PaginationControls
         currentPage={currentPage}
         totalPages={totalPages}
