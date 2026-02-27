@@ -350,9 +350,11 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   collapsed,
   onToggleCollapse,
   lastThought,
-  isTaskActive,
+  isTaskActive: _isTaskActive,
   taskInfo
 }) => {
+  // Note: isTaskActive is still passed for potential future use (e.g., showing live indicators)
+  void _isTaskActive;
   // Get the last significant message (terminal output or tool result)
   const summaryMessage = useMemo(() => {
     if (events.length === 0) return '';
@@ -406,26 +408,26 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   }
 
   return (
-    <div className="mb-6" id="execution-event-log-section">
+    <div id="execution-event-log-section" className="border-t border-gray-100 pt-4">
       <div
-        className="flex items-center justify-between cursor-pointer p-4 rounded-lg transition-colors border bg-gray-50 border-gray-200 hover:bg-gray-100"
+        className="flex items-center justify-between cursor-pointer py-2 px-3 -mx-3 rounded transition-colors hover:bg-gray-50"
         onClick={onToggleCollapse}
       >
-        <h4 className="text-lg font-semibold flex items-center gap-3 text-gray-900">
-          <span className="text-gray-500">{collapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}</span>
-          <Terminal className="h-5 w-5 text-gray-600" />
-          <span>{isTaskActive ? 'Full Execution Event Log' : 'Execution Event Log'}</span>
-          <span className="text-sm font-normal text-gray-500">({events.length} events)</span>
+        <h4 className="text-sm font-semibold flex items-center gap-2 text-gray-900">
+          <span className="text-gray-400">{collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</span>
+          <Terminal className="h-4 w-4 text-gray-600" />
+          <span>Execution Log</span>
+          <span className="text-xs font-normal text-gray-400">({events.length} events)</span>
         </h4>
         {collapsed && summaryMessage && (
-          <div className="text-sm italic max-w-md truncate text-gray-600">
+          <div className="text-xs italic max-w-[200px] truncate text-gray-500">
             {summaryMessage}
           </div>
         )}
       </div>
 
       {!collapsed && (
-        <div className="mt-4 space-y-4 p-4 bg-white border border-gray-200 rounded-lg">
+        <div className="mt-3 space-y-3">
           {eventsWithDefaults.map(({ event, prevToolUse, defaultCollapsed }, index) => (
             <EventItem
               key={index}

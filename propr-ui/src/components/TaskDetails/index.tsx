@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
+import { ChevronRight } from 'lucide-react';
 import DeepDiveAnalysis from '../DeepDiveAnalysis';
 import { renderMarkdown } from './renderMarkdown';
 import TaskStatusTable from './TaskStatusTable';
@@ -11,7 +12,8 @@ import ExecutionEventLog from './ExecutionEventLog';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
 import FollowupModal from './FollowupModal';
-import MetadataBar from './MetadataBar';
+import ContextStrip from './ContextStrip';
+import ActionBar from './ActionBar';
 import TaskHeader from './TaskHeader';
 import ProgressBar from './ProgressBar';
 import { useTaskData, usePromptData, useLogFilesData } from './hooks';
@@ -212,57 +214,90 @@ const TaskDetails: React.FC = () => {
   }, []);
 
   if (taskData.loading) {
-    return <div className="text-gray-600">Loading task details...</div>;
+    return (
+      <div className="h-screen bg-white flex items-center justify-center">
+        <div className="text-gray-600">Loading task details...</div>
+      </div>
+    );
   }
 
   if (taskData.error) {
-    return <div className="text-red-600">Error loading task details: {taskData.error}</div>;
+    return (
+      <div className="h-screen bg-white flex items-center justify-center">
+        <div className="text-red-600">Error loading task details: {taskData.error}</div>
+      </div>
+    );
   }
 
   if (!taskData.history || taskData.history.length === 0) {
-    return <div className="text-gray-600">No history found for task {taskId}</div>;
+    return (
+      <div className="h-screen bg-white flex items-center justify-center">
+        <div className="text-gray-600">No history found for task {taskId}</div>
+      </div>
+    );
   }
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Sticky Header with Metadata */}
-      <MetadataBar
-        taskInfo={taskData.taskInfo}
-        currentStatus={derivedData.currentStatus}
-        modelName={derivedData.modelName}
-        prInfo={derivedData.prInfo}
-        commitInfo={commitInfo}
-        historyItemWithPaths={derivedData.historyItemWithPaths}
-        stoppingExecution={taskData.stoppingExecution}
-        stopFailed={taskData.stopFailed}
-        onStopExecution={taskData.handleStopExecution}
-        onViewPrompt={promptData.fetchPrompt}
-        onViewLogs={logFilesData.fetchLogFilesData}
-        duration={totalDuration}
-        deletingTask={taskData.deletingTask}
-        onDeleteTask={handleDeleteTask}
-        tokenUsage={tokenUsage}
-        onFollowUp={handleOpenFollowup}
-      />
+    <div className="h-screen flex flex-col bg-white">
+      {/* Fixed Header Shell */}
+      <header className="flex-shrink-0 border-b border-gray-200">
+        {/* Breadcrumb Row with Actions */}
+        <div className="px-4 sm:px-6 py-2 flex items-center justify-between">
+          {/* Left: Breadcrumb */}
+          <nav className="flex items-center text-sm text-gray-500">
+            <Link to="/tasks" className="hover:text-gray-700 transition-colors">
+              Tasks
+            </Link>
+            <ChevronRight size={14} className="mx-1.5 text-gray-400" />
+            <span className="text-gray-900 font-medium truncate max-w-[200px] sm:max-w-[400px]">
+              {taskData.taskInfo?.title || `Task #${taskId}`}
+            </span>
+          </nav>
 
-      {/* Progress Bar */}
-      <ProgressBar todos={taskData.liveDetails.todos} />
+          {/* Right: Actions */}
+          <ActionBar
+            currentStatus={derivedData.currentStatus}
+            historyItemWithPaths={derivedData.historyItemWithPaths}
+            stoppingExecution={taskData.stoppingExecution}
+            stopFailed={taskData.stopFailed}
+            deletingTask={taskData.deletingTask}
+            onStopExecution={taskData.handleStopExecution}
+            onViewPrompt={promptData.fetchPrompt}
+            onViewLogs={logFilesData.fetchLogFilesData}
+            onDeleteTask={handleDeleteTask}
+            onFollowUp={handleOpenFollowup}
+          />
+        </div>
 
-      {/* Main Content */}
-      <div className="max-w-[1600px] mx-auto p-4 sm:p-6">
-        {/* Task Header */}
-        <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
+        {/* Context Strip - Dense metadata line */}
+        <div className="px-4 sm:px-6">
+          <ContextStrip
+            taskInfo={taskData.taskInfo}
+            modelName={derivedData.modelName}
+            prInfo={derivedData.prInfo}
+            commitInfo={commitInfo}
+            duration={totalDuration}
+            tokenUsage={tokenUsage}
+            taskId={taskId}
+          />
+        </div>
 
-        {/* Split-Pane Layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
-          {/* LEFT COLUMN: The Plan (35% - 4/12 cols) */}
-          <div className="lg:col-span-4 space-y-4 sm:space-y-6">
+        {/* Progress Bar */}
+        <ProgressBar todos={taskData.liveDetails.todos} />
+      </header>
+
+      {/* Main Content Area - Anchored Shell with 30/70 Split */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* LEFT PANE (30%) - The Plan */}
+        <div className="w-full lg:w-[30%] flex-shrink-0 overflow-y-auto scrollbar-stealth border-r border-gray-200">
+          <div className="p-4 space-y-4">
+            {/* Task Header */}
+            <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
+
             {/* Compact Status Timeline */}
-            <div className="bg-white rounded-lg shadow-sm">
-              <TaskStatusTable history={taskData.history} compact={true} />
-            </div>
+            <TaskStatusTable history={taskData.history} compact={true} />
 
             {/* Todo List */}
             <TodoList
@@ -271,7 +306,7 @@ const TaskDetails: React.FC = () => {
               onTodoHover={setHighlightedTodoId}
             />
 
-            {/* Live File Changes - in left column under todo list */}
+            {/* Live File Changes */}
             {taskId && taskData.history.length > 0 && (
               <LiveFileChanges
                 taskId={taskId}
@@ -279,9 +314,14 @@ const TaskDetails: React.FC = () => {
               />
             )}
           </div>
+        </div>
 
-          {/* RIGHT COLUMN: The Execution (65% - 8/12 cols) */}
-          <div className="lg:col-span-8 space-y-4 sm:space-y-6">
+        {/* Vertical Divider Line (visible on lg+) */}
+        <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
+
+        {/* RIGHT PANE (70%) - The Execution */}
+        <div className="hidden lg:block flex-1 overflow-y-auto scrollbar-stealth">
+          <div className="p-4 space-y-4">
             {/* Execution Analysis - only show when we have data or are loading */}
             {(taskData.analysis || taskData.analysisLoading) && (
               <DeepDiveAnalysis
@@ -312,7 +352,6 @@ const TaskDetails: React.FC = () => {
             />
           </div>
         </div>
-
       </div>
 
       {/* Modals */}

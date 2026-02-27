@@ -90,67 +90,64 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) =
   };
 
   return (
-    <div className="relative">
-      {/* File Tree Panel - takes full width of left column */}
-      <div className="p-4 bg-purple-50 rounded-lg border border-purple-200">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-3">
-          <h4 className="text-purple-900 flex items-center gap-2 m-0">
-            <GitBranch className="h-5 w-5" />
-            <span className="flex items-center gap-2">
-              {isActive ? 'Live File Changes' : 'File Changes'}
-              {isActive && (
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
-                </span>
-              )}
+    <div className="relative border-t border-gray-100 pt-4">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2 m-0">
+          <GitBranch className="h-4 w-4 text-gray-600" />
+          <span className="flex items-center gap-2">
+            {isActive ? 'File Changes' : 'Files Changed'}
+            {isActive && (
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
+              </span>
+            )}
+          </span>
+        </h4>
+        {fileChanges.length > 0 && (
+          <div className="flex items-center gap-3 text-xs">
+            <span className="text-gray-500">
+              {totals.files} file{totals.files !== 1 ? 's' : ''}
             </span>
-          </h4>
-          {fileChanges.length > 0 && (
-            <div className="flex items-center gap-4 text-sm">
-              <span className="text-gray-600">
-                {totals.files} file{totals.files !== 1 ? 's' : ''}
-              </span>
-              <span className="flex items-center text-green-600 font-mono">
-                <Plus className="h-3 w-3" />
-                {totals.added}
-              </span>
-              <span className="flex items-center text-red-500 font-mono">
-                <Minus className="h-3 w-3" />
-                {totals.removed}
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* Content */}
-        {isLoading && fileChanges.length === 0 ? (
-          <div className="flex items-center gap-2 text-purple-600 py-4">
-            <RefreshCw className="h-4 w-4 animate-spin" />
-            <span>Loading file changes...</span>
-          </div>
-        ) : error ? (
-          <div className="flex items-center gap-2 text-red-600 py-4">
-            <AlertCircle className="h-4 w-4" />
-            <span>{error}</span>
-          </div>
-        ) : fileChanges.length === 0 ? (
-          <div className="text-purple-700 py-2 text-sm italic">
-            {isActive ? 'No file changes yet. Changes will appear here as files are modified.' : 'No files were changed during this task.'}
-          </div>
-        ) : (
-          <div className="bg-white rounded border border-purple-100 overflow-hidden">
-            <FileTree
-              files={fileChanges}
-              selectedFile={selectedFilePath}
-              onSelectFile={handleSelectFile}
-            />
+            <span className="flex items-center text-green-600 font-mono">
+              <Plus className="h-3 w-3" />
+              {totals.added}
+            </span>
+            <span className="flex items-center text-red-500 font-mono">
+              <Minus className="h-3 w-3" />
+              {totals.removed}
+            </span>
           </div>
         )}
       </div>
 
-      {/* Diff Viewer Overlay - absolutely positioned to the right of the file tree */}
+      {/* Content */}
+      {isLoading && fileChanges.length === 0 ? (
+        <div className="flex items-center gap-2 text-gray-500 py-2 text-sm">
+          <RefreshCw className="h-4 w-4 animate-spin" />
+          <span>Loading file changes...</span>
+        </div>
+      ) : error ? (
+        <div className="flex items-center gap-2 text-red-600 py-2 text-sm">
+          <AlertCircle className="h-4 w-4" />
+          <span>{error}</span>
+        </div>
+      ) : fileChanges.length === 0 ? (
+        <div className="text-gray-500 py-2 text-sm italic">
+          {isActive ? 'No file changes yet.' : 'No files were changed.'}
+        </div>
+      ) : (
+        <div className="border border-gray-200 rounded overflow-hidden">
+          <FileTree
+            files={fileChanges}
+            selectedFile={selectedFilePath}
+            onSelectFile={handleSelectFile}
+          />
+        </div>
+      )}
+
+      {/* Diff Viewer Overlay */}
       {selectedFile && (
         <>
           {/* Semi-transparent backdrop */}
@@ -158,8 +155,8 @@ const LiveFileChanges: React.FC<LiveFileChangesProps> = ({ taskId, isActive }) =
             className="fixed inset-0 bg-black/20 z-40"
             onClick={() => setSelectedFilePath(null)}
           />
-          {/* Diff viewer overlay */}
-          <div className="fixed top-20 left-[calc(33.333%+2rem)] right-4 bottom-4 z-50 bg-white rounded-lg shadow-2xl border border-gray-200 overflow-hidden">
+          {/* Diff viewer overlay - adjusted for new 30% left pane */}
+          <div className="fixed top-20 left-[calc(30%+2rem)] right-4 bottom-4 z-50 bg-white rounded-lg shadow-2xl border border-gray-200 overflow-hidden">
             <DiffViewer
               file={selectedFile}
               onClose={() => setSelectedFilePath(null)}

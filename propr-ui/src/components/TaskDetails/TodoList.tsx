@@ -50,13 +50,13 @@ const TodoList: React.FC<TodoListProps> = ({ liveDetails, history, onTodoHover }
   const isTaskActive = !['COMPLETED', 'FAILED'].includes(history[history.length - 1]?.state?.toUpperCase() || '');
 
   return (
-    <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+    <div className="border-t border-gray-100 pt-4">
       {isTaskActive && (
         <>
-          <h4 className="mt-0 text-blue-900 flex items-center gap-2">
-            <span className="text-xl animate-pulse">⚡</span>
+          <h4 className="mt-0 mb-3 text-sm font-semibold text-gray-900 flex items-center gap-2">
+            <span className="text-base">⚡</span>
             <span className="flex items-center gap-2">
-              Live Task Progress
+              Live Progress
               <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
@@ -64,32 +64,37 @@ const TodoList: React.FC<TodoListProps> = ({ liveDetails, history, onTodoHover }
             </span>
           </h4>
           {liveDetails.currentTask && (
-            <p className="mb-4 p-3 bg-blue-100 rounded-md border-l-4 border-blue-500 animate-pulse">
-              <strong className="text-blue-900">Current Task:</strong> {liveDetails.currentTask}
+            <p className="mb-3 p-2 bg-blue-50 rounded text-sm border-l-2 border-blue-500">
+              <strong className="text-blue-800">Current:</strong>{' '}
+              <span className="text-blue-700">{liveDetails.currentTask}</span>
             </p>
           )}
         </>
       )}
-      <h5 className="mt-4 mb-2 text-blue-900">To-do List:</h5>
-      <ul className="list-none pl-0 m-0">
+      {!isTaskActive && (
+        <h4 className="mt-0 mb-3 text-sm font-semibold text-gray-900">
+          To-do List
+        </h4>
+      )}
+      <ul className="list-none pl-0 m-0 space-y-1">
         {liveDetails.todos.map(todo => (
           <li
             key={todo.id}
-            className={`flex items-center mb-2 p-2 rounded transition-colors cursor-pointer hover:bg-blue-100 ${
-              todo.status === 'in_progress' ? 'bg-blue-100' : ''
+            className={`flex items-start gap-2 py-1.5 px-2 rounded text-sm transition-colors cursor-pointer hover:bg-gray-50 ${
+              todo.status === 'in_progress' ? 'bg-blue-50' : ''
             }`}
             onClick={() => scrollToThinkingLog(todo.id, todo.content)}
             onMouseEnter={() => onTodoHover?.(todo.id)}
             onMouseLeave={() => onTodoHover?.(null)}
             title="Click to scroll to related thinking log"
           >
-            <span className="mr-2 text-lg">
+            <span className="flex-shrink-0 text-sm leading-5">
               {todo.status === 'completed' ? '✅' : todo.status === 'in_progress' ? '⏳' : '📋'}
             </span>
-            <span className={`${
-              todo.status === 'completed' ? 'text-gray-500' : 'text-gray-700'
+            <span className={`leading-5 ${
+              todo.status === 'completed' ? 'text-gray-400 line-through' : 'text-gray-700'
             } ${
-              todo.status === 'in_progress' ? 'font-bold text-blue-800' : 'font-normal'
+              todo.status === 'in_progress' ? 'font-medium text-blue-800' : 'font-normal'
             }`}>
               {todo.content}
             </span>
