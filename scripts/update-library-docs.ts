@@ -37,7 +37,7 @@ const EXCLUDED_FILES = new Set([
   'results.md', // Batch operation UI
   'upload.md', // File operation UI
 
-  // Feature-specific (not applicable to Gitfix)
+  // Feature-specific (not applicable to ProPR)
   'claude-for-sheets.md', // Google Sheets add-on
   'completions.md', // Legacy completions API
   'computer-use-tool.md', // Desktop automation tool
@@ -56,7 +56,7 @@ const EXCLUDED_FILES = new Set([
   'tool-search-tool.md', // Tool discovery UI
 
   // Wrong language SDK
-  'python.md', // Python SDK - Gitfix uses TypeScript
+  'python.md', // Python SDK - ProPR uses TypeScript
 
   // User-facing support
   'troubleshooting.md', // Installation and IDE plugin issues
@@ -88,7 +88,7 @@ const EXCLUDED_FILES = new Set([
   'open-source-fund.md', // Marketing/funding
   'zdr.md', // Zero Data Retention policy
 
-  // Platform-specific (Gitfix uses Linux containers)
+  // Platform-specific (ProPR uses Linux containers)
   'platform-sandboxing.md', // Platform-specific sandboxing
   'windows_sandbox_security.md', // Windows-specific, agent runs in Linux
 

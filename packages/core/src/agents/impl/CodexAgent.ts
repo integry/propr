@@ -248,7 +248,7 @@ export class CodexAgent implements Agent {
             }
             if (!fs.existsSync(`${analysisWorkspace}/.git`)) {
                 execSync('git init', { cwd: analysisWorkspace, stdio: 'pipe' });
-                execSync('git config user.email "codex@gitfix.dev"', { cwd: analysisWorkspace, stdio: 'pipe' });
+                execSync('git config user.email "codex@propr.dev"', { cwd: analysisWorkspace, stdio: 'pipe' });
                 execSync('git config user.name "Codex Analysis"', { cwd: analysisWorkspace, stdio: 'pipe' });
             }
             // Ensure node user (1000) can write to the directory
