@@ -51,84 +51,84 @@ const SettingsPage: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="p-4 sm:p-8 text-center text-gray-500">
+      <div className="flex h-full items-center justify-center bg-white text-gray-500">
         Loading settings configuration...
       </div>
     );
   }
 
   return (
-    <div className="max-w-7xl mx-auto p-4 sm:p-8">
-      <div className="flex justify-between items-center mb-8">
-        <h2 className="text-gray-900 text-2xl font-semibold">Settings</h2>
-        {/* Auto-save status indicator */}
-        <div className="flex items-center gap-2">
-          {saveStatus === 'saving' && (
-            <span className="flex items-center gap-1.5 text-sm text-gray-500">
-              <svg className="animate-spin h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-              </svg>
-              Saving...
-            </span>
-          )}
-          {saveStatus === 'saved' && (
-            <span className="flex items-center gap-1.5 text-sm text-green-600">
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-              Saved
-            </span>
-          )}
-          {saveStatus === 'error' && globalError && (
-            <span className="flex items-center gap-1.5 text-sm text-red-600">
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              {globalError}
-            </span>
-          )}
+    <div className="flex flex-col h-full bg-white">
+      {/* Anchored Header */}
+      <div className="flex-shrink-0 border-b border-gray-200 px-6 py-4">
+        <div className="flex justify-between items-center">
+          <h2 className="text-gray-900 text-xl font-semibold">Settings</h2>
+          {/* Auto-save status indicator */}
+          <div className="flex items-center gap-2">
+            {saveStatus === 'saving' && (
+              <span className="flex items-center gap-1.5 text-xs font-medium text-gray-500 font-mono">
+                <svg className="animate-spin h-3.5 w-3.5 text-gray-400" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                SAVING...
+              </span>
+            )}
+            {saveStatus === 'saved' && (
+              <span className="flex items-center gap-1.5 text-xs font-medium text-green-600 font-mono">
+                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                SAVED
+              </span>
+            )}
+            {saveStatus === 'error' && globalError && (
+              <span className="flex items-center gap-1.5 text-xs font-medium text-red-600 font-mono">
+                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                {globalError}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left Column */}
-        <div className="space-y-6">
-          <AIModelSelectionSection
-            settings={{
-              analysis_model_fast: settings.analysis_model_fast,
-              planner_context_model: settings.planner_context_model,
-              planner_generation_model: settings.planner_generation_model,
-              default_agent_alias: settings.default_agent_alias
-            }}
-            summarizationSettings={summarizationSettings}
-            agents={agents}
-            onSettingChange={handleModelSelectionChange}
-            onSummarizationModelChange={handleSummarizationModelChange}
-            onDefaultAgentChange={handleDefaultAgentChange}
-          />
+      {/* Main Content Area - 2 Column Split */}
+      <div className="flex-1 flex min-h-0 overflow-hidden">
+        {/* Left Column - AI Engine Configuration */}
+        <div className="w-1/2 overflow-y-auto border-r border-gray-200 p-6">
+          <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-4">AI Engine Configuration</h3>
 
-          <KnowledgeBaseSection
-            settings={summarizationSettings}
-            onSettingsChange={handleSummarizationChange}
-            onReindexAll={handleReindexAll}
-            isReindexing={isReindexing}
-          />
+          <div className="space-y-6">
+            <AIModelSelectionSection
+              settings={{
+                analysis_model_fast: settings.analysis_model_fast,
+                planner_context_model: settings.planner_context_model,
+                planner_generation_model: settings.planner_generation_model,
+                default_agent_alias: settings.default_agent_alias
+              }}
+              summarizationSettings={summarizationSettings}
+              agents={agents}
+              onSettingChange={handleModelSelectionChange}
+              onSummarizationModelChange={handleSummarizationModelChange}
+              onDefaultAgentChange={handleDefaultAgentChange}
+            />
 
-          <GeneralSettingsSection
-            settings={{ worker_concurrency: settings.worker_concurrency }}
-            onSettingChange={(e) =>
-              setSettings(prev => ({ ...prev, [e.target.name]: e.target.value }))
-            }
-            onBlur={triggerAutoSave}
-          />
+            <KnowledgeBaseSection
+              settings={summarizationSettings}
+              onSettingsChange={handleSummarizationChange}
+              onReindexAll={handleReindexAll}
+              isReindexing={isReindexing}
+            />
+          </div>
         </div>
 
-        {/* Right Column */}
-        <div className="space-y-6">
-          <div className="bg-white shadow rounded-lg p-6">
-            <h3 className="text-gray-900 text-lg font-medium mb-6">GitHub Processing Rules</h3>
+        {/* Right Column - Automation Rules */}
+        <div className="w-1/2 overflow-y-auto p-6">
+          <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-4">Automation Rules</h3>
 
+          <div className="space-y-6">
             <TagListSection
               title="GitHub User Whitelist"
               description="Only process issues/comments from these users."
@@ -139,10 +139,7 @@ const SettingsPage: React.FC = () => {
               onRemoveItem={removeWhitelistItem}
               placeholder="e.g., octocat"
               emptyMessage="Allowed for all users (Empty whitelist)."
-              className="shadow-none p-0 border-0"
             />
-
-            <hr className="my-6 border-gray-200" />
 
             <TagListSection
               title="Primary Processing Labels"
@@ -155,19 +152,13 @@ const SettingsPage: React.FC = () => {
               placeholder="e.g., AI"
               emptyMessage="No labels configured."
               helperText="State labels (-processing, -done) are generated automatically."
-              className="shadow-none p-0 border-0"
             />
-
-            <hr className="my-6 border-gray-200" />
 
             <PrLabelSection
               prLabel={prLabel}
               onLabelChange={(e) => setPrLabel(e.target.value)}
               onBlur={triggerAutoSave}
-              className="shadow-none p-0 border-0"
             />
-
-            <hr className="my-6 border-gray-200" />
 
             <TagListSection
               title="Follow-up Keywords"
@@ -180,10 +171,7 @@ const SettingsPage: React.FC = () => {
               placeholder="e.g., GITFIX"
               emptyMessage="No keywords configured."
               showEmptyIcon={true}
-              className="shadow-none p-0 border-0"
             />
-
-            <hr className="my-6 border-gray-200" />
 
             <TagListSection
               title="PR Follow-up Ignore Keywords"
@@ -196,10 +184,20 @@ const SettingsPage: React.FC = () => {
               placeholder="e.g., Deployment In Progress"
               emptyMessage="No ignore keywords configured."
               showEmptyIcon={true}
-              className="shadow-none p-0 border-0"
             />
           </div>
         </div>
+      </div>
+
+      {/* Anchored Footer - General Configuration */}
+      <div className="flex-shrink-0 border-t border-gray-200 px-6 py-4 bg-gray-50">
+        <GeneralSettingsSection
+          settings={{ worker_concurrency: settings.worker_concurrency }}
+          onSettingChange={(e) =>
+            setSettings(prev => ({ ...prev, [e.target.name]: e.target.value }))
+          }
+          onBlur={triggerAutoSave}
+        />
       </div>
     </div>
   );

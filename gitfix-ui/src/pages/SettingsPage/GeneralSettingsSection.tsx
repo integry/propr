@@ -18,12 +18,14 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
   className
 }) => {
   return (
-    <div className={`bg-white shadow rounded-lg p-6 ${className || ''}`}>
-      <h3 className="text-gray-900 text-lg font-medium mb-4">General Configuration</h3>
+    <div className={className || ''}>
+      <div className="flex items-center justify-between gap-6">
+        <div className="flex items-center gap-4">
+          <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500">General Configuration</h4>
+        </div>
 
-      <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="worker_concurrency">
+        <div className="flex items-center gap-3">
+          <label className="text-xs font-medium text-gray-600 whitespace-nowrap" htmlFor="worker_concurrency">
             Worker Concurrency
           </label>
           <input
@@ -33,12 +35,10 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             value={settings.worker_concurrency}
             onChange={onSettingChange}
             onBlur={onBlur}
-            placeholder="e.g., 2"
-            className="w-[100px] rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm px-3 py-2 border"
+            placeholder="2"
+            className="w-16 rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2 py-1 border text-center"
           />
-          <p className="mt-1 text-sm text-gray-500">
-            Number of issues to process simultaneously.
-          </p>
+          <span className="text-xs text-gray-500">issues processed simultaneously</span>
         </div>
       </div>
     </div>
