@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getQueueStats, getTasks, getSystemStatus } from '../api/gitfixApi';
+import { getQueueStats, getTasks, getSystemStatus } from '../api/proprApi';
 import { getDrafts, DraftListItem } from '../api/plannerApi';
 import { useSocket } from '../contexts/useSocket';
 

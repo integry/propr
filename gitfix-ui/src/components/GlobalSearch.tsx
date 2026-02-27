@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Search, X, ScrollText, ListTodo, GitBranch, Loader2, ChevronRight } from 'lucide-react';
 import { useGlobalSearch, TaskSearchResult } from '../hooks/useGlobalSearch';
 import { DraftListItem } from '../api/plannerApi';
-import { MonitoredRepo } from '../api/gitfixApi';
+import { MonitoredRepo } from '../api/proprApi';
 
 // Utility function for formatting time ago
 const formatTimeAgo = (dateString: string): string => {

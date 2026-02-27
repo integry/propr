@@ -1,6 +1,6 @@
 // CI trigger: 2026-02-18
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getTasks, getRepoConfig, MonitoredRepo } from '../api/gitfixApi';
+import { getTasks, getRepoConfig, MonitoredRepo } from '../api/proprApi';
 import { getDrafts, DraftListItem } from '../api/plannerApi';
 
 // Debounce delay in milliseconds

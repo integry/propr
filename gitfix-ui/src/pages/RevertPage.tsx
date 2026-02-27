@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AlertTriangle, RotateCcw, CheckCircle, Loader2, GitCommit, ArrowDown, Trash2, GitBranch } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { revertCommit, getRevertPreview, type RevertPreviewResponse, type CommitInfo } from '../api/gitfixApi';
+import { revertCommit, getRevertPreview, type RevertPreviewResponse, type CommitInfo } from '../api/proprApi';
 
 type RevertState = 'loading' | 'idle' | 'processing' | 'success' | 'error';
 

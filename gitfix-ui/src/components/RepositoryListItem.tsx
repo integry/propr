@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { IndexingStatusIndicator } from './IndexingStatusIndicator';
-import { RepositoryIndexingStatus, MonitoredRepo } from '../api/gitfixApi';
+import { RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { getRepoStatusKey } from '../api/repoIndexingApi';
 
 interface RepositoryListItemProps {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getDraft, PlannerDraft } from '../api/gitfixApi';
+import { getDraft, PlannerDraft } from '../api/proprApi';
 
 interface UseDraftOptions {
   initialData?: PlannerDraft | null;

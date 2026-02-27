@@ -16,7 +16,7 @@ import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
 import { SocketProvider } from './contexts/SocketProvider'
 import './App.css'
-import { getCurrentUser } from './api/gitfixApi'
+import { getCurrentUser } from './api/proprApi'
 
 const App: React.FC = () => {
   // Auth check state - start loading unless already on login page

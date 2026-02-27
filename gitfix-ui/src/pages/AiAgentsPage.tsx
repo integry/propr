@@ -6,7 +6,7 @@ import {
   getAgents,
   saveAgents,
   AgentConfig
-} from '../api/gitfixApi';
+} from '../api/proprApi';
 import AgentsListSection from './SettingsPage/AgentsListSection';
 import ChatPanel from '../components/AgentChat/ChatPanel';
 

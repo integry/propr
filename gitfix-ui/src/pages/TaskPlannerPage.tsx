@@ -7,7 +7,7 @@ import SetupWizard from '../components/TaskPlanner/SetupWizard';
 import PlanEditor from '../components/TaskPlanner/PlanEditor';
 import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import SkeletonLoader from '../components/TaskPlanner/SkeletonLoader';
-import { DraftWithPlan, Draft } from '../api/gitfixApi';
+import { DraftWithPlan, Draft } from '../api/proprApi';
 
 const GeneratingView: React.FC<{ draft: Draft }> = ({ draft }) => (
   <div className="h-[calc(100vh-120px)] p-4">

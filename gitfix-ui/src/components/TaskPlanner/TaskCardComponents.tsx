@@ -2,7 +2,7 @@ import { RefObject } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
 import { FileText } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { PlanTask } from '../../api/gitfixApi';
+import { PlanTask } from '../../api/proprApi';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 
 export type EditableField = 'title' | 'body' | 'implementation' | 'notes' | null;

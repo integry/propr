@@ -1,5 +1,5 @@
 import React from 'react';
-import { Granularity } from '../../api/gitfixApi';
+import { Granularity } from '../../api/proprApi';
 
 const GRANULARITY_OPTIONS: Array<{
   id: Granularity;

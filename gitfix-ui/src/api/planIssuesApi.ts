@@ -1,4 +1,4 @@
-import { handleApiResponse, API_BASE_URL } from './gitfixApi';
+import { handleApiResponse, API_BASE_URL } from './proprApi';
 
 /**
  * Status enum for plan issues.

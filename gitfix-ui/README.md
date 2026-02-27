@@ -15,7 +15,7 @@ A web-based management interface for monitoring and managing the GitFix applicat
 gitfix-ui/
 ├── src/
 │   ├── api/              # API integration layer
-│   │   └── gitfixApi.js  # Mock API functions (to be connected to backend)
+│   │   └── proprApi.ts   # Core API functions
 │   ├── components/       # React components
 │   │   ├── Dashboard.jsx
 │   │   ├── SystemStatus.jsx
@@ -67,11 +67,11 @@ npm run preview
 
 ## API Integration
 
-Currently, the application uses mock data to simulate the backend API. The mock functions are located in `src/api/gitfixApi.js`.
+Currently, the application uses mock data to simulate the backend API. The API functions are located in `src/api/proprApi.ts`.
 
 ### Future Backend Integration
 
-When the backend API endpoints are ready, update the functions in `gitfixApi.js` to make actual HTTP requests:
+When the backend API endpoints are ready, update the functions in `proprApi.ts` to make actual HTTP requests:
 
 - `GET /api/system/status` - System status information
 - `GET /api/queue/stats` - Queue statistics
@@ -102,6 +102,6 @@ This is Part 1 of the GitFix Web Management UI epic. Future enhancements will in
 
 When adding new features:
 1. Create components in the `src/components/` directory
-2. Add API functions to `src/api/gitfixApi.js`
+2. Add API functions to `src/api/proprApi.ts`
 3. Follow the existing component structure and naming conventions
 4. Ensure responsive design for mobile compatibility

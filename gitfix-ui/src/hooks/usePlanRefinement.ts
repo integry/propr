@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { debounce } from 'lodash';
-import { updateDraft, refinePlan, getDraftWithPlan, PlanTask, RefinementResult } from '../api/gitfixApi';
+import { updateDraft, refinePlan, getDraftWithPlan, PlanTask, RefinementResult } from '../api/proprApi';
 
 export type SaveStatus = 'saved' | 'saving' | 'error';
 

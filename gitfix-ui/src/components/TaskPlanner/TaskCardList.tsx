@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import TaskCard from './TaskCard';
 import TaskTimeline from './TaskTimeline';
-import { PlanTask } from '../../api/gitfixApi';
+import { PlanTask } from '../../api/proprApi';
 
 interface TaskCardListProps {
   tasks: PlanTask[];

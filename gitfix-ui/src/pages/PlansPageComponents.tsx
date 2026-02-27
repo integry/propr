@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Search, Filter, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
-import { DraftListItem } from '../api/gitfixApi';
+import { DraftListItem } from '../api/proprApi';
 import {
   getEffectiveStatus,
   renderStatusStrip,

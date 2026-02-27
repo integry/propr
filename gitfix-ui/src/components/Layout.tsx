@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ScrollText, ListTodo, BookMarked, Bot, Cpu } from 'lucide-react';
-import { getQueueStats, getCurrentUser, logout } from '../api/gitfixApi';
+import { getQueueStats, getCurrentUser, logout } from '../api/proprApi';
 import { getGeneratingPlansCount } from '../api/taskStatsApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';

@@ -1,5 +1,5 @@
 // Summary Browser API - File and Directory Summaries
-import { API_BASE_URL, handleApiResponse } from './gitfixApi';
+import { API_BASE_URL, handleApiResponse } from './proprApi';
 
 // ============= Types =============
 

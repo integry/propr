@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AgentConfig } from '../../api/gitfixApi';
+import { AgentConfig } from '../../api/proprApi';
 import { AgentType, AGENT_MODELS, AGENT_DEFAULTS } from '../../config/modelDefinitions';
 
 interface AgentConfigModalProps {

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { FileQuestion, Info, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { GranularityEnforcementMetadata } from '../../api/gitfixApi';
+import { GranularityEnforcementMetadata } from '../../api/proprApi';
 
 interface OriginalPromptPopoverProps {
   prompt: string;

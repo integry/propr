@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getSystemStatus } from '../api/gitfixApi';
+import { getSystemStatus } from '../api/proprApi';
 
 interface Worker {
   id: number;

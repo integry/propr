@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { getDrafts, deleteDraft, abortGeneration, DraftListItem } from '../api/gitfixApi';
+import { getDrafts, deleteDraft, abortGeneration, DraftListItem } from '../api/proprApi';
 import { Filter, Search, X } from 'lucide-react';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getQueueStats } from '../api/gitfixApi';
+import { getQueueStats } from '../api/proprApi';
 
 interface QueueStats {
   active: number;

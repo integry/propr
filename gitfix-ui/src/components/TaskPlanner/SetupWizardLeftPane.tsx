@@ -1,5 +1,5 @@
 import React from 'react';
-import { PlannerAttachment, GenerationTrace, getAttachmentUrl } from '../../api/gitfixApi';
+import { PlannerAttachment, GenerationTrace, getAttachmentUrl } from '../../api/proprApi';
 import { Paperclip, Loader2 } from 'lucide-react';
 import { AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';

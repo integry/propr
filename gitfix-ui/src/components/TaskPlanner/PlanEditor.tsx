@@ -4,7 +4,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Undo2, Redo2, Loader2, AlertCircle, GripVertical, ArrowLeft, Github, GitBranch, Trash2 } from 'lucide-react';
 import { debounce } from 'lodash';
 import { usePlanRefinement } from '../../hooks/usePlanRefinement';
-import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, resetDraftToSetup, abortRefinement, deleteDraft } from '../../api/gitfixApi';
+import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, resetDraftToSetup, abortRefinement, deleteDraft } from '../../api/proprApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
 import BackToSetupDialog from './BackToSetupDialog';

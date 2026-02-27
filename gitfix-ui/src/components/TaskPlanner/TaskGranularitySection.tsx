@@ -1,6 +1,6 @@
 import React from 'react';
 import { ListTodo } from 'lucide-react';
-import { Granularity } from '../../api/gitfixApi';
+import { Granularity } from '../../api/proprApi';
 import { GranularitySelector } from './GranularitySelector';
 
 interface TaskGranularitySectionProps {

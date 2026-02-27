@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getRepoConfig, createDraft, uploadAttachment } from '../api/gitfixApi';
+import { getRepoConfig, createDraft, uploadAttachment } from '../api/proprApi';
 import { transformRepoData, getInitialSelectedRepo, Repo } from '../components/Dashboard/index';
 import { resizeImage } from '../components/TaskPlanner/imageUtils';
 

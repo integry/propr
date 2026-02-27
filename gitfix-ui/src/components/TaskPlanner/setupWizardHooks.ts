@@ -12,7 +12,7 @@ import {
   PlannerDraft,
   PlannerAttachment,
   AgentConfig
-} from '../../api/gitfixApi';
+} from '../../api/proprApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { resizeImage } from './imageUtils';
@@ -22,7 +22,7 @@ export { useAutoDraftCreation, constructDraftWithPlan } from './useAutoDraftCrea
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; }
 
-import type { Granularity } from '../../api/gitfixApi';
+import type { Granularity } from '../../api/proprApi';
 
 export interface PlannerConfig {
   prompt: string;
@@ -338,7 +338,7 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
     setIsCreating(true);
     setError(null);
     try {
-      const { createDraft } = await import('../../api/gitfixApi');
+      const { createDraft } = await import('../../api/proprApi');
       const newDraft = await createDraft(selectedRepo, config.prompt.trim());
       // Upload any local files
       for (const file of localFiles) {

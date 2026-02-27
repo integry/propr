@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getTaskStats, TaskStatsResponse } from '../api/gitfixApi';
+import { getTaskStats, TaskStatsResponse } from '../api/proprApi';
 import { VolumeChart, ProcessingTimeChart, StatusPieChart } from './TaskStatsChartParts';
 
 // Color palette matching the dashboard's indigo/purple theme

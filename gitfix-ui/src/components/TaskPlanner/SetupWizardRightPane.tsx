@@ -1,5 +1,5 @@
 import React from 'react';
-import { SmartFileSelection as SmartFileInfo, ContextRepository, GenerationTrace } from '../../api/gitfixApi';
+import { SmartFileSelection as SmartFileInfo, ContextRepository, GenerationTrace } from '../../api/proprApi';
 import { ContextLevelSlider } from './ContextLevelSlider';
 import { SmartFileSelection } from './SmartFileSelection';
 import { FileSelectionSkeleton } from './SkeletonLoader';
