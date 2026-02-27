@@ -6,9 +6,9 @@ services:
     restart: unless-stopped
     command: redis-server --appendonly yes
     volumes:
-      - redis-data:/data
+      - propr-redis-data:/data
     networks:
-      - gitfix-network
+      - propr-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -40,14 +40,14 @@ services:
       DB_FILENAME: /app/data/gitfix.sqlite
       GH_WEBHOOK_SECRET: ${GH_WEBHOOK_SECRET}
     volumes:
-      - sqlite-data:/app/data
+      - propr-sqlite-data:/app/data
     depends_on:
       redis:
         condition: service_healthy
       daemon:
         condition: service_started
     networks:
-      - gitfix-network
+      - propr-network
 
   daemon:
     build:
@@ -69,12 +69,12 @@ services:
       DB_FILENAME: /app/data/gitfix.sqlite
     volumes:
       - ./logs:/app/logs
-      - sqlite-data:/app/data
+      - propr-sqlite-data:/app/data
     depends_on:
       redis:
         condition: service_healthy
     networks:
-      - gitfix-network
+      - propr-network
     command: ["node", "dist/src/daemon.js"]
 
   worker:
@@ -99,18 +99,18 @@ services:
       - ./logs:/app/logs
       - ./repos:/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
-      - sqlite-data:/app/data
+      - propr-sqlite-data:/app/data
     depends_on:
       redis:
         condition: service_healthy
     networks:
-      - gitfix-network
+      - propr-network
     command: ["node", "dist/src/worker.js"]
 
 networks:
-  gitfix-network:
+  propr-network:
     driver: bridge
 
 volumes:
-  redis-data:
-  sqlite-data:
+  propr-redis-data:
+  propr-sqlite-data:
