@@ -1,5 +1,5 @@
 #!/bin/bash
-# Wrapper script for GitHub CLI that filters out gitfixio bot comments
+# Wrapper script for GitHub CLI that filters out proprio bot comments
 # This script intercepts `gh issue view --comments` commands and removes operational bot comments
 
 # Check if this is an issue view command with comments
@@ -20,30 +20,30 @@ if [[ "$1" == "issue" && "$2" == "view" && "${@}" == *"--comments"* ]]; then
         exit_code=$?
         
         if [ $exit_code -eq 0 ]; then
-            # Filter out gitfixio bot comments
+            # Filter out proprio bot comments
             # The gh output format shows comments with author names
-            # We'll remove entire comment blocks from gitfixio bot
+            # We'll remove entire comment blocks from proprio bot
             echo "$output" | awk '
-                BEGIN { print_line = 1; in_gitfixio_comment = 0 }
-                
-                # Detect start of a gitfixio comment
-                /^[[:space:]]*gitfixio[[:space:]]+commented/ {
-                    in_gitfixio_comment = 1
+                BEGIN { print_line = 1; in_proprio_comment = 0 }
+
+                # Detect start of a proprio comment
+                /^[[:space:]]*proprio[[:space:]]+commented/ {
+                    in_proprio_comment = 1
                     print_line = 0
                     next
                 }
-                
-                # Detect start of any new comment (ends gitfixio comment block)
+
+                # Detect start of any new comment (ends proprio comment block)
                 /^[[:space:]]*[^[:space:]]+[[:space:]]+commented/ {
-                    if (in_gitfixio_comment) {
-                        in_gitfixio_comment = 0
+                    if (in_proprio_comment) {
+                        in_proprio_comment = 0
                         print_line = 1
                     }
                 }
-                
-                # Print lines that are not part of gitfixio comments
+
+                # Print lines that are not part of proprio comments
                 {
-                    if (print_line && !in_gitfixio_comment) {
+                    if (print_line && !in_proprio_comment) {
                         print
                     }
                 }

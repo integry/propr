@@ -12,7 +12,7 @@ interface KnexConfig {
 }
 
 // Default database path
-const defaultDbPath = path.join(__dirname, 'data', 'gitfix.sqlite');
+const defaultDbPath = path.join(__dirname, 'data', 'propr.sqlite');
 const dbFilename = process.env.DB_FILENAME ?? defaultDbPath;
 
 const config: KnexConfig = {

@@ -83,14 +83,14 @@ async function createGitHubIssue(options: CreateIssueOptions): Promise<CreatedIs
   const { octokit, owner, repoName, task, draftId, correlatedLogger } = options;
 
   let issueBody = task.body || '';
-  issueBody += '\n\n---\n*Created by GitFix AI Planner*';
+  issueBody += '\n\n---\n*Created by ProPR AI Planner*';
 
   const response = await octokit.request('POST /repos/{owner}/{repo}/issues', {
     owner,
     repo: repoName,
     title: task.title,
     body: issueBody,
-    labels: ['gitfix-planned']
+    labels: ['propr-planned']
   });
 
   correlatedLogger.info({

@@ -14,10 +14,10 @@ function getDbFilename(): string {
     if (process.env.DB_FILENAME) {
         return process.env.DB_FILENAME;
     }
-    // Default path: /usr/src/app/data/gitfix.sqlite (inside container)
-    // or ./data/gitfix.sqlite (local development)
+    // Default path: /usr/src/app/data/propr.sqlite (inside container)
+    // or ./data/propr.sqlite (local development)
     const dataDir = process.env.DATA_DIR ?? path.join(process.cwd(), 'data');
-    return path.join(dataDir, 'gitfix.sqlite');
+    return path.join(dataDir, 'propr.sqlite');
 }
 
 function ensureDataDirectory(filename: string): void {
@@ -30,7 +30,7 @@ function ensureDataDirectory(filename: string): void {
 
 function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
     const dbFilename = getDbFilename();
-    const testDbFilename = path.join(path.dirname(dbFilename), 'gitfix.test.sqlite');
+    const testDbFilename = path.join(path.dirname(dbFilename), 'propr.test.sqlite');
 
     return {
         development: {
