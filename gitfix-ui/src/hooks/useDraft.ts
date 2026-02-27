@@ -84,12 +84,13 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     }
     // When draftId changes to a different value, reset state and fetch new data
     // This handles navigation between saved plans (e.g., /studio/abc to /studio/xyz)
-    if (draft && draft.draft_id !== draftId && draftId) {
+    // and also when navigating to /studio/new (where draftId becomes empty/undefined)
+    if (draft && draft.draft_id !== draftId) {
       setDraft(null);
       setError(null);
     }
-    // Fetch if we don't have data or if draftId changed
-    if (!draft || (draft.draft_id !== draftId && draftId)) {
+    // Fetch if we have a valid draftId and either don't have data or draftId changed
+    if (draftId && (!draft || draft.draft_id !== draftId)) {
       fetchDraft(true);
     }
   }, [draftId]); // eslint-disable-line react-hooks/exhaustive-deps
