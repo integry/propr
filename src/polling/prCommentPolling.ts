@@ -4,6 +4,7 @@ import { handleError } from '@propr/core';
 import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '@propr/core';
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
 import { resolveModelAlias } from '@propr/core';
+import { loadPrimaryProcessingLabels } from '@propr/core';
 import type { Redis } from 'ioredis';
 
 type Octokit = {
@@ -195,6 +196,28 @@ async function processPullRequestComments(
     }
 }
 
+function extractModelFromPRLabels(pr: PullRequest, modelLabelPattern: string, correlationId: string): string | null {
+    if (!pr.labels || !Array.isArray(pr.labels)) return null;
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    const modelLabelRegex = new RegExp(modelLabelPattern);
+    for (const label of pr.labels) {
+        const labelName = typeof label === 'string' ? label : label.name;
+        const match = labelName.match(modelLabelRegex);
+        if (match) {
+            const resolvedModel = resolveModelAlias(match[1]);
+            correlatedLogger.debug({ pullRequestNumber: pr.number, label: labelName, resolvedModel }, 'Extracted model from PR label');
+            return resolvedModel;
+        }
+    }
+    return null;
+}
+
+async function prHasProcessingLabel(pr: PullRequest): Promise<boolean> {
+    const processingLabels = await loadPrimaryProcessingLabels();
+    const prLabelNames = pr.labels?.map(l => typeof l === 'string' ? l : l.name) || [];
+    return prLabelNames.some(name => processingLabels.includes(name));
+}
+
 async function collectUnprocessedComments(
     commentsByTime: PRComment[],
     pr: PullRequest,
@@ -206,32 +229,18 @@ async function collectUnprocessedComments(
 
     const correlatedLogger = logger.withCorrelation(correlationId);
     const unprocessedComments: UnprocessedComment[] = [];
-    let selectedLlm: string | null = null;
 
-    if (pr.labels && Array.isArray(pr.labels)) {
-        const modelLabelRegex = new RegExp(MODEL_LABEL_PATTERN);
-        for (const label of pr.labels) {
-            const labelName = typeof label === 'string' ? label : label.name;
-            const match = labelName.match(modelLabelRegex);
-            if (match) {
-                selectedLlm = resolveModelAlias(match[1]);
-                correlatedLogger.debug({
-                    pullRequestNumber: pr.number,
-                    label: labelName,
-                    resolvedModel: selectedLlm
-                }, 'Extracted model from PR label');
-                break;
-            }
-        }
-    }
+    const hasProcessingLabel = await prHasProcessingLabel(pr);
+    let selectedLlm: string | null = extractModelFromPRLabels(pr, MODEL_LABEL_PATTERN, correlationId);
 
     for (const comment of commentsByTime) {
         const commentAuthor = comment.user.login;
         const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
         if (filterResult.shouldFilter) continue;
 
+        // Check trigger: PR must have a processing label OR comment must contain trigger keyword
         const triggerResult = checkCommentTrigger(comment.body || '', correlationId);
-        if (!triggerResult.isTriggered) continue;
+        if (!hasProcessingLabel && !triggerResult.isTriggered) continue;
 
         const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${pr.number}:${comment.id}`;
         const alreadyQueued = await redisClient.get(commentTrackingKey);

@@ -2,7 +2,7 @@ import logger, { generateCorrelationId } from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { issueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '../queue/taskQueue.js';
 import { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from '../utils/commentFilters.js';
-import { loadFollowupIgnoreKeywords } from '../config/configManager.js';
+import { loadFollowupIgnoreKeywords, loadPrimaryProcessingLabels } from '../config/configManager.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPendingPrCommentsKey } from '../utils/constants.js';
 import { withRetry } from '../utils/retryHandler.js';
@@ -34,6 +34,11 @@ interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS:
 interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
+
+async function prHasProcessingLabel(prLabels: Label[]): Promise<boolean> {
+    const processingLabels = await loadPrimaryProcessingLabels();
+    return prLabels.some(label => processingLabels.includes(label.name));
+}
 
 export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<void> {
     const { redisClient } = config;
@@ -148,8 +153,20 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const ignoreResult = checkCommentIgnore(comment.body, ignoreKeywords, correlationId);
     if (ignoreResult.shouldIgnore) return;
 
+    // Fetch PR labels early to check for processing label
+    const { prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
+    const hasProcessingLabel = await prHasProcessingLabel(prLabels);
+
+    // Check trigger: PR must have a processing label OR comment must contain trigger keyword
     const triggerResult = checkCommentTrigger(comment.body, correlationId);
-    if (!triggerResult.isTriggered) return;
+    if (!hasProcessingLabel && !triggerResult.isTriggered) {
+        correlatedLogger.debug({ pullRequestNumber: prNumber, commentId: comment.id }, 'PR does not have processing label and comment does not contain trigger keyword, skipping');
+        return;
+    }
+
+    if (hasProcessingLabel) {
+        correlatedLogger.debug({ pullRequestNumber: prNumber, commentId: comment.id, prLabels: prLabels.map(l => l.name) }, 'PR has processing label, processing comment');
+    }
 
     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
     const alreadyQueued = await redisClient.get(commentTrackingKey);
