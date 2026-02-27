@@ -95,48 +95,56 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
 
   return (
     <tr className="hover:bg-gray-50 group">
-      <td className="px-6 py-4">
+      {/* Main content cell - spans the content area */}
+      <td className="px-6 py-3">
         <Link to={`/studio/${draft.draft_id}`} className="block">
-          <div className="text-sm font-medium text-indigo-600">{draft.repository}</div>
-          <div className="text-sm text-gray-500 truncate max-w-md">
-            {draft.name || draft.initial_prompt}
+          {/* Top line: Repo Chip + Title */}
+          <div className="flex items-center gap-2 mb-1">
+            <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded">
+              {draft.repository}
+            </span>
+            <span className="text-sm font-medium text-gray-900 truncate">
+              {draft.name || draft.initial_prompt}
+            </span>
+          </div>
+          {/* Bottom line: Metrics + Status + Time */}
+          <div className="flex items-center gap-3 text-xs">
+            {renderIssueSummary(draft.issue_summary)}
+            <span className={`px-2 inline-flex items-center gap-1 leading-5 font-semibold rounded-full ${getStatusBadge(effectiveStatus)}`}>
+              {getStatusIcon(effectiveStatus)}
+              {getStatusLabel(effectiveStatus)}
+            </span>
+            <span className="text-gray-500">
+              {formatRelativeTime(draft.updated_at)}
+            </span>
           </div>
         </Link>
       </td>
-      <td className="px-6 py-4 whitespace-nowrap">
-        <span className={`px-2 inline-flex items-center gap-1 text-xs leading-5 font-semibold rounded-full ${getStatusBadge(effectiveStatus)}`}>
-          {getStatusIcon(effectiveStatus)}
-          {getStatusLabel(effectiveStatus)}
-        </span>
-      </td>
-      <td className="px-6 py-4 whitespace-nowrap">
-        {renderIssueSummary(draft.issue_summary)}
-      </td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-        {formatRelativeTime(draft.updated_at)}
-      </td>
-      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-        <Link
-          to={`/studio/${draft.draft_id}`}
-          className="text-indigo-600 hover:text-indigo-900 mr-4"
-        >
-          {draft.status === 'executed' || draft.status === 'merged' || effectiveStatus === 'merged' ? 'Manage' : 'Resume'}
-        </Link>
-        {draft.status === 'generating' && (
-          <button
-            onClick={(e) => onAbort(draft.draft_id, e)}
-            disabled={abortingId === draft.draft_id}
-            className="text-orange-600 hover:text-orange-900 mr-4 disabled:opacity-50"
+      {/* Actions cell */}
+      <td className="px-6 py-3 whitespace-nowrap text-right text-sm font-medium">
+        <div className="flex items-center justify-end gap-2">
+          <Link
+            to={`/studio/${draft.draft_id}`}
+            className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
           >
-            {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
+            {draft.status === 'executed' || draft.status === 'merged' || effectiveStatus === 'merged' ? 'Manage' : 'Resume'}
+          </Link>
+          {draft.status === 'generating' && (
+            <button
+              onClick={(e) => onAbort(draft.draft_id, e)}
+              disabled={abortingId === draft.draft_id}
+              className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-orange-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50"
+            >
+              {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
+            </button>
+          )}
+          <button
+            onClick={(e) => onDelete(draft.draft_id, e)}
+            className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-red-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors opacity-0 group-hover:opacity-100"
+          >
+            Delete
           </button>
-        )}
-        <button
-          onClick={(e) => onDelete(draft.draft_id, e)}
-          className="text-red-600 hover:text-red-900 opacity-0 group-hover:opacity-100 transition-opacity"
-        >
-          Delete
-        </button>
+        </div>
       </td>
     </tr>
   );
@@ -227,16 +235,7 @@ export const PlansTable: React.FC<PlansTableProps> = ({
           <thead className="bg-gray-50 sticky top-0">
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Repository / Prompt
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Status
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Issues
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Last Updated
+                Plan
               </th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Actions
