@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { previewContext, PreviewResult, Granularity, PlannerAttachment } from '../api/gitfixApi';
+import { previewContext, PreviewResult, Granularity, PlannerAttachment } from '../api/proprApi';
 
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
 const DEBOUNCE_DELAY = 800;

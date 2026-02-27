@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { AgentConfig, chatWithAgents, ChatResult, ChatQuery } from '../../api/gitfixApi';
+import { AgentConfig, chatWithAgents, ChatResult, ChatQuery } from '../../api/proprApi';
 import { MODEL_INFO_MAP, AgentType } from '../../config/modelDefinitions';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import { Bot, User, Send } from 'lucide-react';

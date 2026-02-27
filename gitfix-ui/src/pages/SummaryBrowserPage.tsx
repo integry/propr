@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Book, ChevronLeft, Search, Loader2 } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import SummaryBrowser from '../components/SummaryBrowser';
-import { getAvailableGithubRepos } from '../api/gitfixApi';
+import { getAvailableGithubRepos } from '../api/proprApi';
 
 interface ReposResponse {
   repos: string[];

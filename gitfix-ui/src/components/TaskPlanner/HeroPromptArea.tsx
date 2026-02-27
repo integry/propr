@@ -1,5 +1,5 @@
 import React from 'react';
-import { PlannerAttachment } from '../../api/gitfixApi';
+import { PlannerAttachment } from '../../api/proprApi';
 import { AttachmentUploader } from './AttachmentUploader';
 
 interface HeroPromptAreaProps {

@@ -1,4 +1,4 @@
-import { API_BASE_URL, handleApiResponse } from './gitfixApi';
+import { API_BASE_URL, handleApiResponse } from './proprApi';
 
 export interface LlmLogEntry {
   logId: number;

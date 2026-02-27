@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { PlannerAttachment, getAttachmentUrl } from '../../api/gitfixApi';
+import { PlannerAttachment, getAttachmentUrl } from '../../api/proprApi';
 import { X, FileText, Loader2, Paperclip } from 'lucide-react';
 import { resizeImage } from './imageUtils';
 

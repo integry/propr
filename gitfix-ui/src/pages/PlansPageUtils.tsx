@@ -1,6 +1,6 @@
 import React from 'react';
 import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, GitMerge, GitPullRequestArrow } from 'lucide-react';
-import { IssueSummary } from '../api/gitfixApi';
+import { IssueSummary } from '../api/proprApi';
 
 /**
  * Computes the effective display status for a draft based on its status and issue summary.

@@ -1,7 +1,7 @@
 import React from 'react';
 // CI trigger
 import { Brain, ClipboardCheck, Cpu } from 'lucide-react';
-import { AgentConfig, SummarizationSettings } from '../../api/gitfixApi';
+import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 
 interface AIModelSelectionSettings {

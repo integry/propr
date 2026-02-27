@@ -16,7 +16,7 @@ import {
   triggerReindexAll,
   AgentConfig,
   SummarizationSettings
-} from '../../api/gitfixApi';
+} from '../../api/proprApi';
 import { Settings } from './types';
 
 // Debounce delay for prompt changes (in milliseconds)

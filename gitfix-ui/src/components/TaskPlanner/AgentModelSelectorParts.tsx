@@ -1,6 +1,6 @@
 import React from 'react';
 import { ChevronDown, Users, Check } from 'lucide-react';
-import { AgentConfig } from '../../api/gitfixApi';
+import { AgentConfig } from '../../api/proprApi';
 import { AgentModelPair } from '../../api/planIssuesApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import {

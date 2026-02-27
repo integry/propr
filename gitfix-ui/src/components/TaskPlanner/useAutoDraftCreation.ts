@@ -5,7 +5,7 @@ import {
   createDraft as apiCreateDraft,
   PlannerDraft,
   DraftWithPlan
-} from '../../api/gitfixApi';
+} from '../../api/proprApi';
 
 // Helper to construct a DraftWithPlan from a PlannerDraft for router state
 export function constructDraftWithPlan(draft: PlannerDraft): DraftWithPlan {

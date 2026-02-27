@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/gitfixApi';
+import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
 import { AddRepositoryForm } from '../components/AddRepositoryForm';
 import { RepositoryListItem } from '../components/RepositoryListItem';

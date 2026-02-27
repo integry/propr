@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { GenerationTrace } from '../../api/gitfixApi';
+import { GenerationTrace } from '../../api/proprApi';
 
 interface GenerationProgressProps {
   trace?: GenerationTrace;

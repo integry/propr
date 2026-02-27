@@ -1,7 +1,7 @@
 import { useState, forwardRef, useRef, useCallback } from 'react';
 import { MessageSquare, Trash2, Pencil, ChevronDown, Maximize2, Minimize2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { PlanTask, uploadAttachment, removeAttachment } from '../../api/gitfixApi';
+import { PlanTask, uploadAttachment, removeAttachment } from '../../api/proprApi';
 import { AttachmentUploader } from './AttachmentUploader';
 import { resizeImage } from './imageUtils';
 import { ClearImplementationDialog } from './ClearImplementationDialog';

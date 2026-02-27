@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { getTasks, getRepositoryStats } from '../api/gitfixApi';
+import { getTasks, getRepositoryStats } from '../api/proprApi';
 import type { TaskListProps, LoadConfig } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';

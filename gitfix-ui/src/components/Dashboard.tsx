@@ -6,7 +6,7 @@ import RepositoryBreakdown from './RepositoryBreakdown';
 import TopModels from './TopModels';
 import TaskList from './TaskList';
 import ActivitySparkline from './ActivitySparkline';
-import { getQueueStats } from '../api/gitfixApi';
+import { getQueueStats } from '../api/proprApi';
 import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
 import { Loader2, ChevronRight } from 'lucide-react';
 import { useSocket } from '../contexts/useSocket';

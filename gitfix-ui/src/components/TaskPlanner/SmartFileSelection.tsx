@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useCallback } from 'react';
 import { FileCode, FileText, FileJson, File, FolderOpen, Check } from 'lucide-react';
-import { PreviewResult } from '../../api/gitfixApi';
+import { PreviewResult } from '../../api/proprApi';
 
 interface SmartFileSelectionProps {
   smartSelection: PreviewResult['smartSelection'];

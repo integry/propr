@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2, Edit3 } from 'lucide-react';
-import { DraftWithPlan, deleteDraft } from '../../api/gitfixApi';
+import { DraftWithPlan, deleteDraft } from '../../api/proprApi';
 import DeletePlanDialog from './DeletePlanDialog';
 import RevisePlanDialog from './RevisePlanDialog';
 import PlanIssuesManager from './PlanIssuesManager';

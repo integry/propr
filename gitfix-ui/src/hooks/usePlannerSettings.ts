@@ -1,4 +1,4 @@
-import { Granularity } from '../api/gitfixApi';
+import { Granularity } from '../api/proprApi';
 
 const STORAGE_KEY = 'plannerSettings';
 

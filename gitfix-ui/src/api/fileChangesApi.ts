@@ -1,5 +1,5 @@
 // API for fetching file changes during task execution
-import { API_BASE_URL, handleApiResponse } from './gitfixApi';
+import { API_BASE_URL, handleApiResponse } from './proprApi';
 
 export interface FileChange {
   path: string;

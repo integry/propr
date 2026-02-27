@@ -6,7 +6,7 @@ import {
   stopTaskExecution,
   StopExecutionResponse,
   deleteTask
-} from '../../api/gitfixApi';
+} from '../../api/proprApi';
 import {
   HistoryItem,
   TaskInfo,

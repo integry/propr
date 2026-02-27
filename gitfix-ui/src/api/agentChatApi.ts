@@ -1,5 +1,5 @@
 // Agent Chat Types and API
-import { API_BASE_URL, handleApiResponse } from './gitfixApi';
+import { API_BASE_URL, handleApiResponse } from './proprApi';
 
 export interface ChatQuery {
   agentId: string;

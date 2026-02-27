@@ -1,4 +1,4 @@
-import { handleApiResponse, API_BASE_URL } from './gitfixApi';
+import { handleApiResponse, API_BASE_URL } from './proprApi';
 
 export interface GenerationStepData {
   keywords?: string[];

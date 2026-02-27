@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Send, Bot, User, Loader2, Square } from 'lucide-react';
-import { ChatMessage } from '../../api/gitfixApi';
+import { ChatMessage } from '../../api/proprApi';
 import type { RefinementProgress } from '../../hooks/usePlanRefinement';
 
 interface Message {

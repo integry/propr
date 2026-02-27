@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { 
   fetchLogFiles as apiFetchLogFiles, 
   fetchLogFile as apiFetchLogFile 
-} from '../../api/gitfixApi';
+} from '../../api/proprApi';
 import { LogFilesData, SelectedLogFileData } from './types';
 
 export const useLogFilesData = () => {

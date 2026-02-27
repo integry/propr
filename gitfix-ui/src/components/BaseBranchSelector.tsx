@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { getRepoBranches } from '../api/gitfixApi';
+import { getRepoBranches } from '../api/proprApi';
 
 interface BaseBranchSelectorProps {
   repoName: string;

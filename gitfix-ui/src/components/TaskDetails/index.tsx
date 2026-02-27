@@ -19,7 +19,7 @@ import { useThinkingLog } from './useThinkingLog';
 import { getHistoryDerivedData } from './useHistoryData';
 import { getCleanDocumentTitle } from '../TaskList/utils.tsx';
 import { useToast } from '../ui/useToast';
-import { postTaskFollowup } from '../../api/gitfixApi';
+import { postTaskFollowup } from '../../api/proprApi';
 
 const TaskDetails: React.FC = () => {
   const { taskId } = useParams();

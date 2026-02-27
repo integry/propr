@@ -1,5 +1,5 @@
 import React from 'react';
-import { PlannerAttachment, PreviewResult, ContextRepository, Granularity, GenerationTrace } from '../../api/gitfixApi';
+import { PlannerAttachment, PreviewResult, ContextRepository, Granularity, GenerationTrace } from '../../api/proprApi';
 import { GenerationProgress } from './GenerationProgress';
 import { SmartFileSelection } from './SmartFileSelection';
 import { FileSelectionSkeleton } from './SkeletonLoader';

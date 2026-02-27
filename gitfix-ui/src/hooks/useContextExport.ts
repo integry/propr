@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { downloadContext, Granularity, PlannerAttachment } from '../api/gitfixApi';
+import { downloadContext, Granularity, PlannerAttachment } from '../api/proprApi';
 
 interface ExportParams {
   draftId: string;

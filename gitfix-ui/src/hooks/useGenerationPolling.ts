@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getDraft, GenerationTrace } from '../api/gitfixApi';
+import { getDraft, GenerationTrace } from '../api/proprApi';
 import { useSocket } from '../contexts/useSocket';
 import { DraftUpdatePayload } from '@gitfix/shared';
 

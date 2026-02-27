@@ -1,6 +1,6 @@
 import React from 'react';
 import { Loader2, DollarSign, Zap, Info, BookOpen, RefreshCw, Clock, Pause, Play } from 'lucide-react';
-import { PreviewResult, ContextRepository, GenerationTrace } from '../../api/gitfixApi';
+import { PreviewResult, ContextRepository, GenerationTrace } from '../../api/proprApi';
 import { GenerationProgress } from './GenerationProgress';
 
 interface PreviewState {

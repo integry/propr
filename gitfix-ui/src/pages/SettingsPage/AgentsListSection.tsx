@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AgentConfig } from '../../api/gitfixApi';
+import { AgentConfig } from '../../api/proprApi';
 import Alert from './Alert';
 import AgentConfigModal from './AgentConfigModal';
 import { MODEL_INFO_MAP, typeBadgeColors } from '../../config/modelDefinitions';

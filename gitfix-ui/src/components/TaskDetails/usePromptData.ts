@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { fetchPrompt as apiFetchPrompt } from '../../api/gitfixApi';
+import { fetchPrompt as apiFetchPrompt } from '../../api/proprApi';
 import { PromptData } from './types';
 
 export const usePromptData = () => {

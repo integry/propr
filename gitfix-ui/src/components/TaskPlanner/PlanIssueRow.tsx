@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ExternalLink } from 'lucide-react';
 import { PlanIssue, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
-import { AgentConfig } from '../../api/gitfixApi';
+import { AgentConfig } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
 import {
   StatusBadge,

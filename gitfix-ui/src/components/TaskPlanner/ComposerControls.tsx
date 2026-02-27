@@ -1,6 +1,6 @@
 import React from 'react';
 import { X, FileText, Square, Layers, LayoutGrid } from 'lucide-react';
-import { Granularity } from '../../api/gitfixApi';
+import { Granularity } from '../../api/proprApi';
 
 // Helper to estimate issue count based on granularity
 // Single: always exactly 1 issue

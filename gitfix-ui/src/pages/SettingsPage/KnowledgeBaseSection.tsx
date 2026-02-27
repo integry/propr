@@ -1,5 +1,5 @@
 import React from 'react';
-import { SummarizationSettings } from '../../api/gitfixApi';
+import { SummarizationSettings } from '../../api/proprApi';
 
 interface KnowledgeBaseSectionProps {
   settings: SummarizationSettings;

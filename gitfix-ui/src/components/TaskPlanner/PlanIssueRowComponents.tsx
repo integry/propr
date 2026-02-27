@@ -12,7 +12,7 @@ import {
   StickyNote
 } from 'lucide-react';
 import { PlanIssue, PlanIssueStatus, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
-import { AgentConfig, getAttachmentUrl } from '../../api/gitfixApi';
+import { AgentConfig, getAttachmentUrl } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import AgentModelSelector from './AgentModelSelector';

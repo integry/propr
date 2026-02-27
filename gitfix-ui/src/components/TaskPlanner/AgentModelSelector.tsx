@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { AgentConfig } from '../../api/gitfixApi';
+import { AgentConfig } from '../../api/proprApi';
 import { AgentModelPair } from '../../api/planIssuesApi';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 import { AgentModelPairWithDisplay } from './agentModelSelectorUtils';

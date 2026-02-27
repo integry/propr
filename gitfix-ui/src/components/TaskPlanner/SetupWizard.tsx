@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Download, Loader2 } from 'lucide-react';
-import { PlannerDraft, createDraft, GenerationTrace, getDraft } from '../../api/gitfixApi';
+import { PlannerDraft, createDraft, GenerationTrace, getDraft } from '../../api/proprApi';
 import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
