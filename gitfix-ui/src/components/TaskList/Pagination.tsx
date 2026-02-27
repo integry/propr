@@ -1,4 +1,5 @@
 import React from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface PaginationProps {
   hideFilters?: boolean;
@@ -19,25 +20,34 @@ export const Pagination: React.FC<PaginationProps> = ({
     return null;
   }
 
+  const totalPages = Math.ceil(totalTasks / tasksPerPage);
+  // Convert from 0-based internal state to 1-based display
+  const displayPage = currentPage + 1;
+
   return (
-    <div className="flex justify-between items-center mt-4 px-2">
-      <div className="text-sm text-gray-500">
-        Showing {currentPage * tasksPerPage + 1} - {Math.min((currentPage + 1) * tasksPerPage, totalTasks)} of {totalTasks} tasks
-      </div>
-      <div className="flex gap-2">
+    <div className="flex items-center justify-between px-6 py-4">
+      <span className="text-sm text-gray-600">
+        Showing {currentPage * tasksPerPage + 1}-{Math.min((currentPage + 1) * tasksPerPage, totalTasks)} of {totalTasks} tasks
+      </span>
+      <div className="flex items-center gap-2">
         <button
           onClick={() => setCurrentPage(prev => Math.max(prev - 1, 0))}
           disabled={currentPage === 0}
-          className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
+          <ChevronLeft size={16} />
           Previous
         </button>
+        <span className="text-sm text-gray-600 px-2">
+          Page {displayPage} of {totalPages}
+        </span>
         <button
           onClick={() => setCurrentPage(prev => (prev + 1) * tasksPerPage < totalTasks ? prev + 1 : prev)}
           disabled={(currentPage + 1) * tasksPerPage >= totalTasks}
-          className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           Next
+          <ChevronRight size={16} />
         </button>
       </div>
     </div>
