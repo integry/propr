@@ -4,11 +4,7 @@ import { Search, Filter, ChevronLeft, ChevronRight } from 'lucide-react';
 import { DraftListItem } from '../api/gitfixApi';
 import {
   getEffectiveStatus,
-  formatRelativeTime,
-  getStatusBadge,
-  getStatusLabel,
-  getStatusIcon,
-  renderIssueSummary
+  renderStatusStrip
 } from './PlansPageUtils';
 
 interface EmptyStateProps {
@@ -107,16 +103,9 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
               {draft.name || draft.initial_prompt}
             </span>
           </div>
-          {/* Bottom line: Metrics + Status + Time */}
-          <div className="flex items-center gap-3 text-xs">
-            {renderIssueSummary(draft.issue_summary)}
-            <span className={`px-2 inline-flex items-center gap-1 leading-5 font-semibold rounded-full ${getStatusBadge(effectiveStatus)}`}>
-              {getStatusIcon(effectiveStatus)}
-              {getStatusLabel(effectiveStatus)}
-            </span>
-            <span className="text-gray-500">
-              {formatRelativeTime(draft.updated_at)}
-            </span>
+          {/* Bottom line: Unified Status Strip */}
+          <div className="flex items-center text-xs">
+            {renderStatusStrip(draft.issue_summary, effectiveStatus, draft.updated_at)}
           </div>
         </Link>
       </td>
@@ -140,7 +129,7 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           )}
           <button
             onClick={(e) => onDelete(draft.draft_id, e)}
-            className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-red-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors opacity-0 group-hover:opacity-100"
+            className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-gray-500 bg-transparent rounded-md hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
           >
             Delete
           </button>
@@ -172,7 +161,7 @@ export const PaginationControls: React.FC<PaginationControlsProps> = ({
   if (totalPages <= 1) return null;
 
   return (
-    <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-slate-50">
+    <div className="flex items-center justify-between px-6 py-4">
       <span className="text-sm text-gray-600">
         Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, totalDrafts)} of {totalDrafts} plans
       </span>
@@ -206,27 +195,13 @@ interface PlansTableProps {
   abortingId: string | null;
   onDelete: (id: string, e: React.MouseEvent) => void;
   onAbort: (id: string, e: React.MouseEvent) => void;
-  currentPage: number;
-  totalPages: number;
-  totalDrafts: number;
-  pageSize: number;
-  hasMore: boolean;
-  loading: boolean;
-  onPageChange: (page: number) => void;
 }
 
 export const PlansTable: React.FC<PlansTableProps> = ({
   drafts,
   abortingId,
   onDelete,
-  onAbort,
-  currentPage,
-  totalPages,
-  totalDrafts,
-  pageSize,
-  hasMore,
-  loading,
-  onPageChange
+  onAbort
 }) => {
   return (
     <div className="flex flex-col h-full bg-white shadow rounded-lg overflow-hidden">
@@ -255,15 +230,6 @@ export const PlansTable: React.FC<PlansTableProps> = ({
           </tbody>
         </table>
       </div>
-      <PaginationControls
-        currentPage={currentPage}
-        totalPages={totalPages}
-        totalDrafts={totalDrafts}
-        pageSize={pageSize}
-        hasMore={hasMore}
-        loading={loading}
-        onPageChange={onPageChange}
-      />
     </div>
   );
 };

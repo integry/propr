@@ -4,7 +4,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem } from '../api/gitfixApi';
 import { Filter, Search, X } from 'lucide-react';
-import { EmptyState, PlansTable } from './PlansPageComponents';
+import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 
 const DEFAULT_PAGE_SIZE = 50;
 
@@ -266,13 +266,6 @@ const PlansPage: React.FC = () => {
         abortingId={abortingId}
         onDelete={handleDelete}
         onAbort={handleAbort}
-        currentPage={currentPage}
-        totalPages={totalPages}
-        totalDrafts={totalDrafts}
-        pageSize={DEFAULT_PAGE_SIZE}
-        hasMore={hasMore}
-        loading={loading}
-        onPageChange={handlePageChange}
       />
     );
   };
@@ -344,6 +337,21 @@ const PlansPage: React.FC = () => {
       <div className="flex-1 overflow-auto p-6">
         {renderContent()}
       </div>
+
+      {/* Anchored Footer */}
+      {drafts.length > 0 && totalPages > 1 && (
+        <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200">
+          <PaginationControls
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalDrafts={totalDrafts}
+            pageSize={DEFAULT_PAGE_SIZE}
+            hasMore={hasMore}
+            loading={loading}
+            onPageChange={handlePageChange}
+          />
+        </div>
+      )}
     </div>
   );
 };

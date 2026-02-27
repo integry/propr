@@ -1,5 +1,4 @@
 import React from 'react';
-import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, GitMerge, GitPullRequestArrow } from 'lucide-react';
 import { IssueSummary } from '../api/gitfixApi';
 
 /**
@@ -107,62 +106,64 @@ export const getStatusIcon = (status: string): React.ReactNode => {
 
 export const renderIssueSummary = (summary: IssueSummary | null | undefined): React.ReactNode => {
   if (!summary || summary.total === 0) {
-    return <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-gray-100 text-gray-500 rounded">No issues</span>;
+    return null;
   }
 
-  // Build metrics array for the Metrics Zone - using monospace code chip styling
-  const metrics: React.ReactNode[] = [];
+  // Build metrics array for the Status Strip - using monospace code chip styling with bullet separators
+  const metricItems: string[] = [];
 
-  // Total issues - always shown with code chip styling
-  metrics.push(
-    <span key="total" className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-gray-100 text-gray-600 rounded" title="Total Issues">
-      {summary.total} Issues
-    </span>
-  );
+  // Total issues - always shown
+  metricItems.push(`${summary.total} Issues`);
 
   // Processing - shown if > 0, using ⟳ symbol
   if (summary.processing > 0) {
-    metrics.push(
-      <span key="processing" className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-teal-50 text-teal-600 rounded" title="Processing">
-        {summary.processing} ⟳
-      </span>
-    );
+    metricItems.push(`${summary.processing} ⟳`);
   }
 
-  // Pending - shown if > 0, using ⚠️ symbol
+  // Pending - shown if > 0
   if (summary.pending > 0) {
-    metrics.push(
-      <span key="pending" className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-amber-50 text-amber-600 rounded" title="Pending">
-        {summary.pending} ⚠️
-      </span>
-    );
+    metricItems.push(`${summary.pending} pending`);
   }
 
   // Merged - shown if > 0, using ✓ symbol
   if (summary.merged > 0) {
-    metrics.push(
-      <span key="merged" className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-gray-100 text-gray-500 rounded" title="Merged">
-        {summary.merged} ✓
-      </span>
-    );
+    metricItems.push(`${summary.merged} ✓`);
   }
 
   // Closed - shown if > 0, using ✗ symbol
   if (summary.closed > 0) {
-    metrics.push(
-      <span key="closed" className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-red-50 text-red-600 rounded" title="Closed">
-        {summary.closed} ✗
-      </span>
-    );
+    metricItems.push(`${summary.closed} ✗`);
   }
 
+  return metricItems;
+};
+
+/**
+ * Renders the unified Status Strip combining issue metrics, status, and time
+ * Format: "3 Issues  •  3 ✓  •  Merged  •  2 hours ago"
+ */
+export const renderStatusStrip = (
+  summary: IssueSummary | null | undefined,
+  effectiveStatus: string,
+  updatedAt: string
+): React.ReactNode => {
+  const stripItems: string[] = [];
+
+  // Add issue metrics if available
+  const metrics = renderIssueSummary(summary);
+  if (metrics && Array.isArray(metrics)) {
+    stripItems.push(...metrics);
+  }
+
+  // Add status label
+  stripItems.push(getStatusLabel(effectiveStatus));
+
+  // Add relative time
+  stripItems.push(formatRelativeTime(updatedAt));
+
   return (
-    <div className="flex items-center gap-1.5 text-xs">
-      {metrics.map((metric, index) => (
-        <React.Fragment key={index}>
-          {metric}
-        </React.Fragment>
-      ))}
-    </div>
+    <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-600 rounded">
+      {stripItems.join('  •  ')}
+    </span>
   );
 };
