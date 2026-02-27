@@ -111,7 +111,7 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           </div>
           {/* Bottom line: Unified Status Strip */}
           <div className="flex items-center text-xs">
-            {renderStatusStrip(draft.issue_summary, effectiveStatus, draft.updated_at)}
+            {renderStatusStrip(draft.issue_summary, effectiveStatus)}
           </div>
         </Link>
       </td>

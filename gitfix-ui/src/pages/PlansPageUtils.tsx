@@ -144,8 +144,7 @@ export const renderIssueSummary = (summary: IssueSummary | null | undefined): Re
  */
 export const renderStatusStrip = (
   summary: IssueSummary | null | undefined,
-  effectiveStatus: string,
-  _updatedAt: string
+  effectiveStatus: string
 ): React.ReactNode => {
   return (
     <div className="flex items-center gap-2.5">
