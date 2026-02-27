@@ -19,10 +19,10 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
 
   return (
     <tr
-      className="hover:bg-gray-50 transition-colors cursor-pointer group bg-white"
+      className="hover:bg-gray-50 transition-colors cursor-pointer group bg-white border-b border-slate-100"
       onClick={() => onRowClick(task.id)}
     >
-      <td className="py-3 px-4 align-top">
+      <td className="py-3 px-6 align-top">
         <div className={`flex flex-col ${isDuplicateRepo ? 'opacity-30' : ''}`}>
           <span className="text-xs text-gray-400 font-normal">{group.repoOwner}</span>
           <span className="text-sm font-bold text-gray-800">{group.repoName}</span>
@@ -37,7 +37,7 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
               // Show PR badge if there's a PR number
               if (group.prNumber) {
                 badges.push(
-                  <span key="pr" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
+                  <span key="pr" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-xs font-mono font-medium text-slate-700 border border-slate-200">
                     <GitPullRequest size={12} className="text-purple-600" />
                     #{group.prNumber}
                   </span>
@@ -50,7 +50,7 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
               // Show Issue badge if it differs from PR number, or if there's no PR
               if (issueToShow && issueToShow !== group.prNumber) {
                 badges.push(
-                  <span key="issue" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
+                  <span key="issue" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-xs font-mono font-medium text-slate-700 border border-slate-200">
                     <CircleDot size={12} className="text-green-600" />
                     #{issueToShow}
                   </span>
@@ -60,7 +60,7 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
               // Fallback: if no badges, show task ID
               if (badges.length === 0) {
                 badges.push(
-                  <span key="fallback" className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-xs font-mono font-medium text-gray-700 border border-gray-200">
+                  <span key="fallback" className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 text-xs font-mono font-medium text-slate-700 border border-slate-200">
                     #{task.id.substring(0, 8)}
                   </span>
                 );
@@ -109,11 +109,11 @@ export const ParentTaskRow: React.FC<ParentTaskRowProps> = ({ group, task, onRow
         <div className="text-sm text-gray-800" title={new Date(task.createdAt).toLocaleString()}>
           {formatRelativeTime(task.createdAt)}
         </div>
-        <div className="text-xs text-gray-400 font-mono">
+        <div className="text-xs text-slate-400 font-mono">
           {formatDuration(task.processedAt || task.createdAt, task.completedAt)}
         </div>
       </td>
-      <td className="py-3 px-4 align-top text-right">
+      <td className="py-3 px-6 align-top text-right">
         <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors opacity-0 group-hover:opacity-100">
           <ChevronRight size={16} />
         </button>
@@ -145,10 +145,10 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
 
   return (
     <tr
-      className="hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30 group"
+      className="hover:bg-gray-50 transition-colors cursor-pointer bg-gray-50/30 group border-b border-slate-100"
       onClick={() => onRowClick(task.id)}
     >
-      <td className="py-3 px-4 align-top relative">
+      <td className="py-3 px-6 align-top relative">
          {/* Visual connector line placeholder if we wanted one spanning rows */}
       </td>
       <td className="py-0 px-4 align-top relative">
@@ -190,11 +190,11 @@ export const ChildTaskRow: React.FC<ChildTaskRowExtraProps> = ({ task, onRowClic
         <div className="text-sm text-gray-800" title={new Date(task.createdAt).toLocaleString()}>
           {formatRelativeTime(task.createdAt)}
         </div>
-        <div className="text-xs text-gray-400 font-mono">
+        <div className="text-xs text-slate-400 font-mono">
           {formatDuration(task.processedAt || task.createdAt, task.completedAt)}
         </div>
       </td>
-      <td className="py-3 px-4 align-top text-right">
+      <td className="py-3 px-6 align-top text-right">
          <button className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors opacity-0 group-hover:opacity-100">
             <ChevronRight size={16} />
          </button>
@@ -210,8 +210,8 @@ interface CollapseToggleRowProps {
 }
 
 export const CollapseToggleRow: React.FC<CollapseToggleRowProps> = ({ groupKey, hiddenCount, onToggle }) => (
-  <tr className="bg-gray-50/30">
-    <td className="py-3 px-4 align-top relative">
+  <tr className="bg-gray-50/30 border-b border-slate-100">
+    <td className="py-3 px-6 align-top relative">
        {/* Empty cell for repository column alignment */}
     </td>
     <td colSpan={4} className="py-0 px-4 align-top text-xs relative">

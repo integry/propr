@@ -270,112 +270,204 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     navigate(`/tasks/${taskId}`);
   };
 
-  if (loading && tasks.length === 0) return <div className="text-gray-500 p-4">Loading tasks...</div>;
-  if (error) return <div className="text-red-600 p-4">Error loading tasks: {error}</div>;
+  // Loading state
+  if (loading && tasks.length === 0) {
+    // For dashboard integration (hideFilters), use simple layout
+    if (hideFilters) {
+      return <div className="text-gray-500 p-4">Loading tasks...</div>;
+    }
+    // For main Tasks page, use full-height layout with header
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
+          <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>
+        </div>
+        <div className="flex-1 overflow-auto px-6 py-6">
+          <div className="text-gray-500">Loading tasks...</div>
+        </div>
+      </div>
+    );
+  }
 
+  // Error state
+  if (error) {
+    if (hideFilters) {
+      return <div className="text-red-600 p-4">Error loading tasks: {error}</div>;
+    }
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
+          <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>
+        </div>
+        <div className="flex-1 overflow-auto px-6 py-6">
+          <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">Error loading tasks: {error}</div>
+        </div>
+      </div>
+    );
+  }
+
+  const totalPages = Math.ceil(totalTasks / tasksPerPage);
+
+  // Render the table content
+  const renderTableContent = () => (
+    <>
+      {/* Mobile Card View */}
+      <div className="md:hidden space-y-3 px-4 py-4">
+        {groupedTasks.map((group) => (
+          <MobileTaskCard
+            key={group.key}
+            group={group}
+            expandedGroups={expandedGroups}
+            onRowClick={handleRowClick}
+            onToggleGroup={toggleGroup}
+          />
+        ))}
+      </div>
+
+      {/* Desktop Table View */}
+      <div className="hidden md:block">
+        <table className="w-full">
+          <thead className="sr-only">
+            <tr>
+              <th>Repository</th>
+              <th>Issue/Task</th>
+              <th>Status</th>
+              <th>Metadata</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody className="bg-white">
+            {groupedTasks.map((group, index) => {
+              const parentTask = group.tasks[0];
+              const allChildren = group.tasks.slice(1);
+
+              const isExpanded = expandedGroups.has(group.key);
+
+              // The "Last 3" Rule
+              // If group has many items (e.g. > 5 total, so > 4 children), collapse by default
+              // show collapse trigger if children > 3
+              const shouldCollapse = allChildren.length > 3;
+
+              let visibleChildren = allChildren;
+              let hiddenCount = 0;
+
+              if (shouldCollapse && !isExpanded) {
+                visibleChildren = allChildren.slice(0, 3);
+                hiddenCount = allChildren.length - 3;
+              }
+
+              // Check if this group's repository is the same as the previous one
+              const prevGroup = index > 0 ? groupedTasks[index - 1] : null;
+              const isDuplicateRepo = prevGroup
+                ? prevGroup.repoOwner === group.repoOwner && prevGroup.repoName === group.repoName
+                : false;
+
+              return (
+                <React.Fragment key={group.key}>
+                  <ParentTaskRow group={group} task={parentTask} onRowClick={handleRowClick} isDuplicateRepo={isDuplicateRepo} />
+
+                  {visibleChildren.map((child, childIndex) => (
+                    <ChildTaskRow
+                      key={child.id}
+                      task={child}
+                      onRowClick={handleRowClick}
+                      isLastChild={childIndex === visibleChildren.length - 1 && hiddenCount === 0}
+                    />
+                  ))}
+
+                  {hiddenCount > 0 && (
+                    <CollapseToggleRow groupKey={group.key} hiddenCount={hiddenCount} onToggle={toggleGroup} />
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+
+  // Dashboard integration: simpler layout without anchored header/footer
+  if (hideFilters) {
+    return (
+      <div>
+        <Filters
+          hideFilters={hideFilters}
+          showViewAll={showViewAll}
+          filter={filter}
+          setFilter={setFilter}
+          repoFilter={repoFilter}
+          setRepoFilter={setRepoFilter}
+          availableRepos={availableRepos}
+          reposLoading={reposLoading}
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
+        />
+
+        {tasks.length === 0 ? (
+          <p className="text-gray-500 text-center py-8">No tasks found</p>
+        ) : (
+          renderTableContent()
+        )}
+
+        <Pagination
+          hideFilters={hideFilters}
+          totalTasks={totalTasks}
+          tasksPerPage={tasksPerPage}
+          currentPage={currentPage}
+          setCurrentPage={setCurrentPage}
+        />
+      </div>
+    );
+  }
+
+  // Main Tasks page: full-height flex layout with anchored header/footer
   return (
-    <div>
-      <Filters
-        hideFilters={hideFilters}
-        showViewAll={showViewAll}
-        filter={filter}
-        setFilter={setFilter}
-        repoFilter={repoFilter}
-        setRepoFilter={setRepoFilter}
-        availableRepos={availableRepos}
-        reposLoading={reposLoading}
-        searchQuery={searchQuery}
-        setSearchQuery={setSearchQuery}
-      />
+    <>
+      {/* Anchored Header */}
+      <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
+        <Filters
+          hideFilters={hideFilters}
+          showViewAll={showViewAll}
+          filter={filter}
+          setFilter={setFilter}
+          repoFilter={repoFilter}
+          setRepoFilter={setRepoFilter}
+          availableRepos={availableRepos}
+          reposLoading={reposLoading}
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
+        />
+      </div>
 
-      {tasks.length === 0 ? (
-        <p className="text-gray-500 text-center py-8">No tasks found</p>
-      ) : (
-        <>
-          {/* Mobile Card View */}
-          <div className="md:hidden space-y-3">
-            {groupedTasks.map((group) => (
-              <MobileTaskCard
-                key={group.key}
-                group={group}
-                expandedGroups={expandedGroups}
-                onRowClick={handleRowClick}
-                onToggleGroup={toggleGroup}
-              />
-            ))}
+      {/* Scrollable Content Area */}
+      <div className="flex-1 overflow-auto">
+        {tasks.length === 0 ? (
+          <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+            <p className="text-gray-500">No tasks found</p>
           </div>
-
-          {/* Desktop Table View */}
-          <div className="hidden md:block overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-200 bg-gray-50/50">
-                  <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-48">Repository</th>
-                  <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Issue/Task</th>
-                  <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-32">Status</th>
-                  <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-36">Metadata</th>
-                  <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-16"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {groupedTasks.map((group, index) => {
-                  const parentTask = group.tasks[0];
-                  const allChildren = group.tasks.slice(1);
-
-                  const isExpanded = expandedGroups.has(group.key);
-
-                  // The "Last 3" Rule
-                  // If group has many items (e.g. > 5 total, so > 4 children), collapse by default
-                  // show collapse trigger if children > 3
-                  const shouldCollapse = allChildren.length > 3;
-
-                  let visibleChildren = allChildren;
-                  let hiddenCount = 0;
-
-                  if (shouldCollapse && !isExpanded) {
-                    visibleChildren = allChildren.slice(0, 3);
-                    hiddenCount = allChildren.length - 3;
-                  }
-
-                  // Check if this group's repository is the same as the previous one
-                  const prevGroup = index > 0 ? groupedTasks[index - 1] : null;
-                  const isDuplicateRepo = prevGroup
-                    ? prevGroup.repoOwner === group.repoOwner && prevGroup.repoName === group.repoName
-                    : false;
-
-                  return (
-                    <React.Fragment key={group.key}>
-                      <ParentTaskRow group={group} task={parentTask} onRowClick={handleRowClick} isDuplicateRepo={isDuplicateRepo} />
-
-                      {visibleChildren.map((child, childIndex) => (
-                        <ChildTaskRow
-                          key={child.id}
-                          task={child}
-                          onRowClick={handleRowClick}
-                          isLastChild={childIndex === visibleChildren.length - 1 && hiddenCount === 0}
-                        />
-                      ))}
-
-                      {hiddenCount > 0 && (
-                        <CollapseToggleRow groupKey={group.key} hiddenCount={hiddenCount} onToggle={toggleGroup} />
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
+        ) : (
+          <div className="flex flex-col h-full bg-white">
+            <div className="flex-1 overflow-auto">
+              {renderTableContent()}
+            </div>
           </div>
-        </>
+        )}
+      </div>
+
+      {/* Anchored Footer */}
+      {tasks.length > 0 && totalPages > 1 && (
+        <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200">
+          <Pagination
+            hideFilters={false}
+            totalTasks={totalTasks}
+            tasksPerPage={tasksPerPage}
+            currentPage={currentPage}
+            setCurrentPage={setCurrentPage}
+          />
+        </div>
       )}
-
-      <Pagination
-        hideFilters={hideFilters}
-        totalTasks={totalTasks}
-        tasksPerPage={tasksPerPage}
-        currentPage={currentPage}
-        setCurrentPage={setCurrentPage}
-      />
-    </div>
+    </>
   );
 };
 
