@@ -7,6 +7,78 @@ import { Pagination } from './TaskList/Pagination';
 import { ParentTaskRow, ChildTaskRow, CollapseToggleRow } from './TaskList/TaskRows';
 import { MobileTaskCard } from './TaskList/MobileTaskCard';
 
+/**
+ * Groups tasks by PR number, issue number, or task ID for display.
+ * Merges issue-based groups into PR-based groups when linked.
+ */
+function groupTasksForDisplay(tasks: Task[]): TaskGroup[] {
+  const groups: Record<string, TaskGroup> = {};
+  const issueToPrMap: Record<string, string> = {};
+
+  // First pass: create initial groups and build issue-to-PR mapping
+  tasks.forEach(task => {
+    let owner = task.repositoryOwner;
+    let name = task.repositoryName;
+
+    if (!owner || !name) {
+      const parts = (task.repository || 'unknown/unknown').split('/');
+      owner = parts[0] || 'unknown';
+      name = parts[1] || 'unknown';
+    }
+
+    const repoPrefix = `${owner}/${name}`;
+
+    if (task.prNumber && task.linkedIssueNumber) {
+      const issueKey = `${repoPrefix}-issue-${task.linkedIssueNumber}`;
+      const prKey = `${repoPrefix}-pr-${task.prNumber}`;
+      issueToPrMap[issueKey] = prKey;
+    }
+
+    let key: string;
+    if (task.prNumber) {
+      key = `${repoPrefix}-pr-${task.prNumber}`;
+    } else if (task.issueNumber) {
+      key = `${repoPrefix}-issue-${task.issueNumber}`;
+    } else {
+      key = task.id;
+    }
+
+    if (!groups[key]) {
+      groups[key] = {
+        key,
+        repoOwner: owner,
+        repoName: name,
+        prNumber: task.prNumber,
+        tasks: []
+      };
+    }
+    groups[key].tasks.push(task);
+  });
+
+  // Second pass: merge issue-based groups into their corresponding PR groups
+  Object.entries(issueToPrMap).forEach(([issueKey, prKey]) => {
+    if (groups[issueKey] && groups[prKey]) {
+      groups[prKey].tasks.push(...groups[issueKey].tasks);
+      delete groups[issueKey];
+    }
+  });
+
+  // Sort tasks within each group by creation date (newest first)
+  Object.values(groups).forEach(group => {
+    group.tasks.sort((a, b) => {
+      const dateA = new Date(a.createdAt).getTime();
+      const dateB = new Date(b.createdAt).getTime();
+      return dateB - dateA;
+    });
+  });
+
+  return Object.values(groups).sort((a, b) => {
+    const dateA = new Date(a.tasks[0].createdAt).getTime();
+    const dateB = new Date(b.tasks[0].createdAt).getTime();
+    return dateB - dateA;
+  });
+}
+
 const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -173,85 +245,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     return () => clearInterval(interval);
   }, [filter, tasksPerPage, currentPage, repoFilter, debouncedSearch]);
 
-  const groupedTasks = useMemo(() => {
-    const groups: Record<string, TaskGroup> = {};
-    // Track issue-to-PR mapping: when a PR task has linkedIssueNumber,
-    // map that issue to the PR for merging groups
-    const issueToPrMap: Record<string, string> = {};
-
-    // First pass: create initial groups and build issue-to-PR mapping
-    tasks.forEach(task => {
-      // robustly handle owner/name splitting
-      let owner = task.repositoryOwner;
-      let name = task.repositoryName;
-
-      if (!owner || !name) {
-        const parts = (task.repository || 'unknown/unknown').split('/');
-        owner = parts[0] || 'unknown';
-        name = parts[1] || 'unknown';
-      }
-
-      const repoPrefix = `${owner}/${name}`;
-
-      // If this task has a PR and a linkedIssueNumber, record the mapping
-      // This allows us to merge issue-based groups into PR-based groups
-      if (task.prNumber && task.linkedIssueNumber) {
-        const issueKey = `${repoPrefix}-issue-${task.linkedIssueNumber}`;
-        const prKey = `${repoPrefix}-pr-${task.prNumber}`;
-        issueToPrMap[issueKey] = prKey;
-      }
-
-      // Group tasks by PR number if available, otherwise by issue number, or task ID
-      let key: string;
-      if (task.prNumber) {
-        // Group by PR number (preferred)
-        key = `${repoPrefix}-pr-${task.prNumber}`;
-      } else if (task.issueNumber) {
-        // Group by issue number if no PR number is available
-        key = `${repoPrefix}-issue-${task.issueNumber}`;
-      } else {
-        // Fallback to task ID if neither PR nor issue number is available
-        key = task.id;
-      }
-
-      if (!groups[key]) {
-        groups[key] = {
-          key,
-          repoOwner: owner,
-          repoName: name,
-          prNumber: task.prNumber,
-          tasks: []
-        };
-      }
-      groups[key].tasks.push(task);
-    });
-
-    // Second pass: merge issue-based groups into their corresponding PR groups
-    Object.entries(issueToPrMap).forEach(([issueKey, prKey]) => {
-      if (groups[issueKey] && groups[prKey]) {
-        // Merge issue group tasks into PR group
-        groups[prKey].tasks.push(...groups[issueKey].tasks);
-        // Remove the issue group
-        delete groups[issueKey];
-      }
-    });
-
-    // Sort tasks within each group by creation date (newest first)
-    Object.values(groups).forEach(group => {
-      group.tasks.sort((a, b) => {
-        const dateA = new Date(a.createdAt).getTime();
-        const dateB = new Date(b.createdAt).getTime();
-        return dateB - dateA;
-      });
-    });
-
-    return Object.values(groups).sort((a, b) => {
-      // Sort groups by the date of their most recent task
-      const dateA = new Date(a.tasks[0].createdAt).getTime();
-      const dateB = new Date(b.tasks[0].createdAt).getTime();
-      return dateB - dateA;
-    });
-  }, [tasks]);
+  const groupedTasks = useMemo(() => groupTasksForDisplay(tasks), [tasks]);
 
   const toggleGroup = (groupKey: string, e: React.MouseEvent) => {
     e.stopPropagation();
