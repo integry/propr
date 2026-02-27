@@ -35,16 +35,24 @@ export const formatRelativeTime = (dateString: string): string => {
 export const getStatusBadge = (status: string): string => {
   switch (status) {
     case 'merged':
-      return 'bg-purple-100 text-purple-800';
+      // Quiet Success: muted gray for completed work
+      return 'bg-gray-100 text-gray-500';
     case 'executed':
-      return 'bg-green-100 text-green-800';
+      // Active status: Brand Teal
+      return 'bg-teal-100 text-teal-800';
     case 'pr_created':
-      return 'bg-cyan-100 text-cyan-800';
+      // Active status: Brand Teal
+      return 'bg-teal-100 text-teal-800';
     case 'review':
-      return 'bg-blue-100 text-blue-800';
+      // Active status: Brand Teal
+      return 'bg-teal-100 text-teal-800';
     case 'generating':
     case 'refining':
-      return 'bg-yellow-100 text-yellow-800';
+      // Active status: Brand Teal
+      return 'bg-teal-100 text-teal-800';
+    case 'draft':
+      // Draft status: amber outline
+      return 'bg-transparent border border-amber-400 text-amber-600';
     default:
       return 'bg-gray-100 text-gray-800';
   }
@@ -74,16 +82,24 @@ export const getStatusLabel = (status: string): string => {
 export const getStatusIcon = (status: string): React.ReactNode => {
   switch (status) {
     case 'merged':
-      return <GitMerge size={12} className="text-purple-600" />;
+      // Quiet Success: muted gray for completed work
+      return <GitMerge size={12} className="text-gray-400" />;
     case 'executed':
-      return <CheckCircle size={12} className="text-green-600" />;
+      // Active status: Brand Teal
+      return <CheckCircle size={12} className="text-teal-600" />;
     case 'pr_created':
-      return <GitPullRequestArrow size={12} className="text-cyan-600" />;
+      // Active status: Brand Teal
+      return <GitPullRequestArrow size={12} className="text-teal-600" />;
     case 'review':
-      return <Settings2 size={12} className="text-blue-600" />;
+      // Active status: Brand Teal
+      return <Settings2 size={12} className="text-teal-600" />;
     case 'generating':
     case 'refining':
-      return <Loader2 size={12} className="text-yellow-600 animate-spin" />;
+      // Active status: Brand Teal
+      return <Loader2 size={12} className="text-teal-600 animate-spin" />;
+    case 'draft':
+      // Draft status: amber
+      return <Clock size={12} className="text-amber-500" />;
     default:
       return <Clock size={12} className="text-gray-500" />;
   }
@@ -91,39 +107,63 @@ export const getStatusIcon = (status: string): React.ReactNode => {
 
 export const renderIssueSummary = (summary: IssueSummary | null | undefined): React.ReactNode => {
   if (!summary || summary.total === 0) {
-    return <span className="text-gray-400 text-sm">No issues</span>;
+    return <span className="text-gray-400 text-sm font-mono">No issues</span>;
+  }
+
+  // Build metrics array for the Metrics Zone
+  const metrics: React.ReactNode[] = [];
+
+  // Total issues - always shown
+  metrics.push(
+    <span key="total" className="font-mono text-gray-600" title="Total Issues">
+      [ <span className="font-mono">{summary.total}</span> Issues ]
+    </span>
+  );
+
+  // Processing - shown if > 0, using ⟳ symbol
+  if (summary.processing > 0) {
+    metrics.push(
+      <span key="processing" className="font-mono text-teal-600" title="Processing">
+        [ <span className="font-mono">{summary.processing}</span> ⟳ ]
+      </span>
+    );
+  }
+
+  // Pending - shown if > 0, using ⚠️ symbol
+  if (summary.pending > 0) {
+    metrics.push(
+      <span key="pending" className="font-mono text-amber-600" title="Pending">
+        [ <span className="font-mono">{summary.pending}</span> ⚠️ ]
+      </span>
+    );
+  }
+
+  // Merged - shown if > 0, using ✓ symbol
+  if (summary.merged > 0) {
+    metrics.push(
+      <span key="merged" className="font-mono text-gray-500" title="Merged">
+        [ <span className="font-mono">{summary.merged}</span> ✓ ]
+      </span>
+    );
+  }
+
+  // Closed - shown if > 0, using ✗ symbol
+  if (summary.closed > 0) {
+    metrics.push(
+      <span key="closed" className="font-mono text-red-600" title="Closed">
+        [ <span className="font-mono">{summary.closed}</span> ✗ ]
+      </span>
+    );
   }
 
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="flex items-center gap-1 text-gray-600">
-        <AlertCircle size={12} />
-        {summary.total}
-      </span>
-      {summary.processing > 0 && (
-        <span className="flex items-center gap-1 text-blue-600" title="Processing">
-          <Play size={12} />
-          {summary.processing}
-        </span>
-      )}
-      {summary.pending > 0 && (
-        <span className="flex items-center gap-1 text-yellow-600" title="Pending">
-          <Clock size={12} />
-          {summary.pending}
-        </span>
-      )}
-      {summary.merged > 0 && (
-        <span className="flex items-center gap-1 text-green-600" title="Merged">
-          <GitPullRequest size={12} />
-          {summary.merged}
-        </span>
-      )}
-      {summary.closed > 0 && (
-        <span className="flex items-center gap-1 text-red-600" title="Closed">
-          <XCircle size={12} />
-          {summary.closed}
-        </span>
-      )}
+    <div className="flex items-center gap-1 text-xs font-mono">
+      {metrics.map((metric, index) => (
+        <React.Fragment key={index}>
+          {index > 0 && <span className="text-gray-400 mx-1">•</span>}
+          {metric}
+        </React.Fragment>
+      ))}
     </div>
   );
 };
