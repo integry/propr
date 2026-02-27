@@ -141,6 +141,36 @@ export async function ensureConfigRepoExists(): Promise<boolean> {
     return true;
 }
 
+// --- Auto-Followup Score Threshold ---
+
+/**
+ * Default threshold for auto-followup on low implementation scores.
+ * Range: 0-9 (0 = disabled, 1-9 = trigger if score is at or below this value)
+ */
+const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
+
+/**
+ * Loads the auto-followup score threshold from the database.
+ * Returns 0 if disabled, or a value 1-9 indicating the threshold.
+ */
+export async function loadAutoFollowupScoreThreshold(): Promise<number> {
+    const threshold = await getConfig<number>('auto_followup_score_threshold', DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD);
+    logger.info({ auto_followup_score_threshold: threshold }, 'Successfully loaded auto-followup score threshold');
+    return threshold;
+}
+
+/**
+ * Saves the auto-followup score threshold to the database.
+ * @param threshold - Value 0-9 (0 = disabled, 1-9 = threshold value)
+ */
+export async function saveAutoFollowupScoreThreshold(threshold: number): Promise<boolean> {
+    // Validate the threshold is within the valid range
+    const validThreshold = Math.max(0, Math.min(9, Math.floor(threshold)));
+    await saveConfig('auto_followup_score_threshold', validThreshold);
+    logger.info({ auto_followup_score_threshold: validThreshold }, 'Successfully saved auto-followup score threshold');
+    return true;
+}
+
 export async function loadFollowupKeywords(): Promise<string[]> {
     const keywords = await getConfig<string[]>('followup_keywords', []);
     logger.info({ followup_keywords: keywords }, 'Successfully loaded followup keywords');

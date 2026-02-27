@@ -159,7 +159,10 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const settings = await configManager.loadSettings();
+      const [settings, autoFollowupThreshold] = await Promise.all([
+        configManager.loadSettings(),
+        configManager.loadAutoFollowupScoreThreshold()
+      ]);
       const envDefaults = {
         worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
         github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()),
@@ -172,7 +175,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         github_user_whitelist: settings.github_user_whitelist || envDefaults.github_user_whitelist,
         analysis_model_fast: settings.analysis_model_fast || envDefaults.analysis_model_fast,
         planner_context_model: settings.planner_context_model || envDefaults.planner_context_model,
-        planner_generation_model: settings.planner_generation_model || envDefaults.planner_generation_model
+        planner_generation_model: settings.planner_generation_model || envDefaults.planner_generation_model,
+        auto_followup_score_threshold: autoFollowupThreshold
       };
       res.json(mergedSettings);
     } catch (error) {
@@ -189,7 +193,20 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return { status: 400, body: { error: 'settings object is required' } };
       }
 
-      await configManager.saveSettings(settings);
+      // Handle auto_followup_score_threshold separately since it's stored in its own key
+      const { auto_followup_score_threshold, ...otherSettings } = settings;
+
+      const savePromises: Promise<boolean>[] = [configManager.saveSettings(otherSettings)];
+
+      if (auto_followup_score_threshold !== undefined) {
+        const threshold = parseInt(auto_followup_score_threshold, 10);
+        if (isNaN(threshold) || threshold < 0 || threshold > 9) {
+          return { status: 400, body: { error: 'auto_followup_score_threshold must be a number between 0 and 9' } };
+        }
+        savePromises.push(configManager.saveAutoFollowupScoreThreshold(threshold));
+      }
+
+      await Promise.all(savePromises);
 
       // Publish config update event
       await publishConfigUpdate('settings_update');

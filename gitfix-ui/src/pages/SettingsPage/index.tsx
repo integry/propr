@@ -159,10 +159,16 @@ const SettingsPage: React.FC = () => {
             {/* Horizontal divider */}
             <div className="border-t border-gray-200 pt-6">
               <GeneralSettingsSection
-                settings={{ worker_concurrency: settings.worker_concurrency }}
-                onSettingChange={(e) =>
-                  setSettings(prev => ({ ...prev, [e.target.name]: e.target.value }))
-                }
+                settings={{
+                  worker_concurrency: settings.worker_concurrency,
+                  auto_followup_score_threshold: settings.auto_followup_score_threshold
+                }}
+                onSettingChange={(e) => {
+                  const value = e.target.name === 'auto_followup_score_threshold'
+                    ? parseInt(e.target.value, 10)
+                    : e.target.value;
+                  setSettings(prev => ({ ...prev, [e.target.name]: value }));
+                }}
                 onBlur={triggerAutoSave}
               />
             </div>

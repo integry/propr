@@ -60,7 +60,8 @@ export function useSettingsState() {
     analysis_model_fast: '',
     planner_context_model: '',
     planner_generation_model: '',
-    default_agent_alias: ''
+    default_agent_alias: '',
+    auto_followup_score_threshold: 4
   });
   const [prLabel, setPrLabel] = useState('');
 
@@ -109,6 +110,7 @@ export function useSettingsState() {
           planner_generation_model?: string;
           default_agent_alias?: string;
           github_user_whitelist?: string[];
+          auto_followup_score_threshold?: number;
         };
         const keywordsData = kData as { followup_keywords?: string[] };
         const ignoreKeywordsData = ignoreData as { followup_ignore_keywords?: string[] };
@@ -130,7 +132,8 @@ export function useSettingsState() {
           analysis_model_fast: settingsData.analysis_model_fast || '',
           planner_context_model: settingsData.planner_context_model || '',
           planner_generation_model: settingsData.planner_generation_model || '',
-          default_agent_alias: defaultAgentAlias
+          default_agent_alias: defaultAgentAlias,
+          auto_followup_score_threshold: settingsData.auto_followup_score_threshold ?? 4
         });
 
         // Parse Whitelist
@@ -207,7 +210,8 @@ export function useSettingsState() {
           analysis_model_fast: settingsToSave.analysis_model_fast,
           planner_context_model: settingsToSave.planner_context_model,
           planner_generation_model: settingsToSave.planner_generation_model,
-          default_agent_alias: settingsToSave.default_agent_alias
+          default_agent_alias: settingsToSave.default_agent_alias,
+          auto_followup_score_threshold: settingsToSave.auto_followup_score_threshold
         }),
         updatePrLabel(prLabelToSave.trim()),
         updatePrimaryProcessingLabels(primaryLabelsToSave),

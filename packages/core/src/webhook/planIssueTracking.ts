@@ -94,7 +94,7 @@ async function linkPRToReferencedPlanIssue(
 }
 
 /**
- * Handles Epic PR opened events - adds auto-merge label if child issues have it.
+ * Handles Epic PR opened events - adds PR label
  * This allows users to post followup comments on Epic PRs for refinement.
  */
 async function handleEpicPROpened(
@@ -114,46 +114,18 @@ async function handleEpicPROpened(
             return;
         }
 
-        // Check if any referenced issue has the auto-merge label
+        // Add the PR label to the Epic PR (same label used for regular PRs)
+        // This allows followup comments on Epic PRs to trigger refinement
+        const prLabel = await loadPrLabel();
         const octokit = await getAuthenticatedOctokit();
-        let hasAutoMerge = false;
 
-        for (const ref of issueRefs) {
-            const issueNumber = parseInt(ref.replace('#', ''), 10);
-            if (isNaN(issueNumber)) continue;
-
-            try {
-                const issueResponse = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-                    owner,
-                    repo,
-                    issue_number: issueNumber
-                });
-
-                const labels = issueResponse.data.labels as Array<{ name: string } | string>;
-                hasAutoMerge = labels.some(label =>
-                    (typeof label === 'string' ? label : label.name) === 'auto-merge'
-                );
-
-                if (hasAutoMerge) break;
-            } catch {
-                // Issue might not exist or be inaccessible, continue checking others
-                continue;
-            }
-        }
-
-        if (hasAutoMerge) {
-            // Add the PR label to the Epic PR (same label used for regular PRs)
-            // This allows followup comments on Epic PRs to trigger refinement
-            const prLabel = await loadPrLabel();
-
-            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-                owner,
-                repo,
-                issue_number: prNumber,
-                labels: [prLabel]
-            });
-            log.info({ repository, prNumber, label: prLabel }, 'Added PR label to Epic PR for followup handling');
-        }
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+            owner,
+            repo,
+            issue_number: prNumber,
+            labels: [prLabel]
+        });
+        log.info({ repository, prNumber, label: prLabel }, 'Added PR label to Epic PR for followup handling');
     } catch (error) {
         log.warn({
             repository,
