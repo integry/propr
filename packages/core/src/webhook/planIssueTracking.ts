@@ -117,6 +117,7 @@ async function handleEpicPROpened(
         // Add the PR label to the Epic PR (same label used for regular PRs)
         // This allows followup comments on Epic PRs to trigger refinement
         const prLabel = await loadPrLabel();
+        const octokit = await getAuthenticatedOctokit();
 
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
             owner,
