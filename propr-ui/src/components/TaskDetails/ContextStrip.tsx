@@ -47,6 +47,154 @@ const Dot: React.FC = () => (
   <span className="text-gray-300 mx-1.5">•</span>
 );
 
+// Repository link component
+const RepoLink: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => (
+  <>
+    <a
+      href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1 text-gray-700 hover:text-blue-600 transition-colors"
+    >
+      <GitHubIcon size={12} className="text-gray-500" />
+      <span className="font-medium">{taskInfo.repoOwner}/{taskInfo.repoName}</span>
+    </a>
+    <Dot />
+  </>
+);
+
+// Issue/PR number chip component
+const IssuePRChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => (
+  <>
+    <a
+      href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/${taskInfo.type === 'pr-comment' ? 'pull' : 'issues'}/${taskInfo.number}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1 bg-gray-100 text-gray-700 hover:text-blue-600 hover:bg-blue-50 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
+      title={taskInfo.type === 'pr-comment' ? `Pull Request #${taskInfo.number}` : `Issue #${taskInfo.number}`}
+    >
+      {taskInfo.type === 'pr-comment' ? 'PR' : '#'}{taskInfo.number}
+      <ExternalLink size={10} className="opacity-60" />
+    </a>
+    <Dot />
+  </>
+);
+
+// Linked issue chip for PR tasks
+const LinkedIssueChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
+  if (taskInfo.type !== 'pr-comment' || !taskInfo.issueNumber) return null;
+  return (
+    <>
+      <a
+        href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/issues/${taskInfo.issueNumber}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 bg-orange-50 text-orange-700 hover:bg-orange-100 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
+        title={`Original Issue #${taskInfo.issueNumber}`}
+      >
+        #{taskInfo.issueNumber}
+        <ExternalLink size={10} className="opacity-60" />
+      </a>
+      <Dot />
+    </>
+  );
+};
+
+// Task ID chip component
+const TaskIdChip: React.FC<{ taskId: string }> = ({ taskId }) => (
+  <>
+    <span
+      className="inline-flex items-center bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded font-mono text-[11px]"
+      title={`Task ID: ${taskId}`}
+    >
+      {taskId.length > 12 ? `${taskId.substring(0, 8)}...` : taskId}
+    </span>
+    <Dot />
+  </>
+);
+
+// Model chip component
+const ModelChip: React.FC<{ modelName: string; duration?: number | null }> = ({ modelName, duration }) => (
+  <>
+    <span
+      className="inline-flex items-center gap-1 bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded font-mono text-[11px]"
+      title={modelName}
+    >
+      <ProviderLogo provider={modelName} className="w-3 h-3" />
+      {getDisplayModelName(modelName)}
+    </span>
+    {duration !== null && duration !== undefined && (
+      <span className="ml-1.5 text-gray-400 font-mono text-[11px]">
+        {formatRelativeTime(duration)}
+      </span>
+    )}
+  </>
+);
+
+// PR info chip component
+const PRInfoChip: React.FC<{ prInfo: { url?: string; number?: number } }> = ({ prInfo }) => {
+  if (!prInfo.url) return null;
+  return (
+    <>
+      <Dot />
+      <a
+        href={prInfo.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 bg-green-50 text-green-700 hover:bg-green-100 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
+      >
+        <GitPullRequest size={10} />
+        PR #{prInfo.number}
+        <ExternalLink size={10} className="opacity-60" />
+      </a>
+    </>
+  );
+};
+
+// Commit info chip component
+const CommitInfoChip: React.FC<{ commitInfo: { shortHash: string; url: string } }> = ({ commitInfo }) => {
+  if (!commitInfo.shortHash || !commitInfo.url) return null;
+  return (
+    <>
+      <Dot />
+      <a
+        href={commitInfo.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 bg-gray-100 text-gray-600 hover:text-gray-800 hover:bg-gray-200 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
+        title="View commit on GitHub"
+      >
+        <GitCommit size={10} />
+        {commitInfo.shortHash}
+      </a>
+    </>
+  );
+};
+
+// Token usage chip component
+const TokenUsageChip: React.FC<{ tokenUsage: TokenUsage }> = ({ tokenUsage }) => {
+  const inputTokens = (tokenUsage.input_tokens ?? 0) +
+    (tokenUsage.cache_creation_input_tokens ?? 0) +
+    (tokenUsage.cache_read_input_tokens ?? 0);
+  const outputTokens = tokenUsage.output_tokens ?? 0;
+  const hasTokens = inputTokens > 0 || outputTokens > 0;
+
+  if (!hasTokens) return null;
+
+  return (
+    <>
+      <Dot />
+      <span
+        className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-mono text-[11px]"
+        title={`Input: ${tokenUsage.input_tokens ?? 0} | Output: ${tokenUsage.output_tokens ?? 0}${tokenUsage.cache_read_input_tokens ? ` | Cache Read: ${tokenUsage.cache_read_input_tokens}` : ''}${tokenUsage.cache_creation_input_tokens ? ` | Cache Creation: ${tokenUsage.cache_creation_input_tokens}` : ''}`}
+      >
+        <Zap size={10} />
+        {formatTokenCount(inputTokens)}/{formatTokenCount(outputTokens)}
+      </span>
+    </>
+  );
+};
+
 interface ContextStripProps {
   taskInfo: TaskInfo | null;
   modelName: string;
@@ -66,143 +214,16 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   tokenUsage,
   taskId
 }) => {
-  // Calculate total tokens
-  const inputTokens = tokenUsage
-    ? (tokenUsage.input_tokens ?? 0) +
-      (tokenUsage.cache_creation_input_tokens ?? 0) +
-      (tokenUsage.cache_read_input_tokens ?? 0)
-    : 0;
-  const outputTokens = tokenUsage?.output_tokens ?? 0;
-  const hasTokens = inputTokens > 0 || outputTokens > 0;
-
   return (
     <div className="flex items-center flex-wrap gap-y-1 text-xs text-gray-600 py-2 border-b border-gray-100">
-      {/* Repository */}
-      {taskInfo && (
-        <>
-          <a
-            href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-gray-700 hover:text-blue-600 transition-colors"
-          >
-            <GitHubIcon size={12} className="text-gray-500" />
-            <span className="font-medium">{taskInfo.repoOwner}/{taskInfo.repoName}</span>
-          </a>
-          <Dot />
-        </>
-      )}
-
-      {/* Issue/PR Number - Code Chip style */}
-      {taskInfo && (
-        <>
-          <a
-            href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/${taskInfo.type === 'pr-comment' ? 'pull' : 'issues'}/${taskInfo.number}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 bg-gray-100 text-gray-700 hover:text-blue-600 hover:bg-blue-50 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
-            title={taskInfo.type === 'pr-comment' ? `Pull Request #${taskInfo.number}` : `Issue #${taskInfo.number}`}
-          >
-            {taskInfo.type === 'pr-comment' ? 'PR' : '#'}{taskInfo.number}
-            <ExternalLink size={10} className="opacity-60" />
-          </a>
-          <Dot />
-        </>
-      )}
-
-      {/* Linked Issue for PR tasks */}
-      {taskInfo?.type === 'pr-comment' && taskInfo.issueNumber && (
-        <>
-          <a
-            href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/issues/${taskInfo.issueNumber}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 bg-orange-50 text-orange-700 hover:bg-orange-100 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
-            title={`Original Issue #${taskInfo.issueNumber}`}
-          >
-            #{taskInfo.issueNumber}
-            <ExternalLink size={10} className="opacity-60" />
-          </a>
-          <Dot />
-        </>
-      )}
-
-      {/* Task ID - Monospace Code Chip */}
-      {taskId && (
-        <>
-          <span
-            className="inline-flex items-center bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded font-mono text-[11px]"
-            title={`Task ID: ${taskId}`}
-          >
-            {taskId.length > 12 ? `${taskId.substring(0, 8)}...` : taskId}
-          </span>
-          <Dot />
-        </>
-      )}
-
-      {/* Agent/Model - Monospace Code Chip with Provider Logo */}
-      <span
-        className="inline-flex items-center gap-1 bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded font-mono text-[11px]"
-        title={modelName}
-      >
-        <ProviderLogo provider={modelName} className="w-3 h-3" />
-        {getDisplayModelName(modelName)}
-      </span>
-
-      {/* Duration - Gray monospace label next to model */}
-      {duration !== null && duration !== undefined && (
-        <span className="ml-1.5 text-gray-400 font-mono text-[11px]">
-          {formatRelativeTime(duration)}
-        </span>
-      )}
-
-      {/* PR Info */}
-      {prInfo?.url && (
-        <>
-          <Dot />
-          <a
-            href={prInfo.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 bg-green-50 text-green-700 hover:bg-green-100 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
-          >
-            <GitPullRequest size={10} />
-            PR #{prInfo.number}
-            <ExternalLink size={10} className="opacity-60" />
-          </a>
-        </>
-      )}
-
-      {/* Commit Info */}
-      {commitInfo?.shortHash && commitInfo?.url && (
-        <>
-          <Dot />
-          <a
-            href={commitInfo.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 bg-gray-100 text-gray-600 hover:text-gray-800 hover:bg-gray-200 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
-            title="View commit on GitHub"
-          >
-            <GitCommit size={10} />
-            {commitInfo.shortHash}
-          </a>
-        </>
-      )}
-
-      {/* Token Usage */}
-      {hasTokens && (
-        <>
-          <Dot />
-          <span
-            className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-mono text-[11px]"
-            title={`Input: ${tokenUsage?.input_tokens ?? 0} | Output: ${tokenUsage?.output_tokens ?? 0}${tokenUsage?.cache_read_input_tokens ? ` | Cache Read: ${tokenUsage.cache_read_input_tokens}` : ''}${tokenUsage?.cache_creation_input_tokens ? ` | Cache Creation: ${tokenUsage.cache_creation_input_tokens}` : ''}`}
-          >
-            <Zap size={10} />
-            {formatTokenCount(inputTokens)}/{formatTokenCount(outputTokens)}
-          </span>
-        </>
-      )}
+      {taskInfo && <RepoLink taskInfo={taskInfo} />}
+      {taskInfo && <IssuePRChip taskInfo={taskInfo} />}
+      {taskInfo && <LinkedIssueChip taskInfo={taskInfo} />}
+      {taskId && <TaskIdChip taskId={taskId} />}
+      <ModelChip modelName={modelName} duration={duration} />
+      {prInfo && <PRInfoChip prInfo={prInfo} />}
+      {commitInfo && <CommitInfoChip commitInfo={commitInfo} />}
+      {tokenUsage && <TokenUsageChip tokenUsage={tokenUsage} />}
     </div>
   );
 };
