@@ -17,7 +17,7 @@ import ProgressBar from './ProgressBar';
 import { useTaskData, usePromptData, useLogFilesData } from './hooks';
 import { useThinkingLog } from './useThinkingLog';
 import { getHistoryDerivedData } from './useHistoryData';
-import { getCleanDocumentTitle } from '../TaskList/utils';
+import { getCleanDocumentTitle } from '../TaskList/utils.tsx';
 import { useToast } from '../ui/useToast';
 import { postTaskFollowup } from '../../api/gitfixApi';
 

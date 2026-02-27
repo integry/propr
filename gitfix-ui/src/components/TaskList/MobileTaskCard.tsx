@@ -1,7 +1,7 @@
 import React from 'react';
 import { ChevronRight, ChevronDown, ChevronUp, GitPullRequest, CircleDot } from 'lucide-react';
 import type { Task, TaskGroup } from './types';
-import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration, shouldDimTask } from './utils';
+import { getTaskTypeInfo, getStatusPill, formatRelativeTime, formatDuration, shouldDimTask } from './utils.tsx';
 import { TaskTypeBadge } from './TaskTypeBadge';
 import { ScoreBadge } from './ScoreBadge';
 

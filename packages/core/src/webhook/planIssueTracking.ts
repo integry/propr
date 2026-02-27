@@ -337,6 +337,16 @@ export async function handlePlanPRCommentTracking(
             const botUsername = process.env.BOT_USERNAME || 'gitfixio[bot]';
             if (commentAuthor === botUsername) return;
 
+            // Don't update status if the issue is already merged or closed
+            if (planIssue.status === 'merged' || planIssue.status === 'closed') {
+                log.debug({
+                    repository,
+                    prNumber,
+                    currentStatus: planIssue.status
+                }, 'Skipping refinement status update - plan issue already completed');
+                return;
+            }
+
             const newFollowupCount = (planIssue.followup_count || 0) + 1;
             const newStatus: PlanIssueStatus = 'in_refinement';
 

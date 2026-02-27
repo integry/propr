@@ -4,7 +4,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem } from '../api/gitfixApi';
 import { Filter, Search, X } from 'lucide-react';
-import { EmptyState, PlansTable } from './PlansPageComponents';
+import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 
 const DEFAULT_PAGE_SIZE = 50;
 
@@ -205,18 +205,26 @@ const PlansPage: React.FC = () => {
 
   if (loading && drafts.length === 0 && totalAllDrafts === 0) {
     return (
-      <div className="p-6">
-        <h1 className="text-2xl font-bold text-gray-800 mb-6">Implementation Plans</h1>
-        <div className="text-gray-500">Loading plans...</div>
+      <div className="flex flex-col h-full">
+        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
+          <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
+        </div>
+        <div className="flex-1 overflow-auto px-6 py-6">
+          <div className="text-gray-500">Loading plans...</div>
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="p-6">
-        <h1 className="text-2xl font-bold text-gray-800 mb-6">Implementation Plans</h1>
-        <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
+      <div className="flex flex-col h-full">
+        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
+          <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
+        </div>
+        <div className="flex-1 overflow-auto px-6 py-6">
+          <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
+        </div>
       </div>
     );
   }
@@ -258,84 +266,92 @@ const PlansPage: React.FC = () => {
         abortingId={abortingId}
         onDelete={handleDelete}
         onAbort={handleAbort}
-        currentPage={currentPage}
-        totalPages={totalPages}
-        totalDrafts={totalDrafts}
-        pageSize={DEFAULT_PAGE_SIZE}
-        hasMore={hasMore}
-        loading={loading}
-        onPageChange={handlePageChange}
       />
     );
   };
 
   return (
-    <div className="p-6">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
-        <div className="flex items-center gap-4">
-          <div className="relative">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search plans..."
-              className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-            />
-            {searchQuery && (
-              <button
-                onClick={handleSearchClear}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                title="Clear search"
-              >
-                <X size={16} />
-              </button>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <Filter size={16} className="text-gray-500" />
-            <select
-              value={statusFilter}
-              onChange={(e) => handleStatusFilterChange(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-            >
-              <option value="all">All Statuses</option>
-              <option value="draft">Draft</option>
-              <option value="review">Ready for Review</option>
-              <option value="generating">Generating</option>
-              <option value="refining">Refining</option>
-              <option value="executed">Issues Created</option>
-              <option value="pr_created">PR Created</option>
-              <option value="merged">Merged</option>
-            </select>
-          </div>
-          {allRepositories.length > 1 && (
+    <div className="flex flex-col h-full">
+      {/* Anchored Header */}
+      <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
+        <div className="flex justify-between items-center">
+          <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search plans..."
+                className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+              />
+              {searchQuery && (
+                <button
+                  onClick={handleSearchClear}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  title="Clear search"
+                >
+                  <X size={16} />
+                </button>
+              )}
+            </div>
             <div className="flex items-center gap-2">
+              <Filter size={16} className="text-gray-500" />
               <select
-                value={repoFilter}
-                onChange={(e) => handleFilterChange(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                value={statusFilter}
+                onChange={(e) => handleStatusFilterChange(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               >
-                <option value="all">All Repositories ({totalAllDrafts})</option>
-                {allRepositories.map(({ repo, count }) => (
-                  <option key={repo} value={repo}>
-                    {repo} ({count})
-                  </option>
-                ))}
+                <option value="all">All Statuses</option>
+                <option value="draft">Draft</option>
+                <option value="review">Ready for Review</option>
+                <option value="generating">Generating</option>
+                <option value="refining">Refining</option>
+                <option value="executed">Issues Created</option>
+                <option value="pr_created">PR Created</option>
+                <option value="merged">Merged</option>
               </select>
             </div>
-          )}
-          <button
-            onClick={handleNewPlan}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
-          >
-            + New Plan
-          </button>
+            {allRepositories.length > 1 && (
+              <div className="flex items-center gap-2">
+                <select
+                  value={repoFilter}
+                  onChange={(e) => handleFilterChange(e.target.value)}
+                  className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                >
+                  <option value="all">All Repositories ({totalAllDrafts})</option>
+                  {allRepositories.map(({ repo, count }) => (
+                    <option key={repo} value={repo}>
+                      {repo} ({count})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {renderContent()}
+      {/* Scrollable Content Area - no outer padding so rows touch edges */}
+      <div className="flex-1 overflow-auto">
+        {renderContent()}
+      </div>
+
+      {/* Anchored Footer */}
+      {drafts.length > 0 && totalPages > 1 && (
+        <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200">
+          <PaginationControls
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalDrafts={totalDrafts}
+            pageSize={DEFAULT_PAGE_SIZE}
+            hasMore={hasMore}
+            loading={loading}
+            onPageChange={handlePageChange}
+          />
+        </div>
+      )}
     </div>
   );
 };

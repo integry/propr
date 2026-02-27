@@ -10,17 +10,15 @@ const TasksPage: React.FC = () => {
   // Only set title when viewing task list (TaskDetails sets its own title)
   useDocumentTitle(taskId ? undefined : 'Tasks');
 
+  // TaskDetails view should not be constrained by parent padding
+  if (taskId) {
+    return <TaskDetails />;
+  }
+
+  // Full-height flex column layout for TaskList with anchored header/footer
   return (
-    <div className="p-4 sm:p-8">
-      {taskId ? (
-        <TaskDetails />
-      ) : (
-        <>
-          <h2 className="text-gray-900 text-2xl font-semibold mb-4">Tasks</h2>
-          <p className="text-gray-600 mb-4">View all current and previous tasks.</p>
-          <TaskList limit={50} />
-        </>
-      )}
+    <div className="flex flex-col h-full">
+      <TaskList limit={50} />
     </div>
   );
 };
