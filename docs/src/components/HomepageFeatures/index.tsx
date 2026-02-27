@@ -13,7 +13,7 @@ const FeatureList: FeatureItem[] = [
     title: 'AI-Powered Resolution',
     description: (
       <>
-        GitFix uses Claude AI to automatically analyze and resolve GitHub issues,
+        ProPR uses Claude AI to automatically analyze and resolve GitHub issues,
         providing intelligent solutions to your repository's problems.
       </>
     ),

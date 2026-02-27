@@ -13,7 +13,7 @@ process.on('unhandledRejection', (reason: unknown) => {
 });
 
 async function main(): Promise<void> {
-    logger.info('GitFix application starting', {
+    logger.info('ProPR application starting', {
         environment: config.environment,
         logLevel: config.logging.level,
     });
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
         process.exit(1);
     }
 
-    logger.info('GitFix application initialized successfully');
+    logger.info('ProPR application initialized successfully');
 }
 
 const safeMain = withErrorHandling(main, 'main');

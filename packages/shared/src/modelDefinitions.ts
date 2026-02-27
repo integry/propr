@@ -1,6 +1,6 @@
 // Shared model definitions for AI agents
 // This file provides a single source of truth for model information
-// Both backend (packages/core) and frontend (gitfix-ui) import from this package
+// Both backend (packages/core) and frontend (propr-ui) import from this package
 
 export type AgentType = 'claude' | 'codex' | 'gemini';
 

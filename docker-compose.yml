@@ -109,7 +109,7 @@ services:
   web-ui:
     build:
       context: .
-      dockerfile: gitfix-ui/Dockerfile
+      dockerfile: propr-ui/Dockerfile
       args:
         - VITE_API_BASE_URL=${VITE_API_BASE_URL}
         - VITE_OAUTH_API_URL=${VITE_OAUTH_API_URL}

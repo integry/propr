@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # Features
 
-GitFix provides a comprehensive set of features for automated issue processing with AI-powered solutions.
+ProPR provides a comprehensive set of features for automated issue processing with AI-powered solutions.
 
 ## Complete End-to-End Automation
 
@@ -12,7 +12,7 @@ GitFix provides a comprehensive set of features for automated issue processing w
 Automatic monitoring of GitHub repositories for AI-eligible issues with configurable polling intervals.
 
 ### Multiple Primary Labels
-Support for multiple trigger labels (e.g., 'AI', 'gitfix') with dynamic state label generation. Each label triggers its own processing workflow with dedicated state tracking.
+Support for multiple trigger labels (e.g., 'AI', 'propr') with dynamic state label generation. Each label triggers its own processing workflow with dedicated state tracking.
 
 ### Model-Specific Processing
 Support for multiple Claude models (Sonnet, Opus) with dedicated job queues. Issues can be processed by one or multiple models simultaneously.
@@ -101,13 +101,13 @@ Redis-based job state tracking with correlation IDs for debugging and monitoring
 ### Multiple Primary Labels
 Configure multiple labels to trigger processing:
 ```bash
-PRIMARY_PROCESSING_LABELS=AI,gitfix,automation
+PRIMARY_PROCESSING_LABELS=AI,propr,automation
 ```
 
 ### Automatic State Labels
 State labels are dynamically generated based on the triggering label:
 - Issue with 'AI' label → Uses 'AI-processing', 'AI-done', 'AI-failed-*'
-- Issue with 'gitfix' label → Uses 'gitfix-processing', 'gitfix-done', 'gitfix-failed-*'
+- Issue with 'propr' label → Uses 'propr-processing', 'propr-done', 'propr-failed-*'
 
 ### Correct Label Attribution
 Each issue is tracked with labels specific to its trigger, avoiding conflicts in multi-label scenarios.
@@ -117,7 +117,7 @@ Add or remove primary labels via environment variables or UI without code change
 
 ## Prerequisites
 
-To use GitFix, you'll need:
+To use ProPR, you'll need:
 
 - **Node.js 18+** - Runtime environment
 - **GitHub App** - With appropriate permissions

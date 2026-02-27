@@ -1,6 +1,6 @@
-# GitFix Management UI
+# ProPR Management UI
 
-A web-based management interface for monitoring and managing the GitFix application. This React-based dashboard provides real-time visibility into system status, worker health, and task queue metrics.
+A web-based management interface for monitoring and managing the ProPR application. This React-based dashboard provides real-time visibility into system status, worker health, and task queue metrics.
 
 ## Features
 
@@ -12,7 +12,7 @@ A web-based management interface for monitoring and managing the GitFix applicat
 ## Project Structure
 
 ```
-gitfix-ui/
+propr-ui/
 ├── src/
 │   ├── api/              # API integration layer
 │   │   └── proprApi.ts   # Core API functions
@@ -39,7 +39,7 @@ gitfix-ui/
 ### Installation
 
 ```bash
-cd gitfix-ui
+cd propr-ui
 npm install
 ```
 
@@ -82,7 +82,7 @@ When the backend API endpoints are ready, update the functions in `proprApi.ts` 
 
 ## Next Steps
 
-This is Part 1 of the GitFix Web Management UI epic. Future enhancements will include:
+This is Part 1 of the ProPR Web Management UI epic. Future enhancements will include:
 
 1. Real-time activity feed
 2. Detailed job/task view

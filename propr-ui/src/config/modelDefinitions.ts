@@ -1,5 +1,5 @@
 // Re-export all model definitions from @propr/shared
-// This ensures gitfix-ui uses the same single source of truth as @propr/core
+// This ensures propr-ui uses the same single source of truth as @propr/core
 export {
   type AgentType,
   type ModelInfo,

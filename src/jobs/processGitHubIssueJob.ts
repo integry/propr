@@ -110,7 +110,7 @@ async function getPrLabel(): Promise<string> {
     } catch (error) {
         logger.warn({ error: (error as Error).message }, 'Failed to load PR label from config, using fallback');
     }
-    return process.env.PR_LABEL || 'gitfix';
+    return process.env.PR_LABEL || 'propr';
 }
 
 async function initializeJobContext(job: Job<IssueJobData>): Promise<JobContext> {

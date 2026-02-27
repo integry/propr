@@ -17,7 +17,7 @@ let totalSaved = 0;
 
 /**
  * Files to exclude from documentation fetching with explanations
- * These files are not relevant for Gitfix's automated GitHub issue processing
+ * These files are not relevant for ProPR's automated GitHub issue processing
  */
 const EXCLUDED_FILES = new Set([
   // === CLAUDE DOCUMENTATION EXCLUSIONS ===
@@ -43,7 +43,7 @@ const EXCLUDED_FILES = new Set([
   'computer-use-tool.md', // Desktop automation tool
   'customer-support-chat.md', // Support agent guidelines
 
-  // Interactive UI features (Gitfix is headless/automated)
+  // Interactive UI features (ProPR is headless/automated)
   'hooks-guide.md', // Interactive user hooks
   'hosting.md', // Hosting Claude apps
   'output-styles.md', // UI formatting
@@ -61,7 +61,7 @@ const EXCLUDED_FILES = new Set([
   // User-facing support
   'troubleshooting.md', // Installation and IDE plugin issues
 
-  // API Key Required (Gitfix uses subscription-based auth)
+  // API Key Required (ProPR uses subscription-based auth)
   'batches.md', // Batch API operations - requires API key
   'bash-tool.md', // Bash tool via API - requires API key
   'code-execution-tool.md', // Code execution via API - requires API key
@@ -92,7 +92,7 @@ const EXCLUDED_FILES = new Set([
   'platform-sandboxing.md', // Platform-specific sandboxing
   'windows_sandbox_security.md', // Windows-specific, agent runs in Linux
 
-  // Installation (Gitfix uses Docker)
+  // Installation (ProPR uses Docker)
   'install.md', // Manual installation guide, agent uses Docker
 
   // Interactive/UI
@@ -466,7 +466,7 @@ async function main(): Promise<void> {
   console.log(`Files skipped (excluded): ${totalSkipped}`);
   console.log(`Total excluded files configured: ${EXCLUDED_FILES.size}`);
   console.log();
-  console.log('Excluded files help reduce context size and focus on Gitfix-relevant documentation.');
+  console.log('Excluded files help reduce context size and focus on ProPR-relevant documentation.');
   console.log('See comments in EXCLUDED_FILES for rationale behind each exclusion.');
 }
 

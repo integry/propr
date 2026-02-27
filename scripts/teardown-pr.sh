@@ -33,7 +33,7 @@ if [ "$PR_NUMBER" -lt 1 ] || [ "$PR_NUMBER" -gt 9999 ]; then
   exit 1
 fi
 
-PROJECT_NAME="gitfix-pr-${PR_NUMBER}"
+PROJECT_NAME="propr-pr-${PR_NUMBER}"
 
 echo "============================================"
 echo "Tearing Down PR Preview Environment"

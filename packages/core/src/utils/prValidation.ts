@@ -231,7 +231,7 @@ ${currentIssueData.body || 'No description provided'}
 **IMPORTANT INSTRUCTIONS:**
 1. First, use \`gh issue view ${issueRef.number}\` to get the full issue details
 2. Use \`gh issue view ${issueRef.number} --comments\` to read all issue comments for additional context
-   (Note: Operational comments from gitfixio bot are automatically filtered out)
+   (Note: Operational comments from propr bot are automatically filtered out)
 3. You are working in the directory: ${worktreePath}
 4. Make your changes and commit them to the current branch: ${branchName}
 5. When creating a Pull Request, use EXACTLY these details:

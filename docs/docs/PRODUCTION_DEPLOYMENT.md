@@ -1,6 +1,6 @@
 # Production Deployment Guide
 
-This guide covers deploying GitFix with the Web UI dashboard in a production environment.
+This guide covers deploying ProPR with the Web UI dashboard in a production environment.
 
 ## Prerequisites
 
@@ -154,7 +154,7 @@ Important data to backup:
 docker-compose -f docker-compose.prod.yml exec redis redis-cli BGSAVE
 
 # Create backup archive
-tar -czf gitfix-backup-$(date +%Y%m%d).tar.gz \
+tar -czf propr-backup-$(date +%Y%m%d).tar.gz \
   ./repos \
   ./logs \
   docker-volume-backup-redis-data

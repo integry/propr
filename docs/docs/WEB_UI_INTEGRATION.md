@@ -1,10 +1,10 @@
-# GitFix Web UI Integration Guide
+# ProPR Web UI Integration Guide
 
-This document outlines how to integrate the React-based web UI with the GitFix backend.
+This document outlines how to integrate the React-based web UI with the ProPR backend.
 
 ## Overview
 
-The GitFix Web Management UI is located in the `gitfix-ui/` directory. It's a React application built with Vite that provides a dashboard for monitoring and managing the GitFix system.
+The ProPR Web Management UI is located in the `propr-ui/` directory. It's a React application built with Vite that provides a dashboard for monitoring and managing the ProPR system.
 
 ## Current Status
 
@@ -20,7 +20,7 @@ The GitFix Web Management UI is located in the `gitfix-ui/` directory. It's a Re
 
 ## Backend API Requirements
 
-To connect the frontend with the GitFix backend, the following API endpoints need to be implemented:
+To connect the frontend with the ProPR backend, the following API endpoints need to be implemented:
 
 ### 1. System Status Endpoint
 ```
@@ -52,7 +52,7 @@ Response:
 
 ### Development Mode
 ```bash
-cd gitfix-ui
+cd propr-ui
 npm install
 npm run dev
 ```
@@ -60,20 +60,20 @@ Access at: http://localhost:5173
 
 ### Production Build
 ```bash
-cd gitfix-ui
+cd propr-ui
 npm run build
 ```
-Static files will be in `gitfix-ui/dist/`
+Static files will be in `propr-ui/dist/`
 
 ## Integration Steps
 
-1. **Add Express Server**: Create an Express server in the main GitFix application to serve the API endpoints and the built React app.
+1. **Add Express Server**: Create an Express server in the main ProPR application to serve the API endpoints and the built React app.
 
 2. **Implement API Endpoints**: Add routes to expose system status and queue statistics from the existing services.
 
 3. **CORS Configuration**: Configure CORS if running the UI and backend on different ports during development.
 
-4. **Update API Functions**: Replace mock functions in `gitfix-ui/src/api/gitfixApi.js` with actual HTTP requests.
+4. **Update API Functions**: Replace mock functions in `propr-ui/src/api/proprApi.js` with actual HTTP requests.
 
 5. **Authentication**: Add authentication middleware to protect the API endpoints and UI access.
 
@@ -92,4 +92,4 @@ The following features are planned for future issues:
 - The UI uses polling (5-second intervals) for updates. This can be replaced with WebSocket for real-time updates.
 - Mock data includes randomization to simulate live changes during development.
 - The UI is built as a static SPA and can be served from any web server or CDN.
-- All API calls are centralized in `gitfixApi.js` for easy maintenance.
+- All API calls are centralized in `proprApi.js` for easy maintenance.

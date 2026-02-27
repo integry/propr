@@ -47,7 +47,7 @@ export function setupAuth(app: Express): void {
     // Use Redis store for sessions to share across subdomains
     const redisStore = new RedisStore({
         client: redisClient,
-        prefix: 'gitfix:session:'
+        prefix: 'propr:session:'
     });
 
     app.use(session({

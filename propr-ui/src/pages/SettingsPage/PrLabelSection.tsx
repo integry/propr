@@ -17,7 +17,7 @@ const PrLabelSection: React.FC<PrLabelSectionProps> = ({
     <div className={className || ''}>
       <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">PR Label</h4>
       <p className="text-gray-500 text-xs mb-3">
-        Automatically added to all GitFix PRs. Used to monitor for follow-up comments.
+        Automatically added to all ProPR PRs. Used to monitor for follow-up comments.
       </p>
 
       <div>
@@ -31,7 +31,7 @@ const PrLabelSection: React.FC<PrLabelSectionProps> = ({
           value={prLabel}
           onChange={onLabelChange}
           onBlur={onBlur}
-          placeholder="e.g., gitfix"
+          placeholder="e.g., propr"
           required
           className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
         />

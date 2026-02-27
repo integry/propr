@@ -1,6 +1,6 @@
-# GitFix Dashboard
+# ProPR Dashboard
 
-The GitFix Dashboard provides a web-based management interface for monitoring and controlling your GitFix instance.
+The ProPR Dashboard provides a web-based management interface for monitoring and controlling your ProPR instance.
 
 ## Components
 
@@ -59,7 +59,7 @@ To run the dashboard in development mode:
 ## Features
 
 - **GitHub OAuth Authentication**: Secure login with GitHub
-- **System Status Monitoring**: View health status of all GitFix components
+- **System Status Monitoring**: View health status of all ProPR components
 - **Queue Statistics**: Monitor task queue metrics
 - **Activity Log**: Track recent system activities
 - **Performance Metrics**: View processing times and throughput

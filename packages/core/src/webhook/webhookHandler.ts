@@ -35,8 +35,8 @@ export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review
 // --- PREVIEW ENVIRONMENT CONFIGURATION ---
 // This implements the "Singleton Processor" pattern for webhook routing.
 //
-// The 'preview-env' label is applied to gitfix repo PRs (not source issues/PRs).
-// When a gitfix PR has this label, it becomes the active processor for all webhooks.
+// The 'preview-env' label is applied to ProPR repo PRs (not source issues/PRs).
+// When a ProPR PR has this label, it becomes the active processor for all webhooks.
 // The routing logic is simple:
 // - If an open PR is assigned the label, it becomes the processor (overriding any previous)
 // - If the label is removed, the main instance becomes the processor again
@@ -45,12 +45,12 @@ export type WebhookEventType = 'issues' | 'issue_comment' | 'pull_request_review
 //
 // ENABLE_PREVIEW_ROUTING: Set to 'true' to enable the preview environment feature.
 const ENABLE_PREVIEW_ROUTING = process.env.ENABLE_PREVIEW_ROUTING === 'true';
-// PROCESSOR_LABEL: The label that designates a gitfix PR as the active processor.
+// PROCESSOR_LABEL: The label that designates a ProPR PR as the active processor.
 const PROCESSOR_LABEL = process.env.PROCESSOR_LABEL || 'preview-env';
-// GITFIX_REPO: The gitfix repository in 'owner/repo' format. Label events from this repo
+// PROPR_REPO: The ProPR repository in 'owner/repo' format. Label events from this repo
 // trigger processor assignment changes.
-const GITFIX_REPO = process.env.GITFIX_REPO || 'integry/gitfix';
-// processorPrNumber: Dynamically tracks which gitfix PR has the 'preview-env' label.
+const PROPR_REPO = process.env.PROPR_REPO || 'integry/gitfix';
+// processorPrNumber: Dynamically tracks which ProPR PR has the 'preview-env' label.
 // When set, all webhooks are forwarded to that PR's preview instance.
 // When null, webhooks are processed by the main instance.
 let processorPrNumber: number | null = null;
@@ -164,8 +164,8 @@ function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
     return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
 }
 
-// --- PROCESSOR LABEL MANAGEMENT: Track 'preview-env' label on gitfix repo PRs ---
-// This function handles label events from the gitfix repo itself to dynamically
+// --- PROCESSOR LABEL MANAGEMENT: Track 'preview-env' label on ProPR repo PRs ---
+// This function handles label events from the ProPR repo itself to dynamically
 // update which PR is the active processor for webhook routing.
 function handleProcessorLabelChange(
     payload: PullRequestEvent,
@@ -174,8 +174,8 @@ function handleProcessorLabelChange(
     const log = logger.withCorrelation(correlationId);
     const repoFullName = payload.repository.full_name;
 
-    // Only process label events from the gitfix repo
-    if (repoFullName !== GITFIX_REPO) {
+    // Only process label events from the ProPR repo
+    if (repoFullName !== PROPR_REPO) {
         return;
     }
 
@@ -190,7 +190,7 @@ function handleProcessorLabelChange(
             processorPrNumber = prNumber;
             log.info(
                 { prNumber, previousProcessor, label: PROCESSOR_LABEL },
-                'Processor PR updated: gitfix PR labeled with preview-env'
+                'Processor PR updated: ProPR PR labeled with preview-env'
             );
         }
         return;
@@ -213,7 +213,7 @@ function handleProcessorLabelChange(
     if (payload.action === 'closed' && processorPrNumber === prNumber) {
         log.info(
             { prNumber, merged: payload.pull_request.merged },
-            'Processor PR reset: gitfix PR closed/merged'
+            'Processor PR reset: ProPR PR closed/merged'
         );
         processorPrNumber = null;
     }
@@ -229,9 +229,9 @@ async function handleInfrastructureEvents(
 
     const prEvent = payload as PullRequestEvent;
 
-    // Only handle infrastructure events for gitfix repo PRs
+    // Only handle infrastructure events for ProPR repo PRs
     const repoFullName = prEvent.repository.full_name;
-    if (repoFullName !== GITFIX_REPO) {
+    if (repoFullName !== PROPR_REPO) {
         return;
     }
 
@@ -411,7 +411,7 @@ export async function processWebhookEvent(
 ): Promise<void> {
     const correlatedLogger = logger.withCorrelation(correlationId);
 
-    // 1. Handle Processor Label Changes (Watch for 'preview-env' label on gitfix repo PRs)
+    // 1. Handle Processor Label Changes (Watch for 'preview-env' label on ProPR repo PRs)
     if (ENABLE_PREVIEW_ROUTING && eventType === 'pull_request' && isPullRequestEvent(payload)) {
         handleProcessorLabelChange(payload, correlationId);
     }

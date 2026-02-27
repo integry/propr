@@ -138,7 +138,7 @@ const SettingsPage: React.FC = () => {
               onNewItemChange={setNewKeyword}
               onAddItem={addKeyword}
               onRemoveItem={removeKeyword}
-              placeholder="e.g., GITFIX"
+              placeholder="e.g., PROPR"
               emptyMessage="No keywords configured."
               showEmptyIcon={true}
             />

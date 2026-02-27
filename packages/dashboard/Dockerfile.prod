@@ -1,5 +1,5 @@
 # Production build for dashboard API server only
-# Note: The web UI is served separately via gitfix-ui service
+# Note: The web UI is served separately via propr-ui service
 # This Dockerfile is meant to be built from the project root context
 
 FROM node:20-alpine AS builder

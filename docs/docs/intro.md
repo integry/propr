@@ -4,11 +4,11 @@ sidebar_position: 1
 
 # Introduction
 
-Welcome to GitFix - an automated GitHub issue processor that leverages AI to solve problems in your repositories.
+Welcome to ProPR - an automated GitHub issue processor that leverages AI to solve problems in your repositories.
 
-## What is GitFix?
+## What is ProPR?
 
-GitFix is a production-ready automated system that monitors GitHub issues, uses Anthropic's Claude Code to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.
+ProPR is a production-ready automated system that monitors GitHub issues, uses Anthropic's Claude Code to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.
 
 ## Key Capabilities
 
@@ -30,7 +30,7 @@ GitFix is a production-ready automated system that monitors GitHub issues, uses 
 
 ## Quick Start
 
-Ready to get started? Check out our [Setup Guide](./getting-started/setup.md) to configure GitFix for your repositories.
+Ready to get started? Check out our [Setup Guide](./getting-started/setup.md) to configure ProPR for your repositories.
 
 ## Documentation Structure
 

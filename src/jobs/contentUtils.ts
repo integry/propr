@@ -92,8 +92,8 @@ export async function localizeContentImages(content: string, worktreeRoot: strin
 
     // Store assets in a subdirectory identified by issue/PR ID for easy cleanup when closed/merged
     const assetsDir = issueOrPrId
-        ? path.join(worktreeRoot, '.gitfix', 'assets', String(issueOrPrId))
-        : path.join(worktreeRoot, '.gitfix', 'assets');
+        ? path.join(worktreeRoot, '.propr', 'assets', String(issueOrPrId))
+        : path.join(worktreeRoot, '.propr', 'assets');
     let newContent = content;
 
     // Match markdown image syntax: ![alt text](url)
@@ -163,7 +163,7 @@ export async function localizeContentImages(content: string, worktreeRoot: strin
  * @param logger - Logger instance for debugging/warnings
  */
 export async function cleanupIssueAssets(worktreeRoot: string, issueOrPrId: number, logger: Logger): Promise<void> {
-    const assetsDir = path.join(worktreeRoot, '.gitfix', 'assets', String(issueOrPrId));
+    const assetsDir = path.join(worktreeRoot, '.propr', 'assets', String(issueOrPrId));
 
     try {
         const exists = await fs.pathExists(assetsDir);

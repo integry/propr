@@ -134,7 +134,7 @@ const RepositoriesPage: React.FC = () => {
       // Validate that at least one repository is enabled
       const enabledRepos = reposToSave.filter(r => r.enabled);
       if (enabledRepos.length === 0 && reposToSave.length > 0) {
-        if (!window.confirm('No repositories are enabled. This will effectively disable GitFix monitoring. Continue?')) {
+        if (!window.confirm('No repositories are enabled. This will effectively disable ProPR monitoring. Continue?')) {
           setSaveStatus('idle');
           return false;
         }

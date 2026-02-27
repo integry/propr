@@ -18,11 +18,11 @@ export const INDEXING_UPDATE = 'indexing:update';
 /** Redis channel names for pub/sub */
 export const REDIS_CHANNELS = {
   /** Channel for all task-related events */
-  TASKS: 'gitfix:events:tasks',
+  TASKS: 'propr:events:tasks',
   /** Channel for draft/plan generation events */
-  DRAFTS: 'gitfix:events:drafts',
+  DRAFTS: 'propr:events:drafts',
   /** Channel for indexing events */
-  INDEXING: 'gitfix:events:indexing'
+  INDEXING: 'propr:events:indexing'
 } as const;
 
 /** Event payload for task updates */

@@ -142,7 +142,7 @@ export function useSettingsState() {
 
         setKeywords(keywordsData.followup_keywords || []);
         setIgnoreKeywords(ignoreKeywordsData.followup_ignore_keywords || []);
-        setPrLabel(prLabelDataTyped.pr_label || 'gitfix');
+        setPrLabel(prLabelDataTyped.pr_label || 'propr');
         setPrimaryLabels(primaryLabelsData.primary_processing_labels || ['AI']);
         setAgents(agentsData.agents || []);
         setSummarizationSettings({

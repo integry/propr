@@ -52,7 +52,7 @@ fi
 # Configure Git to trust all directories (security: container environment)
 git config --global --add safe.directory '*' 2>/dev/null || echo "Git safe directory config already set" >&2
 
-# Set up gh wrapper to filter gitfixio comments
+# Set up gh wrapper to filter propr bot comments
 # This ensures Gemini doesn't see operational bot comments when analyzing issues
 if [ -x "/usr/local/bin/gh-wrapper" ]; then
     echo "Setting up GitHub CLI wrapper to filter operational comments" >&2

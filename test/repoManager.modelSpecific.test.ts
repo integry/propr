@@ -31,7 +31,7 @@ describe('Repository Manager - Model-Specific Features', () => {
     let mockWorktreesBasePath: string;
     
     beforeEach(async () => {
-        tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitfix-test-'));
+        tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-test-'));
         testRepoPath = path.join(tempDir, 'test-repo');
         mockWorktreesBasePath = path.join(tempDir, 'worktrees');
         

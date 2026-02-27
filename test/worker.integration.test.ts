@@ -31,7 +31,7 @@ describe('Worker Integration - Concurrent Model Execution', () => {
     beforeEach(async () => {
         originalEnv = { ...process.env };
         
-        tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitfix-integration-'));
+        tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-integration-'));
         
         process.env.WORKTREES_BASE_PATH = path.join(tempDir, 'worktrees');
         process.env.GIT_PROCESSOR_PATH = path.join(tempDir, 'git-processor');

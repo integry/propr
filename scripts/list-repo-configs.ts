@@ -9,7 +9,7 @@ interface RepoConfig {
 }
 
 function main(): void {
-    console.log('GitFix Repository Branch Configurations\n');
+    console.log('ProPR Repository Branch Configurations\n');
     
     const configs = listRepositoryBranchConfigurations() as Record<string, RepoConfig>;
     const configCount = Object.keys(configs).length;

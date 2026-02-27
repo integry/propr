@@ -8,7 +8,7 @@ The git management system (`src/git/repoManager.js`) handles repository operatio
 
 ## Overview
 
-GitFix uses advanced git features to enable safe, concurrent processing of multiple issues:
+ProPR uses advanced git features to enable safe, concurrent processing of multiple issues:
 
 - **Repository cloning** with authentication
 - **Worktree isolation** for conflict-free processing
@@ -90,7 +90,7 @@ Git worktrees allow multiple working directories from a single repository:
 - All worktrees share the same git database
 - Changes in one worktree don't affect others
 
-### Benefits for GitFix
+### Benefits for ProPR
 
 1. **Isolation**: Multiple issues processed simultaneously without conflicts
 2. **Efficiency**: Shared git database saves disk space
@@ -236,7 +236,7 @@ GIT_DEFAULT_BRANCH_vercel_next=canary
 
 ### GitHub App Authentication
 
-GitFix uses GitHub App installation tokens:
+ProPR uses GitHub App installation tokens:
 
 ```javascript
 const token = await getInstallationToken();

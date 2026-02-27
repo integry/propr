@@ -235,7 +235,7 @@ export async function saveSettings(settings: ConfigSettings): Promise<boolean> {
 }
 
 export async function loadPrLabel(): Promise<string> {
-    const defaultLabel = process.env.PR_LABEL || 'gitfix';
+    const defaultLabel = process.env.PR_LABEL || 'propr';
     const label = await getConfig<string>('pr_label', defaultLabel);
     logger.info({ pr_label: label }, 'Successfully loaded PR label');
     return label;

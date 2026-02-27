@@ -18,14 +18,14 @@ export interface DatabaseConfig {
     database: string;
 }
 
-export interface GitFixConfig {
+export interface ProPRConfig {
     github: GitHubConfig;
     logging: LoggingConfig;
     environment: string;
     database?: DatabaseConfig;
 }
 
-const config: GitFixConfig = {
+const config: ProPRConfig = {
     github: {
         appId: process.env.GH_APP_ID ?? '',
         privateKeyPath: process.env.GH_PRIVATE_KEY_PATH ?? '',

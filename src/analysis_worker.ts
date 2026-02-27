@@ -82,7 +82,7 @@ function generateFollowupComment(parsedReport: ParsedAnalysisReport): string {
 
     comment += `---\n`;
     comment += `*This automated follow-up was triggered because the implementation critique score (${score}) was at or below the configured threshold. Please address the issues identified above.*\n\n`;
-    comment += `**GITFIX** - Please review and address the critique above.`;
+    comment += `**ProPR** - Please review and address the critique above.`;
 
     return comment;
 }

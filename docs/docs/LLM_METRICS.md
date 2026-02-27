@@ -1,6 +1,6 @@
 # LLM Metrics Documentation
 
-This document describes the LLM metrics collection and monitoring functionality implemented in GitFix.
+This document describes the LLM metrics collection and monitoring functionality implemented in ProPR.
 
 ## Overview
 
@@ -108,7 +108,7 @@ When a request exceeds the cost threshold (default: $10.00, configurable via `LL
 
 ## Dashboard Integration
 
-The LLM metrics are displayed in the GitFix dashboard with:
+The LLM metrics are displayed in the ProPR dashboard with:
 - Summary cards showing key metrics
 - Model performance comparison table
 - Daily cost trend chart

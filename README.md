@@ -1,4 +1,4 @@
-# GitFix - Automated GitHub Issue Processor
+# ProPR - Automated GitHub Issue Processor
 
 A production-ready automated system that monitors GitHub issues, uses Anthropic's Claude Code to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.
 
@@ -6,7 +6,7 @@ A production-ready automated system that monitors GitHub issues, uses Anthropic'
 
 ### ✅ Complete End-to-End Automation
 - **Issue Detection**: Automatic monitoring of GitHub repositories for AI-eligible issues
-- **Multiple Primary Labels**: Support for multiple trigger labels (e.g., 'AI', 'gitfix') with dynamic state label generation
+- **Multiple Primary Labels**: Support for multiple trigger labels (e.g., 'AI', 'propr') with dynamic state label generation
 - **Model-Specific Processing**: Support for multiple Claude models (sonnet, opus) with dedicated job queues
 - **Deterministic Git Workflow**: Reliable 3-phase workflow separating AI implementation from git operations
 - **Automatic PR Creation**: Direct GitHub API integration with proper issue linking
@@ -37,10 +37,10 @@ A production-ready automated system that monitors GitHub issues, uses Anthropic'
 - **State Management**: Redis-based job state tracking with correlation IDs for debugging
 
 ### ✅ Dynamic Label System
-- **Multiple Primary Labels**: Configure multiple labels to trigger processing (e.g., 'AI', 'gitfix', 'automation')
+- **Multiple Primary Labels**: Configure multiple labels to trigger processing (e.g., 'AI', 'propr', 'automation')
 - **Automatic State Labels**: State labels are dynamically generated based on the triggering label:
   - Issue with 'AI' label → Uses 'AI-processing', 'AI-done', 'AI-failed-*' labels
-  - Issue with 'gitfix' label → Uses 'gitfix-processing', 'gitfix-done', 'gitfix-failed-*' labels
+  - Issue with 'propr' label → Uses 'propr-processing', 'propr-done', 'propr-failed-*' labels
 - **Correct Label Attribution**: Each issue is tracked with labels specific to its trigger, avoiding conflicts
 - **Flexible Configuration**: Add or remove primary labels via environment variables or UI without code changes
 
@@ -92,7 +92,7 @@ Create a GitHub App with the following permissions:
    POLLING_INTERVAL_MS=60000
    
    # Issue Detection Configuration
-   PRIMARY_PROCESSING_LABELS=AI,gitfix
+   PRIMARY_PROCESSING_LABELS=AI,propr
    # Note: State labels (-processing, -done, -failed-*) are now automatically 
    # generated based on the specific primary label that triggered processing
    
@@ -187,7 +187,7 @@ npm install
 ## Project Structure
 
 ```
-gitfix/
+propr/
 ├── src/
 │   ├── auth/
 │   │   └── githubAuth.js        # GitHub App authentication
@@ -318,7 +318,7 @@ console.log(config.logging.level);
 
 ## Docker Compose Setup
 
-The project includes a complete Docker Compose configuration for running all services in containers. This simplifies development and deployment by managing GitFix, Redis, and the UI in a unified environment.
+The project includes a complete Docker Compose configuration for running all services in containers. This simplifies development and deployment by managing ProPR, Redis, and the UI in a unified environment.
 
 ### Docker Compose Commands
 
@@ -342,9 +342,9 @@ These commands use the `scripts/compose.sh` script which wraps Docker Compose op
 
 ### Docker Compose Services
 
-- **gitfix**: Main application (daemon and worker)
+- **propr**: Main application (daemon and worker)
 - **redis**: Redis server for task queue management
-- **gitfix-ui**: Web UI for monitoring and management (port 5173)
+- **propr-ui**: Web UI for monitoring and management (port 5173)
 
 All services are configured in `docker-compose.yml` with proper networking and volume management.
 

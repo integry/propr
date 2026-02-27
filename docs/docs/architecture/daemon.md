@@ -39,7 +39,7 @@ On each poll cycle, the daemon:
 Primary labels trigger issue processing:
 
 ```bash
-PRIMARY_PROCESSING_LABELS=AI,gitfix,automation
+PRIMARY_PROCESSING_LABELS=AI,propr,automation
 ```
 
 Any issue with one of these labels is considered for processing.
@@ -54,7 +54,7 @@ State labels are dynamically generated based on the triggering primary label:
 
 **Examples:**
 - Issue with `AI` label → Uses `AI-processing`, `AI-done`, `AI-failed-*`
-- Issue with `gitfix` label → Uses `gitfix-processing`, `gitfix-done`, `gitfix-failed-*`
+- Issue with `propr` label → Uses `propr-processing`, `propr-done`, `propr-failed-*`
 
 #### Model Labels
 
@@ -124,7 +124,7 @@ GITHUB_REPOS_TO_MONITOR=owner/repo1,owner/repo2
 POLLING_INTERVAL_MS=60000
 
 # Label configuration
-PRIMARY_PROCESSING_LABELS=AI,gitfix
+PRIMARY_PROCESSING_LABELS=AI,propr
 MODEL_LABELS_SONNET=llm-claude-sonnet
 MODEL_LABELS_OPUS=llm-claude-opus
 
@@ -183,12 +183,12 @@ Labels: AI, llm-claude-sonnet, llm-claude-opus
 **Jobs Created:**
 1. Job for Sonnet model
    - Branch: `ai-fix/123-title-timestamp-sonnet-random`
-   - Queue: `gitfix-issues`
+   - Queue: `propr-issues`
    - Model: `claude-sonnet-4-5-20250929`
 
 2. Job for Opus model
    - Branch: `ai-fix/123-title-timestamp-opus-random`
-   - Queue: `gitfix-issues`
+   - Queue: `propr-issues`
    - Model: `claude-opus-4-20250514`
 
 Each job is completely independent and can be processed concurrently.

@@ -110,17 +110,17 @@ test('Repository-specific branch configuration takes precedence', () => {
 
 test('Multiple repository configurations can coexist', () => {
     const originalForex = process.env.GIT_DEFAULT_BRANCH_INTEGRY_FOREX;
-    const originalSnake = process.env.GIT_DEFAULT_BRANCH_INTEGRY_GITFIX_EXAMPLE_SNAKE;
+    const originalSnake = process.env.GIT_DEFAULT_BRANCH_INTEGRY_PROPR_EXAMPLE_SNAKE;
     
     process.env.GIT_DEFAULT_BRANCH_INTEGRY_FOREX = 'dev';
-    process.env.GIT_DEFAULT_BRANCH_INTEGRY_GITFIX_EXAMPLE_SNAKE = 'main';
+    process.env.GIT_DEFAULT_BRANCH_INTEGRY_PROPR_EXAMPLE_SNAKE = 'main';
     
     assert.strictEqual(process.env.GIT_DEFAULT_BRANCH_INTEGRY_FOREX, 'dev');
-    assert.strictEqual(process.env.GIT_DEFAULT_BRANCH_INTEGRY_GITFIX_EXAMPLE_SNAKE, 'main');
+    assert.strictEqual(process.env.GIT_DEFAULT_BRANCH_INTEGRY_PROPR_EXAMPLE_SNAKE, 'main');
     
     assert.notStrictEqual(
         process.env.GIT_DEFAULT_BRANCH_INTEGRY_FOREX, 
-        process.env.GIT_DEFAULT_BRANCH_INTEGRY_GITFIX_EXAMPLE_SNAKE
+        process.env.GIT_DEFAULT_BRANCH_INTEGRY_PROPR_EXAMPLE_SNAKE
     );
     
     if (originalForex !== undefined) {
@@ -130,8 +130,8 @@ test('Multiple repository configurations can coexist', () => {
     }
     
     if (originalSnake !== undefined) {
-        process.env.GIT_DEFAULT_BRANCH_INTEGRY_GITFIX_EXAMPLE_SNAKE = originalSnake;
+        process.env.GIT_DEFAULT_BRANCH_INTEGRY_PROPR_EXAMPLE_SNAKE = originalSnake;
     } else {
-        delete process.env.GIT_DEFAULT_BRANCH_INTEGRY_GITFIX_EXAMPLE_SNAKE;
+        delete process.env.GIT_DEFAULT_BRANCH_INTEGRY_PROPR_EXAMPLE_SNAKE;
     }
 });

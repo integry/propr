@@ -177,7 +177,7 @@ export async function ensureEpicPR(options: EnsureEpicPROptions): Promise<EpicPR
         title: `[Epic] ${planName}`,
         head: branchName,
         base: baseBranch,
-        body: `## Epic PR\n\nThis PR aggregates all changes for: **${planName}**\n\nChild PRs should target the \`${branchName}\` branch using the \`${labelName}\` label.\n\n---\n*Created by GitFix AI Planner*`,
+        body: `## Epic PR\n\nThis PR aggregates all changes for: **${planName}**\n\nChild PRs should target the \`${branchName}\` branch using the \`${labelName}\` label.\n\n---\n*Created by ProPR AI Planner*`,
         draft: true
       });
       prNumber = prResponse.data.number;

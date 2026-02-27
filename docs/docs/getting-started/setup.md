@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Setup
 
-This guide walks you through setting up GitFix for your GitHub repositories.
+This guide walks you through setting up ProPR for your GitHub repositories.
 
 ## Prerequisites
 
@@ -78,7 +78,7 @@ Define which labels trigger processing:
 
 ```bash
 # Issue Detection Configuration
-PRIMARY_PROCESSING_LABELS=AI,gitfix
+PRIMARY_PROCESSING_LABELS=AI,propr
 
 # Model-Specific Configuration
 MODEL_LABELS_SONNET=llm-claude-sonnet
@@ -235,4 +235,4 @@ chmod 600 your-app-private-key.pem
 
 ## Next Steps
 
-Once setup is complete, proceed to the [Usage Guide](./usage.md) to learn how to run GitFix.
+Once setup is complete, proceed to the [Usage Guide](./usage.md) to learn how to run ProPR.

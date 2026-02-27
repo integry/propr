@@ -157,7 +157,7 @@ export class AttachmentService {
         const tail = content.slice(content.length - TAIL_CHARS);
         const removed = content.length - (HEAD_CHARS + TAIL_CHARS);
 
-        content = `${head}\n\n... [TRUNCATED BY GITFIX: REMOVED ${removed} CHARS] ...\n\n${tail}`;
+        content = `${head}\n\n... [TRUNCATED BY PROPR: REMOVED ${removed} CHARS] ...\n\n${tail}`;
       }
 
       await fs.writeFile(finalPath, content, 'utf-8');
@@ -261,7 +261,7 @@ export class AttachmentService {
     try {
       // Build headers - add auth for GitHub URLs
       const headers: Record<string, string> = {
-        'User-Agent': 'GitFix-Bot/1.0 (https://github.com/integry/gitfix)'
+        'User-Agent': 'ProPR-Bot/1.0 (https://github.com/integry/gitfix)'
       };
 
       // GitHub user-attachments require authentication

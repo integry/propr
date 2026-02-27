@@ -4,11 +4,11 @@ sidebar_position: 1
 
 # Architecture Overview
 
-GitFix is designed with a modular, production-ready architecture that separates concerns and ensures reliable operation.
+ProPR is designed with a modular, production-ready architecture that separates concerns and ensures reliable operation.
 
 ## High-Level Architecture
 
-GitFix consists of three main components:
+ProPR consists of three main components:
 
 1. **Daemon** - Monitors GitHub repositories and enqueues issues
 2. **Worker** - Processes issues through a deterministic 3-phase workflow
@@ -32,7 +32,7 @@ GitFix consists of three main components:
 ## Project Structure
 
 ```
-gitfix/
+propr/
 ├── src/
 │   ├── auth/
 │   │   └── githubAuth.js        # GitHub App authentication
@@ -72,7 +72,7 @@ gitfix/
 The daemon continuously monitors configured GitHub repositories:
 
 1. Polls repositories at configured intervals (default: 60 seconds)
-2. Searches for open issues with configured primary labels (e.g., 'AI', 'gitfix')
+2. Searches for open issues with configured primary labels (e.g., 'AI', 'propr')
 3. Checks for model-specific labels (e.g., 'llm-claude-sonnet', 'llm-claude-opus')
 4. Excludes issues with state labels (processing, done, failed)
 5. Creates job(s) in Redis queue for each detected issue/model combination
@@ -157,7 +157,7 @@ Full observability through structured logging:
 
 ## Authentication
 
-GitFix uses GitHub App authentication for secure API access:
+ProPR uses GitHub App authentication for secure API access:
 
 1. **GitHub App** - Created with specific repository permissions
 2. **Private Key** - Used to generate installation access tokens
@@ -197,7 +197,7 @@ Job marked complete
 
 ## Scalability
 
-GitFix scales horizontally:
+ProPR scales horizontally:
 
 - **Multiple workers** can process jobs in parallel
 - **Multiple models** can process the same issue independently

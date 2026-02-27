@@ -142,7 +142,7 @@ When this PR is merged, the following issues will be automatically closed:
 ${fixesLine}
 
 ---
-*Created automatically by GitFix*`;
+*Created automatically by ProPR*`;
 }
 
 /**
@@ -240,7 +240,7 @@ export async function handleEpicPRCreationOnMerge(
         } else {
             // Fallback if plan details not found
             title = `[Epic] ${baseBranch}`;
-            body = `## Epic PR\n\nThis PR aggregates all changes from child PRs merged to the \`${baseBranch}\` branch.\n\n---\n*Created automatically by GitFix*`;
+            body = `## Epic PR\n\nThis PR aggregates all changes from child PRs merged to the \`${baseBranch}\` branch.\n\n---\n*Created automatically by ProPR*`;
         }
 
         // Create the Epic PR

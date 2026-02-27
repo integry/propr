@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # Usage
 
-Learn how to run and operate GitFix for automated issue processing.
+Learn how to run and operate ProPR for automated issue processing.
 
 ## Running the Daemon
 
@@ -27,7 +27,7 @@ npm run daemon:reset:dev
 
 The daemon continuously:
 - Polls configured repositories at the specified interval
-- Searches for open issues with configured primary labels (e.g., 'AI', 'gitfix')
+- Searches for open issues with configured primary labels (e.g., 'AI', 'propr')
 - Excludes issues already being processed or completed
 - Detects model-specific labels to determine which Claude models to use
 - Adds detected issues to the appropriate task queue(s)
@@ -141,9 +141,9 @@ npm run compose:build
 
 ### Docker Compose Services
 
-- **gitfix**: Main application (daemon and worker)
+- **propr**: Main application (daemon and worker)
 - **redis**: Redis server for task queue management
-- **gitfix-ui**: Web UI for monitoring and management (port 5173)
+- **propr-ui**: Web UI for monitoring and management (port 5173)
 
 ## GitHub Authentication
 
@@ -158,7 +158,7 @@ const octokit = await getAuthenticatedOctokit();
 
 ## Logging
 
-GitFix uses structured logging with correlation IDs:
+ProPR uses structured logging with correlation IDs:
 
 ```javascript
 import logger from './src/utils/logger.js';
@@ -189,7 +189,7 @@ npm test
 
 ## Branch Naming Convention
 
-GitFix creates branches with a descriptive naming pattern:
+ProPR creates branches with a descriptive naming pattern:
 
 ```
 ai-fix/{issueId}-{title}-{timestamp}-{model}-{random}
@@ -224,7 +224,7 @@ Jobs progress through these states:
 
 ### Error Recovery
 
-GitFix automatically retries failed operations with exponential backoff:
+ProPR automatically retries failed operations with exponential backoff:
 - GitHub API operations: up to 3 retries
 - Git operations: up to 3 retries
 - Network requests: automatic retry with backoff

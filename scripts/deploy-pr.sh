@@ -183,10 +183,10 @@ FRONTEND_URL="https://pr-${PR_NUMBER}.gitfix.dev" \
 SESSION_REDIS_HOST="host.docker.internal" \
 SESSION_REDIS_PORT="6380" \
 STAGING_ENV_FILE="" \
-$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "gitfix-pr-${PR_NUMBER}" up -d --build
+$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" up -d --build
 
 # 5. Database State Handling - copy from staging site
-CONTAINER_ID=$(STAGING_ENV_FILE="" $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "gitfix-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
+CONTAINER_ID=$(STAGING_ENV_FILE="" $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
 
 if [ -n "$CONTAINER_ID" ]; then
     echo "Preview environment deployed successfully!"
@@ -194,11 +194,11 @@ if [ -n "$CONTAINER_ID" ]; then
 
     # Copy database from staging site
     # When running inside a container, docker cp uses the container's filesystem
-    # The daemon has the staging DB mounted at /usr/src/app/data/gitfix.sqlite
-    STAGING_DB_CONTAINER_PATH="/usr/src/app/data/gitfix.sqlite"
+    # The daemon has the staging DB mounted at /usr/src/app/data/propr.sqlite
+    STAGING_DB_CONTAINER_PATH="/usr/src/app/data/propr.sqlite"
     if [ -f "$STAGING_DB_CONTAINER_PATH" ]; then
         echo "Copying database from staging site..."
-        if docker cp "$STAGING_DB_CONTAINER_PATH" "$CONTAINER_ID":/usr/src/app/data/gitfix.sqlite; then
+        if docker cp "$STAGING_DB_CONTAINER_PATH" "$CONTAINER_ID":/usr/src/app/data/propr.sqlite; then
             echo "Database seeded successfully"
         else
             echo "Warning: Failed to copy database"

@@ -8,7 +8,7 @@ The Claude integration (`src/claude/claudeService.js`) handles secure execution 
 
 ## Overview
 
-GitFix uses Anthropic's Claude Code CLI to:
+ProPR uses Anthropic's Claude Code CLI to:
 - Analyze GitHub issues and comments
 - Search and understand codebases
 - Implement solutions to problems
@@ -50,7 +50,7 @@ This generates `~/.config/claude-code/auth.json` with authentication credentials
 
 ### Non-Interactive Execution
 
-GitFix runs Claude Code in non-interactive mode:
+ProPR runs Claude Code in non-interactive mode:
 - No terminal UI
 - Automatic execution
 - Programmatic result parsing
@@ -230,7 +230,7 @@ Parse Claude's output to extract:
 
 ### Available Models
 
-GitFix supports multiple Claude models:
+ProPR supports multiple Claude models:
 
 ```javascript
 const MODELS = {

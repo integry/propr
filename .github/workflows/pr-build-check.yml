@@ -23,7 +23,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
-            gitfix-ui/package-lock.json
+            propr-ui/package-lock.json
             docs/package-lock.json
             packages/shared/package-lock.json
             packages/dashboard/package-lock.json
@@ -40,7 +40,7 @@ jobs:
               - 'package*.json'
               - 'packages/shared/**'
             ui:
-              - 'gitfix-ui/**'
+              - 'propr-ui/**'
               - 'packages/shared/**'
             docs:
               - 'docs/**'
@@ -84,7 +84,7 @@ jobs:
               fi
             fi
 
-            BUILD_OUTPUT=$(docker build -t gitfix-core -f Dockerfile . 2>&1) || {
+            BUILD_OUTPUT=$(docker build -t propr-core -f Dockerfile . 2>&1) || {
               echo "❌ Core Build FAILED" >> build_log.txt
               echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
               CORE_FAILED=1
@@ -121,7 +121,7 @@ jobs:
 
             if [ $UI_FAILED -eq 0 ]; then
               # Lint UI
-              LINT_OUTPUT=$(npm run lint -w gitfix-ui -- --max-warnings 0 2>&1) || {
+              LINT_OUTPUT=$(npm run lint -w propr-ui -- --max-warnings 0 2>&1) || {
                 echo "❌ UI Lint FAILED" >> build_log.txt
                 echo "$LINT_OUTPUT" >> build_log.txt
                 UI_FAILED=1
@@ -133,7 +133,7 @@ jobs:
             fi
 
             # Docker Build (from root context to include packages/shared)
-            BUILD_OUTPUT=$(docker build -t gitfix-ui -f gitfix-ui/Dockerfile . 2>&1) || {
+            BUILD_OUTPUT=$(docker build -t propr-ui -f propr-ui/Dockerfile . 2>&1) || {
               echo "❌ UI Build FAILED" >> build_log.txt
               echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
               EXIT_CODE=1
@@ -170,7 +170,7 @@ jobs:
             fi
             cd ..
 
-            BUILD_OUTPUT=$(docker build -t gitfix-docs ./docs 2>&1) || {
+            BUILD_OUTPUT=$(docker build -t propr-docs ./docs 2>&1) || {
               echo "❌ Docs Build FAILED" >> build_log.txt
               echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
               DOCS_FAILED=1
@@ -299,7 +299,7 @@ jobs:
             fi
 
             # 4. Docker Build
-            BUILD_OUTPUT=$(docker build -t gitfix-dashboard -f packages/dashboard/Dockerfile.prod . 2>&1) || {
+            BUILD_OUTPUT=$(docker build -t propr-dashboard -f packages/dashboard/Dockerfile.prod . 2>&1) || {
               echo "❌ Dashboard Docker Build FAILED" >> build_log.txt
               echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
               DASHBOARD_FAILED=1

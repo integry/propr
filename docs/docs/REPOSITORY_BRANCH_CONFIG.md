@@ -1,6 +1,6 @@
 # Repository-Specific Default Branch Configuration
 
-The GitFix system supports repository-specific default branch configuration through environment variables. This allows you to override the automatic branch detection for specific repositories.
+The ProPR system supports repository-specific default branch configuration through environment variables. This allows you to override the automatic branch detection for specific repositories.
 
 ## Configuration Format
 
@@ -67,7 +67,7 @@ GIT_DEFAULT_BRANCH_INTEGRY_FOREX=dev
 GIT_DEFAULT_BRANCH_INTEGRY_BACKEND=develop
 GIT_DEFAULT_BRANCH_MYORG_FRONTEND=staging
 
-# Other GitFix configuration...
+# Other ProPR configuration...
 GITHUB_REPOS_TO_MONITOR=integry/forex,integry/backend,myorg/frontend
 ```
 

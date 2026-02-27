@@ -37,7 +37,7 @@ services:
       GH_OAUTH_CALLBACK_URL: ${GH_OAUTH_CALLBACK_URL}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      DB_FILENAME: /app/data/gitfix.sqlite
+      DB_FILENAME: /app/data/propr.sqlite
       GH_WEBHOOK_SECRET: ${GH_WEBHOOK_SECRET}
     volumes:
       - propr-sqlite-data:/app/data
@@ -66,7 +66,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
-      DB_FILENAME: /app/data/gitfix.sqlite
+      DB_FILENAME: /app/data/propr.sqlite
     volumes:
       - ./logs:/app/logs
       - propr-sqlite-data:/app/data
@@ -94,7 +94,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
-      DB_FILENAME: /app/data/gitfix.sqlite
+      DB_FILENAME: /app/data/propr.sqlite
     volumes:
       - ./logs:/app/logs
       - ./repos:/app/repos
