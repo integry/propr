@@ -127,7 +127,7 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
             to={`/studio/${draft.draft_id}`}
             className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
           >
-            {draft.status === 'executed' || draft.status === 'merged' || effectiveStatus === 'merged' ? 'Manage' : 'Resume'}
+            {effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
           </Link>
           {draft.status === 'generating' && (
             <button
@@ -231,7 +231,7 @@ export const PlansTable: React.FC<PlansTableProps> = ({
   return (
     <div className="flex flex-col h-full bg-white shadow rounded-lg overflow-hidden">
       <div className="flex-1 overflow-auto">
-        <table className="min-w-full divide-y divide-gray-200">
+        <table className="min-w-full divide-y divide-slate-100">
           <thead className="bg-gray-50 sticky top-0">
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -242,7 +242,7 @@ export const PlansTable: React.FC<PlansTableProps> = ({
               </th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
+          <tbody className="bg-white divide-y divide-slate-100">
             {drafts.map((draft) => (
               <PlansTableRow
                 key={draft.draft_id}

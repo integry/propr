@@ -35,8 +35,8 @@ export const formatRelativeTime = (dateString: string): string => {
 export const getStatusBadge = (status: string): string => {
   switch (status) {
     case 'merged':
-      // Quiet Success: muted gray for completed work
-      return 'bg-gray-100 text-gray-500';
+      // Quiet Success: no background, just gray text - recedes into background
+      return 'text-gray-500';
     case 'executed':
       // Active status: Brand Teal
       return 'bg-teal-100 text-teal-800';
@@ -61,7 +61,7 @@ export const getStatusBadge = (status: string): string => {
 export const getStatusLabel = (status: string): string => {
   switch (status) {
     case 'merged':
-      return 'Merged';
+      return '✓ Merged';
     case 'executed':
       return 'Issues created';
     case 'pr_created':
@@ -82,8 +82,8 @@ export const getStatusLabel = (status: string): string => {
 export const getStatusIcon = (status: string): React.ReactNode => {
   switch (status) {
     case 'merged':
-      // Quiet Success: muted gray for completed work
-      return <GitMerge size={12} className="text-gray-400" />;
+      // Quiet Success: no icon, checkmark is in the label
+      return null;
     case 'executed':
       // Active status: Brand Teal
       return <CheckCircle size={12} className="text-teal-600" />;
@@ -107,24 +107,24 @@ export const getStatusIcon = (status: string): React.ReactNode => {
 
 export const renderIssueSummary = (summary: IssueSummary | null | undefined): React.ReactNode => {
   if (!summary || summary.total === 0) {
-    return <span className="text-gray-400 text-sm font-mono">No issues</span>;
+    return <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-gray-100 text-gray-500 rounded">No issues</span>;
   }
 
-  // Build metrics array for the Metrics Zone
+  // Build metrics array for the Metrics Zone - using monospace code chip styling
   const metrics: React.ReactNode[] = [];
 
-  // Total issues - always shown
+  // Total issues - always shown with code chip styling
   metrics.push(
-    <span key="total" className="font-mono text-gray-600" title="Total Issues">
-      [ <span className="font-mono">{summary.total}</span> Issues ]
+    <span key="total" className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-gray-100 text-gray-600 rounded" title="Total Issues">
+      {summary.total} Issues
     </span>
   );
 
   // Processing - shown if > 0, using ⟳ symbol
   if (summary.processing > 0) {
     metrics.push(
-      <span key="processing" className="font-mono text-teal-600" title="Processing">
-        [ <span className="font-mono">{summary.processing}</span> ⟳ ]
+      <span key="processing" className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-teal-50 text-teal-600 rounded" title="Processing">
+        {summary.processing} ⟳
       </span>
     );
   }
@@ -132,8 +132,8 @@ export const renderIssueSummary = (summary: IssueSummary | null | undefined): Re
   // Pending - shown if > 0, using ⚠️ symbol
   if (summary.pending > 0) {
     metrics.push(
-      <span key="pending" className="font-mono text-amber-600" title="Pending">
-        [ <span className="font-mono">{summary.pending}</span> ⚠️ ]
+      <span key="pending" className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-amber-50 text-amber-600 rounded" title="Pending">
+        {summary.pending} ⚠️
       </span>
     );
   }
@@ -141,8 +141,8 @@ export const renderIssueSummary = (summary: IssueSummary | null | undefined): Re
   // Merged - shown if > 0, using ✓ symbol
   if (summary.merged > 0) {
     metrics.push(
-      <span key="merged" className="font-mono text-gray-500" title="Merged">
-        [ <span className="font-mono">{summary.merged}</span> ✓ ]
+      <span key="merged" className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-gray-100 text-gray-500 rounded" title="Merged">
+        {summary.merged} ✓
       </span>
     );
   }
@@ -150,17 +150,16 @@ export const renderIssueSummary = (summary: IssueSummary | null | undefined): Re
   // Closed - shown if > 0, using ✗ symbol
   if (summary.closed > 0) {
     metrics.push(
-      <span key="closed" className="font-mono text-red-600" title="Closed">
-        [ <span className="font-mono">{summary.closed}</span> ✗ ]
+      <span key="closed" className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-red-50 text-red-600 rounded" title="Closed">
+        {summary.closed} ✗
       </span>
     );
   }
 
   return (
-    <div className="flex items-center gap-1 text-xs font-mono">
+    <div className="flex items-center gap-1.5 text-xs">
       {metrics.map((metric, index) => (
         <React.Fragment key={index}>
-          {index > 0 && <span className="text-gray-400 mx-1">•</span>}
           {metric}
         </React.Fragment>
       ))}
