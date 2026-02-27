@@ -729,7 +729,9 @@ function calculateAttachmentTokens(attachments: Attachment[], imageTokens: numbe
 }
 
 /**
- * Build smart selection array from included files
+ * Build smart selection array from included files.
+ * Includes all files from includedFilesSet, even if they weren't in manualFiles or autoFilePaths.
+ * This ensures files included via compress mode or fallback are shown in the UI.
  */
 function buildSmartSelection(
   manualFiles: string[],
@@ -737,20 +739,38 @@ function buildSmartSelection(
   includedFilesSet: Set<string>,
   fileScores: Record<string, number>
 ): SmartFileSelection[] {
-  return [
+  const manualSet = new Set(manualFiles);
+  const autoSet = new Set(autoFilePaths);
+
+  const result: SmartFileSelection[] = [
+    // Manual files that are included
     ...manualFiles.filter(p => includedFilesSet.has(p)).map(p => ({
       path: p,
       reason: 'Explicitly included',
       source: 'manual' as const,
       score: fileScores[p] ?? 100  // Manual files get 100 if no score
     })),
-    ...autoFilePaths.filter(p => includedFilesSet.has(p) && !manualFiles.includes(p)).map(p => ({
+    // Auto-detected files that are included (excluding manual)
+    ...autoFilePaths.filter(p => includedFilesSet.has(p) && !manualSet.has(p)).map(p => ({
       path: p,
       reason: 'Auto-detected',
       source: 'auto' as const,
       score: fileScores[p] ?? 0
-    }))
+    })),
+    // Files that were included in context but not in manual or auto lists
+    // This handles compress mode or fallback scenarios where all files are included
+    ...Array.from(includedFilesSet)
+      .filter(p => !manualSet.has(p) && !autoSet.has(p))
+      .map(p => ({
+        path: p,
+        reason: 'Included for context',
+        source: 'auto' as const,
+        score: fileScores[p] ?? 0
+      }))
   ];
+
+  // Sort by score descending so most relevant files appear first
+  return result.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 }
 
 /**

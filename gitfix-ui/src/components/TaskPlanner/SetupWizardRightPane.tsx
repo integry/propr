@@ -90,7 +90,9 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
             <p className="text-sm text-gray-400 italic">
               {isNewMode
                 ? 'Context preview will be available after clicking Generate'
-                : 'Files will be selected after context analysis'}
+                : preview.data
+                  ? 'No files found in repository'
+                  : 'Files will be selected after context analysis'}
             </p>
             {isPreviewLoading && <FileSelectionSkeleton />}
           </div>

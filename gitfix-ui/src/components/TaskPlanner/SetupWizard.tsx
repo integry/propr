@@ -326,7 +326,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const generationHandlers = useGenerationHandlers({
     draft, config, branchError,
     contextHelpers: { isContextStale: contextRefresh.isContextStale, clearCountdown: contextRefresh.clearCountdown, fetchPreview: contextRefresh.fetchPreview },
-    startPolling: generationPolling.startPolling, setError, setGenerationError: generationPolling.setGenerationError
+    startPolling: generationPolling.startPolling, stopPolling: generationPolling.stopPolling, setError, setGenerationError: generationPolling.setGenerationError
   });
 
   const handleCreateDraftAndGenerate = useDraftCreation({

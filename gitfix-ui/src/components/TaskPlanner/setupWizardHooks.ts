@@ -270,11 +270,12 @@ interface GenerationHandlersParams {
   branchError: string | null;
   contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<void> };
   startPolling: () => void;
+  stopPolling: () => void;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
   setGenerationError: (error: string | null) => void;
 }
 
-export function useGenerationHandlers({ draft, config, branchError, contextHelpers, startPolling, setError, setGenerationError }: GenerationHandlersParams) {
+export function useGenerationHandlers({ draft, config, branchError, contextHelpers, startPolling, stopPolling, setError, setGenerationError }: GenerationHandlersParams) {
   const { isContextStale, clearCountdown, fetchPreview } = contextHelpers;
 
   const handleGenerateForExistingDraft = useCallback(async () => {
@@ -308,10 +309,11 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
     if (!draft) return;
     try {
       await abortGeneration(draft.draft_id);
+      stopPolling();
     } catch (err) {
       setError((err as Error).message || 'Failed to abort generation');
     }
-  }, [draft, setError]);
+  }, [draft, stopPolling, setError]);
 
   return { handleGenerateForExistingDraft, handleAbortGeneration };
 }
