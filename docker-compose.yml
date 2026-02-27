@@ -8,7 +8,7 @@ services:
     volumes:
       - redis_data:/data
     networks:
-      - gitfix-net
+      - propr-net
 
   daemon:
     build:
@@ -28,13 +28,13 @@ services:
     env_file:
       - .env
     environment:
-      - GITHUB_BOT_USERNAME=gitfixio[bot]
+      - GITHUB_BOT_USERNAME=${GITHUB_BOT_USERNAME:-propr.dev[bot]}
       - STAGING_ENV_FILE=/usr/src/app/.env
     depends_on:
       redis:
         condition: service_started
     networks:
-      - gitfix-net
+      - propr-net
 
   worker:
     build:
@@ -57,7 +57,7 @@ services:
       redis:
         condition: service_started
     networks:
-      - gitfix-net
+      - propr-net
 
   analysis-worker:
     build:
@@ -77,7 +77,7 @@ services:
       redis:
         condition: service_started
     networks:
-      - gitfix-net
+      - propr-net
 
   indexing-worker:
     build:
@@ -104,7 +104,7 @@ services:
       redis:
         condition: service_started
     networks:
-      - gitfix-net
+      - propr-net
 
   web-ui:
     build:
@@ -117,7 +117,7 @@ services:
       # Allow injection of UI_PORT for PR preview environments, default to 5173
       - '${UI_PORT:-5173}:5173'
     networks:
-      - gitfix-net
+      - propr-net
 
   dashboard-api:
     build:
@@ -160,7 +160,7 @@ services:
       daemon:
         condition: service_started
     networks:
-      - gitfix-net
+      - propr-net
 
   docs:
     build:
@@ -170,11 +170,11 @@ services:
       # Allow injection of DOCS_PORT for PR preview environments, default to 8080
       - '${DOCS_PORT:-8080}:3000'
     networks:
-      - gitfix-net
+      - propr-net
     restart: unless-stopped
 
 networks:
-  gitfix-net:
+  propr-net:
     driver: bridge
 
 volumes:
