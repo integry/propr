@@ -54,7 +54,7 @@ export async function detectBotUsername(): Promise<string> {
     } catch (error) {
         const err = error as Error;
         logger.warn({ error: err.message }, 'Failed to auto-detect bot username, will use default');
-        GITHUB_BOT_USERNAME = 'gitfixio[bot]';
+        GITHUB_BOT_USERNAME = 'propr.dev[bot]';
         return GITHUB_BOT_USERNAME;
     }
 }

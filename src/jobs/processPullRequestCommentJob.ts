@@ -131,7 +131,7 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
         owner: repoOwner, repo: repoName, pull_number: pullRequestNumber,
         mediaType: { format: 'full' }  // Get body_html with signed image URLs
     }) as PRData;
-    const botUsername = process.env.GITHUB_BOT_USERNAME || 'gitfixio[bot]';
+    const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr.dev[bot]';
     // Use request for mediaType support - paginate doesn't support it well
     const prCommentsResp = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, per_page: 100,
