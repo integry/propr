@@ -140,12 +140,12 @@ export const renderIssueSummary = (summary: IssueSummary | null | undefined): Re
 };
 
 /**
- * Renders the unified Status Strip combining issue metrics, status, and time
+ * Renders the unified Status Strip combining issue metrics and status (without time)
  */
 export const renderStatusStrip = (
   summary: IssueSummary | null | undefined,
   effectiveStatus: string,
-  updatedAt: string
+  _updatedAt: string
 ): React.ReactNode => {
   return (
     <div className="flex items-center gap-2.5">
@@ -157,12 +157,6 @@ export const renderStatusStrip = (
       <span className={`px-2 py-0.5 inline-flex items-center gap-1 text-xs leading-5 font-medium rounded-full ${getStatusBadge(effectiveStatus)}`}>
         {getStatusIcon(effectiveStatus)}
         {getStatusLabel(effectiveStatus)}
-      </span>
-      {/* Separator dot */}
-      <span className="text-slate-300">•</span>
-      {/* Relative time */}
-      <span className="text-xs text-slate-400">
-        {formatRelativeTime(updatedAt)}
       </span>
     </div>
   );

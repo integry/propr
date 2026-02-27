@@ -4,7 +4,8 @@ import { Search, Filter, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
 import { DraftListItem } from '../api/gitfixApi';
 import {
   getEffectiveStatus,
-  renderStatusStrip
+  renderStatusStrip,
+  formatRelativeTime
 } from './PlansPageUtils';
 
 interface EmptyStateProps {
@@ -115,8 +116,12 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
         </Link>
       </td>
       {/* Actions cell - right-aligned with consistent width */}
-      <td className="px-6 py-3 whitespace-nowrap text-right text-sm font-medium w-[140px]">
-        <div className="flex items-center justify-end gap-2">
+      <td className="px-6 py-3 whitespace-nowrap text-right text-sm font-medium w-[220px]">
+        <div className="flex items-center justify-end gap-3">
+          {/* Relative time - far right aligned */}
+          <span className="text-xs text-slate-400 min-w-[80px] text-right">
+            {formatRelativeTime(draft.updated_at)}
+          </span>
           {/* Ghost Delete button - icon only, gray, turns red on hover */}
           <button
             onClick={(e) => onDelete(draft.draft_id, e)}
@@ -134,10 +139,10 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
               {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
             </button>
           )}
-          {/* Primary action button */}
+          {/* Primary action button - fixed width for alignment */}
           <Link
             to={`/studio/${draft.draft_id}`}
-            className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
+            className="inline-flex items-center justify-center w-[72px] px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
           >
             {effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
           </Link>
