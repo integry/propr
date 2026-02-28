@@ -2,7 +2,7 @@
 
 Based on the git diff analysis between the main branch and the current HEAD, the following comments were removed during the TypeScript migration:
 
-## 1. packages/dashboard/auth.ts (migrated from auth.js)
+## 1. packages/api/auth.ts (migrated from auth.js)
 
 ### Line 19 (in original auth.js)
 ```javascript
@@ -36,7 +36,7 @@ Comment removed from the GitHub callback route.
 ```
 Both comments were removed from the `ensureAuthenticated` function.
 
-## 2. packages/dashboard/llmMetricsAdapter.ts (migrated from llmMetricsAdapter.js)
+## 2. packages/api/llmMetricsAdapter.ts (migrated from llmMetricsAdapter.js)
 
 ### Line 3 (in original llmMetricsAdapter.js)
 ```javascript

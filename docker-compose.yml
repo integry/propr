@@ -119,11 +119,11 @@ services:
     networks:
       - propr-net
 
-  dashboard-api:
+  api:
     build:
       context: .
       dockerfile: Dockerfile.node
-    command: sh -c "cd /usr/src/app/packages/dashboard && npx tsx server.ts"
+    command: sh -c "cd /usr/src/app/packages/api && npx tsx server.ts"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

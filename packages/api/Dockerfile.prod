@@ -1,4 +1,4 @@
-# Production build for dashboard API server only
+# Production build for API server only
 # Note: The web UI is served separately via propr-ui service
 # This Dockerfile is meant to be built from the project root context
 
@@ -12,9 +12,9 @@ COPY package.json package-lock.json tsconfig.json ./
 # Copy all workspace packages
 COPY packages/shared ./packages/shared
 COPY packages/core ./packages/core
-COPY packages/dashboard ./packages/dashboard
+COPY packages/api ./packages/api
 
-# Copy root src directory (needed by dashboard for daemon imports)
+# Copy root src directory (needed by API server for daemon imports)
 COPY src ./src
 COPY config ./config
 
@@ -29,7 +29,7 @@ RUN npm run build
 WORKDIR /app/packages/core
 RUN npm run build
 
-# Build root project (builds both src and dashboard via root tsconfig include)
+# Build root project (builds both src and api via root tsconfig include)
 WORKDIR /app
 RUN npm run build
 
@@ -44,17 +44,17 @@ COPY --from=builder /app/package.json /app/package-lock.json ./
 # Copy built packages (shared and core)
 COPY --from=builder /app/packages/shared ./packages/shared
 COPY --from=builder /app/packages/core ./packages/core
-COPY --from=builder /app/packages/dashboard/package.json ./packages/dashboard/
+COPY --from=builder /app/packages/api/package.json ./packages/api/
 
-# Copy built dist directory (contains src, packages/dashboard output)
+# Copy built dist directory (contains src, packages/api output)
 COPY --from=builder /app/dist ./dist
 
 # Install production dependencies only
 RUN npm ci --production
 
-# Dashboard server is at dist/packages/dashboard/server.js
+# API server is at dist/packages/api/server.js
 WORKDIR /app
 
 EXPOSE 4000
 
-CMD ["node", "dist/packages/dashboard/server.js"]
+CMD ["node", "dist/packages/api/server.js"]

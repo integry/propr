@@ -15,8 +15,8 @@ This guide covers deploying ProPR with the Web UI dashboard in a production envi
 1. Copy the example environment files:
 ```bash
 cp .env.example .env
-cp packages/dashboard/.env.example packages/dashboard/.env
-cp packages/dashboard/client/.env.example packages/dashboard/client/.env
+cp packages/api/.env.example packages/api/.env
+cp packages/api/client/.env.example packages/api/client/.env
 ```
 
 2. Update the `.env` file with production values:

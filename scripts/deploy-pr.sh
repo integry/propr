@@ -186,11 +186,11 @@ STAGING_ENV_FILE="" \
 $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" up -d --build
 
 # 5. Database State Handling - copy from staging site
-CONTAINER_ID=$(STAGING_ENV_FILE="" $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" ps -q dashboard-api 2>/dev/null || true)
+CONTAINER_ID=$(STAGING_ENV_FILE="" $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" ps -q api 2>/dev/null || true)
 
 if [ -n "$CONTAINER_ID" ]; then
     echo "Preview environment deployed successfully!"
-    echo "Dashboard API container: $CONTAINER_ID"
+    echo "API container: $CONTAINER_ID"
 
     # Copy database from staging site
     # When running inside a container, docker cp uses the container's filesystem

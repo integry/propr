@@ -17,8 +17,8 @@ The LLM metrics system tracks and stores detailed metrics about Claude API usage
 ### Components
 
 1. **`src/utils/llmMetrics.js`** - Core metrics recording and retrieval functions
-2. **`packages/dashboard/llmMetricsAdapter.js`** - CommonJS adapter for dashboard integration
-3. **`packages/dashboard/client/src/components/LLMMetricsPanel.tsx`** - React component for displaying metrics
+2. **`packages/api/llmMetricsAdapter.js`** - CommonJS adapter for dashboard integration
+3. **`packages/api/client/src/components/LLMMetricsPanel.tsx`** - React component for displaying metrics
 4. **Redis Storage** - All metrics are stored in Redis with appropriate TTLs
 
 ### Data Flow
