@@ -116,6 +116,8 @@ export interface PreviewOptions {
   files?: string[];
   /** Model to use for plan generation (determines context limits) */
   generationModel?: string;
+  /** Additional repositories to include as reference context */
+  contextRepositories?: ContextRepository[];
 }
 
 export interface PlanGenerationOptions {

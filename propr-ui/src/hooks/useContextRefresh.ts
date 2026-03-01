@@ -57,6 +57,8 @@ interface FetchConfig {
   files: PlannerAttachment[];
   /** Model to use for plan generation (determines context limits) */
   generationModel: string | null;
+  /** Additional repositories to include as reference context */
+  contextRepositories: { repository: string; branch?: string }[];
 }
 
 interface UseContextRefreshOptions {
@@ -144,7 +146,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         contextLevel: currentConfig.contextLevel,
         compress: currentConfig.compress,
         files: currentConfig.files.map(f => f.originalName),
-        generationModel: currentConfig.generationModel || undefined
+        generationModel: currentConfig.generationModel || undefined,
+        contextRepositories: currentConfig.contextRepositories.length > 0 ? currentConfig.contextRepositories : undefined
       }, controller.signal);
 
       lastFetchedSourceRef.current = {
