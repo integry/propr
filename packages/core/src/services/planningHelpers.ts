@@ -7,7 +7,7 @@ import { estimateLlmDuration } from '../utils/llmEstimation.js';
 import { findRelevantFiles } from './relevanceService.js';
 import { getModelPricing } from './pricingService.js';
 import { getAgentRegistry } from '../agents/AgentRegistry.js';
-import { generateContext, selectFilesWithinLimit } from './contextService.js';
+import { generateContext, selectFilesWithinLimit, generateAdditionalContext } from './contextService.js';
 import { parseFileReferences, getResolvedPaths } from './relevance/fileReferenceParser.js';
 import logger from '../utils/logger.js';
 import type { LogFn } from 'pino';
@@ -515,6 +515,10 @@ export interface GenerateContextPreviewOptions {
   contextModel?: string;
   /** Model to use for generation, determining the max context window */
   generationModel?: string;
+  /** Additional repositories to include as reference context */
+  contextRepositories?: ContextRepository[];
+  /** GitHub token for cloning context repositories */
+  githubToken?: string;
 }
 
 export interface Base64Image {
@@ -944,7 +948,7 @@ async function regenerateContext(params: RegenerateContextParams): Promise<Regen
 }
 
 export async function generateContextPreview(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
-  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel, generationModel } = options;
+  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel, generationModel, contextRepositories, githubToken } = options;
   const targetTokenLimit = getEffectiveTokenLimit(generationModel, contextLevel);
   const maxTokenLimit = getEffectiveTokenLimit(generationModel, MAX_CONTEXT_LEVEL);
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -1029,9 +1033,49 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   const costEstimate = await calculateCostEstimate(simulatedTokens, warnings, correlatedLogger);
   const smartSelection = buildSmartSelection(manualFiles, autoFilePaths, includedFilesSet, fileScores);
+
+  // Load additional context from context repositories if configured
+  let additionalContext: string | undefined;
+  if (contextRepositories && contextRepositories.length > 0 && githubToken) {
+    const additionalContextBudget = Math.floor(targetTokenLimit * 0.2); // Reserve 20% for context repos
+    correlatedLogger.info({
+      repositoryCount: contextRepositories.length,
+      repositories: contextRepositories.map(r => r.repository),
+      budgetTokens: additionalContextBudget
+    }, 'Loading additional context from context repositories for preview');
+
+    try {
+      const additionalContextResult = await generateAdditionalContext({
+        repositories: contextRepositories,
+        tokenBudget: additionalContextBudget,
+        authToken: githubToken,
+        correlationId
+      });
+
+      if (additionalContextResult.repositoriesIncluded.length > 0) {
+        additionalContext = additionalContextResult.context;
+        correlatedLogger.info({
+          repositoriesIncluded: additionalContextResult.repositoriesIncluded,
+          totalTokens: additionalContextResult.totalTokens,
+          errors: additionalContextResult.errors
+        }, 'Loaded additional context for preview');
+      }
+
+      if (additionalContextResult.errors.length > 0) {
+        for (const err of additionalContextResult.errors) {
+          warnings.push(`Failed to load context from ${err.repository}: ${err.error}`);
+        }
+      }
+    } catch (error) {
+      correlatedLogger.warn({ error: (error as Error).message }, 'Failed to load additional context repositories');
+      warnings.push(`Failed to load context repositories: ${(error as Error).message}`);
+    }
+  }
+
   const fullContext = buildFullContext({
     userRequest: prompt, repomixContext, granularity, smartSummaries,
-    images: base64Images.length > 0 ? base64Images : undefined
+    images: base64Images.length > 0 ? base64Images : undefined,
+    additionalContext
   });
 
   const newCache: ContextCache = {

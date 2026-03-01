@@ -262,7 +262,7 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
         });
       }
 
-      const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId, contextModel, generationModel });
+      const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId, contextModel, generationModel, contextRepositories, githubToken: authToken });
       res.json(result);
     } catch (error) {
       console.error('Preview context error:', error);
