@@ -118,6 +118,163 @@ const CollapsibleSection: React.FC<{
   );
 };
 
+// Score Pills Row Component
+const ScorePillsRow: React.FC<{
+  critiqueScore?: number;
+  promptScore?: number;
+  efficiencyScore?: number;
+}> = ({ critiqueScore, promptScore, efficiencyScore }) => {
+  const hasScores = critiqueScore !== undefined || promptScore !== undefined || efficiencyScore !== undefined;
+
+  if (!hasScores) return null;
+
+  return (
+    <div className="flex items-center gap-2 mb-3 flex-wrap">
+      {critiqueScore !== undefined && (
+        <LighthouseScorePill score={critiqueScore} label="Critique" />
+      )}
+      {promptScore !== undefined && (
+        <LighthouseScorePill score={promptScore} label="Prompt" />
+      )}
+      {efficiencyScore !== undefined && (
+        <LighthouseScorePill score={efficiencyScore} label="Efficiency" />
+      )}
+    </div>
+  );
+};
+
+// Summary Box Component
+const SummaryBox: React.FC<{
+  content: string;
+  renderMarkdown: (text: string) => React.ReactNode;
+}> = ({ content, renderMarkdown }) => (
+  <div className="bg-slate-50 border-l-2 border-teal-500 px-3 py-2 mb-3">
+    <div className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-1">
+      Summary of Changes
+    </div>
+    <div className="text-sm text-gray-700 prose prose-sm max-w-none">
+      {renderMarkdown(content)}
+    </div>
+  </div>
+);
+
+// Analysis Section Component
+const AnalysisSection: React.FC<{
+  title: string;
+  children: React.ReactNode;
+}> = ({ title, children }) => (
+  <div>
+    <div className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-1">
+      {title}
+    </div>
+    {children}
+  </div>
+);
+
+// Recommendations List Component
+const RecommendationsList: React.FC<{
+  recommendations: string[];
+}> = ({ recommendations }) => (
+  <AnalysisSection title="Recommendations">
+    <ul className="space-y-1">
+      {recommendations.map((rec, idx) => (
+        <li key={idx} className="flex items-start gap-2 text-gray-700">
+          <span className="mt-0.5 text-slate-400">•</span>
+          <span>{rec}</span>
+        </li>
+      ))}
+    </ul>
+  </AnalysisSection>
+);
+
+// Detailed Analysis Content Component
+const DetailedAnalysisContent: React.FC<{
+  parsed: AnalysisData;
+  renderMarkdown: (text: string) => React.ReactNode;
+}> = ({ parsed, renderMarkdown }) => (
+  <div className="space-y-3">
+    {parsed.implementation_critique && (
+      <AnalysisSection title="Implementation Critique">
+        <div className="prose prose-sm max-w-none">
+          {renderMarkdown(parsed.implementation_critique)}
+        </div>
+      </AnalysisSection>
+    )}
+
+    {parsed.prompt_improvements && (
+      <AnalysisSection title="Prompt Improvements">
+        <p className="text-gray-700">{parsed.prompt_improvements}</p>
+      </AnalysisSection>
+    )}
+
+    {parsed.efficiency_notes && (
+      <AnalysisSection title="Efficiency Notes">
+        <p className="text-gray-700">{parsed.efficiency_notes}</p>
+      </AnalysisSection>
+    )}
+
+    {parsed.recommendations && parsed.recommendations.length > 0 && (
+      <RecommendationsList recommendations={parsed.recommendations} />
+    )}
+
+    {parsed.error_analysis && (
+      <AnalysisSection title="Error Analysis">
+        <p className="text-gray-700">{parsed.error_analysis}</p>
+      </AnalysisSection>
+    )}
+  </div>
+);
+
+// Check if detailed content exists
+const hasDetailedAnalysisContent = (parsed: AnalysisData): boolean => {
+  return !!(
+    parsed.implementation_critique ||
+    parsed.prompt_improvements ||
+    parsed.efficiency_notes ||
+    (parsed.recommendations && parsed.recommendations.length > 0) ||
+    parsed.error_analysis
+  );
+};
+
+// Loading State Component
+const LoadingState: React.FC = () => (
+  <div className="py-2 text-gray-500 text-sm">Running analysis...</div>
+);
+
+// Analysis Content Component - handles parsed data rendering
+const AnalysisContent: React.FC<{
+  parsed: AnalysisData;
+  renderMarkdown: (text: string) => React.ReactNode;
+  totalThoughts: number;
+}> = ({ parsed, renderMarkdown, totalThoughts }) => {
+  const summaryContent = parsed.summary_of_changes || parsed.summary;
+  const shouldCollapseByDefault = totalThoughts > 10;
+  const hasDetailedContent = hasDetailedAnalysisContent(parsed);
+
+  return (
+    <>
+      <ScorePillsRow
+        critiqueScore={parsed.implementation_critique_score}
+        promptScore={parsed.prompt_quality_score}
+        efficiencyScore={parsed.efficiency_score}
+      />
+
+      {summaryContent && (
+        <SummaryBox content={summaryContent} renderMarkdown={renderMarkdown} />
+      )}
+
+      {hasDetailedContent && (
+        <CollapsibleSection
+          title="View Detailed Analysis"
+          defaultExpanded={!shouldCollapseByDefault}
+        >
+          <DetailedAnalysisContent parsed={parsed} renderMarkdown={renderMarkdown} />
+        </CollapsibleSection>
+      )}
+    </>
+  );
+};
+
 const ResultOverview: React.FC<ResultOverviewProps> = ({
   analysis,
   loading,
@@ -126,134 +283,18 @@ const ResultOverview: React.FC<ResultOverviewProps> = ({
 }) => {
   const parsed = parseAnalysis(analysis);
 
-  // Don't render if no analysis and not loading
   if (!parsed && !loading) return null;
-
-  // Extract scores
-  const critiqueScore = parsed?.implementation_critique_score;
-  const promptScore = parsed?.prompt_quality_score;
-  const efficiencyScore = parsed?.efficiency_score;
-  const hasScores = critiqueScore !== undefined || promptScore !== undefined || efficiencyScore !== undefined;
-
-  // Extract summary
-  const summaryContent = parsed?.summary_of_changes || parsed?.summary;
-
-  // Determine if we should collapse by default (for larger tasks)
-  const shouldCollapseByDefault = totalThoughts > 10;
-
-  // Build detailed analysis content
-  const hasDetailedContent = parsed?.implementation_critique ||
-    parsed?.prompt_improvements ||
-    parsed?.efficiency_notes ||
-    parsed?.recommendations?.length ||
-    parsed?.error_analysis;
 
   return (
     <div className="bg-white border-b border-gray-200">
       <div className="p-4">
-        {/* Loading state */}
-        {loading && (
-          <div className="py-2 text-gray-500 text-sm">Running analysis...</div>
-        )}
-
+        {loading && <LoadingState />}
         {parsed && !loading && (
-          <>
-            {/* 1. Score Pills Row */}
-            {hasScores && (
-              <div className="flex items-center gap-2 mb-3 flex-wrap">
-                {critiqueScore !== undefined && (
-                  <LighthouseScorePill score={critiqueScore} label="Critique" />
-                )}
-                {promptScore !== undefined && (
-                  <LighthouseScorePill score={promptScore} label="Prompt" />
-                )}
-                {efficiencyScore !== undefined && (
-                  <LighthouseScorePill score={efficiencyScore} label="Efficiency" />
-                )}
-              </div>
-            )}
-
-            {/* 2. Summary of Changes - Highlighted Box */}
-            {summaryContent && (
-              <div className="bg-slate-50 border-l-2 border-teal-500 px-3 py-2 mb-3">
-                <div className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-1">
-                  Summary of Changes
-                </div>
-                <div className="text-sm text-gray-700 prose prose-sm max-w-none">
-                  {renderMarkdown(summaryContent)}
-                </div>
-              </div>
-            )}
-
-            {/* 3. Detailed Analysis - Collapsible */}
-            {hasDetailedContent && (
-              <CollapsibleSection
-                title="View Detailed Analysis"
-                defaultExpanded={!shouldCollapseByDefault}
-              >
-                <div className="space-y-3">
-                  {/* Implementation Critique */}
-                  {parsed.implementation_critique && (
-                    <div>
-                      <div className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-1">
-                        Implementation Critique
-                      </div>
-                      <div className="prose prose-sm max-w-none">
-                        {renderMarkdown(parsed.implementation_critique)}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Prompt Improvements */}
-                  {parsed.prompt_improvements && (
-                    <div>
-                      <div className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-1">
-                        Prompt Improvements
-                      </div>
-                      <p className="text-gray-700">{parsed.prompt_improvements}</p>
-                    </div>
-                  )}
-
-                  {/* Efficiency Notes */}
-                  {parsed.efficiency_notes && (
-                    <div>
-                      <div className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-1">
-                        Efficiency Notes
-                      </div>
-                      <p className="text-gray-700">{parsed.efficiency_notes}</p>
-                    </div>
-                  )}
-
-                  {/* Recommendations */}
-                  {parsed.recommendations && parsed.recommendations.length > 0 && (
-                    <div>
-                      <div className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-1">
-                        Recommendations
-                      </div>
-                      <ul className="space-y-1">
-                        {parsed.recommendations.map((rec, idx) => (
-                          <li key={idx} className="flex items-start gap-2 text-gray-700">
-                            <span className="mt-0.5 text-slate-400">•</span>
-                            <span>{rec}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {/* Error Analysis */}
-                  {parsed.error_analysis && (
-                    <div>
-                      <div className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-1">
-                        Error Analysis
-                      </div>
-                      <p className="text-gray-700">{parsed.error_analysis}</p>
-                    </div>
-                  )}
-                </div>
-              </CollapsibleSection>
-            )}
-          </>
+          <AnalysisContent
+            parsed={parsed}
+            renderMarkdown={renderMarkdown}
+            totalThoughts={totalThoughts}
+          />
         )}
       </div>
     </div>
