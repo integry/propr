@@ -1036,6 +1036,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
   // Load additional context from context repositories if configured
   let additionalContext: string | undefined;
+  let additionalContextTokens = 0;
   if (contextRepositories && contextRepositories.length > 0 && githubToken) {
     const additionalContextBudget = Math.floor(targetTokenLimit * 0.2); // Reserve 20% for context repos
     correlatedLogger.info({
@@ -1054,6 +1055,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
 
       if (additionalContextResult.repositoriesIncluded.length > 0) {
         additionalContext = additionalContextResult.context;
+        additionalContextTokens = additionalContextResult.totalTokens;
         correlatedLogger.info({
           repositoriesIncluded: additionalContextResult.repositoriesIncluded,
           totalTokens: additionalContextResult.totalTokens,
@@ -1087,18 +1089,20 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   await db('task_drafts').where({ draft_id: draftId }).update({
     initial_prompt: prompt,
     name: truncateToSentences(prompt),
-    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, compress, manualFiles, autoFiles: autoFilePaths, contextCache: newCache }),
+    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, compress, manualFiles, autoFiles: autoFilePaths, contextRepositories, contextCache: newCache }),
     generated_context: fullContext,
     updated_at: db.fn.now()
   });
 
   const estimatedActualTokens = Math.ceil(simulatedTokens * TIKTOKEN_TO_CLAUDE_RATIO);
-  const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens;
+  // Convert additional context tokens from tiktoken to Claude estimate
+  const additionalContextTokensEstimated = Math.ceil(additionalContextTokens * TIKTOKEN_TO_CLAUDE_RATIO);
+  const totalTokens = estimatedActualTokens + attachmentTokens + smartSummaryTokens + additionalContextTokensEstimated;
   // Convert maxTokens to same space as totalTokens for consistent display
   const maxTokensEstimated = Math.ceil(targetTokenLimit * TIKTOKEN_TO_CLAUDE_RATIO);
   const { modelName, modelMaxContextTokens } = getModelDisplayInfo(generationModel);
 
-  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, totalTokens, maxTokensEstimated, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
+  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens: additionalContextTokensEstimated, totalTokens, maxTokensEstimated, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
 
   return {
     success: true,
