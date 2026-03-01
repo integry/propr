@@ -4,8 +4,8 @@ import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import DeepDiveAnalysis from '../DeepDiveAnalysis';
 import { renderMarkdown } from './renderMarkdown';
 import TaskStatusTable from './TaskStatusTable';
-import TodoList from './TodoList';
-import LiveFileChanges from './LiveFileChanges';
+import ExecutionRail from './ExecutionRail';
+import LiveFileChips from './LiveFileChips';
 import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
 import PromptModal from './PromptModal';
@@ -290,16 +290,16 @@ const TaskDetails: React.FC = () => {
             {/* Compact Status Timeline */}
             <TaskStatusTable history={taskData.history} compact={true} />
 
-            {/* Todo List */}
-            <TodoList
+            {/* Execution Rail - unified task sequence with vertical threading */}
+            <ExecutionRail
               liveDetails={taskData.liveDetails}
               history={taskData.history}
               onTodoHover={setHighlightedTodoId}
             />
 
-            {/* Live File Changes */}
+            {/* Live File Changes - dense monospace code chips */}
             {taskId && taskData.history.length > 0 && (
-              <LiveFileChanges
+              <LiveFileChips
                 taskId={taskId}
                 isActive={derivedData.isTaskActive}
               />
