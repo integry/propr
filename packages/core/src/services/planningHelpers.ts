@@ -476,7 +476,9 @@ export class PlanningFailedError extends Error {
 export interface SmartFileSelection {
   path: string;
   reason: string;
-  source: 'manual' | 'auto';
+  source: 'manual' | 'auto' | 'context-repo';
+  /** Repository name for context-repo files */
+  repository?: string;
   score?: number;
 }
 
@@ -1040,6 +1042,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   let additionalContext: string | undefined;
   let additionalContextTokens = 0;
   let additionalContextFiles = 0;
+  let additionalContextFilesIncluded: Array<{ repository: string; path: string }> = [];
   if (contextRepositories && contextRepositories.length > 0 && githubToken) {
     // Calculate budget: use remaining space after target repo, with minimum 20% and maximum 80%
     const targetRepoUsage = simulatedTokens + attachmentTokens + smartSummaryTokens;
@@ -1065,6 +1068,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
         additionalContext = additionalContextResult.context;
         additionalContextTokens = additionalContextResult.totalTokens;
         additionalContextFiles = additionalContextResult.totalFiles;
+        additionalContextFilesIncluded = additionalContextResult.filesIncluded;
         correlatedLogger.info({
           repositoriesIncluded: additionalContextResult.repositoriesIncluded,
           totalTokens: additionalContextResult.totalTokens,
@@ -1112,12 +1116,21 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const maxTokensEstimated = Math.ceil(targetTokenLimit * TIKTOKEN_TO_CLAUDE_RATIO);
   const { modelName, modelMaxContextTokens } = getModelDisplayInfo(generationModel);
 
+  // Add context repo files to smartSelection
+  const contextRepoSelection: SmartFileSelection[] = additionalContextFilesIncluded.map(f => ({
+    path: f.path,
+    reason: 'Reference context',
+    source: 'context-repo' as const,
+    repository: f.repository
+  }));
+  const fullSmartSelection = [...smartSelection, ...contextRepoSelection];
+
   correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens: additionalContextTokensEstimated, additionalContextFiles, totalTokens, maxTokensEstimated, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
 
   return {
     success: true,
     stats: { totalTokens, tiktokenCount: simulatedTokens, costEstimate, contextLength: repomixContext.length, fileCount: simulatedIncludedFiles.length, contextRepoFileCount: additionalContextFiles, attachmentTokens, maxTokens: maxTokensEstimated, modelName, modelMaxContextTokens },
-    smartSelection,
+    smartSelection: fullSmartSelection,
     warnings
   };
 }

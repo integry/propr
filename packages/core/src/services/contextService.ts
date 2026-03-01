@@ -455,6 +455,8 @@ export interface AdditionalContextResult {
   totalTokens: number;
   /** Total file count across all context repositories */
   totalFiles: number;
+  /** Files included from each repository (for UI display) */
+  filesIncluded: Array<{ repository: string; path: string }>;
   /** List of repositories that were successfully included */
   repositoriesIncluded: string[];
   /** Errors encountered when processing repositories */
@@ -504,6 +506,7 @@ export async function generateAdditionalContext(
       context: '',
       totalTokens: 0,
       totalFiles: 0,
+      filesIncluded: [],
       repositoriesIncluded: [],
       errors: []
     };
@@ -514,7 +517,7 @@ export async function generateAdditionalContext(
     'Starting additional context generation'
   );
 
-  const results: Array<{ repository: string; context: string; tokens: number; files: number }> = [];
+  const results: Array<{ repository: string; context: string; tokens: number; files: number; filePaths: string[] }> = [];
   const errors: Array<{ repository: string; error: string }> = [];
 
   // Divide token budget evenly among repositories (with some buffer for overhead)
@@ -573,7 +576,8 @@ export async function generateAdditionalContext(
         repository: repo.repository,
         context: finalContext,
         tokens: contextResult.totalTokens,
-        files: contextResult.totalFiles
+        files: contextResult.totalFiles,
+        filePaths: contextResult.includedFiles
       });
 
       correlatedLogger.info(
@@ -599,6 +603,7 @@ export async function generateAdditionalContext(
   const combinedContext = results.map(r => r.context).join('\n\n---\n\n');
   const totalTokens = results.reduce((sum, r) => sum + r.tokens, 0);
   const totalFiles = results.reduce((sum, r) => sum + r.files, 0);
+  const filesIncluded = results.flatMap(r => r.filePaths.map(path => ({ repository: r.repository, path })));
 
   correlatedLogger.info(
     {
@@ -614,6 +619,7 @@ export async function generateAdditionalContext(
     context: combinedContext,
     totalTokens,
     totalFiles,
+    filesIncluded,
     repositoriesIncluded: results.map(r => r.repository),
     errors
   };
