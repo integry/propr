@@ -453,6 +453,8 @@ export interface AdditionalContextResult {
   context: string;
   /** Total tokens used for additional context */
   totalTokens: number;
+  /** Total file count across all context repositories */
+  totalFiles: number;
   /** List of repositories that were successfully included */
   repositoriesIncluded: string[];
   /** Errors encountered when processing repositories */
@@ -501,6 +503,7 @@ export async function generateAdditionalContext(
     return {
       context: '',
       totalTokens: 0,
+      totalFiles: 0,
       repositoriesIncluded: [],
       errors: []
     };
@@ -511,7 +514,7 @@ export async function generateAdditionalContext(
     'Starting additional context generation'
   );
 
-  const results: Array<{ repository: string; context: string; tokens: number }> = [];
+  const results: Array<{ repository: string; context: string; tokens: number; files: number }> = [];
   const errors: Array<{ repository: string; error: string }> = [];
 
   // Divide token budget evenly among repositories (with some buffer for overhead)
@@ -569,7 +572,8 @@ export async function generateAdditionalContext(
       results.push({
         repository: repo.repository,
         context: finalContext,
-        tokens: contextResult.totalTokens
+        tokens: contextResult.totalTokens,
+        files: contextResult.totalFiles
       });
 
       correlatedLogger.info(
@@ -594,12 +598,14 @@ export async function generateAdditionalContext(
   // Combine all context
   const combinedContext = results.map(r => r.context).join('\n\n---\n\n');
   const totalTokens = results.reduce((sum, r) => sum + r.tokens, 0);
+  const totalFiles = results.reduce((sum, r) => sum + r.files, 0);
 
   correlatedLogger.info(
     {
       repositoriesIncluded: results.length,
       errorCount: errors.length,
-      totalTokens
+      totalTokens,
+      totalFiles
     },
     'Additional context generation completed'
   );
@@ -607,6 +613,7 @@ export async function generateAdditionalContext(
   return {
     context: combinedContext,
     totalTokens,
+    totalFiles,
     repositoriesIncluded: results.map(r => r.repository),
     errors
   };

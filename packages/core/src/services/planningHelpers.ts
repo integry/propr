@@ -486,6 +486,8 @@ export interface PreviewStats {
   costEstimate: number;
   contextLength: number;
   fileCount: number;
+  /** File count from additional context repositories */
+  contextRepoFileCount?: number;
   attachmentTokens?: number;
   maxTokens: number;
   /** Name of the model used for context limits (e.g., "Claude Sonnet 4.5") */
@@ -1037,8 +1039,14 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   // Load additional context from context repositories if configured
   let additionalContext: string | undefined;
   let additionalContextTokens = 0;
+  let additionalContextFiles = 0;
   if (contextRepositories && contextRepositories.length > 0 && githubToken) {
-    const additionalContextBudget = Math.floor(targetTokenLimit * 0.2); // Reserve 20% for context repos
+    // Calculate budget: use remaining space after target repo, with minimum 20% and maximum 80%
+    const targetRepoUsage = simulatedTokens + attachmentTokens + smartSummaryTokens;
+    const remainingBudget = targetTokenLimit - targetRepoUsage;
+    const minBudget = Math.floor(targetTokenLimit * 0.2);
+    const maxBudget = Math.floor(targetTokenLimit * 0.8);
+    const additionalContextBudget = Math.max(minBudget, Math.min(maxBudget, remainingBudget));
     correlatedLogger.info({
       repositoryCount: contextRepositories.length,
       repositories: contextRepositories.map(r => r.repository),
@@ -1056,9 +1064,11 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
       if (additionalContextResult.repositoriesIncluded.length > 0) {
         additionalContext = additionalContextResult.context;
         additionalContextTokens = additionalContextResult.totalTokens;
+        additionalContextFiles = additionalContextResult.totalFiles;
         correlatedLogger.info({
           repositoriesIncluded: additionalContextResult.repositoriesIncluded,
           totalTokens: additionalContextResult.totalTokens,
+          totalFiles: additionalContextResult.totalFiles,
           errors: additionalContextResult.errors
         }, 'Loaded additional context for preview');
       }
@@ -1102,11 +1112,11 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
   const maxTokensEstimated = Math.ceil(targetTokenLimit * TIKTOKEN_TO_CLAUDE_RATIO);
   const { modelName, modelMaxContextTokens } = getModelDisplayInfo(generationModel);
 
-  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens: additionalContextTokensEstimated, totalTokens, maxTokensEstimated, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
+  correlatedLogger.info({ usedCache: canUseCache, tiktokenCount: simulatedTokens, estimatedActualTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens: additionalContextTokensEstimated, additionalContextFiles, totalTokens, maxTokensEstimated, costEstimate, fileCount: simulatedIncludedFiles.length, modelName, modelMaxContextTokens }, 'Context preview completed');
 
   return {
     success: true,
-    stats: { totalTokens, tiktokenCount: simulatedTokens, costEstimate, contextLength: repomixContext.length, fileCount: simulatedIncludedFiles.length, attachmentTokens, maxTokens: maxTokensEstimated, modelName, modelMaxContextTokens },
+    stats: { totalTokens, tiktokenCount: simulatedTokens, costEstimate, contextLength: repomixContext.length, fileCount: simulatedIncludedFiles.length, contextRepoFileCount: additionalContextFiles, attachmentTokens, maxTokens: maxTokensEstimated, modelName, modelMaxContextTokens },
     smartSelection,
     warnings
   };
