@@ -9,7 +9,6 @@ import {
 } from 'lucide-react';
 import {
   detectLanguage,
-  isNoisyTool,
   formatToolResult,
   getCategoryDisplay,
   extractEventSummary,
@@ -129,7 +128,6 @@ interface TerminalEventItemProps {
   event: LiveEvent;
   taskInfo: TaskInfo | null;
   previousEvent?: LiveEvent;
-  defaultCollapsed?: boolean;
   eventIndex: number;
 }
 
@@ -137,10 +135,10 @@ const TerminalEventItem: React.FC<TerminalEventItemProps> = ({
   event,
   taskInfo,
   previousEvent,
-  defaultCollapsed = false,
   eventIndex
 }) => {
-  const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
+  // Always start expanded
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
   const filePath = previousEvent?.type === 'tool_use' ? previousEvent?.input?.file_path : undefined;
   const resultText = event.type === 'tool_result' ? formatToolResult(event.result) : '';
@@ -207,11 +205,11 @@ const computeSummaryMessage = (filteredEvents: LiveEvent[], lastThought: string 
   return lastThought ? `Thinking: ${lastThought.substring(0, 60)}${lastThought.length > 60 ? '...' : ''}` : '';
 };
 
-// Compute events with their defaults
-const computeEventsWithDefaults = (
+// Compute events with their previous tool_use reference for context
+const computeEventsWithContext = (
   filteredEvents: LiveEvent[],
   allEvents: LiveEvent[]
-): Array<{ event: LiveEvent; prevToolUse?: LiveEvent; defaultCollapsed: boolean; originalIndex: number }> => {
+): Array<{ event: LiveEvent; prevToolUse?: LiveEvent; originalIndex: number }> => {
   return filteredEvents.map((event, index) => {
     let prevToolUse: LiveEvent | undefined;
     for (let i = index - 1; i >= 0; i--) {
@@ -221,14 +219,9 @@ const computeEventsWithDefaults = (
       }
     }
 
-    const shouldCollapse = event.type === 'tool_result' && prevToolUse?.toolName
-      ? isNoisyTool(prevToolUse.toolName)
-      : event.type !== 'thought';
-
     return {
       event,
       prevToolUse,
-      defaultCollapsed: shouldCollapse,
       originalIndex: allEvents.indexOf(event)
     };
   });
@@ -259,8 +252,8 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
     [filteredEvents, lastThought]
   );
 
-  const eventsWithDefaults = useMemo(
-    () => computeEventsWithDefaults(filteredEvents, events),
+  const eventsWithContext = useMemo(
+    () => computeEventsWithContext(filteredEvents, events),
     [filteredEvents, events]
   );
 
@@ -293,13 +286,12 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
 
       {!collapsed && (
         <div className="mt-1 divide-y divide-gray-50">
-          {eventsWithDefaults.map(({ event, prevToolUse, defaultCollapsed, originalIndex }) => (
+          {eventsWithContext.map(({ event, prevToolUse, originalIndex }) => (
             <TerminalEventItem
               key={originalIndex}
               event={event}
               taskInfo={taskInfo}
               previousEvent={prevToolUse}
-              defaultCollapsed={defaultCollapsed}
               eventIndex={originalIndex}
             />
           ))}

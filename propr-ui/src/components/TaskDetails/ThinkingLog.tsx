@@ -46,18 +46,6 @@ const getCategoryInfo = (type: 'analysis' | 'action' | 'summary' | 'search') => 
   }
 };
 
-// Extract first line or meaningful summary from content
-const extractSummary = (content: string): string => {
-  if (!content) return '';
-  // Get first line or first sentence
-  const firstLine = content.split('\n')[0];
-  // Truncate if too long
-  if (firstLine.length > 80) {
-    return firstLine.substring(0, 77) + '...';
-  }
-  return firstLine;
-};
-
 interface TerminalLogEntryProps {
   event: ThinkingLogEvent;
   todoContext?: string;
@@ -68,7 +56,6 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
   const thoughtType = detectThoughtType(event.content || '');
   const categoryInfo = getCategoryInfo(thoughtType);
   const { Icon } = categoryInfo;
-  const summary = extractSummary(event.content || '');
 
   return (
     <div
@@ -107,23 +94,11 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
             )}
           </div>
 
-          {/* Summary line */}
-          <div className="text-sm text-gray-700 mt-0.5 leading-snug">
-            {summary}
-          </div>
-
-          {/* Full content - indented to align with text */}
-          {event.content && event.content.length > 80 && (
-            <details className="mt-1">
-              <summary className="text-[10px] text-gray-400 cursor-pointer hover:text-gray-600">
-                Show full content
-              </summary>
-              <div className="text-sm text-gray-600 mt-1 pl-0 border-l-2 border-gray-100 ml-0 leading-relaxed">
-                <div className="pl-2">
-                  {renderMarkdown(event.content)}
-                </div>
-              </div>
-            </details>
+          {/* Full content - shown directly */}
+          {event.content && (
+            <div className="text-sm text-gray-700 mt-0.5 leading-relaxed">
+              {renderMarkdown(event.content)}
+            </div>
           )}
         </div>
       </div>
