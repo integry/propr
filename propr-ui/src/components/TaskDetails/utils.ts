@@ -1,3 +1,5 @@
+import { LiveEvent } from './types';
+
 export const WORKSPACE_PREFIXES = [
   '/home/node/workspace/',
   /\/tmp\/git-processor\/worktrees\/[^\/]+\/[^\/]+\/[^\/]+\//
@@ -70,4 +72,42 @@ export const stripWorkspacePrefixes = (text: string): string => {
     }
   }
   return result;
+};
+
+// ThinkingLog helper - Pattern lists for thought type detection
+const SUMMARY_PATTERNS = ['implementation summary', 'summary:', 'completed:', 'successfully'];
+const ANALYSIS_PATTERNS = ['i will analyze', 'let me analyze', 'looking at', 'examining', 'reviewing', 'understanding', 'i need to understand', 'let me understand'];
+const SEARCH_PATTERNS = ['searching', 'let me search', 'looking for', 'finding'];
+const ACTION_PATTERNS = ['now let me', 'i will create', 'i will update', 'i will modify', 'i will add', 'i will implement', 'let me create', 'let me update', 'let me modify', 'let me add', 'creating', 'updating', 'modifying'];
+
+const matchesAnyPattern = (content: string, patterns: string[]): boolean =>
+  patterns.some(pattern => content.includes(pattern));
+
+// Detect the type of thought based on content
+export const detectThoughtType = (content: string): 'analysis' | 'action' | 'summary' | 'search' => {
+  const lowerContent = content.toLowerCase();
+
+  if (matchesAnyPattern(lowerContent, SUMMARY_PATTERNS)) return 'summary';
+  if (matchesAnyPattern(lowerContent, ANALYSIS_PATTERNS)) return 'analysis';
+  if (matchesAnyPattern(lowerContent, SEARCH_PATTERNS)) return 'search';
+  if (matchesAnyPattern(lowerContent, ACTION_PATTERNS)) return 'action';
+
+  return 'analysis';
+};
+
+// ExecutionEventLog helpers - Event categories for filtering
+export type EventCategory = 'thought' | 'tool_use' | 'tool_result' | 'read' | 'write' | 'bash' | 'search';
+
+// Get category for an event
+export const getEventCategory = (event: LiveEvent): EventCategory => {
+  if (event.type === 'thought') return 'thought';
+  if (event.type === 'tool_result') return 'tool_result';
+
+  const toolName = event.toolName?.toLowerCase() || '';
+  if (toolName === 'read') return 'read';
+  if (toolName === 'write' || toolName === 'edit') return 'write';
+  if (toolName === 'bash') return 'bash';
+  if (toolName === 'glob' || toolName === 'grep') return 'search';
+
+  return 'tool_use';
 };

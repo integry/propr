@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { LiveEvent, TodoItem } from './types';
 import { renderMarkdown } from './renderMarkdown';
+import { detectThoughtType } from './utils';
 import { Lightbulb, Wrench, Search, CheckCircle2 } from 'lucide-react';
 
 interface ThinkingLogEvent extends LiveEvent {
@@ -13,27 +14,6 @@ interface ThinkingLogProps {
   highlightedTodoId?: string | null;
   activeFilters?: Set<string>;
 }
-
-// Pattern lists for thought type detection
-const SUMMARY_PATTERNS = ['implementation summary', 'summary:', 'completed:', 'successfully'];
-const ANALYSIS_PATTERNS = ['i will analyze', 'let me analyze', 'looking at', 'examining', 'reviewing', 'understanding', 'i need to understand', 'let me understand'];
-const SEARCH_PATTERNS = ['searching', 'let me search', 'looking for', 'finding'];
-const ACTION_PATTERNS = ['now let me', 'i will create', 'i will update', 'i will modify', 'i will add', 'i will implement', 'let me create', 'let me update', 'let me modify', 'let me add', 'creating', 'updating', 'modifying'];
-
-const matchesAnyPattern = (content: string, patterns: string[]): boolean =>
-  patterns.some(pattern => content.includes(pattern));
-
-// Detect the type of thought based on content
-const detectThoughtType = (content: string): 'analysis' | 'action' | 'summary' | 'search' => {
-  const lowerContent = content.toLowerCase();
-
-  if (matchesAnyPattern(lowerContent, SUMMARY_PATTERNS)) return 'summary';
-  if (matchesAnyPattern(lowerContent, ANALYSIS_PATTERNS)) return 'analysis';
-  if (matchesAnyPattern(lowerContent, SEARCH_PATTERNS)) return 'search';
-  if (matchesAnyPattern(lowerContent, ACTION_PATTERNS)) return 'action';
-
-  return 'analysis';
-};
 
 // Get category display info for terminal-style output
 const getCategoryInfo = (type: 'analysis' | 'action' | 'summary' | 'search') => {
@@ -212,6 +192,15 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
 };
 
 const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlightedTodoId, activeFilters }) => {
+  // Filter events at the top level to get accurate count - must be before any early returns
+  const filteredEventCount = useMemo(() => {
+    if (!activeFilters || activeFilters.size === 0) return events.length;
+    return events.filter(event => {
+      const type = detectThoughtType(event.content || '');
+      return activeFilters.has(type);
+    }).length;
+  }, [events, activeFilters]);
+
   // Group events by todo items if available
   const groupedEvents = useMemo(() => {
     if (todos.length === 0) {
@@ -281,15 +270,6 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
     return null;
   }
 
-  // Filter events at the top level to get accurate count
-  const filteredEventCount = useMemo(() => {
-    if (!activeFilters || activeFilters.size === 0) return events.length;
-    return events.filter(event => {
-      const type = detectThoughtType(event.content || '');
-      return activeFilters.has(type);
-    }).length;
-  }, [events, activeFilters]);
-
   return (
     <div id="thinking-log-section">
       {/* Grouped Events - terminal style log feed */}
@@ -318,6 +298,3 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
 };
 
 export default ThinkingLog;
-
-// Export helper for use in filters
-export { detectThoughtType };
