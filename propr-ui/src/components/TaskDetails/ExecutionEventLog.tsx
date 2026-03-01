@@ -12,9 +12,11 @@ import {
   isNoisyTool,
   formatToolResult,
   getCategoryDisplay,
-  getEventIcon,
   extractEventSummary,
-  renderClickablePath,
+} from './ExecutionEventUtils';
+import {
+  EventIcon,
+  ClickablePath,
   SyntaxHighlightedResult,
 } from './ExecutionEventHelpers';
 
@@ -41,7 +43,7 @@ const ToolUseDetails: React.FC<{ event: LiveEvent; taskInfo: TaskInfo | null }> 
     {event.input?.file_path && (
       <div className="flex items-center gap-1 text-gray-500">
         <span className="text-[10px] uppercase">File:</span>
-        {renderClickablePath(event.input.file_path, taskInfo)}
+        <ClickablePath fullPath={event.input.file_path} taskInfo={taskInfo} />
       </div>
     )}
     {event.input?.command && (
@@ -84,6 +86,45 @@ const ExpandedContent: React.FC<{
   return null;
 };
 
+// Check if event has expandable content
+const hasExpandableContent = (event: LiveEvent, resultText: string): boolean => {
+  return (
+    (event.type === 'thought' && !!event.content && event.content.length > 60) ||
+    (event.type === 'tool_result' && resultText.length > 0) ||
+    (event.type === 'tool_use' && !!(event.input?.command || event.input?.file_path))
+  );
+};
+
+// Event header component
+const EventHeader: React.FC<{
+  categoryDisplay: { label: string; color: string };
+  eventIndex: number;
+  summary: string;
+  expandable: boolean;
+  isCollapsed: boolean;
+  onToggle?: () => void;
+}> = ({ categoryDisplay, eventIndex, summary, expandable, isCollapsed, onToggle }) => (
+  <div
+    className={`flex items-center gap-2 flex-wrap ${expandable ? 'cursor-pointer' : ''}`}
+    onClick={onToggle}
+  >
+    <span className={`text-[10px] font-bold uppercase ${categoryDisplay.color}`}>
+      {categoryDisplay.label}
+    </span>
+    <span className="font-mono text-[10px] text-gray-400">
+      #{eventIndex + 1}
+    </span>
+    <span className="text-xs text-gray-600 truncate flex-1">
+      {summary}
+    </span>
+    {expandable && (
+      <span className="text-gray-400">
+        {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+      </span>
+    )}
+  </div>
+);
+
 interface TerminalEventItemProps {
   event: LiveEvent;
   taskInfo: TaskInfo | null;
@@ -107,42 +148,28 @@ const TerminalEventItem: React.FC<TerminalEventItemProps> = ({
 
   const categoryDisplay = getCategoryDisplay(event);
   const summary = extractEventSummary(event);
-  const hasExpandableContent =
-    (event.type === 'thought' && event.content && event.content.length > 60) ||
-    (event.type === 'tool_result' && resultText.length > 0) ||
-    (event.type === 'tool_use' && (event.input?.command || event.input?.file_path));
+  const expandable = hasExpandableContent(event, resultText);
 
-  const handleToggle = hasExpandableContent ? () => setIsCollapsed(!isCollapsed) : undefined;
+  const handleToggle = expandable ? () => setIsCollapsed(!isCollapsed) : undefined;
 
   return (
     <div className="py-1">
       <div className="flex items-start gap-2">
         <div className="flex-shrink-0 w-4 pt-0.5">
-          {getEventIcon(event)}
+          <EventIcon event={event} />
         </div>
 
         <div className="flex-1 min-w-0">
-          <div
-            className={`flex items-center gap-2 flex-wrap ${hasExpandableContent ? 'cursor-pointer' : ''}`}
-            onClick={handleToggle}
-          >
-            <span className={`text-[10px] font-bold uppercase ${categoryDisplay.color}`}>
-              {categoryDisplay.label}
-            </span>
-            <span className="font-mono text-[10px] text-gray-400">
-              #{eventIndex + 1}
-            </span>
-            <span className="text-xs text-gray-600 truncate flex-1">
-              {summary}
-            </span>
-            {hasExpandableContent && (
-              <span className="text-gray-400">
-                {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-              </span>
-            )}
-          </div>
+          <EventHeader
+            categoryDisplay={categoryDisplay}
+            eventIndex={eventIndex}
+            summary={summary}
+            expandable={expandable}
+            isCollapsed={isCollapsed}
+            onToggle={handleToggle}
+          />
 
-          {!isCollapsed && hasExpandableContent && (
+          {!isCollapsed && expandable && (
             <div className="mt-1.5 ml-0">
               <ExpandedContent
                 event={event}
@@ -156,6 +183,55 @@ const TerminalEventItem: React.FC<TerminalEventItemProps> = ({
       </div>
     </div>
   );
+};
+
+// Compute summary message for collapsed view
+const computeSummaryMessage = (filteredEvents: LiveEvent[], lastThought: string | null): string => {
+  if (filteredEvents.length === 0) return '';
+
+  for (let i = filteredEvents.length - 1; i >= 0; i--) {
+    const event = filteredEvents[i];
+    if (event.type === 'tool_result') {
+      const resultStr = formatToolResult(event.result);
+      const truncated = resultStr.slice(0, 60).replace(/\n/g, ' ');
+      return `Result: ${truncated}${resultStr.length > 60 ? '...' : ''}`;
+    }
+    if (event.type === 'tool_use' && event.toolName) {
+      if (event.input?.command) {
+        return `> ${event.input.command.slice(0, 50)}${event.input.command.length > 50 ? '...' : ''}`;
+      }
+      return `Exec: ${event.toolName}`;
+    }
+  }
+
+  return lastThought ? `Thinking: ${lastThought.substring(0, 60)}${lastThought.length > 60 ? '...' : ''}` : '';
+};
+
+// Compute events with their defaults
+const computeEventsWithDefaults = (
+  filteredEvents: LiveEvent[],
+  allEvents: LiveEvent[]
+): Array<{ event: LiveEvent; prevToolUse?: LiveEvent; defaultCollapsed: boolean; originalIndex: number }> => {
+  return filteredEvents.map((event, index) => {
+    let prevToolUse: LiveEvent | undefined;
+    for (let i = index - 1; i >= 0; i--) {
+      if (filteredEvents[i].type === 'tool_use') {
+        prevToolUse = filteredEvents[i];
+        break;
+      }
+    }
+
+    const shouldCollapse = event.type === 'tool_result' && prevToolUse?.toolName
+      ? isNoisyTool(prevToolUse.toolName)
+      : event.type !== 'thought';
+
+    return {
+      event,
+      prevToolUse,
+      defaultCollapsed: shouldCollapse,
+      originalIndex: allEvents.indexOf(event)
+    };
+  });
 };
 
 const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
@@ -178,49 +254,15 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
     });
   }, [events, activeFilters]);
 
-  const summaryMessage = useMemo(() => {
-    if (filteredEvents.length === 0) return '';
+  const summaryMessage = useMemo(
+    () => computeSummaryMessage(filteredEvents, lastThought),
+    [filteredEvents, lastThought]
+  );
 
-    for (let i = filteredEvents.length - 1; i >= 0; i--) {
-      const event = filteredEvents[i];
-      if (event.type === 'tool_result') {
-        const resultStr = formatToolResult(event.result);
-        const truncated = resultStr.slice(0, 60).replace(/\n/g, ' ');
-        return `Result: ${truncated}${resultStr.length > 60 ? '...' : ''}`;
-      }
-      if (event.type === 'tool_use' && event.toolName) {
-        if (event.input?.command) {
-          return `> ${event.input.command.slice(0, 50)}${event.input.command.length > 50 ? '...' : ''}`;
-        }
-        return `Exec: ${event.toolName}`;
-      }
-    }
-
-    return lastThought ? `Thinking: ${lastThought.substring(0, 60)}${lastThought.length > 60 ? '...' : ''}` : '';
-  }, [filteredEvents, lastThought]);
-
-  const eventsWithDefaults = useMemo(() => {
-    return filteredEvents.map((event, index) => {
-      let prevToolUse: LiveEvent | undefined;
-      for (let i = index - 1; i >= 0; i--) {
-        if (filteredEvents[i].type === 'tool_use') {
-          prevToolUse = filteredEvents[i];
-          break;
-        }
-      }
-
-      const shouldCollapse = event.type === 'tool_result' && prevToolUse?.toolName
-        ? isNoisyTool(prevToolUse.toolName)
-        : event.type !== 'thought';
-
-      return {
-        event,
-        prevToolUse,
-        defaultCollapsed: shouldCollapse,
-        originalIndex: events.indexOf(event)
-      };
-    });
-  }, [filteredEvents, events]);
+  const eventsWithDefaults = useMemo(
+    () => computeEventsWithDefaults(filteredEvents, events),
+    [filteredEvents, events]
+  );
 
   if (events.length === 0) {
     return null;
