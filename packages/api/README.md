@@ -1,10 +1,10 @@
-# ProPR Dashboard
+# ProPR API
 
-The ProPR Dashboard provides a web-based management interface for monitoring and controlling your ProPR instance.
+The ProPR API provides the backend server for the web-based management interface for monitoring and controlling your ProPR instance.
 
 ## Components
 
-- **dashboard-api**: Express.js backend API with GitHub OAuth authentication
+- **api**: Express.js backend API with GitHub OAuth authentication
 - **client**: React frontend built with Vite and Tailwind CSS
 
 ## Setup
@@ -35,23 +35,16 @@ The ProPR Dashboard provides a web-based management interface for monitoring and
 The dashboard is integrated into the main docker-compose setup:
 
 ```bash
-docker-compose up dashboard-api dashboard-client
+docker-compose up api
 ```
 
 ### Development
 
-To run the dashboard in development mode:
+To run the API in development mode:
 
 1. Backend API:
    ```bash
-   cd packages/dashboard
-   npm install
-   npm run dev
-   ```
-
-2. Frontend Client:
-   ```bash
-   cd packages/dashboard/client
+   cd packages/api
    npm install
    npm run dev
    ```

@@ -11,7 +11,7 @@ WORKDIR /usr/src/app
 COPY package*.json ./
 COPY packages/shared/package*.json ./packages/shared/
 COPY packages/core/package*.json ./packages/core/
-COPY packages/dashboard/package*.json ./packages/dashboard/
+COPY packages/api/package*.json ./packages/api/
 
 # Install all dependencies (including dev for TypeScript compilation)
 RUN npm install

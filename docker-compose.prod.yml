@@ -15,10 +15,10 @@ services:
       timeout: 5s
       retries: 3
 
-  dashboard:
+  api:
     build:
       context: .
-      dockerfile: packages/dashboard/Dockerfile.prod
+      dockerfile: packages/api/Dockerfile.prod
       args:
         VITE_API_BASE_URL: ${FRONTEND_API_URL:-http://localhost}
         VITE_APP_URL: ${FRONTEND_APP_URL:-http://localhost}

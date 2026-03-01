@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
 COPY package*.json ./
 COPY packages/shared/package*.json ./packages/shared/
 COPY packages/core/package*.json ./packages/core/
-COPY packages/dashboard/package*.json ./packages/dashboard/
+COPY packages/api/package*.json ./packages/api/
 
 RUN npm install
 

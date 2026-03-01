@@ -26,7 +26,7 @@ jobs:
             propr-ui/package-lock.json
             docs/package-lock.json
             packages/shared/package-lock.json
-            packages/dashboard/package-lock.json
+            packages/api/package-lock.json
             packages/core/package-lock.json
 
       - name: Detect Changes
@@ -44,8 +44,8 @@ jobs:
               - 'packages/shared/**'
             docs:
               - 'docs/**'
-            dashboard:
-              - 'packages/dashboard/**'
+            api:
+              - 'packages/api/**'
               - 'packages/shared/**'
             core_package:
               - 'packages/core/**'
@@ -235,78 +235,78 @@ jobs:
             fi
           fi
 
-          # --- DASHBOARD ---
-          if [ "${{ steps.filter.outputs.dashboard }}" == 'true' ]; then
-            echo -e "\n--- Dashboard: Build & Lint ---" >> build_log.txt
-            DASHBOARD_FAILED=0
+          # --- API ---
+          if [ "${{ steps.filter.outputs.api }}" == 'true' ]; then
+            echo -e "\n--- API: Build & Lint ---" >> build_log.txt
+            API_FAILED=0
 
             # Ensure root dependencies are installed (respecting lockfile & workspaces)
             INSTALL_OUTPUT=$(npm ci 2>&1) || {
               echo "❌ Root Dependency Install FAILED" >> build_log.txt
               echo "$INSTALL_OUTPUT" | tail -50 >> build_log.txt
-              DASHBOARD_FAILED=1
+              API_FAILED=1
               EXIT_CODE=1
             }
 
-            if [ $DASHBOARD_FAILED -eq 0 ]; then
-              # Build @propr/shared first (core and dashboard depend on it)
+            if [ $API_FAILED -eq 0 ]; then
+              # Build @propr/shared first (core and api depend on it)
               echo "Building @propr/shared (dependency)..."
               BUILD_OUTPUT=$(npm run build -w @propr/shared 2>&1) || {
-                echo "❌ Shared Package Build FAILED (dashboard dependency)" >> build_log.txt
+                echo "❌ Shared Package Build FAILED (api dependency)" >> build_log.txt
                 echo "$BUILD_OUTPUT" >> build_log.txt
-                DASHBOARD_FAILED=1
+                API_FAILED=1
                 EXIT_CODE=1
               }
             fi
 
-            if [ $DASHBOARD_FAILED -eq 0 ]; then
-              # 1. Build @propr/core first (dashboard depends on it)
+            if [ $API_FAILED -eq 0 ]; then
+              # 1. Build @propr/core first (api depends on it)
               echo "Building @propr/core (dependency)..."
               BUILD_OUTPUT=$(npm run build -w @propr/core 2>&1) || {
-                echo "❌ Core Package Build FAILED (dashboard dependency)" >> build_log.txt
+                echo "❌ Core Package Build FAILED (api dependency)" >> build_log.txt
                 echo "$BUILD_OUTPUT" >> build_log.txt
-                DASHBOARD_FAILED=1
+                API_FAILED=1
                 EXIT_CODE=1
               }
             fi
 
-            if [ $DASHBOARD_FAILED -eq 0 ]; then
+            if [ $API_FAILED -eq 0 ]; then
               # 2. Build Verification
-              echo "Building @propr/dashboard..."
-              BUILD_OUTPUT=$(npm run build -w @propr/dashboard 2>&1) || {
-                echo "❌ Dashboard Build FAILED" >> build_log.txt
+              echo "Building @propr/api..."
+              BUILD_OUTPUT=$(npm run build -w @propr/api 2>&1) || {
+                echo "❌ API Build FAILED" >> build_log.txt
                 echo "$BUILD_OUTPUT" >> build_log.txt
-                DASHBOARD_FAILED=1
+                API_FAILED=1
                 EXIT_CODE=1
               }
-              if [ $DASHBOARD_FAILED -eq 0 ]; then
-                echo "✅ Dashboard Build passed" >> build_log.txt
+              if [ $API_FAILED -eq 0 ]; then
+                echo "✅ API Build passed" >> build_log.txt
               fi
             fi
 
-            if [ $DASHBOARD_FAILED -eq 0 ]; then
+            if [ $API_FAILED -eq 0 ]; then
               # 3. Lint Verification
-              echo "Linting @propr/dashboard..."
-              LINT_OUTPUT=$(npm run lint -w @propr/dashboard -- --max-warnings 0 2>&1) || {
-                echo "❌ Dashboard Lint FAILED" >> build_log.txt
+              echo "Linting @propr/api..."
+              LINT_OUTPUT=$(npm run lint -w @propr/api -- --max-warnings 0 2>&1) || {
+                echo "❌ API Lint FAILED" >> build_log.txt
                 echo "$LINT_OUTPUT" >> build_log.txt
-                DASHBOARD_FAILED=1
+                API_FAILED=1
                 EXIT_CODE=1
               }
-              if [ $DASHBOARD_FAILED -eq 0 ]; then
-                echo "✅ Dashboard Lint passed" >> build_log.txt
+              if [ $API_FAILED -eq 0 ]; then
+                echo "✅ API Lint passed" >> build_log.txt
               fi
             fi
 
             # 4. Docker Build
-            BUILD_OUTPUT=$(docker build -t propr-dashboard -f packages/dashboard/Dockerfile.prod . 2>&1) || {
-              echo "❌ Dashboard Docker Build FAILED" >> build_log.txt
+            BUILD_OUTPUT=$(docker build -t propr-api -f packages/api/Dockerfile.prod . 2>&1) || {
+              echo "❌ API Docker Build FAILED" >> build_log.txt
               echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
-              DASHBOARD_FAILED=1
+              API_FAILED=1
               EXIT_CODE=1
             }
-            if [ $DASHBOARD_FAILED -eq 0 ]; then
-              echo "✅ Dashboard Docker Build passed" >> build_log.txt
+            if [ $API_FAILED -eq 0 ]; then
+              echo "✅ API Docker Build passed" >> build_log.txt
             fi
           fi
 
