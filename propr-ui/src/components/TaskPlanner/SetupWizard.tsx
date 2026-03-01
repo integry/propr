@@ -254,6 +254,20 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Sync contextRepositories and generationModel from draft when it loads
+  // (useState initializer may run before draft is available)
+  useEffect(() => {
+    if (!draft) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const draftConfig = (draft as any)?.context_config;
+    if (draftConfig?.contextRepositories && draftConfig.contextRepositories.length > 0) {
+      setConfig(prev => ({ ...prev, contextRepositories: draftConfig.contextRepositories }));
+    }
+    if (draftConfig?.generationModel) {
+      setConfig(prev => ({ ...prev, generationModel: draftConfig.generationModel }));
+    }
+  }, [draft]);
+
   // Data loading hooks
   // Always load repositories so the dropdown shows all available repos in both new and edit modes
   const repoLoader = useRepositoryLoader(true, savedSettings.lastRepository ?? undefined);
