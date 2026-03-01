@@ -318,8 +318,8 @@ const TaskDetails: React.FC = () => {
 
   return (
     <div className="h-screen flex flex-col bg-white">
-      {/* Fixed Header Shell */}
-      <header className="flex-shrink-0 border-b border-gray-200">
+      {/* Sticky Header Shell - Never scrolls */}
+      <header className="flex-shrink-0 sticky top-0 z-20 bg-white border-b border-gray-200">
         {/* Task Header with Actions */}
         <div className="px-4 sm:px-6 py-3 flex items-start justify-between gap-4">
           {/* Left: Task Header */}
@@ -427,19 +427,19 @@ const TaskDetails: React.FC = () => {
                 highlightedTodoId={highlightedTodoId}
                 activeFilters={activeThoughtFilters}
               />
-
-              {/* Execution Event Log - Terminal Style */}
-              <ExecutionEventLog
-                events={taskData.liveDetails.events}
-                collapsed={thinkingLog.eventsCollapsed}
-                onToggleCollapse={thinkingLog.toggleEventsCollapse}
-                lastThought={thinkingLog.lastThought}
-                isTaskActive={derivedData.isTaskActive}
-                taskInfo={taskData.taskInfo}
-                activeFilters={activeEventFilters}
-              />
             </div>
           </div>
+
+          {/* VS Code Terminal Footer - Execution Event Log */}
+          <ExecutionEventLog
+            events={taskData.liveDetails.events}
+            collapsed={thinkingLog.eventsCollapsed}
+            onToggleCollapse={thinkingLog.toggleEventsCollapse}
+            lastThought={thinkingLog.lastThought}
+            isTaskActive={derivedData.isTaskActive}
+            taskInfo={taskData.taskInfo}
+            activeFilters={activeEventFilters}
+          />
         </div>
       </div>
 

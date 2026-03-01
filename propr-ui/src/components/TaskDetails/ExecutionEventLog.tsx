@@ -4,6 +4,7 @@ import { getEventCategory } from './utils';
 import MarkdownRenderer from './MarkdownRenderer';
 import {
   Terminal,
+  ChevronUp,
   ChevronDown,
   ChevronRight,
 } from 'lucide-react';
@@ -261,42 +262,50 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
     return null;
   }
 
+  const eventCount = filteredEvents.length;
+  const showFilteredCount = activeFilters && activeFilters.size > 0 && filteredEvents.length !== events.length;
+
   return (
-    <div id="execution-event-log-section">
+    <div id="execution-event-log-section" className="flex-shrink-0 border-t border-gray-200 bg-white flex flex-col">
+      {/* Expandable Content - only shown when not collapsed */}
+      {!collapsed && (
+        <div className="flex-1 overflow-y-auto max-h-[40vh] border-b border-gray-200">
+          <div className="p-4 divide-y divide-gray-50">
+            {eventsWithContext.map(({ event, prevToolUse, originalIndex }) => (
+              <TerminalEventItem
+                key={originalIndex}
+                event={event}
+                taskInfo={taskInfo}
+                previousEvent={prevToolUse}
+                eventIndex={originalIndex}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* VS Code Terminal Footer Bar */}
       <div
-        className="flex items-center justify-between cursor-pointer py-1.5 -mx-1 px-1 rounded transition-colors hover:bg-gray-50"
+        className="h-9 px-4 flex items-center justify-between cursor-pointer bg-slate-100 hover:bg-slate-200 transition-colors"
         onClick={onToggleCollapse}
       >
         <div className="flex items-center gap-2">
-          <span className="text-gray-400">
-            {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-          </span>
-          <Terminal className="h-3.5 w-3.5 text-gray-500" />
-          <span className="text-[10px] font-bold uppercase text-gray-600">Execution Log</span>
-          <span className="font-mono text-[10px] text-gray-400">
-            ({filteredEvents.length}{activeFilters && activeFilters.size > 0 ? `/${events.length}` : ''})
+          <Terminal className="h-4 w-4 text-slate-600" />
+          <span className="font-mono text-xs font-bold text-slate-700 uppercase tracking-wide">
+            EXECUTION LOG ({showFilteredCount ? `${eventCount}/${events.length}` : eventCount})
           </span>
         </div>
-        {collapsed && summaryMessage && (
-          <div className="text-[10px] text-gray-500 truncate max-w-[200px] font-mono">
-            {summaryMessage}
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {collapsed && summaryMessage && (
+            <span className="text-xs text-slate-500 truncate max-w-[200px] font-mono">
+              {summaryMessage}
+            </span>
+          )}
+          <span className="text-slate-500">
+            {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </span>
+        </div>
       </div>
-
-      {!collapsed && (
-        <div className="mt-1 divide-y divide-gray-50">
-          {eventsWithContext.map(({ event, prevToolUse, originalIndex }) => (
-            <TerminalEventItem
-              key={originalIndex}
-              event={event}
-              taskInfo={taskInfo}
-              previousEvent={prevToolUse}
-              eventIndex={originalIndex}
-            />
-          ))}
-        </div>
-      )}
     </div>
   );
 };

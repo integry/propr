@@ -71,8 +71,8 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
 
       {/* Execution Rail with Vertical Line */}
       <div className="relative">
-        {/* Vertical Threading Rail - continuous line in left gutter */}
-        <div className="absolute left-[11px] top-0 bottom-0 w-0.5 border-l-2 border-gray-200" />
+        {/* Vertical Threading Rail - solid 2px gray line in left gutter */}
+        <div className="absolute left-[11px] top-0 bottom-0 w-0.5 bg-gray-300" />
 
         {/* Todo Items */}
         <ul className="list-none pl-0 m-0 space-y-0 relative">

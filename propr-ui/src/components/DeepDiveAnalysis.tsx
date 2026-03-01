@@ -18,6 +18,8 @@ interface DeepDiveAnalysisData {
   report?: string;
   modelUsed?: string;
   generatedAt?: string;
+  summary_of_changes?: string;
+  summary?: string;
 }
 
 interface DeepDiveAnalysisProps {
@@ -25,46 +27,9 @@ interface DeepDiveAnalysisProps {
   loading: boolean;
   renderMarkdown?: (text: string) => React.ReactNode;
   title?: string;
-  colorScheme?: 'purple' | 'gray';
+  colorScheme?: 'purple' | 'gray'; // Kept for backward compatibility, but no longer used
   emptyStateText?: string;
 }
-
-interface ColorScheme {
-  bg: string;
-  border: string;
-  cardBorder: string;
-  text: string;
-  heading: string;
-  button: string;
-  progress: string;
-  badge: string;
-  bullet: string;
-}
-
-const COLOR_SCHEMES: Record<'purple' | 'gray', ColorScheme> = {
-  purple: {
-    bg: 'bg-purple-50',
-    border: 'border-purple-200',
-    cardBorder: 'border-purple-300',
-    text: 'text-purple-800',
-    heading: 'text-purple-900',
-    button: 'bg-purple-600 hover:bg-purple-700',
-    progress: 'bg-purple-600',
-    badge: 'bg-purple-100 text-purple-800',
-    bullet: 'text-purple-600',
-  },
-  gray: {
-    bg: 'bg-gray-50',
-    border: 'border-gray-200',
-    cardBorder: 'border-gray-300',
-    text: 'text-gray-800',
-    heading: 'text-gray-900',
-    button: 'bg-gray-600 hover:bg-gray-700',
-    progress: 'bg-gray-600',
-    badge: 'bg-gray-100 text-gray-800',
-    bullet: 'text-gray-600',
-  },
-};
 
 const MODEL_NAMES: Record<string, string> = {
   'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
@@ -118,90 +83,105 @@ const hasStructuredContent = (analysis: DeepDiveAnalysisData | string | null): b
   );
 };
 
-const Card: React.FC<{ scheme: ColorScheme; children: React.ReactNode }> = ({ scheme, children }) => (
-  <div className={`bg-white rounded-lg p-4 border ${scheme.cardBorder}`}>{children}</div>
+// Document-style section - no cards, just clean dividers
+const Section: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <div className="py-4 border-b border-gray-100 last:border-b-0">{children}</div>
 );
 
-const ImplementationCritique: React.FC<{
+// Utility header style for section titles
+const SectionHeader: React.FC<{ title: string; score?: number }> = ({ title, score }) => (
+  <div className="flex items-center gap-2 mb-2">
+    <h5 className="text-[10px] uppercase font-bold text-slate-500 tracking-widest">{title}</h5>
+    {score !== undefined && <ScoreBadge score={score} />}
+  </div>
+);
+
+// Summary of Changes - Hero section at the top with highlighted styling
+const SummaryOfChanges: React.FC<{
   data: DeepDiveAnalysisData;
-  scheme: ColorScheme;
   renderMarkdown: (text: string) => React.ReactNode;
-}> = ({ data, scheme, renderMarkdown }) => {
-  if (!data.implementation_critique) return null;
+}> = ({ data, renderMarkdown }) => {
+  const summaryContent = data.summary_of_changes || data.summary;
+  if (!summaryContent) return null;
+
   return (
-    <Card scheme={scheme}>
-      <div className="flex items-center gap-2 mb-2">
-        <h5 className={`font-semibold ${scheme.heading}`}>Implementation Critique</h5>
-        {data.implementation_critique_score !== undefined && (
-          <ScoreBadge score={data.implementation_critique_score} />
-        )}
-      </div>
+    <div className="mb-4 -mx-4 px-4 py-4 bg-slate-50 border-l-2 border-slate-300">
+      <SectionHeader title="Summary of Changes" />
       <div className="text-gray-700 text-sm prose prose-sm max-w-none">
-        {renderMarkdown(data.implementation_critique)}
+        {renderMarkdown(summaryContent)}
       </div>
-    </Card>
+    </div>
   );
 };
 
-const PromptQuality: React.FC<{ data: DeepDiveAnalysisData; scheme: ColorScheme }> = ({ data, scheme }) => {
+const ImplementationCritique: React.FC<{
+  data: DeepDiveAnalysisData;
+  renderMarkdown: (text: string) => React.ReactNode;
+}> = ({ data, renderMarkdown }) => {
+  if (!data.implementation_critique) return null;
+  return (
+    <Section>
+      <SectionHeader title="Implementation Critique" score={data.implementation_critique_score} />
+      <div className="text-gray-700 text-sm prose prose-sm max-w-none">
+        {renderMarkdown(data.implementation_critique)}
+      </div>
+    </Section>
+  );
+};
+
+const PromptQuality: React.FC<{ data: DeepDiveAnalysisData }> = ({ data }) => {
   if (data.prompt_quality_score === undefined) return null;
   return (
-    <Card scheme={scheme}>
-      <div className="flex items-center gap-2 mb-2">
-        <h5 className={`font-semibold ${scheme.heading}`}>Prompt Quality</h5>
-        <ScoreBadge score={data.prompt_quality_score} />
-      </div>
+    <Section>
+      <SectionHeader title="Prompt Quality" score={data.prompt_quality_score} />
       {data.prompt_improvements && (
         <div>
           <p className="text-sm font-medium text-gray-700 mb-1">Suggested Improvements:</p>
           <p className="text-gray-700 text-sm">{data.prompt_improvements}</p>
         </div>
       )}
-    </Card>
+    </Section>
   );
 };
 
-const EfficiencyScore: React.FC<{ data: DeepDiveAnalysisData; scheme: ColorScheme }> = ({ data, scheme }) => {
+const EfficiencyScore: React.FC<{ data: DeepDiveAnalysisData }> = ({ data }) => {
   if (data.efficiency_score === undefined) return null;
   return (
-    <Card scheme={scheme}>
-      <div className="flex items-center gap-2 mb-2">
-        <h5 className={`font-semibold ${scheme.heading}`}>Efficiency</h5>
-        <ScoreBadge score={data.efficiency_score} />
-      </div>
+    <Section>
+      <SectionHeader title="Efficiency" score={data.efficiency_score} />
       {data.efficiency_notes && <p className="text-gray-700 text-sm">{data.efficiency_notes}</p>}
-    </Card>
+    </Section>
   );
 };
 
-const Recommendations: React.FC<{ data: DeepDiveAnalysisData; scheme: ColorScheme }> = ({ data, scheme }) => {
+const Recommendations: React.FC<{ data: DeepDiveAnalysisData }> = ({ data }) => {
   if (!data.recommendations || data.recommendations.length === 0) return null;
   return (
-    <Card scheme={scheme}>
-      <h5 className={`font-semibold mb-3 ${scheme.heading}`}>Recommendations</h5>
+    <Section>
+      <SectionHeader title="Recommendations" />
       <ul className="space-y-2">
         {data.recommendations.map((rec, idx) => (
           <li key={idx} className="flex items-start gap-2 text-sm text-gray-700">
-            <span className={`mt-0.5 ${scheme.bullet}`}>•</span>
+            <span className="mt-0.5 text-slate-400">•</span>
             <span>{rec}</span>
           </li>
         ))}
       </ul>
-    </Card>
+    </Section>
   );
 };
 
-const ToolUsageSummary: React.FC<{ data: DeepDiveAnalysisData; scheme: ColorScheme }> = ({ data, scheme }) => {
+const ToolUsageSummary: React.FC<{ data: DeepDiveAnalysisData }> = ({ data }) => {
   if (!data.tool_usage_summary) return null;
   return (
-    <Card scheme={scheme}>
-      <h5 className={`font-semibold mb-3 ${scheme.heading}`}>Tool Usage Summary</h5>
+    <Section>
+      <SectionHeader title="Tool Usage Summary" />
       {data.tool_usage_summary.most_used_tools && (
         <div className="mb-3">
           <p className="text-sm font-medium text-gray-700 mb-2">Most Used Tools:</p>
           <div className="flex flex-wrap gap-2">
             {data.tool_usage_summary.most_used_tools.map((tool, idx) => (
-              <span key={idx} className={`px-3 py-1 rounded-full text-sm font-medium ${scheme.badge}`}>{tool}</span>
+              <span key={idx} className="px-3 py-1 rounded-full text-sm font-medium bg-slate-100 text-slate-700">{tool}</span>
             ))}
           </div>
         </div>
@@ -212,43 +192,44 @@ const ToolUsageSummary: React.FC<{ data: DeepDiveAnalysisData; scheme: ColorSche
           <p className="text-gray-700 text-sm">{data.tool_usage_summary.tool_appropriateness}</p>
         </div>
       )}
-    </Card>
+    </Section>
   );
 };
 
-const ErrorAnalysis: React.FC<{ data: DeepDiveAnalysisData; scheme: ColorScheme }> = ({ data, scheme }) => {
+const ErrorAnalysis: React.FC<{ data: DeepDiveAnalysisData }> = ({ data }) => {
   if (!data.error_analysis) return null;
   return (
-    <Card scheme={scheme}>
-      <h5 className={`font-semibold mb-2 ${scheme.heading}`}>Error Analysis</h5>
+    <Section>
+      <SectionHeader title="Error Analysis" />
       <p className="text-gray-700 text-sm">{data.error_analysis}</p>
-    </Card>
+    </Section>
   );
 };
 
 const StructuredContent: React.FC<{
   data: DeepDiveAnalysisData;
-  scheme: ColorScheme;
   renderMarkdown: (text: string) => React.ReactNode;
-}> = ({ data, scheme, renderMarkdown }) => (
-  <div className="space-y-4">
-    <ImplementationCritique data={data} scheme={scheme} renderMarkdown={renderMarkdown} />
-    <PromptQuality data={data} scheme={scheme} />
-    <EfficiencyScore data={data} scheme={scheme} />
-    <Recommendations data={data} scheme={scheme} />
-    <ToolUsageSummary data={data} scheme={scheme} />
-    <ErrorAnalysis data={data} scheme={scheme} />
+}> = ({ data, renderMarkdown }) => (
+  <div>
+    {/* Summary of Changes - Hero section at the top */}
+    <SummaryOfChanges data={data} renderMarkdown={renderMarkdown} />
+    {/* Analysis sections */}
+    <ImplementationCritique data={data} renderMarkdown={renderMarkdown} />
+    <PromptQuality data={data} />
+    <EfficiencyScore data={data} />
+    <Recommendations data={data} />
+    <ToolUsageSummary data={data} />
+    <ErrorAnalysis data={data} />
   </div>
 );
 
 interface AnalysisContentProps {
   actualAnalysis: DeepDiveAnalysisData | string | null;
   hasStructuredData: boolean;
-  scheme: ColorScheme;
   renderMarkdown: (text: string) => React.ReactNode;
 }
 
-const AnalysisContent: React.FC<AnalysisContentProps> = ({ actualAnalysis, hasStructuredData, scheme, renderMarkdown }) => {
+const AnalysisContent: React.FC<AnalysisContentProps> = ({ actualAnalysis, hasStructuredData, renderMarkdown }) => {
   if (typeof actualAnalysis === 'object' && actualAnalysis && 'error' in actualAnalysis && actualAnalysis.error) {
     return <div className="text-red-600">{actualAnalysis.error}</div>;
   }
@@ -256,7 +237,7 @@ const AnalysisContent: React.FC<AnalysisContentProps> = ({ actualAnalysis, hasSt
     return <div>{renderMarkdown(actualAnalysis)}</div>;
   }
   if (hasStructuredData && actualAnalysis && typeof actualAnalysis === 'object') {
-    return <StructuredContent data={actualAnalysis} scheme={scheme} renderMarkdown={renderMarkdown} />;
+    return <StructuredContent data={actualAnalysis} renderMarkdown={renderMarkdown} />;
   }
   return (
     <div className="text-sm text-gray-700">
@@ -268,7 +249,6 @@ const AnalysisContent: React.FC<AnalysisContentProps> = ({ actualAnalysis, hasSt
 interface HeaderProps {
   title: string;
   parsedAnalysis: DeepDiveAnalysisData | string | null;
-  scheme: ColorScheme;
 }
 
 const Header: React.FC<HeaderProps> = ({ title, parsedAnalysis }) => (
@@ -289,10 +269,10 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
   loading,
   renderMarkdown = (text) => text,
   title = 'Execution Analysis',
-  colorScheme = 'purple',
+  colorScheme: _colorScheme, // Kept for backward compatibility
   emptyStateText = 'Automated analysis is pending...',
 }) => {
-  const scheme = COLOR_SCHEMES[colorScheme];
+  void _colorScheme; // Suppress unused variable warning
   const parsedAnalysis = parseAnalysis(analysis);
   const actualAnalysis = extractReportAnalysis(parsedAnalysis);
   const hasStructuredData = hasStructuredContent(actualAnalysis);
@@ -302,27 +282,19 @@ const DeepDiveAnalysis: React.FC<DeepDiveAnalysisProps> = ({
       <Header
         title={title}
         parsedAnalysis={parsedAnalysis}
-        scheme={scheme}
       />
       {loading && (
-        <div className={`p-4 rounded-lg border ${scheme.bg} ${scheme.border}`}>
-          <div className={scheme.text}>Running analysis...</div>
-        </div>
+        <div className="py-4 text-gray-600 text-sm">Running analysis...</div>
       )}
       {actualAnalysis && !loading && (
-        <div className={`space-y-4 p-4 rounded-lg border ${scheme.bg} ${scheme.border}`}>
-          <AnalysisContent
-            actualAnalysis={actualAnalysis}
-            hasStructuredData={hasStructuredData}
-            scheme={scheme}
-            renderMarkdown={renderMarkdown}
-          />
-        </div>
+        <AnalysisContent
+          actualAnalysis={actualAnalysis}
+          hasStructuredData={hasStructuredData}
+          renderMarkdown={renderMarkdown}
+        />
       )}
       {!actualAnalysis && !loading && (
-        <div className={`p-4 rounded-lg border ${scheme.bg} ${scheme.border}`}>
-          <div className="text-gray-500 text-sm">{emptyStateText}</div>
-        </div>
+        <div className="py-4 text-gray-500 text-sm">{emptyStateText}</div>
       )}
     </div>
   );
