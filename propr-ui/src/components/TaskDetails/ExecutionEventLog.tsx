@@ -3,7 +3,6 @@ import { LiveEvent, TaskInfo } from './types';
 import { getEventCategory } from './utils';
 import MarkdownRenderer from './MarkdownRenderer';
 import {
-  Terminal,
   ChevronUp,
   ChevronDown,
   ChevronRight,
@@ -284,20 +283,20 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
         </div>
       )}
 
-      {/* VS Code Terminal Footer Bar */}
+      {/* Professional Terminal Footer Bar - VS Code style */}
       <div
-        className="h-9 px-4 flex items-center justify-between cursor-pointer bg-slate-100 hover:bg-slate-200 transition-colors"
+        className="h-10 px-4 flex items-center justify-between cursor-pointer bg-slate-100 hover:bg-slate-200 transition-colors border-t border-slate-200"
         onClick={onToggleCollapse}
       >
-        <div className="flex items-center gap-2">
-          <Terminal className="h-4 w-4 text-slate-600" />
-          <span className="font-mono text-xs font-bold text-slate-700 uppercase tracking-wide">
+        <div className="flex items-center gap-2.5">
+          <span className="text-slate-500 font-mono text-sm">{'>_'}</span>
+          <span className="font-mono text-xs font-bold text-slate-700 uppercase tracking-wider">
             EXECUTION LOG ({showFilteredCount ? `${eventCount}/${events.length}` : eventCount})
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           {collapsed && summaryMessage && (
-            <span className="text-xs text-slate-500 truncate max-w-[200px] font-mono">
+            <span className="text-xs text-slate-500 truncate max-w-[240px] font-mono">
               {summaryMessage}
             </span>
           )}

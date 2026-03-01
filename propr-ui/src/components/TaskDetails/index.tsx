@@ -1,13 +1,13 @@
 import React, { useMemo, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
-import DeepDiveAnalysis from '../DeepDiveAnalysis';
 import { renderMarkdown } from './renderMarkdown';
 import TaskStatusTable from './TaskStatusTable';
 import ExecutionRail from './ExecutionRail';
 import LiveFileChips from './LiveFileChips';
 import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
+import ResultOverview from './ResultOverview';
 import { detectThoughtType, getEventCategory } from './utils';
 import RightPaneHeader, { ThoughtType, EventType } from './RightPaneHeader';
 import PromptModal from './PromptModal';
@@ -390,6 +390,16 @@ const TaskDetails: React.FC = () => {
 
         {/* RIGHT PANE (70%) - The Execution */}
         <div className="hidden lg:flex flex-1 flex-col overflow-hidden">
+          {/* Pinned Result Overview - Scores + Summary + Collapsible Analysis */}
+          {(taskData.analysis || taskData.analysisLoading) && (
+            <ResultOverview
+              analysis={taskData.analysis}
+              loading={taskData.analysisLoading}
+              renderMarkdown={renderMarkdown}
+              totalThoughts={thinkingLog.thinkingLogWithTimestamps.length}
+            />
+          )}
+
           {/* Anchored Header with Tabs and Filters */}
           <RightPaneHeader
             thoughtCount={thinkingLog.thinkingLogWithTimestamps.length}
@@ -405,21 +415,9 @@ const TaskDetails: React.FC = () => {
             onTabChange={setActiveRightPaneTab}
           />
 
-          {/* Scrollable Log Content */}
+          {/* Scrollable Log Content - Thinking Log starts immediately */}
           <div className="flex-1 overflow-y-auto scrollbar-stealth">
-            <div className="p-4 space-y-4">
-              {/* Execution Analysis - only show when we have data or are loading */}
-              {(taskData.analysis || taskData.analysisLoading) && (
-                <DeepDiveAnalysis
-                  analysis={taskData.analysis}
-                  loading={taskData.analysisLoading}
-                  renderMarkdown={renderMarkdown}
-                  title="Execution Analysis"
-                  colorScheme="gray"
-                  emptyStateText="Automated analysis is pending..."
-                />
-              )}
-
+            <div className="p-4">
               {/* Thinking Log - Terminal Style */}
               <ThinkingLog
                 events={thinkingLog.thinkingLogWithTimestamps}
