@@ -179,8 +179,13 @@ export async function checkoutBaseBranch(
     await checkoutBranch(worktreePath, baseBranch);
     correlatedLogger.info({ baseBranch, worktreePath }, 'Checked out configured base branch');
   } catch (error) {
-    if (error instanceof BranchNotFoundError) throw error;
-    correlatedLogger.warn({ baseBranch, error: (error as Error).message }, 'Failed to checkout base branch');
+    if (error instanceof BranchNotFoundError) {
+      // Branch doesn't exist - repo might be empty or branch not created yet
+      // Continue with whatever state the worktree is in
+      correlatedLogger.warn({ baseBranch, worktreePath }, 'Base branch not found (repo may be empty), continuing with current state');
+    } else {
+      correlatedLogger.warn({ baseBranch, error: (error as Error).message }, 'Failed to checkout base branch');
+    }
   }
 }
 
@@ -821,8 +826,13 @@ async function regenerateContext(params: RegenerateContextParams): Promise<Regen
     await checkoutBranch(worktreePath, baseBranch);
     correlatedLogger.info({ baseBranch, worktreePath }, 'Checked out branch for preview');
   } catch (error) {
-    if (error instanceof BranchNotFoundError) throw error;
-    throw new PlanningFailedError(`Failed to checkout branch '${baseBranch}': ${(error as Error).message}`);
+    if (error instanceof BranchNotFoundError) {
+      // Branch doesn't exist - repo might be empty or branch not created yet
+      // Continue with whatever state the worktree is in
+      correlatedLogger.warn({ baseBranch, worktreePath }, 'Branch not found (repo may be empty), continuing with current state');
+    } else {
+      throw new PlanningFailedError(`Failed to checkout branch '${baseBranch}': ${(error as Error).message}`);
+    }
   }
 
   // Parse @file references from the prompt

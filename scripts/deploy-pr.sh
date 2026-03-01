@@ -199,9 +199,11 @@ if [ -n "$CONTAINER_ID" ]; then
         STAGING_DB_PATH=$(grep -E '^DB_FILENAME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
     fi
     STAGING_DB_PATH="${STAGING_DB_PATH:-/usr/src/app/data/propr.sqlite}"
+    # Extract just the filename for the destination path
+    DB_FILENAME=$(basename "$STAGING_DB_PATH")
     if [ -f "$STAGING_DB_PATH" ]; then
         echo "Copying database from staging site ($STAGING_DB_PATH)..."
-        if docker cp "$STAGING_DB_PATH" "$CONTAINER_ID":/usr/src/app/data/propr.sqlite; then
+        if docker cp "$STAGING_DB_PATH" "$CONTAINER_ID":/usr/src/app/data/"$DB_FILENAME"; then
             echo "Database seeded successfully"
         else
             echo "Warning: Failed to copy database"
