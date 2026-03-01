@@ -60,6 +60,9 @@ const TaskDetails: React.FC = () => {
   const [activeThoughtFilters, setActiveThoughtFilters] = useState<Set<string>>(new Set());
   const [activeEventFilters, setActiveEventFilters] = useState<Set<string>>(new Set());
 
+  // State for right pane active tab
+  const [activeRightPaneTab, setActiveRightPaneTab] = useState<'thoughts' | 'events'>('thoughts');
+
   // Toggle thought filter
   const toggleThoughtFilter = useCallback((type: ThoughtType) => {
     setActiveThoughtFilters(prev => {
@@ -341,8 +344,8 @@ const TaskDetails: React.FC = () => {
           </div>
         </div>
 
-        {/* Context Strip - Dense metadata line */}
-        <div className="px-4 sm:px-6">
+        {/* Context Strip - Dense metadata line with continuous border */}
+        <div className="px-4 sm:px-6 border-b border-gray-200">
           <ContextStrip
             taskInfo={taskData.taskInfo}
             modelName={derivedData.modelName}
@@ -387,7 +390,7 @@ const TaskDetails: React.FC = () => {
 
         {/* RIGHT PANE (70%) - The Execution */}
         <div className="hidden lg:flex flex-1 flex-col overflow-hidden">
-          {/* Anchored Header with Filters */}
+          {/* Anchored Header with Tabs and Filters */}
           <RightPaneHeader
             thoughtCount={thinkingLog.thinkingLogWithTimestamps.length}
             thoughtTypeCounts={thoughtTypeCounts}
@@ -398,6 +401,8 @@ const TaskDetails: React.FC = () => {
             activeEventFilters={activeEventFilters}
             onToggleEventFilter={toggleEventFilter}
             onClearAllFilters={clearAllFilters}
+            activeTab={activeRightPaneTab}
+            onTabChange={setActiveRightPaneTab}
           />
 
           {/* Scrollable Log Content */}

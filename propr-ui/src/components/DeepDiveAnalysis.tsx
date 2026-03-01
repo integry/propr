@@ -1,4 +1,5 @@
 import React from 'react';
+import { ScoreBadge } from './TaskList/ScoreBadge';
 
 interface DeepDiveAnalysisData {
   efficiency_score?: number;
@@ -129,13 +130,11 @@ const ImplementationCritique: React.FC<{
   if (!data.implementation_critique) return null;
   return (
     <Card scheme={scheme}>
-      <div className="flex items-center gap-3 mb-2">
-        {data.implementation_critique_score !== undefined && (
-          <span className={`px-2 py-1 text-xs font-bold rounded ${scheme.badge}`}>
-            {data.implementation_critique_score}/10
-          </span>
-        )}
+      <div className="flex items-center gap-2 mb-2">
         <h5 className={`font-semibold ${scheme.heading}`}>Implementation Critique</h5>
+        {data.implementation_critique_score !== undefined && (
+          <ScoreBadge score={data.implementation_critique_score} />
+        )}
       </div>
       <div className="text-gray-700 text-sm prose prose-sm max-w-none">
         {renderMarkdown(data.implementation_critique)}
@@ -148,9 +147,9 @@ const PromptQuality: React.FC<{ data: DeepDiveAnalysisData; scheme: ColorScheme 
   if (data.prompt_quality_score === undefined) return null;
   return (
     <Card scheme={scheme}>
-      <div className="flex items-center gap-3 mb-2">
-        <span className={`px-2 py-1 text-xs font-bold rounded ${scheme.badge}`}>{data.prompt_quality_score}/10</span>
+      <div className="flex items-center gap-2 mb-2">
         <h5 className={`font-semibold ${scheme.heading}`}>Prompt Quality</h5>
+        <ScoreBadge score={data.prompt_quality_score} />
       </div>
       {data.prompt_improvements && (
         <div>
@@ -166,9 +165,9 @@ const EfficiencyScore: React.FC<{ data: DeepDiveAnalysisData; scheme: ColorSchem
   if (data.efficiency_score === undefined) return null;
   return (
     <Card scheme={scheme}>
-      <div className="flex items-center gap-3 mb-2">
-        <span className={`px-2 py-1 text-xs font-bold rounded ${scheme.badge}`}>{data.efficiency_score}/10</span>
+      <div className="flex items-center gap-2 mb-2">
         <h5 className={`font-semibold ${scheme.heading}`}>Efficiency</h5>
+        <ScoreBadge score={data.efficiency_score} />
       </div>
       {data.efficiency_notes && <p className="text-gray-700 text-sm">{data.efficiency_notes}</p>}
     </Card>

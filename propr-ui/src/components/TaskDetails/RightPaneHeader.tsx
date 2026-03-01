@@ -17,7 +17,32 @@ export type ThoughtType = 'analysis' | 'action' | 'summary' | 'search';
 // Execution event categories for filtering
 export type EventType = 'thought' | 'read' | 'write' | 'bash' | 'search' | 'tool_use' | 'tool_result';
 
-interface FilterBadgeProps {
+// Tab button for THOUGHTS / EVENTS toggle
+interface TabButtonProps {
+  label: string;
+  icon: React.ReactNode;
+  count: number;
+  isActive: boolean;
+  onClick: () => void;
+}
+
+const TabButton: React.FC<TabButtonProps> = ({ label, icon, count, isActive, onClick }) => (
+  <button
+    onClick={onClick}
+    className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold uppercase transition-all border-b-2 -mb-px
+      ${isActive
+        ? 'text-gray-900 border-gray-900'
+        : 'text-gray-400 border-transparent hover:text-gray-600 hover:border-gray-300'
+      }`}
+  >
+    {icon}
+    <span>{label}</span>
+    <span className="font-mono text-[9px] opacity-70">({count})</span>
+  </button>
+);
+
+// Filter chip for the filter strip
+interface FilterChipProps {
   label: string;
   icon: React.ReactNode;
   color: string;
@@ -26,19 +51,19 @@ interface FilterBadgeProps {
   count?: number;
 }
 
-const FilterBadge: React.FC<FilterBadgeProps> = ({ label, icon, color, isActive, onClick, count }) => (
+const FilterChip: React.FC<FilterChipProps> = ({ label, icon, color, isActive, onClick, count }) => (
   <button
     onClick={onClick}
-    className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium uppercase rounded transition-all
+    className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-medium uppercase rounded transition-all
       ${isActive
         ? `${color} bg-opacity-10 ring-1 ring-current`
-        : 'text-gray-400 hover:text-gray-600'
+        : 'text-gray-400 hover:text-gray-500'
       }`}
   >
     {icon}
     <span>{label}</span>
     {count !== undefined && count > 0 && (
-      <span className="font-mono text-[9px] opacity-70">({count})</span>
+      <span className="font-mono text-[9px] opacity-60 ml-0.5">{count}</span>
     )}
   </button>
 );
@@ -58,6 +83,10 @@ interface RightPaneHeaderProps {
 
   // Clear filters
   onClearAllFilters: () => void;
+
+  // Active tab
+  activeTab?: 'thoughts' | 'events';
+  onTabChange?: (tab: 'thoughts' | 'events') => void;
 }
 
 const RightPaneHeader: React.FC<RightPaneHeaderProps> = ({
@@ -69,122 +98,121 @@ const RightPaneHeader: React.FC<RightPaneHeaderProps> = ({
   eventTypeCounts,
   activeEventFilters,
   onToggleEventFilter,
-  onClearAllFilters
+  onClearAllFilters,
+  activeTab = 'thoughts',
+  onTabChange
 }) => {
   const hasActiveFilters = activeThoughtFilters.size > 0 || activeEventFilters.size > 0;
+  const showThoughtsFilters = activeTab === 'thoughts';
+  const showEventsFilters = activeTab === 'events';
 
   return (
-    <div className="sticky top-0 z-10 bg-white border-b border-gray-100 px-4 py-2">
-      {/* Header row */}
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-4">
-          {/* Thinking Log title and count */}
-          <div className="flex items-center gap-1.5">
-            <MessageSquareText className="h-3.5 w-3.5 text-gray-500" />
-            <span className="text-[10px] font-bold uppercase text-gray-600">Thoughts</span>
-            <span className="font-mono text-[10px] text-gray-400">({thoughtCount})</span>
-          </div>
-
-          {/* Divider */}
-          <div className="h-3 w-px bg-gray-200" />
-
-          {/* Execution Log title and count */}
-          <div className="flex items-center gap-1.5">
-            <Terminal className="h-3.5 w-3.5 text-gray-500" />
-            <span className="text-[10px] font-bold uppercase text-gray-600">Events</span>
-            <span className="font-mono text-[10px] text-gray-400">({eventCount})</span>
-          </div>
+    <div className="sticky top-0 z-10 bg-white">
+      {/* Tabs row - sits on the continuous border like IDE tabs */}
+      <div className="flex items-end justify-between px-4 border-b border-gray-200">
+        <div className="flex items-center">
+          <TabButton
+            label="Thoughts"
+            icon={<MessageSquareText className="h-3 w-3" />}
+            count={thoughtCount}
+            isActive={activeTab === 'thoughts'}
+            onClick={() => onTabChange?.('thoughts')}
+          />
+          <TabButton
+            label="Events"
+            icon={<Terminal className="h-3 w-3" />}
+            count={eventCount}
+            isActive={activeTab === 'events'}
+            onClick={() => onTabChange?.('events')}
+          />
         </div>
 
         {/* Clear filters button */}
         {hasActiveFilters && (
           <button
             onClick={onClearAllFilters}
-            className="text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
+            className="text-[10px] text-gray-400 hover:text-gray-600 transition-colors pb-1.5"
           >
-            Clear filters
+            Clear
           </button>
         )}
       </div>
 
-      {/* Filters row */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        {/* Thought type filters */}
-        <div className="flex items-center gap-1">
-          <span className="text-[9px] text-gray-400 uppercase mr-1">Thought:</span>
-          <FilterBadge
-            label="Analysis"
-            icon={<Lightbulb className="h-2.5 w-2.5" />}
-            color="text-blue-600"
-            isActive={activeThoughtFilters.has('analysis')}
-            onClick={() => onToggleThoughtFilter('analysis')}
-            count={thoughtTypeCounts.analysis}
-          />
-          <FilterBadge
-            label="Action"
-            icon={<Wrench className="h-2.5 w-2.5" />}
-            color="text-green-600"
-            isActive={activeThoughtFilters.has('action')}
-            onClick={() => onToggleThoughtFilter('action')}
-            count={thoughtTypeCounts.action}
-          />
-          <FilterBadge
-            label="Search"
-            icon={<Search className="h-2.5 w-2.5" />}
-            color="text-purple-600"
-            isActive={activeThoughtFilters.has('search')}
-            onClick={() => onToggleThoughtFilter('search')}
-            count={thoughtTypeCounts.search}
-          />
-          <FilterBadge
-            label="Summary"
-            icon={<CheckCircle2 className="h-2.5 w-2.5" />}
-            color="text-amber-600"
-            isActive={activeThoughtFilters.has('summary')}
-            onClick={() => onToggleThoughtFilter('summary')}
-            count={thoughtTypeCounts.summary}
-          />
-        </div>
+      {/* Filter Strip - high-density single line */}
+      <div className="flex items-center gap-1 px-4 py-1.5 bg-gray-50/50 border-b border-gray-100">
+        {showThoughtsFilters && (
+          <>
+            <FilterChip
+              label="Analysis"
+              icon={<Lightbulb className="h-2.5 w-2.5" />}
+              color="text-blue-600"
+              isActive={activeThoughtFilters.has('analysis')}
+              onClick={() => onToggleThoughtFilter('analysis')}
+              count={thoughtTypeCounts.analysis}
+            />
+            <FilterChip
+              label="Action"
+              icon={<Wrench className="h-2.5 w-2.5" />}
+              color="text-green-600"
+              isActive={activeThoughtFilters.has('action')}
+              onClick={() => onToggleThoughtFilter('action')}
+              count={thoughtTypeCounts.action}
+            />
+            <FilterChip
+              label="Search"
+              icon={<Search className="h-2.5 w-2.5" />}
+              color="text-purple-600"
+              isActive={activeThoughtFilters.has('search')}
+              onClick={() => onToggleThoughtFilter('search')}
+              count={thoughtTypeCounts.search}
+            />
+            <FilterChip
+              label="Summary"
+              icon={<CheckCircle2 className="h-2.5 w-2.5" />}
+              color="text-amber-600"
+              isActive={activeThoughtFilters.has('summary')}
+              onClick={() => onToggleThoughtFilter('summary')}
+              count={thoughtTypeCounts.summary}
+            />
+          </>
+        )}
 
-        {/* Vertical divider */}
-        <div className="h-4 w-px bg-gray-200" />
-
-        {/* Event type filters */}
-        <div className="flex items-center gap-1">
-          <span className="text-[9px] text-gray-400 uppercase mr-1">Event:</span>
-          <FilterBadge
-            label="Read"
-            icon={<Eye className="h-2.5 w-2.5" />}
-            color="text-cyan-600"
-            isActive={activeEventFilters.has('read')}
-            onClick={() => onToggleEventFilter('read')}
-            count={eventTypeCounts.read}
-          />
-          <FilterBadge
-            label="Write"
-            icon={<Edit3 className="h-2.5 w-2.5" />}
-            color="text-orange-600"
-            isActive={activeEventFilters.has('write')}
-            onClick={() => onToggleEventFilter('write')}
-            count={eventTypeCounts.write}
-          />
-          <FilterBadge
-            label="Bash"
-            icon={<Terminal className="h-2.5 w-2.5" />}
-            color="text-gray-700"
-            isActive={activeEventFilters.has('bash')}
-            onClick={() => onToggleEventFilter('bash')}
-            count={eventTypeCounts.bash}
-          />
-          <FilterBadge
-            label="Search"
-            icon={<FolderSearch className="h-2.5 w-2.5" />}
-            color="text-indigo-600"
-            isActive={activeEventFilters.has('search')}
-            onClick={() => onToggleEventFilter('search')}
-            count={eventTypeCounts.search}
-          />
-        </div>
+        {showEventsFilters && (
+          <>
+            <FilterChip
+              label="Read"
+              icon={<Eye className="h-2.5 w-2.5" />}
+              color="text-cyan-600"
+              isActive={activeEventFilters.has('read')}
+              onClick={() => onToggleEventFilter('read')}
+              count={eventTypeCounts.read}
+            />
+            <FilterChip
+              label="Write"
+              icon={<Edit3 className="h-2.5 w-2.5" />}
+              color="text-orange-600"
+              isActive={activeEventFilters.has('write')}
+              onClick={() => onToggleEventFilter('write')}
+              count={eventTypeCounts.write}
+            />
+            <FilterChip
+              label="Bash"
+              icon={<Terminal className="h-2.5 w-2.5" />}
+              color="text-gray-700"
+              isActive={activeEventFilters.has('bash')}
+              onClick={() => onToggleEventFilter('bash')}
+              count={eventTypeCounts.bash}
+            />
+            <FilterChip
+              label="Search"
+              icon={<FolderSearch className="h-2.5 w-2.5" />}
+              color="text-indigo-600"
+              isActive={activeEventFilters.has('search')}
+              onClick={() => onToggleEventFilter('search')}
+              count={eventTypeCounts.search}
+            />
+          </>
+        )}
       </div>
     </div>
   );

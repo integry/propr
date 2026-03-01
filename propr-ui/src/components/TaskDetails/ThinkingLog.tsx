@@ -139,11 +139,11 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
       {/* Group Header - terminal style */}
       <div className="flex items-center gap-2 py-1 border-b border-gray-100 mb-1">
         {isCompleted ? (
-          <CheckCircle2 className="h-3 w-3 text-green-500" />
+          <CheckCircle2 className="h-3 w-3 text-slate-400" />
         ) : (
           <div className="h-3 w-3 rounded-full border border-gray-300 bg-gray-50" />
         )}
-        <span className={`text-xs font-medium ${isCompleted ? 'text-green-700' : 'text-gray-600'}`}>
+        <span className={`text-xs font-medium ${isCompleted ? 'text-slate-600' : 'text-gray-600'}`}>
           {title}
         </span>
         <span className="text-[10px] text-gray-400">

@@ -94,13 +94,9 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
                 {/* Icon intersecting the rail */}
                 <div className="relative flex-shrink-0 z-10">
                   {isCompleted ? (
-                    // Completed: checkmark - gray for live tasks, green for finished tasks
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
-                      isTaskActive
-                        ? 'bg-white border-2 border-gray-300'
-                        : 'bg-green-500'
-                    }`}>
-                      <Check className={`w-3.5 h-3.5 ${isTaskActive ? 'text-gray-400' : 'text-white'}`} />
+                    // Completed: Gray checkmarks - "Success is Quiet" principle
+                    <div className="w-6 h-6 rounded-full flex items-center justify-center bg-white border-2 border-slate-300">
+                      <Check className="w-3.5 h-3.5 text-slate-400" />
                     </div>
                   ) : isInProgress ? (
                     // Current/In Progress: Teal animated pulse icon
