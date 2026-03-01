@@ -20,7 +20,7 @@ const CancelledBadge: React.FC<{ isCancelled: boolean }> = ({ isCancelled }) => 
   if (!isCancelled) return null;
   return (
     <span
-      className="flex items-center gap-1.5 bg-orange-50 text-orange-700 px-2 py-1 rounded text-xs font-medium border border-orange-200"
+      className="flex items-center gap-1.5 bg-orange-50 text-orange-700 px-2 py-1 rounded text-[11px] font-medium border border-orange-200"
       title="Task was cancelled by user"
     >
       <Ban size={14} />
@@ -41,7 +41,7 @@ const StopExecutionButton: React.FC<{
       onClick={onStopExecution}
       disabled={stoppingExecution}
       title={stoppingExecution ? 'Stopping execution...' : 'Stop Execution'}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
         stoppingExecution
           ? 'bg-red-50 text-red-400 cursor-not-allowed border border-red-200'
           : 'bg-red-100 hover:bg-red-200 text-red-600 hover:text-red-700 border border-red-200'
@@ -85,7 +85,7 @@ const DeleteButton: React.FC<{
       onClick={onDeleteTask}
       disabled={isDisabled}
       title={getTitle()}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
         isDisabled
           ? 'bg-gray-50 text-gray-400 cursor-not-allowed border border-gray-200'
           : 'bg-white hover:bg-red-50 text-red-500 hover:text-red-600 border border-gray-200 hover:border-red-200'
@@ -125,7 +125,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
         <button
           onClick={() => onViewPrompt(historyItemWithPaths.promptPath!)}
           title="View Prompt"
-          className="flex items-center gap-1.5 px-2 py-1.5 rounded text-sm text-gray-600 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+          className="flex items-center gap-1.5 px-2 py-1.5 rounded text-xs text-gray-600 hover:text-blue-600 hover:bg-blue-50 transition-colors"
         >
           <FileText size={14} />
           <span className="hidden sm:inline">Prompt</span>
@@ -137,7 +137,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
         <button
           onClick={() => onViewLogs(historyItemWithPaths.logsPath!)}
           title="View Logs"
-          className="flex items-center gap-1.5 px-2 py-1.5 rounded text-sm text-gray-600 hover:text-green-600 hover:bg-green-50 transition-colors"
+          className="flex items-center gap-1.5 px-2 py-1.5 rounded text-xs text-gray-600 hover:text-green-600 hover:bg-green-50 transition-colors"
         >
           <Terminal size={14} />
           <span className="hidden sm:inline">Logs</span>
@@ -149,7 +149,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
         <button
           onClick={onFollowUp}
           title="Follow Up - Post a follow-up comment"
-          className="flex items-center gap-1.5 px-2 py-1.5 rounded text-sm text-gray-600 hover:text-purple-600 hover:bg-purple-50 transition-colors"
+          className="flex items-center gap-1.5 px-2 py-1.5 rounded text-xs text-gray-600 hover:text-purple-600 hover:bg-purple-50 transition-colors"
         >
           <MessageSquarePlus size={14} />
           <span className="hidden sm:inline">Follow Up</span>

@@ -70,7 +70,7 @@ const IssuePRChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => (
       href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/${taskInfo.type === 'pr-comment' ? 'pull' : 'issues'}/${taskInfo.number}`}
       target="_blank"
       rel="noopener noreferrer"
-      className="inline-flex items-center gap-1 bg-gray-100 text-gray-700 hover:text-blue-600 hover:bg-blue-50 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
+      className="inline-flex items-center gap-1 bg-gray-100 text-gray-700 hover:text-blue-600 hover:bg-blue-50 px-1.5 py-0.5 rounded font-mono text-xs transition-colors"
       title={taskInfo.type === 'pr-comment' ? `Pull Request #${taskInfo.number}` : `Issue #${taskInfo.number}`}
     >
       {taskInfo.type === 'pr-comment' ? 'PR' : '#'}{taskInfo.number}
@@ -89,7 +89,7 @@ const LinkedIssueChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
         href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/issues/${taskInfo.issueNumber}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 bg-orange-50 text-orange-700 hover:bg-orange-100 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
+        className="inline-flex items-center gap-1 bg-orange-50 text-orange-700 hover:bg-orange-100 px-1.5 py-0.5 rounded font-mono text-xs transition-colors"
         title={`Original Issue #${taskInfo.issueNumber}`}
       >
         #{taskInfo.issueNumber}
@@ -104,14 +104,14 @@ const LinkedIssueChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
 const ModelChip: React.FC<{ modelName: string; duration?: number | null }> = ({ modelName, duration }) => (
   <>
     <span
-      className="inline-flex items-center gap-1 bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded font-mono text-[11px]"
+      className="inline-flex items-center gap-1 bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded font-mono text-xs"
       title={modelName}
     >
       <ProviderLogo provider={modelName} className="w-3 h-3" />
       {getDisplayModelName(modelName)}
     </span>
     {duration !== null && duration !== undefined && (
-      <span className="ml-1.5 text-gray-400 font-mono text-[11px]">
+      <span className="ml-1.5 text-gray-400 font-mono text-xs">
         {formatRelativeTime(duration)}
       </span>
     )}
@@ -128,7 +128,7 @@ const PRInfoChip: React.FC<{ prInfo: { url?: string; number?: number } }> = ({ p
         href={prInfo.url}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 bg-green-50 text-green-700 hover:bg-green-100 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
+        className="inline-flex items-center gap-1 bg-green-50 text-green-700 hover:bg-green-100 px-1.5 py-0.5 rounded font-mono text-xs transition-colors"
       >
         <GitPullRequest size={10} />
         PR #{prInfo.number}
@@ -148,7 +148,7 @@ const CommitInfoChip: React.FC<{ commitInfo: { shortHash: string; url: string } 
         href={commitInfo.url}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 bg-gray-100 text-gray-600 hover:text-gray-800 hover:bg-gray-200 px-1.5 py-0.5 rounded font-mono text-[11px] transition-colors"
+        className="inline-flex items-center gap-1 bg-gray-100 text-gray-600 hover:text-gray-800 hover:bg-gray-200 px-1.5 py-0.5 rounded font-mono text-xs transition-colors"
         title="View commit on GitHub"
       >
         <GitCommit size={10} />
@@ -172,7 +172,7 @@ const TokenUsageChip: React.FC<{ tokenUsage: TokenUsage }> = ({ tokenUsage }) =>
     <>
       <Dot />
       <span
-        className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-mono text-[11px]"
+        className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-mono text-xs"
         title={`Input: ${tokenUsage.input_tokens ?? 0} | Output: ${tokenUsage.output_tokens ?? 0}${tokenUsage.cache_read_input_tokens ? ` | Cache Read: ${tokenUsage.cache_read_input_tokens}` : ''}${tokenUsage.cache_creation_input_tokens ? ` | Cache Creation: ${tokenUsage.cache_creation_input_tokens}` : ''}`}
       >
         <Zap size={10} />
@@ -200,7 +200,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   tokenUsage,
 }) => {
   return (
-    <div className="flex items-center flex-wrap gap-y-1 text-xs text-gray-600 py-2 border-b border-gray-100">
+    <div className="flex items-center flex-wrap gap-y-1 text-sm text-gray-600 py-2 border-b border-gray-100">
       {taskInfo && <RepoLink taskInfo={taskInfo} />}
       {taskInfo && <IssuePRChip taskInfo={taskInfo} />}
       {taskInfo && <LinkedIssueChip taskInfo={taskInfo} />}
