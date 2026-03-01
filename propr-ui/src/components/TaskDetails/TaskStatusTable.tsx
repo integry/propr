@@ -239,28 +239,24 @@ const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = fa
   if (!history || history.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-      <div className={`bg-gray-50 ${compact ? 'px-3 sm:px-4 py-2 sm:py-3' : 'px-4 sm:px-6 py-3 sm:py-4'} border-b border-gray-200`}>
-        <h4 className={`${compact ? 'text-sm sm:text-base' : 'text-base sm:text-lg'} font-semibold text-gray-900`}>
-          Status Timeline
-          {startDate && <span className={`ml-2 ${compact ? 'text-xs' : 'text-xs sm:text-sm'} font-normal text-gray-500`}>(Started {startDate})</span>}
-        </h4>
-      </div>
+    <div className="border-t border-gray-100 pt-4">
+      <h4 className={`${compact ? 'text-sm' : 'text-base'} font-semibold text-gray-900 mb-3`}>
+        Timeline
+        {startDate && <span className="ml-2 text-xs font-normal text-gray-400">{startDate}</span>}
+      </h4>
 
-      <div className={compact ? 'p-3 sm:p-4' : 'p-4 sm:p-6'}>
-        <div className="relative">
-          {itemsWithDuration.map((item, index) => (
-            <TaskTimelineItem
-              key={index}
-              item={item}
-              index={index}
-              history={history}
-              maxDurationIndex={maxDurationIndex}
-              isLast={index === itemsWithDuration.length - 1}
-              compact={compact}
-            />
-          ))}
-        </div>
+      <div className="relative">
+        {itemsWithDuration.map((item, index) => (
+          <TaskTimelineItem
+            key={index}
+            item={item}
+            index={index}
+            history={history}
+            maxDurationIndex={maxDurationIndex}
+            isLast={index === itemsWithDuration.length - 1}
+            compact={compact}
+          />
+        ))}
       </div>
     </div>
   );

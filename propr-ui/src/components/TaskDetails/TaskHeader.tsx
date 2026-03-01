@@ -86,23 +86,26 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
   const statusInfo = getStatusInfo(currentStatus);
 
   return (
-    <>
-      <div className="flex items-center gap-3 mb-2">
-        <div className="flex items-center gap-2">
+    <div>
+      <div className="flex items-start gap-3">
+        <div className="flex-shrink-0 mt-0.5">
           {statusInfo.icon}
-          <span className={`text-sm font-medium ${statusInfo.color}`}>
-            {statusInfo.label}
-          </span>
         </div>
-        <div className="h-6 w-px bg-gray-300" />
-        <h2 className="text-2xl font-bold text-gray-900 break-all">
-          {taskInfo?.title || 'Loading...'}
-        </h2>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <span className={`text-xs font-medium ${statusInfo.color}`}>
+              {statusInfo.label}
+            </span>
+          </div>
+          <h2 className="text-lg font-semibold text-gray-900 leading-tight break-words">
+            {taskInfo?.title || 'Loading...'}
+          </h2>
+          {taskInfo && (
+            <p className="text-sm text-gray-500 mt-1">{getSubtitle(taskInfo)}</p>
+          )}
+        </div>
       </div>
-      {taskInfo && (
-        <p className="text-gray-600 mb-6 ml-0">{getSubtitle(taskInfo)}</p>
-      )}
-    </>
+    </div>
   );
 };
 

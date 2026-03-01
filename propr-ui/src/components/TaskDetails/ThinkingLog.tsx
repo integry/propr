@@ -209,35 +209,35 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
   }
 
   return (
-    <div className="mb-6" id="thinking-log-section">
-      <div className="flex items-center gap-2 mb-4">
-        <MessageSquareText className="h-5 w-5 text-gray-700" />
-        <h4 className="text-lg font-semibold text-gray-900">Thinking Log</h4>
-        <span className="text-sm text-gray-500">({events.length} thoughts)</span>
+    <div id="thinking-log-section">
+      <div className="flex items-center gap-2 mb-3">
+        <MessageSquareText className="h-4 w-4 text-gray-600" />
+        <h4 className="text-sm font-semibold text-gray-900">Thinking Log</h4>
+        <span className="text-xs text-gray-400">({events.length} thoughts)</span>
       </div>
 
-      <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-        {/* Legend */}
-        <div className="flex flex-wrap gap-4 mb-4 pb-3 border-b border-gray-200 text-xs">
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-3 rounded-full bg-blue-100 border border-blue-200"></div>
-            <span className="text-gray-600">Analysis</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-3 rounded-full bg-green-100 border border-green-200"></div>
-            <span className="text-gray-600">Action</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-3 rounded-full bg-purple-100 border border-purple-200"></div>
-            <span className="text-gray-600">Search</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-3 rounded-full bg-amber-100 border border-amber-200"></div>
-            <span className="text-gray-600">Summary</span>
-          </div>
+      {/* Legend - Compact inline */}
+      <div className="flex flex-wrap gap-3 mb-3 text-[10px] text-gray-500">
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 rounded-full bg-blue-200"></div>
+          <span>Analysis</span>
         </div>
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 rounded-full bg-green-200"></div>
+          <span>Action</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 rounded-full bg-purple-200"></div>
+          <span>Search</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 rounded-full bg-amber-200"></div>
+          <span>Summary</span>
+        </div>
+      </div>
 
-        {/* Grouped Events */}
+      {/* Grouped Events */}
+      <div className="space-y-3">
         {groupedEvents.map((group, index) => (
           <ThoughtGroup
             key={group.todoId || index}
