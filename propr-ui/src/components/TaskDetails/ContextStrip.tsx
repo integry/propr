@@ -100,19 +100,6 @@ const LinkedIssueChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
   );
 };
 
-// Task ID chip component
-const TaskIdChip: React.FC<{ taskId: string }> = ({ taskId }) => (
-  <>
-    <span
-      className="inline-flex items-center bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded font-mono text-[11px]"
-      title={`Task ID: ${taskId}`}
-    >
-      {taskId.length > 12 ? `${taskId.substring(0, 8)}...` : taskId}
-    </span>
-    <Dot />
-  </>
-);
-
 // Model chip component
 const ModelChip: React.FC<{ modelName: string; duration?: number | null }> = ({ modelName, duration }) => (
   <>
@@ -202,7 +189,6 @@ interface ContextStripProps {
   commitInfo?: { shortHash: string; url: string };
   duration?: number | null;
   tokenUsage?: TokenUsage;
-  taskId?: string;
 }
 
 const ContextStrip: React.FC<ContextStripProps> = ({
@@ -212,14 +198,12 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   commitInfo,
   duration,
   tokenUsage,
-  taskId
 }) => {
   return (
     <div className="flex items-center flex-wrap gap-y-1 text-xs text-gray-600 py-2 border-b border-gray-100">
       {taskInfo && <RepoLink taskInfo={taskInfo} />}
       {taskInfo && <IssuePRChip taskInfo={taskInfo} />}
       {taskInfo && <LinkedIssueChip taskInfo={taskInfo} />}
-      {taskId && <TaskIdChip taskId={taskId} />}
       <ModelChip modelName={modelName} duration={duration} />
       {prInfo && <PRInfoChip prInfo={prInfo} />}
       {commitInfo && <CommitInfoChip commitInfo={commitInfo} />}

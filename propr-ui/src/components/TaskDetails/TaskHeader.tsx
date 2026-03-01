@@ -86,8 +86,8 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
   const statusInfo = getStatusInfo(currentStatus);
 
   return (
-    <div className="pb-4">
-      <div className="flex items-start gap-3 mb-2">
+    <div>
+      <div className="flex items-start gap-3">
         <div className="flex-shrink-0 mt-0.5">
           {statusInfo.icon}
         </div>

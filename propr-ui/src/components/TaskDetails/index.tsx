@@ -1,7 +1,6 @@
 import React, { useMemo, useState, useCallback } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
-import { ChevronRight } from 'lucide-react';
 import DeepDiveAnalysis from '../DeepDiveAnalysis';
 import { renderMarkdown } from './renderMarkdown';
 import TaskStatusTable from './TaskStatusTable';
@@ -243,32 +242,28 @@ const TaskDetails: React.FC = () => {
     <div className="h-screen flex flex-col bg-white">
       {/* Fixed Header Shell */}
       <header className="flex-shrink-0 border-b border-gray-200">
-        {/* Breadcrumb Row with Actions */}
-        <div className="px-4 sm:px-6 py-2 flex items-center justify-between">
-          {/* Left: Breadcrumb */}
-          <nav className="flex items-center text-sm text-gray-500">
-            <Link to="/tasks" className="hover:text-gray-700 transition-colors">
-              Tasks
-            </Link>
-            <ChevronRight size={14} className="mx-1.5 text-gray-400" />
-            <span className="text-gray-900 font-medium truncate max-w-[200px] sm:max-w-[400px]">
-              {taskData.taskInfo?.title || `Task #${taskId}`}
-            </span>
-          </nav>
+        {/* Task Header with Actions */}
+        <div className="px-4 sm:px-6 py-3 flex items-start justify-between gap-4">
+          {/* Left: Task Header */}
+          <div className="flex-1 min-w-0">
+            <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
+          </div>
 
           {/* Right: Actions */}
-          <ActionBar
-            currentStatus={derivedData.currentStatus}
-            historyItemWithPaths={derivedData.historyItemWithPaths}
-            stoppingExecution={taskData.stoppingExecution}
-            stopFailed={taskData.stopFailed}
-            deletingTask={taskData.deletingTask}
-            onStopExecution={taskData.handleStopExecution}
-            onViewPrompt={promptData.fetchPrompt}
-            onViewLogs={logFilesData.fetchLogFilesData}
-            onDeleteTask={handleDeleteTask}
-            onFollowUp={handleOpenFollowup}
-          />
+          <div className="flex-shrink-0">
+            <ActionBar
+              currentStatus={derivedData.currentStatus}
+              historyItemWithPaths={derivedData.historyItemWithPaths}
+              stoppingExecution={taskData.stoppingExecution}
+              stopFailed={taskData.stopFailed}
+              deletingTask={taskData.deletingTask}
+              onStopExecution={taskData.handleStopExecution}
+              onViewPrompt={promptData.fetchPrompt}
+              onViewLogs={logFilesData.fetchLogFilesData}
+              onDeleteTask={handleDeleteTask}
+              onFollowUp={handleOpenFollowup}
+            />
+          </div>
         </div>
 
         {/* Context Strip - Dense metadata line */}
@@ -280,7 +275,6 @@ const TaskDetails: React.FC = () => {
             commitInfo={commitInfo}
             duration={totalDuration}
             tokenUsage={tokenUsage}
-            taskId={taskId}
           />
         </div>
 
@@ -293,9 +287,6 @@ const TaskDetails: React.FC = () => {
         {/* LEFT PANE (30%) - The Plan */}
         <div className="w-full lg:w-[30%] flex-shrink-0 overflow-y-auto scrollbar-stealth border-r border-gray-200">
           <div className="p-4 space-y-4">
-            {/* Task Header */}
-            <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
-
             {/* Compact Status Timeline */}
             <TaskStatusTable history={taskData.history} compact={true} />
 
