@@ -233,6 +233,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const { addToast } = useToast();
   const isNewMode = !draft;
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const draftContextConfig = (draft as any)?.context_config;
   const [config, setConfig] = useState<PlannerConfig>(() => ({
     prompt: draft?.initial_prompt ?? '',
     baseBranch: '',
@@ -240,8 +242,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     contextLevel: savedSettings.lastContextLevel,
     compress: false,
     files: draft?.attachments ?? [],
-    contextRepositories: [],
-    generationModel: null
+    contextRepositories: draftContextConfig?.contextRepositories ?? [],
+    generationModel: draftContextConfig?.generationModel ?? null
   }));
 
   const [isChangingRepo, setIsChangingRepo] = useState(false);
