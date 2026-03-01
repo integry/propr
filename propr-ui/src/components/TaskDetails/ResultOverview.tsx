@@ -57,8 +57,8 @@ const parseAnalysis = (analysis: AnalysisData | string | null): AnalysisData | n
   }
 };
 
-// Lighthouse-style geometric score pill
-const LighthouseScorePill: React.FC<{ score: number; label: string }> = ({ score, label }) => {
+// Geometric score pill (compact version for inline use)
+const GeometricScorePill: React.FC<{ score: number }> = ({ score }) => {
   let colorClasses: string;
   let ShapeIcon: typeof Triangle;
 
@@ -78,12 +78,25 @@ const LighthouseScorePill: React.FC<{ score: number; label: string }> = ({ score
 
   return (
     <div
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border ${colorClasses}`}
-      title={`${label}: ${score}/10`}
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded border ${colorClasses}`}
+      title={`Score: ${score}/10`}
     >
       <ShapeIcon size={10} fill="currentColor" />
       <span className="font-mono text-sm font-bold">{score}</span>
-      <span className="text-[10px] uppercase font-medium opacity-70">{label}</span>
+    </div>
+  );
+};
+
+// Primary Implementation Header with single score
+const ImplementationHeader: React.FC<{ score?: number }> = ({ score }) => {
+  return (
+    <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center gap-3">
+        <span className="text-[10px] uppercase font-bold text-slate-500 tracking-widest">
+          Implementation
+        </span>
+        {score !== undefined && <GeometricScorePill score={score} />}
+      </div>
     </div>
   );
 };
@@ -118,30 +131,19 @@ const CollapsibleSection: React.FC<{
   );
 };
 
-// Score Pills Row Component
-const ScorePillsRow: React.FC<{
-  critiqueScore?: number;
-  promptScore?: number;
-  efficiencyScore?: number;
-}> = ({ critiqueScore, promptScore, efficiencyScore }) => {
-  const hasScores = critiqueScore !== undefined || promptScore !== undefined || efficiencyScore !== undefined;
+// Section header with optional score pill (for inside accordion)
+const SectionHeaderWithScore: React.FC<{
+  title: string;
+  score?: number;
+}> = ({ title, score }) => (
+  <div className="flex items-center gap-2 mb-1">
+    <span className="text-[10px] uppercase font-bold text-slate-500 tracking-widest">
+      {title}
+    </span>
+    {score !== undefined && <GeometricScorePill score={score} />}
+  </div>
+);
 
-  if (!hasScores) return null;
-
-  return (
-    <div className="flex items-center gap-2 mb-3 flex-wrap">
-      {critiqueScore !== undefined && (
-        <LighthouseScorePill score={critiqueScore} label="Critique" />
-      )}
-      {promptScore !== undefined && (
-        <LighthouseScorePill score={promptScore} label="Prompt" />
-      )}
-      {efficiencyScore !== undefined && (
-        <LighthouseScorePill score={efficiencyScore} label="Efficiency" />
-      )}
-    </div>
-  );
-};
 
 // Summary Box Component
 const SummaryBox: React.FC<{
@@ -202,15 +204,17 @@ const DetailedAnalysisContent: React.FC<{
     )}
 
     {parsed.prompt_improvements && (
-      <AnalysisSection title="Prompt Improvements">
+      <div>
+        <SectionHeaderWithScore title="Prompt Improvements" score={parsed.prompt_quality_score} />
         <p className="text-gray-700">{parsed.prompt_improvements}</p>
-      </AnalysisSection>
+      </div>
     )}
 
     {parsed.efficiency_notes && (
-      <AnalysisSection title="Efficiency Notes">
+      <div>
+        <SectionHeaderWithScore title="Efficiency Notes" score={parsed.efficiency_score} />
         <p className="text-gray-700">{parsed.efficiency_notes}</p>
-      </AnalysisSection>
+      </div>
     )}
 
     {parsed.recommendations && parsed.recommendations.length > 0 && (
@@ -253,11 +257,7 @@ const AnalysisContent: React.FC<{
 
   return (
     <>
-      <ScorePillsRow
-        critiqueScore={parsed.implementation_critique_score}
-        promptScore={parsed.prompt_quality_score}
-        efficiencyScore={parsed.efficiency_score}
-      />
+      <ImplementationHeader score={parsed.implementation_critique_score} />
 
       {summaryContent && (
         <SummaryBox content={summaryContent} renderMarkdown={renderMarkdown} />
