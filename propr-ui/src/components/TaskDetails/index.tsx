@@ -6,8 +6,9 @@ import { renderMarkdown } from './renderMarkdown';
 import TaskStatusTable from './TaskStatusTable';
 import ExecutionRail from './ExecutionRail';
 import LiveFileChips from './LiveFileChips';
-import ThinkingLog from './ThinkingLog';
-import ExecutionEventLog from './ExecutionEventLog';
+import ThinkingLog, { detectThoughtType } from './ThinkingLog';
+import ExecutionEventLog, { getEventCategory } from './ExecutionEventLog';
+import RightPaneHeader, { ThoughtType, EventType } from './RightPaneHeader';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
 import FollowupModal from './FollowupModal';
@@ -53,6 +54,79 @@ const TaskDetails: React.FC = () => {
 
   // State for follow-up modal
   const [followupModalOpen, setFollowupModalOpen] = useState(false);
+
+  // State for right pane filters
+  const [activeThoughtFilters, setActiveThoughtFilters] = useState<Set<string>>(new Set());
+  const [activeEventFilters, setActiveEventFilters] = useState<Set<string>>(new Set());
+
+  // Toggle thought filter
+  const toggleThoughtFilter = useCallback((type: ThoughtType) => {
+    setActiveThoughtFilters(prev => {
+      const next = new Set(prev);
+      if (next.has(type)) {
+        next.delete(type);
+      } else {
+        next.add(type);
+      }
+      return next;
+    });
+  }, []);
+
+  // Toggle event filter
+  const toggleEventFilter = useCallback((type: EventType) => {
+    setActiveEventFilters(prev => {
+      const next = new Set(prev);
+      if (next.has(type)) {
+        next.delete(type);
+      } else {
+        next.add(type);
+      }
+      return next;
+    });
+  }, []);
+
+  // Clear all filters
+  const clearAllFilters = useCallback(() => {
+    setActiveThoughtFilters(new Set());
+    setActiveEventFilters(new Set());
+  }, []);
+
+  // Calculate thought type counts
+  const thoughtTypeCounts = useMemo(() => {
+    const counts: Record<ThoughtType, number> = {
+      analysis: 0,
+      action: 0,
+      search: 0,
+      summary: 0
+    };
+
+    thinkingLog.thinkingLogWithTimestamps.forEach(event => {
+      const type = detectThoughtType(event.content || '');
+      counts[type]++;
+    });
+
+    return counts;
+  }, [thinkingLog.thinkingLogWithTimestamps]);
+
+  // Calculate event type counts
+  const eventTypeCounts = useMemo(() => {
+    const counts: Record<EventType, number> = {
+      thought: 0,
+      read: 0,
+      write: 0,
+      bash: 0,
+      search: 0,
+      tool_use: 0,
+      tool_result: 0
+    };
+
+    taskData.liveDetails.events.forEach(event => {
+      const category = getEventCategory(event);
+      counts[category]++;
+    });
+
+    return counts;
+  }, [taskData.liveDetails.events]);
 
   // Calculate total duration from history
   const totalDuration = useMemo(() => {
@@ -311,36 +385,54 @@ const TaskDetails: React.FC = () => {
         <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
 
         {/* RIGHT PANE (70%) - The Execution */}
-        <div className="hidden lg:block flex-1 overflow-y-auto scrollbar-stealth">
-          <div className="p-4 space-y-4">
-            {/* Execution Analysis - only show when we have data or are loading */}
-            {(taskData.analysis || taskData.analysisLoading) && (
-              <DeepDiveAnalysis
-                analysis={taskData.analysis}
-                loading={taskData.analysisLoading}
-                renderMarkdown={renderMarkdown}
-                title="Execution Analysis"
-                colorScheme="gray"
-                emptyStateText="Automated analysis is pending..."
+        <div className="hidden lg:flex flex-1 flex-col overflow-hidden">
+          {/* Anchored Header with Filters */}
+          <RightPaneHeader
+            thoughtCount={thinkingLog.thinkingLogWithTimestamps.length}
+            thoughtTypeCounts={thoughtTypeCounts}
+            activeThoughtFilters={activeThoughtFilters}
+            onToggleThoughtFilter={toggleThoughtFilter}
+            eventCount={taskData.liveDetails.events.length}
+            eventTypeCounts={eventTypeCounts}
+            activeEventFilters={activeEventFilters}
+            onToggleEventFilter={toggleEventFilter}
+            onClearAllFilters={clearAllFilters}
+          />
+
+          {/* Scrollable Log Content */}
+          <div className="flex-1 overflow-y-auto scrollbar-stealth">
+            <div className="p-4 space-y-4">
+              {/* Execution Analysis - only show when we have data or are loading */}
+              {(taskData.analysis || taskData.analysisLoading) && (
+                <DeepDiveAnalysis
+                  analysis={taskData.analysis}
+                  loading={taskData.analysisLoading}
+                  renderMarkdown={renderMarkdown}
+                  title="Execution Analysis"
+                  colorScheme="gray"
+                  emptyStateText="Automated analysis is pending..."
+                />
+              )}
+
+              {/* Thinking Log - Terminal Style */}
+              <ThinkingLog
+                events={thinkingLog.thinkingLogWithTimestamps}
+                todos={taskData.liveDetails.todos}
+                highlightedTodoId={highlightedTodoId}
+                activeFilters={activeThoughtFilters}
               />
-            )}
 
-            {/* Thinking Log */}
-            <ThinkingLog
-              events={thinkingLog.thinkingLogWithTimestamps}
-              todos={taskData.liveDetails.todos}
-              highlightedTodoId={highlightedTodoId}
-            />
-
-            {/* Execution Event Log */}
-            <ExecutionEventLog
-              events={taskData.liveDetails.events}
-              collapsed={thinkingLog.eventsCollapsed}
-              onToggleCollapse={thinkingLog.toggleEventsCollapse}
-              lastThought={thinkingLog.lastThought}
-              isTaskActive={derivedData.isTaskActive}
-              taskInfo={taskData.taskInfo}
-            />
+              {/* Execution Event Log - Terminal Style */}
+              <ExecutionEventLog
+                events={taskData.liveDetails.events}
+                collapsed={thinkingLog.eventsCollapsed}
+                onToggleCollapse={thinkingLog.toggleEventsCollapse}
+                lastThought={thinkingLog.lastThought}
+                isTaskActive={derivedData.isTaskActive}
+                taskInfo={taskData.taskInfo}
+                activeFilters={activeEventFilters}
+              />
+            </div>
           </div>
         </div>
       </div>
