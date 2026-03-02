@@ -95,36 +95,40 @@ const SectionHeaderWithScore: React.FC<{
 );
 
 
-// Outcome Area Component
-const OutcomeArea: React.FC<{
+// Summary of Changes - Hero content at the top with "Outcome Gravity" styling
+const SummaryOfChanges: React.FC<{
   summaryContent?: string;
-  critiqueContent?: string;
   renderMarkdown: (text: string) => React.ReactNode;
-}> = ({ summaryContent, critiqueContent, renderMarkdown }) => {
-  if (!summaryContent && !critiqueContent) return null;
+}> = ({ summaryContent, renderMarkdown }) => {
+  if (!summaryContent) return null;
 
   return (
-    <div className="bg-slate-50 border-l-4 border-teal-600 px-4 py-3 mb-4 flex flex-col gap-6 overflow-hidden">
-      {summaryContent && (
-        <div>
-          <div className="text-[11px] uppercase font-bold text-slate-500 tracking-widest mb-1">
-            Summary of Changes
-          </div>
-          <div className="text-[13px] text-gray-700 leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
-            {renderMarkdown(summaryContent)}
-          </div>
-        </div>
-      )}
-      {critiqueContent && (
-        <div>
-          <div className="text-[11px] uppercase font-bold text-slate-500 tracking-widest mb-1">
-            Technical Review
-          </div>
-          <div className="text-[13px] text-gray-700 leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
-            {renderMarkdown(critiqueContent)}
-          </div>
-        </div>
-      )}
+    <div className="bg-slate-50 border-l-4 border-teal-600 px-4 py-3 overflow-hidden">
+      <div className="text-[11px] uppercase font-bold text-slate-500 tracking-widest mb-2">
+        Summary of Changes
+      </div>
+      <div className="text-[13px] text-gray-700 leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
+        {renderMarkdown(summaryContent)}
+      </div>
+    </div>
+  );
+};
+
+// Technical Review - Critique section below summary
+const TechnicalReview: React.FC<{
+  critiqueContent?: string;
+  renderMarkdown: (text: string) => React.ReactNode;
+}> = ({ critiqueContent, renderMarkdown }) => {
+  if (!critiqueContent) return null;
+
+  return (
+    <div className="px-4 py-3 overflow-hidden">
+      <div className="text-[11px] uppercase font-bold text-slate-500 tracking-widest mb-1">
+        Technical Review
+      </div>
+      <div className="text-[13px] text-gray-700 leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
+        {renderMarkdown(critiqueContent)}
+      </div>
     </div>
   );
 };
@@ -217,8 +221,14 @@ const AnalysisContent: React.FC<{
 
   return (
     <>
-      <OutcomeArea
+      {/* Summary of Changes - Hero content pinned to the top */}
+      <SummaryOfChanges
         summaryContent={summaryContent}
+        renderMarkdown={renderMarkdown}
+      />
+
+      {/* Technical Review - Below summary */}
+      <TechnicalReview
         critiqueContent={critiqueContent}
         renderMarkdown={renderMarkdown}
       />

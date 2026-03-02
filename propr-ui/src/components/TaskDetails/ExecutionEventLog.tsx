@@ -29,7 +29,7 @@ interface ExecutionEventLogProps {
 
 // Separate component for thought content rendering
 const ThoughtContent: React.FC<{ content: string }> = ({ content }) => (
-  <div className="text-xs text-slate-300 border-l-2 border-slate-700 pl-2 overflow-hidden">
+  <div className="text-xs text-zinc-400 border-l-2 border-zinc-700 pl-2 overflow-hidden">
     <MarkdownRenderer text={content} />
   </div>
 );
@@ -38,15 +38,15 @@ const ThoughtContent: React.FC<{ content: string }> = ({ content }) => (
 const ToolUseDetails: React.FC<{ event: LiveEvent; taskInfo: TaskInfo | null }> = ({ event, taskInfo }) => (
   <div className="text-xs space-y-1">
     {event.input?.file_path && (
-      <div className="flex items-center gap-1 text-slate-400">
+      <div className="flex items-center gap-1 text-zinc-400">
         <span className="text-[10px] uppercase">File:</span>
         <ClickablePath fullPath={event.input.file_path} taskInfo={taskInfo} />
       </div>
     )}
     {event.input?.command && (
       <div>
-        <span className="text-[10px] text-slate-500 uppercase">Command:</span>
-        <code className="block bg-slate-900 text-slate-300 p-1.5 rounded font-mono text-[11px] mt-0.5 overflow-x-auto border border-slate-800">
+        <span className="text-[10px] text-zinc-500 uppercase">Command:</span>
+        <code className="block bg-zinc-900 text-teal-400/90 p-1.5 rounded font-mono text-[11px] mt-0.5 overflow-x-auto border border-zinc-800">
           {event.input.command}
         </code>
       </div>
@@ -108,14 +108,14 @@ const EventHeader: React.FC<{
     <span className={`text-[11px] font-bold uppercase tracking-widest ${categoryDisplay.color}`}>
       {categoryDisplay.label}
     </span>
-    <span className="font-mono text-[10px] text-slate-500">
+    <span className="font-mono text-[10px] text-zinc-600">
       #{eventIndex + 1}
     </span>
-    <span className="text-[13px] text-slate-300 truncate flex-1">
+    <span className="text-[13px] text-zinc-300 truncate flex-1">
       {summary}
     </span>
     {expandable && (
-      <span className="text-slate-500">
+      <span className="text-zinc-500">
         {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
       </span>
     )}
@@ -254,20 +254,20 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   }
 
   return (
-    <div id="execution-event-log-section" className={`border-t border-slate-200 flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0 bg-white' : 'flex-1 min-h-0 bg-slate-950'}`}>
-      {/* VS Code Terminal Footer Bar - Solid full-width bar (bg-slate-100, 36px height) */}
+    <div id="execution-event-log-section" className={`border-t border-slate-200 flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0 bg-white' : 'flex-1 min-h-0 bg-zinc-950'}`}>
+      {/* VS Code Terminal Footer Bar - Solid full-width bar */}
       <div
         className={`flex items-center justify-between px-6 h-9 transition-all duration-300 cursor-pointer flex-shrink-0 border-t ${
           collapsed
             ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-500'
-            : 'bg-teal-600 text-white border-teal-600'
+            : 'bg-zinc-900 text-zinc-300 border-zinc-800'
         }`}
         onClick={onToggleCollapse}
       >
         <div className="flex items-center gap-2.5">
-          <span className={`font-mono text-sm font-bold ${collapsed ? 'text-slate-500' : 'text-teal-200'}`}>{'>_'}</span>
-          <span className={`font-mono text-[11px] font-bold uppercase tracking-wider ${collapsed ? 'text-slate-600' : 'text-white'}`}>
-            EXECUTION LOG ({events.length})
+          <span className={`font-mono text-sm font-bold ${collapsed ? 'text-slate-500' : 'text-teal-500'}`}>{'>_'}</span>
+          <span className={`font-mono text-[11px] font-bold uppercase tracking-wider ${collapsed ? 'text-slate-600' : 'text-zinc-400'}`}>
+            {collapsed ? 'EXECUTION LOG' : 'TERMINAL OUTPUT'} ({events.length})
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -276,22 +276,22 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
               {summaryMessage}
             </span>
           )}
-          <span className={collapsed ? 'text-slate-500' : 'text-white'}>
+          <span className={collapsed ? 'text-slate-500' : 'text-zinc-400'}>
             {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </span>
         </div>
       </div>
 
-      {/* Expandable Content - grows upward from bottom bar */}
+      {/* Expandable Content - VS Code Integrated Terminal Style */}
       <div
         className={`overflow-hidden transition-all duration-300 ease-in-out ${
           collapsed
             ? 'max-h-0 opacity-0'
-            : 'max-h-[9999px] opacity-100 flex-1 min-h-0 bg-slate-950 text-slate-300'
+            : 'max-h-[9999px] opacity-100 flex-1 min-h-0 bg-zinc-950 text-zinc-300'
         }`}
       >
-        <div className={`overflow-y-auto border-b border-slate-800 ${collapsed ? 'h-0' : 'h-full'}`}>
-          <div className="p-4 divide-y divide-slate-800">
+        <div className={`overflow-y-auto scrollbar-stealth-dark ${collapsed ? 'h-0' : 'h-full'}`}>
+          <div className="p-4 divide-y divide-zinc-800/50">
             {eventsWithContext.map(({ event, prevToolUse, originalIndex }) => (
               <TerminalEventItem
                 key={originalIndex}

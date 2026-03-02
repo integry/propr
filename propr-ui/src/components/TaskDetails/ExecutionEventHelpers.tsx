@@ -62,31 +62,31 @@ export const ToolIcon: React.FC<{ toolName: string }> = ({ toolName }) => {
   }
 };
 
-// Event icon component
+// Event icon component - VS Code integrated terminal aesthetic (desaturated colors)
 export const EventIcon: React.FC<{ event: LiveEvent }> = ({ event }) => {
   const iconType = getEventIconType(event);
 
   switch (iconType) {
     case 'thought':
-      return <Lightbulb className="h-3.5 w-3.5 text-blue-600" />;
+      return <Lightbulb className="h-3.5 w-3.5 text-sky-400/80" />;
     case 'tool':
       return <ToolIcon toolName={event.toolName || ''} />;
     case 'success':
-      return <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />;
+      return <CheckCircle2 className="h-3.5 w-3.5 text-teal-400/80" />;
     case 'error':
-      return <XCircle className="h-3.5 w-3.5 text-red-500" />;
+      return <XCircle className="h-3.5 w-3.5 text-red-400/90" />;
     default:
-      return <FileText className="h-3.5 w-3.5 text-gray-400" />;
+      return <FileText className="h-3.5 w-3.5 text-zinc-500" />;
   }
 };
 
-// Clickable path component
+// Clickable path component - Updated for dark terminal background
 export const ClickablePath: React.FC<{ fullPath: string; taskInfo: TaskInfo | null }> = ({ fullPath, taskInfo }) => {
   const cleanPath = formatDisplayPath(fullPath);
 
   if (!cleanPath || !cleanPath.includes('/') || cleanPath.startsWith('http')) {
     return (
-      <span className="font-mono text-xs flex items-center gap-1">
+      <span className="font-mono text-xs flex items-center gap-1 text-zinc-300">
         <FileIcon filePath={cleanPath} />
         {cleanPath}
       </span>
@@ -99,7 +99,7 @@ export const ClickablePath: React.FC<{ fullPath: string; taskInfo: TaskInfo | nu
 
   if (!REPO_BASE_URL) {
     return (
-      <span className="font-mono text-xs flex items-center gap-1">
+      <span className="font-mono text-xs flex items-center gap-1 text-zinc-300">
         <FileIcon filePath={cleanPath} />
         {cleanPath}
       </span>
@@ -111,7 +111,7 @@ export const ClickablePath: React.FC<{ fullPath: string; taskInfo: TaskInfo | nu
       href={`${REPO_BASE_URL}/${cleanPath}`}
       target="_blank"
       rel="noopener noreferrer"
-      className="font-mono text-xs text-blue-600 hover:text-blue-700 underline flex items-center gap-1"
+      className="font-mono text-xs text-sky-400/90 hover:text-sky-300 underline flex items-center gap-1"
     >
       <FileIcon filePath={cleanPath} />
       {cleanPath}
