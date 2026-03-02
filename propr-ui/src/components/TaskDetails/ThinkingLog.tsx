@@ -82,7 +82,7 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
           {/* Header line */}
           <div className="flex items-center gap-2 flex-wrap">
             {/* Category label - utility header style */}
-            <span className={`text-[10px] font-bold uppercase ${categoryInfo.textColor}`}>
+            <span className={`text-[11px] font-bold uppercase tracking-widest ${categoryInfo.textColor}`}>
               {categoryInfo.label}
             </span>
 
@@ -103,7 +103,7 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
 
           {/* Full content - shown directly */}
           {event.content && (
-            <div className="text-sm text-gray-700 mt-0.5 leading-relaxed break-words overflow-hidden">
+            <div className="text-[13px] text-gray-700 mt-0.5 leading-relaxed break-words overflow-hidden">
               {renderMarkdown(event.content)}
             </div>
           )}

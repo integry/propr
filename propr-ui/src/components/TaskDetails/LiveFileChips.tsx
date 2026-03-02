@@ -180,7 +180,7 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
               <button
                 key={file.path}
                 onClick={() => handleSelectFile(file.path)}
-                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded border text-xs font-mono transition-colors cursor-pointer ${getChipBgClass(file.status, isSelected)}`}
+                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded border text-[11px] font-mono transition-colors cursor-pointer ${getChipBgClass(file.status, isSelected)}`}
                 title={file.path}
               >
                 {getStatusIndicator(file.status)}

@@ -157,7 +157,7 @@ const TaskDetails: React.FC = () => {
   return (
     <div className="h-full flex flex-col bg-white">
       {/* Sticky Header Shell - Never scrolls */}
-      <header className="flex-shrink-0 sticky top-0 z-20 bg-white border-b border-gray-200">
+      <header className="flex-shrink-0 sticky top-0 z-20 bg-white border-b border-slate-200">
         {/* Task Header with Actions */}
         <div className="px-4 sm:px-6 py-3 flex items-start justify-between gap-4">
           {/* Left: Task Header */}
@@ -182,8 +182,8 @@ const TaskDetails: React.FC = () => {
           </div>
         </div>
 
-        {/* Context Strip - Dense metadata line with continuous border */}
-        <div className="px-4 sm:px-6 border-b border-gray-200">
+        {/* Context Strip - Dense metadata line with continuous 1px border */}
+        <div className="px-4 sm:px-6 border-b border-slate-200">
           <ContextStrip
             taskInfo={taskData.taskInfo}
             modelName={derivedData.modelName}
@@ -200,12 +200,18 @@ const TaskDetails: React.FC = () => {
 
       {/* Main Content Area - Anchored Shell with 30/70 Split */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        {/* Horizontal Header Row - TIMELINE label */}
-        <div className="flex-shrink-0 flex border-b border-gray-200">
+        {/* Horizontal Header Row - TIMELINE and IMPLEMENTATION aligned on same baseline */}
+        <div className="flex-shrink-0 flex border-b border-slate-200">
           {/* Left Pane Header (30%) */}
-          <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-end border-r border-gray-200">
-            <div className="py-2 text-[11px] font-bold uppercase tracking-widest text-slate-500">
+          <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-center border-r border-slate-200">
+            <div className="py-2.5 text-[11px] font-bold uppercase tracking-widest text-slate-500">
               TIMELINE
+            </div>
+          </div>
+          {/* Right Pane Header (70%) - IMPLEMENTATION label aligned with TIMELINE */}
+          <div className="hidden lg:flex flex-1 px-4 items-center">
+            <div className="py-2.5 text-[11px] font-bold uppercase tracking-widest text-slate-500">
+              IMPLEMENTATION
             </div>
           </div>
         </div>

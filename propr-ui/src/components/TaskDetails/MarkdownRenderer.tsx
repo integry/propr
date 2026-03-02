@@ -191,7 +191,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
               );
             }
             return (
-              <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300 text-gray-800 break-all" {...props}>
+              <code className="bg-slate-100 px-1.5 py-0.5 rounded text-[13px] font-mono border border-slate-200 text-slate-800 break-all whitespace-nowrap" {...props}>
                 {children}
               </code>
             );

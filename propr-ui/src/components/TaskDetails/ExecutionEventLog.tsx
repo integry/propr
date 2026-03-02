@@ -105,13 +105,13 @@ const EventHeader: React.FC<{
     className={`flex items-center gap-2 flex-wrap ${expandable ? 'cursor-pointer' : ''}`}
     onClick={onToggle}
   >
-    <span className={`text-[10px] font-bold uppercase ${categoryDisplay.color}`}>
+    <span className={`text-[11px] font-bold uppercase tracking-widest ${categoryDisplay.color}`}>
       {categoryDisplay.label}
     </span>
     <span className="font-mono text-[10px] text-gray-400">
       #{eventIndex + 1}
     </span>
-    <span className="text-xs text-gray-600 truncate flex-1">
+    <span className="text-[13px] text-gray-600 truncate flex-1">
       {summary}
     </span>
     {expandable && (
@@ -255,18 +255,18 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
 
   return (
     <div id="execution-event-log-section" className={`border-t border-slate-200 bg-white flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
-      {/* VS Code Terminal Footer Bar - Fixed 36px height, bg-slate-50, monospace bold */}
+      {/* VS Code Terminal Footer Bar - Solid full-width bar (bg-slate-100, 36px height) */}
       <div
-        className={`flex items-center justify-between px-6 h-9 transition-all duration-300 cursor-pointer flex-shrink-0 border-y border-slate-200 ${
+        className={`flex items-center justify-between px-6 h-9 transition-all duration-300 cursor-pointer flex-shrink-0 border-t border-slate-200 ${
           collapsed
-            ? 'bg-slate-50 hover:bg-slate-100'
-            : 'bg-teal-50 hover:bg-teal-100 border-t-2 border-t-teal-500'
+            ? 'bg-slate-100 hover:bg-slate-200'
+            : 'bg-slate-100 hover:bg-slate-200'
         }`}
         onClick={onToggleCollapse}
       >
         <div className="flex items-center gap-2.5">
-          <span className={`font-mono text-sm font-bold ${collapsed ? 'text-slate-500' : 'text-teal-600'}`}>{'>_'}</span>
-          <span className={`font-mono text-[11px] font-bold uppercase tracking-wider ${collapsed ? 'text-slate-700' : 'text-teal-700'}`}>
+          <span className="font-mono text-sm font-bold text-slate-500">{'>_'}</span>
+          <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-slate-600">
             EXECUTION LOG ({events.length})
           </span>
         </div>
@@ -276,7 +276,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
               {summaryMessage}
             </span>
           )}
-          <span className={collapsed ? 'text-slate-500' : 'text-teal-600'}>
+          <span className="text-slate-500">
             {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </span>
         </div>
