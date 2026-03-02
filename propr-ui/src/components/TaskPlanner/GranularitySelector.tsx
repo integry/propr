@@ -22,8 +22,8 @@ const GRANULARITY_OPTIONS: Array<{
   {
     id: 'granular',
     label: 'Granular',
-    description: 'Create a separate issue for every modified file.',
-    estimatedIssues: '5-10 issues'
+    description: 'Break down into many smaller, focused issues.',
+    estimatedIssues: '7-15+ issues'
   }
 ];
 

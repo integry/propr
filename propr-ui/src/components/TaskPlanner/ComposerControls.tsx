@@ -5,7 +5,7 @@ import { Granularity } from '../../api/proprApi';
 // Helper to estimate issue count based on granularity
 // Single: always exactly 1 issue
 // Balanced: 3-5 issues
-// Granular: 5-10 issues
+// Granular: 7-15+ issues
 const estimateIssueCount = (granularity: Granularity): string => {
   switch (granularity) {
     case 'single':
@@ -13,7 +13,7 @@ const estimateIssueCount = (granularity: Granularity): string => {
     case 'balanced':
       return '3-5';
     case 'granular':
-      return '5-10';
+      return '7-15+';
     default:
       return '1';
   }
