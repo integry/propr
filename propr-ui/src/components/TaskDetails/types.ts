@@ -99,3 +99,10 @@ export interface AnalysisData {
   content?: string;
   error?: string;
 }
+
+export interface ParsedAnalysis {
+  recommendations?: string[];
+  error_analysis?: string;
+  implementation_critique?: string;
+  efficiency_notes?: string;
+}

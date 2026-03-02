@@ -8,7 +8,7 @@ import LiveFileChips from './LiveFileChips';
 import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
 import ResultOverview from './ResultOverview';
-import { detectThoughtType, getEventCategory } from './utils';
+import { detectThoughtType, getEventCategory, generateFollowupContent } from './utils';
 import RightPaneHeader, { ThoughtType, EventType } from './RightPaneHeader';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
@@ -184,96 +184,6 @@ const TaskDetails: React.FC = () => {
 
     return historyWithTokens?.metadata?.tokenUsage;
   }, [taskData.liveDetails, taskData.history]);
-
-  // Helper to parse analysis data (same logic as DeepDiveAnalysis)
-  const parseAnalysisData = useCallback((rawAnalysis: unknown): {
-    recommendations?: string[];
-    error_analysis?: string;
-    implementation_critique?: string;
-    efficiency_notes?: string;
-  } | null => {
-    if (!rawAnalysis) return null;
-
-    // First, parse if it's a string (might be double-encoded JSON)
-    let parsed = rawAnalysis;
-    if (typeof parsed === 'string') {
-      try {
-        parsed = JSON.parse(parsed);
-        // Handle double-encoded JSON
-        if (typeof parsed === 'string') {
-          parsed = JSON.parse(parsed);
-        }
-      } catch {
-        return null;
-      }
-    }
-
-    // Check if we have a 'report' field that contains the actual data
-    if (typeof parsed === 'object' && parsed !== null && 'report' in parsed) {
-      const analysisObj = parsed as { report?: string };
-      if (analysisObj.report) {
-        try {
-          let reportText = analysisObj.report;
-          // Extract JSON from markdown code blocks if present
-          const jsonMatch = reportText.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
-          if (jsonMatch) {
-            reportText = jsonMatch[1].trim();
-          }
-          return JSON.parse(reportText);
-        } catch {
-          return null;
-        }
-      }
-    }
-
-    return parsed as {
-      recommendations?: string[];
-      error_analysis?: string;
-      implementation_critique?: string;
-      efficiency_notes?: string;
-    };
-  }, []);
-
-  // Generate initial content for follow-up based on analysis data
-  const generateFollowupContent = useCallback(() => {
-    const analysis = parseAnalysisData(taskData.analysis);
-
-    if (!analysis) {
-      return 'Please address the following based on the previous task execution:\n\n';
-    }
-
-    const parts: string[] = [];
-
-    // Check if task failed
-    const latestState = taskData.history?.[taskData.history.length - 1]?.state?.toUpperCase();
-    const isFailed = latestState === 'FAILED';
-
-    if (isFailed && analysis.error_analysis) {
-      parts.push('## Issue to Fix\n');
-      parts.push(analysis.error_analysis);
-      parts.push('\n');
-    }
-
-    if (analysis.recommendations && analysis.recommendations.length > 0) {
-      parts.push('## Recommendations to Address\n');
-      analysis.recommendations.forEach((rec, idx) => {
-        parts.push(`${idx + 1}. ${rec}`);
-      });
-      parts.push('\n');
-    }
-
-    if (analysis.implementation_critique) {
-      parts.push('## Implementation Feedback\n');
-      parts.push(analysis.implementation_critique);
-      parts.push('\n');
-    }
-
-    if (parts.length === 0) {
-      return 'Please address the following based on the previous task execution:\n\n';
-    }
-
-    return parts.join('\n');
-  }, [taskData.analysis, taskData.history, parseAnalysisData]);
 
   // Handle follow-up submission
   const handleFollowupSubmit = useCallback(async (body: string) => {
@@ -493,7 +403,7 @@ const TaskDetails: React.FC = () => {
         isOpen={followupModalOpen}
         onClose={() => setFollowupModalOpen(false)}
         onSubmit={handleFollowupSubmit}
-        initialContent={generateFollowupContent()}
+        initialContent={generateFollowupContent(taskData.analysis, taskData.history)}
         taskInfo={taskData.taskInfo}
       />
     </div>

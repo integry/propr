@@ -1,4 +1,4 @@
-import { LiveEvent } from './types';
+import { LiveEvent, ParsedAnalysis, HistoryItem } from './types';
 
 export const WORKSPACE_PREFIXES = [
   '/home/node/workspace/',
@@ -110,4 +110,81 @@ export const getEventCategory = (event: LiveEvent): EventCategory => {
   if (toolName === 'glob' || toolName === 'grep') return 'search';
 
   return 'tool_use';
+};
+
+// Parse analysis data from raw analysis object (handles double-encoded JSON)
+export const parseAnalysisData = (rawAnalysis: unknown): ParsedAnalysis | null => {
+  if (!rawAnalysis) return null;
+
+  let parsed = rawAnalysis;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+      if (typeof parsed === 'string') {
+        parsed = JSON.parse(parsed);
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  if (typeof parsed === 'object' && parsed !== null && 'report' in parsed) {
+    const analysisObj = parsed as { report?: string };
+    if (analysisObj.report) {
+      try {
+        let reportText = analysisObj.report;
+        const jsonMatch = reportText.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+        if (jsonMatch) {
+          reportText = jsonMatch[1].trim();
+        }
+        return JSON.parse(reportText);
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  return parsed as ParsedAnalysis;
+};
+
+// Generate initial content for follow-up modal based on analysis data
+export const generateFollowupContent = (
+  analysis: unknown,
+  history: HistoryItem[] | null | undefined
+): string => {
+  const parsedAnalysis = parseAnalysisData(analysis);
+
+  if (!parsedAnalysis) {
+    return 'Please address the following based on the previous task execution:\n\n';
+  }
+
+  const parts: string[] = [];
+  const latestState = history?.[history.length - 1]?.state?.toUpperCase();
+  const isFailed = latestState === 'FAILED';
+
+  if (isFailed && parsedAnalysis.error_analysis) {
+    parts.push('## Issue to Fix\n');
+    parts.push(parsedAnalysis.error_analysis);
+    parts.push('\n');
+  }
+
+  if (parsedAnalysis.recommendations && parsedAnalysis.recommendations.length > 0) {
+    parts.push('## Recommendations to Address\n');
+    parsedAnalysis.recommendations.forEach((rec, idx) => {
+      parts.push(`${idx + 1}. ${rec}`);
+    });
+    parts.push('\n');
+  }
+
+  if (parsedAnalysis.implementation_critique) {
+    parts.push('## Implementation Feedback\n');
+    parts.push(parsedAnalysis.implementation_critique);
+    parts.push('\n');
+  }
+
+  if (parts.length === 0) {
+    return 'Please address the following based on the previous task execution:\n\n';
+  }
+
+  return parts.join('\n');
 };
