@@ -133,18 +133,18 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
       data-todo-id={todoId}
       data-todo-content={title}
     >
-      {/* Group Header - terminal style */}
-      <div className="flex items-center gap-2 py-1 border-b border-gray-100 mb-1">
+      {/* Group Header - todo subheader style */}
+      <div className="flex items-center gap-2 py-2 px-2 bg-slate-50 border-l-2 border-slate-300 mb-2 mt-3 first:mt-0">
         {isCompleted ? (
-          <CheckCircle2 className="h-3 w-3 text-slate-400" />
+          <CheckCircle2 className="h-3.5 w-3.5 text-slate-500 flex-shrink-0" />
         ) : (
-          <div className="h-3 w-3 rounded-full border border-gray-300 bg-gray-50" />
+          <div className="h-3.5 w-3.5 rounded-full border-2 border-blue-400 bg-blue-50 flex-shrink-0" />
         )}
-        <span className={`text-xs font-medium ${isCompleted ? 'text-slate-600' : 'text-gray-600'}`}>
+        <span className={`text-[13px] font-semibold ${isCompleted ? 'text-slate-700' : 'text-slate-800'}`}>
           {title}
         </span>
-        <span className="text-[10px] text-gray-400">
-          ({events.length})
+        <span className="text-[10px] text-slate-400 font-medium ml-auto flex-shrink-0">
+          {events.length} {events.length === 1 ? 'entry' : 'entries'}
         </span>
       </div>
 
