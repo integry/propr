@@ -389,55 +389,64 @@ const TaskDetails: React.FC = () => {
         <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
 
         {/* RIGHT PANE (70%) - The Execution */}
-        <div className="hidden lg:flex flex-1 flex-col overflow-hidden">
-          {/* Pinned Result Overview - Scores + Summary + Collapsible Analysis */}
-          {(taskData.analysis || taskData.analysisLoading) && (
-            <ResultOverview
-              analysis={taskData.analysis}
-              loading={taskData.analysisLoading}
-              renderMarkdown={renderMarkdown}
-              totalThoughts={thinkingLog.thinkingLogWithTimestamps.length}
-            />
-          )}
+        <div className="hidden lg:flex flex-1 flex-col min-h-0">
+          {/* Scrollable Content Area - Everything except footer */}
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+            {/* Pinned Result Overview - Scores + Summary + Collapsible Analysis */}
+            {(taskData.analysis || taskData.analysisLoading) && (
+              <div className="flex-shrink-0">
+                <ResultOverview
+                  analysis={taskData.analysis}
+                  loading={taskData.analysisLoading}
+                  renderMarkdown={renderMarkdown}
+                  totalThoughts={thinkingLog.thinkingLogWithTimestamps.length}
+                />
+              </div>
+            )}
 
-          {/* Anchored Header with Tabs and Filters */}
-          <RightPaneHeader
-            thoughtCount={thinkingLog.thinkingLogWithTimestamps.length}
-            thoughtTypeCounts={thoughtTypeCounts}
-            activeThoughtFilters={activeThoughtFilters}
-            onToggleThoughtFilter={toggleThoughtFilter}
-            eventCount={taskData.liveDetails.events.length}
-            eventTypeCounts={eventTypeCounts}
-            activeEventFilters={activeEventFilters}
-            onToggleEventFilter={toggleEventFilter}
-            onClearAllFilters={clearAllFilters}
-            activeTab={activeRightPaneTab}
-            onTabChange={setActiveRightPaneTab}
-          />
-
-          {/* Scrollable Log Content - Thinking Log starts immediately */}
-          <div className="flex-1 overflow-y-auto scrollbar-stealth">
-            <div className="p-4">
-              {/* Thinking Log - Terminal Style */}
-              <ThinkingLog
-                events={thinkingLog.thinkingLogWithTimestamps}
-                todos={taskData.liveDetails.todos}
-                highlightedTodoId={highlightedTodoId}
-                activeFilters={activeThoughtFilters}
+            {/* Anchored Header with Tabs and Filters */}
+            <div className="flex-shrink-0">
+              <RightPaneHeader
+                thoughtCount={thinkingLog.thinkingLogWithTimestamps.length}
+                thoughtTypeCounts={thoughtTypeCounts}
+                activeThoughtFilters={activeThoughtFilters}
+                onToggleThoughtFilter={toggleThoughtFilter}
+                eventCount={taskData.liveDetails.events.length}
+                eventTypeCounts={eventTypeCounts}
+                activeEventFilters={activeEventFilters}
+                onToggleEventFilter={toggleEventFilter}
+                onClearAllFilters={clearAllFilters}
+                activeTab={activeRightPaneTab}
+                onTabChange={setActiveRightPaneTab}
               />
+            </div>
+
+            {/* Scrollable Log Content - Thinking Log starts immediately */}
+            <div className="flex-1 overflow-y-auto scrollbar-stealth min-h-0">
+              <div className="p-4">
+                {/* Thinking Log - Terminal Style */}
+                <ThinkingLog
+                  events={thinkingLog.thinkingLogWithTimestamps}
+                  todos={taskData.liveDetails.todos}
+                  highlightedTodoId={highlightedTodoId}
+                  activeFilters={activeThoughtFilters}
+                />
+              </div>
             </div>
           </div>
 
-          {/* VS Code Terminal Footer - Execution Event Log */}
-          <ExecutionEventLog
-            events={taskData.liveDetails.events}
-            collapsed={thinkingLog.eventsCollapsed}
-            onToggleCollapse={thinkingLog.toggleEventsCollapse}
-            lastThought={thinkingLog.lastThought}
-            isTaskActive={derivedData.isTaskActive}
-            taskInfo={taskData.taskInfo}
-            activeFilters={activeEventFilters}
-          />
+          {/* VS Code Terminal Footer - Execution Event Log - Always visible at bottom */}
+          <div className="flex-shrink-0">
+            <ExecutionEventLog
+              events={taskData.liveDetails.events}
+              collapsed={thinkingLog.eventsCollapsed}
+              onToggleCollapse={thinkingLog.toggleEventsCollapse}
+              lastThought={thinkingLog.lastThought}
+              isTaskActive={derivedData.isTaskActive}
+              taskInfo={taskData.taskInfo}
+              activeFilters={activeEventFilters}
+            />
+          </div>
         </div>
       </div>
 
