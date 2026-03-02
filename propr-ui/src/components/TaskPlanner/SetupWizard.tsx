@@ -256,15 +256,25 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
 
   // Sync contextRepositories and generationModel from draft when it loads
   // (useState initializer may run before draft is available)
+  // Only update when values actually differ to prevent infinite update loops
   useEffect(() => {
     if (!draft) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const draftConfig = (draft as any)?.context_config;
     if (draftConfig?.contextRepositories && draftConfig.contextRepositories.length > 0) {
-      setConfig(prev => ({ ...prev, contextRepositories: draftConfig.contextRepositories }));
+      setConfig(prev => {
+        // Compare by serializing to JSON to detect actual changes
+        const currentJson = JSON.stringify(prev.contextRepositories);
+        const newJson = JSON.stringify(draftConfig.contextRepositories);
+        if (currentJson === newJson) return prev;
+        return { ...prev, contextRepositories: draftConfig.contextRepositories };
+      });
     }
     if (draftConfig?.generationModel) {
-      setConfig(prev => ({ ...prev, generationModel: draftConfig.generationModel }));
+      setConfig(prev => {
+        if (prev.generationModel === draftConfig.generationModel) return prev;
+        return { ...prev, generationModel: draftConfig.generationModel };
+      });
     }
   }, [draft]);
 

@@ -91,8 +91,15 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
         if (STATUS_CONFIG[issue.status]?.isActive) hasActive = true;
       }
     });
+
+    // When autoMerge or useEpic is enabled and there are pending issues,
+    // keep polling so the UI can detect when the next pending issue transitions to processing
+    if ((autoMerge || useEpic) && pending > 0) {
+      hasActive = true;
+    }
+
     return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive, firstPendingIssueNumber: firstPending, sortedIssues: sorted };
-  }, [issuesWithDefaults]);
+  }, [issuesWithDefaults, autoMerge, useEpic]);
 
   // Get unmerged issues that come before a given issue number (for dependency warning)
   const getUnmergedIssuesBefore = useCallback((issueNumber: number) => {
