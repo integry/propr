@@ -6,7 +6,6 @@ interface ResultOverviewProps {
   analysis: DetailedAnalysisData | string | null;
   loading: boolean;
   renderMarkdown: (text: string) => React.ReactNode;
-  totalThoughts?: number;
   detailedAnalysisExpanded?: boolean;
   onDetailedAnalysisToggle?: (expanded: boolean) => void;
 }
@@ -41,10 +40,9 @@ export const GeometricScorePill: React.FC<{ score: number }> = ({ score }) => {
 // Collapsible accordion section - simple chevron toggle
 const CollapsibleSection: React.FC<{
   children: React.ReactNode;
-  defaultExpanded?: boolean;
   isExpanded?: boolean;
   onToggle?: (expanded: boolean) => void;
-}> = ({ children, defaultExpanded = false, isExpanded: controlledExpanded, onToggle }) => {
+}> = ({ children, isExpanded: controlledExpanded, onToggle }) => {
   // Always start collapsed by default for Implementation Review Details
   const [internalExpanded, setInternalExpanded] = useState(false);
 
@@ -210,26 +208,23 @@ const LoadingState: React.FC = () => (
 const AnalysisContent: React.FC<{
   parsed: DetailedAnalysisData;
   renderMarkdown: (text: string) => React.ReactNode;
-  totalThoughts: number;
   detailedAnalysisExpanded?: boolean;
   onDetailedAnalysisToggle?: (expanded: boolean) => void;
-}> = ({ parsed, renderMarkdown, totalThoughts, detailedAnalysisExpanded, onDetailedAnalysisToggle }) => {
+}> = ({ parsed, renderMarkdown, detailedAnalysisExpanded, onDetailedAnalysisToggle }) => {
   const summaryContent = parsed.summary_of_changes || parsed.summary;
   const critiqueContent = parsed.implementation_critique;
-  const shouldCollapseByDefault = totalThoughts > 10;
   const hasDetailedContent = hasDetailedAnalysisContent(parsed);
 
   return (
     <>
-      <OutcomeArea 
-        summaryContent={summaryContent} 
-        critiqueContent={critiqueContent} 
-        renderMarkdown={renderMarkdown} 
+      <OutcomeArea
+        summaryContent={summaryContent}
+        critiqueContent={critiqueContent}
+        renderMarkdown={renderMarkdown}
       />
 
       {hasDetailedContent && (
         <CollapsibleSection
-          defaultExpanded={!shouldCollapseByDefault}
           isExpanded={detailedAnalysisExpanded}
           onToggle={onDetailedAnalysisToggle}
         >
@@ -244,7 +239,6 @@ const ResultOverview: React.FC<ResultOverviewProps> = ({
   analysis,
   loading,
   renderMarkdown,
-  totalThoughts = 0,
   detailedAnalysisExpanded,
   onDetailedAnalysisToggle,
 }) => {
@@ -260,7 +254,6 @@ const ResultOverview: React.FC<ResultOverviewProps> = ({
           <AnalysisContent
             parsed={parsed}
             renderMarkdown={renderMarkdown}
-            totalThoughts={totalThoughts}
             detailedAnalysisExpanded={detailedAnalysisExpanded}
             onDetailedAnalysisToggle={onDetailedAnalysisToggle}
           />

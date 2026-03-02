@@ -263,7 +263,6 @@ const TaskDetails: React.FC = () => {
                     analysis={taskData.analysis}
                     loading={taskData.analysisLoading}
                     renderMarkdown={renderMarkdown}
-                    totalThoughts={thinkingLog.thinkingLogWithTimestamps.length}
                     detailedAnalysisExpanded={detailedAnalysisExpanded}
                     onDetailedAnalysisToggle={setDetailedAnalysisExpanded}
                   />
