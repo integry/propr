@@ -30,7 +30,7 @@ interface ExecutionEventLogProps {
 // Separate component for thought content rendering
 const ThoughtContent: React.FC<{ content: string }> = ({ content }) => (
   <div className="text-xs text-zinc-200 pl-2 overflow-hidden font-mono">
-    <MarkdownRenderer text={content} />
+    <MarkdownRenderer text={content} darkMode={true} />
   </div>
 );
 

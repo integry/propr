@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import { renderMarkdown } from './renderMarkdown';
@@ -130,6 +130,32 @@ const TaskDetails: React.FC = () => {
   }, []);
 
   const parsedAnalysis = useMemo(() => parseAnalysis(taskData.analysis), [taskData.analysis]);
+
+  // Ref for execution log section to detect clicks outside
+  const executionLogRef = useRef<HTMLDivElement>(null);
+
+  // Click-outside-to-collapse handler for Execution Log
+  useEffect(() => {
+    if (thinkingLog.eventsCollapsed) return; // Only listen when expanded
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      // Check if click is outside the execution log section
+      if (executionLogRef.current && !executionLogRef.current.contains(target)) {
+        thinkingLog.collapseEvents();
+      }
+    };
+
+    // Add listener after a small delay to prevent immediate collapse from the click that opened it
+    const timeoutId = setTimeout(() => {
+      document.addEventListener('mousedown', handleClickOutside);
+    }, 100);
+
+    return () => {
+      clearTimeout(timeoutId);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [thinkingLog.eventsCollapsed, thinkingLog.collapseEvents]);
 
   if (taskData.loading) {
     return (
@@ -277,7 +303,10 @@ const TaskDetails: React.FC = () => {
             </div>
 
             {/* VS Code Terminal Footer - Execution Event Log - Fills entire height when expanded */}
-            <div className={`transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}`}>
+            <div
+              ref={executionLogRef}
+              className={`transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}`}
+            >
               <ExecutionEventLog
                 events={taskData.liveDetails.events}
                 collapsed={thinkingLog.eventsCollapsed}

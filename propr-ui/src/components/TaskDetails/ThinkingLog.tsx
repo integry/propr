@@ -22,32 +22,33 @@ interface ThinkingLogProps {
   highlightedTodoId?: string | null;
 }
 
-// Get category display info for terminal-style output
+// Get category display info for gutter-style output
+// Icons use low-saturation colors (60% opacity), labels use slate-400
 const getCategoryInfo = (type: 'analysis' | 'action' | 'summary' | 'search') => {
   switch (type) {
     case 'summary':
       return {
         label: 'SUMMARY',
-        textColor: 'text-amber-600',
+        iconColor: 'text-amber-500/60',
         Icon: CheckCircle2
       };
     case 'action':
       return {
         label: 'ACTION',
-        textColor: 'text-green-600',
+        iconColor: 'text-emerald-500/60',
         Icon: Wrench
       };
     case 'search':
       return {
         label: 'SEARCH',
-        textColor: 'text-purple-600',
+        iconColor: 'text-purple-500/60',
         Icon: Search
       };
     case 'analysis':
     default:
       return {
         label: 'ANALYSIS',
-        textColor: 'text-blue-600',
+        iconColor: 'text-blue-500/60',
         Icon: Lightbulb
       };
   }
@@ -66,44 +67,39 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
 
   return (
     <div
-      className={`py-1.5 transition-all duration-200 ${
+      className={`py-3 transition-all duration-200 border-b border-slate-50 last:border-b-0 ${
         isHighlighted ? 'bg-blue-50/50' : ''
       }`}
     >
-      {/* Single-line header: [Icon] [CATEGORY] [Timestamp] [Summary] */}
-      <div className="flex items-start gap-2">
-        {/* Icon in the gutter */}
-        <div className="flex-shrink-0 w-4 pt-0.5">
-          <Icon className={`h-3.5 w-3.5 ${categoryInfo.textColor}`} />
-        </div>
-
-        {/* Content area */}
-        <div className="flex-1 min-w-0 overflow-hidden">
-          {/* Header line */}
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Category label - utility header style */}
-            <span className={`text-[11px] font-bold uppercase tracking-widest ${categoryInfo.textColor}`}>
+      {/* Gutter Layout: Two-Column Row */}
+      <div className="flex items-start gap-3">
+        {/* Left Gutter (100px) - Icon, Category Label, Timestamp */}
+        <div className="flex-shrink-0 w-[100px] flex flex-col items-start">
+          {/* Icon + Category Label Row */}
+          <div className="flex items-center gap-1.5">
+            <Icon className={`h-3 w-3 ${categoryInfo.iconColor}`} />
+            <span className="text-[10px] font-mono font-bold uppercase tracking-tighter text-slate-400">
               {categoryInfo.label}
             </span>
-
-            {/* Timestamp - monospace */}
-            {event.relativeTime && (
-              <span className="font-mono text-[10px] text-gray-400">
-                {event.relativeTime}
-              </span>
-            )}
-
-            {/* Todo context if available */}
-            {todoContext && (
-              <span className="text-[10px] text-gray-400 truncate">
-                → {todoContext}
-              </span>
-            )}
           </div>
+          {/* Timestamp below category label */}
+          {event.relativeTime && (
+            <span className="font-mono text-[9px] text-slate-300 mt-0.5 ml-[18px]">
+              {event.relativeTime}
+            </span>
+          )}
+          {/* Todo context if available */}
+          {todoContext && (
+            <span className="text-[9px] text-slate-300 truncate mt-0.5 ml-[18px]">
+              → {todoContext}
+            </span>
+          )}
+        </div>
 
-          {/* Full content - shown directly */}
+        {/* Right Pane - Content */}
+        <div className="flex-1 min-w-0 overflow-hidden">
           {event.content && (
-            <div className="text-[13px] text-gray-700 mt-0.5 leading-relaxed break-words overflow-hidden">
+            <div className="text-sm text-slate-700 leading-relaxed break-words overflow-hidden">
               {renderMarkdown(event.content)}
             </div>
           )}
@@ -133,23 +129,23 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
       data-todo-id={todoId}
       data-todo-content={title}
     >
-      {/* Group Header - todo subheader style */}
-      <div className="flex items-center gap-2 py-2 px-2 bg-slate-50 border-l-2 border-slate-300 mb-2 mt-3 first:mt-0">
+      {/* Group Header - todo subheader style with better prominence */}
+      <div className="flex items-center gap-2 py-2.5 px-3 bg-slate-50/80 border-l-2 border-slate-400 mb-1 mt-4 first:mt-0">
         {isCompleted ? (
-          <CheckCircle2 className="h-3.5 w-3.5 text-slate-500 flex-shrink-0" />
+          <CheckCircle2 className="h-4 w-4 text-slate-500 flex-shrink-0" />
         ) : (
-          <div className="h-3.5 w-3.5 rounded-full border-2 border-blue-400 bg-blue-50 flex-shrink-0" />
+          <div className="h-4 w-4 rounded-full border-2 border-blue-400 bg-blue-50 flex-shrink-0" />
         )}
-        <span className={`text-[13px] font-semibold ${isCompleted ? 'text-slate-700' : 'text-slate-800'}`}>
+        <span className={`text-sm font-semibold ${isCompleted ? 'text-slate-600' : 'text-slate-700'}`}>
           {title}
         </span>
-        <span className="text-[10px] text-slate-400 font-medium ml-auto flex-shrink-0">
-          {events.length} {events.length === 1 ? 'entry' : 'entries'}
+        <span className="text-[10px] text-slate-400 font-mono ml-auto flex-shrink-0">
+          ({events.length})
         </span>
       </div>
 
-      {/* Log entries */}
-      <div className="space-y-0 divide-y divide-gray-50">
+      {/* Log entries - gutter style layout */}
+      <div>
         {events.map((event, index) => (
           <TerminalLogEntry
             key={index}
