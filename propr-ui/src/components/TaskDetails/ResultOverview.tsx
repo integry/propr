@@ -1,63 +1,15 @@
 import React, { useState } from 'react';
 import { ChevronDown, ChevronRight, Circle } from 'lucide-react';
-
-export interface AnalysisData {
-  efficiency_score?: number;
-  efficiency_notes?: string;
-  tool_usage_summary?: {
-    most_used_tools?: string[];
-    tool_appropriateness?: string;
-  };
-  error_analysis?: string;
-  prompt_quality_score?: number;
-  prompt_improvements?: string;
-  implementation_critique?: string;
-  implementation_critique_score?: number;
-  recommendations?: string[];
-  error?: string;
-  report?: string;
-  modelUsed?: string;
-  generatedAt?: string;
-  summary_of_changes?: string;
-  summary?: string;
-}
+import { DetailedAnalysisData, parseAnalysis } from './AnalysisUtils';
 
 interface ResultOverviewProps {
-  analysis: AnalysisData | string | null;
+  analysis: DetailedAnalysisData | string | null;
   loading: boolean;
   renderMarkdown: (text: string) => React.ReactNode;
   totalThoughts?: number;
   detailedAnalysisExpanded?: boolean;
   onDetailedAnalysisToggle?: (expanded: boolean) => void;
 }
-
-// Parse analysis (handle double-encoded JSON)
-export const parseAnalysis = (analysis: AnalysisData | string | null): AnalysisData | null => {
-  if (!analysis) return null;
-  if (typeof analysis !== 'string') return analysis;
-
-  try {
-    const firstParse = JSON.parse(analysis);
-    const parsed = typeof firstParse === 'string' ? JSON.parse(firstParse) : firstParse;
-
-    // Extract from report field if present
-    if (parsed && typeof parsed === 'object' && parsed.report) {
-      try {
-        let reportText = parsed.report;
-        const jsonMatch = reportText.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
-        if (jsonMatch) {
-          reportText = jsonMatch[1].trim();
-        }
-        return { ...JSON.parse(reportText), modelUsed: parsed.modelUsed, generatedAt: parsed.generatedAt };
-      } catch {
-        return parsed;
-      }
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-};
 
 // Lighthouse Geometric Pill - styled as [ ● 9 ]
 export const GeometricScorePill: React.FC<{ score: number }> = ({ score }) => {
@@ -190,7 +142,7 @@ const RecommendationsList: React.FC<{
 
 // Detailed Analysis Content Component
 const DetailedAnalysisContent: React.FC<{
-  parsed: AnalysisData;
+  parsed: DetailedAnalysisData;
   renderMarkdown: (text: string) => React.ReactNode;
 }> = ({ parsed, renderMarkdown }) => (
   <div className="space-y-3">
@@ -229,7 +181,7 @@ const DetailedAnalysisContent: React.FC<{
 );
 
 // Check if detailed content exists
-const hasDetailedAnalysisContent = (parsed: AnalysisData): boolean => {
+const hasDetailedAnalysisContent = (parsed: DetailedAnalysisData): boolean => {
   return !!(
     parsed.implementation_critique ||
     parsed.prompt_improvements ||
@@ -246,7 +198,7 @@ const LoadingState: React.FC = () => (
 
 // Analysis Content Component - handles parsed data rendering
 const AnalysisContent: React.FC<{
-  parsed: AnalysisData;
+  parsed: DetailedAnalysisData;
   renderMarkdown: (text: string) => React.ReactNode;
   totalThoughts: number;
   detailedAnalysisExpanded?: boolean;

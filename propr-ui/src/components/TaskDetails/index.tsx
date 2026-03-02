@@ -7,7 +7,8 @@ import ExecutionRail from './ExecutionRail';
 import LiveFileChips from './LiveFileChips';
 import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
-import ResultOverview, { parseAnalysis, GeometricScorePill } from './ResultOverview';
+import ResultOverview, { GeometricScorePill } from './ResultOverview';
+import { parseAnalysis } from './AnalysisUtils';
 import { generateFollowupContent } from './utils';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
@@ -128,6 +129,8 @@ const TaskDetails: React.FC = () => {
     setFollowupModalOpen(true);
   }, []);
 
+  const parsedAnalysis = useMemo(() => parseAnalysis(taskData.analysis), [taskData.analysis]);
+
   if (taskData.loading) {
     return (
       <div className="h-full bg-white flex items-center justify-center">
@@ -153,7 +156,6 @@ const TaskDetails: React.FC = () => {
   }
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
-  const parsedAnalysis = useMemo(() => parseAnalysis(taskData.analysis), [taskData.analysis]);
 
   return (
     <div className="h-full flex flex-col bg-white">
