@@ -78,13 +78,13 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
           {/* Icon + Category Label Row */}
           <div className="flex items-center gap-1.5">
             <Icon className={`h-3 w-3 ${categoryInfo.iconColor}`} />
-            <span className="text-[10px] font-mono font-bold uppercase tracking-tighter text-slate-400">
+            <span className="text-[11px] font-mono font-bold uppercase tracking-tighter text-slate-400">
               {categoryInfo.label}
             </span>
           </div>
           {/* Timestamp below category label */}
           {event.relativeTime && (
-            <span className="font-mono text-[9px] text-slate-300 mt-0.5 ml-[18px]">
+            <span className="font-mono text-[10px] text-slate-300 mt-0.5 ml-[18px]">
               {event.relativeTime}
             </span>
           )}
