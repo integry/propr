@@ -9,7 +9,6 @@ import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
 import ResultOverview from './ResultOverview';
 import { generateFollowupContent } from './utils';
-import RightPaneHeader from './RightPaneHeader';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
 import FollowupModal from './FollowupModal';
@@ -56,8 +55,6 @@ const TaskDetails: React.FC = () => {
   // State for follow-up modal
   const [followupModalOpen, setFollowupModalOpen] = useState(false);
 
-  // State for right pane active tab
-  const [activeRightPaneTab, setActiveRightPaneTab] = useState<'thoughts' | 'events'>('thoughts');
 
   // State for detailed analysis expansion (lifted from ResultOverview to persist across Execution Log toggles)
   // Now using CSS hidden instead of conditional rendering, so components don't unmount
@@ -203,22 +200,13 @@ const TaskDetails: React.FC = () => {
 
       {/* Main Content Area - Anchored Shell with 30/70 Split */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        {/* Horizontal Header Row - Aligned TIMELINE label with THOUGHTS/EVENTS tabs */}
+        {/* Horizontal Header Row - TIMELINE label */}
         <div className="flex-shrink-0 flex border-b border-gray-200">
           {/* Left Pane Header (30%) */}
           <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-end border-r border-gray-200">
             <div className="py-2 text-[11px] font-bold uppercase tracking-widest text-slate-500">
               TIMELINE
             </div>
-          </div>
-          {/* Right Pane Header (70%) - Tabs */}
-          <div className="hidden lg:flex flex-1 min-w-0">
-            <RightPaneHeader
-              thoughtCount={thinkingLog.thinkingLogWithTimestamps.length}
-              eventCount={taskData.liveDetails.events.length}
-              activeTab={activeRightPaneTab}
-              onTabChange={setActiveRightPaneTab}
-            />
           </div>
         </div>
 
