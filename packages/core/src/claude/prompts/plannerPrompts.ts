@@ -169,20 +169,24 @@ Target: 2-4 tasks total.
   granular: `
 **Task Granularity: GRANULAR**
 
-Target: 5+ tasks, scaling with complexity. Create as many tasks as needed to capture all requirements.
+Target: 7-15+ tasks, scaling with complexity. Create as many tasks as needed to fully capture all requirements.
+
+⚠️ IMPORTANT: Do NOT artificially limit yourself to exactly 5 tasks. Break down the work significantly to create smaller, more focused issues.
 
 This mode is ideal for:
 - Long lists of features or requirements from the user
 - Complex specifications with many distinct components
 - Epics that need to be broken down for easier review
+- Large feature implementations that benefit from incremental PRs
 
 Guidelines:
 - Each task should be a cohesive unit of work resulting in a reviewable PR (~100-300 lines of changes)
+- Aim for smaller, more focused tasks rather than fewer large ones
 - Do NOT split tasks so granularly that each becomes a trivial 1-liner or single file change
 - Group related file changes together when they serve the same logical purpose
-- A single feature typically needs 1-3 tasks unless it's truly massive
+- A single feature typically needs 2-4 tasks; complex features may need 5+ tasks
 - Focus on distinct logical concerns, not individual files
-- The goal is manageable PR sizes for reviewers, not maximizing task count`
+- The goal is manageable PR sizes for reviewers while ensuring comprehensive coverage`
 };
 
 export function getPlannerPrompt(granularity: Granularity): string {
