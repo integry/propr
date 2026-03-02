@@ -27,6 +27,8 @@ interface ResultOverviewProps {
   loading: boolean;
   renderMarkdown: (text: string) => React.ReactNode;
   totalThoughts?: number;
+  detailedAnalysisExpanded?: boolean;
+  onDetailedAnalysisToggle?: (expanded: boolean) => void;
 }
 
 // Parse analysis (handle double-encoded JSON)
@@ -106,13 +108,27 @@ const CollapsibleSection: React.FC<{
   title: string;
   children: React.ReactNode;
   defaultExpanded?: boolean;
-}> = ({ title, children, defaultExpanded = false }) => {
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  isExpanded?: boolean;
+  onToggle?: (expanded: boolean) => void;
+}> = ({ title, children, defaultExpanded = false, isExpanded: controlledExpanded, onToggle }) => {
+  const [internalExpanded, setInternalExpanded] = useState(defaultExpanded);
+
+  // Use controlled state if provided, otherwise use internal state
+  const isExpanded = controlledExpanded !== undefined ? controlledExpanded : internalExpanded;
+
+  const handleToggle = () => {
+    const newValue = !isExpanded;
+    if (onToggle) {
+      onToggle(newValue);
+    } else {
+      setInternalExpanded(newValue);
+    }
+  };
 
   return (
     <div className="border-t border-gray-100">
       <button
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={handleToggle}
         className="flex items-center gap-2 w-full py-2 text-left text-xs text-gray-500 hover:text-gray-700 transition-colors"
       >
         {isExpanded ? (
@@ -250,7 +266,9 @@ const AnalysisContent: React.FC<{
   parsed: AnalysisData;
   renderMarkdown: (text: string) => React.ReactNode;
   totalThoughts: number;
-}> = ({ parsed, renderMarkdown, totalThoughts }) => {
+  detailedAnalysisExpanded?: boolean;
+  onDetailedAnalysisToggle?: (expanded: boolean) => void;
+}> = ({ parsed, renderMarkdown, totalThoughts, detailedAnalysisExpanded, onDetailedAnalysisToggle }) => {
   const summaryContent = parsed.summary_of_changes || parsed.summary;
   const shouldCollapseByDefault = totalThoughts > 10;
   const hasDetailedContent = hasDetailedAnalysisContent(parsed);
@@ -267,6 +285,8 @@ const AnalysisContent: React.FC<{
         <CollapsibleSection
           title="View Detailed Analysis"
           defaultExpanded={!shouldCollapseByDefault}
+          isExpanded={detailedAnalysisExpanded}
+          onToggle={onDetailedAnalysisToggle}
         >
           <DetailedAnalysisContent parsed={parsed} renderMarkdown={renderMarkdown} />
         </CollapsibleSection>
@@ -280,6 +300,8 @@ const ResultOverview: React.FC<ResultOverviewProps> = ({
   loading,
   renderMarkdown,
   totalThoughts = 0,
+  detailedAnalysisExpanded,
+  onDetailedAnalysisToggle,
 }) => {
   const parsed = parseAnalysis(analysis);
 
@@ -294,6 +316,8 @@ const ResultOverview: React.FC<ResultOverviewProps> = ({
             parsed={parsed}
             renderMarkdown={renderMarkdown}
             totalThoughts={totalThoughts}
+            detailedAnalysisExpanded={detailedAnalysisExpanded}
+            onDetailedAnalysisToggle={onDetailedAnalysisToggle}
           />
         )}
       </div>

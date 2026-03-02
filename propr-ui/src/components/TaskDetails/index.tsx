@@ -63,6 +63,9 @@ const TaskDetails: React.FC = () => {
   // State for right pane active tab
   const [activeRightPaneTab, setActiveRightPaneTab] = useState<'thoughts' | 'events'>('thoughts');
 
+  // State for detailed analysis expansion (lifted from ResultOverview to persist across Execution Log toggles)
+  const [detailedAnalysisExpanded, setDetailedAnalysisExpanded] = useState<boolean | undefined>(undefined);
+
   // Toggle thought filter
   const toggleThoughtFilter = useCallback((type: ThoughtType) => {
     setActiveThoughtFilters(prev => {
@@ -420,6 +423,8 @@ const TaskDetails: React.FC = () => {
                     loading={taskData.analysisLoading}
                     renderMarkdown={renderMarkdown}
                     totalThoughts={thinkingLog.thinkingLogWithTimestamps.length}
+                    detailedAnalysisExpanded={detailedAnalysisExpanded}
+                    onDetailedAnalysisToggle={setDetailedAnalysisExpanded}
                   />
                 )}
 
