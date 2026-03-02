@@ -265,7 +265,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   const showFilteredCount = activeFilters && activeFilters.size > 0 && filteredEvents.length !== events.length;
 
   return (
-    <div id="execution-event-log-section" className={`border-t border-gray-200 bg-white flex flex-col-reverse transition-all duration-300 ease-in-out ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
+    <div id="execution-event-log-section" className={`border-t border-gray-200 bg-white flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
       {/* Anchored Footer Bar - at bottom, styled differently when expanded */}
       <div
         className={`flex items-center justify-between px-6 transition-all duration-300 cursor-pointer flex-shrink-0 ${

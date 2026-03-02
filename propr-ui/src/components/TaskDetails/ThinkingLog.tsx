@@ -246,9 +246,9 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
   }
 
   return (
-    <div id="thinking-log-section">
+    <div id="thinking-log-section" className="min-w-0 overflow-hidden">
       {/* Grouped Events - terminal style log feed */}
-      <div className="space-y-3">
+      <div className="space-y-3 min-w-0">
         {groupedEvents.map((group, index) => (
           <ThoughtGroup
             key={group.todoId || index}

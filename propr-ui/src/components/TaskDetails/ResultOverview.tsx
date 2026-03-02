@@ -286,8 +286,8 @@ const ResultOverview: React.FC<ResultOverviewProps> = ({
   if (!parsed && !loading) return null;
 
   return (
-    <div className="bg-white border-b border-gray-200">
-      <div className="p-4">
+    <div className="bg-white border-b border-gray-200 min-w-0 overflow-hidden">
+      <div className="p-4 min-w-0">
         {loading && <LoadingState />}
         {parsed && !loading && (
           <AnalysisContent

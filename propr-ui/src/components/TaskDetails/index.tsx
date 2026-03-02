@@ -361,7 +361,7 @@ const TaskDetails: React.FC = () => {
       </header>
 
       {/* Main Content Area - Anchored Shell with 30/70 Split */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden min-w-0">
         {/* LEFT PANE (30%) - The Plan */}
         <div className="w-full lg:w-[30%] flex-shrink-0 overflow-y-auto scrollbar-stealth border-r border-gray-200">
           <div className="p-4 space-y-4">
@@ -389,11 +389,11 @@ const TaskDetails: React.FC = () => {
         <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
 
         {/* RIGHT PANE (70%) - The Execution */}
-        <div className="hidden lg:flex flex-1 flex-col min-h-0">
+        <div className="hidden lg:flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
           {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
           {/* Hidden when Execution Log is expanded */}
           {thinkingLog.eventsCollapsed && (
-            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+            <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
               {/* Anchored Header with Tabs and Filters */}
               <div className="flex-shrink-0">
                 <RightPaneHeader
@@ -412,7 +412,7 @@ const TaskDetails: React.FC = () => {
               </div>
 
               {/* Single scrollable area for Implementation Analysis + Thinking Log */}
-              <div className="flex-1 overflow-y-auto scrollbar-stealth min-h-0">
+              <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stealth min-h-0 min-w-0">
                 {/* Implementation Analysis - now scrolls with Thinking Log */}
                 {(taskData.analysis || taskData.analysisLoading) && (
                   <ResultOverview
@@ -424,7 +424,7 @@ const TaskDetails: React.FC = () => {
                 )}
 
                 {/* Thinking Log - Terminal Style - in same scroll flow */}
-                <div className="p-4">
+                <div className="p-4 min-w-0 overflow-hidden">
                   <ThinkingLog
                     events={thinkingLog.thinkingLogWithTimestamps}
                     todos={taskData.liveDetails.todos}
@@ -437,7 +437,7 @@ const TaskDetails: React.FC = () => {
           )}
 
           {/* VS Code Terminal Footer - Execution Event Log - Fills entire height when expanded */}
-          <div className={`transition-all duration-300 ease-in-out ${thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}`}>
+          <div className={`transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}`}>
             <ExecutionEventLog
               events={taskData.liveDetails.events}
               collapsed={thinkingLog.eventsCollapsed}
