@@ -133,8 +133,8 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
   return (
     <div className="relative border-t border-gray-100 pt-4">
       {/* Header - Utility Header style */}
-      <div className="flex items-center justify-between mb-3">
-        <h4 className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 m-0">
+      <div className="flex items-center justify-between mb-3 mt-8">
+        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 m-0">
           FILES CHANGED
           {isActive && (
             <span className="relative flex h-2 w-2">

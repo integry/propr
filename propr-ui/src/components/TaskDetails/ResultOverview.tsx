@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { ChevronDown, ChevronRight, Circle } from 'lucide-react';
 
-interface AnalysisData {
+export interface AnalysisData {
   efficiency_score?: number;
   efficiency_notes?: string;
   tool_usage_summary?: {
@@ -32,7 +32,7 @@ interface ResultOverviewProps {
 }
 
 // Parse analysis (handle double-encoded JSON)
-const parseAnalysis = (analysis: AnalysisData | string | null): AnalysisData | null => {
+export const parseAnalysis = (analysis: AnalysisData | string | null): AnalysisData | null => {
   if (!analysis) return null;
   if (typeof analysis !== 'string') return analysis;
 
@@ -60,7 +60,7 @@ const parseAnalysis = (analysis: AnalysisData | string | null): AnalysisData | n
 };
 
 // Lighthouse Geometric Pill - styled as [ ● 9 ]
-const GeometricScorePill: React.FC<{ score: number }> = ({ score }) => {
+export const GeometricScorePill: React.FC<{ score: number }> = ({ score }) => {
   let colorClasses: string;
 
   if (score >= 9) {
@@ -84,16 +84,7 @@ const GeometricScorePill: React.FC<{ score: number }> = ({ score }) => {
   );
 };
 
-// Primary Implementation Header with single score (no label - moved to horizon line)
-const ImplementationHeader: React.FC<{ score?: number }> = ({ score }) => {
-  if (score === undefined) return null;
 
-  return (
-    <div className="flex items-center mb-3">
-      <GeometricScorePill score={score} />
-    </div>
-  );
-};
 
 // Collapsible accordion section - simple chevron toggle
 const CollapsibleSection: React.FC<{
@@ -267,8 +258,6 @@ const AnalysisContent: React.FC<{
 
   return (
     <>
-      <ImplementationHeader score={parsed.implementation_critique_score} />
-
       {summaryContent && (
         <SummaryBox content={summaryContent} renderMarkdown={renderMarkdown} />
       )}

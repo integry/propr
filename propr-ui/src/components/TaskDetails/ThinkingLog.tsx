@@ -235,6 +235,16 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
 
   return (
     <div id="thinking-log-section" className="min-w-0 overflow-hidden">
+      {/* Section Header */}
+      <div className="mt-8 mb-4 flex items-center gap-2">
+        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 m-0">
+          THINKING LOG
+        </h4>
+        <div className="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-500 font-mono text-[10px] font-bold">
+          {events.length}
+        </div>
+      </div>
+
       {/* Grouped Events - terminal style log feed */}
       <div className="space-y-3 min-w-0">
         {groupedEvents.map((group, index) => (

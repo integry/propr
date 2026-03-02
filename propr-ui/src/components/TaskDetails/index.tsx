@@ -7,7 +7,7 @@ import ExecutionRail from './ExecutionRail';
 import LiveFileChips from './LiveFileChips';
 import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
-import ResultOverview from './ResultOverview';
+import ResultOverview, { parseAnalysis, GeometricScorePill } from './ResultOverview';
 import { generateFollowupContent } from './utils';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
@@ -153,6 +153,7 @@ const TaskDetails: React.FC = () => {
   }
 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
+  const parsedAnalysis = useMemo(() => parseAnalysis(taskData.analysis), [taskData.analysis]);
 
   return (
     <div className="h-full flex flex-col bg-white">
@@ -203,16 +204,19 @@ const TaskDetails: React.FC = () => {
         {/* Horizontal Header Row - TIMELINE and IMPLEMENTATION aligned on same baseline */}
         <div className="flex-shrink-0 flex border-b border-slate-200">
           {/* Left Pane Header (30%) */}
-          <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-center border-r border-slate-200">
-            <div className="py-2.5 text-[11px] font-bold uppercase tracking-widest text-slate-500">
+          <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-center">
+            <div className="py-2.5 text-xs font-bold uppercase tracking-widest text-slate-500">
               TIMELINE
             </div>
           </div>
           {/* Right Pane Header (70%) - IMPLEMENTATION label aligned with TIMELINE */}
-          <div className="hidden lg:flex flex-1 px-4 items-center">
-            <div className="py-2.5 text-[11px] font-bold uppercase tracking-widest text-slate-500">
+          <div className="hidden lg:flex flex-1 px-4 items-center gap-3">
+            <div className="py-2.5 text-xs font-bold uppercase tracking-widest text-slate-500">
               IMPLEMENTATION
             </div>
+            {parsedAnalysis?.implementation_critique_score !== undefined && (
+              <GeometricScorePill score={parsedAnalysis.implementation_critique_score} />
+            )}
           </div>
         </div>
 

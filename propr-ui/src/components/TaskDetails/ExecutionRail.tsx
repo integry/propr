@@ -52,7 +52,7 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
   return (
     <div className="pt-4">
       {/* Header - Utility Header style */}
-      <h4 className="mt-0 mb-4 text-[11px] font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
+      <h4 className="mt-8 mb-4 text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
         EXECUTION RAIL
         {isTaskActive && (
           <span className="relative flex h-2 w-2">
@@ -64,19 +64,17 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
 
       {/* Execution Rail with Vertical Line */}
       <div className="relative">
-        {/* Vertical Threading Rail - solid 2px line in left gutter connecting all icons */}
-        <div className="absolute left-[11px] top-0 bottom-0 w-0.5 bg-slate-300" />
-
         {/* Todo Items - space-y-4 for increased vertical gap */}
         <ul className="list-none pl-0 m-0 space-y-4 relative">
-          {liveDetails.todos.map((todo) => {
+          {liveDetails.todos.map((todo, index) => {
             const isCompleted = todo.status === 'completed';
             const isInProgress = todo.status === 'in_progress';
+            const isLast = index === liveDetails.todos.length - 1;
 
             return (
               <li
                 key={todo.id}
-                className={`flex items-start gap-3 py-1 pl-0 pr-2 text-sm transition-colors cursor-pointer hover:bg-gray-50 rounded-r ${
+                className={`relative flex items-start gap-3 py-1 pl-0 pr-2 text-sm transition-colors cursor-pointer hover:bg-gray-50 rounded-r ${
                   isInProgress ? 'bg-primary-500/5' : ''
                 }`}
                 onClick={() => scrollToThinkingLog(todo.id, todo.content)}
@@ -84,6 +82,11 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
                 onMouseLeave={() => onTodoHover?.(null)}
                 title="Click to scroll to related thinking log"
               >
+                {/* Connecting Line to next item */}
+                {!isLast && (
+                  <div className="absolute left-[11px] top-[28px] -bottom-[20px] w-0.5 bg-slate-300 z-0" />
+                )}
+
                 {/* Icon intersecting the rail */}
                 <div className="relative flex-shrink-0 z-10">
                   {isCompleted ? (
