@@ -292,7 +292,7 @@ const TaskDetails: React.FC = () => {
 
   if (taskData.loading) {
     return (
-      <div className="h-screen bg-white flex items-center justify-center">
+      <div className="h-full bg-white flex items-center justify-center">
         <div className="text-gray-600">Loading task details...</div>
       </div>
     );
@@ -300,7 +300,7 @@ const TaskDetails: React.FC = () => {
 
   if (taskData.error) {
     return (
-      <div className="h-screen bg-white flex items-center justify-center">
+      <div className="h-full bg-white flex items-center justify-center">
         <div className="text-red-600">Error loading task details: {taskData.error}</div>
       </div>
     );
@@ -308,7 +308,7 @@ const TaskDetails: React.FC = () => {
 
   if (!taskData.history || taskData.history.length === 0) {
     return (
-      <div className="h-screen bg-white flex items-center justify-center">
+      <div className="h-full bg-white flex items-center justify-center">
         <div className="text-gray-600">No history found for task {taskId}</div>
       </div>
     );
@@ -317,7 +317,7 @@ const TaskDetails: React.FC = () => {
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
 
   return (
-    <div className="h-screen flex flex-col bg-white">
+    <div className="h-full flex flex-col bg-white">
       {/* Sticky Header Shell - Never scrolls */}
       <header className="flex-shrink-0 sticky top-0 z-20 bg-white border-b border-gray-200">
         {/* Task Header with Actions */}
