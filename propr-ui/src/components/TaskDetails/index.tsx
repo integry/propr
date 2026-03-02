@@ -155,7 +155,7 @@ const TaskDetails: React.FC = () => {
       clearTimeout(timeoutId);
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [thinkingLog.eventsCollapsed, thinkingLog.collapseEvents]);
+  }, [thinkingLog]);
 
   if (taskData.loading) {
     return (
