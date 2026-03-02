@@ -390,21 +390,10 @@ const TaskDetails: React.FC = () => {
 
         {/* RIGHT PANE (70%) - The Execution */}
         <div className="hidden lg:flex flex-1 flex-col min-h-0">
-          {/* Scrollable Content Area - Hidden when Execution Log is expanded */}
+          {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
+          {/* Hidden when Execution Log is expanded */}
           {thinkingLog.eventsCollapsed && (
             <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-              {/* Pinned Result Overview - Scores + Summary + Collapsible Analysis */}
-              {(taskData.analysis || taskData.analysisLoading) && (
-                <div className="flex-shrink-0">
-                  <ResultOverview
-                    analysis={taskData.analysis}
-                    loading={taskData.analysisLoading}
-                    renderMarkdown={renderMarkdown}
-                    totalThoughts={thinkingLog.thinkingLogWithTimestamps.length}
-                  />
-                </div>
-              )}
-
               {/* Anchored Header with Tabs and Filters */}
               <div className="flex-shrink-0">
                 <RightPaneHeader
@@ -422,10 +411,20 @@ const TaskDetails: React.FC = () => {
                 />
               </div>
 
-              {/* Scrollable Log Content - Thinking Log starts immediately */}
+              {/* Single scrollable area for Implementation Analysis + Thinking Log */}
               <div className="flex-1 overflow-y-auto scrollbar-stealth min-h-0">
+                {/* Implementation Analysis - now scrolls with Thinking Log */}
+                {(taskData.analysis || taskData.analysisLoading) && (
+                  <ResultOverview
+                    analysis={taskData.analysis}
+                    loading={taskData.analysisLoading}
+                    renderMarkdown={renderMarkdown}
+                    totalThoughts={thinkingLog.thinkingLogWithTimestamps.length}
+                  />
+                )}
+
+                {/* Thinking Log - Terminal Style - in same scroll flow */}
                 <div className="p-4">
-                  {/* Thinking Log - Terminal Style */}
                   <ThinkingLog
                     events={thinkingLog.thinkingLogWithTimestamps}
                     todos={taskData.liveDetails.todos}
@@ -438,7 +437,7 @@ const TaskDetails: React.FC = () => {
           )}
 
           {/* VS Code Terminal Footer - Execution Event Log - Fills entire height when expanded */}
-          <div className={thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}>
+          <div className={`transition-all duration-300 ease-in-out ${thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}`}>
             <ExecutionEventLog
               events={taskData.liveDetails.events}
               collapsed={thinkingLog.eventsCollapsed}

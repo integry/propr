@@ -265,10 +265,16 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   const showFilteredCount = activeFilters && activeFilters.size > 0 && filteredEvents.length !== events.length;
 
   return (
-    <div id="execution-event-log-section" className={`border-t border-gray-200 bg-white flex flex-col ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
-      {/* Expandable Content - only shown when not collapsed */}
-      {!collapsed && (
-        <div className="flex-1 overflow-y-auto min-h-0 border-b border-gray-200">
+    <div id="execution-event-log-section" className={`border-t border-gray-200 bg-white flex flex-col transition-all duration-300 ease-in-out ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
+      {/* Expandable Content - animates height via max-height and opacity */}
+      <div
+        className={`overflow-hidden transition-all duration-300 ease-in-out ${
+          collapsed
+            ? 'max-h-0 opacity-0'
+            : 'max-h-[9999px] opacity-100 flex-1 min-h-0'
+        }`}
+      >
+        <div className={`overflow-y-auto border-b border-gray-200 ${collapsed ? 'h-0' : 'h-full'}`}>
           <div className="p-4 divide-y divide-gray-50">
             {eventsWithContext.map(({ event, prevToolUse, originalIndex }) => (
               <TerminalEventItem
@@ -281,18 +287,28 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
             ))}
           </div>
         </div>
-      )}
+      </div>
 
       {/* Anchored Footer Bar - consistent with Plan Studio and Task List */}
+      {/* Changes styling when expanded to indicate active state */}
       <div
-        className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-100 hover:bg-gray-200 transition-colors cursor-pointer flex-shrink-0"
+        className={`flex items-center justify-between px-6 transition-all duration-300 cursor-pointer flex-shrink-0 ${
+          collapsed
+            ? 'py-4 border-t border-gray-200 bg-gray-100 hover:bg-gray-200'
+            : 'py-3 border-t-2 border-teal-500 bg-teal-50 hover:bg-teal-100'
+        }`}
         onClick={onToggleCollapse}
       >
         <div className="flex items-center gap-2.5">
-          <span className="text-gray-500 font-mono text-sm">{'>_'}</span>
-          <span className="font-mono text-xs font-bold text-gray-700 uppercase tracking-wider">
+          <span className={`font-mono text-sm ${collapsed ? 'text-gray-500' : 'text-teal-600'}`}>{'>_'}</span>
+          <span className={`font-mono text-xs font-bold uppercase tracking-wider ${collapsed ? 'text-gray-700' : 'text-teal-700'}`}>
             EXECUTION LOG ({showFilteredCount ? `${eventCount}/${events.length}` : eventCount})
           </span>
+          {!collapsed && (
+            <span className="text-[10px] font-medium text-teal-600 bg-teal-100 px-1.5 py-0.5 rounded">
+              ACTIVE
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3">
           {collapsed && summaryMessage && (
@@ -300,7 +316,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
               {summaryMessage}
             </span>
           )}
-          <span className="text-gray-500">
+          <span className={collapsed ? 'text-gray-500' : 'text-teal-600'}>
             {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </span>
         </div>
