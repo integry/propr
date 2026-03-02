@@ -112,22 +112,22 @@ export const formatToolResult = (result: string | object | undefined): string =>
 };
 
 // Get category label and color for terminal-style display (Professional Console aesthetic)
-// Uses desaturated colors that don't "glow" too harshly against the dark zinc-950 background
+// Uses readable colors against the dark zinc-900 background
 export const getCategoryDisplay = (event: LiveEvent): { label: string; color: string } => {
   if (event.type === 'thought') {
-    // Desaturated gray-blue for AI thoughts - quiet, non-glowing
-    return { label: 'THOUGHT', color: 'text-slate-400' };
+    // Readable gray-blue for AI thoughts
+    return { label: 'THOUGHT', color: 'text-slate-300' };
   }
   if (event.type === 'tool_result') {
     return event.isError
-      ? { label: 'ERROR', color: 'text-red-400/80' }
+      ? { label: 'ERROR', color: 'text-red-400' }
       // Soft "Matrix" teal for success/results
-      : { label: 'RESULT', color: 'text-emerald-400/80' };
+      : { label: 'RESULT', color: 'text-emerald-400' };
   }
 
-  // Dimmed zinc for action labels
+  // Readable zinc for action labels
   const toolName = event.toolName?.toUpperCase() || 'TOOL';
-  return { label: toolName, color: 'text-zinc-500' };
+  return { label: toolName, color: 'text-zinc-300' };
 };
 
 // Get event icon type for rendering

@@ -29,7 +29,7 @@ interface ExecutionEventLogProps {
 
 // Separate component for thought content rendering
 const ThoughtContent: React.FC<{ content: string }> = ({ content }) => (
-  <div className="text-xs text-zinc-400 pl-2 overflow-hidden font-mono">
+  <div className="text-xs text-zinc-200 pl-2 overflow-hidden font-mono">
     <MarkdownRenderer text={content} />
   </div>
 );
@@ -38,14 +38,14 @@ const ThoughtContent: React.FC<{ content: string }> = ({ content }) => (
 const ToolUseDetails: React.FC<{ event: LiveEvent; taskInfo: TaskInfo | null }> = ({ event, taskInfo }) => (
   <div className="text-xs space-y-1 font-mono">
     {event.input?.file_path && (
-      <div className="flex items-center gap-1 text-zinc-400">
-        <span className="text-[10px] uppercase text-zinc-500 font-bold tracking-widest">File:</span>
+      <div className="flex items-center gap-1 text-zinc-300">
+        <span className="text-[10px] uppercase text-zinc-400 font-bold tracking-widest">File:</span>
         <ClickablePath fullPath={event.input.file_path} taskInfo={taskInfo} />
       </div>
     )}
     {event.input?.command && (
       <div>
-        <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">Command:</span>
+        <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest">Command:</span>
         <code className="block border border-zinc-800 bg-transparent text-emerald-400/80 p-1.5 rounded font-mono text-[11px] mt-0.5 overflow-x-auto">
           {event.input.command}
         </code>
@@ -108,10 +108,10 @@ const EventHeader: React.FC<{
     <span className={`text-[10px] font-bold uppercase tracking-widest ${categoryDisplay.color}`}>
       {categoryDisplay.label}
     </span>
-    <span className="text-[10px] text-zinc-500">
+    <span className="text-[10px] text-zinc-400">
       #{eventIndex + 1}
     </span>
-    <span className="text-[12px] text-zinc-300 truncate flex-1">
+    <span className="text-[12px] text-zinc-200 truncate flex-1">
       {summary}
     </span>
     {expandable && (

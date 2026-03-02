@@ -24,60 +24,60 @@ import {
   getEventIconType,
 } from './ExecutionEventUtils';
 
-// File icon component - desaturated colors for zinc palette terminal
+// File icon component - readable colors for zinc palette terminal
 export const FileIcon: React.FC<{ filePath: string }> = ({ filePath }) => {
   const iconType = getFileIconType(filePath);
 
   switch (iconType) {
     case 'code':
-      return <FileCode className="h-3.5 w-3.5 text-blue-400/80" />;
+      return <FileCode className="h-3.5 w-3.5 text-blue-400" />;
     case 'json':
-      return <FileJson className="h-3.5 w-3.5 text-amber-400/80" />;
+      return <FileJson className="h-3.5 w-3.5 text-amber-400" />;
     case 'text':
-      return <FileText className="h-3.5 w-3.5 text-zinc-400" />;
+      return <FileText className="h-3.5 w-3.5 text-zinc-300" />;
     default:
-      return <File className="h-3.5 w-3.5 text-zinc-500" />;
+      return <File className="h-3.5 w-3.5 text-zinc-400" />;
   }
 };
 
-// Tool icon component - muted zinc colors for terminal aesthetic
+// Tool icon component - readable zinc colors for terminal aesthetic
 export const ToolIcon: React.FC<{ toolName: string }> = ({ toolName }) => {
   const iconType = getToolIconType(toolName);
 
   switch (iconType) {
     case 'read':
-      return <Eye className="h-3.5 w-3.5 text-zinc-400" />;
+      return <Eye className="h-3.5 w-3.5 text-zinc-300" />;
     case 'edit':
-      return <Edit3 className="h-3.5 w-3.5 text-zinc-400" />;
+      return <Edit3 className="h-3.5 w-3.5 text-zinc-300" />;
     case 'write':
-      return <FileText className="h-3.5 w-3.5 text-zinc-400" />;
+      return <FileText className="h-3.5 w-3.5 text-zinc-300" />;
     case 'search':
-      return <FolderSearch className="h-3.5 w-3.5 text-zinc-400" />;
+      return <FolderSearch className="h-3.5 w-3.5 text-zinc-300" />;
     case 'terminal':
-      return <Terminal className="h-3.5 w-3.5 text-zinc-400" />;
+      return <Terminal className="h-3.5 w-3.5 text-zinc-300" />;
     case 'web':
-      return <Globe className="h-3.5 w-3.5 text-zinc-400" />;
+      return <Globe className="h-3.5 w-3.5 text-zinc-300" />;
     default:
-      return <Wrench className="h-3.5 w-3.5 text-zinc-400" />;
+      return <Wrench className="h-3.5 w-3.5 text-zinc-300" />;
   }
 };
 
-// Event icon component - Professional Console aesthetic (desaturated colors for zinc palette)
+// Event icon component - Professional Console aesthetic (readable colors for zinc palette)
 export const EventIcon: React.FC<{ event: LiveEvent }> = ({ event }) => {
   const iconType = getEventIconType(event);
 
   switch (iconType) {
     case 'thought':
-      // Desaturated gray-blue for AI thoughts - quiet, non-glowing
-      return <Lightbulb className="h-3.5 w-3.5 text-slate-400" />;
+      // Readable gray-blue for AI thoughts
+      return <Lightbulb className="h-3.5 w-3.5 text-slate-300" />;
     case 'tool':
       return <ToolIcon toolName={event.toolName || ''} />;
     case 'success':
-      return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400/80" />;
+      return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />;
     case 'error':
-      return <XCircle className="h-3.5 w-3.5 text-red-400/80" />;
+      return <XCircle className="h-3.5 w-3.5 text-red-400" />;
     default:
-      return <FileText className="h-3.5 w-3.5 text-zinc-500" />;
+      return <FileText className="h-3.5 w-3.5 text-zinc-400" />;
   }
 };
 
