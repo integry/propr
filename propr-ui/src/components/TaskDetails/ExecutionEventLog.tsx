@@ -265,10 +265,10 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   const showFilteredCount = activeFilters && activeFilters.size > 0 && filteredEvents.length !== events.length;
 
   return (
-    <div id="execution-event-log-section" className="flex-shrink-0 border-t border-gray-200 bg-white flex flex-col">
+    <div id="execution-event-log-section" className={`border-t border-gray-200 bg-white flex flex-col ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
       {/* Expandable Content - only shown when not collapsed */}
       {!collapsed && (
-        <div className="flex-1 overflow-y-auto max-h-[40vh] border-b border-gray-200">
+        <div className="flex-1 overflow-y-auto min-h-0 border-b border-gray-200">
           <div className="p-4 divide-y divide-gray-50">
             {eventsWithContext.map(({ event, prevToolUse, originalIndex }) => (
               <TerminalEventItem

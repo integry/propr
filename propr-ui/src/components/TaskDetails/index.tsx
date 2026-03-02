@@ -390,53 +390,55 @@ const TaskDetails: React.FC = () => {
 
         {/* RIGHT PANE (70%) - The Execution */}
         <div className="hidden lg:flex flex-1 flex-col min-h-0">
-          {/* Scrollable Content Area - Everything except footer */}
-          <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-            {/* Pinned Result Overview - Scores + Summary + Collapsible Analysis */}
-            {(taskData.analysis || taskData.analysisLoading) && (
+          {/* Scrollable Content Area - Hidden when Execution Log is expanded */}
+          {thinkingLog.eventsCollapsed && (
+            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              {/* Pinned Result Overview - Scores + Summary + Collapsible Analysis */}
+              {(taskData.analysis || taskData.analysisLoading) && (
+                <div className="flex-shrink-0">
+                  <ResultOverview
+                    analysis={taskData.analysis}
+                    loading={taskData.analysisLoading}
+                    renderMarkdown={renderMarkdown}
+                    totalThoughts={thinkingLog.thinkingLogWithTimestamps.length}
+                  />
+                </div>
+              )}
+
+              {/* Anchored Header with Tabs and Filters */}
               <div className="flex-shrink-0">
-                <ResultOverview
-                  analysis={taskData.analysis}
-                  loading={taskData.analysisLoading}
-                  renderMarkdown={renderMarkdown}
-                  totalThoughts={thinkingLog.thinkingLogWithTimestamps.length}
+                <RightPaneHeader
+                  thoughtCount={thinkingLog.thinkingLogWithTimestamps.length}
+                  thoughtTypeCounts={thoughtTypeCounts}
+                  activeThoughtFilters={activeThoughtFilters}
+                  onToggleThoughtFilter={toggleThoughtFilter}
+                  eventCount={taskData.liveDetails.events.length}
+                  eventTypeCounts={eventTypeCounts}
+                  activeEventFilters={activeEventFilters}
+                  onToggleEventFilter={toggleEventFilter}
+                  onClearAllFilters={clearAllFilters}
+                  activeTab={activeRightPaneTab}
+                  onTabChange={setActiveRightPaneTab}
                 />
               </div>
-            )}
 
-            {/* Anchored Header with Tabs and Filters */}
-            <div className="flex-shrink-0">
-              <RightPaneHeader
-                thoughtCount={thinkingLog.thinkingLogWithTimestamps.length}
-                thoughtTypeCounts={thoughtTypeCounts}
-                activeThoughtFilters={activeThoughtFilters}
-                onToggleThoughtFilter={toggleThoughtFilter}
-                eventCount={taskData.liveDetails.events.length}
-                eventTypeCounts={eventTypeCounts}
-                activeEventFilters={activeEventFilters}
-                onToggleEventFilter={toggleEventFilter}
-                onClearAllFilters={clearAllFilters}
-                activeTab={activeRightPaneTab}
-                onTabChange={setActiveRightPaneTab}
-              />
-            </div>
-
-            {/* Scrollable Log Content - Thinking Log starts immediately */}
-            <div className="flex-1 overflow-y-auto scrollbar-stealth min-h-0">
-              <div className="p-4">
-                {/* Thinking Log - Terminal Style */}
-                <ThinkingLog
-                  events={thinkingLog.thinkingLogWithTimestamps}
-                  todos={taskData.liveDetails.todos}
-                  highlightedTodoId={highlightedTodoId}
-                  activeFilters={activeThoughtFilters}
-                />
+              {/* Scrollable Log Content - Thinking Log starts immediately */}
+              <div className="flex-1 overflow-y-auto scrollbar-stealth min-h-0">
+                <div className="p-4">
+                  {/* Thinking Log - Terminal Style */}
+                  <ThinkingLog
+                    events={thinkingLog.thinkingLogWithTimestamps}
+                    todos={taskData.liveDetails.todos}
+                    highlightedTodoId={highlightedTodoId}
+                    activeFilters={activeThoughtFilters}
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
-          {/* VS Code Terminal Footer - Execution Event Log - Always visible at bottom */}
-          <div className="flex-shrink-0">
+          {/* VS Code Terminal Footer - Execution Event Log - Fills entire height when expanded */}
+          <div className={thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}>
             <ExecutionEventLog
               events={taskData.liveDetails.events}
               collapsed={thinkingLog.eventsCollapsed}
