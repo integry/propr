@@ -89,9 +89,16 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFetchedSourceRef = useRef<SourceConfig | null>(null);
   const pausedTimeRemainingRef = useRef<number | null>(null);
+  // Track previous view settings to detect actual changes
+  const prevViewSettingsRef = useRef<{ granularity: Granularity; contextLevel: number; generationModel: string | null } | null>(null);
+  // Track isContextStale without triggering re-renders
+  const isContextStaleRef = useRef<boolean>(false);
 
   // Keep config ref up to date
   useEffect(() => { configRef.current = config; }, [config]);
+
+  // Keep isContextStaleRef in sync with state
+  useEffect(() => { isContextStaleRef.current = isContextStale; }, [isContextStale]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -243,13 +250,36 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   }, [config.prompt, config.baseBranch, config.files.length, config.compress, initialSyncDone, isPaused, isContextStale, clearCountdown, startCountdown]);
 
   // View changes - fetch immediately (granularity, contextLevel, generationModel)
+  // Only triggers when actual view settings change, not when isContextStale transitions
   useEffect(() => {
-    if (!initialSyncDone || isContextStale) return;
+    if (!initialSyncDone) return;
+
+    const currentViewSettings = {
+      granularity: config.granularity,
+      contextLevel: config.contextLevel,
+      generationModel: config.generationModel
+    };
+
+    const prevSettings = prevViewSettingsRef.current;
+
+    // Check if view settings actually changed
+    const viewSettingsChanged = prevSettings !== null && (
+      prevSettings.granularity !== currentViewSettings.granularity ||
+      prevSettings.contextLevel !== currentViewSettings.contextLevel ||
+      prevSettings.generationModel !== currentViewSettings.generationModel
+    );
+
+    // Update the ref for next comparison
+    prevViewSettingsRef.current = currentViewSettings;
+
+    // Only fetch if settings actually changed and context is not stale
+    // Use ref to avoid dependency on isContextStale state
+    if (!viewSettingsChanged || isContextStaleRef.current) return;
 
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     debounceTimerRef.current = setTimeout(() => fetchPreview(), SLIDER_DEBOUNCE_DELAY);
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
-  }, [config.granularity, config.contextLevel, config.generationModel, initialSyncDone, isContextStale, fetchPreview]);
+  }, [config.granularity, config.contextLevel, config.generationModel, initialSyncDone, fetchPreview]);
 
   // Timer expiry - auto-fetch when countdown ends (only if not paused and countdown was started)
   // Note: countdownStarted ensures we don't auto-fetch when context becomes stale but countdown hasn't begun
