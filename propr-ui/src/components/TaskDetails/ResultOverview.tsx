@@ -113,8 +113,8 @@ const CollapsibleSection: React.FC<{
 }> = ({ title, children, defaultExpanded = false, isExpanded: controlledExpanded, onToggle }) => {
   const [internalExpanded, setInternalExpanded] = useState(defaultExpanded);
 
-  // Use controlled state if provided, otherwise use internal state
-  const isExpanded = controlledExpanded !== undefined ? controlledExpanded : internalExpanded;
+  // Use controlled state if provided (is a boolean), otherwise use internal state
+  const isExpanded = typeof controlledExpanded === 'boolean' ? controlledExpanded : internalExpanded;
 
   const handleToggle = () => {
     const newValue = !isExpanded;
