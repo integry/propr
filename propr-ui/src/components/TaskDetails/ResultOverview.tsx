@@ -45,7 +45,8 @@ const CollapsibleSection: React.FC<{
   isExpanded?: boolean;
   onToggle?: (expanded: boolean) => void;
 }> = ({ children, defaultExpanded = false, isExpanded: controlledExpanded, onToggle }) => {
-  const [internalExpanded, setInternalExpanded] = useState(defaultExpanded);
+  // Always start collapsed by default for Implementation Review Details
+  const [internalExpanded, setInternalExpanded] = useState(false);
 
   // Use controlled state if provided (is a boolean), otherwise use internal state
   const isExpanded = typeof controlledExpanded === 'boolean' ? controlledExpanded : internalExpanded;
@@ -71,7 +72,7 @@ const CollapsibleSection: React.FC<{
         ) : (
           <ChevronRight className="h-4 w-4" />
         )}
-        <span className="text-[11px] uppercase font-bold tracking-widest">Details</span>
+        <span className="text-[11px] uppercase font-bold tracking-widest">Implementation Review Details</span>
       </button>
       {isExpanded && (
         <div className="pb-3 text-[13px] leading-relaxed text-gray-700 overflow-hidden">
