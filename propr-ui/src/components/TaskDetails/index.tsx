@@ -258,13 +258,14 @@ const TaskDetails: React.FC = () => {
               {/* Single scrollable area for Implementation Analysis + Thinking Log */}
               <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stealth min-h-0 min-w-0">
                 {/* Implementation Analysis - now scrolls with Thinking Log */}
-                {(taskData.analysis || taskData.analysisLoading) && (
+                {(taskData.analysis || taskData.analysisLoading || thinkingLog.extractedSummary) && (
                   <ResultOverview
                     analysis={taskData.analysis}
                     loading={taskData.analysisLoading}
                     renderMarkdown={renderMarkdown}
                     detailedAnalysisExpanded={detailedAnalysisExpanded}
                     onDetailedAnalysisToggle={setDetailedAnalysisExpanded}
+                    extractedSummary={thinkingLog.extractedSummary}
                   />
                 )}
 

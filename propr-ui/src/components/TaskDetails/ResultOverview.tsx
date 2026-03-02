@@ -8,6 +8,7 @@ interface ResultOverviewProps {
   renderMarkdown: (text: string) => React.ReactNode;
   detailedAnalysisExpanded?: boolean;
   onDetailedAnalysisToggle?: (expanded: boolean) => void;
+  extractedSummary?: string | null;
 }
 
 // Lighthouse Geometric Pill - styled as [ ● 9 ]
@@ -210,14 +211,16 @@ const LoadingState: React.FC = () => (
 
 // Analysis Content Component - handles parsed data rendering
 const AnalysisContent: React.FC<{
-  parsed: DetailedAnalysisData;
+  parsed: DetailedAnalysisData | null;
   renderMarkdown: (text: string) => React.ReactNode;
   detailedAnalysisExpanded?: boolean;
   onDetailedAnalysisToggle?: (expanded: boolean) => void;
-}> = ({ parsed, renderMarkdown, detailedAnalysisExpanded, onDetailedAnalysisToggle }) => {
-  const summaryContent = parsed.summary_of_changes || parsed.summary;
-  const critiqueContent = parsed.implementation_critique;
-  const hasDetailedContent = hasDetailedAnalysisContent(parsed);
+  extractedSummary?: string | null;
+}> = ({ parsed, renderMarkdown, detailedAnalysisExpanded, onDetailedAnalysisToggle, extractedSummary }) => {
+  // Priority: extractedSummary (from thinking log) > parsed summary_of_changes > parsed summary
+  const summaryContent = extractedSummary || parsed?.summary_of_changes || parsed?.summary;
+  const critiqueContent = parsed?.implementation_critique;
+  const hasDetailedContent = parsed ? hasDetailedAnalysisContent(parsed) : false;
 
   return (
     <>
@@ -233,7 +236,7 @@ const AnalysisContent: React.FC<{
         renderMarkdown={renderMarkdown}
       />
 
-      {hasDetailedContent && (
+      {hasDetailedContent && parsed && (
         <CollapsibleSection
           isExpanded={detailedAnalysisExpanded}
           onToggle={onDetailedAnalysisToggle}
@@ -251,21 +254,24 @@ const ResultOverview: React.FC<ResultOverviewProps> = ({
   renderMarkdown,
   detailedAnalysisExpanded,
   onDetailedAnalysisToggle,
+  extractedSummary,
 }) => {
   const parsed = parseAnalysis(analysis);
 
-  if (!parsed && !loading) return null;
+  // Show if we have parsed analysis, are loading, or have an extracted summary
+  if (!parsed && !loading && !extractedSummary) return null;
 
   return (
     <div className="bg-white border-b border-slate-200 min-w-0 overflow-hidden">
       <div className="p-4 min-w-0">
         {loading && <LoadingState />}
-        {parsed && !loading && (
+        {(parsed || extractedSummary) && !loading && (
           <AnalysisContent
             parsed={parsed}
             renderMarkdown={renderMarkdown}
             detailedAnalysisExpanded={detailedAnalysisExpanded}
             onDetailedAnalysisToggle={onDetailedAnalysisToggle}
+            extractedSummary={extractedSummary}
           />
         )}
       </div>
