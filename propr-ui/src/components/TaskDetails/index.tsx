@@ -271,6 +271,9 @@ const TaskDetails: React.FC = () => {
 
                 {/* Thinking Log - Terminal Style - in same scroll flow */}
                 <div className="p-4 min-w-0 overflow-hidden">
+                  <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500 mb-4">
+                    THINKING LOG [ {thinkingLog.thinkingLogWithTimestamps.length} ]
+                  </div>
                   <ThinkingLog
                     events={thinkingLog.thinkingLogWithTimestamps}
                     todos={taskData.liveDetails.todos}

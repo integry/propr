@@ -96,20 +96,39 @@ const SectionHeaderWithScore: React.FC<{
 );
 
 
-// Summary Box Component
-const SummaryBox: React.FC<{
-  content: string;
+// Outcome Area Component
+const OutcomeArea: React.FC<{
+  summaryContent?: string;
+  critiqueContent?: string;
   renderMarkdown: (text: string) => React.ReactNode;
-}> = ({ content, renderMarkdown }) => (
-  <div className="bg-slate-50 border-l-2 border-slate-300 px-3 py-2 mb-3 overflow-hidden">
-    <div className="text-[11px] uppercase font-bold text-slate-500 tracking-widest mb-1">
-      Summary of Changes
+}> = ({ summaryContent, critiqueContent, renderMarkdown }) => {
+  if (!summaryContent && !critiqueContent) return null;
+
+  return (
+    <div className="bg-slate-50 border-l-4 border-teal-600 px-4 py-3 mb-4 flex flex-col gap-6 overflow-hidden">
+      {summaryContent && (
+        <div>
+          <div className="text-[11px] uppercase font-bold text-slate-500 tracking-widest mb-1">
+            Summary of Changes
+          </div>
+          <div className="text-[13px] text-gray-700 leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
+            {renderMarkdown(summaryContent)}
+          </div>
+        </div>
+      )}
+      {critiqueContent && (
+        <div>
+          <div className="text-[11px] uppercase font-bold text-slate-500 tracking-widest mb-1">
+            Technical Review
+          </div>
+          <div className="text-[13px] text-gray-700 leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
+            {renderMarkdown(critiqueContent)}
+          </div>
+        </div>
+      )}
     </div>
-    <div className="text-[13px] text-gray-700 leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
-      {renderMarkdown(content)}
-    </div>
-  </div>
-);
+  );
+};
 
 // Analysis Section Component
 const AnalysisSection: React.FC<{
@@ -146,14 +165,6 @@ const DetailedAnalysisContent: React.FC<{
   renderMarkdown: (text: string) => React.ReactNode;
 }> = ({ parsed, renderMarkdown }) => (
   <div className="space-y-3">
-    {parsed.implementation_critique && (
-      <AnalysisSection title="Implementation Critique">
-        <div className="text-[13px] leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
-          {renderMarkdown(parsed.implementation_critique)}
-        </div>
-      </AnalysisSection>
-    )}
-
     {parsed.prompt_improvements && (
       <div className="overflow-hidden">
         <SectionHeaderWithScore title="Prompt Improvements" score={parsed.prompt_quality_score} />
@@ -183,7 +194,6 @@ const DetailedAnalysisContent: React.FC<{
 // Check if detailed content exists
 const hasDetailedAnalysisContent = (parsed: DetailedAnalysisData): boolean => {
   return !!(
-    parsed.implementation_critique ||
     parsed.prompt_improvements ||
     parsed.efficiency_notes ||
     (parsed.recommendations && parsed.recommendations.length > 0) ||
@@ -205,14 +215,17 @@ const AnalysisContent: React.FC<{
   onDetailedAnalysisToggle?: (expanded: boolean) => void;
 }> = ({ parsed, renderMarkdown, totalThoughts, detailedAnalysisExpanded, onDetailedAnalysisToggle }) => {
   const summaryContent = parsed.summary_of_changes || parsed.summary;
+  const critiqueContent = parsed.implementation_critique;
   const shouldCollapseByDefault = totalThoughts > 10;
   const hasDetailedContent = hasDetailedAnalysisContent(parsed);
 
   return (
     <>
-      {summaryContent && (
-        <SummaryBox content={summaryContent} renderMarkdown={renderMarkdown} />
-      )}
+      <OutcomeArea 
+        summaryContent={summaryContent} 
+        critiqueContent={critiqueContent} 
+        renderMarkdown={renderMarkdown} 
+      />
 
       {hasDetailedContent && (
         <CollapsibleSection
@@ -240,7 +253,7 @@ const ResultOverview: React.FC<ResultOverviewProps> = ({
   if (!parsed && !loading) return null;
 
   return (
-    <div className="bg-white border-b border-gray-200 min-w-0 overflow-hidden">
+    <div className="bg-white border-b border-slate-200 min-w-0 overflow-hidden">
       <div className="p-4 min-w-0">
         {loading && <LoadingState />}
         {parsed && !loading && (
