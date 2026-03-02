@@ -117,7 +117,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
   let codeBlockCounter = 0;
 
   return (
-    <div className={`markdown-body ${className}`}>
+    <div className={`markdown-body overflow-hidden ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
         components={{
@@ -191,27 +191,27 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
               );
             }
             return (
-              <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300 text-gray-800" {...props}>
+              <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300 text-gray-800 break-all" {...props}>
                 {children}
               </code>
             );
           },
           // Typography mappings to match original design
-          h1: ({ children }) => <h1 className="text-xl font-bold text-gray-900 mt-6 mb-3">{children}</h1>,
-          h2: ({ children }) => <h2 className="text-lg font-bold text-gray-900 mt-5 mb-3">{children}</h2>,
-          h3: ({ children }) => <h3 className="text-base font-semibold text-gray-800 mt-4 mb-2">{children}</h3>,
-          h4: ({ children }) => <h4 className="text-sm font-semibold text-gray-700 mt-3 mb-1">{children}</h4>,
-          p: ({ children }) => <p className="mb-4 text-gray-700 leading-relaxed">{children}</p>,
+          h1: ({ children }) => <h1 className="text-xl font-bold text-gray-900 mt-6 mb-3 break-words">{children}</h1>,
+          h2: ({ children }) => <h2 className="text-lg font-bold text-gray-900 mt-5 mb-3 break-words">{children}</h2>,
+          h3: ({ children }) => <h3 className="text-base font-semibold text-gray-800 mt-4 mb-2 break-words">{children}</h3>,
+          h4: ({ children }) => <h4 className="text-sm font-semibold text-gray-700 mt-3 mb-1 break-words">{children}</h4>,
+          p: ({ children }) => <p className="mb-4 text-gray-700 leading-relaxed break-words">{children}</p>,
           ul: ({ children }) => <ul className="list-disc list-inside space-y-2 my-4 ml-2">{children}</ul>,
           ol: ({ children }) => <ol className="list-decimal list-inside space-y-2 my-4 ml-2">{children}</ol>,
-          li: ({ children }) => <li className="ml-2 mb-1 text-gray-700">{children}</li>,
+          li: ({ children }) => <li className="ml-2 mb-1 text-gray-700 break-words">{children}</li>,
           a: ({ href, children }) => (
             <a href={href} className="text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer">
               {children}
             </a>
           ),
           blockquote: ({ children }) => (
-            <blockquote className="border-l-4 border-gray-300 pl-4 italic my-4 text-gray-600">
+            <blockquote className="border-l-4 border-gray-300 pl-4 italic my-4 text-gray-600 break-words overflow-hidden">
               {children}
             </blockquote>
           ),

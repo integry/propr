@@ -71,7 +71,7 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
         </div>
 
         {/* Content area */}
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 overflow-hidden">
           {/* Header line */}
           <div className="flex items-center gap-2 flex-wrap">
             {/* Category label - utility header style */}
@@ -96,7 +96,7 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
 
           {/* Full content - shown directly */}
           {event.content && (
-            <div className="text-sm text-gray-700 mt-0.5 leading-relaxed">
+            <div className="text-sm text-gray-700 mt-0.5 leading-relaxed break-words overflow-hidden">
               {renderMarkdown(event.content)}
             </div>
           )}

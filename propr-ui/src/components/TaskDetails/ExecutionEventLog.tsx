@@ -31,7 +31,7 @@ interface ExecutionEventLogProps {
 
 // Separate component for thought content rendering
 const ThoughtContent: React.FC<{ content: string }> = ({ content }) => (
-  <div className="text-xs text-gray-600 border-l-2 border-gray-100 pl-2">
+  <div className="text-xs text-gray-600 border-l-2 border-gray-100 pl-2 overflow-hidden">
     <MarkdownRenderer text={content} />
   </div>
 );
@@ -157,7 +157,7 @@ const TerminalEventItem: React.FC<TerminalEventItemProps> = ({
           <EventIcon event={event} />
         </div>
 
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 overflow-hidden">
           <EventHeader
             categoryDisplay={categoryDisplay}
             eventIndex={eventIndex}
@@ -168,7 +168,7 @@ const TerminalEventItem: React.FC<TerminalEventItemProps> = ({
           />
 
           {!isCollapsed && expandable && (
-            <div className="mt-1.5 ml-0">
+            <div className="mt-1.5 ml-0 overflow-hidden">
               <ExpandedContent
                 event={event}
                 taskInfo={taskInfo}
@@ -265,8 +265,35 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   const showFilteredCount = activeFilters && activeFilters.size > 0 && filteredEvents.length !== events.length;
 
   return (
-    <div id="execution-event-log-section" className={`border-t border-gray-200 bg-white flex flex-col transition-all duration-300 ease-in-out ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
-      {/* Expandable Content - animates height via max-height and opacity */}
+    <div id="execution-event-log-section" className={`border-t border-gray-200 bg-white flex flex-col-reverse transition-all duration-300 ease-in-out ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
+      {/* Anchored Footer Bar - at bottom, styled differently when expanded */}
+      <div
+        className={`flex items-center justify-between px-6 transition-all duration-300 cursor-pointer flex-shrink-0 ${
+          collapsed
+            ? 'py-4 border-t border-gray-200 bg-gray-100 hover:bg-gray-200'
+            : 'py-3 border-t-2 border-teal-500 bg-teal-50 hover:bg-teal-100'
+        }`}
+        onClick={onToggleCollapse}
+      >
+        <div className="flex items-center gap-2.5">
+          <span className={`font-mono text-sm ${collapsed ? 'text-gray-500' : 'text-teal-600'}`}>{'>_'}</span>
+          <span className={`font-mono text-xs font-bold uppercase tracking-wider ${collapsed ? 'text-gray-700' : 'text-teal-700'}`}>
+            EXECUTION LOG ({showFilteredCount ? `${eventCount}/${events.length}` : eventCount})
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          {collapsed && summaryMessage && (
+            <span className="text-xs text-gray-500 truncate max-w-[240px] font-mono">
+              {summaryMessage}
+            </span>
+          )}
+          <span className={collapsed ? 'text-gray-500' : 'text-teal-600'}>
+            {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </span>
+        </div>
+      </div>
+
+      {/* Expandable Content - grows upward from bottom bar */}
       <div
         className={`overflow-hidden transition-all duration-300 ease-in-out ${
           collapsed
@@ -286,39 +313,6 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
               />
             ))}
           </div>
-        </div>
-      </div>
-
-      {/* Anchored Footer Bar - consistent with Plan Studio and Task List */}
-      {/* Changes styling when expanded to indicate active state */}
-      <div
-        className={`flex items-center justify-between px-6 transition-all duration-300 cursor-pointer flex-shrink-0 ${
-          collapsed
-            ? 'py-4 border-t border-gray-200 bg-gray-100 hover:bg-gray-200'
-            : 'py-3 border-t-2 border-teal-500 bg-teal-50 hover:bg-teal-100'
-        }`}
-        onClick={onToggleCollapse}
-      >
-        <div className="flex items-center gap-2.5">
-          <span className={`font-mono text-sm ${collapsed ? 'text-gray-500' : 'text-teal-600'}`}>{'>_'}</span>
-          <span className={`font-mono text-xs font-bold uppercase tracking-wider ${collapsed ? 'text-gray-700' : 'text-teal-700'}`}>
-            EXECUTION LOG ({showFilteredCount ? `${eventCount}/${events.length}` : eventCount})
-          </span>
-          {!collapsed && (
-            <span className="text-[10px] font-medium text-teal-600 bg-teal-100 px-1.5 py-0.5 rounded">
-              ACTIVE
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-3">
-          {collapsed && summaryMessage && (
-            <span className="text-xs text-gray-500 truncate max-w-[240px] font-mono">
-              {summaryMessage}
-            </span>
-          )}
-          <span className={collapsed ? 'text-gray-500' : 'text-teal-600'}>
-            {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          </span>
         </div>
       </div>
     </div>

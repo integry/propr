@@ -123,7 +123,7 @@ const CollapsibleSection: React.FC<{
         <span className="uppercase font-bold tracking-wider">{title}</span>
       </button>
       {isExpanded && (
-        <div className="pb-3 text-sm text-gray-700">
+        <div className="pb-3 text-sm text-gray-700 overflow-hidden">
           {children}
         </div>
       )}
@@ -150,11 +150,11 @@ const SummaryBox: React.FC<{
   content: string;
   renderMarkdown: (text: string) => React.ReactNode;
 }> = ({ content, renderMarkdown }) => (
-  <div className="bg-slate-50 border-l-2 border-teal-500 px-3 py-2 mb-3">
+  <div className="bg-slate-50 border-l-2 border-teal-500 px-3 py-2 mb-3 overflow-hidden">
     <div className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-1">
       Summary of Changes
     </div>
-    <div className="text-sm text-gray-700 prose prose-sm max-w-none">
+    <div className="text-sm text-gray-700 prose prose-sm max-w-none break-words overflow-hidden">
       {renderMarkdown(content)}
     </div>
   </div>
@@ -181,8 +181,8 @@ const RecommendationsList: React.FC<{
     <ul className="space-y-1">
       {recommendations.map((rec, idx) => (
         <li key={idx} className="flex items-start gap-2 text-gray-700">
-          <span className="mt-0.5 text-slate-400">•</span>
-          <span>{rec}</span>
+          <span className="mt-0.5 text-slate-400 flex-shrink-0">•</span>
+          <span className="break-words min-w-0">{rec}</span>
         </li>
       ))}
     </ul>
@@ -197,23 +197,23 @@ const DetailedAnalysisContent: React.FC<{
   <div className="space-y-3">
     {parsed.implementation_critique && (
       <AnalysisSection title="Implementation Critique">
-        <div className="prose prose-sm max-w-none">
+        <div className="prose prose-sm max-w-none break-words overflow-hidden">
           {renderMarkdown(parsed.implementation_critique)}
         </div>
       </AnalysisSection>
     )}
 
     {parsed.prompt_improvements && (
-      <div>
+      <div className="overflow-hidden">
         <SectionHeaderWithScore title="Prompt Improvements" score={parsed.prompt_quality_score} />
-        <p className="text-gray-700">{parsed.prompt_improvements}</p>
+        <p className="text-gray-700 break-words">{parsed.prompt_improvements}</p>
       </div>
     )}
 
     {parsed.efficiency_notes && (
-      <div>
+      <div className="overflow-hidden">
         <SectionHeaderWithScore title="Efficiency Notes" score={parsed.efficiency_score} />
-        <p className="text-gray-700">{parsed.efficiency_notes}</p>
+        <p className="text-gray-700 break-words">{parsed.efficiency_notes}</p>
       </div>
     )}
 
@@ -223,7 +223,7 @@ const DetailedAnalysisContent: React.FC<{
 
     {parsed.error_analysis && (
       <AnalysisSection title="Error Analysis">
-        <p className="text-gray-700">{parsed.error_analysis}</p>
+        <p className="text-gray-700 break-words">{parsed.error_analysis}</p>
       </AnalysisSection>
     )}
   </div>
