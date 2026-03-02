@@ -162,8 +162,7 @@ const RecommendationsList: React.FC<{
 // Detailed Analysis Content Component
 const DetailedAnalysisContent: React.FC<{
   parsed: DetailedAnalysisData;
-  renderMarkdown: (text: string) => React.ReactNode;
-}> = ({ parsed, renderMarkdown }) => (
+}> = ({ parsed }) => (
   <div className="space-y-3">
     {parsed.prompt_improvements && (
       <div className="overflow-hidden">
@@ -233,7 +232,7 @@ const AnalysisContent: React.FC<{
           isExpanded={detailedAnalysisExpanded}
           onToggle={onDetailedAnalysisToggle}
         >
-          <DetailedAnalysisContent parsed={parsed} renderMarkdown={renderMarkdown} />
+          <DetailedAnalysisContent parsed={parsed} />
         </CollapsibleSection>
       )}
     </>
