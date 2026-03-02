@@ -112,15 +112,15 @@ export const formatToolResult = (result: string | object | undefined): string =>
 };
 
 // Get category label and color for terminal-style display (VS Code integrated terminal aesthetic)
-// Uses desaturated, high-contrast colors that are easy on the eyes in dark mode
+// Uses desaturated colors that don't "glow" too harshly against the dark zinc-950 background
 export const getCategoryDisplay = (event: LiveEvent): { label: string; color: string } => {
   if (event.type === 'thought') {
-    return { label: 'THOUGHT', color: 'text-sky-400/80' };
+    return { label: 'THOUGHT', color: 'text-blue-400/80' };
   }
   if (event.type === 'tool_result') {
     return event.isError
-      ? { label: 'ERROR', color: 'text-red-400/90' }
-      : { label: 'RESULT', color: 'text-teal-400/80' };
+      ? { label: 'ERROR', color: 'text-red-400/80' }
+      : { label: 'RESULT', color: 'text-emerald-400/80' };
   }
 
   const toolName = event.toolName?.toUpperCase() || 'TOOL';

@@ -29,24 +29,24 @@ interface ExecutionEventLogProps {
 
 // Separate component for thought content rendering
 const ThoughtContent: React.FC<{ content: string }> = ({ content }) => (
-  <div className="text-xs text-zinc-400 border-l-2 border-zinc-700 pl-2 overflow-hidden">
+  <div className="text-xs text-zinc-400 pl-2 overflow-hidden font-mono">
     <MarkdownRenderer text={content} />
   </div>
 );
 
 // Separate component for tool use details rendering
 const ToolUseDetails: React.FC<{ event: LiveEvent; taskInfo: TaskInfo | null }> = ({ event, taskInfo }) => (
-  <div className="text-xs space-y-1">
+  <div className="text-xs space-y-1 font-mono">
     {event.input?.file_path && (
       <div className="flex items-center gap-1 text-zinc-400">
-        <span className="text-[10px] uppercase">File:</span>
+        <span className="text-[10px] uppercase text-zinc-500">File:</span>
         <ClickablePath fullPath={event.input.file_path} taskInfo={taskInfo} />
       </div>
     )}
     {event.input?.command && (
       <div>
         <span className="text-[10px] text-zinc-500 uppercase">Command:</span>
-        <code className="block bg-zinc-900 text-teal-400/90 p-1.5 rounded font-mono text-[11px] mt-0.5 overflow-x-auto border border-zinc-800">
+        <code className="block bg-zinc-900/50 text-emerald-400/80 p-1.5 rounded font-mono text-[11px] mt-0.5 overflow-x-auto">
           {event.input.command}
         </code>
       </div>
@@ -102,20 +102,20 @@ const EventHeader: React.FC<{
   onToggle?: () => void;
 }> = ({ categoryDisplay, eventIndex, summary, expandable, isCollapsed, onToggle }) => (
   <div
-    className={`flex items-center gap-2 flex-wrap ${expandable ? 'cursor-pointer' : ''}`}
+    className={`flex items-center gap-2 flex-wrap font-mono ${expandable ? 'cursor-pointer' : ''}`}
     onClick={onToggle}
   >
-    <span className={`text-[11px] font-bold uppercase tracking-widest ${categoryDisplay.color}`}>
+    <span className={`text-[10px] font-bold uppercase tracking-widest ${categoryDisplay.color}`}>
       {categoryDisplay.label}
     </span>
-    <span className="font-mono text-[10px] text-zinc-600">
+    <span className="text-[10px] text-zinc-500">
       #{eventIndex + 1}
     </span>
-    <span className="text-[13px] text-zinc-300 truncate flex-1">
+    <span className="text-[12px] text-zinc-300 truncate flex-1">
       {summary}
     </span>
     {expandable && (
-      <span className="text-zinc-500">
+      <span className="text-zinc-600">
         {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
       </span>
     )}
@@ -149,13 +149,18 @@ const TerminalEventItem: React.FC<TerminalEventItemProps> = ({
   const handleToggle = expandable ? () => setIsCollapsed(!isCollapsed) : undefined;
 
   return (
-    <div className="py-1">
+    <div className="py-0.5">
       <div className="flex items-start gap-2">
-        <div className="flex-shrink-0 w-4 pt-0.5">
-          <EventIcon event={event} />
+        {/* Left gutter with icon and vertical threading line */}
+        <div className="flex-shrink-0 w-4 flex flex-col items-center">
+          <div className="pt-0.5">
+            <EventIcon event={event} />
+          </div>
+          {/* Vertical threading line */}
+          <div className="flex-1 w-px bg-zinc-800 mt-1" />
         </div>
 
-        <div className="flex-1 min-w-0 overflow-hidden">
+        <div className="flex-1 min-w-0 overflow-hidden pb-1">
           <EventHeader
             categoryDisplay={categoryDisplay}
             eventIndex={eventIndex}
@@ -166,7 +171,7 @@ const TerminalEventItem: React.FC<TerminalEventItemProps> = ({
           />
 
           {!isCollapsed && expandable && (
-            <div className="mt-1.5 ml-0 overflow-hidden">
+            <div className="mt-1 ml-0 overflow-hidden">
               <ExpandedContent
                 event={event}
                 taskInfo={taskInfo}
@@ -255,18 +260,18 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
 
   return (
     <div id="execution-event-log-section" className={`border-t border-slate-200 flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0 bg-white' : 'flex-1 min-h-0 bg-zinc-950'}`}>
-      {/* VS Code Terminal Footer Bar - Solid full-width bar */}
+      {/* VS Code Terminal Footer Bar - Solid full-width bar with zinc palette */}
       <div
-        className={`flex items-center justify-between px-6 h-9 transition-all duration-300 cursor-pointer flex-shrink-0 border-t ${
+        className={`flex items-center justify-between px-6 h-9 transition-all duration-300 cursor-pointer flex-shrink-0 ${
           collapsed
-            ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-500'
-            : 'bg-zinc-900 text-zinc-300 border-zinc-800'
+            ? 'bg-slate-100 hover:bg-slate-200 border-t border-slate-200 text-slate-500'
+            : 'bg-zinc-900 text-white'
         }`}
         onClick={onToggleCollapse}
       >
         <div className="flex items-center gap-2.5">
-          <span className={`font-mono text-sm font-bold ${collapsed ? 'text-slate-500' : 'text-teal-500'}`}>{'>_'}</span>
-          <span className={`font-mono text-[11px] font-bold uppercase tracking-wider ${collapsed ? 'text-slate-600' : 'text-zinc-400'}`}>
+          <span className={`font-mono text-sm font-bold ${collapsed ? 'text-slate-500' : 'text-zinc-400'}`}>{'>_'}</span>
+          <span className={`font-mono text-[11px] font-bold uppercase tracking-wider ${collapsed ? 'text-slate-600' : 'text-white'}`}>
             {collapsed ? 'EXECUTION LOG' : 'TERMINAL OUTPUT'} ({events.length})
           </span>
         </div>
@@ -282,7 +287,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
         </div>
       </div>
 
-      {/* Expandable Content - VS Code Integrated Terminal Style */}
+      {/* Expandable Content - VS Code Integrated Terminal Style with zinc-950 background */}
       <div
         className={`overflow-hidden transition-all duration-300 ease-in-out ${
           collapsed
@@ -291,7 +296,8 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
         }`}
       >
         <div className={`overflow-y-auto scrollbar-stealth-dark ${collapsed ? 'h-0' : 'h-full'}`}>
-          <div className="p-4 divide-y divide-zinc-800/50">
+          {/* Continuous stream layout - no dividers between items */}
+          <div className="p-3 space-y-0">
             {eventsWithContext.map(({ event, prevToolUse, originalIndex }) => (
               <TerminalEventItem
                 key={originalIndex}

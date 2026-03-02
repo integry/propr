@@ -24,57 +24,57 @@ import {
   getEventIconType,
 } from './ExecutionEventUtils';
 
-// File icon component
+// File icon component - desaturated colors for zinc palette terminal
 export const FileIcon: React.FC<{ filePath: string }> = ({ filePath }) => {
   const iconType = getFileIconType(filePath);
 
   switch (iconType) {
     case 'code':
-      return <FileCode className="h-3.5 w-3.5 text-blue-500" />;
+      return <FileCode className="h-3.5 w-3.5 text-blue-400/80" />;
     case 'json':
-      return <FileJson className="h-3.5 w-3.5 text-yellow-500" />;
+      return <FileJson className="h-3.5 w-3.5 text-amber-400/80" />;
     case 'text':
-      return <FileText className="h-3.5 w-3.5 text-gray-500" />;
+      return <FileText className="h-3.5 w-3.5 text-zinc-400" />;
     default:
-      return <File className="h-3.5 w-3.5 text-gray-400" />;
+      return <File className="h-3.5 w-3.5 text-zinc-500" />;
   }
 };
 
-// Tool icon component
+// Tool icon component - muted zinc colors for terminal aesthetic
 export const ToolIcon: React.FC<{ toolName: string }> = ({ toolName }) => {
   const iconType = getToolIconType(toolName);
 
   switch (iconType) {
     case 'read':
-      return <Eye className="h-3.5 w-3.5" />;
+      return <Eye className="h-3.5 w-3.5 text-zinc-400" />;
     case 'edit':
-      return <Edit3 className="h-3.5 w-3.5" />;
+      return <Edit3 className="h-3.5 w-3.5 text-zinc-400" />;
     case 'write':
-      return <FileText className="h-3.5 w-3.5" />;
+      return <FileText className="h-3.5 w-3.5 text-zinc-400" />;
     case 'search':
-      return <FolderSearch className="h-3.5 w-3.5" />;
+      return <FolderSearch className="h-3.5 w-3.5 text-zinc-400" />;
     case 'terminal':
-      return <Terminal className="h-3.5 w-3.5" />;
+      return <Terminal className="h-3.5 w-3.5 text-zinc-400" />;
     case 'web':
-      return <Globe className="h-3.5 w-3.5" />;
+      return <Globe className="h-3.5 w-3.5 text-zinc-400" />;
     default:
-      return <Wrench className="h-3.5 w-3.5" />;
+      return <Wrench className="h-3.5 w-3.5 text-zinc-400" />;
   }
 };
 
-// Event icon component - VS Code integrated terminal aesthetic (desaturated colors)
+// Event icon component - VS Code integrated terminal aesthetic (desaturated colors for zinc palette)
 export const EventIcon: React.FC<{ event: LiveEvent }> = ({ event }) => {
   const iconType = getEventIconType(event);
 
   switch (iconType) {
     case 'thought':
-      return <Lightbulb className="h-3.5 w-3.5 text-sky-400/80" />;
+      return <Lightbulb className="h-3.5 w-3.5 text-blue-400/80" />;
     case 'tool':
       return <ToolIcon toolName={event.toolName || ''} />;
     case 'success':
-      return <CheckCircle2 className="h-3.5 w-3.5 text-teal-400/80" />;
+      return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400/80" />;
     case 'error':
-      return <XCircle className="h-3.5 w-3.5 text-red-400/90" />;
+      return <XCircle className="h-3.5 w-3.5 text-red-400/80" />;
     default:
       return <FileText className="h-3.5 w-3.5 text-zinc-500" />;
   }
@@ -111,7 +111,7 @@ export const ClickablePath: React.FC<{ fullPath: string; taskInfo: TaskInfo | nu
       href={`${REPO_BASE_URL}/${cleanPath}`}
       target="_blank"
       rel="noopener noreferrer"
-      className="font-mono text-xs text-sky-400/90 hover:text-sky-300 underline flex items-center gap-1"
+      className="font-mono text-xs text-blue-400/80 hover:text-blue-300 underline flex items-center gap-1"
     >
       <FileIcon filePath={cleanPath} />
       {cleanPath}
