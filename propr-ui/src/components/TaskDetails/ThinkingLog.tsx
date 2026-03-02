@@ -1,8 +1,16 @@
 import React, { useMemo } from 'react';
 import { LiveEvent, TodoItem } from './types';
 import { renderMarkdown } from './renderMarkdown';
-import { detectThoughtType } from './utils';
 import { Lightbulb, Wrench, Search, CheckCircle2 } from 'lucide-react';
+
+// Simple thought type detection based on content
+const detectThoughtType = (content: string): 'analysis' | 'action' | 'summary' | 'search' => {
+  const lower = content.toLowerCase();
+  if (lower.includes('search') || lower.includes('find') || lower.includes('look for')) return 'search';
+  if (lower.includes('create') || lower.includes('update') || lower.includes('modify') || lower.includes('implement')) return 'action';
+  if (lower.includes('summary') || lower.includes('complete') || lower.includes('done') || lower.includes('finished')) return 'summary';
+  return 'analysis';
+};
 
 interface ThinkingLogEvent extends LiveEvent {
   relativeTime?: string | null;
@@ -12,7 +20,6 @@ interface ThinkingLogProps {
   events: ThinkingLogEvent[];
   todos?: TodoItem[];
   highlightedTodoId?: string | null;
-  activeFilters?: Set<string>;
 }
 
 // Get category display info for terminal-style output
@@ -112,20 +119,10 @@ interface ThoughtGroupProps {
   isCompleted: boolean;
   todoId?: string;
   isHighlighted?: boolean;
-  activeFilters?: Set<string>;
 }
 
-const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted, todoId, isHighlighted, activeFilters }) => {
-  // Filter events if filters are active
-  const filteredEvents = useMemo(() => {
-    if (!activeFilters || activeFilters.size === 0) return events;
-    return events.filter(event => {
-      const type = detectThoughtType(event.content || '');
-      return activeFilters.has(type);
-    });
-  }, [events, activeFilters]);
-
-  if (filteredEvents.length === 0) return null;
+const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted, todoId, isHighlighted }) => {
+  if (events.length === 0) return null;
 
   return (
     <div
@@ -147,13 +144,13 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
           {title}
         </span>
         <span className="text-[10px] text-gray-400">
-          ({filteredEvents.length})
+          ({events.length})
         </span>
       </div>
 
       {/* Log entries */}
       <div className="space-y-0 divide-y divide-gray-50">
-        {filteredEvents.map((event, index) => (
+        {events.map((event, index) => (
           <TerminalLogEntry
             key={index}
             event={event}
@@ -166,16 +163,7 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
   );
 };
 
-const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlightedTodoId, activeFilters }) => {
-  // Filter events at the top level to get accurate count - must be before any early returns
-  const filteredEventCount = useMemo(() => {
-    if (!activeFilters || activeFilters.size === 0) return events.length;
-    return events.filter(event => {
-      const type = detectThoughtType(event.content || '');
-      return activeFilters.has(type);
-    }).length;
-  }, [events, activeFilters]);
-
+const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlightedTodoId }) => {
   // Group events by todo items if available
   const groupedEvents = useMemo(() => {
     if (todos.length === 0) {
@@ -257,17 +245,10 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
             isCompleted={group.isCompleted}
             todoId={group.todoId}
             isHighlighted={highlightedTodoId === group.todoId}
-            activeFilters={activeFilters}
           />
         ))}
       </div>
 
-      {/* Show filtered count if filtering is active */}
-      {activeFilters && activeFilters.size > 0 && filteredEventCount !== events.length && (
-        <div className="text-[10px] text-gray-400 mt-2 text-center">
-          Showing {filteredEventCount} of {events.length} thoughts
-        </div>
-      )}
     </div>
   );
 };

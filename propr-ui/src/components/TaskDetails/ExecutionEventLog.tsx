@@ -1,6 +1,5 @@
 import React, { useState, useMemo } from 'react';
 import { LiveEvent, TaskInfo } from './types';
-import { getEventCategory } from './utils';
 import MarkdownRenderer from './MarkdownRenderer';
 import {
   ChevronUp,
@@ -26,7 +25,6 @@ interface ExecutionEventLogProps {
   lastThought: string | null;
   isTaskActive: boolean;
   taskInfo: TaskInfo | null;
-  activeFilters?: Set<string>;
 }
 
 // Separate component for thought content rendering
@@ -233,19 +231,13 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   onToggleCollapse,
   lastThought,
   isTaskActive: _isTaskActive,
-  taskInfo,
-  activeFilters
+  taskInfo
 }) => {
   // Note: isTaskActive is still passed for potential future use
   void _isTaskActive;
 
-  const filteredEvents = useMemo(() => {
-    if (!activeFilters || activeFilters.size === 0) return events;
-    return events.filter(event => {
-      const category = getEventCategory(event);
-      return activeFilters.has(category);
-    });
-  }, [events, activeFilters]);
+  // No filtering - show all events
+  const filteredEvents = events;
 
   const summaryMessage = useMemo(
     () => computeSummaryMessage(filteredEvents, lastThought),
@@ -261,9 +253,6 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
     return null;
   }
 
-  const eventCount = filteredEvents.length;
-  const showFilteredCount = activeFilters && activeFilters.size > 0 && filteredEvents.length !== events.length;
-
   return (
     <div id="execution-event-log-section" className={`border-t border-slate-200 bg-white flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
       {/* VS Code Terminal Footer Bar - Fixed 36px height, bg-slate-50, monospace bold */}
@@ -278,7 +267,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
         <div className="flex items-center gap-2.5">
           <span className={`font-mono text-sm font-bold ${collapsed ? 'text-slate-500' : 'text-teal-600'}`}>{'>_'}</span>
           <span className={`font-mono text-[11px] font-bold uppercase tracking-wider ${collapsed ? 'text-slate-700' : 'text-teal-700'}`}>
-            EXECUTION LOG ({showFilteredCount ? `${eventCount}/${events.length}` : eventCount})
+            EXECUTION LOG ({events.length})
           </span>
         </div>
         <div className="flex items-center gap-3">
