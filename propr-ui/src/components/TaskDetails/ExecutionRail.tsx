@@ -50,9 +50,9 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
   const isTaskActive = !['COMPLETED', 'FAILED'].includes(history[history.length - 1]?.state?.toUpperCase() || '');
 
   return (
-    <div className="pt-4">
+    <div className="pt-2">
       {/* Header - Utility Header style */}
-      <h4 className="mt-8 mb-4 text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
+      <h4 className="mt-4 mb-3 text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
         EXECUTION RAIL
         {isTaskActive && (
           <span className="relative flex h-2 w-2">

@@ -97,6 +97,7 @@ const SectionHeaderWithScore: React.FC<{
 
 
 // Summary of Changes - Hero content at the top with "Outcome Gravity" styling
+// Brand Teal bullets for the achievements
 const SummaryOfChanges: React.FC<{
   summaryContent?: string;
   renderMarkdown: (text: string) => React.ReactNode;
@@ -105,17 +106,17 @@ const SummaryOfChanges: React.FC<{
 
   return (
     <div className="bg-slate-50 border-l-4 border-teal-600 px-4 py-3 overflow-hidden">
-      <div className="text-[11px] uppercase font-bold text-slate-500 tracking-widest mb-2">
+      <div className="text-[11px] uppercase font-bold text-teal-700 tracking-widest mb-2">
         Summary of Changes
       </div>
-      <div className="text-[13px] text-gray-700 leading-relaxed prose prose-sm max-w-none break-words overflow-hidden">
+      <div className="text-[13px] text-gray-700 leading-relaxed prose prose-sm max-w-none break-words overflow-hidden prose-li:marker:text-teal-600">
         {renderMarkdown(summaryContent)}
       </div>
     </div>
   );
 };
 
-// Technical Review - Critique section below summary
+// Technical Review - Critique section below summary (standard text styling)
 const TechnicalReview: React.FC<{
   critiqueContent?: string;
   renderMarkdown: (text: string) => React.ReactNode;
@@ -123,7 +124,7 @@ const TechnicalReview: React.FC<{
   if (!critiqueContent) return null;
 
   return (
-    <div className="px-4 py-3 overflow-hidden">
+    <div className="px-4 py-3 overflow-hidden bg-slate-50 border-l-4 border-slate-300">
       <div className="text-[11px] uppercase font-bold text-slate-500 tracking-widest mb-1">
         Technical Review
       </div>
@@ -223,14 +224,14 @@ const AnalysisContent: React.FC<{
   const hasDetailedContent = parsed ? hasDetailedAnalysisContent(parsed) : false;
 
   return (
-    <>
-      {/* Summary of Changes - Hero content pinned to the top */}
+    <div className="space-y-2">
+      {/* Summary of Changes - Hero content pinned to the top with teal accent */}
       <SummaryOfChanges
         summaryContent={summaryContent}
         renderMarkdown={renderMarkdown}
       />
 
-      {/* Technical Review - Below summary */}
+      {/* Technical Review - Below summary with slate accent */}
       <TechnicalReview
         critiqueContent={critiqueContent}
         renderMarkdown={renderMarkdown}
@@ -244,7 +245,7 @@ const AnalysisContent: React.FC<{
           <DetailedAnalysisContent parsed={parsed} />
         </CollapsibleSection>
       )}
-    </>
+    </div>
   );
 };
 

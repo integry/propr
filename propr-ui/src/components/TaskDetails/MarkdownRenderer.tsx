@@ -206,7 +206,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
           ol: ({ children }) => <ol className="list-decimal list-inside space-y-2 my-4 ml-2">{children}</ol>,
           li: ({ children }) => <li className="ml-2 mb-1 text-gray-700 break-words">{children}</li>,
           a: ({ href, children }) => (
-            <a href={href} className="text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer">
+            <a href={href} className="text-sky-400 hover:text-sky-300 hover:underline" target="_blank" rel="noopener noreferrer">
               {children}
             </a>
           ),

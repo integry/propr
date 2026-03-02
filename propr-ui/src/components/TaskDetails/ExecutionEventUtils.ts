@@ -113,10 +113,11 @@ export const formatToolResult = (result: string | object | undefined): string =>
 
 // Get category label and color for terminal-style display (Professional Console aesthetic)
 // Uses readable colors against the dark zinc-900 background
+// Sky-300 used for thought labels for better legibility (accessibility fix for blue on black)
 export const getCategoryDisplay = (event: LiveEvent): { label: string; color: string } => {
   if (event.type === 'thought') {
-    // Readable gray-blue for AI thoughts
-    return { label: 'THOUGHT', color: 'text-slate-300' };
+    // Light Sky Blue for AI thoughts - better legibility against dark backgrounds
+    return { label: 'THOUGHT', color: 'text-sky-300' };
   }
   if (event.type === 'tool_result') {
     return event.isError
@@ -125,9 +126,9 @@ export const getCategoryDisplay = (event: LiveEvent): { label: string; color: st
       : { label: 'RESULT', color: 'text-emerald-400' };
   }
 
-  // Readable zinc for action labels
+  // Light cyan for action labels - readable against dark zinc-900
   const toolName = event.toolName?.toUpperCase() || 'TOOL';
-  return { label: toolName, color: 'text-zinc-300' };
+  return { label: toolName, color: 'text-cyan-300' };
 };
 
 // Get event icon type for rendering

@@ -187,11 +187,6 @@ interface ContextStripProps {
   tokenUsage?: TokenUsage;
 }
 
-// Cluster separator - more spacing between logical groups
-const ClusterSeparator: React.FC = () => (
-  <span className="text-gray-200 mx-3">│</span>
-);
-
 const ContextStrip: React.FC<ContextStripProps> = ({
   taskInfo,
   modelName,
@@ -201,31 +196,31 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   tokenUsage,
 }) => {
   return (
-    <div className="flex items-center flex-wrap gap-y-1 text-sm text-gray-600 py-2">
-      {/* Identity Cluster: Repo • Issue • PR */}
+    <div className="flex items-center flex-wrap gap-y-1 text-sm text-gray-600 flex-1 min-w-0">
+      {/* Left: Repo/Branch - Bold repo name */}
       <div className="flex items-center">
         {taskInfo && <RepoLink taskInfo={taskInfo} />}
+      </div>
+
+      {/* Middle: PR • Issue • Model • Duration - Separated by dots */}
+      <div className="flex items-center flex-wrap">
+        {prInfo && <PRInfoChip prInfo={prInfo} />}
         {taskInfo && <IssuePRChip taskInfo={taskInfo} />}
         {taskInfo && <LinkedIssueChip taskInfo={taskInfo} />}
-        {prInfo && <PRInfoChip prInfo={prInfo} />}
-        {commitInfo && <CommitInfoChip commitInfo={commitInfo} />}
-      </div>
-
-      {/* Engine Cluster: Model + Duration */}
-      <ClusterSeparator />
-      <div className="flex items-center">
         <ModelChip modelName={modelName} duration={duration} />
-      </div>
-
-      {/* Metrics Cluster: Token Usage */}
-      {tokenUsage && (
-        <>
-          <ClusterSeparator />
-          <div className="flex items-center">
+        {commitInfo && (
+          <>
+            <Dot />
+            <CommitInfoChip commitInfo={commitInfo} />
+          </>
+        )}
+        {tokenUsage && (
+          <>
+            <Dot />
             <TokenUsageChip tokenUsage={tokenUsage} />
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </div>
     </div>
   );
 };

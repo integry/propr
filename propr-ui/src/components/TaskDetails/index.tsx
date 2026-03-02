@@ -160,33 +160,15 @@ const TaskDetails: React.FC = () => {
   return (
     <div className="h-full flex flex-col bg-white">
       {/* Sticky Header Shell - Never scrolls */}
-      <header className="flex-shrink-0 sticky top-0 z-20 bg-white border-b border-slate-200">
-        {/* Task Header with Actions */}
-        <div className="px-4 sm:px-6 py-3 flex items-start justify-between gap-4">
-          {/* Left: Task Header */}
-          <div className="flex-1 min-w-0">
-            <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
-          </div>
-
-          {/* Right: Actions */}
-          <div className="flex-shrink-0">
-            <ActionBar
-              currentStatus={derivedData.currentStatus}
-              historyItemWithPaths={derivedData.historyItemWithPaths}
-              stoppingExecution={taskData.stoppingExecution}
-              stopFailed={taskData.stopFailed}
-              deletingTask={taskData.deletingTask}
-              onStopExecution={taskData.handleStopExecution}
-              onViewPrompt={promptData.fetchPrompt}
-              onViewLogs={logFilesData.fetchLogFilesData}
-              onDeleteTask={handleDeleteTask}
-              onFollowUp={handleOpenFollowup}
-            />
-          </div>
+      <header className="flex-shrink-0 sticky top-0 z-20 bg-white">
+        {/* Task Header Row - Title and Status */}
+        <div className="px-4 sm:px-6 py-3 border-b border-slate-100">
+          <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
         </div>
 
-        {/* Context Strip - Dense metadata line with continuous 1px border */}
-        <div className="px-4 sm:px-6 border-b border-slate-200">
+        {/* Consolidated Context Bar - Single horizontal row with bg-slate-50 */}
+        <div className="px-4 sm:px-6 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-4">
+          {/* Left + Middle: Repo/Branch and Metadata */}
           <ContextStrip
             taskInfo={taskData.taskInfo}
             modelName={derivedData.modelName}
@@ -194,6 +176,20 @@ const TaskDetails: React.FC = () => {
             commitInfo={commitInfo}
             duration={totalDuration}
             tokenUsage={tokenUsage}
+          />
+
+          {/* Right: Action Buttons (Ghost style) */}
+          <ActionBar
+            currentStatus={derivedData.currentStatus}
+            historyItemWithPaths={derivedData.historyItemWithPaths}
+            stoppingExecution={taskData.stoppingExecution}
+            stopFailed={taskData.stopFailed}
+            deletingTask={taskData.deletingTask}
+            onStopExecution={taskData.handleStopExecution}
+            onViewPrompt={promptData.fetchPrompt}
+            onViewLogs={logFilesData.fetchLogFilesData}
+            onDeleteTask={handleDeleteTask}
+            onFollowUp={handleOpenFollowup}
           />
         </div>
 
@@ -226,7 +222,7 @@ const TaskDetails: React.FC = () => {
         <div className="flex-1 flex overflow-hidden min-w-0">
           {/* LEFT PANE (30%) - The Plan */}
           <div className="w-full lg:w-[30%] flex-shrink-0 overflow-y-auto scrollbar-stealth border-r border-gray-200">
-            <div className="p-4 space-y-4">
+            <div className="p-4 space-y-2">
               {/* Compact Status Timeline */}
               <TaskStatusTable history={taskData.history} compact={true} />
 

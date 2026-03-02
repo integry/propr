@@ -25,12 +25,13 @@ import {
 } from './ExecutionEventUtils';
 
 // File icon component - readable colors for zinc palette terminal
+// Using sky-300 for better legibility against dark backgrounds
 export const FileIcon: React.FC<{ filePath: string }> = ({ filePath }) => {
   const iconType = getFileIconType(filePath);
 
   switch (iconType) {
     case 'code':
-      return <FileCode className="h-3.5 w-3.5 text-blue-400" />;
+      return <FileCode className="h-3.5 w-3.5 text-sky-300" />;
     case 'json':
       return <FileJson className="h-3.5 w-3.5 text-amber-400" />;
     case 'text':
@@ -112,7 +113,7 @@ export const ClickablePath: React.FC<{ fullPath: string; taskInfo: TaskInfo | nu
       href={`${REPO_BASE_URL}/${cleanPath}`}
       target="_blank"
       rel="noopener noreferrer"
-      className="font-mono text-xs text-blue-400/80 hover:text-blue-300 underline flex items-center gap-1"
+      className="font-mono text-xs text-sky-300/90 hover:text-sky-200 underline flex items-center gap-1"
     >
       <FileIcon filePath={cleanPath} />
       {cleanPath}
