@@ -50,40 +50,31 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
   const isTaskActive = !['COMPLETED', 'FAILED'].includes(history[history.length - 1]?.state?.toUpperCase() || '');
 
   return (
-    <div className="pt-4">
-      {/* Header */}
-      <h4 className="mt-0 mb-4 text-sm font-semibold text-gray-900 flex items-center gap-2">
-        {isTaskActive ? (
-          <>
-            <span className="text-base">⚡</span>
-            <span className="flex items-center gap-2">
-              Execution Rail
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary-500 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-primary-500"></span>
-              </span>
-            </span>
-          </>
-        ) : (
-          <span>Execution Rail</span>
+    <div className="pt-2">
+      {/* Header - Utility Header style */}
+      <h4 className="mt-4 mb-3 text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
+        EXECUTION RAIL
+        {isTaskActive && (
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary-500 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-primary-500"></span>
+          </span>
         )}
       </h4>
 
       {/* Execution Rail with Vertical Line */}
       <div className="relative">
-        {/* Vertical Threading Rail - continuous line in left gutter */}
-        <div className="absolute left-[11px] top-0 bottom-0 w-0.5 border-l-2 border-gray-200" />
-
-        {/* Todo Items */}
-        <ul className="list-none pl-0 m-0 space-y-0 relative">
-          {liveDetails.todos.map((todo) => {
+        {/* Todo Items - space-y-4 for increased vertical gap */}
+        <ul className="list-none pl-0 m-0 space-y-4 relative">
+          {liveDetails.todos.map((todo, index) => {
             const isCompleted = todo.status === 'completed';
             const isInProgress = todo.status === 'in_progress';
+            const isLast = index === liveDetails.todos.length - 1;
 
             return (
               <li
                 key={todo.id}
-                className={`flex items-start gap-3 py-2 pl-0 pr-2 text-sm transition-colors cursor-pointer hover:bg-gray-50 rounded-r ${
+                className={`relative flex items-start gap-3 py-1 pl-0 pr-2 text-sm transition-colors cursor-pointer hover:bg-gray-50 rounded-r ${
                   isInProgress ? 'bg-primary-500/5' : ''
                 }`}
                 onClick={() => scrollToThinkingLog(todo.id, todo.content)}
@@ -91,16 +82,17 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
                 onMouseLeave={() => onTodoHover?.(null)}
                 title="Click to scroll to related thinking log"
               >
+                {/* Connecting Line to next item */}
+                {!isLast && (
+                  <div className="absolute left-[11px] top-[28px] -bottom-[20px] w-0.5 bg-slate-300 z-0" />
+                )}
+
                 {/* Icon intersecting the rail */}
                 <div className="relative flex-shrink-0 z-10">
                   {isCompleted ? (
-                    // Completed: checkmark - gray for live tasks, green for finished tasks
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
-                      isTaskActive
-                        ? 'bg-white border-2 border-gray-300'
-                        : 'bg-green-500'
-                    }`}>
-                      <Check className={`w-3.5 h-3.5 ${isTaskActive ? 'text-gray-400' : 'text-white'}`} />
+                    // Completed: Gray checkmarks - "Success is Quiet" principle
+                    <div className="w-6 h-6 rounded-full flex items-center justify-center bg-white border-2 border-slate-300">
+                      <Check className="w-3.5 h-3.5 text-slate-400" />
                     </div>
                   ) : isInProgress ? (
                     // Current/In Progress: Teal animated pulse icon

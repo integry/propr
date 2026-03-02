@@ -181,12 +181,12 @@ const TaskTimelineItem: React.FC<{
           </span>
         </div>
 
-        {/* Timeline Graphic */}
+        {/* Timeline Graphic with Threading Rail */}
         <div className="relative flex flex-col items-center mr-2 sm:mr-3">
-          {/* Upper Line */}
-          <div className={`w-0.5 bg-gray-200 absolute top-0 bottom-0 left-1/2 -translate-x-1/2 ${index === 0 ? 'top-3' : ''} ${isLast ? 'h-3' : ''}`}></div>
+          {/* Continuous 2px solid vertical line connecting all icons */}
+          <div className={`w-0.5 bg-slate-300 absolute top-0 bottom-0 left-1/2 -translate-x-1/2 ${index === 0 ? 'top-3' : ''} ${isLast ? 'h-3' : ''}`}></div>
 
-          {/* Icon/Dot */}
+          {/* Icon/Dot - intersects the rail */}
           <div className="relative z-10 bg-white p-0.5">
             <TimelineIcon state={stateUpper} isRunning={isRunning} isFailure={isFailure} isCancelled={isCancelled} />
           </div>
@@ -239,11 +239,11 @@ const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = fa
   if (!history || history.length === 0) return null;
 
   return (
-    <div className="border-t border-gray-100 pt-4">
-      <h4 className={`${compact ? 'text-sm' : 'text-base'} font-semibold text-gray-900 mb-3`}>
-        Timeline
-        {startDate && <span className="ml-2 text-xs font-normal text-gray-400">{startDate}</span>}
-      </h4>
+    <div className="pt-2">
+      {/* Start date shown as subtitle */}
+      {startDate && (
+        <div className="text-[10px] font-mono text-slate-400 mb-2">{startDate}</div>
+      )}
 
       <div className="relative">
         {itemsWithDuration.map((item, index) => (

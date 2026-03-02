@@ -123,7 +123,6 @@ const PRInfoChip: React.FC<{ prInfo: { url?: string; number?: number } }> = ({ p
   if (!prInfo.url) return null;
   return (
     <>
-      <Dot />
       <a
         href={prInfo.url}
         target="_blank"
@@ -134,6 +133,7 @@ const PRInfoChip: React.FC<{ prInfo: { url?: string; number?: number } }> = ({ p
         PR #{prInfo.number}
         <ExternalLink size={10} className="opacity-60" />
       </a>
+      <Dot />
     </>
   );
 };
@@ -143,7 +143,6 @@ const CommitInfoChip: React.FC<{ commitInfo: { shortHash: string; url: string } 
   if (!commitInfo.shortHash || !commitInfo.url) return null;
   return (
     <>
-      <Dot />
       <a
         href={commitInfo.url}
         target="_blank"
@@ -169,16 +168,13 @@ const TokenUsageChip: React.FC<{ tokenUsage: TokenUsage }> = ({ tokenUsage }) =>
   if (!hasTokens) return null;
 
   return (
-    <>
-      <Dot />
-      <span
-        className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-mono text-xs"
-        title={`Input: ${tokenUsage.input_tokens ?? 0} | Output: ${tokenUsage.output_tokens ?? 0}${tokenUsage.cache_read_input_tokens ? ` | Cache Read: ${tokenUsage.cache_read_input_tokens}` : ''}${tokenUsage.cache_creation_input_tokens ? ` | Cache Creation: ${tokenUsage.cache_creation_input_tokens}` : ''}`}
-      >
-        <Zap size={10} />
-        {formatTokenCount(inputTokens)}/{formatTokenCount(outputTokens)}
-      </span>
-    </>
+    <span
+      className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-mono text-xs"
+      title={`Input: ${tokenUsage.input_tokens ?? 0} | Output: ${tokenUsage.output_tokens ?? 0}${tokenUsage.cache_read_input_tokens ? ` | Cache Read: ${tokenUsage.cache_read_input_tokens}` : ''}${tokenUsage.cache_creation_input_tokens ? ` | Cache Creation: ${tokenUsage.cache_creation_input_tokens}` : ''}`}
+    >
+      <Zap size={10} />
+      {formatTokenCount(inputTokens)}/{formatTokenCount(outputTokens)}
+    </span>
   );
 };
 
@@ -200,14 +196,31 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   tokenUsage,
 }) => {
   return (
-    <div className="flex items-center flex-wrap gap-y-1 text-sm text-gray-600 py-2 border-b border-gray-100">
-      {taskInfo && <RepoLink taskInfo={taskInfo} />}
-      {taskInfo && <IssuePRChip taskInfo={taskInfo} />}
-      {taskInfo && <LinkedIssueChip taskInfo={taskInfo} />}
-      <ModelChip modelName={modelName} duration={duration} />
-      {prInfo && <PRInfoChip prInfo={prInfo} />}
-      {commitInfo && <CommitInfoChip commitInfo={commitInfo} />}
-      {tokenUsage && <TokenUsageChip tokenUsage={tokenUsage} />}
+    <div className="flex items-center flex-wrap gap-y-1 text-sm text-gray-600 flex-1 min-w-0">
+      {/* Left: Repo/Branch - Bold repo name */}
+      <div className="flex items-center">
+        {taskInfo && <RepoLink taskInfo={taskInfo} />}
+      </div>
+
+      {/* Middle: PR • Issue • Model • Duration - Separated by dots */}
+      <div className="flex items-center flex-wrap">
+        {prInfo && <PRInfoChip prInfo={prInfo} />}
+        {taskInfo && <IssuePRChip taskInfo={taskInfo} />}
+        {taskInfo && <LinkedIssueChip taskInfo={taskInfo} />}
+        <ModelChip modelName={modelName} duration={duration} />
+        {commitInfo && (
+          <>
+            <Dot />
+            <CommitInfoChip commitInfo={commitInfo} />
+          </>
+        )}
+        {tokenUsage && (
+          <>
+            <Dot />
+            <TokenUsageChip tokenUsage={tokenUsage} />
+          </>
+        )}
+      </div>
     </div>
   );
 };

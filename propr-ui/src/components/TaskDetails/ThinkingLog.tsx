@@ -1,7 +1,16 @@
 import React, { useMemo } from 'react';
 import { LiveEvent, TodoItem } from './types';
 import { renderMarkdown } from './renderMarkdown';
-import { MessageSquareText, Lightbulb, Wrench, Search, CheckCircle2, ListChecks } from 'lucide-react';
+import { Lightbulb, Wrench, Search, CheckCircle2 } from 'lucide-react';
+
+// Simple thought type detection based on content
+const detectThoughtType = (content: string): 'analysis' | 'action' | 'summary' | 'search' => {
+  const lower = content.toLowerCase();
+  if (lower.includes('search') || lower.includes('find') || lower.includes('look for')) return 'search';
+  if (lower.includes('create') || lower.includes('update') || lower.includes('modify') || lower.includes('implement')) return 'action';
+  if (lower.includes('summary') || lower.includes('complete') || lower.includes('done') || lower.includes('finished')) return 'summary';
+  return 'analysis';
+};
 
 interface ThinkingLogEvent extends LiveEvent {
   relativeTime?: string | null;
@@ -13,63 +22,91 @@ interface ThinkingLogProps {
   highlightedTodoId?: string | null;
 }
 
-// Pattern lists for thought type detection
-const SUMMARY_PATTERNS = ['implementation summary', 'summary:', 'completed:', 'successfully'];
-const ANALYSIS_PATTERNS = ['i will analyze', 'let me analyze', 'looking at', 'examining', 'reviewing', 'understanding', 'i need to understand', 'let me understand'];
-const SEARCH_PATTERNS = ['searching', 'let me search', 'looking for', 'finding'];
-const ACTION_PATTERNS = ['now let me', 'i will create', 'i will update', 'i will modify', 'i will add', 'i will implement', 'let me create', 'let me update', 'let me modify', 'let me add', 'creating', 'updating', 'modifying'];
-
-const matchesAnyPattern = (content: string, patterns: string[]): boolean =>
-  patterns.some(pattern => content.includes(pattern));
-
-// Detect the type of thought based on content
-const detectThoughtType = (content: string): 'analysis' | 'action' | 'summary' | 'search' => {
-  const lowerContent = content.toLowerCase();
-
-  if (matchesAnyPattern(lowerContent, SUMMARY_PATTERNS)) return 'summary';
-  if (matchesAnyPattern(lowerContent, ANALYSIS_PATTERNS)) return 'analysis';
-  if (matchesAnyPattern(lowerContent, SEARCH_PATTERNS)) return 'search';
-  if (matchesAnyPattern(lowerContent, ACTION_PATTERNS)) return 'action';
-
-  return 'analysis';
-};
-
-const getThoughtStyles = (type: 'analysis' | 'action' | 'summary' | 'search') => {
+// Get category display info for gutter-style output
+// Icons use low-saturation colors (60% opacity), labels use slate-400
+const getCategoryInfo = (type: 'analysis' | 'action' | 'summary' | 'search') => {
   switch (type) {
     case 'summary':
       return {
-        bgColor: 'bg-amber-50',
-        borderColor: 'border-amber-200',
-        iconBg: 'bg-amber-100',
-        iconColor: 'text-amber-600',
+        label: 'SUMMARY',
+        iconColor: 'text-amber-500/60',
         Icon: CheckCircle2
       };
     case 'action':
       return {
-        bgColor: 'bg-green-50',
-        borderColor: 'border-green-200',
-        iconBg: 'bg-green-100',
-        iconColor: 'text-green-600',
+        label: 'ACTION',
+        iconColor: 'text-emerald-500/60',
         Icon: Wrench
       };
     case 'search':
       return {
-        bgColor: 'bg-purple-50',
-        borderColor: 'border-purple-200',
-        iconBg: 'bg-purple-100',
-        iconColor: 'text-purple-600',
+        label: 'SEARCH',
+        iconColor: 'text-purple-500/60',
         Icon: Search
       };
     case 'analysis':
     default:
       return {
-        bgColor: 'bg-blue-50',
-        borderColor: 'border-blue-200',
-        iconBg: 'bg-blue-100',
-        iconColor: 'text-blue-600',
+        label: 'ANALYSIS',
+        iconColor: 'text-blue-500/60',
         Icon: Lightbulb
       };
   }
+};
+
+interface TerminalLogEntryProps {
+  event: ThinkingLogEvent;
+  todoContext?: string;
+  isHighlighted?: boolean;
+}
+
+const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext, isHighlighted }) => {
+  const thoughtType = detectThoughtType(event.content || '');
+  const categoryInfo = getCategoryInfo(thoughtType);
+  const { Icon } = categoryInfo;
+
+  return (
+    <div
+      className={`py-3 transition-all duration-200 border-b border-slate-50 last:border-b-0 ${
+        isHighlighted ? 'bg-blue-50/50' : ''
+      }`}
+    >
+      {/* Gutter Layout: Two-Column Row */}
+      <div className="flex items-start gap-3">
+        {/* Left Gutter (100px) - Icon, Category Label, Timestamp */}
+        <div className="flex-shrink-0 w-[100px] flex flex-col items-start">
+          {/* Icon + Category Label Row */}
+          <div className="flex items-center gap-1.5">
+            <Icon className={`h-3 w-3 ${categoryInfo.iconColor}`} />
+            <span className="text-[11px] font-mono font-bold uppercase tracking-tighter text-slate-400">
+              {categoryInfo.label}
+            </span>
+          </div>
+          {/* Timestamp below category label */}
+          {event.relativeTime && (
+            <span className="font-mono text-[10px] text-slate-300 mt-0.5 ml-[18px]">
+              {event.relativeTime}
+            </span>
+          )}
+          {/* Todo context if available */}
+          {todoContext && (
+            <span className="text-[9px] text-slate-300 truncate mt-0.5 ml-[18px]">
+              → {todoContext}
+            </span>
+          )}
+        </div>
+
+        {/* Right Pane - Content */}
+        <div className="flex-1 min-w-0 overflow-hidden">
+          {event.content && (
+            <div className="text-sm text-slate-700 leading-relaxed break-words overflow-hidden">
+              {renderMarkdown(event.content)}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 };
 
 interface ThoughtGroupProps {
@@ -85,52 +122,38 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
 
   return (
     <div
-      className={`mb-4 transition-all duration-300 ${
-        isHighlighted ? 'ring-2 ring-blue-400 ring-offset-2 rounded-lg' : ''
+      className={`transition-all duration-300 ${
+        isHighlighted ? 'ring-1 ring-blue-300 ring-offset-1 rounded' : ''
       }`}
       id={todoId ? `thinking-log-${todoId}` : undefined}
       data-todo-id={todoId}
       data-todo-content={title}
     >
-      {/* Group Header */}
-      <div className={`flex items-center gap-2 mb-2 px-3 py-1.5 rounded-t-lg ${isCompleted ? 'bg-green-100' : 'bg-gray-100'}`}>
+      {/* Group Header - todo subheader style with better prominence */}
+      <div className="flex items-center gap-2 py-2.5 px-3 bg-slate-50/80 border-l-2 border-slate-400 mb-1 mt-4 first:mt-0">
         {isCompleted ? (
-          <CheckCircle2 className="h-4 w-4 text-green-600" />
+          <CheckCircle2 className="h-4 w-4 text-slate-500 flex-shrink-0" />
         ) : (
-          <ListChecks className="h-4 w-4 text-gray-600" />
+          <div className="h-4 w-4 rounded-full border-2 border-blue-400 bg-blue-50 flex-shrink-0" />
         )}
-        <span className={`text-sm font-medium ${isCompleted ? 'text-green-800' : 'text-gray-700'}`}>
+        <span className={`text-sm font-semibold ${isCompleted ? 'text-slate-600' : 'text-slate-700'}`}>
           {title}
+        </span>
+        <span className="text-[10px] text-slate-400 font-mono ml-auto flex-shrink-0">
+          ({events.length})
         </span>
       </div>
 
-      {/* Grouped Thoughts */}
-      <div className="space-y-2 pl-2 border-l-2 border-gray-200 ml-2">
-        {events.map((event, index) => {
-          const thoughtType = detectThoughtType(event.content || '');
-          const styles = getThoughtStyles(thoughtType);
-          const { Icon } = styles;
-
-          return (
-            <div
-              key={index}
-              className={`flex items-start gap-3 p-3 rounded-lg border ${styles.bgColor} ${styles.borderColor}`}
-            >
-              <div className={`flex-shrink-0 w-7 h-7 rounded-full ${styles.iconBg} flex items-center justify-center`}>
-                <Icon className={`h-4 w-4 ${styles.iconColor}`} />
-              </div>
-              <div className="flex-1 min-w-0">
-                {/* Changed from whitespace-pre-wrap to allow ReactMarkdown to handle spacing */}
-                <div className="text-gray-700 text-sm break-words">
-                  {renderMarkdown(event.content)}
-                </div>
-                {event.relativeTime && (
-                  <p className="text-xs text-gray-500 mt-1">{event.relativeTime}</p>
-                )}
-              </div>
-            </div>
-          );
-        })}
+      {/* Log entries - gutter style layout */}
+      <div>
+        {events.map((event, index) => (
+          <TerminalLogEntry
+            key={index}
+            event={event}
+            todoContext={undefined}
+            isHighlighted={false}
+          />
+        ))}
       </div>
     </div>
   );
@@ -145,8 +168,6 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
     }
 
     // For now, create logical groups based on event timing and todo completion
-    // This is a simplified grouping - in a real implementation, you might have
-    // more sophisticated correlation between thoughts and todos
     const groups: ThoughtGroupProps[] = [];
 
     // Find completed todos and create groups
@@ -209,35 +230,19 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
   }
 
   return (
-    <div id="thinking-log-section">
-      <div className="flex items-center gap-2 mb-3">
-        <MessageSquareText className="h-4 w-4 text-gray-600" />
-        <h4 className="text-sm font-semibold text-gray-900">Thinking Log</h4>
-        <span className="text-xs text-gray-400">({events.length} thoughts)</span>
-      </div>
-
-      {/* Legend - Compact inline */}
-      <div className="flex flex-wrap gap-3 mb-3 text-[10px] text-gray-500">
-        <div className="flex items-center gap-1">
-          <div className="w-2 h-2 rounded-full bg-blue-200"></div>
-          <span>Analysis</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <div className="w-2 h-2 rounded-full bg-green-200"></div>
-          <span>Action</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <div className="w-2 h-2 rounded-full bg-purple-200"></div>
-          <span>Search</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <div className="w-2 h-2 rounded-full bg-amber-200"></div>
-          <span>Summary</span>
+    <div id="thinking-log-section" className="min-w-0 overflow-hidden">
+      {/* Section Header */}
+      <div className="mb-4 flex items-center gap-2">
+        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 m-0">
+          IMPLEMENTATION LOG
+        </h4>
+        <div className="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-500 font-mono text-[10px] font-bold">
+          {events.length}
         </div>
       </div>
 
-      {/* Grouped Events */}
-      <div className="space-y-3">
+      {/* Grouped Events - terminal style log feed */}
+      <div className="space-y-3 min-w-0">
         {groupedEvents.map((group, index) => (
           <ThoughtGroup
             key={group.todoId || index}
@@ -249,6 +254,7 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({ events, todos = [], highlight
           />
         ))}
       </div>
+
     </div>
   );
 };

@@ -10,6 +10,7 @@ interface MarkdownRendererProps {
   text: unknown;
   className?: string;
   isCodeExpanded?: boolean;
+  darkMode?: boolean;
 }
 
 // Helper to check if a line starts a code block (supports both ``` and ~~~)
@@ -92,7 +93,7 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
   return { processedText: processedLines.join('\n'), filePathMap };
 };
 
-const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '', isCodeExpanded = false }) => {
+const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '', isCodeExpanded = false, darkMode = false }) => {
   if (!text) return null;
 
   // Handle non-string content (JSON objects)
@@ -117,7 +118,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
   let codeBlockCounter = 0;
 
   return (
-    <div className={`markdown-body ${className}`}>
+    <div className={`markdown-body overflow-hidden ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
         components={{
@@ -191,27 +192,31 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
               );
             }
             return (
-              <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono border border-gray-300 text-gray-800" {...props}>
+              <code className={`px-1.5 py-0.5 rounded text-[13px] font-mono break-all whitespace-nowrap ${
+                darkMode
+                  ? 'bg-zinc-700/50 border border-zinc-600 text-zinc-200'
+                  : 'bg-slate-100 border border-slate-200 text-slate-800'
+              }`} {...props}>
                 {children}
               </code>
             );
           },
-          // Typography mappings to match original design
-          h1: ({ children }) => <h1 className="text-xl font-bold text-gray-900 mt-6 mb-3">{children}</h1>,
-          h2: ({ children }) => <h2 className="text-lg font-bold text-gray-900 mt-5 mb-3">{children}</h2>,
-          h3: ({ children }) => <h3 className="text-base font-semibold text-gray-800 mt-4 mb-2">{children}</h3>,
-          h4: ({ children }) => <h4 className="text-sm font-semibold text-gray-700 mt-3 mb-1">{children}</h4>,
-          p: ({ children }) => <p className="mb-4 text-gray-700 leading-relaxed">{children}</p>,
+          // Typography mappings to match original design (with dark mode support)
+          h1: ({ children }) => <h1 className={`text-xl font-bold mt-6 mb-3 break-words ${darkMode ? 'text-zinc-100' : 'text-gray-900'}`}>{children}</h1>,
+          h2: ({ children }) => <h2 className={`text-lg font-bold mt-5 mb-3 break-words ${darkMode ? 'text-zinc-100' : 'text-gray-900'}`}>{children}</h2>,
+          h3: ({ children }) => <h3 className={`text-base font-semibold mt-4 mb-2 break-words ${darkMode ? 'text-zinc-200' : 'text-gray-800'}`}>{children}</h3>,
+          h4: ({ children }) => <h4 className={`text-sm font-semibold mt-3 mb-1 break-words ${darkMode ? 'text-zinc-300' : 'text-gray-700'}`}>{children}</h4>,
+          p: ({ children }) => <p className={`mb-4 leading-relaxed break-words ${darkMode ? 'text-zinc-200' : 'text-gray-700'}`}>{children}</p>,
           ul: ({ children }) => <ul className="list-disc list-inside space-y-2 my-4 ml-2">{children}</ul>,
           ol: ({ children }) => <ol className="list-decimal list-inside space-y-2 my-4 ml-2">{children}</ol>,
-          li: ({ children }) => <li className="ml-2 mb-1 text-gray-700">{children}</li>,
+          li: ({ children }) => <li className={`ml-2 mb-1 break-words ${darkMode ? 'text-zinc-200' : 'text-gray-700'}`}>{children}</li>,
           a: ({ href, children }) => (
-            <a href={href} className="text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer">
+            <a href={href} className="text-sky-400 hover:text-sky-300 hover:underline" target="_blank" rel="noopener noreferrer">
               {children}
             </a>
           ),
           blockquote: ({ children }) => (
-            <blockquote className="border-l-4 border-gray-300 pl-4 italic my-4 text-gray-600">
+            <blockquote className={`border-l-4 pl-4 italic my-4 break-words overflow-hidden ${darkMode ? 'border-zinc-600 text-zinc-300' : 'border-gray-300 text-gray-600'}`}>
               {children}
             </blockquote>
           ),

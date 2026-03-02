@@ -42,8 +42,8 @@ export async function getTasksFromDb(
     .whereNotNull('task_id')
     .as('pi');
 
-  const critiqueScoreSubquery = db.raw(`
-    (SELECT
+  const critiqueScoreSubquerySql = `
+    LEFT JOIN (SELECT
       task_id,
       CASE
         WHEN json_valid(analysis_report) = 1
@@ -79,8 +79,8 @@ export async function getTasksFromDb(
           AND le2.analysis_report IS NOT NULL
           AND json_valid(le2.analysis_report) = 1
       )
-    ) as cs_score
-  `);
+    ) as cs_score ON cs_score.task_id = t.task_id
+  `;
 
   const baseQuery = db('tasks as t')
     .join(latestHistorySubquery, function() {
@@ -89,7 +89,7 @@ export async function getTasksFromDb(
     .leftJoin(processingStartSubquery, 'ps.task_id', 't.task_id')
     .leftJoin(completionSubquery, 'cs.task_id', 't.task_id')
     .leftJoin(planIssueStatusSubquery, 'pi.task_id', 't.task_id')
-    .leftJoin(critiqueScoreSubquery, 'cs_score.task_id', 't.task_id');
+    .joinRaw(critiqueScoreSubquerySql);
 
   if (status && status !== 'all') {
     baseQuery.where('h.state', status);

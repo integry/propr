@@ -131,19 +131,17 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
   }
 
   return (
-    <div className="relative border-t border-gray-100 pt-4">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2 m-0">
-          <span className="flex items-center gap-2">
-            {isActive ? 'Live Files' : 'Files Changed'}
-            {isActive && (
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
-              </span>
-            )}
-          </span>
+    <div className="relative border-t border-gray-100 pt-2">
+      {/* Header - Utility Header style */}
+      <div className="flex items-center justify-between mb-2 mt-4">
+        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2 m-0">
+          FILES CHANGED
+          {isActive && (
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
+            </span>
+          )}
         </h4>
         {fileChanges.length > 0 && (
           <div className="flex items-center gap-3 text-xs">
@@ -182,7 +180,7 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive }) => {
               <button
                 key={file.path}
                 onClick={() => handleSelectFile(file.path)}
-                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded border text-xs font-mono transition-colors cursor-pointer ${getChipBgClass(file.status, isSelected)}`}
+                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded border text-[11px] font-mono transition-colors cursor-pointer ${getChipBgClass(file.status, isSelected)}`}
                 title={file.path}
               >
                 {getStatusIndicator(file.status)}

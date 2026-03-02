@@ -101,6 +101,9 @@ const DeleteButton: React.FC<{
   );
 };
 
+// Ghost button style for action buttons - small with icon + text
+const ghostButtonClass = "flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-white/80 border border-transparent hover:border-slate-200 transition-colors";
+
 const ActionBar: React.FC<ActionBarProps> = ({
   currentStatus,
   historyItemWithPaths,
@@ -117,48 +120,48 @@ const ActionBar: React.FC<ActionBarProps> = ({
   const isCancelled = currentStatus === 'CANCELLED';
 
   return (
-    <div className="flex items-center justify-end gap-2">
+    <div className="flex items-center gap-1.5 flex-shrink-0">
       <CancelledBadge isCancelled={isCancelled} />
 
-      {/* View Prompt Button */}
+      {/* View Prompt Button - Ghost style */}
       {historyItemWithPaths?.promptPath && (
         <button
           onClick={() => onViewPrompt(historyItemWithPaths.promptPath!)}
           title="View Prompt"
-          className="flex items-center gap-1.5 px-2 py-1.5 rounded text-xs text-gray-600 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+          className={ghostButtonClass}
         >
-          <FileText size={14} />
+          <FileText size={13} />
           <span className="hidden sm:inline">Prompt</span>
         </button>
       )}
 
-      {/* View Logs Button */}
+      {/* View Logs Button - Ghost style */}
       {historyItemWithPaths?.logsPath && (
         <button
           onClick={() => onViewLogs(historyItemWithPaths.logsPath!)}
           title="View Logs"
-          className="flex items-center gap-1.5 px-2 py-1.5 rounded text-xs text-gray-600 hover:text-green-600 hover:bg-green-50 transition-colors"
+          className={ghostButtonClass}
         >
-          <Terminal size={14} />
+          <Terminal size={13} />
           <span className="hidden sm:inline">Logs</span>
         </button>
       )}
 
-      {/* Follow Up Button */}
+      {/* Follow Up Button - Ghost style */}
       {onFollowUp && !isActive && (
         <button
           onClick={onFollowUp}
           title="Follow Up - Post a follow-up comment"
-          className="flex items-center gap-1.5 px-2 py-1.5 rounded text-xs text-gray-600 hover:text-purple-600 hover:bg-purple-50 transition-colors"
+          className={ghostButtonClass}
         >
-          <MessageSquarePlus size={14} />
+          <MessageSquarePlus size={13} />
           <span className="hidden sm:inline">Follow Up</span>
         </button>
       )}
 
       {/* Divider before destructive actions */}
       {(isActive || onDeleteTask) && (
-        <div className="h-5 w-px bg-gray-200 mx-1" />
+        <div className="h-4 w-px bg-slate-300 mx-1" />
       )}
 
       <StopExecutionButton

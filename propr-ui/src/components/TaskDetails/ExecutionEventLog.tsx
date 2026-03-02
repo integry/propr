@@ -1,26 +1,22 @@
 import React, { useState, useMemo } from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { LiveEvent, TaskInfo } from './types';
-import { formatDisplayPath, stripWorkspacePrefixes } from './utils';
 import MarkdownRenderer from './MarkdownRenderer';
 import {
-  FileText,
-  FileCode,
-  FileJson,
-  File,
-  FolderSearch,
-  Terminal,
-  Edit3,
-  Eye,
+  ChevronUp,
   ChevronDown,
   ChevronRight,
-  CheckCircle2,
-  XCircle,
-  Wrench,
-  Lightbulb,
-  Globe
 } from 'lucide-react';
+import {
+  detectLanguage,
+  formatToolResult,
+  getCategoryDisplay,
+  extractEventSummary,
+} from './ExecutionEventUtils';
+import {
+  EventIcon,
+  ClickablePath,
+  SyntaxHighlightedResult,
+} from './ExecutionEventHelpers';
 
 interface ExecutionEventLogProps {
   events: LiveEvent[];
@@ -31,226 +27,26 @@ interface ExecutionEventLogProps {
   taskInfo: TaskInfo | null;
 }
 
-// Get file icon based on file extension
-const getFileIcon = (filePath: string) => {
-  const ext = filePath.split('.').pop()?.toLowerCase() || '';
-
-  if (['ts', 'tsx', 'js', 'jsx'].includes(ext)) {
-    return <FileCode className="h-4 w-4 text-blue-500" />;
-  }
-  if (['json', 'yaml', 'yml'].includes(ext)) {
-    return <FileJson className="h-4 w-4 text-yellow-500" />;
-  }
-  if (['md', 'txt', 'env'].includes(ext)) {
-    return <FileText className="h-4 w-4 text-gray-500" />;
-  }
-  return <File className="h-4 w-4 text-gray-400" />;
-};
-
-// Get tool icon based on tool name
-const getToolIcon = (toolName: string) => {
-  const name = toolName.toLowerCase();
-
-  if (name === 'read') return <Eye className="h-4 w-4" />;
-  if (name === 'edit') return <Edit3 className="h-4 w-4" />;
-  if (name === 'write') return <FileText className="h-4 w-4" />;
-  if (name === 'glob' || name === 'grep') return <FolderSearch className="h-4 w-4" />;
-  if (name === 'bash') return <Terminal className="h-4 w-4" />;
-  if (name === 'webfetch' || name === 'websearch') return <Globe className="h-4 w-4" />;
-
-  return <Wrench className="h-4 w-4" />;
-};
-
-// Detect if content is a diff
-const isDiffContent = (content: string): boolean => {
-  if (!content) return false;
-  const lines = content.split('\n').slice(0, 10);
-  const diffPatterns = [
-    /^[+-]{3}\s/,        // --- or +++ at start
-    /^@@\s.*@@/,         // @@ line numbers @@
-    /^[+-]\s/,           // + or - at start of line
-    /^diff --git/,       // git diff header
-  ];
-
-  return lines.some(line =>
-    diffPatterns.some(pattern => pattern.test(line))
-  );
-};
-
-// Detect language from file path or content
-const detectLanguage = (filePath?: string, content?: string): string => {
-  if (filePath) {
-    const ext = filePath.split('.').pop()?.toLowerCase() || '';
-    const langMap: Record<string, string> = {
-      'ts': 'typescript',
-      'tsx': 'tsx',
-      'js': 'javascript',
-      'jsx': 'jsx',
-      'json': 'json',
-      'yaml': 'yaml',
-      'yml': 'yaml',
-      'md': 'markdown',
-      'py': 'python',
-      'sh': 'bash',
-      'bash': 'bash',
-      'css': 'css',
-      'scss': 'scss',
-      'html': 'html',
-      'xml': 'xml',
-      'sql': 'sql',
-      'go': 'go',
-      'rs': 'rust',
-      'java': 'java',
-      'rb': 'ruby',
-      'php': 'php',
-    };
-    if (langMap[ext]) return langMap[ext];
-  }
-
-  // Check content for diff patterns
-  if (content && isDiffContent(content)) {
-    return 'diff';
-  }
-
-  return 'text';
-};
-
-// Check if tool is typically noisy (should be collapsed by default)
-const isNoisyTool = (toolName: string): boolean => {
-  const name = toolName.toLowerCase();
-  return ['read', 'glob', 'grep', 'todowrite'].includes(name);
-};
-
-const renderClickablePath = (fullPath: string, taskInfo: TaskInfo | null): React.ReactNode => {
-  const cleanPath = formatDisplayPath(fullPath);
-
-  if (!cleanPath || !cleanPath.includes('/') || cleanPath.startsWith('http')) {
-    return (
-      <span className="font-mono flex items-center gap-1">
-        {getFileIcon(cleanPath)}
-        {cleanPath}
-      </span>
-    );
-  }
-
-  const REPO_BASE_URL = taskInfo?.repoOwner && taskInfo?.repoName
-    ? `https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}/blob/main`
-    : null;
-
-  if (!REPO_BASE_URL) {
-    return (
-      <span className="font-mono flex items-center gap-1">
-        {getFileIcon(cleanPath)}
-        {cleanPath}
-      </span>
-    );
-  }
-
-  return (
-    <a
-      href={`${REPO_BASE_URL}/${cleanPath}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="font-mono text-blue-600 hover:text-blue-700 underline flex items-center gap-1"
-    >
-      {getFileIcon(cleanPath)}
-      {cleanPath}
-    </a>
-  );
-};
-
-interface SyntaxHighlightedResultProps {
-  result: string;
-  language: string;
-  maxHeight?: string;
-}
-
-const SyntaxHighlightedResult: React.FC<SyntaxHighlightedResultProps> = ({
-  result,
-  language,
-  maxHeight = '300px'
-}) => {
-  // For diff content, use special styling
-  if (language === 'diff') {
-    return (
-      <SyntaxHighlighter
-        language="diff"
-        style={vscDarkPlus}
-        customStyle={{
-          fontSize: '12px',
-          borderRadius: '0.375rem',
-          margin: 0,
-          maxHeight,
-          overflow: 'auto'
-        }}
-        showLineNumbers={false}
-      >
-        {result}
-      </SyntaxHighlighter>
-    );
-  }
-
-  return (
-    <SyntaxHighlighter
-      language={language}
-      style={vscDarkPlus}
-      customStyle={{
-        fontSize: '12px',
-        borderRadius: '0.375rem',
-        margin: 0,
-        maxHeight,
-        overflow: 'auto'
-      }}
-      showLineNumbers={true}
-      wrapLines={true}
-    >
-      {result}
-    </SyntaxHighlighter>
-  );
-};
-
-const formatToolResult = (result: string | object | undefined): string => {
-  let resultText: string;
-  if (typeof result === 'string') {
-    resultText = result;
-  } else if (result === undefined) {
-    resultText = '(undefined)';
-  } else if (result === null) {
-    resultText = '(null)';
-  } else {
-    try {
-      resultText = JSON.stringify(result, null, 2);
-    } catch {
-      resultText = String(result);
-    }
-  }
-  return stripWorkspacePrefixes(resultText);
-};
-
-// Sub-components for EventItem to reduce complexity
-const ThoughtContent: React.FC<{ content?: string }> = ({ content }) => (
-  <div className="text-gray-700 text-sm">
-    <MarkdownRenderer text={content} />
+// Separate component for thought content rendering
+const ThoughtContent: React.FC<{ content: string }> = ({ content }) => (
+  <div className="text-xs text-zinc-200 pl-2 overflow-hidden font-mono">
+    <MarkdownRenderer text={content} darkMode={true} />
   </div>
 );
 
-const ToolUseContent: React.FC<{ event: LiveEvent; taskInfo: TaskInfo | null }> = ({ event, taskInfo }) => (
-  <div className="text-sm">
-    <div className="flex items-center gap-2 mb-1">
-      <span className="font-semibold text-gray-800 bg-gray-100 px-2 py-0.5 rounded border border-gray-200 text-xs">
-        {event.toolName}
-      </span>
-    </div>
+// Separate component for tool use details rendering
+const ToolUseDetails: React.FC<{ event: LiveEvent; taskInfo: TaskInfo | null }> = ({ event, taskInfo }) => (
+  <div className="text-xs space-y-1 font-mono">
     {event.input?.file_path && (
-      <p className="text-gray-600 mt-1 flex items-center gap-1">
-        <span className="text-gray-500">File:</span>
-        {renderClickablePath(event.input.file_path, taskInfo)}
-      </p>
+      <div className="flex items-center gap-1 text-zinc-300">
+        <span className="text-[10px] uppercase text-zinc-400 font-bold tracking-widest">File:</span>
+        <ClickablePath fullPath={event.input.file_path} taskInfo={taskInfo} />
+      </div>
     )}
     {event.input?.command && (
-      <div className="mt-1">
-        <span className="text-gray-500 text-xs">Command:</span>
-        <code className="block bg-gray-900 text-gray-100 p-2 rounded font-mono text-xs mt-1 overflow-x-auto">
+      <div>
+        <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest">Command:</span>
+        <code className="block border border-zinc-800 bg-transparent text-emerald-400/80 p-1.5 rounded font-mono text-[11px] mt-0.5 overflow-x-auto">
           {event.input.command}
         </code>
       </div>
@@ -258,91 +54,180 @@ const ToolUseContent: React.FC<{ event: LiveEvent; taskInfo: TaskInfo | null }> 
   </div>
 );
 
-interface ToolResultContentProps {
+// Separate component for tool result rendering
+const ToolResultContent: React.FC<{ resultText: string; language: string }> = ({ resultText, language }) => (
+  <div className="mt-1">
+    <SyntaxHighlightedResult result={resultText} language={language} maxHeight="200px" />
+  </div>
+);
+
+// Expanded content component to reduce complexity
+const ExpandedContent: React.FC<{
   event: LiveEvent;
+  taskInfo: TaskInfo | null;
   resultText: string;
   language: string;
-  isCollapsed: boolean;
-  onToggle: () => void;
-}
+}> = ({ event, taskInfo, resultText, language }) => {
+  if (event.type === 'thought' && event.content) {
+    return <ThoughtContent content={event.content} />;
+  }
 
-const ToolResultContent: React.FC<ToolResultContentProps> = ({
-  event,
-  resultText,
-  language,
-  isCollapsed,
-  onToggle
-}) => {
-  const sizeDisplay = resultText.length > 1000
-    ? `${Math.round(resultText.length / 1024)}KB`
-    : `${resultText.length} chars`;
+  if (event.type === 'tool_use') {
+    return <ToolUseDetails event={event} taskInfo={taskInfo} />;
+  }
 
+  if (event.type === 'tool_result' && resultText) {
+    return <ToolResultContent resultText={resultText} language={language} />;
+  }
+
+  return null;
+};
+
+// Check if event has expandable content
+const hasExpandableContent = (event: LiveEvent, resultText: string): boolean => {
   return (
-    <div className={`text-sm rounded-lg overflow-hidden ${event.isError ? 'border border-red-200' : 'border border-gray-200'}`}>
-      <div
-        className={`flex items-center justify-between px-3 py-2 cursor-pointer ${event.isError ? 'bg-red-50' : 'bg-gray-50'}`}
-        onClick={onToggle}
-      >
-        <span className={`font-semibold text-xs ${event.isError ? 'text-red-600' : 'text-green-600'}`}>
-          Tool Result {event.isError ? '(Error)' : '(Success)'}
-        </span>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-500">{sizeDisplay}</span>
-          {isCollapsed ? <ChevronRight className="h-4 w-4 text-gray-400" /> : <ChevronDown className="h-4 w-4 text-gray-400" />}
-        </div>
-      </div>
-      {!isCollapsed && (
-        <div className="p-2">
-          <SyntaxHighlightedResult result={resultText} language={language} maxHeight="300px" />
-        </div>
-      )}
-    </div>
+    (event.type === 'thought' && !!event.content && event.content.length > 60) ||
+    (event.type === 'tool_result' && resultText.length > 0) ||
+    (event.type === 'tool_use' && !!(event.input?.command || event.input?.file_path))
   );
 };
 
-const getEventIcon = (event: LiveEvent): React.ReactNode => {
-  if (event.type === 'thought') return <Lightbulb className="h-4 w-4 text-blue-600" />;
-  if (event.type === 'tool_use') return getToolIcon(event.toolName || '');
-  if (event.type === 'tool_result') {
-    return event.isError ? <XCircle className="h-4 w-4 text-red-500" /> : <CheckCircle2 className="h-4 w-4 text-green-500" />;
-  }
-  return <FileText className="h-4 w-4 text-gray-400" />;
-};
+// Event header component
+const EventHeader: React.FC<{
+  categoryDisplay: { label: string; color: string };
+  eventIndex: number;
+  summary: string;
+  expandable: boolean;
+  isCollapsed: boolean;
+  onToggle?: () => void;
+}> = ({ categoryDisplay, eventIndex, summary, expandable, isCollapsed, onToggle }) => (
+  <div
+    className={`flex items-center gap-2 flex-wrap font-mono ${expandable ? 'cursor-pointer' : ''}`}
+    onClick={onToggle}
+  >
+    <span className={`text-[10px] font-bold uppercase tracking-widest ${categoryDisplay.color}`}>
+      {categoryDisplay.label}
+    </span>
+    <span className="text-[10px] text-zinc-400">
+      #{eventIndex + 1}
+    </span>
+    <span className="text-[12px] text-zinc-200 truncate flex-1">
+      {summary}
+    </span>
+    {expandable && (
+      <span className="text-zinc-600">
+        {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+      </span>
+    )}
+  </div>
+);
 
-interface EventItemProps {
+interface TerminalEventItemProps {
   event: LiveEvent;
   taskInfo: TaskInfo | null;
   previousEvent?: LiveEvent;
-  defaultCollapsed?: boolean;
+  eventIndex: number;
 }
 
-const EventItem: React.FC<EventItemProps> = ({ event, taskInfo, previousEvent, defaultCollapsed = false }) => {
-  const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
+const TerminalEventItem: React.FC<TerminalEventItemProps> = ({
+  event,
+  taskInfo,
+  previousEvent,
+  eventIndex
+}) => {
+  // Always start expanded
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
   const filePath = previousEvent?.type === 'tool_use' ? previousEvent?.input?.file_path : undefined;
   const resultText = event.type === 'tool_result' ? formatToolResult(event.result) : '';
   const language = event.type === 'tool_result' ? detectLanguage(filePath, resultText) : 'text';
 
+  const categoryDisplay = getCategoryDisplay(event);
+  const summary = extractEventSummary(event);
+  const expandable = hasExpandableContent(event, resultText);
+
+  const handleToggle = expandable ? () => setIsCollapsed(!isCollapsed) : undefined;
+
   return (
-    <div className="flex items-start gap-3">
-      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center">
-        {getEventIcon(event)}
-      </div>
-      <div className="flex-1 min-w-0">
-        {event.type === 'thought' && <ThoughtContent content={event.content} />}
-        {event.type === 'tool_use' && <ToolUseContent event={event} taskInfo={taskInfo} />}
-        {event.type === 'tool_result' && (
-          <ToolResultContent
-            event={event}
-            resultText={resultText}
-            language={language}
+    <div className="py-0.5">
+      <div className="flex items-start gap-2">
+        {/* Left gutter with icon and vertical threading line */}
+        <div className="flex-shrink-0 w-4 flex flex-col items-center">
+          <div className="pt-0.5">
+            <EventIcon event={event} />
+          </div>
+          {/* Vertical threading line */}
+          <div className="flex-1 w-px bg-zinc-800 mt-1" />
+        </div>
+
+        <div className="flex-1 min-w-0 overflow-hidden pb-1">
+          <EventHeader
+            categoryDisplay={categoryDisplay}
+            eventIndex={eventIndex}
+            summary={summary}
+            expandable={expandable}
             isCollapsed={isCollapsed}
-            onToggle={() => setIsCollapsed(!isCollapsed)}
+            onToggle={handleToggle}
           />
-        )}
+
+          {!isCollapsed && expandable && (
+            <div className="mt-1 ml-0 overflow-hidden">
+              <ExpandedContent
+                event={event}
+                taskInfo={taskInfo}
+                resultText={resultText}
+                language={language}
+              />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
+};
+
+// Compute summary message for collapsed view
+const computeSummaryMessage = (filteredEvents: LiveEvent[], lastThought: string | null): string => {
+  if (filteredEvents.length === 0) return '';
+
+  for (let i = filteredEvents.length - 1; i >= 0; i--) {
+    const event = filteredEvents[i];
+    if (event.type === 'tool_result') {
+      const resultStr = formatToolResult(event.result);
+      const truncated = resultStr.slice(0, 60).replace(/\n/g, ' ');
+      return `Result: ${truncated}${resultStr.length > 60 ? '...' : ''}`;
+    }
+    if (event.type === 'tool_use' && event.toolName) {
+      if (event.input?.command) {
+        return `> ${event.input.command.slice(0, 50)}${event.input.command.length > 50 ? '...' : ''}`;
+      }
+      return `Exec: ${event.toolName}`;
+    }
+  }
+
+  return lastThought ? `Thinking: ${lastThought.substring(0, 60)}${lastThought.length > 60 ? '...' : ''}` : '';
+};
+
+// Compute events with their previous tool_use reference for context
+const computeEventsWithContext = (
+  filteredEvents: LiveEvent[],
+  allEvents: LiveEvent[]
+): Array<{ event: LiveEvent; prevToolUse?: LiveEvent; originalIndex: number }> => {
+  return filteredEvents.map((event, index) => {
+    let prevToolUse: LiveEvent | undefined;
+    for (let i = index - 1; i >= 0; i--) {
+      if (filteredEvents[i].type === 'tool_use') {
+        prevToolUse = filteredEvents[i];
+        break;
+      }
+    }
+
+    return {
+      event,
+      prevToolUse,
+      originalIndex: allEvents.indexOf(event)
+    };
+  });
 };
 
 const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
@@ -353,92 +238,78 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   isTaskActive: _isTaskActive,
   taskInfo
 }) => {
-  // Note: isTaskActive is still passed for potential future use (e.g., showing live indicators)
+  // Note: isTaskActive is still passed for potential future use
   void _isTaskActive;
-  // Get the last significant message (terminal output or tool result)
-  const summaryMessage = useMemo(() => {
-    if (events.length === 0) return '';
 
-    // Look backwards for the most relevant event
-    for (let i = events.length - 1; i >= 0; i--) {
-      const event = events[i];
-      if (event.type === 'tool_result') {
-        const resultStr = formatToolResult(event.result);
-        const truncated = resultStr.slice(0, 60).replace(/\n/g, ' ');
-        return `Result: ${truncated}${resultStr.length > 60 ? '...' : ''}`;
-      }
-      if (event.type === 'tool_use' && event.toolName) {
-        if (event.input?.command) {
-          return `> ${event.input.command.slice(0, 50)}${event.input.command.length > 50 ? '...' : ''}`;
-        }
-        return `Exec: ${event.toolName}`;
-      }
-    }
+  // No filtering - show all events
+  const filteredEvents = events;
 
-    return lastThought ? `Thinking: ${lastThought.substring(0, 60)}${lastThought.length > 60 ? '...' : ''}` : '';
-  }, [events, lastThought]);
+  const summaryMessage = useMemo(
+    () => computeSummaryMessage(filteredEvents, lastThought),
+    [filteredEvents, lastThought]
+  );
 
-  // Memoize default collapse states based on tool type
-  const eventsWithDefaults = useMemo(() => {
-    return events.map((event, index) => {
-      // Find the previous tool_use event for context
-      let prevToolUse: LiveEvent | undefined;
-      for (let i = index - 1; i >= 0; i--) {
-        if (events[i].type === 'tool_use') {
-          prevToolUse = events[i];
-          break;
-        }
-      }
-
-      // Determine if this result should be collapsed by default
-      const shouldCollapse = event.type === 'tool_result' && prevToolUse?.toolName
-        ? isNoisyTool(prevToolUse.toolName)
-        : false;
-
-      return {
-        event,
-        prevToolUse,
-        defaultCollapsed: shouldCollapse
-      };
-    });
-  }, [events]);
+  const eventsWithContext = useMemo(
+    () => computeEventsWithContext(filteredEvents, events),
+    [filteredEvents, events]
+  );
 
   if (events.length === 0) {
     return null;
   }
 
   return (
-    <div id="execution-event-log-section" className="border-t border-gray-100 pt-4">
+    <div id="execution-event-log-section" className={`border-t border-slate-200 flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0 bg-white' : 'flex-1 min-h-0 bg-zinc-900'}`}>
+      {/* VS Code Terminal Footer Bar - Solid full-width bar with zinc palette */}
       <div
-        className="flex items-center justify-between cursor-pointer py-2 px-3 -mx-3 rounded transition-colors hover:bg-gray-50"
+        className={`flex items-center justify-between px-6 h-9 transition-all duration-300 cursor-pointer flex-shrink-0 ${
+          collapsed
+            ? 'bg-slate-100 hover:bg-slate-200 border-t border-slate-200 text-slate-500'
+            : 'bg-zinc-900 text-white'
+        }`}
         onClick={onToggleCollapse}
       >
-        <h4 className="text-sm font-semibold flex items-center gap-2 text-gray-900">
-          <span className="text-gray-400">{collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</span>
-          <Terminal className="h-4 w-4 text-gray-600" />
-          <span>Execution Log</span>
-          <span className="text-xs font-normal text-gray-400">({events.length} events)</span>
-        </h4>
-        {collapsed && summaryMessage && (
-          <div className="text-xs italic max-w-[200px] truncate text-gray-500">
-            {summaryMessage}
-          </div>
-        )}
+        <div className="flex items-center gap-2.5">
+          <span className={`font-mono text-sm font-bold ${collapsed ? 'text-slate-500' : 'text-zinc-400'}`}>{'>_'}</span>
+          <span className={`font-mono text-[11px] font-bold uppercase tracking-wider ${collapsed ? 'text-slate-600' : 'text-white'}`}>
+            {collapsed ? 'EXECUTION LOG' : 'TERMINAL OUTPUT'} ({events.length})
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          {collapsed && summaryMessage && (
+            <span className="text-[11px] text-slate-500 truncate max-w-[240px] font-mono">
+              {summaryMessage}
+            </span>
+          )}
+          <span className={collapsed ? 'text-slate-500' : 'text-zinc-400'}>
+            {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </span>
+        </div>
       </div>
 
-      {!collapsed && (
-        <div className="mt-3 space-y-3">
-          {eventsWithDefaults.map(({ event, prevToolUse, defaultCollapsed }, index) => (
-            <EventItem
-              key={index}
-              event={event}
-              taskInfo={taskInfo}
-              previousEvent={prevToolUse}
-              defaultCollapsed={defaultCollapsed}
-            />
-          ))}
+      {/* Expandable Content - VS Code Integrated Terminal Style with zinc-950 background */}
+      <div
+        className={`overflow-hidden transition-all duration-300 ease-in-out ${
+          collapsed
+            ? 'max-h-0 opacity-0'
+            : 'max-h-[9999px] opacity-100 flex-1 min-h-0 bg-zinc-900 text-zinc-300'
+        }`}
+      >
+        <div className={`overflow-y-auto scrollbar-stealth-dark ${collapsed ? 'h-0' : 'h-full'}`}>
+          {/* Continuous stream layout - no dividers between items */}
+          <div className="p-3 space-y-0">
+            {eventsWithContext.map(({ event, prevToolUse, originalIndex }) => (
+              <TerminalEventItem
+                key={originalIndex}
+                event={event}
+                taskInfo={taskInfo}
+                previousEvent={prevToolUse}
+                eventIndex={originalIndex}
+              />
+            ))}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

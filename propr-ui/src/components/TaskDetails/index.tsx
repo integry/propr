@@ -1,13 +1,15 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
-import DeepDiveAnalysis from '../DeepDiveAnalysis';
 import { renderMarkdown } from './renderMarkdown';
 import TaskStatusTable from './TaskStatusTable';
 import ExecutionRail from './ExecutionRail';
 import LiveFileChips from './LiveFileChips';
 import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
+import ResultOverview, { GeometricScorePill } from './ResultOverview';
+import { parseAnalysis } from './AnalysisUtils';
+import { generateFollowupContent } from './utils';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
 import FollowupModal from './FollowupModal';
@@ -53,6 +55,11 @@ const TaskDetails: React.FC = () => {
 
   // State for follow-up modal
   const [followupModalOpen, setFollowupModalOpen] = useState(false);
+
+
+  // State for detailed analysis expansion (lifted from ResultOverview to persist across Execution Log toggles)
+  // Now using CSS hidden instead of conditional rendering, so components don't unmount
+  const [detailedAnalysisExpanded, setDetailedAnalysisExpanded] = useState<boolean | undefined>(undefined);
 
   // Calculate total duration from history
   const totalDuration = useMemo(() => {
@@ -103,96 +110,6 @@ const TaskDetails: React.FC = () => {
     return historyWithTokens?.metadata?.tokenUsage;
   }, [taskData.liveDetails, taskData.history]);
 
-  // Helper to parse analysis data (same logic as DeepDiveAnalysis)
-  const parseAnalysisData = useCallback((rawAnalysis: unknown): {
-    recommendations?: string[];
-    error_analysis?: string;
-    implementation_critique?: string;
-    efficiency_notes?: string;
-  } | null => {
-    if (!rawAnalysis) return null;
-
-    // First, parse if it's a string (might be double-encoded JSON)
-    let parsed = rawAnalysis;
-    if (typeof parsed === 'string') {
-      try {
-        parsed = JSON.parse(parsed);
-        // Handle double-encoded JSON
-        if (typeof parsed === 'string') {
-          parsed = JSON.parse(parsed);
-        }
-      } catch {
-        return null;
-      }
-    }
-
-    // Check if we have a 'report' field that contains the actual data
-    if (typeof parsed === 'object' && parsed !== null && 'report' in parsed) {
-      const analysisObj = parsed as { report?: string };
-      if (analysisObj.report) {
-        try {
-          let reportText = analysisObj.report;
-          // Extract JSON from markdown code blocks if present
-          const jsonMatch = reportText.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
-          if (jsonMatch) {
-            reportText = jsonMatch[1].trim();
-          }
-          return JSON.parse(reportText);
-        } catch {
-          return null;
-        }
-      }
-    }
-
-    return parsed as {
-      recommendations?: string[];
-      error_analysis?: string;
-      implementation_critique?: string;
-      efficiency_notes?: string;
-    };
-  }, []);
-
-  // Generate initial content for follow-up based on analysis data
-  const generateFollowupContent = useCallback(() => {
-    const analysis = parseAnalysisData(taskData.analysis);
-
-    if (!analysis) {
-      return 'Please address the following based on the previous task execution:\n\n';
-    }
-
-    const parts: string[] = [];
-
-    // Check if task failed
-    const latestState = taskData.history?.[taskData.history.length - 1]?.state?.toUpperCase();
-    const isFailed = latestState === 'FAILED';
-
-    if (isFailed && analysis.error_analysis) {
-      parts.push('## Issue to Fix\n');
-      parts.push(analysis.error_analysis);
-      parts.push('\n');
-    }
-
-    if (analysis.recommendations && analysis.recommendations.length > 0) {
-      parts.push('## Recommendations to Address\n');
-      analysis.recommendations.forEach((rec, idx) => {
-        parts.push(`${idx + 1}. ${rec}`);
-      });
-      parts.push('\n');
-    }
-
-    if (analysis.implementation_critique) {
-      parts.push('## Implementation Feedback\n');
-      parts.push(analysis.implementation_critique);
-      parts.push('\n');
-    }
-
-    if (parts.length === 0) {
-      return 'Please address the following based on the previous task execution:\n\n';
-    }
-
-    return parts.join('\n');
-  }, [taskData.analysis, taskData.history, parseAnalysisData]);
-
   // Handle follow-up submission
   const handleFollowupSubmit = useCallback(async (body: string) => {
     if (!taskId) {
@@ -212,9 +129,37 @@ const TaskDetails: React.FC = () => {
     setFollowupModalOpen(true);
   }, []);
 
+  const parsedAnalysis = useMemo(() => parseAnalysis(taskData.analysis), [taskData.analysis]);
+
+  // Ref for execution log section to detect clicks outside
+  const executionLogRef = useRef<HTMLDivElement>(null);
+
+  // Click-outside-to-collapse handler for Execution Log
+  useEffect(() => {
+    if (thinkingLog.eventsCollapsed) return; // Only listen when expanded
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      // Check if click is outside the execution log section
+      if (executionLogRef.current && !executionLogRef.current.contains(target)) {
+        thinkingLog.collapseEvents();
+      }
+    };
+
+    // Add listener after a small delay to prevent immediate collapse from the click that opened it
+    const timeoutId = setTimeout(() => {
+      document.addEventListener('mousedown', handleClickOutside);
+    }, 100);
+
+    return () => {
+      clearTimeout(timeoutId);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [thinkingLog]);
+
   if (taskData.loading) {
     return (
-      <div className="h-screen bg-white flex items-center justify-center">
+      <div className="h-full bg-white flex items-center justify-center">
         <div className="text-gray-600">Loading task details...</div>
       </div>
     );
@@ -222,7 +167,7 @@ const TaskDetails: React.FC = () => {
 
   if (taskData.error) {
     return (
-      <div className="h-screen bg-white flex items-center justify-center">
+      <div className="h-full bg-white flex items-center justify-center">
         <div className="text-red-600">Error loading task details: {taskData.error}</div>
       </div>
     );
@@ -230,7 +175,7 @@ const TaskDetails: React.FC = () => {
 
   if (!taskData.history || taskData.history.length === 0) {
     return (
-      <div className="h-screen bg-white flex items-center justify-center">
+      <div className="h-full bg-white flex items-center justify-center">
         <div className="text-gray-600">No history found for task {taskId}</div>
       </div>
     );
@@ -239,35 +184,17 @@ const TaskDetails: React.FC = () => {
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
 
   return (
-    <div className="h-screen flex flex-col bg-white">
-      {/* Fixed Header Shell */}
-      <header className="flex-shrink-0 border-b border-gray-200">
-        {/* Task Header with Actions */}
-        <div className="px-4 sm:px-6 py-3 flex items-start justify-between gap-4">
-          {/* Left: Task Header */}
-          <div className="flex-1 min-w-0">
-            <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
-          </div>
-
-          {/* Right: Actions */}
-          <div className="flex-shrink-0">
-            <ActionBar
-              currentStatus={derivedData.currentStatus}
-              historyItemWithPaths={derivedData.historyItemWithPaths}
-              stoppingExecution={taskData.stoppingExecution}
-              stopFailed={taskData.stopFailed}
-              deletingTask={taskData.deletingTask}
-              onStopExecution={taskData.handleStopExecution}
-              onViewPrompt={promptData.fetchPrompt}
-              onViewLogs={logFilesData.fetchLogFilesData}
-              onDeleteTask={handleDeleteTask}
-              onFollowUp={handleOpenFollowup}
-            />
-          </div>
+    <div className="h-full flex flex-col bg-white">
+      {/* Sticky Header Shell - Never scrolls */}
+      <header className="flex-shrink-0 sticky top-0 z-20 bg-white">
+        {/* Task Header Row - Title and Status */}
+        <div className="px-4 sm:px-6 py-3 border-b border-slate-100">
+          <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
         </div>
 
-        {/* Context Strip - Dense metadata line */}
-        <div className="px-4 sm:px-6">
+        {/* Consolidated Context Bar - Single horizontal row with bg-slate-50 */}
+        <div className="px-4 sm:px-6 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-4">
+          {/* Left + Middle: Repo/Branch and Metadata */}
           <ContextStrip
             taskInfo={taskData.taskInfo}
             modelName={derivedData.modelName}
@@ -276,6 +203,20 @@ const TaskDetails: React.FC = () => {
             duration={totalDuration}
             tokenUsage={tokenUsage}
           />
+
+          {/* Right: Action Buttons (Ghost style) */}
+          <ActionBar
+            currentStatus={derivedData.currentStatus}
+            historyItemWithPaths={derivedData.historyItemWithPaths}
+            stoppingExecution={taskData.stoppingExecution}
+            stopFailed={taskData.stopFailed}
+            deletingTask={taskData.deletingTask}
+            onStopExecution={taskData.handleStopExecution}
+            onViewPrompt={promptData.fetchPrompt}
+            onViewLogs={logFilesData.fetchLogFilesData}
+            onDeleteTask={handleDeleteTask}
+            onFollowUp={handleOpenFollowup}
+          />
         </div>
 
         {/* Progress Bar */}
@@ -283,64 +224,98 @@ const TaskDetails: React.FC = () => {
       </header>
 
       {/* Main Content Area - Anchored Shell with 30/70 Split */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* LEFT PANE (30%) - The Plan */}
-        <div className="w-full lg:w-[30%] flex-shrink-0 overflow-y-auto scrollbar-stealth border-r border-gray-200">
-          <div className="p-4 space-y-4">
-            {/* Compact Status Timeline */}
-            <TaskStatusTable history={taskData.history} compact={true} />
-
-            {/* Execution Rail - unified task sequence with vertical threading */}
-            <ExecutionRail
-              liveDetails={taskData.liveDetails}
-              history={taskData.history}
-              onTodoHover={setHighlightedTodoId}
-            />
-
-            {/* Live File Changes - dense monospace code chips */}
-            {taskId && taskData.history.length > 0 && (
-              <LiveFileChips
-                taskId={taskId}
-                isActive={derivedData.isTaskActive}
-              />
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* Horizontal Header Row - TIMELINE and IMPLEMENTATION aligned on same baseline */}
+        <div className="flex-shrink-0 flex border-b border-slate-200">
+          {/* Left Pane Header (30%) */}
+          <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-center">
+            <div className="py-2.5 text-xs font-bold uppercase tracking-widest text-slate-500">
+              TIMELINE
+            </div>
+          </div>
+          {/* Right Pane Header (70%) - IMPLEMENTATION label aligned with TIMELINE */}
+          <div className="hidden lg:flex flex-1 px-4 items-center gap-3">
+            <div className="py-2.5 text-xs font-bold uppercase tracking-widest text-slate-500">
+              IMPLEMENTATION
+            </div>
+            {parsedAnalysis?.implementation_critique_score !== undefined && (
+              <GeometricScorePill score={parsedAnalysis.implementation_critique_score} />
             )}
           </div>
         </div>
 
-        {/* Vertical Divider Line (visible on lg+) */}
-        <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
+        {/* Content Area Below the Horizon Line */}
+        <div className="flex-1 flex overflow-hidden min-w-0">
+          {/* LEFT PANE (30%) - The Plan */}
+          <div className="w-full lg:w-[30%] flex-shrink-0 overflow-y-auto scrollbar-stealth border-r border-gray-200">
+            <div className="p-4 space-y-2">
+              {/* Compact Status Timeline */}
+              <TaskStatusTable history={taskData.history} compact={true} />
 
-        {/* RIGHT PANE (70%) - The Execution */}
-        <div className="hidden lg:block flex-1 overflow-y-auto scrollbar-stealth">
-          <div className="p-4 space-y-4">
-            {/* Execution Analysis - only show when we have data or are loading */}
-            {(taskData.analysis || taskData.analysisLoading) && (
-              <DeepDiveAnalysis
-                analysis={taskData.analysis}
-                loading={taskData.analysisLoading}
-                renderMarkdown={renderMarkdown}
-                title="Execution Analysis"
-                colorScheme="gray"
-                emptyStateText="Automated analysis is pending..."
+              {/* Execution Rail - unified task sequence with vertical threading */}
+              <ExecutionRail
+                liveDetails={taskData.liveDetails}
+                history={taskData.history}
+                onTodoHover={setHighlightedTodoId}
               />
-            )}
 
-            {/* Thinking Log */}
-            <ThinkingLog
-              events={thinkingLog.thinkingLogWithTimestamps}
-              todos={taskData.liveDetails.todos}
-              highlightedTodoId={highlightedTodoId}
-            />
+              {/* Live File Changes - dense monospace code chips */}
+              {taskId && taskData.history.length > 0 && (
+                <LiveFileChips
+                  taskId={taskId}
+                  isActive={derivedData.isTaskActive}
+                />
+              )}
+            </div>
+          </div>
 
-            {/* Execution Event Log */}
-            <ExecutionEventLog
-              events={taskData.liveDetails.events}
-              collapsed={thinkingLog.eventsCollapsed}
-              onToggleCollapse={thinkingLog.toggleEventsCollapse}
-              lastThought={thinkingLog.lastThought}
-              isTaskActive={derivedData.isTaskActive}
-              taskInfo={taskData.taskInfo}
-            />
+          {/* Vertical Divider Line (visible on lg+) */}
+          <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
+
+          {/* RIGHT PANE (70%) - The Execution */}
+          <div className="hidden lg:flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
+            {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
+            {/* Hidden (not unmounted) when Execution Log is expanded to preserve state */}
+            <div className={`flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'hidden'}`}>
+              {/* Single scrollable area for Implementation Analysis + Thinking Log */}
+              <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stealth min-h-0 min-w-0">
+                {/* Implementation Analysis - now scrolls with Thinking Log */}
+                {(taskData.analysis || taskData.analysisLoading || thinkingLog.extractedSummary) && (
+                  <ResultOverview
+                    analysis={taskData.analysis}
+                    loading={taskData.analysisLoading}
+                    renderMarkdown={renderMarkdown}
+                    detailedAnalysisExpanded={detailedAnalysisExpanded}
+                    onDetailedAnalysisToggle={setDetailedAnalysisExpanded}
+                    extractedSummary={thinkingLog.extractedSummary}
+                  />
+                )}
+
+                {/* Implementation Log - Terminal Style - in same scroll flow */}
+                <div className="p-4 min-w-0 overflow-hidden">
+                  <ThinkingLog
+                    events={thinkingLog.thinkingLogWithTimestamps}
+                    todos={taskData.liveDetails.todos}
+                    highlightedTodoId={highlightedTodoId}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* VS Code Terminal Footer - Execution Event Log - Fills entire height when expanded */}
+            <div
+              ref={executionLogRef}
+              className={`transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}`}
+            >
+              <ExecutionEventLog
+                events={taskData.liveDetails.events}
+                collapsed={thinkingLog.eventsCollapsed}
+                onToggleCollapse={thinkingLog.toggleEventsCollapse}
+                lastThought={thinkingLog.lastThought}
+                isTaskActive={derivedData.isTaskActive}
+                taskInfo={taskData.taskInfo}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -371,7 +346,7 @@ const TaskDetails: React.FC = () => {
         isOpen={followupModalOpen}
         onClose={() => setFollowupModalOpen(false)}
         onSubmit={handleFollowupSubmit}
-        initialContent={generateFollowupContent()}
+        initialContent={generateFollowupContent(taskData.analysis, taskData.history)}
         taskInfo={taskData.taskInfo}
       />
     </div>
