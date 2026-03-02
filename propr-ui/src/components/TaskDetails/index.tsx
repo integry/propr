@@ -365,92 +365,104 @@ const TaskDetails: React.FC = () => {
       </header>
 
       {/* Main Content Area - Anchored Shell with 30/70 Split */}
-      <div className="flex-1 flex overflow-hidden min-w-0">
-        {/* LEFT PANE (30%) - The Plan */}
-        <div className="w-full lg:w-[30%] flex-shrink-0 overflow-y-auto scrollbar-stealth border-r border-gray-200">
-          <div className="p-4 space-y-4">
-            {/* Compact Status Timeline */}
-            <TaskStatusTable history={taskData.history} compact={true} />
-
-            {/* Execution Rail - unified task sequence with vertical threading */}
-            <ExecutionRail
-              liveDetails={taskData.liveDetails}
-              history={taskData.history}
-              onTodoHover={setHighlightedTodoId}
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* Horizontal Header Row - Aligned TIMELINE label with THOUGHTS/EVENTS tabs */}
+        <div className="flex-shrink-0 flex border-b border-gray-200">
+          {/* Left Pane Header (30%) */}
+          <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-end border-r border-gray-200">
+            <div className="py-2 text-[11px] font-bold uppercase tracking-widest text-slate-500">
+              TIMELINE
+            </div>
+          </div>
+          {/* Right Pane Header (70%) - Tabs */}
+          <div className="hidden lg:flex flex-1 min-w-0">
+            <RightPaneHeader
+              thoughtCount={thinkingLog.thinkingLogWithTimestamps.length}
+              thoughtTypeCounts={thoughtTypeCounts}
+              activeThoughtFilters={activeThoughtFilters}
+              onToggleThoughtFilter={toggleThoughtFilter}
+              eventCount={taskData.liveDetails.events.length}
+              eventTypeCounts={eventTypeCounts}
+              activeEventFilters={activeEventFilters}
+              onToggleEventFilter={toggleEventFilter}
+              onClearAllFilters={clearAllFilters}
+              activeTab={activeRightPaneTab}
+              onTabChange={setActiveRightPaneTab}
             />
-
-            {/* Live File Changes - dense monospace code chips */}
-            {taskId && taskData.history.length > 0 && (
-              <LiveFileChips
-                taskId={taskId}
-                isActive={derivedData.isTaskActive}
-              />
-            )}
           </div>
         </div>
 
-        {/* Vertical Divider Line (visible on lg+) */}
-        <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
+        {/* Content Area Below the Horizon Line */}
+        <div className="flex-1 flex overflow-hidden min-w-0">
+          {/* LEFT PANE (30%) - The Plan */}
+          <div className="w-full lg:w-[30%] flex-shrink-0 overflow-y-auto scrollbar-stealth border-r border-gray-200">
+            <div className="p-4 space-y-4">
+              {/* Compact Status Timeline */}
+              <TaskStatusTable history={taskData.history} compact={true} />
 
-        {/* RIGHT PANE (70%) - The Execution */}
-        <div className="hidden lg:flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
-          {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
-          {/* Hidden (not unmounted) when Execution Log is expanded to preserve state */}
-          <div className={`flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'hidden'}`}>
-            {/* Anchored Header with Tabs and Filters */}
-            <div className="flex-shrink-0">
-              <RightPaneHeader
-                thoughtCount={thinkingLog.thinkingLogWithTimestamps.length}
-                thoughtTypeCounts={thoughtTypeCounts}
-                activeThoughtFilters={activeThoughtFilters}
-                onToggleThoughtFilter={toggleThoughtFilter}
-                eventCount={taskData.liveDetails.events.length}
-                eventTypeCounts={eventTypeCounts}
-                activeEventFilters={activeEventFilters}
-                onToggleEventFilter={toggleEventFilter}
-                onClearAllFilters={clearAllFilters}
-                activeTab={activeRightPaneTab}
-                onTabChange={setActiveRightPaneTab}
+              {/* Execution Rail - unified task sequence with vertical threading */}
+              <ExecutionRail
+                liveDetails={taskData.liveDetails}
+                history={taskData.history}
+                onTodoHover={setHighlightedTodoId}
               />
-            </div>
 
-            {/* Single scrollable area for Implementation Analysis + Thinking Log */}
-            <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stealth min-h-0 min-w-0">
-              {/* Implementation Analysis - now scrolls with Thinking Log */}
-              {(taskData.analysis || taskData.analysisLoading) && (
-                <ResultOverview
-                  analysis={taskData.analysis}
-                  loading={taskData.analysisLoading}
-                  renderMarkdown={renderMarkdown}
-                  totalThoughts={thinkingLog.thinkingLogWithTimestamps.length}
-                  detailedAnalysisExpanded={detailedAnalysisExpanded}
-                  onDetailedAnalysisToggle={setDetailedAnalysisExpanded}
+              {/* Live File Changes - dense monospace code chips */}
+              {taskId && taskData.history.length > 0 && (
+                <LiveFileChips
+                  taskId={taskId}
+                  isActive={derivedData.isTaskActive}
                 />
               )}
-
-              {/* Thinking Log - Terminal Style - in same scroll flow */}
-              <div className="p-4 min-w-0 overflow-hidden">
-                <ThinkingLog
-                  events={thinkingLog.thinkingLogWithTimestamps}
-                  todos={taskData.liveDetails.todos}
-                  highlightedTodoId={highlightedTodoId}
-                  activeFilters={activeThoughtFilters}
-                />
-              </div>
             </div>
           </div>
 
-          {/* VS Code Terminal Footer - Execution Event Log - Fills entire height when expanded */}
-          <div className={`transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}`}>
-            <ExecutionEventLog
-              events={taskData.liveDetails.events}
-              collapsed={thinkingLog.eventsCollapsed}
-              onToggleCollapse={thinkingLog.toggleEventsCollapse}
-              lastThought={thinkingLog.lastThought}
-              isTaskActive={derivedData.isTaskActive}
-              taskInfo={taskData.taskInfo}
-              activeFilters={activeEventFilters}
-            />
+          {/* Vertical Divider Line (visible on lg+) */}
+          <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
+
+          {/* RIGHT PANE (70%) - The Execution */}
+          <div className="hidden lg:flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
+            {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
+            {/* Hidden (not unmounted) when Execution Log is expanded to preserve state */}
+            <div className={`flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'hidden'}`}>
+              {/* Single scrollable area for Implementation Analysis + Thinking Log */}
+              <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stealth min-h-0 min-w-0">
+                {/* Implementation Analysis - now scrolls with Thinking Log */}
+                {(taskData.analysis || taskData.analysisLoading) && (
+                  <ResultOverview
+                    analysis={taskData.analysis}
+                    loading={taskData.analysisLoading}
+                    renderMarkdown={renderMarkdown}
+                    totalThoughts={thinkingLog.thinkingLogWithTimestamps.length}
+                    detailedAnalysisExpanded={detailedAnalysisExpanded}
+                    onDetailedAnalysisToggle={setDetailedAnalysisExpanded}
+                  />
+                )}
+
+                {/* Thinking Log - Terminal Style - in same scroll flow */}
+                <div className="p-4 min-w-0 overflow-hidden">
+                  <ThinkingLog
+                    events={thinkingLog.thinkingLogWithTimestamps}
+                    todos={taskData.liveDetails.todos}
+                    highlightedTodoId={highlightedTodoId}
+                    activeFilters={activeThoughtFilters}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* VS Code Terminal Footer - Execution Event Log - Fills entire height when expanded */}
+            <div className={`transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}`}>
+              <ExecutionEventLog
+                events={taskData.liveDetails.events}
+                collapsed={thinkingLog.eventsCollapsed}
+                onToggleCollapse={thinkingLog.toggleEventsCollapse}
+                lastThought={thinkingLog.lastThought}
+                isTaskActive={derivedData.isTaskActive}
+                taskInfo={taskData.taskInfo}
+                activeFilters={activeEventFilters}
+              />
+            </div>
           </div>
         </div>
       </div>

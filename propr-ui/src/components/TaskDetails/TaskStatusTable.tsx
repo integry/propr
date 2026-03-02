@@ -239,11 +239,11 @@ const TaskStatusTable: React.FC<TaskStatusTableProps> = ({ history, compact = fa
   if (!history || history.length === 0) return null;
 
   return (
-    <div className="border-t border-gray-100 pt-4">
-      <h4 className={`${compact ? 'text-sm' : 'text-base'} font-semibold text-gray-900 mb-3`}>
-        Timeline
-        {startDate && <span className="ml-2 text-xs font-normal text-gray-400">{startDate}</span>}
-      </h4>
+    <div className="pt-2">
+      {/* Start date shown as subtitle */}
+      {startDate && (
+        <div className="text-[10px] font-mono text-slate-400 mb-2">{startDate}</div>
+      )}
 
       <div className="relative">
         {itemsWithDuration.map((item, index) => (

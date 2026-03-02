@@ -265,29 +265,29 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   const showFilteredCount = activeFilters && activeFilters.size > 0 && filteredEvents.length !== events.length;
 
   return (
-    <div id="execution-event-log-section" className={`border-t border-gray-200 bg-white flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
-      {/* Anchored Footer Bar - at bottom, styled differently when expanded */}
+    <div id="execution-event-log-section" className={`border-t border-slate-200 bg-white flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0' : 'flex-1 min-h-0'}`}>
+      {/* VS Code Terminal Footer Bar - Fixed 36px height, bg-slate-50, monospace bold */}
       <div
-        className={`flex items-center justify-between px-6 transition-all duration-300 cursor-pointer flex-shrink-0 ${
+        className={`flex items-center justify-between px-6 h-9 transition-all duration-300 cursor-pointer flex-shrink-0 border-y border-slate-200 ${
           collapsed
-            ? 'py-4 border-t border-gray-200 bg-gray-100 hover:bg-gray-200'
-            : 'py-3 border-t-2 border-teal-500 bg-teal-50 hover:bg-teal-100'
+            ? 'bg-slate-50 hover:bg-slate-100'
+            : 'bg-teal-50 hover:bg-teal-100 border-t-2 border-t-teal-500'
         }`}
         onClick={onToggleCollapse}
       >
         <div className="flex items-center gap-2.5">
-          <span className={`font-mono text-sm ${collapsed ? 'text-gray-500' : 'text-teal-600'}`}>{'>_'}</span>
-          <span className={`font-mono text-xs font-bold uppercase tracking-wider ${collapsed ? 'text-gray-700' : 'text-teal-700'}`}>
+          <span className={`font-mono text-sm font-bold ${collapsed ? 'text-slate-500' : 'text-teal-600'}`}>{'>_'}</span>
+          <span className={`font-mono text-[11px] font-bold uppercase tracking-wider ${collapsed ? 'text-slate-700' : 'text-teal-700'}`}>
             EXECUTION LOG ({showFilteredCount ? `${eventCount}/${events.length}` : eventCount})
           </span>
         </div>
         <div className="flex items-center gap-3">
           {collapsed && summaryMessage && (
-            <span className="text-xs text-gray-500 truncate max-w-[240px] font-mono">
+            <span className="text-[11px] text-slate-500 truncate max-w-[240px] font-mono">
               {summaryMessage}
             </span>
           )}
-          <span className={collapsed ? 'text-gray-500' : 'text-teal-600'}>
+          <span className={collapsed ? 'text-slate-500' : 'text-teal-600'}>
             {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </span>
         </div>

@@ -29,10 +29,10 @@ interface TabButtonProps {
 const TabButton: React.FC<TabButtonProps> = ({ label, icon, count, isActive, onClick }) => (
   <button
     onClick={onClick}
-    className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold uppercase transition-all border-b-2 -mb-px
+    className={`flex items-center gap-1.5 px-3 py-2 text-[11px] font-bold uppercase tracking-widest transition-all border-b-2 -mb-px
       ${isActive
-        ? 'text-gray-900 border-gray-900'
-        : 'text-gray-400 border-transparent hover:text-gray-600 hover:border-gray-300'
+        ? 'text-teal-600 border-teal-500'
+        : 'text-slate-400 border-transparent hover:text-slate-600 hover:border-slate-300'
       }`}
   >
     {icon}
@@ -107,9 +107,9 @@ const RightPaneHeader: React.FC<RightPaneHeaderProps> = ({
   const showEventsFilters = activeTab === 'events';
 
   return (
-    <div className="sticky top-0 z-10 bg-white">
+    <div className="flex-1 flex flex-col bg-white min-w-0">
       {/* Tabs row - sits on the continuous border like IDE tabs */}
-      <div className="flex items-end justify-between px-4 border-b border-gray-200">
+      <div className="flex items-end justify-between px-4">
         <div className="flex items-center">
           <TabButton
             label="Thoughts"

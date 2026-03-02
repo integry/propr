@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronDown, ChevronRight, Circle, Diamond, Square, Triangle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Circle } from 'lucide-react';
 
 interface AnalysisData {
   efficiency_score?: number;
@@ -59,32 +59,27 @@ const parseAnalysis = (analysis: AnalysisData | string | null): AnalysisData | n
   }
 };
 
-// Geometric score pill (compact version for inline use)
+// Lighthouse Geometric Pill - styled as [ ● 9 ]
 const GeometricScorePill: React.FC<{ score: number }> = ({ score }) => {
   let colorClasses: string;
-  let ShapeIcon: typeof Triangle;
 
   if (score >= 9) {
-    colorClasses = 'bg-teal-50 text-teal-600 border-teal-200';
-    ShapeIcon = Circle;
+    colorClasses = 'text-teal-600';
   } else if (score >= 7) {
-    colorClasses = 'bg-slate-100 text-slate-600 border-slate-200';
-    ShapeIcon = Diamond;
+    colorClasses = 'text-slate-600';
   } else if (score >= 5) {
-    colorClasses = 'bg-amber-50 text-amber-600 border-amber-200';
-    ShapeIcon = Square;
+    colorClasses = 'text-amber-600';
   } else {
-    colorClasses = 'bg-red-50 text-red-600 border-red-200';
-    ShapeIcon = Triangle;
+    colorClasses = 'text-red-600';
   }
 
   return (
     <div
-      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded border ${colorClasses}`}
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-200 bg-slate-50 ${colorClasses}`}
       title={`Score: ${score}/10`}
     >
-      <ShapeIcon size={10} fill="currentColor" />
-      <span className="font-mono text-sm font-bold">{score}</span>
+      <Circle size={8} fill="currentColor" />
+      <span className="font-mono text-xs font-bold">{score}</span>
     </div>
   );
 };
@@ -94,8 +89,8 @@ const ImplementationHeader: React.FC<{ score?: number }> = ({ score }) => {
   return (
     <div className="flex items-center justify-between mb-3">
       <div className="flex items-center gap-3">
-        <span className="text-[10px] uppercase font-bold text-slate-500 tracking-widest">
-          Implementation
+        <span className="text-[11px] uppercase font-bold text-slate-500 tracking-widest">
+          IMPLEMENTATION
         </span>
         {score !== undefined && <GeometricScorePill score={score} />}
       </div>
@@ -103,14 +98,13 @@ const ImplementationHeader: React.FC<{ score?: number }> = ({ score }) => {
   );
 };
 
-// Collapsible accordion section
+// Collapsible accordion section - simple chevron toggle
 const CollapsibleSection: React.FC<{
-  title: string;
   children: React.ReactNode;
   defaultExpanded?: boolean;
   isExpanded?: boolean;
   onToggle?: (expanded: boolean) => void;
-}> = ({ title, children, defaultExpanded = false, isExpanded: controlledExpanded, onToggle }) => {
+}> = ({ children, defaultExpanded = false, isExpanded: controlledExpanded, onToggle }) => {
   const [internalExpanded, setInternalExpanded] = useState(defaultExpanded);
 
   // Use controlled state if provided (is a boolean), otherwise use internal state
@@ -129,14 +123,15 @@ const CollapsibleSection: React.FC<{
     <div className="border-t border-gray-100">
       <button
         onClick={handleToggle}
-        className="flex items-center gap-2 w-full py-2 text-left text-xs text-gray-500 hover:text-gray-700 transition-colors"
+        className="flex items-center gap-1 py-2 text-left text-slate-400 hover:text-slate-600 transition-colors"
+        title={isExpanded ? "Collapse details" : "Expand details"}
       >
         {isExpanded ? (
-          <ChevronDown className="h-3 w-3" />
+          <ChevronDown className="h-4 w-4" />
         ) : (
-          <ChevronRight className="h-3 w-3" />
+          <ChevronRight className="h-4 w-4" />
         )}
-        <span className="uppercase font-bold tracking-wider">{title}</span>
+        <span className="text-[10px] uppercase font-bold tracking-widest">Details</span>
       </button>
       {isExpanded && (
         <div className="pb-3 text-sm text-gray-700 overflow-hidden">
@@ -283,7 +278,6 @@ const AnalysisContent: React.FC<{
 
       {hasDetailedContent && (
         <CollapsibleSection
-          title="View Detailed Analysis"
           defaultExpanded={!shouldCollapseByDefault}
           isExpanded={detailedAnalysisExpanded}
           onToggle={onDetailedAnalysisToggle}

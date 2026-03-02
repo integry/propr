@@ -51,21 +51,14 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
 
   return (
     <div className="pt-4">
-      {/* Header */}
-      <h4 className="mt-0 mb-4 text-sm font-semibold text-gray-900 flex items-center gap-2">
-        {isTaskActive ? (
-          <>
-            <span className="text-base">⚡</span>
-            <span className="flex items-center gap-2">
-              Execution Rail
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary-500 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-primary-500"></span>
-              </span>
-            </span>
-          </>
-        ) : (
-          <span>Execution Rail</span>
+      {/* Header - Utility Header style */}
+      <h4 className="mt-0 mb-4 text-[11px] font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
+        EXECUTION RAIL
+        {isTaskActive && (
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary-500 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-primary-500"></span>
+          </span>
         )}
       </h4>
 
@@ -74,8 +67,8 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
         {/* Vertical Threading Rail - solid 2px gray line in left gutter */}
         <div className="absolute left-[11px] top-0 bottom-0 w-0.5 bg-gray-300" />
 
-        {/* Todo Items */}
-        <ul className="list-none pl-0 m-0 space-y-0 relative">
+        {/* Todo Items - space-y-4 for increased vertical gap */}
+        <ul className="list-none pl-0 m-0 space-y-4 relative">
           {liveDetails.todos.map((todo) => {
             const isCompleted = todo.status === 'completed';
             const isInProgress = todo.status === 'in_progress';
@@ -83,7 +76,7 @@ const ExecutionRail: React.FC<ExecutionRailProps> = ({ liveDetails, history, onT
             return (
               <li
                 key={todo.id}
-                className={`flex items-start gap-3 py-2 pl-0 pr-2 text-sm transition-colors cursor-pointer hover:bg-gray-50 rounded-r ${
+                className={`flex items-start gap-3 py-1 pl-0 pr-2 text-sm transition-colors cursor-pointer hover:bg-gray-50 rounded-r ${
                   isInProgress ? 'bg-primary-500/5' : ''
                 }`}
                 onClick={() => scrollToThinkingLog(todo.id, todo.content)}
