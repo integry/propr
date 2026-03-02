@@ -259,7 +259,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
   }
 
   return (
-    <div id="execution-event-log-section" className={`border-t border-slate-200 flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0 bg-white' : 'flex-1 min-h-0 bg-zinc-950'}`}>
+    <div id="execution-event-log-section" className={`border-t border-slate-200 flex flex-col-reverse transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${collapsed ? 'flex-shrink-0 bg-white' : 'flex-1 min-h-0 bg-zinc-900'}`}>
       {/* VS Code Terminal Footer Bar - Solid full-width bar with zinc palette */}
       <div
         className={`flex items-center justify-between px-6 h-9 transition-all duration-300 cursor-pointer flex-shrink-0 ${
@@ -292,7 +292,7 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
         className={`overflow-hidden transition-all duration-300 ease-in-out ${
           collapsed
             ? 'max-h-0 opacity-0'
-            : 'max-h-[9999px] opacity-100 flex-1 min-h-0 bg-zinc-950 text-zinc-300'
+            : 'max-h-[9999px] opacity-100 flex-1 min-h-0 bg-zinc-900 text-zinc-300'
         }`}
       >
         <div className={`overflow-y-auto scrollbar-stealth-dark ${collapsed ? 'h-0' : 'h-full'}`}>
