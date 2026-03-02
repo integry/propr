@@ -192,7 +192,11 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
               );
             }
             return (
-              <code className="bg-slate-100 px-1.5 py-0.5 rounded text-[13px] font-mono border border-slate-200 text-slate-800 break-all whitespace-nowrap" {...props}>
+              <code className={`px-1.5 py-0.5 rounded text-[13px] font-mono break-all whitespace-nowrap ${
+                darkMode
+                  ? 'bg-zinc-700/50 border border-zinc-600 text-zinc-200'
+                  : 'bg-slate-100 border border-slate-200 text-slate-800'
+              }`} {...props}>
                 {children}
               </code>
             );
