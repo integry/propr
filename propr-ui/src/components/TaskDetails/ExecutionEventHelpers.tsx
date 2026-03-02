@@ -62,13 +62,14 @@ export const ToolIcon: React.FC<{ toolName: string }> = ({ toolName }) => {
   }
 };
 
-// Event icon component - VS Code integrated terminal aesthetic (desaturated colors for zinc palette)
+// Event icon component - Professional Console aesthetic (desaturated colors for zinc palette)
 export const EventIcon: React.FC<{ event: LiveEvent }> = ({ event }) => {
   const iconType = getEventIconType(event);
 
   switch (iconType) {
     case 'thought':
-      return <Lightbulb className="h-3.5 w-3.5 text-blue-400/80" />;
+      // Desaturated gray-blue for AI thoughts - quiet, non-glowing
+      return <Lightbulb className="h-3.5 w-3.5 text-slate-400" />;
     case 'tool':
       return <ToolIcon toolName={event.toolName || ''} />;
     case 'success':
@@ -133,20 +134,23 @@ export const SyntaxHighlightedResult: React.FC<SyntaxHighlightedResultProps> = (
   const showLineNumbers = language !== 'diff';
 
   return (
-    <SyntaxHighlighter
-      language={language}
-      style={vscDarkPlus}
-      customStyle={{
-        fontSize: '11px',
-        borderRadius: '0.25rem',
-        margin: 0,
-        maxHeight,
-        overflow: 'auto'
-      }}
-      showLineNumbers={showLineNumbers}
-      wrapLines={showLineNumbers}
-    >
-      {result}
-    </SyntaxHighlighter>
+    <div className="border border-zinc-800 rounded">
+      <SyntaxHighlighter
+        language={language}
+        style={vscDarkPlus}
+        customStyle={{
+          fontSize: '11px',
+          borderRadius: '0.25rem',
+          margin: 0,
+          maxHeight,
+          overflow: 'auto',
+          background: 'transparent'
+        }}
+        showLineNumbers={showLineNumbers}
+        wrapLines={showLineNumbers}
+      >
+        {result}
+      </SyntaxHighlighter>
+    </div>
   );
 };

@@ -111,20 +111,23 @@ export const formatToolResult = (result: string | object | undefined): string =>
   return stripWorkspacePrefixes(resultText);
 };
 
-// Get category label and color for terminal-style display (VS Code integrated terminal aesthetic)
+// Get category label and color for terminal-style display (Professional Console aesthetic)
 // Uses desaturated colors that don't "glow" too harshly against the dark zinc-950 background
 export const getCategoryDisplay = (event: LiveEvent): { label: string; color: string } => {
   if (event.type === 'thought') {
-    return { label: 'THOUGHT', color: 'text-blue-400/80' };
+    // Desaturated gray-blue for AI thoughts - quiet, non-glowing
+    return { label: 'THOUGHT', color: 'text-slate-400' };
   }
   if (event.type === 'tool_result') {
     return event.isError
       ? { label: 'ERROR', color: 'text-red-400/80' }
+      // Soft "Matrix" teal for success/results
       : { label: 'RESULT', color: 'text-emerald-400/80' };
   }
 
+  // Dimmed zinc for action labels
   const toolName = event.toolName?.toUpperCase() || 'TOOL';
-  return { label: toolName, color: 'text-zinc-400' };
+  return { label: toolName, color: 'text-zinc-500' };
 };
 
 // Get event icon type for rendering

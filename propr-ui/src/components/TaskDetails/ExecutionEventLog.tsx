@@ -39,14 +39,14 @@ const ToolUseDetails: React.FC<{ event: LiveEvent; taskInfo: TaskInfo | null }> 
   <div className="text-xs space-y-1 font-mono">
     {event.input?.file_path && (
       <div className="flex items-center gap-1 text-zinc-400">
-        <span className="text-[10px] uppercase text-zinc-500">File:</span>
+        <span className="text-[10px] uppercase text-zinc-500 font-bold tracking-widest">File:</span>
         <ClickablePath fullPath={event.input.file_path} taskInfo={taskInfo} />
       </div>
     )}
     {event.input?.command && (
       <div>
-        <span className="text-[10px] text-zinc-500 uppercase">Command:</span>
-        <code className="block bg-zinc-900/50 text-emerald-400/80 p-1.5 rounded font-mono text-[11px] mt-0.5 overflow-x-auto">
+        <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">Command:</span>
+        <code className="block border border-zinc-800 bg-transparent text-emerald-400/80 p-1.5 rounded font-mono text-[11px] mt-0.5 overflow-x-auto">
           {event.input.command}
         </code>
       </div>
