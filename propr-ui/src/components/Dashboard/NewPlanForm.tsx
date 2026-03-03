@@ -108,6 +108,47 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [shouldFocusTextarea, setShouldFocusTextarea] = useState(false);
 
+  const handleExpand = () => {
+    if (onExpandChange) {
+      onExpandChange(true);
+    } else {
+      setInternalExpanded(true);
+    }
+    setShouldFocusTextarea(true);
+  };
+
+  // Auto-expand textarea based on content
+  const adjustTextareaHeight = () => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      // Reset height to calculate new scroll height
+      textarea.style.height = 'auto';
+      // Set minimum height (6 rows ~ 144px) and max height
+      const minHeight = 144;
+      const maxHeight = 400;
+      const newHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+      textarea.style.height = `${newHeight}px`;
+    }
+  };
+
+  // Focus textarea when it becomes visible after expansion
+  useEffect(() => {
+    if (shouldFocusTextarea && textareaRef.current) {
+      textareaRef.current.focus();
+      setShouldFocusTextarea(false);
+    }
+  }, [shouldFocusTextarea, isExpanded]);
+
+  // Adjust height when prompt changes
+  useEffect(() => {
+    if (isExpanded || prompt.trim().length > 0 || selectedFiles.length > 0) {
+      adjustTextareaHeight();
+    }
+  }, [prompt, isExpanded, selectedFiles.length]);
+
+  // Auto-expand if there's content or files
+  const shouldBeExpanded = isExpanded || prompt.trim().length > 0 || selectedFiles.length > 0;
+
   // Empty state when no repositories are configured
   if (repos.length === 0) {
     return (
@@ -142,47 +183,6 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
       </div>
     );
   }
-
-  const handleExpand = () => {
-    if (onExpandChange) {
-      onExpandChange(true);
-    } else {
-      setInternalExpanded(true);
-    }
-    setShouldFocusTextarea(true);
-  };
-
-  // Focus textarea when it becomes visible after expansion
-  useEffect(() => {
-    if (shouldFocusTextarea && textareaRef.current) {
-      textareaRef.current.focus();
-      setShouldFocusTextarea(false);
-    }
-  }, [shouldFocusTextarea, isExpanded]);
-
-  // Auto-expand textarea based on content
-  const adjustTextareaHeight = () => {
-    const textarea = textareaRef.current;
-    if (textarea) {
-      // Reset height to calculate new scroll height
-      textarea.style.height = 'auto';
-      // Set minimum height (6 rows ~ 144px) and max height
-      const minHeight = 144;
-      const maxHeight = 400;
-      const newHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
-      textarea.style.height = `${newHeight}px`;
-    }
-  };
-
-  // Adjust height when prompt changes
-  useEffect(() => {
-    if (isExpanded || prompt.trim().length > 0 || selectedFiles.length > 0) {
-      adjustTextareaHeight();
-    }
-  }, [prompt, isExpanded, selectedFiles.length]);
-
-  // Auto-expand if there's content or files
-  const shouldBeExpanded = isExpanded || prompt.trim().length > 0 || selectedFiles.length > 0;
 
   return (
     <div className={`bg-white border border-gray-200 rounded-lg p-6 mb-8 shadow-md hover:shadow-lg transition-all duration-300 border-t-4 border-t-indigo-500`}>
