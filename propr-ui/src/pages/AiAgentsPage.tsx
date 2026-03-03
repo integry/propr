@@ -110,6 +110,7 @@ const AiAgentsPage: React.FC = () => {
                   onSaveAgents={handleSaveAgents}
                   showAddModal={showAddModal}
                   onCloseAddModal={handleCloseModal}
+                  onAddClick={handleAddAgentClick}
                 />
               </div>
             </div>
