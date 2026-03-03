@@ -12,7 +12,9 @@ interface RepositoryInfoDeps {
 
 export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
   return async function getRepositoryInfo(req: Request, res: Response): Promise<void> {
-    const { draftId, repository } = req.body;
+    // draftId comes from URL path parameter for GET requests
+    const draftId = req.params.id;
+    const repository = req.query.repository as string | undefined;
     if (!draftId && !repository) {
       res.status(400).json({ error: 'Either draftId or repository is required' });
       return;
@@ -28,7 +30,7 @@ export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
           res.status(ownership.status!).json({ error: ownership.error });
           return;
         }
-        repoFullName = ownership.draft?.repository;
+        repoFullName = ownership.draft?.repository as string | undefined;
       }
 
       if (!repoFullName) {
