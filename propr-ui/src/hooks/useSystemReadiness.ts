@@ -1,15 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getAgents, getRepoConfig, AgentConfig, MonitoredRepo } from '../api/proprApi';
+import { getAgents, getRepoConfig, getTasks, AgentConfig, MonitoredRepo } from '../api/proprApi';
 
 /**
  * System readiness state for onboarding guidance
- * Tracks whether the user has completed initial setup (adding an AI agent and monitoring a repository)
+ * Tracks whether the user has completed initial setup (adding an AI agent, monitoring a repository, and creating tasks)
  */
 export interface SystemReadinessState {
   /** Whether at least one enabled agent is configured */
   hasAgents: boolean;
   /** Whether at least one repository is configured for monitoring */
   hasRepos: boolean;
+  /** Whether at least one task exists (GitHub issues with ProPR processing labels or created via Plans) */
+  hasTasks: boolean;
   /** Whether data is currently being loaded */
   isLoading: boolean;
   /** Error message if fetching failed, null otherwise */
@@ -19,6 +21,7 @@ export interface SystemReadinessState {
 export function useSystemReadiness(): SystemReadinessState {
   const [hasAgents, setHasAgents] = useState<boolean>(false);
   const [hasRepos, setHasRepos] = useState<boolean>(false);
+  const [hasTasks, setHasTasks] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,10 +34,11 @@ export function useSystemReadiness(): SystemReadinessState {
       setIsLoading(true);
       setError(null);
 
-      // Fetch agents and repos configuration in parallel
-      const [agentsResponse, repoConfigResponse] = await Promise.all([
+      // Fetch agents, repos configuration, and tasks in parallel
+      const [agentsResponse, repoConfigResponse, tasksResponse] = await Promise.all([
         getAgents(),
         getRepoConfig(),
+        getTasks('all', 1, 0), // Just check if any task exists
       ]);
 
       if (!isMountedRef.current) return;
@@ -47,6 +51,10 @@ export function useSystemReadiness(): SystemReadinessState {
       // Check if at least one repository is configured
       const repos: MonitoredRepo[] = repoConfigResponse.repos_to_monitor || [];
       setHasRepos(repos.length > 0);
+
+      // Check if at least one task exists
+      const tasks = (tasksResponse as { total?: number }).total || 0;
+      setHasTasks(tasks > 0);
     } catch (err) {
       if (!isMountedRef.current) return;
       console.error('Failed to fetch system readiness:', err);
@@ -72,6 +80,7 @@ export function useSystemReadiness(): SystemReadinessState {
   return {
     hasAgents,
     hasRepos,
+    hasTasks,
     isLoading,
     error,
   };

@@ -42,7 +42,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   useDynamicFavicon(activeTaskCount);
 
   // Track system readiness for proactive sidebar indicators
-  const { hasAgents, hasRepos } = useSystemReadiness();
+  const { hasAgents, hasRepos, hasTasks } = useSystemReadiness();
 
   // Calculate display task count for sidebar by subtracting plans (clamped to 0)
   // This is a workaround for the backend including plan generation jobs in activeTaskCount
@@ -207,6 +207,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">
                   {displayTaskCount}
                 </span>
+              )}
+              {item.name === 'Tasks' && displayTaskCount === 0 && !hasTasks && hasAgents && hasRepos && (
+                <span className="ml-auto w-2 h-2 rounded-full bg-amber-500" title="No tasks created yet" />
               )}
               {item.name === 'Plans' && generatingPlansCount > 0 && (
                 <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">

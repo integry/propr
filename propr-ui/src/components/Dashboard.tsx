@@ -113,8 +113,8 @@ const Dashboard: React.FC = () => {
   useDocumentTitle('Dashboard');
 
   // System readiness state for onboarding
-  const { hasAgents, hasRepos, isLoading: readinessLoading } = useSystemReadiness();
-  const showOnboarding = !readinessLoading && (!hasAgents || !hasRepos);
+  const { hasAgents, hasRepos, hasTasks, isLoading: readinessLoading } = useSystemReadiness();
+  const showOnboarding = !readinessLoading && (!hasAgents || !hasRepos || !hasTasks);
 
   // Lifted state for KPIs
   const [taskStats, setTaskStats] = useState<TaskStatsResponse | null>(null);
@@ -186,7 +186,7 @@ const Dashboard: React.FC = () => {
       {/* Onboarding Widget - shown when setup is incomplete */}
       {showOnboarding && (
         <div className="px-6 pt-6">
-          <OnboardingWidget hasAgents={hasAgents} hasRepos={hasRepos} />
+          <OnboardingWidget hasAgents={hasAgents} hasRepos={hasRepos} hasTasks={hasTasks} />
         </div>
       )}
 

@@ -7,21 +7,25 @@ export interface OnboardingWidgetProps {
   hasAgents: boolean;
   /** Whether the user has added at least one repository */
   hasRepos: boolean;
+  /** Whether the user has created at least one task */
+  hasTasks: boolean;
 }
 
 /**
  * OnboardingWidget displays the onboarding steps for new users on the dashboard.
  *
  * Follows the Studio Aesthetic guidelines - uses divider-based layout instead of cards.
- * It shows two steps:
+ * It shows three steps:
  * 1. Configure an AI Agent
  * 2. Add a Repository
+ * 3. Create a Task
  *
- * The repo step only becomes 'active' after the agent step is 'completed'.
+ * Each step becomes 'active' after the previous step is 'completed'.
  */
 export const OnboardingWidget: React.FC<OnboardingWidgetProps> = ({
   hasAgents,
   hasRepos,
+  hasTasks,
 }) => {
   const navigate = useNavigate();
 
@@ -36,12 +40,22 @@ export const OnboardingWidget: React.FC<OnboardingWidgetProps> = ({
     return 'pending';
   };
 
+  const getTaskStepStatus = (): OnboardingStepStatus => {
+    if (hasTasks) return 'completed';
+    if (hasAgents && hasRepos) return 'active';
+    return 'pending';
+  };
+
   const handleConfigureAgent = () => {
     navigate('/ai-agents');
   };
 
   const handleAddRepository = () => {
     navigate('/repositories');
+  };
+
+  const handleCreateTask = () => {
+    navigate('/studio/new');
   };
 
   return (
@@ -65,6 +79,14 @@ export const OnboardingWidget: React.FC<OnboardingWidgetProps> = ({
           status={getRepoStepStatus()}
           actionLabel="Add Repository"
           onAction={handleAddRepository}
+        />
+        <OnboardingStep
+          stepNumber={3}
+          title="Create a Task"
+          description="Create a plan or add a ProPR label to a GitHub issue"
+          status={getTaskStepStatus()}
+          actionLabel="Create Plan"
+          onAction={handleCreateTask}
         />
       </div>
     </div>
