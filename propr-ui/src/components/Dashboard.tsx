@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { useSystemReadiness } from '../hooks/useSystemReadiness';
 import TaskStatsChart from './TaskStatsChart';
 import RepositoryBreakdown from './RepositoryBreakdown';
 import TopModels from './TopModels';
 import TaskList from './TaskList';
 import ActivitySparkline from './ActivitySparkline';
+import { OnboardingWidget } from './Dashboard/OnboardingWidget';
 import { getQueueStats } from '../api/proprApi';
 import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
 import { Loader2, ChevronRight } from 'lucide-react';
@@ -110,6 +112,10 @@ const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, overviewSt
 const Dashboard: React.FC = () => {
   useDocumentTitle('Dashboard');
 
+  // System readiness state for onboarding
+  const { hasAgents, hasRepos, hasTasks, isLoading: readinessLoading } = useSystemReadiness();
+  const showOnboarding = !readinessLoading && (!hasAgents || !hasRepos || !hasTasks);
+
   // Lifted state for KPIs
   const [taskStats, setTaskStats] = useState<TaskStatsResponse | null>(null);
   const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
@@ -177,6 +183,13 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="bg-white min-h-full">
+      {/* Onboarding Widget - shown when setup is incomplete */}
+      {showOnboarding && (
+        <div className="px-6 pt-6">
+          <OnboardingWidget hasAgents={hasAgents} hasRepos={hasRepos} hasTasks={hasTasks} />
+        </div>
+      )}
+
       {/* Main Content - Studio Split Layout */}
       <div className="flex flex-col lg:flex-row">
         {/* Left Column (70%) - Activity Feed */}
