@@ -187,8 +187,7 @@ async function enqueueIssueForModel(
     options: EnqueueOptions
 ): Promise<void> {
     const { correlationId, correlatedLogger, modelName, agentAlias } = options;
-    const timestamp = Date.now();
-    const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${agentAlias}-${modelName}-${timestamp}`;
+    const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}-${agentAlias}-${modelName}`;
     const issueJob: IssueJobData = {
         repoOwner: issue.repoOwner,
         repoName: issue.repoName,
@@ -212,7 +211,7 @@ async function enqueueIssueForModel(
 
     try {
         const activity: ActivityLog = {
-            id: `activity-${timestamp}-${issue.id}-${modelName}`,
+            id: `activity-${Date.now()}-${issue.id}-${modelName}`,
             type: 'issue_created',
             timestamp: new Date().toISOString(),
             repository: repoFullName,
