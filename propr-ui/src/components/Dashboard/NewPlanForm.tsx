@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
-import { X, Paperclip, Loader2, Image } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { X, Paperclip, Loader2, Image, FolderGit2 } from 'lucide-react';
 
 export interface Repo {
   name: string;
@@ -101,11 +101,47 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
   isExpanded: controlledExpanded,
   onExpandChange,
 }) => {
+  const navigate = useNavigate();
   // Use internal state if not controlled externally
   const [internalExpanded, setInternalExpanded] = useState(false);
   const isExpanded = controlledExpanded !== undefined ? controlledExpanded : internalExpanded;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [shouldFocusTextarea, setShouldFocusTextarea] = useState(false);
+
+  // Empty state when no repositories are configured
+  if (repos.length === 0) {
+    return (
+      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-8 shadow-md hover:shadow-lg transition-all duration-300 border-t-4 border-t-indigo-500">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
+            <span>✨</span> Start New AI Plan
+          </h3>
+          <Link
+            to="/plans"
+            className="text-sm text-gray-500 hover:text-gray-700 underline"
+          >
+            View History
+          </Link>
+        </div>
+        <div className="flex flex-col items-center justify-center py-8 text-center">
+          <div className="w-16 h-16 bg-indigo-50 rounded-full flex items-center justify-center mb-4">
+            <FolderGit2 className="w-8 h-8 text-indigo-500" />
+          </div>
+          <h4 className="text-lg font-medium text-gray-900 mb-2">No repositories configured</h4>
+          <p className="text-gray-500 mb-6 max-w-md">
+            Add a repository to start creating AI-powered plans for your codebase.
+          </p>
+          <button
+            onClick={() => navigate('/repositories')}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 text-white font-medium rounded-md hover:bg-primary-700 transition-colors"
+          >
+            <FolderGit2 className="w-4 h-4" />
+            Add a Repository
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const handleExpand = () => {
     if (onExpandChange) {
