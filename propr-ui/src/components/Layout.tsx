@@ -5,6 +5,7 @@ import { getQueueStats, getCurrentUser, logout } from '../api/proprApi';
 import { getGeneratingPlansCount } from '../api/taskStatsApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
+import { useSystemReadiness } from '../hooks/useSystemReadiness';
 import { useToast } from './ui/useToast';
 import { HomeIcon, SettingsIcon, MenuIcon, CloseIcon } from './icons/LayoutIcons';
 import GlobalHeader from './GlobalHeader';
@@ -39,6 +40,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   // Update favicon to show combined count of tasks + plans
   // Note: activeTaskCount currently includes plans due to backend bug, which satisfies the requirement
   useDynamicFavicon(activeTaskCount);
+
+  // Track system readiness for proactive sidebar indicators
+  const { hasAgents, hasRepos } = useSystemReadiness();
 
   // Calculate display task count for sidebar by subtracting plans (clamped to 0)
   // This is a workaround for the backend including plan generation jobs in activeTaskCount
@@ -208,6 +212,12 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 <span className="ml-auto inline-flex items-center justify-center h-5 w-5 rounded-full bg-primary-500 text-xs font-semibold text-white">
                   {generatingPlansCount}
                 </span>
+              )}
+              {item.name === 'Repositories' && !hasRepos && (
+                <span className="ml-auto w-2 h-2 rounded-full bg-amber-500" title="No repositories configured" />
+              )}
+              {item.name === 'Coding Agents' && !hasAgents && (
+                <span className="ml-auto w-2 h-2 rounded-full bg-amber-500" title="No AI agents configured" />
               )}
             </Link>
           ))}
