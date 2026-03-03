@@ -37,6 +37,18 @@ const GitHubIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" })
   </svg>
 );
 
+const RobotIcon: React.FC<{ className?: string }> = ({ className = "w-12 h-12" }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+  </svg>
+);
+
+const PlusIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+  </svg>
+);
+
 // --- Components ---
 
 interface CopyButtonProps {
@@ -74,6 +86,7 @@ interface AgentsListSectionProps {
   onSaveAgents: (agents: AgentConfig[]) => void;
   showAddModal?: boolean;
   onCloseAddModal?: () => void;
+  onAddClick?: () => void;
 }
 
 // Code Chip component for consistent styling of IDs, aliases, and paths
@@ -223,7 +236,8 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
   success,
   onSaveAgents,
   showAddModal = false,
-  onCloseAddModal
+  onCloseAddModal,
+  onAddClick
 }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null);
@@ -296,11 +310,23 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
             />
           ))}
           {agents.length === 0 && (
-            <div className="text-center py-8">
-              <p className="text-gray-500">No agents configured.</p>
-              <p className="text-gray-400 text-sm mt-1">
-                Click "+ Add Agent" to configure your first AI agent.
+            <div className="text-center py-12 px-4">
+              <div className="flex justify-center mb-4">
+                <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center">
+                  <RobotIcon className="w-8 h-8 text-gray-400" />
+                </div>
+              </div>
+              <h3 className="text-gray-900 font-medium text-base mb-2">No agents configured</h3>
+              <p className="text-gray-500 text-sm mb-6 max-w-sm mx-auto">
+                Configure AI agents to connect to providers like OpenAI, Anthropic, or other LLM services.
               </p>
+              <button
+                onClick={onAddClick}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+              >
+                <PlusIcon className="w-4 h-4" />
+                Add First Agent
+              </button>
             </div>
           )}
         </div>
