@@ -12,6 +12,7 @@ export interface OnboardingWidgetProps {
 /**
  * OnboardingWidget displays the onboarding steps for new users on the dashboard.
  *
+ * Follows the Studio Aesthetic guidelines - uses divider-based layout instead of cards.
  * It shows two steps:
  * 1. Configure an AI Agent
  * 2. Add a Repository
@@ -44,15 +45,15 @@ export const OnboardingWidget: React.FC<OnboardingWidgetProps> = ({
   };
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-sm">
-      <h3 className="text-lg font-semibold text-slate-900 mb-4">
-        Get Started with ProPR
+    <div className="border-b border-slate-200 pb-4">
+      <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">
+        Getting Started
       </h3>
-      <div className="space-y-3">
+      <div className="divide-y divide-slate-100">
         <OnboardingStep
           stepNumber={1}
           title="Configure an AI Agent"
-          description="Set up your first AI coding agent to start automating pull request reviews and code generation."
+          description="Set up your first AI coding agent"
           status={getAgentStepStatus()}
           actionLabel="Configure Agent"
           onAction={handleConfigureAgent}
@@ -60,7 +61,7 @@ export const OnboardingWidget: React.FC<OnboardingWidgetProps> = ({
         <OnboardingStep
           stepNumber={2}
           title="Add a Repository"
-          description="Connect a GitHub repository to enable AI-powered code reviews and automated improvements."
+          description="Connect a GitHub repository"
           status={getRepoStepStatus()}
           actionLabel="Add Repository"
           onAction={handleAddRepository}

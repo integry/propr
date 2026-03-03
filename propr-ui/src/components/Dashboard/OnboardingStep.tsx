@@ -21,9 +21,10 @@ export interface OnboardingStepProps {
 /**
  * OnboardingStep component displays a single step in the onboarding journey.
  *
+ * Follows the Studio Aesthetic guidelines - uses divider-based layout instead of cards.
  * Supports three visual states:
- * - `active`: Highlighted with indigo styling, CTA button is prominent
- * - `completed`: Shows checkmark instead of number, green styling, CTA hidden
+ * - `active`: Teal styling (Brand color), prominent CTA button
+ * - `completed`: Gray styling (Success is Quiet), checkmark shown, CTA hidden
  * - `pending`: Muted gray styling, CTA button is subdued
  */
 export const OnboardingStep: React.FC<OnboardingStepProps> = ({
@@ -39,67 +40,60 @@ export const OnboardingStep: React.FC<OnboardingStepProps> = ({
   const isPending = status === 'pending';
 
   return (
-    <div
-      className={`
-        flex items-start gap-4 p-4 rounded-lg border transition-all duration-200
-        ${isActive ? 'border-indigo-200 bg-indigo-50/50' : ''}
-        ${isCompleted ? 'border-slate-200 bg-white' : ''}
-        ${isPending ? 'border-slate-200 bg-slate-50/50' : ''}
-      `}
-    >
-      {/* Step Number / Checkmark Circle */}
+    <div className="flex items-start gap-3 py-3 transition-all duration-200">
+      {/* Step Number / Checkmark - inline indicator */}
       <div
         className={`
-          flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-sm font-medium
+          flex h-6 w-6 flex-shrink-0 items-center justify-center text-xs font-medium
           transition-all duration-200
-          ${isCompleted ? 'bg-green-100 text-green-600 border-2 border-green-300' : ''}
-          ${isActive ? 'bg-indigo-600 text-white' : ''}
-          ${isPending ? 'bg-white text-slate-500 border-2 border-slate-300' : ''}
+          ${isCompleted ? 'text-slate-400' : ''}
+          ${isActive ? 'text-teal-600' : ''}
+          ${isPending ? 'text-slate-400' : ''}
         `}
       >
         {isCompleted ? (
           <Check className="h-4 w-4 stroke-[2.5]" />
         ) : (
-          stepNumber
+          <span className="font-mono">{stepNumber}.</span>
         )}
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0">
-        {/* Title */}
-        <h4
-          className={`
-            text-sm font-semibold transition-colors duration-200
-            ${isCompleted ? 'text-slate-500' : ''}
-            ${isActive ? 'text-indigo-900' : ''}
-            ${isPending ? 'text-slate-600' : ''}
-          `}
-        >
-          {title}
-        </h4>
+        {/* Title and Description inline */}
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span
+            className={`
+              text-sm font-medium transition-colors duration-200
+              ${isCompleted ? 'text-slate-400' : ''}
+              ${isActive ? 'text-slate-900' : ''}
+              ${isPending ? 'text-slate-500' : ''}
+            `}
+          >
+            {title}
+          </span>
+          <span
+            className={`
+              text-sm transition-colors duration-200
+              ${isCompleted ? 'text-slate-400' : ''}
+              ${isActive ? 'text-slate-600' : ''}
+              ${isPending ? 'text-slate-400' : ''}
+            `}
+          >
+            — {description}
+          </span>
+        </div>
 
-        {/* Description */}
-        <p
-          className={`
-            mt-1 text-sm leading-relaxed
-            ${isCompleted ? 'text-slate-400' : ''}
-            ${isActive ? 'text-indigo-700' : ''}
-            ${isPending ? 'text-slate-500' : ''}
-          `}
-        >
-          {description}
-        </p>
-
-        {/* Action Button - Hidden when completed */}
+        {/* Action Button - Hidden when completed, inline link style for pending */}
         {!isCompleted && onAction && (
           <button
             onClick={onAction}
             className={`
-              mt-3 inline-flex items-center px-4 py-2 text-sm font-medium rounded-md
+              mt-2 inline-flex items-center text-sm font-medium
               transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2
               ${isActive
-                ? 'bg-indigo-600 text-white hover:bg-indigo-700 focus:ring-indigo-500'
-                : 'bg-white text-slate-600 border border-slate-300 hover:bg-slate-50 hover:border-slate-400 focus:ring-slate-400'
+                ? 'px-3 py-1.5 bg-teal-600 text-white rounded-md hover:bg-teal-700 focus:ring-teal-500'
+                : 'text-slate-500 hover:text-slate-700 underline-offset-2 hover:underline focus:ring-slate-400'
               }
             `}
           >
