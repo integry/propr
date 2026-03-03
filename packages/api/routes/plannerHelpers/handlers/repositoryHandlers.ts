@@ -54,15 +54,28 @@ export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
       const { Octokit } = await import('@octokit/core');
       const octokit = new Octokit({ auth: authToken });
 
-      const [repoInfo, branches] = await Promise.all([
-        octokit.request('GET /repos/{owner}/{repo}', { owner, repo: repoName }),
-        octokit.request('GET /repos/{owner}/{repo}/branches', { owner, repo: repoName, per_page: 100 })
-      ]);
+      // Fetch repo info first
+      const repoInfo = await octokit.request('GET /repos/{owner}/{repo}', { owner, repo: repoName });
+
+      // Paginate through all branches
+      const allBranches: string[] = [];
+      let page = 1;
+      while (true) {
+        const branchesResponse = await octokit.request('GET /repos/{owner}/{repo}/branches', {
+          owner,
+          repo: repoName,
+          per_page: 100,
+          page
+        });
+        allBranches.push(...branchesResponse.data.map(b => b.name));
+        if (branchesResponse.data.length < 100) break;
+        page++;
+      }
 
       res.json({
         repository: repoFullName,
         defaultBranch: repoInfo.data.default_branch,
-        branches: branches.data.map(b => b.name),
+        branches: allBranches,
         isPrivate: repoInfo.data.private,
         description: repoInfo.data.description
       });
