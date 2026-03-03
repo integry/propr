@@ -213,13 +213,27 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       return { error: 'No execution record found.' };
     }
 
-    const task = await db('tasks')
+    let task = await db('tasks')
       .where({ task_id: execution.task_id })
       .first() as Task | undefined;
 
     if (!task) {
       correlatedLogger.warn({ executionId, taskId: execution.task_id }, 'No task record found.');
       return { error: 'No task record found.' };
+    }
+
+    // Wait for commit_hash to be populated (post-processing may still be running)
+    // Retry up to 6 times with 10 second intervals (60 seconds total)
+    const maxRetries = 6;
+    const retryDelayMs = 10000;
+    for (let attempt = 0; attempt < maxRetries && !task.commit_hash; attempt++) {
+      correlatedLogger.debug({ taskId: execution.task_id, attempt: attempt + 1, maxRetries }, 'Waiting for commit_hash to be populated...');
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+      const refreshedTask = await db('tasks')
+        .where({ task_id: execution.task_id })
+        .first() as Task | undefined;
+      if (!refreshedTask) break;
+      task = refreshedTask;
     }
 
     const worktreePath = `/tmp/git-processor/clones/${task.repository}`;
