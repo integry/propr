@@ -5,6 +5,8 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem } from '../api/proprApi';
 import { Filter, Search, X } from 'lucide-react';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
+import { useSocket } from '../contexts/useSocket';
+import { DraftUpdatePayload } from '@propr/shared';
 
 const DEFAULT_PAGE_SIZE = 50;
 
@@ -12,6 +14,7 @@ const PlansPage: React.FC = () => {
   useDocumentTitle('Plans');
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { onDraftUpdate, isConnected } = useSocket();
 
   // Derive state from URL parameters
   const repoFilter = searchParams.get('repository') || 'all';
@@ -130,13 +133,24 @@ const PlansPage: React.FC = () => {
     return () => clearTimeout(timer);
   }, [searchQuery, debouncedSearch, setSearchParams]);
 
-  // Auto-polling every 5 seconds for silent refresh
-  useEffect(() => {
-    const intervalId = setInterval(() => {
-      loadDrafts(currentPage, repoFilter, statusFilter, false);
-    }, 5000);
-    return () => clearInterval(intervalId);
+  // Handle draft update from WebSocket - refresh drafts list when any draft changes
+  const handleDraftUpdate = useCallback(async (_payload: DraftUpdatePayload) => {
+    console.log('[PlansPage] Received draft update via WebSocket');
+    // Silently refresh drafts list to reflect the latest state
+    await loadDrafts(currentPage, repoFilter, statusFilter, false);
   }, [currentPage, repoFilter, statusFilter, loadDrafts]);
+
+  // Subscribe to WebSocket events for draft updates
+  useEffect(() => {
+    if (!isConnected) return;
+
+    // Listen for draft updates (global listener for the plans list)
+    const unsubscribe = onDraftUpdate(handleDraftUpdate);
+
+    return () => {
+      unsubscribe();
+    };
+  }, [isConnected, onDraftUpdate, handleDraftUpdate]);
 
   // Helper to update URL params
   const updateSearchParams = useCallback((updates: Record<string, string | null>) => {

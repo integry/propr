@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue, AgentModelPair } from '../../api/planIssuesApi';
 import { AgentConfig, getAgents } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
-
-const POLL_INTERVAL = 5000;
+import { useSocket } from '../../contexts/useSocket';
+import { TaskUpdatePayload } from '@propr/shared';
 
 interface UsePlanIssuesManagerProps {
   draftId: string;
@@ -32,7 +32,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   const [issueMultiModeMap, setIssueMultiModeMap] = useState<Record<number, boolean>>({});
   const [issueSelectedModelsMap, setIssueSelectedModelsMap] = useState<Record<number, AgentModelPair[]>>({});
 
-  const pollIntervalRef = useRef<number | null>(null);
+  const { onTaskUpdate, isConnected } = useSocket();
 
   const issueTitles = useMemo(() => {
     const map: Record<number, string> = {};
@@ -150,15 +150,24 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     load();
   }, [fetchIssues, fetchAgents]);
 
+  // Handle task update from WebSocket - refresh issues when any task changes
+  const handleTaskUpdate = useCallback(async (_payload: TaskUpdatePayload) => {
+    // When any task updates, refresh issues to reflect the latest state
+    console.log('[usePlanIssuesManager] Received task update via WebSocket');
+    await fetchIssues();
+  }, [fetchIssues]);
+
+  // Subscribe to WebSocket events for task updates when there are active issues
   useEffect(() => {
-    if (hasActiveIssues) {
-      pollIntervalRef.current = window.setInterval(fetchIssues, POLL_INTERVAL);
-    } else if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-    return () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); };
-  }, [hasActiveIssues, fetchIssues]);
+    if (!hasActiveIssues || !isConnected) return;
+
+    // Listen for task updates (global listener since issues can map to any task)
+    const unsubscribe = onTaskUpdate(handleTaskUpdate);
+
+    return () => {
+      unsubscribe();
+    };
+  }, [hasActiveIssues, isConnected, onTaskUpdate, handleTaskUpdate]);
 
   const handleImplementIssue = useCallback(async (issueNumber: number, models?: AgentModelPair[]) => {
     setImplementingIssue(issueNumber);

@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload } from '@propr/shared';
+import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
 
 interface SocketProviderProps {
@@ -14,6 +14,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
   const draftUpdateCallbacksRef = useRef<Set<(payload: DraftUpdatePayload) => void>>(new Set());
   const indexingUpdateCallbacksRef = useRef<Set<(payload: IndexingUpdatePayload) => void>>(new Set());
   const queueStatsUpdateCallbacksRef = useRef<Set<(payload: QueueStatsUpdatePayload) => void>>(new Set());
+  const taskLiveUpdateCallbacksRef = useRef<Set<(payload: TaskLiveUpdatePayload) => void>>(new Set());
 
   useEffect(() => {
     // Connect to the backend WebSocket server
@@ -62,6 +63,11 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     newSocket.on(QUEUE_STATS_UPDATE, (payload: QueueStatsUpdatePayload) => {
       console.log('[SocketContext] Received queue stats update:', payload);
       queueStatsUpdateCallbacksRef.current.forEach((callback) => callback(payload));
+    });
+
+    newSocket.on(TASK_LIVE_UPDATE, (payload: TaskLiveUpdatePayload) => {
+      console.log('[SocketContext] Received task live update:', payload);
+      taskLiveUpdateCallbacksRef.current.forEach((callback) => callback(payload));
     });
 
     setSocket(newSocket);
@@ -142,6 +148,20 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     }
   }, [socket, isConnected]);
 
+  const subscribeToTaskLive = useCallback((taskId: string) => {
+    if (socket && isConnected) {
+      socket.emit('subscribe:task:live', taskId);
+      console.log(`[SocketContext] Subscribed to task:live:${taskId}`);
+    }
+  }, [socket, isConnected]);
+
+  const unsubscribeFromTaskLive = useCallback((taskId: string) => {
+    if (socket && isConnected) {
+      socket.emit('unsubscribe:task:live', taskId);
+      console.log(`[SocketContext] Unsubscribed from task:live:${taskId}`);
+    }
+  }, [socket, isConnected]);
+
   const onTaskUpdate = useCallback((callback: (payload: TaskUpdatePayload) => void) => {
     taskUpdateCallbacksRef.current.add(callback);
     return () => {
@@ -170,6 +190,13 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     };
   }, []);
 
+  const onTaskLiveUpdate = useCallback((callback: (payload: TaskLiveUpdatePayload) => void) => {
+    taskLiveUpdateCallbacksRef.current.add(callback);
+    return () => {
+      taskLiveUpdateCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
   const value: SocketContextValue = {
     socket,
     isConnected,
@@ -183,10 +210,13 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     unsubscribeFromIndexingUpdates,
     subscribeToQueueStats,
     unsubscribeFromQueueStats,
+    subscribeToTaskLive,
+    unsubscribeFromTaskLive,
     onTaskUpdate,
     onDraftUpdate,
     onIndexingUpdate,
     onQueueStatsUpdate,
+    onTaskLiveUpdate,
   };
 
   return (
