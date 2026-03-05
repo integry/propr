@@ -14,14 +14,24 @@ export async function generateContextWithRetry(params: ContextGenerationParams):
   const { worktreePath, config, relevantFilePaths, candidateSummaries, budgets, base64Images, draft, draftId, githubToken, correlationId, generationModel, correlatedLogger } = params;
   const modelHardLimit = getModelHardLimit(generationModel);
   let currentRepomixLimit = budgets.repomixTokenLimit;
+  let currentSmartSummaryBudget = budgets.smartSummaryBudget;
   let contextResult: Awaited<ReturnType<typeof generateContext>> | undefined;
   let fullContext = '';
-  const maxRetries = 5;
+  let retryCount = 0;
+  // Track current files - use reduced set from previous iteration
+  let currentFilePaths = relevantFilePaths.length > 0 ? [...relevantFilePaths] : [];
 
-  for (let retryCount = 0; retryCount < maxRetries; retryCount++) {
-    const filesToInclude = config.compress ? undefined : (relevantFilePaths.length > 0 ? relevantFilePaths : undefined);
-    const priorityFiles = config.compress ? relevantFilePaths : undefined;
+  // Keep reducing context until it fits or we hit the minimum limit
+  while (currentRepomixLimit >= 5000) {
+    const filesToInclude = config.compress ? undefined : (currentFilePaths.length > 0 ? currentFilePaths : undefined);
+    const priorityFiles = config.compress ? currentFilePaths : undefined;
     contextResult = await generateContext({ repoPath: worktreePath, filesToInclude, priorityFiles, tokenLimit: currentRepomixLimit, compress: config.compress, correlationId });
+
+    // Update currentFilePaths with whatever files were actually included after optimization
+    if (contextResult.includedFiles.length < currentFilePaths.length) {
+      currentFilePaths = contextResult.includedFiles;
+      correlatedLogger.info({ originalFiles: relevantFilePaths.length, currentFiles: currentFilePaths.length }, 'Updated file list from optimization');
+    }
 
     const includedFilesSet = new Set(contextResult.includedFiles);
     const filteredCandidates = candidateSummaries.filter(s => !includedFilesSet.has(s.path));
@@ -38,7 +48,7 @@ export async function generateContextWithRetry(params: ContextGenerationParams):
 
     correlatedLogger.info({ totalCandidates: candidateSummaries.length, includedInContext: contextResult.includedFiles.length, summariesIncluded: summariesIncludedCount, summariesTruncated: summariesIncludedCount < filteredCandidates.length, summaryBudgetChars, retryCount }, 'Filtered summaries for context enrichment');
 
-    const smartSummaryResult = await buildSummaryContext({ tokenBudget: budgets.smartSummaryBudget, priorityPaths: relevantFilePaths, repoName: draft.repository, correlationId });
+    const smartSummaryResult = await buildSummaryContext({ tokenBudget: currentSmartSummaryBudget, priorityPaths: currentFilePaths.length > 0 ? currentFilePaths : relevantFilePaths, repoName: draft.repository, correlationId });
     const smartSummaries = smartSummaryResult.context || undefined;
     if (smartSummaries) {
       correlatedLogger.info({ fileSummaryCount: smartSummaryResult.fileSummaryCount, dirSummaryCount: smartSummaryResult.dirSummaryCount, estimatedTokens: smartSummaryResult.estimatedTokens, truncated: smartSummaryResult.truncated }, 'Built smart summary context');
@@ -49,21 +59,23 @@ export async function generateContextWithRetry(params: ContextGenerationParams):
 
     fullContext = buildFullContext({ userRequest: draft.initial_prompt, repomixContext: contextResult.context, granularity: config.granularity, fileSummaries: filteredSummaries, smartSummaries, images: base64Images.length > 0 ? base64Images : undefined, additionalContext });
 
-    const validation = await validatePromptTokens(fullContext, modelHardLimit, correlatedLogger);
+    const validation = await validatePromptTokens(fullContext, modelHardLimit, correlatedLogger, generationModel);
     if (validation.valid) {
       correlatedLogger.info({ tokenCount: validation.tokenCount, modelHardLimit, retryCount, filesIncluded: contextResult.includedFiles.length }, 'Context fits within model limit');
       return { fullContext, contextResult };
     }
 
     const overage = validation.tokenCount - (modelHardLimit - CLAUDE_CODE_OVERHEAD);
-    currentRepomixLimit = Math.floor(currentRepomixLimit * 0.7);
+    // Calculate reduction ratio based on actual overage, with 10% extra buffer
+    const targetTokens = modelHardLimit - CLAUDE_CODE_OVERHEAD;
+    const reductionRatio = Math.max(0.5, (targetTokens / validation.tokenCount) * 0.9);
+    currentRepomixLimit = Math.floor(currentRepomixLimit * reductionRatio);
+    currentSmartSummaryBudget = Math.floor(currentSmartSummaryBudget * reductionRatio);
 
-    correlatedLogger.warn({ tokenCount: validation.tokenCount, modelHardLimit, overage, newRepomixLimit: currentRepomixLimit, retryCount: retryCount + 1 }, 'Context exceeds model limit, reducing files and retrying');
-
-    if (currentRepomixLimit < 5000) {
-      throw new PlanningFailedError(`Cannot fit context within model limit even with minimal files. Attachments and fixed content use too many tokens. Try removing large images.`);
-    }
+    retryCount++;
+    correlatedLogger.warn({ tokenCount: validation.tokenCount, modelHardLimit, overage, newRepomixLimit: currentRepomixLimit, newSmartSummaryBudget: currentSmartSummaryBudget, retryCount }, 'Context exceeds model limit, reducing files and retrying');
   }
 
-  throw new PlanningFailedError(`Failed to fit context within model limit after ${maxRetries} attempts. Try removing large images or reducing context complexity.`);
+  // If we exit the loop, it means currentRepomixLimit dropped below 5000
+  throw new PlanningFailedError(`Cannot fit context within model limit even with minimal files. Attachments and fixed content use too many tokens. Try removing large images.`);
 }

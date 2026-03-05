@@ -132,34 +132,41 @@ export async function generateContext(options: ContextGenerationOptions): Promis
     }
 
     // Check if result exceeds token limit and needs truncation
-    if (result.totalTokens > tiktokenLimit && filesToInclude && filesToInclude.length > 0) {
-      correlatedLogger.info(
-        { totalTokens: result.totalTokens, tiktokenLimit, fileCount: filesToInclude.length },
-        'Initial context exceeds token limit, applying iterative truncation'
-      );
+    if (result.totalTokens > tiktokenLimit) {
+      // Use provided files or extract from result if not specified
+      const filesForOptimization = (filesToInclude && filesToInclude.length > 0)
+        ? filesToInclude
+        : Object.keys(result.fileTokenCounts || {});
 
-      // Use optimized context generation with iterative truncation
-      const optimizedResult = await generateOptimizedContext({
-        repoPath,
-        initialFiles: filesToInclude,
-        baseConfig: config,
-        tiktokenLimit,
-        contextLogger: correlatedLogger,
-        writeOutput: captureWriteOutput,
-        noopClipboard: noopCopyToClipboard,
-      });
+      if (filesForOptimization.length > 0) {
+        correlatedLogger.info(
+          { totalTokens: result.totalTokens, tiktokenLimit, fileCount: filesForOptimization.length, hadExplicitFiles: !!(filesToInclude && filesToInclude.length > 0) },
+          'Initial context exceeds token limit, applying iterative truncation'
+        );
 
-      result = optimizedResult.result;
+        // Use optimized context generation with iterative truncation
+        const optimizedResult = await generateOptimizedContext({
+          repoPath,
+          initialFiles: filesForOptimization,
+          baseConfig: config,
+          tiktokenLimit,
+          contextLogger: correlatedLogger,
+          writeOutput: captureWriteOutput,
+          noopClipboard: noopCopyToClipboard,
+        });
 
-      correlatedLogger.info(
-        {
-          originalFiles: filesToInclude.length,
-          finalFiles: optimizedResult.currentFiles.length,
-          totalTokens: result.totalTokens,
-          tiktokenLimit
-        },
-        'Context truncation completed'
-      );
+        result = optimizedResult.result;
+
+        correlatedLogger.info(
+          {
+            originalFiles: filesForOptimization.length,
+            finalFiles: optimizedResult.currentFiles.length,
+            totalTokens: result.totalTokens,
+            tiktokenLimit
+          },
+          'Context truncation completed'
+        );
+      }
     }
 
     correlatedLogger.info(

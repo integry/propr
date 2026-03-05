@@ -58,14 +58,19 @@ export function getDefaultModelLimit(): number {
 
 /**
  * Validate prompt token count before sending to LLM.
+ * @param modelId - Optional model identifier to use model-specific token ratios
  */
 export async function validatePromptTokens(
   prompt: string,
   modelLimit: number,
-  correlatedLogger: MinimalLogger
+  correlatedLogger: MinimalLogger,
+  modelId?: string
 ): Promise<{ valid: boolean; tokenCount: number; source: 'tiktoken' | 'api' }> {
   const tiktokenEstimate = estimateTokens(prompt);
-  const conservativeEstimate = Math.ceil(tiktokenEstimate * TIKTOKEN_TO_CLAUDE_RATIO);
+  // Use model-specific ratio: Claude uses 1.36x, Gemini uses ~1.1x (closer to tiktoken)
+  const isGemini = modelId?.toLowerCase().includes('gemini');
+  const tokenRatio = isGemini ? 1.1 : TIKTOKEN_TO_CLAUDE_RATIO;
+  const conservativeEstimate = Math.ceil(tiktokenEstimate * tokenRatio);
   const effectiveLimit = modelLimit - CLAUDE_CODE_OVERHEAD;
 
   correlatedLogger.info({ tiktokenEstimate, conservativeEstimate, effectiveLimit, modelLimit }, 'Initial token estimate');

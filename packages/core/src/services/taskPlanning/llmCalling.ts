@@ -26,7 +26,7 @@ export async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPl
   correlatedLogger.info({ model, tokenLimit, modelHardLimit, contextLength: fullContext.length }, 'Calling LLM for plan generation');
 
   // Validate token count before sending to LLM (use model's hard limit, not user's context level)
-  const validation = await validatePromptTokens(fullContext, modelHardLimit, correlatedLogger);
+  const validation = await validatePromptTokens(fullContext, modelHardLimit, correlatedLogger, model);
 
   if (!validation.valid) {
     throw new PlanningFailedError(
@@ -91,10 +91,44 @@ export async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPl
     plan = parseLlmJson<PlanItem[]>(response);
   } catch (error) {
     if (error instanceof JsonParseError) {
-      correlatedLogger.error({ error: error.message, response: response.substring(0, 500) }, 'Failed to parse LLM response');
-      throw new PlanningFailedError(`Failed to parse plan: ${error.message}`);
+      correlatedLogger.warn({ error: error.message, responseLength: response.length }, 'Failed to parse LLM response, attempting repair');
+
+      // Try to repair the JSON by asking the same LLM to fix it
+      const repairPrompt = `The following JSON array is malformed and cannot be parsed.
+Error: ${error.message}
+
+Please fix the JSON syntax errors and return ONLY the corrected JSON array.
+Do not include any explanation, markdown formatting, or code fences.
+Ensure all strings are properly escaped (especially quotes and newlines within string values).
+
+Broken JSON:
+${response}`;
+
+      try {
+        const repairedResponse = await runLightweightLLMAnalysis({
+          prompt: repairPrompt,
+          model,
+          correlationId: correlationId ? `${correlationId}-repair` : 'plan-generation-repair',
+          worktreePath,
+          githubToken,
+          issueRef,
+          taskId: draftId,
+          executionType: 'plan-generation'
+        });
+
+        plan = parseLlmJson<PlanItem[]>(repairedResponse);
+        correlatedLogger.info({ originalError: error.message }, 'Successfully repaired JSON response');
+      } catch (repairError) {
+        correlatedLogger.error({
+          originalError: error.message,
+          repairError: repairError instanceof Error ? repairError.message : 'Unknown error',
+          response: response.substring(0, 500)
+        }, 'Failed to repair LLM response');
+        throw new PlanningFailedError(`Failed to parse plan: ${error.message}`);
+      }
+    } else {
+      throw error;
     }
-    throw error;
   }
 
   if (!Array.isArray(plan) || plan.length === 0) {

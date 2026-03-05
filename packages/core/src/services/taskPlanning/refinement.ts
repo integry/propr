@@ -138,10 +138,44 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
     refinementResponse = parseRefinementResponse(response, correlatedLogger);
   } catch (error) {
     if (error instanceof JsonParseError) {
-      correlatedLogger.error({ error: error.message, responsePreview: response.substring(0, 500) }, 'Failed to parse refined plan');
-      throw new PlanningFailedError(`Failed to parse refined plan: ${error.message}`);
+      correlatedLogger.warn({ error: error.message, responseLength: response.length }, 'Failed to parse refinement response, attempting repair');
+
+      // Try to repair the JSON by asking the same LLM to fix it
+      const repairPrompt = `The following JSON is malformed and cannot be parsed.
+Error: ${error.message}
+
+Please fix the JSON syntax errors and return ONLY the corrected JSON.
+Do not include any explanation, markdown formatting, or code fences.
+Ensure all strings are properly escaped (especially quotes and newlines within string values).
+
+Broken JSON:
+${response}`;
+
+      try {
+        const repairedResponse = await runLightweightLLMAnalysis({
+          prompt: repairPrompt,
+          model: generationModel,
+          correlationId: correlationId ? `${correlationId}-repair` : 'plan-refinement-repair',
+          worktreePath,
+          githubToken,
+          issueRef,
+          taskId: draftId,
+          executionType: 'plan-refinement'
+        });
+
+        refinementResponse = parseRefinementResponse(repairedResponse, correlatedLogger);
+        correlatedLogger.info({ originalError: error.message }, 'Successfully repaired refinement JSON response');
+      } catch (repairError) {
+        correlatedLogger.error({
+          originalError: error.message,
+          repairError: repairError instanceof Error ? repairError.message : 'Unknown error',
+          responsePreview: response.substring(0, 500)
+        }, 'Failed to repair refinement response');
+        throw new PlanningFailedError(`Failed to parse refined plan: ${error.message}`);
+      }
+    } else {
+      throw error;
     }
-    throw error;
   }
 
   refinementResponse = validateRefinementResponse(refinementResponse, correlatedLogger);
