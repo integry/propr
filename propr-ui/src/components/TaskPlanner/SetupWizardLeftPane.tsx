@@ -191,8 +191,11 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           onChange={(e) => onPromptChange(e.target.value)}
           onInput={autoResize}
           onPaste={onPaste}
+          disabled={isGenerating || isUploading}
           placeholder="Describe the feature, bug fix, or improvement you want to implement..."
-          className="flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none"
+          className={`flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none ${
+            isGenerating || isUploading ? 'opacity-70 cursor-not-allowed bg-gray-50' : ''
+          }`}
           style={{ minHeight: '160px' }}
         />
         <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-white border-t border-gray-100">

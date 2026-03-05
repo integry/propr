@@ -286,6 +286,8 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
     }
     setError(null);
     setGenerationError(null);
+    // Start polling immediately to show loading state
+    startPolling();
     try {
       if (isContextStale) {
         clearCountdown();
@@ -299,11 +301,11 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
         contextRepositories: config.contextRepositories,
         generationModel: config.generationModel || undefined
       });
-      startPolling();
     } catch (err) {
+      stopPolling();
       setError((err as Error).message || 'Failed to start plan generation');
     }
-  }, [draft, config, branchError, isContextStale, clearCountdown, fetchPreview, startPolling, setError, setGenerationError]);
+  }, [draft, config, branchError, isContextStale, clearCountdown, fetchPreview, startPolling, stopPolling, setError, setGenerationError]);
 
   const handleAbortGeneration = useCallback(async () => {
     if (!draft) return;
@@ -346,14 +348,25 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
         catch (uploadErr) { console.error('Failed to upload attachment:', uploadErr); }
       }
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
+      // Start plan generation immediately after draft creation
+      await generatePlan(newDraft.draft_id, {
+        baseBranch: config.baseBranch,
+        granularity: config.granularity,
+        contextLevel: config.contextLevel,
+        compress: config.compress,
+        contextRepositories: config.contextRepositories,
+        generationModel: config.generationModel || undefined
+      });
       // Pass the draft data via router state to avoid re-fetch and UI flicker
+      // Set status to 'generating' so the UI shows the generating state immediately
       const draftWithPlan = constructDraftWithPlan(newDraft);
+      draftWithPlan.status = 'generating';
       navigate(`/studio/${newDraft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan } });
     } catch (err) {
       setError((err as Error).message || 'Failed to create draft');
       setIsCreating(false);
     }
-  }, [selectedRepo, config.prompt, localFiles, onDraftCreated, navigate, setError, setIsCreating]);
+  }, [selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating]);
 
   return handleCreateDraftAndGenerate;
 }
