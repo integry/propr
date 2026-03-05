@@ -15,7 +15,7 @@ import {
 } from './types';
 import { useToast } from '../ui/useToast';
 import { useSocket } from '../../contexts/useSocket';
-import { TaskUpdatePayload } from '@propr/shared';
+import { TaskUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 
 export const useTaskData = (taskId: string | undefined) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -29,9 +29,14 @@ export const useTaskData = (taskId: string | undefined) => {
   const [stopFailed, setStopFailed] = useState<boolean>(false);
   const [deletingTask, setDeletingTask] = useState<boolean>(false);
   const { addToast } = useToast();
-  const { subscribeToTask, unsubscribeFromTask, onTaskUpdate, isConnected } = useSocket();
+  const { subscribeToTask, unsubscribeFromTask, onTaskUpdate, isConnected, subscribeToTaskLive, unsubscribeFromTaskLive, onTaskLiveUpdate } = useSocket();
   // Track the last notified terminal state to avoid duplicate toasts
   const lastNotifiedStateRef = useRef<string | null>(null);
+
+  // Debounce timer for live details refetch
+  const liveDetailsDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  // Track pending live update to batch multiple WebSocket events
+  const pendingLiveUpdateRef = useRef<TaskLiveUpdatePayload | null>(null);
 
   // Fetch task history data
   const fetchTaskHistory = useCallback(async () => {
@@ -66,9 +71,8 @@ export const useTaskData = (taskId: string | undefined) => {
 
     console.log('[useTaskData] Received task update via WebSocket:', payload);
 
-    // Refresh data when we receive an update
+    // Refresh task history when we receive an update
     await fetchTaskHistory();
-    await fetchLiveDetails();
 
     // Check for terminal states and show toast notifications
     const state = payload.state?.toUpperCase() || '';
@@ -85,7 +89,43 @@ export const useTaskData = (taskId: string | undefined) => {
         message: 'Task execution failed',
       });
     }
-  }, [taskId, fetchTaskHistory, fetchLiveDetails, addToast]);
+  }, [taskId, fetchTaskHistory, addToast]);
+
+  // Handle task live update from WebSocket with debouncing
+  // This updates the terminal output directly from WebSocket data to stay fluid
+  const handleTaskLiveUpdate = useCallback((payload: TaskLiveUpdatePayload) => {
+    if (payload.taskId !== taskId) return;
+
+    console.log('[useTaskData] Received task live update via WebSocket:', payload);
+
+    // Directly update live details from the WebSocket payload for immediate UI update
+    // This avoids HTTP calls and keeps the terminal output fluid
+    setLiveDetails({
+      events: payload.events || [],
+      todos: payload.todos || [],
+      currentTask: payload.currentTask || null,
+    });
+
+    // Store the latest update for potential batched HTTP refetch if needed
+    pendingLiveUpdateRef.current = payload;
+
+    // Debounce HTTP refetch to avoid overwhelming the API
+    // Only refetch if we haven't received another update within the debounce window
+    if (liveDetailsDebounceRef.current) {
+      clearTimeout(liveDetailsDebounceRef.current);
+    }
+
+    // Debounce for 1 second - if no new updates come in, do a full HTTP refetch
+    // to ensure we have complete data (WebSocket might have partial updates)
+    liveDetailsDebounceRef.current = setTimeout(async () => {
+      // Only refetch if the pending update is still the same (no new updates came in)
+      if (pendingLiveUpdateRef.current === payload) {
+        console.log('[useTaskData] Debounced HTTP refetch for live details');
+        await fetchLiveDetails();
+        pendingLiveUpdateRef.current = null;
+      }
+    }, 1000);
+  }, [taskId, fetchLiveDetails]);
 
   // Initial data fetch
   useEffect(() => {
@@ -110,17 +150,32 @@ export const useTaskData = (taskId: string | undefined) => {
   useEffect(() => {
     if (!taskId || !isConnected) return;
 
-    // Subscribe to this specific task's room
+    // Subscribe to this specific task's room for state updates
     subscribeToTask(taskId);
 
+    // Subscribe to live task updates (Claude log streaming)
+    subscribeToTaskLive(taskId);
+
     // Listen for task updates
-    const unsubscribe = onTaskUpdate(handleTaskUpdate);
+    const unsubscribeTask = onTaskUpdate(handleTaskUpdate);
+
+    // Listen for live task updates (terminal output)
+    const unsubscribeLive = onTaskLiveUpdate(handleTaskLiveUpdate);
 
     return () => {
       unsubscribeFromTask(taskId);
-      unsubscribe();
+      unsubscribeFromTaskLive(taskId);
+      unsubscribeTask();
+      unsubscribeLive();
+
+      // Clean up debounce timer
+      if (liveDetailsDebounceRef.current) {
+        clearTimeout(liveDetailsDebounceRef.current);
+        liveDetailsDebounceRef.current = null;
+      }
+      pendingLiveUpdateRef.current = null;
     };
-  }, [taskId, isConnected, subscribeToTask, unsubscribeFromTask, onTaskUpdate, handleTaskUpdate]);
+  }, [taskId, isConnected, subscribeToTask, unsubscribeFromTask, subscribeToTaskLive, unsubscribeFromTaskLive, onTaskUpdate, onTaskLiveUpdate, handleTaskUpdate, handleTaskLiveUpdate]);
 
   // Fetch analysis data (separate from task updates, typically only needed once)
   useEffect(() => {

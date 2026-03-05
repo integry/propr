@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getDraft, PlannerDraft } from '../api/proprApi';
+import { useSocket } from '../contexts/useSocket';
+import { DraftUpdatePayload } from '@propr/shared';
 
 interface UseDraftOptions {
   initialData?: PlannerDraft | null;
@@ -32,6 +34,7 @@ function parseJsonFields<T extends Record<string, unknown>>(data: T): T {
 
 export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDraftResult => {
   const { initialData } = options;
+  const { subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, isConnected } = useSocket();
 
   // Check if initialData is valid for this draftId
   const hasValidInitialData = Boolean(initialData && initialData.draft_id === draftId);
@@ -95,13 +98,32 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     }
   }, [draftId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Polling effect for generating status
+  // Handle draft update from WebSocket
+  const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
+    if (payload.draftId !== draftId) return;
+
+    console.log('[useDraft] Received draft update via WebSocket:', payload);
+    // Refresh draft data when we receive an update
+    await fetchDraft(false);
+  }, [draftId, fetchDraft]);
+
+  // Subscribe to WebSocket events for this draft when generating
   useEffect(() => {
+    if (!draftId || !isConnected) return;
+    // Only subscribe when draft is generating
     if (draft?.status !== 'generating') return;
 
-    const interval = setInterval(() => fetchDraft(false), 3000);
-    return () => clearInterval(interval);
-  }, [draft?.status, fetchDraft]);
+    // Subscribe to this specific draft's room
+    subscribeToDraft(draftId);
+
+    // Listen for draft updates
+    const unsubscribe = onDraftUpdate(handleDraftUpdate);
+
+    return () => {
+      unsubscribeFromDraft(draftId);
+      unsubscribe();
+    };
+  }, [draftId, draft?.status, isConnected, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, handleDraftUpdate]);
 
   return { draft, loading, error, refetch: () => fetchDraft(true) };
 };
