@@ -1,9 +1,8 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue, AgentModelPair } from '../../api/planIssuesApi';
 import { AgentConfig, getAgents } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
 import { useSocket } from '../../contexts/useSocket';
-import { TaskUpdatePayload } from '@propr/shared';
 
 interface UsePlanIssuesManagerProps {
   draftId: string;
@@ -151,7 +150,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   }, [fetchIssues, fetchAgents]);
 
   // Handle task update from WebSocket - refresh issues when any task changes
-  const handleTaskUpdate = useCallback(async (_payload: TaskUpdatePayload) => {
+  const handleTaskUpdate = useCallback(async () => {
     // When any task updates, refresh issues to reflect the latest state
     console.log('[usePlanIssuesManager] Received task update via WebSocket');
     await fetchIssues();

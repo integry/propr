@@ -6,7 +6,6 @@ import { getDrafts, deleteDraft, abortGeneration, DraftListItem } from '../api/p
 import { Filter, Search, X } from 'lucide-react';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
-import { DraftUpdatePayload } from '@propr/shared';
 
 const DEFAULT_PAGE_SIZE = 50;
 
@@ -134,7 +133,7 @@ const PlansPage: React.FC = () => {
   }, [searchQuery, debouncedSearch, setSearchParams]);
 
   // Handle draft update from WebSocket - refresh drafts list when any draft changes
-  const handleDraftUpdate = useCallback(async (_payload: DraftUpdatePayload) => {
+  const handleDraftUpdate = useCallback(async () => {
     console.log('[PlansPage] Received draft update via WebSocket');
     // Silently refresh drafts list to reflect the latest state
     await loadDrafts(currentPage, repoFilter, statusFilter, false);
