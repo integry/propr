@@ -4,6 +4,8 @@ import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositori
 import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
 import { AddRepositoryForm } from '../components/AddRepositoryForm';
 import { RepositoryListItem } from '../components/RepositoryListItem';
+import { useSocket } from '../contexts/useSocket';
+import { IndexingUpdatePayload } from '@propr/shared';
 
 // Helper function to generate UUID
 const generateId = (): string => crypto.randomUUID();
@@ -13,6 +15,7 @@ type Repo = MonitoredRepo;
 
 const RepositoriesPage: React.FC = () => {
   useDocumentTitle('Repositories');
+  const { isConnected, subscribeToIndexingUpdates, unsubscribeFromIndexingUpdates, onIndexingUpdate } = useSocket();
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -64,15 +67,80 @@ const RepositoriesPage: React.FC = () => {
     }
   }, []);
 
+  // Handle indexing updates via WebSocket
+  const handleIndexingUpdate = useCallback((payload: IndexingUpdatePayload) => {
+    const key = getRepoStatusKey(payload.repository, undefined);
+
+    // If server confirms indexing status, clear the pending optimistic update
+    if (payload.phase === 'indexing' || payload.phase === 'files' || payload.phase === 'directories') {
+      pendingOptimisticUpdatesRef.current.delete(key);
+    }
+
+    setIndexingStatuses(prev => {
+      // Map the WebSocket payload phase to indexing_status
+      let indexingStatus: 'idle' | 'indexing' | 'completed' | 'failed' = 'idle';
+      if (payload.phase === 'files' || payload.phase === 'directories' || payload.phase === 'indexing') {
+        indexingStatus = 'indexing';
+      } else if (payload.phase === 'done' || payload.phase === 'completed') {
+        indexingStatus = 'completed';
+      } else if (payload.phase === 'failed') {
+        indexingStatus = 'failed';
+      }
+
+      const updatedStatus: RepositoryIndexingStatus = {
+        ...prev[key],
+        full_name: payload.repository,
+        branch: 'HEAD',
+        indexing_status: indexingStatus,
+        last_indexed_at: prev[key]?.last_indexed_at || null,
+        last_indexed_hash: prev[key]?.last_indexed_hash || null,
+        last_indexed_commit_message: prev[key]?.last_indexed_commit_message || null,
+        progress: {
+          totalFiles: payload.totalFiles || prev[key]?.progress?.totalFiles || 0,
+          processedFiles: payload.processedFiles || prev[key]?.progress?.processedFiles || 0,
+          percentComplete: payload.progress || prev[key]?.progress?.percentComplete || 0,
+          inputTokens: prev[key]?.progress?.inputTokens || 0,
+          outputTokens: prev[key]?.progress?.outputTokens || 0,
+          phase: (payload.phase === 'files' || payload.phase === 'directories' || payload.phase === 'done')
+            ? payload.phase as 'files' | 'directories' | 'done'
+            : prev[key]?.progress?.phase || 'files',
+          totalDirectories: prev[key]?.progress?.totalDirectories || 0,
+          processedDirectories: prev[key]?.progress?.processedDirectories || 0
+        }
+      };
+
+      return {
+        ...prev,
+        [key]: updatedStatus
+      };
+    });
+  }, []);
+
+  // Load initial data on mount
   useEffect(() => {
     loadRepos();
     loadAvailableRepos();
     loadIndexingStatuses();
-
-    // Poll for indexing status updates every 3 seconds
-    const pollInterval = setInterval(loadIndexingStatuses, 3000);
-    return () => clearInterval(pollInterval);
   }, [loadRepos]);
+
+  // Subscribe to WebSocket indexing updates when connected
+  useEffect(() => {
+    if (!isConnected) return;
+
+    subscribeToIndexingUpdates();
+
+    return () => {
+      unsubscribeFromIndexingUpdates();
+    };
+  }, [isConnected, subscribeToIndexingUpdates, unsubscribeFromIndexingUpdates]);
+
+  // Register WebSocket event listener
+  useEffect(() => {
+    const unsubscribe = onIndexingUpdate(handleIndexingUpdate);
+    return () => {
+      unsubscribe();
+    };
+  }, [onIndexingUpdate, handleIndexingUpdate]);
 
   const loadAvailableRepos = async () => {
     try {

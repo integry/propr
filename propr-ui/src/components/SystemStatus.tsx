@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { getSystemStatus } from '../api/proprApi';
+import { useSocket } from '../contexts/useSocket';
 
 interface Worker {
   id: number;
@@ -15,29 +16,30 @@ interface SystemStatusData {
 }
 
 const SystemStatus: React.FC = () => {
+  const { isConnected } = useSocket();
   const [status, setStatus] = useState<SystemStatusData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const fetchStatus = async () => {
-      try {
-        setLoading(true);
-        const data = await getSystemStatus();
-        setStatus(data);
-        setError(null);
-      } catch (err) {
-        setError('Failed to fetch system status');
-        console.error('Error fetching system status:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 5000); // Poll every 5 seconds
-    return () => clearInterval(interval);
+  const fetchStatus = useCallback(async () => {
+    try {
+      setLoading(true);
+      const data = await getSystemStatus();
+      setStatus(data);
+      setError(null);
+    } catch (err) {
+      setError('Failed to fetch system status');
+      console.error('Error fetching system status:', err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  // Fetch system status on mount and when WebSocket connection state changes
+  // This ensures we get fresh status when connectivity is restored
+  useEffect(() => {
+    fetchStatus();
+  }, [fetchStatus, isConnected]);
 
   if (loading && !status) {
     return <div className="text-gray-500">Loading System Status...</div>;

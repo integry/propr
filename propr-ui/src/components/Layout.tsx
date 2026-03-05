@@ -1,14 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ScrollText, ListTodo, BookMarked, Bot, Cpu } from 'lucide-react';
-import { getQueueStats, getCurrentUser, logout } from '../api/proprApi';
-import { getGeneratingPlansCount } from '../api/taskStatsApi';
-import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
+import { getCurrentUser, logout } from '../api/proprApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
 import { useSystemReadiness } from '../hooks/useSystemReadiness';
 import { useToast } from './ui/useToast';
 import { HomeIcon, SettingsIcon, MenuIcon, CloseIcon } from './icons/LayoutIcons';
 import GlobalHeader from './GlobalHeader';
+import { useSocket } from '../contexts/useSocket';
+import { QueueStatsUpdatePayload, IndexingUpdatePayload, DraftUpdatePayload } from '@propr/shared';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -30,6 +30,7 @@ interface User {
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const { addToast } = useToast();
+  const { isConnected, subscribeToQueueStats, unsubscribeFromQueueStats, subscribeToIndexingUpdates, unsubscribeFromIndexingUpdates, onQueueStatsUpdate, onIndexingUpdate, onDraftUpdate } = useSocket();
   const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
   const [generatingPlansCount, setGeneratingPlansCount] = useState<number>(0);
   const [user, setUser] = useState<User | null>(null);
@@ -89,17 +90,43 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     setIsSidebarOpen(false);
   }, [location]);
 
-  useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const data = await getQueueStats();
-        setActiveTaskCount((data as { active?: number }).active || 0);
-      } catch (err) {
-        console.error('Error fetching queue stats for layout:', err);
-        setActiveTaskCount(0);
-      }
-    };
+  // Handle queue stats updates via WebSocket
+  const handleQueueStatsUpdate = useCallback((payload: QueueStatsUpdatePayload) => {
+    setActiveTaskCount(payload.stats.active || 0);
+  }, []);
 
+  // Handle indexing updates via WebSocket for toast notifications
+  const handleIndexingUpdate = useCallback((payload: IndexingUpdatePayload) => {
+    const previousStatus = repoStatusesRef.current.get(payload.repository);
+    const currentStatus = payload.phase;
+
+    // Show toast when transitioning from 'indexing' to 'failed'
+    if (previousStatus === 'indexing' && currentStatus === 'failed') {
+      addToast({
+        type: 'error',
+        message: `Indexing failed for ${payload.repository}`,
+      });
+    }
+
+    // Update the tracked status
+    repoStatusesRef.current.set(payload.repository, currentStatus);
+  }, [addToast]);
+
+  // Handle draft updates to track generating plans count
+  const handleDraftUpdate = useCallback((payload: DraftUpdatePayload) => {
+    // When a draft starts or completes, adjust the count
+    // The draft step indicates the phase: 'relevance', 'context', 'llm', etc.
+    if (payload.status === 'in_progress' && payload.step === 'relevance') {
+      // A new plan generation started
+      setGeneratingPlansCount(prev => prev + 1);
+    } else if (payload.status === 'completed' || payload.status === 'failed') {
+      // A plan generation finished
+      setGeneratingPlansCount(prev => Math.max(0, prev - 1));
+    }
+  }, []);
+
+  // Fetch user data on mount (one-time fetch, no polling needed)
+  useEffect(() => {
     const fetchUser = async () => {
       try {
         const userData = await getCurrentUser();
@@ -108,53 +135,35 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         console.error('Error fetching user:', err);
       }
     };
-
-    const fetchGeneratingPlansCount = async () => {
-      try {
-        const data = await getGeneratingPlansCount();
-        setGeneratingPlansCount(data.count || 0);
-      } catch (err) {
-        console.error('Error fetching generating plans count:', err);
-        setGeneratingPlansCount(0);
-      }
-    };
-
-    const fetchIndexingStatus = async () => {
-      try {
-        const data = await getRepositoriesIndexingStatus();
-        const repositories = data.repositories || [];
-
-        repositories.forEach((repo: RepositoryIndexingStatus) => {
-          const previousStatus = repoStatusesRef.current.get(repo.full_name);
-          const currentStatus = repo.indexing_status;
-
-          // Show toast when transitioning from 'indexing' to 'failed'
-          if (previousStatus === 'indexing' && currentStatus === 'failed') {
-            addToast({
-              type: 'error',
-              message: `Indexing failed for ${repo.full_name}`,
-            });
-          }
-
-          // Update the tracked status
-          repoStatusesRef.current.set(repo.full_name, currentStatus);
-        });
-      } catch (err) {
-        console.error('Error fetching repository indexing status:', err);
-      }
-    };
-
-    fetchStats();
     fetchUser();
-    fetchGeneratingPlansCount();
-    fetchIndexingStatus();
-    const interval = setInterval(() => {
-      fetchStats();
-      fetchGeneratingPlansCount();
-      fetchIndexingStatus();
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [addToast]);
+  }, []);
+
+  // Subscribe to WebSocket events when connected
+  useEffect(() => {
+    if (!isConnected) return;
+
+    // Subscribe to queue stats and indexing updates
+    subscribeToQueueStats();
+    subscribeToIndexingUpdates();
+
+    return () => {
+      unsubscribeFromQueueStats();
+      unsubscribeFromIndexingUpdates();
+    };
+  }, [isConnected, subscribeToQueueStats, unsubscribeFromQueueStats, subscribeToIndexingUpdates, unsubscribeFromIndexingUpdates]);
+
+  // Register WebSocket event listeners
+  useEffect(() => {
+    const unsubscribeQueueStats = onQueueStatsUpdate(handleQueueStatsUpdate);
+    const unsubscribeIndexing = onIndexingUpdate(handleIndexingUpdate);
+    const unsubscribeDraft = onDraftUpdate(handleDraftUpdate);
+
+    return () => {
+      unsubscribeQueueStats();
+      unsubscribeIndexing();
+      unsubscribeDraft();
+    };
+  }, [onQueueStatsUpdate, onIndexingUpdate, onDraftUpdate, handleQueueStatsUpdate, handleIndexingUpdate, handleDraftUpdate]);
 
   // Handler for menu toggle
   const handleMenuToggle = () => {
