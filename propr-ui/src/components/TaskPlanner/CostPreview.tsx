@@ -48,7 +48,7 @@ const LoadingState: React.FC<LoadingStateProps> = ({ previewTrace }) => {
 
   if (hasActiveSteps) {
     return (
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+      <div className="pt-4 border-t border-gray-200 overflow-hidden">
         <GenerationProgress trace={previewTrace} hideCompletedSteps />
       </div>
     );
@@ -56,7 +56,7 @@ const LoadingState: React.FC<LoadingStateProps> = ({ previewTrace }) => {
 
   // Default loading state only when trace data is not yet available
   return (
-    <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm">
+    <div className="pt-4 border-t border-gray-200">
       <div className="flex items-center gap-3 text-gray-500">
         <Loader2 className="w-5 h-5 animate-spin" />
         <div>
@@ -69,7 +69,7 @@ const LoadingState: React.FC<LoadingStateProps> = ({ previewTrace }) => {
 };
 
 const ErrorState: React.FC<{ error: string }> = ({ error }) => (
-  <div className="p-5 rounded-xl border border-red-200 bg-red-50">
+  <div className="pt-4 border-t border-gray-200">
     <span className="text-red-600">{error}</span>
   </div>
 );
@@ -94,7 +94,7 @@ const EmptyState: React.FC<EmptyStateProps> = ({
   const showRefreshIndicator = !!onManualRefresh && !isNewMode;
 
   return (
-    <div className="p-5 rounded-xl border border-gray-200 bg-gray-50">
+    <div className="pt-4 border-t border-gray-200">
       <div className="flex items-center justify-between">
         <span className="text-gray-500">
           {isNewMode
@@ -235,7 +235,7 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   const showRefreshIndicator = !!onManualRefresh;
 
   return (
-    <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm space-y-4">
+    <div className="pt-4 border-t border-gray-200 space-y-4">
       {/* Main stats row */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
