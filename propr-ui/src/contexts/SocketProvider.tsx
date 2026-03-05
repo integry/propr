@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload } from '@propr/shared';
+import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
 
 interface SocketProviderProps {
@@ -13,6 +13,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
   const taskUpdateCallbacksRef = useRef<Set<(payload: TaskUpdatePayload) => void>>(new Set());
   const draftUpdateCallbacksRef = useRef<Set<(payload: DraftUpdatePayload) => void>>(new Set());
   const indexingUpdateCallbacksRef = useRef<Set<(payload: IndexingUpdatePayload) => void>>(new Set());
+  const queueStatsUpdateCallbacksRef = useRef<Set<(payload: QueueStatsUpdatePayload) => void>>(new Set());
 
   useEffect(() => {
     // Connect to the backend WebSocket server
@@ -56,6 +57,11 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     newSocket.on(INDEXING_UPDATE, (payload: IndexingUpdatePayload) => {
       console.log('[SocketContext] Received indexing update:', payload);
       indexingUpdateCallbacksRef.current.forEach((callback) => callback(payload));
+    });
+
+    newSocket.on(QUEUE_STATS_UPDATE, (payload: QueueStatsUpdatePayload) => {
+      console.log('[SocketContext] Received queue stats update:', payload);
+      queueStatsUpdateCallbacksRef.current.forEach((callback) => callback(payload));
     });
 
     setSocket(newSocket);
@@ -122,6 +128,20 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     }
   }, [socket, isConnected]);
 
+  const subscribeToQueueStats = useCallback(() => {
+    if (socket && isConnected) {
+      socket.emit('subscribe:queue:stats');
+      console.log('[SocketContext] Subscribed to queue:stats');
+    }
+  }, [socket, isConnected]);
+
+  const unsubscribeFromQueueStats = useCallback(() => {
+    if (socket && isConnected) {
+      socket.emit('unsubscribe:queue:stats');
+      console.log('[SocketContext] Unsubscribed from queue:stats');
+    }
+  }, [socket, isConnected]);
+
   const onTaskUpdate = useCallback((callback: (payload: TaskUpdatePayload) => void) => {
     taskUpdateCallbacksRef.current.add(callback);
     return () => {
@@ -143,6 +163,13 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     };
   }, []);
 
+  const onQueueStatsUpdate = useCallback((callback: (payload: QueueStatsUpdatePayload) => void) => {
+    queueStatsUpdateCallbacksRef.current.add(callback);
+    return () => {
+      queueStatsUpdateCallbacksRef.current.delete(callback);
+    };
+  }, []);
+
   const value: SocketContextValue = {
     socket,
     isConnected,
@@ -154,9 +181,12 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     unsubscribeFromIndexing,
     subscribeToIndexingUpdates,
     unsubscribeFromIndexingUpdates,
+    subscribeToQueueStats,
+    unsubscribeFromQueueStats,
     onTaskUpdate,
     onDraftUpdate,
     onIndexingUpdate,
+    onQueueStatsUpdate,
   };
 
   return (
