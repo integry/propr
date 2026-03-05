@@ -5,9 +5,17 @@ import {
   TASK_UPDATE,
   DRAFT_UPDATE,
   INDEXING_UPDATE,
+  TASK_LIVE_UPDATE,
+  QUEUE_STATS_UPDATE,
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type IndexingUpdatePayload,
+  type TaskLiveUpdatePayload,
+  type QueueStatsUpdatePayload,
+  type ConversationEvent,
+  type TodoItem,
+  type TokenUsageInfo,
+  type QueueStatsData,
   type EventPayload
 } from '@propr/shared';
 
@@ -133,6 +141,44 @@ class EventPublisher {
       timestamp: new Date().toISOString()
     };
     await this.publish(REDIS_CHANNELS.INDEXING, payload);
+  }
+
+  /**
+   * Publish a live task details update event.
+   * Called when Claude log file changes are detected during task execution.
+   */
+  async publishTaskLiveUpdate(params: {
+    taskId: string;
+    events: ConversationEvent[];
+    todos: TodoItem[];
+    currentTask: string | null;
+    tokenUsage: TokenUsageInfo | null;
+  }): Promise<void> {
+    const payload: TaskLiveUpdatePayload = {
+      eventType: TASK_LIVE_UPDATE,
+      taskId: params.taskId,
+      events: params.events,
+      todos: params.todos,
+      currentTask: params.currentTask,
+      tokenUsage: params.tokenUsage,
+      timestamp: new Date().toISOString()
+    };
+    await this.publish(REDIS_CHANNELS.LIVE_DETAILS, payload);
+  }
+
+  /**
+   * Publish a queue statistics update event.
+   * Called when queue state changes (jobs added, completed, failed, etc.).
+   */
+  async publishQueueStatsUpdate(params: {
+    stats: QueueStatsData;
+  }): Promise<void> {
+    const payload: QueueStatsUpdatePayload = {
+      eventType: QUEUE_STATS_UPDATE,
+      stats: params.stats,
+      timestamp: new Date().toISOString()
+    };
+    await this.publish(REDIS_CHANNELS.QUEUE_STATS, payload);
   }
 
   /**
