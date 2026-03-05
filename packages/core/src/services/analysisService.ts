@@ -182,6 +182,45 @@ function compactConversationLog(conversationLog: ConversationLogEntry[]): Conver
   });
 }
 
+async function waitForCommitHash(
+  taskId: string,
+  initialTask: Task,
+  correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<Task> {
+  let task = initialTask;
+  const maxRetries = 6;
+  const retryDelayMs = 10000;
+
+  for (let attempt = 0; attempt < maxRetries && !task.commit_hash; attempt++) {
+    correlatedLogger.debug({ taskId, attempt: attempt + 1, maxRetries }, 'Waiting for commit_hash to be populated...');
+    await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+    const refreshedTask = await db!('tasks')
+      .where({ task_id: taskId })
+      .first() as Task | undefined;
+    if (!refreshedTask) break;
+    task = refreshedTask;
+  }
+
+  return task;
+}
+
+async function resolveCommitHash(
+  task: Task,
+  correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<string | null> {
+  if (task.commit_hash) {
+    correlatedLogger.info({ commitHash: task.commit_hash, taskId: task.task_id }, 'Using commit hash from tasks table');
+    return task.commit_hash;
+  }
+
+  const taskHistory = await db!('task_history')
+    .where({ task_id: task.task_id })
+    .whereNotNull('metadata')
+    .orderBy('timestamp', 'desc') as TaskHistory[];
+
+  return extractCommitHash(taskHistory, task.task_id, correlatedLogger);
+}
+
 export async function getExecutionAnalysis({ executionId, sessionId, correlationId, model }: GetExecutionAnalysisParams): Promise<AnalysisReport | { error: string }> {
   const correlatedLogger = logger.withCorrelation(correlationId);
 
@@ -213,56 +252,28 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
       return { error: 'No execution record found.' };
     }
 
-    let task = await db('tasks')
+    const initialTask = await db('tasks')
       .where({ task_id: execution.task_id })
       .first() as Task | undefined;
 
-    if (!task) {
+    if (!initialTask) {
       correlatedLogger.warn({ executionId, taskId: execution.task_id }, 'No task record found.');
       return { error: 'No task record found.' };
     }
 
     // Wait for commit_hash to be populated (post-processing may still be running)
-    // Retry up to 6 times with 10 second intervals (60 seconds total)
-    const maxRetries = 6;
-    const retryDelayMs = 10000;
-    for (let attempt = 0; attempt < maxRetries && !task.commit_hash; attempt++) {
-      correlatedLogger.debug({ taskId: execution.task_id, attempt: attempt + 1, maxRetries }, 'Waiting for commit_hash to be populated...');
-      await new Promise(resolve => setTimeout(resolve, retryDelayMs));
-      const refreshedTask = await db('tasks')
-        .where({ task_id: execution.task_id })
-        .first() as Task | undefined;
-      if (!refreshedTask) break;
-      task = refreshedTask;
-    }
+    const task = await waitForCommitHash(execution.task_id, initialTask, correlatedLogger);
 
     const worktreePath = `/tmp/git-processor/clones/${task.repository}`;
-
     correlatedLogger.info({ worktreePath, repository: task.repository }, 'Using cloned repository for commit diff retrieval');
 
-    if (!fs.existsSync(worktreePath)) {
+    if (fs.existsSync(worktreePath)) {
+      await execa('git', ['fetch', 'origin'], { cwd: worktreePath, reject: false });
+    } else {
       correlatedLogger.warn({ worktreePath }, 'Repository path does not exist, commit diff will not be available');
-    } else {
-      await execa('git', ['fetch', 'origin'], {
-        cwd: worktreePath,
-        reject: false
-      });
     }
 
-    // Prioritize commit_hash directly from tasks table when available
-    let commitHash: string | null = task.commit_hash || null;
-
-    if (commitHash) {
-      correlatedLogger.info({ commitHash, taskId: execution.task_id }, 'Using commit hash from tasks table');
-    } else {
-      // Fallback to extracting from task history for older tasks
-      const taskHistory = await db('task_history')
-        .where({ task_id: execution.task_id })
-        .whereNotNull('metadata')
-        .orderBy('timestamp', 'desc') as TaskHistory[];
-
-      commitHash = extractCommitHash(taskHistory, execution.task_id, correlatedLogger);
-    }
+    const commitHash = await resolveCommitHash(task, correlatedLogger);
 
     let localDiff: string | null = null;
     if (commitHash) {
