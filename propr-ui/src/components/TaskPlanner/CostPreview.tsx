@@ -213,8 +213,7 @@ export const CostPreview: React.FC<CostPreviewProps> = ({
   onTogglePause,
   isNewMode,
   previewTrace,
-  isGenerating,
-  generationTrace: _generationTrace
+  isGenerating
 }) => {
   // Note: Generation progress is shown in the left pane when isGenerating is true.
   // This component (right pane) only shows progress for context/preview updates via LoadingState.
