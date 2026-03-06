@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
-import { AddRepositoryForm } from '../components/AddRepositoryForm';
+import { AddRepositoryModal } from '../components/AddRepositoryModal';
 import { RepositoryListItem } from '../components/RepositoryListItem';
 
 // Helper function to generate UUID
@@ -22,6 +22,7 @@ const RepositoriesPage: React.FC = () => {
   const [availableRepos, setAvailableRepos] = useState<string[]>([]);
   const [indexingStatuses, setIndexingStatuses] = useState<Record<string, RepositoryIndexingStatus>>({});
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Track repositories with pending optimistic updates to prevent server responses from overwriting them
   const pendingOptimisticUpdatesRef = useRef<Set<string>>(new Set());
@@ -236,6 +237,7 @@ const RepositoriesPage: React.FC = () => {
     setNewRepo('');
     setNewAlias('');
     setNewBaseBranch('');
+    setIsModalOpen(false);
     performAutoSave(newRepos);
   };
 
@@ -255,19 +257,24 @@ const RepositoriesPage: React.FC = () => {
     performAutoSave(newRepos);
   };
 
+  const handleOpenModal = () => {
+    setNewRepo('');
+    setNewAlias('');
+    setNewBaseBranch('');
+    setIsModalOpen(true);
+  };
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setNewRepo('');
+    setNewAlias('');
+    setNewBaseBranch('');
+  };
+
   if (loading && repos.length === 0) {
     return (
-      <div className="p-4 sm:p-8">
-        <h2 className="text-gray-900 text-2xl font-semibold mb-4">Manage Monitored Repositories</h2>
-        <div className="flex items-center justify-center py-12">
-          <div className="flex items-center gap-3 text-gray-600">
-            <svg className="animate-spin h-5 w-5 text-primary-600" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-            </svg>
-            <span>Loading repositories...</span>
-          </div>
-        </div>
+      <div className="flex h-full items-center justify-center bg-white text-gray-500">
+        Loading repositories...
       </div>
     );
   }
@@ -275,25 +282,32 @@ const RepositoriesPage: React.FC = () => {
   // Show error state if loading failed
   if (error && repos.length === 0 && !loading) {
     return (
-      <div className="p-4 sm:p-8">
-        <h2 className="text-gray-900 text-2xl font-semibold mb-4">Manage Monitored Repositories</h2>
-        <div className="p-6 bg-red-50 border border-red-200 rounded-md">
-          <div className="flex items-start gap-3">
-            <svg className="h-5 w-5 text-red-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            <div>
-              <h3 className="text-red-800 font-medium">Failed to load repositories</h3>
-              <p className="text-red-700 mt-1">{error}</p>
-              <button
-                onClick={() => {
-                  setError(null);
-                  loadRepos();
-                }}
-                className="mt-3 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md text-sm font-medium transition-colors"
-              >
-                Try Again
-              </button>
+      <div className="flex flex-col h-full bg-white">
+        {/* Anchored Header */}
+        <div className="flex-shrink-0 h-16 border-b border-gray-200 px-6 flex items-center justify-between">
+          <h2 className="text-gray-900 text-xl font-semibold">Repositories</h2>
+        </div>
+
+        {/* Error Content */}
+        <div className="flex-1 flex items-center justify-center p-6">
+          <div className="p-6 bg-red-50 border border-red-200 rounded-md max-w-md">
+            <div className="flex items-start gap-3">
+              <svg className="h-5 w-5 text-red-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <div>
+                <h3 className="text-red-800 font-medium">Failed to load repositories</h3>
+                <p className="text-red-700 mt-1">{error}</p>
+                <button
+                  onClick={() => {
+                    setError(null);
+                    loadRepos();
+                  }}
+                  className="mt-3 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md text-sm font-medium transition-colors"
+                >
+                  Try Again
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -302,43 +316,136 @@ const RepositoriesPage: React.FC = () => {
   }
 
   return (
-    <div className="p-4 sm:p-8">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-gray-900 text-2xl font-semibold">Manage Monitored Repositories</h2>
-        {/* Auto-save status indicator */}
-        <div className="flex items-center gap-2">
-          {saveStatus === 'saving' && (
-            <span className="flex items-center gap-1.5 text-sm text-gray-500">
-              <svg className="animate-spin h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-              </svg>
-              Saving...
-            </span>
-          )}
-          {saveStatus === 'saved' && (
-            <span className="flex items-center gap-1.5 text-sm text-green-600">
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-              Saved
-            </span>
-          )}
-          {saveStatus === 'error' && error && (
-            <span className="flex items-center gap-1.5 text-sm text-red-600">
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              {error}
-            </span>
+    <div className="flex flex-col h-full bg-white">
+      {/* Anchored Header */}
+      <div className="flex-shrink-0 h-16 border-b border-gray-200 px-6 flex items-center justify-between">
+        <h2 className="text-gray-900 text-xl font-semibold">Repositories</h2>
+        <button
+          onClick={handleOpenModal}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
+        >
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          Add Repository
+        </button>
+      </div>
+
+      {/* Main Content Area */}
+      <div className="flex-1 min-h-0 overflow-y-auto p-6">
+        <p className="text-gray-600 mb-4">
+          Add repositories to monitor, enable/disable them, or remove them from the list. Changes are saved automatically.
+        </p>
+
+        <div className="flex flex-col gap-2">
+          {repos.map(repo => (
+            <RepositoryListItem
+              key={repo.id}
+              repo={repo}
+              indexingStatuses={indexingStatuses}
+              onToggle={handleToggleRepo}
+              onRemove={handleRemoveRepo}
+              onStopIndexing={handleStopIndexing}
+              onReindex={handleReindexRepo}
+            />
+          ))}
+          {repos.length === 0 && (
+            <div className="text-center py-16 px-6 bg-gradient-to-b from-gray-50 to-white border border-gray-200 rounded-lg shadow-sm">
+              <div className="flex justify-center mb-6">
+                <div className="w-20 h-20 rounded-full bg-primary-50 flex items-center justify-center">
+                  <svg className="h-10 w-10 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 11v4m0 0l-2-2m2 2l2-2" />
+                  </svg>
+                </div>
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-3">Welcome! Add Your First Repository</h3>
+              <p className="text-gray-600 mb-4 max-w-md mx-auto">
+                Repositories are the foundation of ProPR. Add a repository to enable AI-powered code reviews,
+                automated planning, and intelligent monitoring for your projects.
+              </p>
+              <div className="flex flex-col items-center gap-3">
+                <div className="flex items-center gap-4 text-sm text-gray-500">
+                  <span className="flex items-center gap-1.5">
+                    <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    AI Code Reviews
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Smart Planning
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Codebase Indexing
+                  </span>
+                </div>
+                <button
+                  onClick={handleOpenModal}
+                  className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                  Add Your First Repository
+                </button>
+              </div>
+            </div>
           )}
         </div>
       </div>
-      <p className="text-gray-600 mb-4">
-        Add repositories to monitor, enable/disable them, or remove them from the list. Changes are saved automatically.
-      </p>
-      
-      <AddRepositoryForm
+
+      {/* Anchored Footer - Status Bar */}
+      <div className="flex-shrink-0 border-t border-gray-200 px-6 py-3 bg-gray-50">
+        <div className="flex items-center justify-between">
+          {/* Left Side - Status Message */}
+          <div className="flex items-center gap-2">
+            {saveStatus === 'saving' && (
+              <span className="flex items-center gap-1.5 text-xs text-gray-500 font-mono">
+                <svg className="animate-spin h-3 w-3 text-gray-400" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                Saving changes...
+              </span>
+            )}
+            {saveStatus === 'saved' && (
+              <span className="flex items-center gap-1.5 text-xs text-gray-500 font-mono">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                Settings auto-saved
+              </span>
+            )}
+            {saveStatus === 'error' && error && (
+              <span className="flex items-center gap-1.5 text-xs text-red-600 font-mono">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+                {error}
+              </span>
+            )}
+            {saveStatus === 'idle' && (
+              <span className="flex items-center gap-1.5 text-xs text-gray-400 font-mono">
+                <span className="w-1.5 h-1.5 rounded-full bg-gray-300"></span>
+                All changes saved
+              </span>
+            )}
+          </div>
+
+          {/* Right Side - Repository count */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500">
+              {repos.length} {repos.length === 1 ? 'repository' : 'repositories'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Add Repository Modal */}
+      <AddRepositoryModal
+        isOpen={isModalOpen}
         newRepo={newRepo}
         newAlias={newAlias}
         newBaseBranch={newBaseBranch}
@@ -347,63 +454,8 @@ const RepositoriesPage: React.FC = () => {
         onAliasChange={setNewAlias}
         onBaseBranchChange={setNewBaseBranch}
         onAdd={handleAddRepo}
+        onClose={handleCloseModal}
       />
-
-      <div className="flex flex-col gap-2 mb-6">
-        {repos.map(repo => (
-          <RepositoryListItem
-            key={repo.id}
-            repo={repo}
-            indexingStatuses={indexingStatuses}
-            onToggle={handleToggleRepo}
-            onRemove={handleRemoveRepo}
-            onStopIndexing={handleStopIndexing}
-            onReindex={handleReindexRepo}
-          />
-        ))}
-        {repos.length === 0 && (
-          <div className="text-center py-16 px-6 bg-gradient-to-b from-gray-50 to-white border border-gray-200 rounded-lg shadow-sm">
-            <div className="flex justify-center mb-6">
-              <div className="w-20 h-20 rounded-full bg-primary-50 flex items-center justify-center">
-                <svg className="h-10 w-10 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 11v4m0 0l-2-2m2 2l2-2" />
-                </svg>
-              </div>
-            </div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-3">Welcome! Add Your First Repository</h3>
-            <p className="text-gray-600 mb-4 max-w-md mx-auto">
-              Repositories are the foundation of ProPR. Add a repository to enable AI-powered code reviews,
-              automated planning, and intelligent monitoring for your projects.
-            </p>
-            <div className="flex flex-col items-center gap-3">
-              <div className="flex items-center gap-4 text-sm text-gray-500">
-                <span className="flex items-center gap-1.5">
-                  <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  AI Code Reviews
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Smart Planning
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Codebase Indexing
-                </span>
-              </div>
-              <p className="text-sm text-gray-400 mt-2">
-                Use the form above to select a repository from your GitHub account.
-              </p>
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 };
