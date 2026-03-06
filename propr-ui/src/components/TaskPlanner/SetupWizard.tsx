@@ -170,6 +170,8 @@ const SetupWizardContent: React.FC<{
           onManualRefresh={contextRefresh.handleManualRefresh}
           isNewMode={isNewMode}
           previewTrace={previewTrace}
+          isGenerating={isGenerating}
+          generationTrace={generationPolling.generationTrace}
         />
       </div>
 

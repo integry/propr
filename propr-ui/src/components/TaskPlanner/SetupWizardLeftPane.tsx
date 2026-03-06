@@ -16,9 +16,10 @@ const AttachmentsSection: React.FC<{
   onRemoveLocalFile?: (fileIndex: number) => void;
   onRemoveFile: (attachmentId: string) => void;
   isUploading: boolean;
+  isGenerating: boolean;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-}> = ({ isNewMode, localFiles, files, draftId, onRemoveLocalFile, onRemoveFile, isUploading, fileInputRef, onFileInputChange }) => {
+}> = ({ isNewMode, localFiles, files, draftId, onRemoveLocalFile, onRemoveFile, isUploading, isGenerating, fileInputRef, onFileInputChange }) => {
   const hasLocalFiles = isNewMode && localFiles.length > 0;
   const hasRemoteFiles = !isNewMode && files.length > 0;
   const hasAnyFiles = hasLocalFiles || hasRemoteFiles;
@@ -36,8 +37,10 @@ const AttachmentsSection: React.FC<{
       />
       <button
         onClick={() => fileInputRef.current?.click()}
-        disabled={isUploading}
-        className="flex items-center gap-1.5 px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+        disabled={isUploading || isGenerating}
+        className={`flex items-center gap-1.5 px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors ${
+          isGenerating ? 'opacity-50 cursor-not-allowed' : ''
+        }`}
       >
         {isUploading ? (
           <>
@@ -207,6 +210,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             onRemoveLocalFile={onRemoveLocalFile}
             onRemoveFile={onRemoveFile}
             isUploading={isUploading}
+            isGenerating={isGenerating}
             fileInputRef={fileInputRef}
             onFileInputChange={onFileInputChange}
           />
