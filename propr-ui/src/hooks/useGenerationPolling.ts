@@ -85,6 +85,61 @@ export function useGenerationPolling({
     };
   }, [draftId, isConnected, isGenerating, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, handleDraftUpdate]);
 
+  // Fallback polling to ensure progress updates even if WebSocket misses updates
+  useEffect(() => {
+    if (!draftId || !isGenerating) return;
+
+    const pollDraft = async () => {
+      if (!isGeneratingRef.current) return;
+
+      try {
+        const updatedDraft = await getDraft(draftId);
+
+        if (updatedDraft.generation_trace) {
+          setGenerationTrace(updatedDraft.generation_trace);
+          // Check for error in generation trace
+          const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
+          if (trace.error) {
+            setGenerationError(trace.error);
+            setIsGenerating(false);
+            isGeneratingRef.current = false;
+            return;
+          }
+        }
+
+        // Check if generation completed (status changed to 'review')
+        if (updatedDraft.status === 'review') {
+          setIsGenerating(false);
+          isGeneratingRef.current = false;
+          onComplete();
+        }
+
+        // Check if generation failed (status went back to 'draft')
+        if (updatedDraft.status === 'draft') {
+          const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
+          if (trace?.error) {
+            setGenerationError(trace.error);
+            setIsGenerating(false);
+            isGeneratingRef.current = false;
+          }
+        }
+      } catch (e) {
+        console.error('[useGenerationPolling] Fallback poll error:', e);
+      }
+    };
+
+    // Initial poll after a short delay to let backend initialize
+    const initialPollTimeout = setTimeout(pollDraft, 1000);
+
+    // Set up polling interval (every 2 seconds)
+    const intervalId = setInterval(pollDraft, 2000);
+
+    return () => {
+      clearTimeout(initialPollTimeout);
+      clearInterval(intervalId);
+    };
+  }, [draftId, isGenerating, onComplete]);
+
   const stopPolling = useCallback(() => {
     setIsGenerating(false);
     isGeneratingRef.current = false;
@@ -93,7 +148,15 @@ export function useGenerationPolling({
   const startPolling = useCallback(() => {
     setIsGenerating(true);
     isGeneratingRef.current = true;
-    setGenerationTrace(undefined);
+    // Initialize with pending steps immediately to show progress UI without flicker
+    // This ensures consistent UI from the start while waiting for backend updates
+    setGenerationTrace({
+      steps: [
+        { name: 'relevance', status: 'in_progress' },
+        { name: 'context', status: 'pending' },
+        { name: 'llm', status: 'pending' }
+      ]
+    });
     setGenerationError(null);
   }, []);
 

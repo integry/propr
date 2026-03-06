@@ -19,7 +19,7 @@ export const Shimmer: React.FC<{ className?: string }> = ({ className = '' }) =>
 // Cost preview skeleton for analysis loading state
 export const CostPreviewSkeleton: React.FC = () => {
   return (
-    <div className="p-5 rounded-xl border border-gray-200 bg-white shadow-sm">
+    <div className="pt-4 border-t border-gray-200">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-4">
           <Shimmer className="h-7 w-36" />
