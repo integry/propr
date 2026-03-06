@@ -4,6 +4,7 @@
 
 import { db } from '../../db/connection.js';
 import type { GenerationTrace } from './planningTypes.js';
+import { getEventPublisher } from '../../utils/eventPublisher.js';
 
 /**
  * Update the generation trace for a draft with step status and data.
@@ -37,4 +38,13 @@ export async function updateTrace(
       generation_trace: JSON.stringify(trace),
       updated_at: db.fn.now()
     });
+
+  // Publish WebSocket event for real-time updates
+  const eventPublisher = getEventPublisher();
+  await eventPublisher.publishDraftUpdate({
+    draftId,
+    step,
+    status,
+    data
+  });
 }

@@ -85,9 +85,13 @@ export function useGenerationPolling({
     };
   }, [draftId, isConnected, isGenerating, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, handleDraftUpdate]);
 
-  // Fallback polling to ensure progress updates even if WebSocket misses updates
+  // Fallback polling - only active when WebSocket is NOT connected
+  // When WebSocket is connected, we rely entirely on real-time updates
   useEffect(() => {
-    if (!draftId || !isGenerating) return;
+    // Skip fallback polling if WebSocket is connected - we use real-time updates instead
+    if (!draftId || !isGenerating || isConnected) return;
+
+    console.log('[useGenerationPolling] WebSocket not connected, using fallback polling');
 
     const pollDraft = async () => {
       if (!isGeneratingRef.current) return;
@@ -131,14 +135,14 @@ export function useGenerationPolling({
     // Initial poll after a short delay to let backend initialize
     const initialPollTimeout = setTimeout(pollDraft, 1000);
 
-    // Set up polling interval (every 2 seconds)
-    const intervalId = setInterval(pollDraft, 2000);
+    // Set up polling interval (every 3 seconds as fallback)
+    const intervalId = setInterval(pollDraft, 3000);
 
     return () => {
       clearTimeout(initialPollTimeout);
       clearInterval(intervalId);
     };
-  }, [draftId, isGenerating, onComplete]);
+  }, [draftId, isGenerating, isConnected, onComplete]);
 
   const stopPolling = useCallback(() => {
     setIsGenerating(false);
