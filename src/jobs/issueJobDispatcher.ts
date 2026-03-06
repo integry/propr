@@ -174,10 +174,19 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
                     repoPayload: repoValidation.repoData as unknown as Record<string, unknown>
                 };
 
-                await issueQueue.add(jobName, newJobData);
+                // Deterministic jobId for deduplication - prevents duplicate child jobs
+                // when multiple webhook events trigger the dispatcher for the same issue
+                const childJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentModel.agentAlias}-${agentModel.model}-${base.branch}`;
+
+                await issueQueue.add(jobName, newJobData, {
+                    jobId: childJobId,
+                    removeOnComplete: true,
+                    removeOnFail: true,
+                });
                 jobsEnqueued++;
                 correlatedLogger.info({
                     jobId,
+                    childJobId,
                     issue: issueRef.number,
                     base: base.branch,
                     agent: agentModel.agentAlias,
