@@ -15,6 +15,8 @@ export interface TaskWatcherInfo {
   taskId: string;
   lastSize: number;
   subscriberCount: number;
+  /** Number of events last sent - used to track which events have been broadcast */
+  lastSentEventCount: number;
 }
 
 /** Dependencies for task watching */
@@ -103,7 +105,8 @@ export class TaskWatcherManager {
       sessionId,
       taskId,
       lastSize: initialSize,
-      subscriberCount: 1
+      subscriberCount: 1,
+      lastSentEventCount: 0
     });
 
     console.log(`[TaskWatcher] Started watching Claude log for task ${taskId}`);
@@ -130,9 +133,12 @@ export class TaskWatcherManager {
   }
 
   /**
-   * Send live task update to subscribed clients
+   * Send live task update to subscribed clients.
+   * On initial subscription, sends full state. On subsequent calls, sends only new events.
+   * @param taskId - Task identifier
+   * @param isInitial - If true, sends full event history (used for initial subscription)
    */
-  async sendTaskLiveUpdate(taskId: string): Promise<void> {
+  async sendTaskLiveUpdate(taskId: string, isInitial = false): Promise<void> {
     const watcherInfo = this.taskWatchers.get(taskId);
     if (!watcherInfo) return;
 
@@ -152,10 +158,37 @@ export class TaskWatcherManager {
 
       const result = await parseConversationFile(conversationPath);
 
+      // Determine which events to send
+      let eventsToSend = result.events;
+
+      if (isInitial) {
+        // Initial subscription: send full event history (already limited by parser)
+        console.log(`[TaskWatcher] Initial subscription for task ${taskId}: sending ${result.events.length} events`);
+      } else {
+        // Incremental update: only send new events since last broadcast
+        const lastSentCount = watcherInfo.lastSentEventCount;
+        const totalCount = result.totalEventCount;
+
+        if (totalCount <= lastSentCount) {
+          // No new events to send (might be metadata-only update like todos)
+          // Still send update for todos/currentTask changes
+          eventsToSend = [];
+        } else {
+          // Calculate new events: we want events from lastSentCount to totalCount
+          // Since result.events might be limited, we need to be careful
+          const newEventCount = totalCount - lastSentCount;
+          eventsToSend = result.events.slice(-newEventCount);
+          console.log(`[TaskWatcher] Incremental update for task ${taskId}: sending ${eventsToSend.length} new events (${lastSentCount} -> ${totalCount})`);
+        }
+      }
+
+      // Update last sent count to current total
+      watcherInfo.lastSentEventCount = result.totalEventCount;
+
       const payload: TaskLiveUpdatePayload = {
         eventType: TASK_LIVE_UPDATE,
         taskId,
-        events: result.events,
+        events: eventsToSend,
         todos: result.todos,
         currentTask: result.currentTask,
         tokenUsage: result.tokenUsage,

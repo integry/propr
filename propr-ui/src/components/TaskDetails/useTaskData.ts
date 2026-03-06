@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   getTaskHistory,
-  getTaskLiveDetails,
   getTaskAnalysis,
   stopTaskExecution,
   StopExecutionResponse,
@@ -32,9 +31,8 @@ export const useTaskData = (taskId: string | undefined) => {
   const { subscribeToTask, unsubscribeFromTask, onTaskUpdate, isConnected, subscribeToTaskLive, unsubscribeFromTaskLive, onTaskLiveUpdate } = useSocket();
   // Track the last notified terminal state to avoid duplicate toasts
   const lastNotifiedStateRef = useRef<string | null>(null);
-
-  // Track if we've received any live updates via WebSocket (to avoid initial HTTP fetch)
-  const hasReceivedLiveUpdateRef = useRef<boolean>(false);
+  // Track if we've received initial data from WebSocket (to distinguish initial vs incremental updates)
+  const hasReceivedInitialDataRef = useRef<boolean>(false);
 
   // Fetch task history data
   const fetchTaskHistory = useCallback(async () => {
@@ -48,18 +46,6 @@ export const useTaskData = (taskId: string | undefined) => {
     } catch (err) {
       console.error('Error fetching task history:', err);
       throw err;
-    }
-  }, [taskId]);
-
-  // Fetch live details data
-  const fetchLiveDetails = useCallback(async () => {
-    if (!taskId) return;
-
-    try {
-      const data = await getTaskLiveDetails(taskId);
-      setLiveDetails(data);
-    } catch (err) {
-      console.error('Error fetching live task details:', err);
     }
   }, [taskId]);
 
@@ -91,21 +77,31 @@ export const useTaskData = (taskId: string | undefined) => {
 
   // Handle task live update from WebSocket
   // This updates the terminal output directly from WebSocket data - no HTTP calls needed
+  // WebSocket sends full state on initial subscription, then only new events on updates
   const handleTaskLiveUpdate = useCallback((payload: TaskLiveUpdatePayload) => {
     if (payload.taskId !== taskId) return;
 
-    console.log('[useTaskData] Received task live update via WebSocket:', payload);
+    const newEvents = payload.events || [];
 
-    // Mark that we've received WebSocket updates
-    hasReceivedLiveUpdateRef.current = true;
-
-    // Directly update live details from the WebSocket payload
-    // WebSocket provides complete data, no need for HTTP fallback
-    setLiveDetails({
-      events: payload.events || [],
-      todos: payload.todos || [],
-      currentTask: payload.currentTask || null,
-    });
+    if (!hasReceivedInitialDataRef.current) {
+      // First message: this is the initial full state
+      console.log(`[useTaskData] Received initial live data via WebSocket: ${newEvents.length} events`);
+      hasReceivedInitialDataRef.current = true;
+      setLiveDetails({
+        events: newEvents,
+        todos: payload.todos || [],
+        currentTask: payload.currentTask || null,
+      });
+    } else {
+      // Subsequent messages: these are incremental updates (only new events)
+      // Append new events to existing ones
+      console.log(`[useTaskData] Received incremental update via WebSocket: ${newEvents.length} new events`);
+      setLiveDetails(prev => ({
+        events: newEvents.length > 0 ? [...prev.events, ...newEvents] : prev.events,
+        todos: payload.todos || [],
+        currentTask: payload.currentTask || null,
+      }));
+    }
   }, [taskId]);
 
   // Initial data fetch
@@ -148,7 +144,8 @@ export const useTaskData = (taskId: string | undefined) => {
       unsubscribeFromTaskLive(taskId);
       unsubscribeTask();
       unsubscribeLive();
-      hasReceivedLiveUpdateRef.current = false;
+      // Reset initial data flag on cleanup so re-subscription gets fresh state
+      hasReceivedInitialDataRef.current = false;
     };
   }, [taskId, isConnected, subscribeToTask, unsubscribeFromTask, subscribeToTaskLive, unsubscribeFromTaskLive, onTaskUpdate, onTaskLiveUpdate, handleTaskUpdate, handleTaskLiveUpdate]);
 
@@ -171,17 +168,9 @@ export const useTaskData = (taskId: string | undefined) => {
     fetchAnalysis();
   }, [taskId]);
 
-  // Fetch live details only once on initial load, if not yet receiving via WebSocket
-  // This provides initial data before WebSocket connection is established
-  useEffect(() => {
-    if (!taskId || history.length === 0) return;
-
-    // Only fetch via HTTP if we haven't received WebSocket updates yet
-    // After WebSocket connection, all updates come through that channel
-    if (!hasReceivedLiveUpdateRef.current) {
-      fetchLiveDetails();
-    }
-  }, [taskId, history.length, fetchLiveDetails]);
+  // Live details are now delivered entirely via WebSocket
+  // Initial data is sent when subscribing to task:live, then only new events on updates
+  // No HTTP fallback needed
 
   const handleStopExecution = async () => {
     if (!taskId) return;

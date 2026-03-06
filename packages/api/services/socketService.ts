@@ -120,7 +120,8 @@ export class SocketService {
       socket.join(`task:live:${taskId}`);
       console.log(`[SocketService] Client ${socket.id} subscribed to task:live:${taskId}`);
       await this.taskWatcherManager.startTaskWatcher(taskId);
-      await this.taskWatcherManager.sendTaskLiveUpdate(taskId);
+      // Send initial full state on subscription (isInitial=true)
+      await this.taskWatcherManager.sendTaskLiveUpdate(taskId, true);
     });
 
     socket.on('unsubscribe:task:live', async (taskId: string) => {

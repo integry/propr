@@ -52,6 +52,8 @@ export interface ParsedConversation {
   todos: TodoItem[];
   currentTask: string | null;
   tokenUsage: TokenUsageInfo | null;
+  /** Total event count before any limiting - used for incremental updates */
+  totalEventCount: number;
 }
 
 /**
@@ -242,6 +244,9 @@ export async function parseConversationFile(conversationPath: string): Promise<P
   const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0 ||
     tokenUsage.cache_creation_input_tokens > 0 || tokenUsage.cache_read_input_tokens > 0;
 
+  // Track total event count before limiting (for incremental update tracking)
+  const totalEventCount = events.length;
+
   // Limit events to most recent to prevent huge WebSocket payloads
   // Keep only the last MAX_EVENTS_FOR_SOCKET events for real-time updates
   const limitedEvents = events.length > MAX_EVENTS_FOR_SOCKET
@@ -252,6 +257,7 @@ export async function parseConversationFile(conversationPath: string): Promise<P
     events: limitedEvents,
     todos,
     currentTask,
-    tokenUsage: hasTokens ? tokenUsage : null
+    tokenUsage: hasTokens ? tokenUsage : null,
+    totalEventCount
   };
 }
