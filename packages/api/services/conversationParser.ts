@@ -40,6 +40,12 @@ interface PendingSubagent {
   startTimestamp: string;
 }
 
+/** Maximum length for tool result content to prevent huge payloads */
+const MAX_RESULT_LENGTH = 2000;
+
+/** Maximum number of events to include in WebSocket payloads */
+const MAX_EVENTS_FOR_SOCKET = 100;
+
 /** Result from parsing a conversation file */
 export interface ParsedConversation {
   events: ConversationEvent[];
@@ -79,10 +85,13 @@ function processAssistantContent(
     if (content.type === 'text' && content.text) {
       events.push({ type: 'thought', content: content.text, timestamp });
     } else if (content.type === 'tool_use') {
+      // Truncate large inputs to prevent huge WebSocket payloads
+      const truncatedInput = truncateResult(content.input) as Record<string, unknown>;
+
       events.push({
         type: 'tool_use',
         toolName: content.name,
-        input: content.input as Record<string, unknown>,
+        input: truncatedInput,
         id: content.id,
         timestamp
       });
@@ -106,6 +115,28 @@ function processAssistantContent(
 }
 
 /**
+ * Truncate large result content to prevent huge WebSocket payloads
+ */
+function truncateResult(result: unknown): unknown {
+  if (typeof result === 'string' && result.length > MAX_RESULT_LENGTH) {
+    return result.substring(0, MAX_RESULT_LENGTH) + `... [truncated ${result.length - MAX_RESULT_LENGTH} chars]`;
+  }
+  if (Array.isArray(result)) {
+    // For arrays, truncate each string element and limit array size
+    return result.slice(0, 10).map(item => truncateResult(item));
+  }
+  if (result && typeof result === 'object') {
+    // For objects, truncate string values recursively
+    const truncated: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(result as Record<string, unknown>)) {
+      truncated[key] = truncateResult(value);
+    }
+    return truncated;
+  }
+  return result;
+}
+
+/**
  * Process user message content items (tool results)
  */
 function processUserContent(
@@ -117,10 +148,13 @@ function processUserContent(
   for (const content of contentItems) {
     if (content.type !== 'tool_result') continue;
 
+    // Truncate large results to prevent huge WebSocket payloads
+    const truncatedResult = truncateResult(content.content);
+
     events.push({
       type: 'tool_result',
       toolUseId: content.tool_use_id,
-      result: content.content as unknown,
+      result: truncatedResult,
       isError: content.is_error || false,
       timestamp
     });
@@ -208,8 +242,14 @@ export async function parseConversationFile(conversationPath: string): Promise<P
   const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0 ||
     tokenUsage.cache_creation_input_tokens > 0 || tokenUsage.cache_read_input_tokens > 0;
 
+  // Limit events to most recent to prevent huge WebSocket payloads
+  // Keep only the last MAX_EVENTS_FOR_SOCKET events for real-time updates
+  const limitedEvents = events.length > MAX_EVENTS_FOR_SOCKET
+    ? events.slice(-MAX_EVENTS_FOR_SOCKET)
+    : events;
+
   return {
-    events,
+    events: limitedEvents,
     todos,
     currentTask,
     tokenUsage: hasTokens ? tokenUsage : null

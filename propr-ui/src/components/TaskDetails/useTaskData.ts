@@ -33,10 +33,8 @@ export const useTaskData = (taskId: string | undefined) => {
   // Track the last notified terminal state to avoid duplicate toasts
   const lastNotifiedStateRef = useRef<string | null>(null);
 
-  // Debounce timer for live details refetch
-  const liveDetailsDebounceRef = useRef<NodeJS.Timeout | null>(null);
-  // Track pending live update to batch multiple WebSocket events
-  const pendingLiveUpdateRef = useRef<TaskLiveUpdatePayload | null>(null);
+  // Track if we've received any live updates via WebSocket (to avoid initial HTTP fetch)
+  const hasReceivedLiveUpdateRef = useRef<boolean>(false);
 
   // Fetch task history data
   const fetchTaskHistory = useCallback(async () => {
@@ -91,41 +89,24 @@ export const useTaskData = (taskId: string | undefined) => {
     }
   }, [taskId, fetchTaskHistory, addToast]);
 
-  // Handle task live update from WebSocket with debouncing
-  // This updates the terminal output directly from WebSocket data to stay fluid
+  // Handle task live update from WebSocket
+  // This updates the terminal output directly from WebSocket data - no HTTP calls needed
   const handleTaskLiveUpdate = useCallback((payload: TaskLiveUpdatePayload) => {
     if (payload.taskId !== taskId) return;
 
     console.log('[useTaskData] Received task live update via WebSocket:', payload);
 
-    // Directly update live details from the WebSocket payload for immediate UI update
-    // This avoids HTTP calls and keeps the terminal output fluid
+    // Mark that we've received WebSocket updates
+    hasReceivedLiveUpdateRef.current = true;
+
+    // Directly update live details from the WebSocket payload
+    // WebSocket provides complete data, no need for HTTP fallback
     setLiveDetails({
       events: payload.events || [],
       todos: payload.todos || [],
       currentTask: payload.currentTask || null,
     });
-
-    // Store the latest update for potential batched HTTP refetch if needed
-    pendingLiveUpdateRef.current = payload;
-
-    // Debounce HTTP refetch to avoid overwhelming the API
-    // Only refetch if we haven't received another update within the debounce window
-    if (liveDetailsDebounceRef.current) {
-      clearTimeout(liveDetailsDebounceRef.current);
-    }
-
-    // Debounce for 1 second - if no new updates come in, do a full HTTP refetch
-    // to ensure we have complete data (WebSocket might have partial updates)
-    liveDetailsDebounceRef.current = setTimeout(async () => {
-      // Only refetch if the pending update is still the same (no new updates came in)
-      if (pendingLiveUpdateRef.current === payload) {
-        console.log('[useTaskData] Debounced HTTP refetch for live details');
-        await fetchLiveDetails();
-        pendingLiveUpdateRef.current = null;
-      }
-    }, 1000);
-  }, [taskId, fetchLiveDetails]);
+  }, [taskId]);
 
   // Initial data fetch
   useEffect(() => {
@@ -167,13 +148,7 @@ export const useTaskData = (taskId: string | undefined) => {
       unsubscribeFromTaskLive(taskId);
       unsubscribeTask();
       unsubscribeLive();
-
-      // Clean up debounce timer
-      if (liveDetailsDebounceRef.current) {
-        clearTimeout(liveDetailsDebounceRef.current);
-        liveDetailsDebounceRef.current = null;
-      }
-      pendingLiveUpdateRef.current = null;
+      hasReceivedLiveUpdateRef.current = false;
     };
   }, [taskId, isConnected, subscribeToTask, unsubscribeFromTask, subscribeToTaskLive, unsubscribeFromTaskLive, onTaskUpdate, onTaskLiveUpdate, handleTaskUpdate, handleTaskLiveUpdate]);
 
@@ -196,11 +171,16 @@ export const useTaskData = (taskId: string | undefined) => {
     fetchAnalysis();
   }, [taskId]);
 
-  // Fetch live details initially and when history changes
+  // Fetch live details only once on initial load, if not yet receiving via WebSocket
+  // This provides initial data before WebSocket connection is established
   useEffect(() => {
     if (!taskId || history.length === 0) return;
 
-    fetchLiveDetails();
+    // Only fetch via HTTP if we haven't received WebSocket updates yet
+    // After WebSocket connection, all updates come through that channel
+    if (!hasReceivedLiveUpdateRef.current) {
+      fetchLiveDetails();
+    }
   }, [taskId, history.length, fetchLiveDetails]);
 
   const handleStopExecution = async () => {
