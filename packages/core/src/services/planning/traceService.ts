@@ -39,12 +39,19 @@ export async function updateTrace(
       updated_at: db.fn.now()
     });
 
-  // Publish WebSocket event for real-time updates
-  const eventPublisher = getEventPublisher();
-  await eventPublisher.publishDraftUpdate({
-    draftId,
-    step,
-    status,
-    data
-  });
+  // Publish WebSocket event for real-time updates (fire-and-forget pattern)
+  // Use try-catch to prevent event publishing failures from breaking core functionality
+  try {
+    const eventPublisher = getEventPublisher();
+    await eventPublisher.publishDraftUpdate({
+      draftId,
+      step,
+      status,
+      data
+    });
+  } catch (error) {
+    // Log but don't throw - database is already updated, so clients can still
+    // receive updates via fallback polling if WebSocket publishing fails
+    console.warn('[traceService] Failed to publish draft update event:', (error as Error).message);
+  }
 }
