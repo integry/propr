@@ -46,6 +46,9 @@ interface SetupWizardRightPaneProps {
   isNewMode?: boolean;
   // Preview trace for progress display
   previewTrace?: GenerationTrace;
+  // Generation state props
+  isGenerating?: boolean;
+  generationTrace?: GenerationTrace;
 }
 
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
@@ -66,6 +69,8 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   onManualRefresh,
   isNewMode,
   previewTrace,
+  isGenerating,
+  generationTrace,
 }) => {
   return (
     <div className="w-[35%] h-full flex flex-col bg-white border-l border-gray-300">
@@ -120,6 +125,8 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
           onManualRefresh={onManualRefresh}
           isNewMode={isNewMode}
           previewTrace={previewTrace}
+          isGenerating={isGenerating}
+          generationTrace={generationTrace}
         />
       </div>
     </div>

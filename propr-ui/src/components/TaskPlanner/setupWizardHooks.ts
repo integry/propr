@@ -41,166 +41,94 @@ interface RepoInfoState {
   error: string | null;
 }
 
-// Helper to load repositories
 async function loadRepositories(savedLastRepository: string | undefined): Promise<{ repos: Repo[]; selectedRepo: string }> {
   const data = await getRepoConfig() as { repos_to_monitor?: unknown[] };
-  const rawRepos = data.repos_to_monitor || [];
-  const validRepos = rawRepos
-    .filter((repo): repo is { name: string; enabled?: boolean; baseBranch?: string } =>
-      typeof repo === 'object' && repo !== null && 'name' in repo && typeof (repo as { name: unknown }).name === 'string'
-    )
-    .map(repo => ({ name: repo.name, enabled: repo.enabled !== false, baseBranch: repo.baseBranch }));
+  const validRepos = (data.repos_to_monitor || [])
+    .filter((r): r is { name: string; enabled?: boolean; baseBranch?: string } => typeof r === 'object' && r !== null && 'name' in r && typeof (r as { name: unknown }).name === 'string')
+    .map(r => ({ name: r.name, enabled: r.enabled !== false, baseBranch: r.baseBranch }));
   const enabledRepos = validRepos.filter(r => r.enabled);
-  let selectedRepo = '';
-  if (savedLastRepository && enabledRepos.some(r => r.name === savedLastRepository)) {
-    selectedRepo = savedLastRepository;
-  } else if (enabledRepos.length > 0) {
-    selectedRepo = enabledRepos[0].name;
-  }
+  const selectedRepo = (savedLastRepository && enabledRepos.some(r => r.name === savedLastRepository)) ? savedLastRepository : (enabledRepos[0]?.name || '');
   return { repos: enabledRepos, selectedRepo };
 }
 
-// Helper to load indexed repos for context
-// Includes both 'completed' and 'indexing' repositories so users can see repos that are being prepared
 async function loadIndexedRepositories(repoToExclude: string): Promise<IndexedRepository[]> {
   const data = await getRepositoriesIndexingStatus();
   return (data.repositories || [])
-    .filter((repo: RepositoryIndexingStatus) =>
-      (repo.indexing_status === 'completed' || repo.indexing_status === 'indexing') &&
-      repo.full_name !== repoToExclude
-    )
-    .map((repo: RepositoryIndexingStatus) => ({
-      full_name: repo.full_name,
-      branch: repo.branch,
-      indexing_status: repo.indexing_status
-    }));
+    .filter((r: RepositoryIndexingStatus) => (r.indexing_status === 'completed' || r.indexing_status === 'indexing') && r.full_name !== repoToExclude)
+    .map((r: RepositoryIndexingStatus) => ({ full_name: r.full_name, branch: r.branch, indexing_status: r.indexing_status }));
 }
 
-// Helper to process uploaded file (handles image resize)
-async function processFileForUpload(file: File): Promise<File> {
-  return file.type.startsWith('image/') ? resizeImage(file) : file;
-}
+async function processFileForUpload(file: File): Promise<File> { return file.type.startsWith('image/') ? resizeImage(file) : file; }
 
-// Hook: Load available repositories (for both new and edit modes)
 export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: string | undefined) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<string>('');
   const [reposLoading, setReposLoading] = useState(shouldLoad);
   const [loadError, setLoadError] = useState<string | null>(null);
-
   useEffect(() => {
     if (!shouldLoad) return;
     setReposLoading(true);
-    loadRepositories(savedLastRepository)
-      .then(({ repos: loadedRepos, selectedRepo: defaultRepo }) => {
-        setRepos(loadedRepos);
-        setSelectedRepo(defaultRepo);
-      })
-      .catch((err) => {
-        console.error('Failed to load repositories:', err);
-        setLoadError('Failed to load repositories');
-      })
-      .finally(() => setReposLoading(false));
+    loadRepositories(savedLastRepository).then(({ repos: loadedRepos, selectedRepo: defaultRepo }) => {
+      setRepos(loadedRepos); setSelectedRepo(defaultRepo);
+    }).catch(err => { console.error('Failed to load repositories:', err); setLoadError('Failed to load repositories'); }).finally(() => setReposLoading(false));
   }, [shouldLoad, savedLastRepository]);
-
   return { repos, selectedRepo, setSelectedRepo, reposLoading, loadError };
 }
 
-// Hook: Load branches for selected repo (for new mode)
 export function useBranchesLoader(selectedRepo: string, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
   const [branchesState, setBranchesState] = useState<RepoInfoState>({ isLoading: false, branches: [], error: null });
-
   useEffect(() => {
-    if (!selectedRepo) {
-      setBranchesState({ isLoading: false, branches: [], error: null });
-      return;
-    }
-
+    if (!selectedRepo) { setBranchesState({ isLoading: false, branches: [], error: null }); return; }
     const [owner, repo] = selectedRepo.split('/');
-    if (!owner || !repo) {
-      setBranchesState({ isLoading: false, branches: [], error: 'Invalid repository format' });
-      return;
-    }
-
+    if (!owner || !repo) { setBranchesState({ isLoading: false, branches: [], error: 'Invalid repository format' }); return; }
     setBranchesState(prev => ({ ...prev, isLoading: true, error: null }));
-    getRepoBranches(owner, repo)
-      .then((data) => {
-        setBranchesState({ isLoading: false, branches: data.branches, error: null });
-        // Set the default branch when repo changes
-        setConfig(prev => ({ ...prev, baseBranch: data.defaultBranch }));
-      })
-      .catch((err) => {
-        console.error('Failed to load branches:', err);
-        setBranchesState({ isLoading: false, branches: [], error: (err as Error).message });
-        // Fallback to 'main' if fetching fails
-        setConfig(prev => ({ ...prev, baseBranch: 'main' }));
-      });
+    getRepoBranches(owner, repo).then(data => {
+      setBranchesState({ isLoading: false, branches: data.branches, error: null });
+      setConfig(prev => ({ ...prev, baseBranch: data.defaultBranch }));
+    }).catch(err => {
+      console.error('Failed to load branches:', err);
+      setBranchesState({ isLoading: false, branches: [], error: (err as Error).message });
+      setConfig(prev => ({ ...prev, baseBranch: 'main' }));
+    });
   }, [selectedRepo, setConfig]);
-
   return branchesState;
 }
 
-// Hook: Load repository info (for edit mode)
 export function useRepoInfoLoader(isNewMode: boolean, draft: PlannerDraft | undefined, setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>) {
   const [repoInfo, setRepoInfo] = useState<RepoInfoState>({ isLoading: !isNewMode, branches: [], error: null });
-
   useEffect(() => {
     if (isNewMode || !draft) return;
-    getRepositoryInfo(draft.draft_id)
-      .then((info) => {
-        setRepoInfo({ isLoading: false, branches: info.branches, error: null });
-        setConfig(prev => ({ ...prev, baseBranch: info.defaultBranch }));
-      })
-      .catch((err) => {
-        setRepoInfo({ isLoading: false, branches: [], error: (err as Error).message });
-        setConfig(prev => ({ ...prev, baseBranch: 'main' }));
-      });
+    getRepositoryInfo(draft.draft_id).then(info => {
+      setRepoInfo({ isLoading: false, branches: info.branches, error: null });
+      setConfig(prev => ({ ...prev, baseBranch: info.defaultBranch }));
+    }).catch(err => {
+      setRepoInfo({ isLoading: false, branches: [], error: (err as Error).message });
+      setConfig(prev => ({ ...prev, baseBranch: 'main' }));
+    });
   }, [isNewMode, draft, setConfig]);
-
   return repoInfo;
 }
 
-// Hook: Load agents
 export function useAgentsLoader() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
-
-  useEffect(() => {
-    getAgents()
-      .then((data) => setAgents(data.agents || []))
-      .catch((err) => console.error('Failed to load agents:', err));
-  }, []);
-
+  useEffect(() => { getAgents().then(data => setAgents(data.agents || [])).catch(err => console.error('Failed to load agents:', err)); }, []);
   return agents;
 }
 
-// Hook: Load indexed repositories for context
 export function useIndexedRepositoriesLoader(draftRepository: string | undefined, selectedRepo: string) {
   const [availableRepos, setAvailableRepos] = useState<IndexedRepository[]>([]);
-
   useEffect(() => {
-    const repoToUse = draftRepository || selectedRepo;
-    if (!repoToUse) return;
-    loadIndexedRepositories(repoToUse)
-      .then(setAvailableRepos)
-      .catch((err) => console.error('Failed to load indexed repos:', err));
+    const repo = draftRepository || selectedRepo;
+    if (repo) loadIndexedRepositories(repo).then(setAvailableRepos).catch(err => console.error('Failed to load indexed repos:', err));
   }, [draftRepository, selectedRepo]);
-
   return availableRepos;
 }
 
-// Hook: Persist planner settings
 export function usePlannerSettingsPersistence(config: PlannerConfig, draftRepository: string | undefined, selectedRepo: string) {
-  useEffect(() => {
-    savePlannerSettings({ lastGranularity: config.granularity, lastContextLevel: config.contextLevel });
-  }, [config.granularity, config.contextLevel]);
-
-  useEffect(() => {
-    const repoToSave = draftRepository || selectedRepo;
-    if (repoToSave) savePlannerSettings({ lastRepository: repoToSave });
-  }, [draftRepository, selectedRepo]);
+  useEffect(() => { savePlannerSettings({ lastGranularity: config.granularity, lastContextLevel: config.contextLevel }); }, [config.granularity, config.contextLevel]);
+  useEffect(() => { const repo = draftRepository || selectedRepo; if (repo) savePlannerSettings({ lastRepository: repo }); }, [draftRepository, selectedRepo]);
 }
 
-// Hook: File upload and handling
 export function useFileHandling(
   isNewMode: boolean,
   draft: PlannerDraft | undefined,
@@ -263,21 +191,14 @@ export function useFileHandling(
   return { localFiles, isUploading, handleUpload, handleRemoveFile, handleRemoveLocalFile, handlePaste };
 }
 
-// Hook: Generation handling
 interface GenerationHandlersParams {
-  draft: PlannerDraft | undefined;
-  config: PlannerConfig;
-  branchError: string | null;
+  draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null;
   contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<void> };
-  startPolling: () => void;
-  stopPolling: () => void;
-  setError: React.Dispatch<React.SetStateAction<string | null>>;
-  setGenerationError: (error: string | null) => void;
+  startPolling: () => void; stopPolling: () => void;
+  setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void;
 }
 
 export function useGenerationHandlers({ draft, config, branchError, contextHelpers, startPolling, stopPolling, setError, setGenerationError }: GenerationHandlersParams) {
-  const { isContextStale, clearCountdown, fetchPreview } = contextHelpers;
-
   const handleGenerateForExistingDraft = useCallback(async () => {
     if (!draft) return;
     if (branchError) {
@@ -286,11 +207,9 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
     }
     setError(null);
     setGenerationError(null);
+    startPolling(); // Start polling immediately to show loading state
     try {
-      if (isContextStale) {
-        clearCountdown();
-        await fetchPreview();
-      }
+      if (contextHelpers.isContextStale) { contextHelpers.clearCountdown(); await contextHelpers.fetchPreview(); }
       await generatePlan(draft.draft_id, {
         baseBranch: config.baseBranch,
         granularity: config.granularity,
@@ -299,11 +218,11 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
         contextRepositories: config.contextRepositories,
         generationModel: config.generationModel || undefined
       });
-      startPolling();
     } catch (err) {
+      stopPolling();
       setError((err as Error).message || 'Failed to start plan generation');
     }
-  }, [draft, config, branchError, isContextStale, clearCountdown, fetchPreview, startPolling, setError, setGenerationError]);
+  }, [draft, config, branchError, contextHelpers, startPolling, stopPolling, setError, setGenerationError]);
 
   const handleAbortGeneration = useCallback(async () => {
     if (!draft) return;
@@ -318,11 +237,8 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
   return { handleGenerateForExistingDraft, handleAbortGeneration };
 }
 
-// Hook: Draft creation and upload for new mode
 interface DraftCreationParams {
-  selectedRepo: string;
-  config: PlannerConfig;
-  localFiles: File[];
+  selectedRepo: string; config: PlannerConfig; localFiles: File[];
   onDraftCreated?: (draftId: string) => void;
   navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
@@ -346,82 +262,62 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
         catch (uploadErr) { console.error('Failed to upload attachment:', uploadErr); }
       }
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
+      // Start plan generation immediately after draft creation
+      await generatePlan(newDraft.draft_id, {
+        baseBranch: config.baseBranch,
+        granularity: config.granularity,
+        contextLevel: config.contextLevel,
+        compress: config.compress,
+        contextRepositories: config.contextRepositories,
+        generationModel: config.generationModel || undefined
+      });
       // Pass the draft data via router state to avoid re-fetch and UI flicker
+      // Set status to 'generating' so the UI shows the generating state immediately
       const draftWithPlan = constructDraftWithPlan(newDraft);
+      draftWithPlan.status = 'generating';
       navigate(`/studio/${newDraft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan } });
     } catch (err) {
       setError((err as Error).message || 'Failed to create draft');
       setIsCreating(false);
     }
-  }, [selectedRepo, config.prompt, localFiles, onDraftCreated, navigate, setError, setIsCreating]);
+  }, [selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating]);
 
   return handleCreateDraftAndGenerate;
 }
 
-// Compute isGenerateDisabled
 interface GenerateDisabledParams {
-  isNewMode: boolean;
-  isCreating: boolean;
-  selectedRepo: string;
-  promptTrimmed: string;
-  reposLoading: boolean;
-  isGenerating: boolean;
-  branchError: string | null;
-  repoInfoLoading: boolean;
+  isNewMode: boolean; isCreating: boolean; selectedRepo: string; promptTrimmed: string;
+  reposLoading: boolean; isGenerating: boolean; branchError: string | null; repoInfoLoading: boolean;
 }
 
-export function computeIsGenerateDisabled(params: GenerateDisabledParams): boolean {
-  const { isNewMode, isCreating, selectedRepo, promptTrimmed, reposLoading, isGenerating, branchError, repoInfoLoading } = params;
-  if (isNewMode) {
-    return isCreating || !selectedRepo || !promptTrimmed || reposLoading;
-  }
-  return isGenerating || !!branchError || repoInfoLoading || !promptTrimmed;
+export function computeIsGenerateDisabled(p: GenerateDisabledParams): boolean {
+  if (p.isNewMode) return p.isCreating || !p.selectedRepo || !p.promptTrimmed || p.reposLoading;
+  return p.isGenerating || !!p.branchError || p.repoInfoLoading || !p.promptTrimmed;
 }
 
-// Compute canExport
 export function computeCanExport(isNewMode: boolean, promptTrimmed: string, baseBranch: string): boolean {
   return !isNewMode && !!(promptTrimmed && baseBranch);
 }
 
-// Hook: Auto resize textarea
 export function useAutoResize(textareaRef: React.RefObject<HTMLTextAreaElement | null>) {
   return useCallback(() => {
-    const textarea = textareaRef.current;
-    if (textarea) {
-      textarea.style.height = 'auto';
-      textarea.style.height = `${Math.max(textarea.scrollHeight, 160)}px`;
-    }
+    const el = textareaRef.current;
+    if (el) { el.style.height = 'auto'; el.style.height = `${Math.max(el.scrollHeight, 160)}px`; }
   }, [textareaRef]);
 }
 
-/**
- * Truncate a prompt to the first 2 sentences for the plan name/summary.
- * Mirrors the backend truncateToSentences function in planningHelpers.ts.
- */
+/** Truncate prompt to first 2 sentences for plan name/summary. Mirrors backend truncateToSentences. */
 function truncateToSentences(text: string): string {
   const trimmed = text.trim();
-  const maxSentences = 2;
-
-  // Match sentences: one or more non-punctuation chars followed by sentence-ending punctuation
   const sentencePattern = /[^.!?]+[.!?]+/g;
   const sentences: string[] = [];
   let match: RegExpExecArray | null;
-
-  while ((match = sentencePattern.exec(trimmed)) !== null && sentences.length < maxSentences) {
+  while ((match = sentencePattern.exec(trimmed)) !== null && sentences.length < 2) {
     sentences.push(match[0].trim());
   }
-
-  if (sentences.length > 0) {
-    return sentences.join(' ');
-  }
-
-  // No sentence endings found - truncate to reasonable length
-  const maxLength = 100;
-  if (trimmed.length <= maxLength) {
-    return trimmed;
-  }
-  // Find last word boundary before maxLength
-  const truncated = trimmed.slice(0, maxLength);
+  if (sentences.length > 0) return sentences.join(' ');
+  if (trimmed.length <= 100) return trimmed;
+  const truncated = trimmed.slice(0, 100);
   const lastSpace = truncated.lastIndexOf(' ');
   return lastSpace > 0 ? truncated.slice(0, lastSpace) + '...' : truncated + '...';
 }

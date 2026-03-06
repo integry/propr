@@ -3,10 +3,11 @@ import { useParams, Link, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDraft } from '../hooks/useDraft';
+import { useGenerationPolling } from '../hooks/useGenerationPolling';
 import SetupWizard from '../components/TaskPlanner/SetupWizard';
 import PlanEditor from '../components/TaskPlanner/PlanEditor';
 import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
-import SkeletonLoader from '../components/TaskPlanner/SkeletonLoader';
+import { GenerationProgress } from '../components/TaskPlanner/GenerationProgress';
 import StudioStepper, { StudioStage } from '../components/TaskPlanner/StudioStepper';
 import { PlannerDraft, DraftWithPlan } from '../api/plannerApi';
 
@@ -38,6 +39,12 @@ const getStageFromStatus = (status: string | undefined): StudioStage => {
   }
 };
 
+const getTaskTitle = (draft: PlannerDraft): string => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const draftAny = draft as any;
+  return draftAny?.task_title || draftAny?.title || 'Untitled Task';
+};
+
 const LoadingView: React.FC<{ isNew: boolean }> = ({ isNew }) => (
   <div className="flex items-center justify-center min-h-[400px]">
     <div className="text-center">
@@ -62,62 +69,57 @@ const ErrorView: React.FC<{ error: string | null }> = ({ error }) => (
   </div>
 );
 
-const GeneratingView: React.FC<{ currentStage: StudioStage; taskTitle: string }> = ({ currentStage, taskTitle }) => (
-  <div className="h-[calc(100vh-64px)] flex flex-col">
-    {/* Fixed Header */}
-    <div className="bg-gray-100 px-6 py-4 border-b border-gray-300">
-      <StudioStepper currentStage={currentStage} />
+const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => {
+  const { generationTrace, startPolling, stopPolling } = useGenerationPolling({
+    draftId: draft.draft_id,
+    onComplete: onRefetch,
+  });
+
+  useEffect(() => {
+    startPolling();
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
+
+  // Use the trace from the hook if available, otherwise fall back to draft's trace
+  const displayTrace = generationTrace || draft.generation_trace;
+  const taskTitle = getTaskTitle(draft);
+
+  return (
+    <div className="h-[calc(100vh-64px)] flex flex-col">
+      {/* Fixed Header */}
+      <div className="bg-gray-100 px-6 py-4 border-b border-gray-300">
+        <StudioStepper currentStage={currentStage} />
+      </div>
+
+      {/* Scrollable Canvas */}
+      <div className="flex-1 overflow-auto bg-white">
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="h-full"
+        >
+          <div className="flex items-center justify-between px-6 py-3 border-b border-gray-100">
+            <div className="flex items-center gap-4">
+              <div className="text-sm text-gray-500 truncate max-w-md">{taskTitle}</div>
+              <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-700 flex items-center gap-1">
+                <motion.span
+                  animate={{ opacity: [1, 0.5, 1] }}
+                  transition={{ duration: 1.5, repeat: Infinity }}
+                  className="w-2 h-2 bg-yellow-500 rounded-full"
+                />
+                Generating
+              </span>
+            </div>
+          </div>
+
+          <div className="px-6 py-4">
+            <GenerationProgress trace={displayTrace} hideCompletedSteps={false} />
+          </div>
+        </motion.div>
+      </div>
     </div>
-
-    {/* Scrollable Canvas */}
-    <div className="flex-1 overflow-auto bg-white">
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        className="h-full"
-      >
-        <div className="flex items-center justify-between px-6 py-3 border-b border-gray-100">
-          <div className="flex items-center gap-4">
-            <div className="text-sm text-gray-500 truncate max-w-md">{taskTitle}</div>
-            <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-700 flex items-center gap-1">
-              <motion.span
-                animate={{ opacity: [1, 0.5, 1] }}
-                transition={{ duration: 1.5, repeat: Infinity }}
-                className="w-2 h-2 bg-yellow-500 rounded-full"
-              />
-              Generating
-            </span>
-          </div>
-        </div>
-
-        <div className="relative h-[calc(100%-56px)]">
-          <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.3 }}
-              className="bg-white/90 backdrop-blur-sm rounded-xl shadow-xl p-6 text-center max-w-md"
-            >
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto mb-4"
-              />
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">Generating Your Plan</h3>
-              <p className="text-gray-600 text-sm">
-                The AI is analyzing your repository and creating an implementation plan...
-              </p>
-            </motion.div>
-          </div>
-
-          <div className="opacity-40">
-            <SkeletonLoader count={3} />
-          </div>
-        </div>
-      </motion.div>
-    </div>
-  </div>
-);
+  );
+};
 
 const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
@@ -168,12 +170,6 @@ const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRe
     </div>
   </div>
 );
-
-const getTaskTitle = (draft: PlannerDraft): string => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const draftAny = draft as any;
-  return draftAny?.task_title || draftAny?.title || 'Untitled Task';
-};
 
 const getDocumentTitle = (draft: PlannerDraft | null): string => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -228,7 +224,7 @@ const renderDraftView = (
   refetch: () => void
 ): React.ReactElement => {
   if (isGeneratingStatus(draft.status)) {
-    return <GeneratingView currentStage={currentStage} taskTitle={getTaskTitle(draft)} />;
+    return <GeneratingView currentStage={currentStage} draft={draft} onRefetch={refetch} />;
   }
 
   if (isApprovedStatus(draft.status)) {

@@ -48,15 +48,16 @@ const formatDuration = (ms: number): string => {
 
 const StatusIcon: React.FC<{ status: string }> = ({ status }) => {
   if (status === 'completed') {
+    // Success is quiet - gray checkmark per design guidelines
     return (
-      <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
       </svg>
     );
   }
   if (status === 'in_progress') {
     return (
-      <svg className="animate-spin w-5 h-5" style={{ color: 'rgb(29, 138, 138)' }} viewBox="0 0 24 24">
+      <svg className="animate-spin w-4 h-4" style={{ color: 'rgb(29, 138, 138)' }} viewBox="0 0 24 24">
         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
       </svg>
@@ -64,26 +65,26 @@ const StatusIcon: React.FC<{ status: string }> = ({ status }) => {
   }
   if (status === 'failed') {
     return (
-      <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg className="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
       </svg>
     );
   }
   return (
-    <div className="w-5 h-5 rounded-full border-2 border-gray-300" />
+    <div className="w-4 h-4 rounded-full border-2 border-slate-300" />
   );
 };
 
 const getStatusBadgeClass = (status: string): string => {
   switch (status) {
     case 'completed':
-      return 'bg-green-100 text-green-800';
+      return 'text-slate-500'; // Success is quiet - gray per design guidelines
     case 'in_progress':
-      return 'bg-teal-100 text-teal-800';
+      return 'bg-teal-50 text-teal-700 border border-teal-200'; // Active state - Brand Teal
     case 'failed':
-      return 'bg-red-100 text-red-800';
+      return 'text-red-600'; // Failed - Red text per guidelines
     default:
-      return 'bg-gray-100 text-gray-600';
+      return 'text-slate-400'; // Pending - subtle
   }
 };
 
@@ -149,11 +150,11 @@ const ProgressBar: React.FC<ProgressBarProps> = ({ estimatedDuration, startedAt,
   const isOverEstimate = elapsed > estimatedDuration * 1.1;
 
   return (
-    <div className="ml-8 mt-3">
+    <div className="ml-6 mt-2">
       {/* Progress bar */}
-      <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+      <div className="w-full h-1.5 bg-slate-200 rounded-sm overflow-hidden">
         <div
-          className="h-full transition-all duration-500 ease-out rounded-full"
+          className="h-full transition-all duration-500 ease-out"
           style={{
             width: `${progress}%`,
             backgroundColor: isOverEstimate ? 'rgb(234, 179, 8)' : 'rgb(29, 138, 138)'
@@ -161,12 +162,12 @@ const ProgressBar: React.FC<ProgressBarProps> = ({ estimatedDuration, startedAt,
         />
       </div>
       {/* Progress info */}
-      <div className="flex justify-between mt-1.5 text-xs text-gray-500">
+      <div className="flex justify-between mt-1 text-xs text-slate-500">
         <span>
           {showComplete ? (
             'Complete'
           ) : isOverEstimate ? (
-            <span className="text-yellow-600">Taking longer than expected...</span>
+            <span className="text-amber-600">Taking longer than expected...</span>
           ) : (
             `~${formatDuration(remaining)} remaining`
           )}
@@ -211,34 +212,34 @@ const StepItem: React.FC<{
   const showIndeterminateProgress = step.status === 'in_progress' && !hasProgressData;
 
   return (
-    <div className="p-4">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-3">
+    <div className="py-3">
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="flex items-center gap-2">
           <StatusIcon status={step.status} />
-          <span className="font-medium text-gray-900">
+          <span className="text-sm font-medium text-slate-900">
             {STEP_LABELS[step.name] || step.name}
           </span>
         </div>
-        <span className={`text-xs px-2 py-1 rounded-full font-medium ${getStatusBadgeClass(step.status)}`}>
+        <span className={`text-xs px-2 py-0.5 rounded font-medium ${getStatusBadgeClass(step.status)}`}>
           {step.status === 'in_progress' ? 'In Progress' : step.status === 'pending' ? 'Pending' : step.status}
         </span>
       </div>
 
       {step.status === 'pending' && (
-        <div className="text-sm text-gray-400 ml-8 italic">
+        <div className="text-xs text-slate-400 ml-6 italic">
           {STEP_PENDING_DESCRIPTIONS[step.name] || 'Waiting to start...'}
         </div>
       )}
 
       {showIndeterminateProgress && (
-        <div className="ml-8 mt-3">
-          <div className="text-sm text-gray-500 mb-2 italic">
+        <div className="ml-6 mt-2">
+          <div className="text-xs text-slate-500 mb-1.5 italic">
             {STEP_DESCRIPTIONS[step.name] || 'Processing...'}
           </div>
           {/* Indeterminate progress bar animation */}
-          <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+          <div className="w-full h-1.5 bg-slate-200 rounded-sm overflow-hidden">
             <div
-              className="h-full rounded-full animate-pulse"
+              className="h-full animate-pulse"
               style={{
                 width: '30%',
                 backgroundColor: 'rgb(29, 138, 138)',
@@ -265,7 +266,7 @@ const StepItem: React.FC<{
       )}
 
       {step.status === 'failed' && (
-        <div className="text-sm text-red-600 ml-8 mt-1">
+        <div className="text-xs text-red-600 ml-6 mt-1">
           Generation failed. Please try again.
         </div>
       )}
@@ -301,23 +302,23 @@ export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, o
   };
 
   return (
-    <div className="mt-6 border rounded-lg overflow-hidden bg-gray-50">
-      <div className="p-4 bg-gray-100 font-semibold border-b flex items-center justify-between">
+    <div className="mt-4">
+      <div className="pb-3 border-b border-slate-200 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <svg className="w-5 h-5" style={{ color: 'rgb(29, 138, 138)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-4 h-4" style={{ color: 'rgb(29, 138, 138)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
           </svg>
-          Generation Progress
+          <span className="text-sm font-medium text-slate-700">Generation Progress</span>
         </div>
         {isGenerating && onAbort && (
           <button
             onClick={handleAbort}
             disabled={isAborting}
-            className="px-3 py-1 text-sm font-medium text-red-700 bg-red-100 hover:bg-red-200 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+            className="px-2 py-0.5 text-xs font-medium text-red-700 hover:text-red-800 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
           >
             {isAborting ? (
               <>
-                <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24">
+                <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                 </svg>
@@ -325,7 +326,7 @@ export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, o
               </>
             ) : (
               <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
                 Stop
@@ -334,7 +335,7 @@ export const GenerationProgress: React.FC<GenerationProgressProps> = ({ trace, o
           </button>
         )}
       </div>
-      <div className="divide-y">
+      <div className="divide-y divide-slate-100">
         {visibleSteps.map((step) => (
           <StepItem key={step.name} step={step} />
         ))}
