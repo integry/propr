@@ -255,8 +255,11 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
         // called during cleanup in worktreeOperations.ts after task completion.
 
         await cleanupExistingBranch(git, branchName);
-        await git.fetch('origin', resolvedBaseBranch);
-        logger.debug({ baseBranch: resolvedBaseBranch }, 'Fetched latest changes for base branch');
+        // Use explicit refspec to ensure remote tracking ref is updated
+        // Simple `git fetch origin <branch>` may only update FETCH_HEAD without
+        // updating refs/remotes/origin/<branch> in some git configurations
+        await git.raw(['fetch', 'origin', `+refs/heads/${resolvedBaseBranch}:refs/remotes/origin/${resolvedBaseBranch}`, '--prune']);
+        logger.debug({ baseBranch: resolvedBaseBranch }, 'Fetched latest changes for base branch with explicit refspec');
 
         await git.raw(['worktree', 'add', worktreePath, '-b', branchName, `origin/${resolvedBaseBranch}`]);
         await setupWorktreePermissions(worktreePath, branchName, issueId);

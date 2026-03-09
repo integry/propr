@@ -16,6 +16,7 @@
     "@propr/shared": "*",
     "@types/multer": "^2.0.0",
     "bullmq": "^5.53.0",
+    "chokidar": "^3.6.0",
     "connect-redis": "^9.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",

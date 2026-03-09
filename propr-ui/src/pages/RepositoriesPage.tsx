@@ -4,6 +4,13 @@ import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositori
 import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
 import { AddRepositoryForm } from '../components/AddRepositoryForm';
 import { RepositoryListItem } from '../components/RepositoryListItem';
+import { EmptyRepositoryState } from '../components/EmptyRepositoryState';
+import { RepositoriesLoadingState } from '../components/RepositoriesLoadingState';
+import { RepositoriesErrorState } from '../components/RepositoriesErrorState';
+import { SaveStatusIndicator } from '../components/SaveStatusIndicator';
+import { useSocket } from '../contexts/useSocket';
+import { IndexingUpdatePayload } from '@propr/shared';
+import { buildUpdatedStatus } from '../utils/indexingStatusHelpers';
 
 // Helper function to generate UUID
 const generateId = (): string => crypto.randomUUID();
@@ -13,6 +20,7 @@ type Repo = MonitoredRepo;
 
 const RepositoriesPage: React.FC = () => {
   useDocumentTitle('Repositories');
+  const { isConnected, subscribeToIndexingUpdates, unsubscribeFromIndexingUpdates, onIndexingUpdate } = useSocket();
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -64,15 +72,46 @@ const RepositoriesPage: React.FC = () => {
     }
   }, []);
 
+  // Handle indexing updates via WebSocket
+  const handleIndexingUpdate = useCallback((payload: IndexingUpdatePayload) => {
+    const key = getRepoStatusKey(payload.repository, undefined);
+
+    // If server confirms indexing status, clear the pending optimistic update
+    if (payload.phase === 'indexing' || payload.phase === 'files' || payload.phase === 'directories') {
+      pendingOptimisticUpdatesRef.current.delete(key);
+    }
+
+    setIndexingStatuses(prev => ({
+      ...prev,
+      [key]: buildUpdatedStatus(payload, prev[key])
+    }));
+  }, []);
+
+  // Load initial data on mount
   useEffect(() => {
     loadRepos();
     loadAvailableRepos();
     loadIndexingStatuses();
-
-    // Poll for indexing status updates every 3 seconds
-    const pollInterval = setInterval(loadIndexingStatuses, 3000);
-    return () => clearInterval(pollInterval);
   }, [loadRepos]);
+
+  // Subscribe to WebSocket indexing updates when connected
+  useEffect(() => {
+    if (!isConnected) return;
+
+    subscribeToIndexingUpdates();
+
+    return () => {
+      unsubscribeFromIndexingUpdates();
+    };
+  }, [isConnected, subscribeToIndexingUpdates, unsubscribeFromIndexingUpdates]);
+
+  // Register WebSocket event listener
+  useEffect(() => {
+    const unsubscribe = onIndexingUpdate(handleIndexingUpdate);
+    return () => {
+      unsubscribe();
+    };
+  }, [onIndexingUpdate, handleIndexingUpdate]);
 
   const loadAvailableRepos = async () => {
     try {
@@ -256,48 +295,19 @@ const RepositoriesPage: React.FC = () => {
   };
 
   if (loading && repos.length === 0) {
-    return (
-      <div className="p-4 sm:p-8">
-        <h2 className="text-gray-900 text-2xl font-semibold mb-4">Manage Monitored Repositories</h2>
-        <div className="flex items-center justify-center py-12">
-          <div className="flex items-center gap-3 text-gray-600">
-            <svg className="animate-spin h-5 w-5 text-primary-600" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-            </svg>
-            <span>Loading repositories...</span>
-          </div>
-        </div>
-      </div>
-    );
+    return <RepositoriesLoadingState />;
   }
 
   // Show error state if loading failed
   if (error && repos.length === 0 && !loading) {
     return (
-      <div className="p-4 sm:p-8">
-        <h2 className="text-gray-900 text-2xl font-semibold mb-4">Manage Monitored Repositories</h2>
-        <div className="p-6 bg-red-50 border border-red-200 rounded-md">
-          <div className="flex items-start gap-3">
-            <svg className="h-5 w-5 text-red-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            <div>
-              <h3 className="text-red-800 font-medium">Failed to load repositories</h3>
-              <p className="text-red-700 mt-1">{error}</p>
-              <button
-                onClick={() => {
-                  setError(null);
-                  loadRepos();
-                }}
-                className="mt-3 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md text-sm font-medium transition-colors"
-              >
-                Try Again
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
+      <RepositoriesErrorState
+        error={error}
+        onRetry={() => {
+          setError(null);
+          loadRepos();
+        }}
+      />
     );
   }
 
@@ -305,34 +315,7 @@ const RepositoriesPage: React.FC = () => {
     <div className="p-4 sm:p-8">
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-gray-900 text-2xl font-semibold">Manage Monitored Repositories</h2>
-        {/* Auto-save status indicator */}
-        <div className="flex items-center gap-2">
-          {saveStatus === 'saving' && (
-            <span className="flex items-center gap-1.5 text-sm text-gray-500">
-              <svg className="animate-spin h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-              </svg>
-              Saving...
-            </span>
-          )}
-          {saveStatus === 'saved' && (
-            <span className="flex items-center gap-1.5 text-sm text-green-600">
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-              Saved
-            </span>
-          )}
-          {saveStatus === 'error' && error && (
-            <span className="flex items-center gap-1.5 text-sm text-red-600">
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              {error}
-            </span>
-          )}
-        </div>
+        <SaveStatusIndicator status={saveStatus} error={error} />
       </div>
       <p className="text-gray-600 mb-4">
         Add repositories to monitor, enable/disable them, or remove them from the list. Changes are saved automatically.
@@ -361,48 +344,7 @@ const RepositoriesPage: React.FC = () => {
             onReindex={handleReindexRepo}
           />
         ))}
-        {repos.length === 0 && (
-          <div className="text-center py-16 px-6 bg-gradient-to-b from-gray-50 to-white border border-gray-200 rounded-lg shadow-sm">
-            <div className="flex justify-center mb-6">
-              <div className="w-20 h-20 rounded-full bg-primary-50 flex items-center justify-center">
-                <svg className="h-10 w-10 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 11v4m0 0l-2-2m2 2l2-2" />
-                </svg>
-              </div>
-            </div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-3">Welcome! Add Your First Repository</h3>
-            <p className="text-gray-600 mb-4 max-w-md mx-auto">
-              Repositories are the foundation of ProPR. Add a repository to enable AI-powered code reviews,
-              automated planning, and intelligent monitoring for your projects.
-            </p>
-            <div className="flex flex-col items-center gap-3">
-              <div className="flex items-center gap-4 text-sm text-gray-500">
-                <span className="flex items-center gap-1.5">
-                  <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  AI Code Reviews
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Smart Planning
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <svg className="h-4 w-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  Codebase Indexing
-                </span>
-              </div>
-              <p className="text-sm text-gray-400 mt-2">
-                Use the form above to select a repository from your GitHub account.
-              </p>
-            </div>
-          </div>
-        )}
+        {repos.length === 0 && <EmptyRepositoryState />}
       </div>
     </div>
   );

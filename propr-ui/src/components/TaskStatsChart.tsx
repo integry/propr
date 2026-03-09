@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { getTaskStats, TaskStatsResponse } from '../api/proprApi';
 import { VolumeChart, ProcessingTimeChart, StatusPieChart } from './TaskStatsChartParts';
+import { useSocket } from '../contexts/useSocket';
+import { TaskUpdatePayload } from '@propr/shared';
 
 // Color palette matching the dashboard's indigo/purple theme
 const STATUS_COLORS: Record<string, string> = {
@@ -48,6 +50,7 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   const [internalStats, setInternalStats] = useState<TaskStatsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(!externalData);
   const [error, setError] = useState<string | null>(null);
+  const { onTaskUpdate, isConnected } = useSocket();
 
   // Use external data if provided, otherwise fetch internally
   const stats = externalData !== undefined ? externalData : internalStats;
@@ -55,6 +58,21 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
   // Use external loading state if provided, otherwise use internal
   const isLoading = externalLoading !== undefined ? externalLoading : loading;
 
+  const fetchStats = useCallback(async (showLoading = true) => {
+    try {
+      if (showLoading) setLoading(true);
+      const fetchedData = await getTaskStats();
+      setInternalStats(fetchedData);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load statistics');
+      console.error('Error fetching task stats:', err);
+    } finally {
+      if (showLoading) setLoading(false);
+    }
+  }, []);
+
+  // Initial fetch
   useEffect(() => {
     // Skip fetching if external data is provided
     if (externalData !== undefined) {
@@ -62,24 +80,32 @@ const TaskStatsChart: React.FC<TaskStatsChartProps> = ({ data: externalData, mod
       return;
     }
 
-    const fetchStats = async () => {
-      try {
-        setLoading(true);
-        const fetchedData = await getTaskStats();
-        setInternalStats(fetchedData);
-        setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load statistics');
-        console.error('Error fetching task stats:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchStats();
-    const interval = setInterval(fetchStats, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [externalData]);
+  }, [externalData, fetchStats]);
+
+  // Handle task update from WebSocket - refresh stats when task state changes
+  const handleTaskUpdate = useCallback(async (payload: TaskUpdatePayload) => {
+    // Only refresh stats when task reaches a terminal state (affects aggregate stats)
+    const terminalStates = ['completed', 'failed'];
+    if (terminalStates.includes(payload.state?.toLowerCase() || '')) {
+      console.log('[TaskStatsChart] Received terminal task update via WebSocket');
+      await fetchStats(false);
+    }
+  }, [fetchStats]);
+
+  // Subscribe to WebSocket events for task updates
+  useEffect(() => {
+    // Skip if external data is provided
+    if (externalData !== undefined) return;
+    if (!isConnected) return;
+
+    // Listen for task updates
+    const unsubscribe = onTaskUpdate(handleTaskUpdate);
+
+    return () => {
+      unsubscribe();
+    };
+  }, [externalData, isConnected, onTaskUpdate, handleTaskUpdate]);
 
   // Loading skeleton for distribution mode (donut chart)
   const renderDistributionSkeleton = () => (
