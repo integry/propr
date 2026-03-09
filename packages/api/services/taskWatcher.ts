@@ -17,6 +17,8 @@ export interface TaskWatcherInfo {
   subscriberCount: number;
   /** Number of events last sent - used to track which events have been broadcast */
   lastSentEventCount: number;
+  /** Whether we're watching for file creation (true) or file changes (false) */
+  watchingForCreation: boolean;
 }
 
 /** Dependencies for task watching */
@@ -72,12 +74,60 @@ export class TaskWatcherManager {
 
     // Check if file exists
     const exists = await fs.pathExists(conversationPath);
+
     if (!exists) {
-      console.log(`[TaskWatcher] Claude log file not found for task ${taskId}: ${conversationPath}`);
+      // File doesn't exist yet - watch the directory for file creation
+      console.log(`[TaskWatcher] Claude log file not found for task ${taskId}, watching for creation: ${conversationPath}`);
+
+      const dirPath = path.dirname(conversationPath);
+      const fileName = path.basename(conversationPath);
+
+      // Ensure directory exists
+      await fs.ensureDir(dirPath);
+
+      // Watch the directory for the file to be created
+      const watcher = chokidar.watch(dirPath, {
+        persistent: true,
+        ignoreInitial: true,
+        depth: 0, // Only watch the directory itself, not subdirectories
+        awaitWriteFinish: {
+          stabilityThreshold: 100,
+          pollInterval: 50
+        }
+      });
+
+      watcher.on('add', async (addedPath) => {
+        // Check if this is the file we're waiting for
+        if (path.basename(addedPath) === fileName) {
+          console.log(`[TaskWatcher] Claude log file created for task ${taskId}, switching to file watcher`);
+
+          // File has been created - switch to watching the file directly
+          await this.switchToFileWatcher(taskId, conversationPath, sessionId);
+
+          // Send initial update now that file exists
+          await this.sendTaskLiveUpdate(taskId, true);
+        }
+      });
+
+      watcher.on('error', (error) => {
+        console.error(`[TaskWatcher] Directory watcher error for task ${taskId}:`, error);
+      });
+
+      this.taskWatchers.set(taskId, {
+        watcher,
+        sessionId,
+        taskId,
+        lastSize: 0,
+        subscriberCount: 1,
+        lastSentEventCount: 0,
+        watchingForCreation: true
+      });
+
+      console.log(`[TaskWatcher] Started watching directory for Claude log creation for task ${taskId}`);
       return;
     }
 
-    // Create file watcher using chokidar
+    // File exists - watch it directly for changes
     const watcher = chokidar.watch(conversationPath, {
       persistent: true,
       ignoreInitial: true,
@@ -106,10 +156,54 @@ export class TaskWatcherManager {
       taskId,
       lastSize: initialSize,
       subscriberCount: 1,
-      lastSentEventCount: 0
+      lastSentEventCount: 0,
+      watchingForCreation: false
     });
 
     console.log(`[TaskWatcher] Started watching Claude log for task ${taskId}`);
+  }
+
+  /**
+   * Switch from watching directory (for file creation) to watching the file directly.
+   * Called when the file is created after we started watching for it.
+   */
+  private async switchToFileWatcher(taskId: string, conversationPath: string, sessionId: string): Promise<void> {
+    const existing = this.taskWatchers.get(taskId);
+    if (!existing) return;
+
+    // Close the directory watcher
+    await existing.watcher.close();
+
+    // Create a new watcher for the file itself
+    const watcher = chokidar.watch(conversationPath, {
+      persistent: true,
+      ignoreInitial: true,
+      awaitWriteFinish: {
+        stabilityThreshold: 100,
+        pollInterval: 50
+      }
+    });
+
+    watcher.on('change', async () => {
+      await this.sendTaskLiveUpdate(taskId);
+    });
+
+    watcher.on('error', (error) => {
+      console.error(`[TaskWatcher] Watcher error for task ${taskId}:`, error);
+    });
+
+    // Update the watcher info
+    this.taskWatchers.set(taskId, {
+      watcher,
+      sessionId,
+      taskId,
+      lastSize: 0,
+      subscriberCount: existing.subscriberCount,
+      lastSentEventCount: 0,
+      watchingForCreation: false
+    });
+
+    console.log(`[TaskWatcher] Switched to file watcher for task ${taskId}`);
   }
 
   /**
