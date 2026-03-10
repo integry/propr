@@ -194,18 +194,18 @@ const computeSummaryMessage = (filteredEvents: LiveEvent[], lastThought: string 
     const event = filteredEvents[i];
     if (event.type === 'tool_result') {
       const resultStr = formatToolResult(event.result);
-      const truncated = resultStr.slice(0, 60).replace(/\n/g, ' ');
-      return `Result: ${truncated}${resultStr.length > 60 ? '...' : ''}`;
+      const truncated = resultStr.slice(0, 150).replace(/\n/g, ' ');
+      return `Result: ${truncated}${resultStr.length > 150 ? '...' : ''}`;
     }
     if (event.type === 'tool_use' && event.toolName) {
       if (event.input?.command) {
-        return `> ${event.input.command.slice(0, 50)}${event.input.command.length > 50 ? '...' : ''}`;
+        return `> ${event.input.command.slice(0, 150)}${event.input.command.length > 150 ? '...' : ''}`;
       }
       return `Exec: ${event.toolName}`;
     }
   }
 
-  return lastThought ? `Thinking: ${lastThought.substring(0, 60)}${lastThought.length > 60 ? '...' : ''}` : '';
+  return lastThought ? `Thinking: ${lastThought.substring(0, 150)}${lastThought.length > 150 ? '...' : ''}` : '';
 };
 
 // Compute events with their previous tool_use reference for context
@@ -269,19 +269,19 @@ const ExecutionEventLog: React.FC<ExecutionEventLogProps> = ({
         }`}
         onClick={onToggleCollapse}
       >
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 flex-shrink-0">
           <span className={`font-mono text-sm font-bold ${collapsed ? 'text-slate-500' : 'text-zinc-400'}`}>{'>_'}</span>
           <span className={`font-mono text-[11px] font-bold uppercase tracking-wider ${collapsed ? 'text-slate-600' : 'text-white'}`}>
             {collapsed ? 'EXECUTION LOG' : 'TERMINAL OUTPUT'} ({events.length})
           </span>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 justify-end min-w-0 flex-1 pl-4">
           {collapsed && summaryMessage && (
-            <span className="text-[11px] text-slate-500 truncate max-w-[240px] font-mono">
+            <span className="text-[10px] text-slate-500 truncate text-right font-mono">
               {summaryMessage}
             </span>
           )}
-          <span className={collapsed ? 'text-slate-500' : 'text-zinc-400'}>
+          <span className={`flex-shrink-0 ${collapsed ? 'text-slate-500' : 'text-zinc-400'}`}>
             {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </span>
         </div>
