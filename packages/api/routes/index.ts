@@ -15,3 +15,4 @@ export { createRelevanceRoutes } from './relevanceRoutes.js';
 export { createAgentRoutes } from './agentRoutes.js';
 export { createStatsRoutes } from './statsRoutes.js';
 export { createSummaryBrowserRoutes } from './summaryBrowserRoutes.js';
+export { createRepoChatRoutes } from './repoChatRoutes.js';

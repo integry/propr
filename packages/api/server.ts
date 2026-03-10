@@ -26,6 +26,7 @@ import {
   createAgentRoutes,
   createStatsRoutes,
   createSummaryBrowserRoutes,
+  createRepoChatRoutes,
   attachmentUpload
 } from './routes/index.js';
 import { checkAndExecuteDelayedReindex } from './routes/configHelpers.js';
@@ -176,6 +177,7 @@ function setupRoutes(): void {
   const agentRoutes = createAgentRoutes();
   const statsRoutes = createStatsRoutes({ db });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
+  const repoChatRoutes = createRepoChatRoutes();
 
   app.get('/api/status', statusRoutes.getStatus);
   app.get('/api/tasks', taskRoutes.getTasks);
@@ -273,6 +275,9 @@ function setupRoutes(): void {
   app.get('/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree);
   app.get('/api/summaries/:owner/:repo/tree/*', summaryBrowserRoutes.getDirectoryTree);
   app.get('/api/summaries/:owner/:repo/summary/*', summaryBrowserRoutes.getPathSummary);
+
+  // Repository chat endpoint for LLM integration
+  app.post('/api/repos/chat', repoChatRoutes.postChat);
 
   setupWebhookRoute();
 }
