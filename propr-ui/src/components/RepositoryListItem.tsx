@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { IndexingStatusIndicator } from './IndexingStatusIndicator';
+import { DeleteRepoDialog } from './DeleteRepoDialog';
 import { RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { getRepoStatusKey } from '../api/repoIndexingApi';
 
@@ -35,7 +36,7 @@ interface RepositoryListItemProps {
   repo: MonitoredRepo;
   indexingStatuses: Record<string, RepositoryIndexingStatus>;
   onToggle: (repoId: string) => void;
-  onRemove: (repoId: string) => void;
+  onRemove: (repoId: string) => void | Promise<void>;
   onStopIndexing: (repoName: string, baseBranch?: string) => void;
   onReindex: (repoName: string, baseBranch?: string) => void;
 }
@@ -48,6 +49,27 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
   onStopIndexing,
   onReindex,
 }) => {
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleDeleteClick = () => {
+    setIsDeleteDialogOpen(true);
+  };
+
+  const handleDeleteClose = () => {
+    setIsDeleteDialogOpen(false);
+  };
+
+  const handleDeleteConfirm = async () => {
+    setIsDeleting(true);
+    try {
+      await onRemove(repo.id);
+    } finally {
+      setIsDeleting(false);
+      setIsDeleteDialogOpen(false);
+    }
+  };
+
   return (
     <div className="border-b border-slate-100 py-4 first:pt-0">
       {/* --- Repository Header: [Name/Alias] [Branch Chip] ... [Toggle] [Browse] [Delete] --- */}
@@ -97,7 +119,7 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
 
           {/* Delete Button */}
           <button
-            onClick={() => onRemove(repo.id)}
+            onClick={handleDeleteClick}
             className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
             title="Remove repository"
           >
@@ -105,6 +127,14 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           </button>
         </div>
       </div>
+
+      <DeleteRepoDialog
+        isOpen={isDeleteDialogOpen}
+        repoName={repo.name}
+        onClose={handleDeleteClose}
+        onConfirm={handleDeleteConfirm}
+        isLoading={isDeleting}
+      />
     </div>
   );
 };
