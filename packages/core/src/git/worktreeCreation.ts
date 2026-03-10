@@ -212,8 +212,11 @@ export async function createWorktreeFromExistingBranch(localRepoPath: string, br
 
         logger.info({ localRepoPath, worktreePath, branchName }, 'Creating Git worktree from existing branch...');
 
-        await git.fetch('origin', branchName);
-        logger.debug({ branchName }, 'Fetched latest changes for branch');
+        // Use explicit refspec to ensure remote tracking ref is updated
+        // Simple `git fetch origin <branch>` may only update FETCH_HEAD without
+        // updating refs/remotes/origin/<branch> in some git configurations
+        await git.raw(['fetch', 'origin', `+refs/heads/${branchName}:refs/remotes/origin/${branchName}`, '--prune']);
+        logger.debug({ branchName }, 'Fetched latest changes for branch with explicit refspec');
 
         await createWorktreeFromRemote(git, worktreePath, branchName, localRepoPath);
 

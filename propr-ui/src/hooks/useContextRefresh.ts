@@ -93,12 +93,19 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const prevViewSettingsRef = useRef<{ granularity: Granularity; contextLevel: number; generationModel: string | null } | null>(null);
   // Track isContextStale without triggering re-renders
   const isContextStaleRef = useRef<boolean>(false);
+  // Track if we just completed a fetch to prevent immediate re-trigger
+  const justFetchedRef = useRef<boolean>(false);
+  // Track loading state for use in callbacks
+  const isLoadingRef = useRef<boolean>(false);
 
   // Keep config ref up to date
   useEffect(() => { configRef.current = config; }, [config]);
 
   // Keep isContextStaleRef in sync with state
   useEffect(() => { isContextStaleRef.current = isContextStale; }, [isContextStale]);
+
+  // Keep isLoadingRef in sync with preview state
+  useEffect(() => { isLoadingRef.current = preview.isLoading; }, [preview.isLoading]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -164,6 +171,9 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         compress: currentConfig.compress
       };
 
+      // Mark that we just fetched to prevent source change effect from re-triggering
+      justFetchedRef.current = true;
+
       setPreview({ isLoading: false, data: result, error: null, lastSynced: new Date() });
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
@@ -186,8 +196,10 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     sourceRefreshTimerRef.current = setTimeout(() => {
       clearCountdown();
       setIsContextStale(false);
-      // Trigger the fetch when countdown completes
-      fetchPreview();
+      // Only trigger fetch if not already loading (use ref for current state)
+      if (!isLoadingRef.current) {
+        fetchPreview();
+      }
     }, SOURCE_REFRESH_DELAY);
   }, [clearCountdown, fetchPreview]);
 
@@ -206,6 +218,12 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   // Source changes - start countdown (unless paused)
   useEffect(() => {
     if (!initialSyncDone) return;
+
+    // Skip if we just completed a fetch - prevents immediate re-trigger loop
+    if (justFetchedRef.current) {
+      justFetchedRef.current = false;
+      return;
+    }
 
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
 
@@ -232,7 +250,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
 
     if (!isStrictlyStale) {
       clearCountdown();
-      if (isContextStale) setIsContextStale(false);
+      // Use ref to avoid triggering effect re-run
+      if (isContextStaleRef.current) setIsContextStale(false);
       return;
     }
 
@@ -247,7 +266,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
 
     debounceTimerRef.current = setTimeout(() => startCountdown(), DEBOUNCE_DELAY);
     return () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); };
-  }, [config.prompt, config.baseBranch, config.files.length, config.compress, initialSyncDone, isPaused, isContextStale, clearCountdown, startCountdown]);
+  // Note: isContextStale intentionally not in deps - we use isContextStaleRef to check without re-triggering
+  }, [config.prompt, config.baseBranch, config.files.length, config.compress, initialSyncDone, isPaused, clearCountdown, startCountdown]);
 
   // View changes - fetch immediately (granularity, contextLevel, generationModel)
   // Only triggers when actual view settings change, not when isContextStale transitions

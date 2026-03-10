@@ -15,6 +15,12 @@ export const PLAN_STEP_UPDATE = 'plan:step:update';
 /** Event fired when indexing progress changes */
 export const INDEXING_UPDATE = 'indexing:update';
 
+/** Event fired when live task details (Claude log) changes */
+export const TASK_LIVE_UPDATE = 'task:live:update';
+
+/** Event fired when queue statistics change */
+export const QUEUE_STATS_UPDATE = 'queue:stats:update';
+
 /** Redis channel names for pub/sub */
 export const REDIS_CHANNELS = {
   /** Channel for all task-related events */
@@ -22,7 +28,11 @@ export const REDIS_CHANNELS = {
   /** Channel for draft/plan generation events */
   DRAFTS: 'propr:events:drafts',
   /** Channel for indexing events */
-  INDEXING: 'propr:events:indexing'
+  INDEXING: 'propr:events:indexing',
+  /** Channel for live task details (Claude log updates) */
+  LIVE_DETAILS: 'propr:events:live',
+  /** Channel for queue statistics updates */
+  QUEUE_STATS: 'propr:events:queue'
 } as const;
 
 /** Event payload for task updates */
@@ -70,9 +80,67 @@ export interface IndexingUpdatePayload {
   timestamp: string;
 }
 
+/** Event for a single parsed conversation event from Claude log */
+export interface ConversationEvent {
+  type: 'thought' | 'tool_use' | 'tool_result';
+  content?: string;
+  toolName?: string;
+  input?: Record<string, unknown>;
+  id?: string;
+  toolUseId?: string;
+  result?: unknown;
+  isError?: boolean;
+  isSubagentSummary?: boolean;
+  timestamp: string;
+}
+
+/** Todo item from Claude's TodoWrite calls */
+export interface TodoItem {
+  status: string;
+  content: string;
+}
+
+/** Token usage information */
+export interface TokenUsageInfo {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+}
+
+/** Event payload for live task details updates */
+export interface TaskLiveUpdatePayload {
+  eventType: typeof TASK_LIVE_UPDATE;
+  taskId: string;
+  events: ConversationEvent[];
+  todos: TodoItem[];
+  currentTask: string | null;
+  tokenUsage: TokenUsageInfo | null;
+  timestamp: string;
+}
+
+/** Queue statistics data */
+export interface QueueStatsData {
+  waiting: number;
+  active: number;
+  completed: number;
+  failed: number;
+  delayed: number;
+  total: number;
+}
+
+/** Event payload for queue statistics updates */
+export interface QueueStatsUpdatePayload {
+  eventType: typeof QUEUE_STATS_UPDATE;
+  stats: QueueStatsData;
+  timestamp: string;
+}
+
 /** Union type for all event payloads */
 export type EventPayload =
   | TaskUpdatePayload
   | DraftUpdatePayload
   | PlanStepUpdatePayload
-  | IndexingUpdatePayload;
+  | IndexingUpdatePayload
+  | TaskLiveUpdatePayload
+  | QueueStatsUpdatePayload;

@@ -88,7 +88,8 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
 
         repoValidation = await validateRepositoryInfo({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number }, octokit, correlationId);
         if (!repoValidation.isValid) {
-            throw new Error('Repository validation failed for dispatcher.');
+            const errorMessage = repoValidation.error || 'Repository validation failed';
+            throw new Error(errorMessage);
         }
 
         const defaultBranch = repoValidation.repoData?.defaultBranch || 'main';
@@ -174,10 +175,19 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
                     repoPayload: repoValidation.repoData as unknown as Record<string, unknown>
                 };
 
-                await issueQueue.add(jobName, newJobData);
+                // Deterministic jobId for deduplication - prevents duplicate child jobs
+                // when multiple webhook events trigger the dispatcher for the same issue
+                const childJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentModel.agentAlias}-${agentModel.model}-${base.branch}`;
+
+                await issueQueue.add(jobName, newJobData, {
+                    jobId: childJobId,
+                    removeOnComplete: true,
+                    removeOnFail: true,
+                });
                 jobsEnqueued++;
                 correlatedLogger.info({
                     jobId,
+                    childJobId,
                     issue: issueRef.number,
                     base: base.branch,
                     agent: agentModel.agentAlias,

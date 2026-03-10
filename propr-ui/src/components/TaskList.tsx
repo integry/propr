@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getTasks, getRepositoryStats } from '../api/proprApi';
+import { useSocket } from '../contexts/useSocket';
 import type { TaskListProps, LoadConfig } from './TaskList/types';
 import { Filters } from './TaskList/Filters';
 import { Pagination } from './TaskList/Pagination';
@@ -23,6 +24,7 @@ import { useDebouncedCallback } from './TaskList/hooks';
 const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFilters = false }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { onTaskUpdate, isConnected } = useSocket();
 
   // Determine whether to use URL-based state (only when filters are shown - Tasks page)
   const useUrlState = !hideFilters;
@@ -143,29 +145,44 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   // Debounce search query
   useDebouncedCallback(searchQuery, handleSearchChange, 400);
 
+  // Memoize fetchTasks to allow WebSocket handler to call it
+  const fetchTasks = useCallback(async (loadConfig?: LoadConfig) => {
+    try {
+      setLoading(loadConfig?.setLoadingState ?? true);
+      const offset = currentPage * tasksPerPage;
+      // Fetch more tasks if we are doing grouping, as grouping reduces visible items
+      // But for now respecting the limit passed to component to avoid breaking pagination logic entirely
+      // Ideally pagination should be group-aware or fetch more to fill the page
+      const data = await getTasks(filter, tasksPerPage * 2, offset, repoFilter, debouncedSearch);
+      setTasks(data.tasks || []);
+      setTotalTasks(data.total || 0);
+    } catch (err) {
+      setError((err as Error).message);
+      console.error('Error fetching tasks:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [filter, tasksPerPage, currentPage, repoFilter, debouncedSearch]);
+
+  // Initial fetch when dependencies change
   useEffect(() => {
-    const fetchTasks = async (loadConfig?: LoadConfig) => {
-      try {
-        setLoading(loadConfig?.setLoadingState ?? true);
-        const offset = currentPage * tasksPerPage;
-        // Fetch more tasks if we are doing grouping, as grouping reduces visible items
-        // But for now respecting the limit passed to component to avoid breaking pagination logic entirely
-        // Ideally pagination should be group-aware or fetch more to fill the page
-        const data = await getTasks(filter, tasksPerPage * 2, offset, repoFilter, debouncedSearch);
-        setTasks(data.tasks || []);
-        setTotalTasks(data.total || 0);
-      } catch (err) {
-        setError((err as Error).message);
-        console.error('Error fetching tasks:', err);
-      } finally {
-        setLoading(false);
-      }
+    fetchTasks({ setLoadingState: true });
+  }, [fetchTasks]);
+
+  // Subscribe to WebSocket task updates for real-time refresh
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const handleTaskUpdate = () => {
+      // Refresh task list without showing loading spinner
+      fetchTasks({ setLoadingState: false });
     };
 
-    fetchTasks({ setLoadingState: true });
-    const interval = setInterval(() => fetchTasks({ setLoadingState: false }), 5000);
-    return () => clearInterval(interval);
-  }, [filter, tasksPerPage, currentPage, repoFilter, debouncedSearch]);
+    const unsubscribe = onTaskUpdate(handleTaskUpdate);
+    return () => {
+      unsubscribe();
+    };
+  }, [isConnected, onTaskUpdate, fetchTasks]);
 
   const groupedTasks = useMemo(() => groupTasksForDisplay(tasks), [tasks]);
 

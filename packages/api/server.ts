@@ -330,8 +330,16 @@ async function start(): Promise<void> {
     setupRoutes();
 
     // Initialize Socket.IO with the HTTP server and shared CORS configuration
-    initSocketService(httpServer, validateCorsOrigin);
+    const socketService = initSocketService(httpServer, validateCorsOrigin);
     console.log('[WebSocket] Socket.IO server initialized');
+
+    // Initialize queue features for real-time broadcasting
+    socketService.initQueueFeatures({
+      taskQueue,
+      redisClient,
+      db
+    });
+    console.log('[WebSocket] Queue features initialized for real-time updates');
 
     try { await configManager.ensureConfigRepoExists(); } catch (error) { console.warn('Failed to initialize config:', (error as Error).message); }
     try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }

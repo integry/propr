@@ -298,10 +298,18 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     fileScores
   };
 
+  // Store cache metadata without the large repomixContext (it's already in generated_context)
+  // This prevents context_config from becoming too large to spread/enumerate
+  const cacheMetadata = {
+    contentHash, autoFilePaths, includedFiles,
+    repomixTokens: contextData.repomixTokens, smartSummaryTokens, fileTokenCounts, cachedMaxTokenLimit: maxTokenLimit,
+    fileScores
+  };
+
   await db('task_drafts').where({ draft_id: draftId }).update({
     initial_prompt: prompt,
     name: truncateToSentences(prompt),
-    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, compress, manualFiles, autoFiles: autoFilePaths, contextRepositories, contextCache: newCache }),
+    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, compress, manualFiles, autoFiles: autoFilePaths, contextRepositories, contextCache: cacheMetadata }),
     generated_context: fullContext,
     updated_at: db.fn.now()
   });
