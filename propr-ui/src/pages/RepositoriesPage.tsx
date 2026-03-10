@@ -2,12 +2,11 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
-import { AddRepositoryForm } from '../components/AddRepositoryForm';
+import { AddRepositoryModal } from '../components/AddRepositoryModal';
 import { RepositoryListItem } from '../components/RepositoryListItem';
 import { EmptyRepositoryState } from '../components/EmptyRepositoryState';
 import { RepositoriesLoadingState } from '../components/RepositoriesLoadingState';
 import { RepositoriesErrorState } from '../components/RepositoriesErrorState';
-import { SaveStatusIndicator } from '../components/SaveStatusIndicator';
 import { useSocket } from '../contexts/useSocket';
 import { IndexingUpdatePayload } from '@propr/shared';
 import { buildUpdatedStatus } from '../utils/indexingStatusHelpers';
@@ -30,6 +29,7 @@ const RepositoriesPage: React.FC = () => {
   const [availableRepos, setAvailableRepos] = useState<string[]>([]);
   const [indexingStatuses, setIndexingStatuses] = useState<Record<string, RepositoryIndexingStatus>>({});
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Track repositories with pending optimistic updates to prevent server responses from overwriting them
   const pendingOptimisticUpdatesRef = useRef<Set<string>>(new Set());
@@ -275,6 +275,7 @@ const RepositoriesPage: React.FC = () => {
     setNewRepo('');
     setNewAlias('');
     setNewBaseBranch('');
+    setIsModalOpen(false);
     performAutoSave(newRepos);
   };
 
@@ -294,45 +295,41 @@ const RepositoriesPage: React.FC = () => {
     performAutoSave(newRepos);
   };
 
-  if (loading && repos.length === 0) {
-    return <RepositoriesLoadingState />;
-  }
+  const handleOpenModal = () => {
+    setNewRepo('');
+    setNewAlias('');
+    setNewBaseBranch('');
+    setIsModalOpen(true);
+  };
 
-  // Show error state if loading failed
-  if (error && repos.length === 0 && !loading) {
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setNewRepo('');
+    setNewAlias('');
+    setNewBaseBranch('');
+  };
+
+  // Render loading state within App Shell
+  const renderContent = () => {
+    if (loading && repos.length === 0) {
+      return <RepositoriesLoadingState />;
+    }
+
+    // Show error state if loading failed
+    if (error && repos.length === 0 && !loading) {
+      return (
+        <RepositoriesErrorState
+          error={error}
+          onRetry={() => {
+            setError(null);
+            loadRepos();
+          }}
+        />
+      );
+    }
+
     return (
-      <RepositoriesErrorState
-        error={error}
-        onRetry={() => {
-          setError(null);
-          loadRepos();
-        }}
-      />
-    );
-  }
-
-  return (
-    <div className="p-4 sm:p-8">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-gray-900 text-2xl font-semibold">Manage Monitored Repositories</h2>
-        <SaveStatusIndicator status={saveStatus} error={error} />
-      </div>
-      <p className="text-gray-600 mb-4">
-        Add repositories to monitor, enable/disable them, or remove them from the list. Changes are saved automatically.
-      </p>
-      
-      <AddRepositoryForm
-        newRepo={newRepo}
-        newAlias={newAlias}
-        newBaseBranch={newBaseBranch}
-        availableRepos={availableRepos}
-        onRepoChange={setNewRepo}
-        onAliasChange={setNewAlias}
-        onBaseBranchChange={setNewBaseBranch}
-        onAdd={handleAddRepo}
-      />
-
-      <div className="flex flex-col gap-2 mb-6">
+      <div className="flex flex-col gap-2">
         {repos.map(repo => (
           <RepositoryListItem
             key={repo.id}
@@ -345,6 +342,81 @@ const RepositoriesPage: React.FC = () => {
           />
         ))}
         {repos.length === 0 && <EmptyRepositoryState />}
+      </div>
+    );
+  };
+
+  return (
+    <div className="flex flex-col h-full bg-white">
+      {/* Anchored Header */}
+      <div className="flex-shrink-0 h-16 border-b border-gray-200 px-6 flex items-center justify-between">
+        <h2 className="text-gray-900 text-xl font-semibold">Repositories</h2>
+        <button
+          onClick={handleOpenModal}
+          className="bg-primary-600 hover:bg-primary-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+        >
+          + Add Repository
+        </button>
+      </div>
+
+      {/* Main Content Area - Flexible Canvas */}
+      <div className="flex-1 min-h-0 overflow-y-auto p-6">
+        {renderContent()}
+      </div>
+
+      {/* Add Repository Modal */}
+      <AddRepositoryModal
+        isOpen={isModalOpen}
+        newRepo={newRepo}
+        newAlias={newAlias}
+        newBaseBranch={newBaseBranch}
+        availableRepos={availableRepos}
+        onRepoChange={setNewRepo}
+        onAliasChange={setNewAlias}
+        onBaseBranchChange={setNewBaseBranch}
+        onAdd={handleAddRepo}
+        onClose={handleCloseModal}
+      />
+
+      {/* Anchored Footer - Auto-save Status */}
+      <div className="flex-shrink-0 border-t border-gray-200 px-6 py-3 bg-gray-50">
+        <div className="flex items-center justify-between">
+          {/* Left Side - Status Message */}
+          <div className="flex items-center gap-2">
+            {saveStatus === 'saving' && (
+              <span className="flex items-center gap-1.5 text-xs text-gray-500 font-mono">
+                <svg className="animate-spin h-3 w-3 text-gray-400" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                Saving changes...
+              </span>
+            )}
+            {saveStatus === 'saved' && (
+              <span className="flex items-center gap-1.5 text-xs text-gray-500 font-mono">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                Changes auto-saved
+              </span>
+            )}
+            {saveStatus === 'error' && error && (
+              <span className="flex items-center gap-1.5 text-xs text-red-600 font-mono">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+                {error}
+              </span>
+            )}
+            {saveStatus === 'idle' && (
+              <span className="flex items-center gap-1.5 text-xs text-gray-400 font-mono">
+                <span className="w-1.5 h-1.5 rounded-full bg-gray-300"></span>
+                All changes saved
+              </span>
+            )}
+          </div>
+
+          {/* Right Side - Reserved for action buttons if needed */}
+          <div className="flex items-center gap-2">
+            {/* Action buttons would go here if needed */}
+          </div>
+        </div>
       </div>
     </div>
   );
