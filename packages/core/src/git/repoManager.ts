@@ -25,6 +25,89 @@ async function getRepoPath(owner: string, repoName: string): Promise<string> {
 }
 
 /**
+ * Check if a repository is empty (has no commits) and create a seed commit if needed.
+ * This allows the system to work with newly created empty repositories.
+ */
+async function ensureSeedCommitIfEmpty(
+    git: SimpleGit,
+    localRepoPath: string,
+    owner: string,
+    repoName: string,
+    defaultBranch: string,
+    authToken: string,
+    repoUrl: string
+): Promise<boolean> {
+    try {
+        // Check if the repo has any commits
+        const logResult = await git.raw(['rev-list', '-n', '1', '--all']).catch(() => '');
+        if (logResult.trim()) {
+            // Repository has commits, no need for seed
+            return false;
+        }
+
+        logger.info({ repo: `${owner}/${repoName}` }, 'Empty repository detected, creating seed commit...');
+
+        // Create a basic README.md
+        const readmePath = path.join(localRepoPath, 'README.md');
+        const readmeContent = `# ${repoName}
+
+Welcome to ${repoName}! This repository was initialized automatically.
+
+## Getting Started
+
+Add your project files and documentation here.
+`;
+        await fs.writeFile(readmePath, readmeContent);
+
+        // Create a basic .gitignore
+        const gitignorePath = path.join(localRepoPath, '.gitignore');
+        const gitignoreContent = `# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+dist/
+build/
+*.log
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+`;
+        await fs.writeFile(gitignorePath, gitignoreContent);
+
+        // Configure git user for the commit
+        await git.addConfig('user.email', 'bot@propr.dev');
+        await git.addConfig('user.name', 'ProPR Bot');
+
+        // Create the default branch and commit
+        await git.checkoutLocalBranch(defaultBranch);
+        await git.add([readmePath, gitignorePath]);
+        await git.commit('Initial commit\n\nRepository initialized by ProPR to enable AI-assisted development.');
+
+        // Push the seed commit to origin
+        await setupAuthenticatedRemote(git, repoUrl, authToken);
+        await git.push(['--set-upstream', 'origin', defaultBranch]);
+
+        logger.info({ repo: `${owner}/${repoName}`, branch: defaultBranch }, 'Seed commit created and pushed successfully');
+        return true;
+    } catch (error) {
+        logger.error({ repo: `${owner}/${repoName}`, error: (error as Error).message }, 'Failed to create seed commit');
+        throw new Error(`Failed to initialize empty repository ${owner}/${repoName}: ${(error as Error).message}`);
+    }
+}
+
+/**
  * Check if a repository has active worktrees that would prevent re-cloning.
  */
 async function hasActiveWorktrees(localRepoPath: string): Promise<boolean> {
@@ -119,20 +202,28 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
             }
 
             const git: SimpleGit = simpleGit(localRepoPath);
-            // Use specified baseBranch if provided, otherwise detect default branch
-            let targetBranch = baseBranch;
-            if (!targetBranch) {
-                targetBranch = await detectDefaultBranch(git, owner, repoName);
+
+            // Use specified baseBranch if provided, default to 'main' for empty repos
+            let targetBranch = baseBranch || 'main';
+
+            // Check if repository is empty and create seed commit if needed
+            const wasEmpty = await ensureSeedCommitIfEmpty(git, localRepoPath, owner, repoName, targetBranch, authToken, repoUrl);
+
+            if (!wasEmpty) {
+                // Repository has commits, detect default branch if not specified
+                if (!baseBranch) {
+                    targetBranch = await detectDefaultBranch(git, owner, repoName);
+                }
+
+                try {
+                    await git.checkout(targetBranch);
+                    logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!baseBranch }, 'Checked out target branch in main repository');
+                } catch (checkoutError) {
+                    logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Failed to checkout target branch, continuing anyway');
+                }
             }
 
-            try {
-                await git.checkout(targetBranch);
-                logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!baseBranch }, 'Checked out target branch in main repository');
-            } catch (checkoutError) {
-                logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Failed to checkout target branch, continuing anyway');
-            }
-
-            logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Repository updated successfully');
+            logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath, wasEmpty }, 'Repository updated successfully');
 
         } else {
             logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Cloning repository...');
@@ -157,27 +248,35 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
 
             const repoGit: SimpleGit = simpleGit(localRepoPath);
             await configureGcWorktreePrune(repoGit);
-            try {
-                await repoGit.raw(['remote', 'set-head', 'origin', '--auto']);
-                logger.debug({ repo: `${owner}/${repoName}` }, 'Set remote HEAD to auto-detect default branch');
-            } catch (headError) {
-                logger.debug({ repo: `${owner}/${repoName}`, error: (headError as Error).message }, 'Failed to set remote HEAD, continuing anyway');
+
+            // Use specified baseBranch if provided, default to 'main' for empty repos
+            let targetBranch = baseBranch || 'main';
+
+            // Check if repository is empty and create seed commit if needed
+            const wasEmpty = await ensureSeedCommitIfEmpty(repoGit, localRepoPath, owner, repoName, targetBranch, authToken, repoUrl);
+
+            if (!wasEmpty) {
+                // Repository has commits, set remote HEAD and detect default branch
+                try {
+                    await repoGit.raw(['remote', 'set-head', 'origin', '--auto']);
+                    logger.debug({ repo: `${owner}/${repoName}` }, 'Set remote HEAD to auto-detect default branch');
+                } catch (headError) {
+                    logger.debug({ repo: `${owner}/${repoName}`, error: (headError as Error).message }, 'Failed to set remote HEAD, continuing anyway');
+                }
+
+                if (!baseBranch) {
+                    targetBranch = await detectDefaultBranch(repoGit, owner, repoName);
+                }
+
+                try {
+                    await repoGit.checkout(targetBranch);
+                    logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!baseBranch }, 'Checked out target branch in main repository after clone');
+                } catch (checkoutError) {
+                    logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Failed to checkout target branch after clone, continuing anyway');
+                }
             }
 
-            // Use specified baseBranch if provided, otherwise detect default branch
-            let targetBranch = baseBranch;
-            if (!targetBranch) {
-                targetBranch = await detectDefaultBranch(repoGit, owner, repoName);
-            }
-
-            try {
-                await repoGit.checkout(targetBranch);
-                logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!baseBranch }, 'Checked out target branch in main repository after clone');
-            } catch (checkoutError) {
-                logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Failed to checkout target branch after clone, continuing anyway');
-            }
-
-            logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath, shallow: !!GIT_SHALLOW_CLONE_DEPTH, baseBranch: baseBranch || 'default' }, 'Repository cloned successfully');
+            logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath, shallow: !!GIT_SHALLOW_CLONE_DEPTH, baseBranch: baseBranch || 'default', wasEmpty }, 'Repository cloned successfully');
         }
 
         return localRepoPath;
@@ -258,8 +357,19 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
         // Use explicit refspec to ensure remote tracking ref is updated
         // Simple `git fetch origin <branch>` may only update FETCH_HEAD without
         // updating refs/remotes/origin/<branch> in some git configurations
-        await git.raw(['fetch', 'origin', `+refs/heads/${resolvedBaseBranch}:refs/remotes/origin/${resolvedBaseBranch}`, '--prune']);
-        logger.debug({ baseBranch: resolvedBaseBranch }, 'Fetched latest changes for base branch with explicit refspec');
+        try {
+            await git.raw(['fetch', 'origin', `+refs/heads/${resolvedBaseBranch}:refs/remotes/origin/${resolvedBaseBranch}`, '--prune']);
+            logger.debug({ baseBranch: resolvedBaseBranch }, 'Fetched latest changes for base branch with explicit refspec');
+        } catch (fetchError) {
+            const fetchErrorMessage = (fetchError as Error).message;
+            // Check if this is an empty repository error (no branches exist)
+            // This shouldn't happen normally since ensureRepoCloned creates seed commits for empty repos
+            if (fetchErrorMessage.includes("couldn't find remote ref") || fetchErrorMessage.includes('does not appear to be a git repository')) {
+                logger.warn({ repo: `${owner}/${repoName}`, branch: resolvedBaseBranch, error: fetchErrorMessage }, 'Repository appears to be empty - seed commit may have failed');
+                throw new Error(`Repository ${owner}/${repoName} appears to be empty or the branch '${resolvedBaseBranch}' does not exist. The system attempted to initialize it but may have failed. Please check if the repository was properly seeded.`);
+            }
+            throw fetchError;
+        }
 
         await git.raw(['worktree', 'add', worktreePath, '-b', branchName, `origin/${resolvedBaseBranch}`]);
         await setupWorktreePermissions(worktreePath, branchName, issueId);

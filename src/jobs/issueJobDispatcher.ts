@@ -88,7 +88,8 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
 
         repoValidation = await validateRepositoryInfo({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number }, octokit, correlationId);
         if (!repoValidation.isValid) {
-            throw new Error('Repository validation failed for dispatcher.');
+            const errorMessage = repoValidation.error || 'Repository validation failed';
+            throw new Error(errorMessage);
         }
 
         const defaultBranch = repoValidation.repoData?.defaultBranch || 'main';

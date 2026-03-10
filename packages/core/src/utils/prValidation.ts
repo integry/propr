@@ -275,6 +275,28 @@ export async function validateRepositoryInfo(issueRef: IssueRef, octokit: Instan
 
         const repoData = repoResponse.data;
 
+        // Check if repository is empty (no commits/branches) - just log, we'll seed it during clone
+        if (repoData.size === 0) {
+            try {
+                await octokit.request('GET /repos/{owner}/{repo}/branches/{branch}', {
+                    owner: issueRef.repoOwner,
+                    repo: issueRef.repoName,
+                    branch: repoData.default_branch
+                });
+            } catch (branchError) {
+                // If the default branch doesn't exist, the repository is empty
+                // We'll create a seed commit during the clone phase
+                const errorResponse = branchError as { status?: number };
+                if (errorResponse.status === 404) {
+                    correlatedLogger.info({
+                        owner: issueRef.repoOwner,
+                        repoName: issueRef.repoName,
+                        defaultBranch: repoData.default_branch
+                    }, 'Repository is empty (no commits) - will be seeded during clone');
+                }
+            }
+        }
+
         await withRetry(
             () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
                 owner: issueRef.repoOwner,
