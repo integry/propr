@@ -40,6 +40,8 @@ interface RepositoryListItemProps {
   onRemove: (repoId: string) => void | Promise<void>;
   onStopIndexing: (repoName: string, baseBranch?: string) => void;
   onReindex: (repoName: string, baseBranch?: string) => void;
+  isSelected?: boolean;
+  onSelect?: (repoId: string) => void;
 }
 
 export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
@@ -49,6 +51,8 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
   onRemove,
   onStopIndexing,
   onReindex,
+  isSelected = false,
+  onSelect,
 }) => {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -72,9 +76,16 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
   };
 
   return (
-    <div className="border-b border-slate-100 py-4 first:pt-0">
+    <div
+      className={`border-b border-slate-100 py-4 first:pt-0 cursor-pointer rounded-lg transition-colors ${
+        isSelected
+          ? 'bg-primary-50 border-primary-200'
+          : 'hover:bg-gray-50'
+      }`}
+      onClick={() => onSelect?.(repo.id)}
+    >
       {/* --- Repository Header: [Name/Alias] [Branch Chip] ... [Toggle] [Browse] [Delete] --- */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between px-2">
         <div className={`flex items-center gap-2 ${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
           {repo.alias ? (
             <>
@@ -97,7 +108,7 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           />
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
           {/* Toggle Switch */}
           <label className="relative inline-flex items-center cursor-pointer">
             <input
