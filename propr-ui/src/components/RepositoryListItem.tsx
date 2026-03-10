@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Github } from 'lucide-react';
 import { IndexingStatusIndicator } from './IndexingStatusIndicator';
+import { DeleteRepoDialog } from './DeleteRepoDialog';
 import { RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { getRepoStatusKey } from '../api/repoIndexingApi';
 
@@ -35,9 +37,11 @@ interface RepositoryListItemProps {
   repo: MonitoredRepo;
   indexingStatuses: Record<string, RepositoryIndexingStatus>;
   onToggle: (repoId: string) => void;
-  onRemove: (repoId: string) => void;
+  onRemove: (repoId: string) => void | Promise<void>;
   onStopIndexing: (repoName: string, baseBranch?: string) => void;
   onReindex: (repoName: string, baseBranch?: string) => void;
+  isSelected?: boolean;
+  onSelect?: (repoId: string) => void;
 }
 
 export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
@@ -47,11 +51,41 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
   onRemove,
   onStopIndexing,
   onReindex,
+  isSelected = false,
+  onSelect,
 }) => {
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleDeleteClick = () => {
+    setIsDeleteDialogOpen(true);
+  };
+
+  const handleDeleteClose = () => {
+    setIsDeleteDialogOpen(false);
+  };
+
+  const handleDeleteConfirm = async () => {
+    setIsDeleting(true);
+    try {
+      await onRemove(repo.id);
+    } finally {
+      setIsDeleting(false);
+      setIsDeleteDialogOpen(false);
+    }
+  };
+
   return (
-    <div className="border-b border-slate-100 py-4 first:pt-0">
+    <div
+      className={`border-b border-slate-100 py-4 first:pt-0 cursor-pointer rounded-lg transition-colors ${
+        isSelected
+          ? 'bg-primary-50 border-primary-200'
+          : 'hover:bg-gray-50'
+      }`}
+      onClick={() => onSelect?.(repo.id)}
+    >
       {/* --- Repository Header: [Name/Alias] [Branch Chip] ... [Toggle] [Browse] [Delete] --- */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between px-2">
         <div className={`flex items-center gap-2 ${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
           {repo.alias ? (
             <>
@@ -74,7 +108,7 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           />
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
           {/* Toggle Switch */}
           <label className="relative inline-flex items-center cursor-pointer">
             <input
@@ -85,6 +119,17 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
             />
             <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary-600"></div>
           </label>
+
+          {/* GitHub Link */}
+          <a
+            href={`https://github.com/${repo.name}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="p-1 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors"
+            title="View on GitHub"
+          >
+            <Github className="w-3.5 h-3.5" />
+          </a>
 
           {/* Browse Button */}
           <Link
@@ -97,7 +142,7 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
 
           {/* Delete Button */}
           <button
-            onClick={() => onRemove(repo.id)}
+            onClick={handleDeleteClick}
             className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
             title="Remove repository"
           >
@@ -105,6 +150,14 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           </button>
         </div>
       </div>
+
+      <DeleteRepoDialog
+        isOpen={isDeleteDialogOpen}
+        repoName={repo.name}
+        onClose={handleDeleteClose}
+        onConfirm={handleDeleteConfirm}
+        isLoading={isDeleting}
+      />
     </div>
   );
 };
