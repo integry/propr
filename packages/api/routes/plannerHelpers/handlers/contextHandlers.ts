@@ -15,20 +15,23 @@ interface PreviewContextDeps {
   db?: Knex;
 }
 
+interface BuildUpdatedConfigOptions {
+  existingConfig: Record<string, unknown>;
+  baseBranch: string;
+  granularity: string | undefined;
+  contextLevel: unknown;
+  compress: unknown;
+  contextRepositories: unknown;
+  requestGenerationModel: unknown;
+}
+
 /**
  * Builds the updated context config for storing in the draft.
  * Note: We avoid spreading existingConfig as it may contain contextCache with thousands
  * of file entries (fileTokenCounts), which can exceed V8's property enumeration limit.
  */
-function buildUpdatedConfig(
-  existingConfig: Record<string, unknown>,
-  baseBranch: string,
-  granularity: string | undefined,
-  contextLevel: unknown,
-  compress: unknown,
-  contextRepositories: unknown,
-  requestGenerationModel: unknown
-): Record<string, unknown> {
+function buildUpdatedConfig(options: BuildUpdatedConfigOptions): Record<string, unknown> {
+  const { existingConfig, baseBranch, granularity, contextLevel, compress, contextRepositories, requestGenerationModel } = options;
   const updatedConfig: Record<string, unknown> = {
     baseBranch,
     granularity: granularity || 'balanced',
@@ -76,7 +79,7 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
       const hasConfigUpdates = contextRepositories || requestGenerationModel;
       if (deps.db && hasConfigUpdates) {
         const existingConfig = (draft.context_config as Record<string, unknown>) || {};
-        const updatedConfig = buildUpdatedConfig(existingConfig, baseBranch, granularity, contextLevel, compress, contextRepositories, requestGenerationModel);
+        const updatedConfig = buildUpdatedConfig({ existingConfig, baseBranch, granularity, contextLevel, compress, contextRepositories, requestGenerationModel });
 
         await deps.db('task_drafts').where({ draft_id: draftId }).update({
           context_config: JSON.stringify(updatedConfig),
