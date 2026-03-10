@@ -329,7 +329,7 @@ const RepositoriesPage: React.FC = () => {
     }
 
     return (
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col">
         {repos.map(repo => (
           <RepositoryListItem
             key={repo.id}
