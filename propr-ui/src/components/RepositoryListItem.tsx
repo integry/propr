@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { IndexingStatusIndicator } from './IndexingStatusIndicator';
+import { DeleteRepoDialog } from './DeleteRepoDialog';
 import { RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { getRepoStatusKey } from '../api/repoIndexingApi';
 
@@ -48,6 +49,21 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
   onStopIndexing,
   onReindex,
 }) => {
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+
+  const handleOpenDeleteDialog = () => {
+    setIsDeleteDialogOpen(true);
+  };
+
+  const handleCloseDeleteDialog = () => {
+    setIsDeleteDialogOpen(false);
+  };
+
+  const handleConfirmDelete = () => {
+    onRemove(repo.id);
+    setIsDeleteDialogOpen(false);
+  };
+
   return (
     <div className="border-b border-slate-100 py-4 first:pt-0">
       {/* --- Repository Header: [Name/Alias] [Branch Chip] ... [Toggle] [Browse] [Delete] --- */}
@@ -97,7 +113,7 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
 
           {/* Delete Button */}
           <button
-            onClick={() => onRemove(repo.id)}
+            onClick={handleOpenDeleteDialog}
             className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
             title="Remove repository"
           >
@@ -105,6 +121,14 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <DeleteRepoDialog
+        isOpen={isDeleteDialogOpen}
+        onClose={handleCloseDeleteDialog}
+        onConfirm={handleConfirmDelete}
+        repoName={repo.name}
+      />
     </div>
   );
 };
