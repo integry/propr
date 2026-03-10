@@ -5,7 +5,7 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
 import { AddRepositoryModal } from '../components/AddRepositoryModal';
-import { RepositoryDetailsPlaceholder } from '../components/RepositoryDetailsPlaceholder';
+import { RepoActionContainer } from '../components/Repositories';
 import { RepositorySaveStatusFooter } from '../components/RepositorySaveStatusFooter';
 import { RepositoriesPageHeader } from '../components/RepositoriesPageHeader';
 import { RepositoryListContent } from '../components/RepositoryListContent';
@@ -370,8 +370,8 @@ const RepositoriesPage: React.FC = () => {
           {/* Right Panel (60%): Details/Chat/Improvements - semantic tinting */}
           <Panel defaultSize={60} minSize={30}>
             <div className="h-full bg-[#F8FAFC] flex flex-col">
-              <div className="flex-1 min-h-0 flex items-center justify-center">
-                <RepositoryDetailsPlaceholder selectedRepo={selectedRepo} />
+              <div className="flex-1 min-h-0">
+                <RepoActionContainer selectedRepo={selectedRepo || null} />
               </div>
             </div>
           </Panel>
