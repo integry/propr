@@ -5,10 +5,10 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
 import { AddRepositoryModal } from '../components/AddRepositoryModal';
-import { RepositoryListItem } from '../components/RepositoryListItem';
-import { EmptyRepositoryState } from '../components/EmptyRepositoryState';
-import { RepositoriesLoadingState } from '../components/RepositoriesLoadingState';
-import { RepositoriesErrorState } from '../components/RepositoriesErrorState';
+import { RepositoryDetailsPlaceholder } from '../components/RepositoryDetailsPlaceholder';
+import { RepositorySaveStatusFooter } from '../components/RepositorySaveStatusFooter';
+import { RepositoriesPageHeader } from '../components/RepositoriesPageHeader';
+import { RepositoryListContent } from '../components/RepositoryListContent';
 import { useSocket } from '../contexts/useSocket';
 import { IndexingUpdatePayload } from '@propr/shared';
 import { buildUpdatedStatus } from '../utils/indexingStatusHelpers';
@@ -320,76 +320,19 @@ const RepositoriesPage: React.FC = () => {
   // Get currently selected repository
   const selectedRepo = repos.find(r => r.id === selectedRepoId);
 
-  // Render loading state within App Shell
-  const renderContent = () => {
-    if (loading && repos.length === 0) {
-      return <RepositoriesLoadingState />;
-    }
-
-    // Show error state if loading failed
-    if (error && repos.length === 0 && !loading) {
-      return (
-        <RepositoriesErrorState
-          error={error}
-          onRetry={() => {
-            setError(null);
-            loadRepos();
-          }}
-        />
-      );
-    }
-
-    return (
-      <div className="flex flex-col">
-        {repos.map(repo => (
-          <RepositoryListItem
-            key={repo.id}
-            repo={repo}
-            indexingStatuses={indexingStatuses}
-            onToggle={handleToggleRepo}
-            onRemove={handleRemoveRepo}
-            onStopIndexing={handleStopIndexing}
-            onReindex={handleReindexRepo}
-            isSelected={repo.id === selectedRepoId}
-            onSelect={handleSelectRepo}
-          />
-        ))}
-        {repos.length === 0 && <EmptyRepositoryState />}
-      </div>
-    );
+  // Retry handler for error state
+  const handleRetry = () => {
+    setError(null);
+    loadRepos();
   };
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* Continuous Horizon Header - single toolbar across both columns */}
-      <div className="flex-shrink-0 border-b border-slate-200 bg-white">
-        <PanelGroup direction="horizontal">
-          {/* Left Header */}
-          <Panel defaultSize={40} minSize={25}>
-            <div className="h-14 px-6 flex items-center justify-between">
-              <h2 className="text-gray-900 text-lg font-semibold">Repositories</h2>
-              <button
-                onClick={handleOpenModal}
-                className="px-3 py-1.5 text-sm font-medium rounded-md border transition-colors border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400"
-              >
-                + Add Repository
-              </button>
-            </div>
-          </Panel>
-
-          {/* Header spacer for resize handle */}
-          <div className="w-2" />
-
-          {/* Right Header */}
-          <Panel defaultSize={60} minSize={30}>
-            <div className="h-14 px-6 flex items-center">
-              <h2 className="text-gray-900 text-lg font-semibold">
-                {selectedRepo ? (selectedRepo.alias || selectedRepo.name) : 'Details'}
-              </h2>
-            </div>
-          </Panel>
-        </PanelGroup>
-      </div>
+      <RepositoriesPageHeader
+        selectedRepoName={selectedRepo?.alias || selectedRepo?.name}
+        onAddRepository={handleOpenModal}
+      />
 
       {/* Split-Pane Container - Resizable 40/60 layout */}
       <div className="flex-1 overflow-hidden">
@@ -399,49 +342,23 @@ const RepositoriesPage: React.FC = () => {
             <div className="h-full bg-white flex flex-col">
               {/* Scrollable content area */}
               <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
-                {renderContent()}
+                <RepositoryListContent
+                  repos={repos}
+                  loading={loading}
+                  error={error}
+                  indexingStatuses={indexingStatuses}
+                  selectedRepoId={selectedRepoId}
+                  onToggle={handleToggleRepo}
+                  onRemove={handleRemoveRepo}
+                  onStopIndexing={handleStopIndexing}
+                  onReindex={handleReindexRepo}
+                  onSelect={handleSelectRepo}
+                  onRetry={handleRetry}
+                />
               </div>
 
               {/* Anchored Footer - Auto-save Status */}
-              <div className="flex-shrink-0 border-t border-gray-200 px-6 py-3 bg-gray-50">
-                <div className="flex items-center justify-between">
-                  {/* Left Side - Status Message */}
-                  <div className="flex items-center gap-2">
-                    {saveStatus === 'saving' && (
-                      <span className="flex items-center gap-1.5 text-xs text-gray-500 font-mono">
-                        <svg className="animate-spin h-3 w-3 text-gray-400" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                        </svg>
-                        Saving changes...
-                      </span>
-                    )}
-                    {saveStatus === 'saved' && (
-                      <span className="flex items-center gap-1.5 text-xs text-gray-500 font-mono">
-                        <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-                        Changes auto-saved
-                      </span>
-                    )}
-                    {saveStatus === 'error' && error && (
-                      <span className="flex items-center gap-1.5 text-xs text-red-600 font-mono">
-                        <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
-                        {error}
-                      </span>
-                    )}
-                    {saveStatus === 'idle' && (
-                      <span className="flex items-center gap-1.5 text-xs text-gray-400 font-mono">
-                        <span className="w-1.5 h-1.5 rounded-full bg-gray-300"></span>
-                        All changes saved
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Right Side - Reserved for action buttons if needed */}
-                  <div className="flex items-center gap-2">
-                    {/* Action buttons would go here if needed */}
-                  </div>
-                </div>
-              </div>
+              <RepositorySaveStatusFooter saveStatus={saveStatus} error={error} />
             </div>
           </Panel>
 
@@ -454,32 +371,7 @@ const RepositoriesPage: React.FC = () => {
           <Panel defaultSize={60} minSize={30}>
             <div className="h-full bg-[#F8FAFC] flex flex-col">
               <div className="flex-1 min-h-0 flex items-center justify-center">
-                {selectedRepo ? (
-                  <div className="text-center p-8">
-                    <div className="text-gray-400 mb-2">
-                      <svg className="w-12 h-12 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                      </svg>
-                    </div>
-                    <h3 className="text-lg font-medium text-gray-700 mb-1">
-                      {selectedRepo.alias || selectedRepo.name}
-                    </h3>
-                    <p className="text-sm text-gray-500">
-                      Chat and improvement features coming soon.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="text-center p-8">
-                    <div className="text-gray-300 mb-2">
-                      <svg className="w-12 h-12 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                      </svg>
-                    </div>
-                    <p className="text-sm text-gray-400">
-                      Select a repository to view details
-                    </p>
-                  </div>
-                )}
+                <RepositoryDetailsPlaceholder selectedRepo={selectedRepo} />
               </div>
             </div>
           </Panel>
