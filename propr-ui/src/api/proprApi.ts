@@ -459,3 +459,4 @@ export * from './agentChatApi';
 export * from './repoIndexingApi';
 export * from './summaryApi';
 export * from './planIssuesApi';
+export * from './repoChatApi';
