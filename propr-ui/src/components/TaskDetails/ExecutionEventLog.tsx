@@ -186,26 +186,38 @@ const TerminalEventItem: React.FC<TerminalEventItemProps> = ({
   );
 };
 
-// Compute summary message for collapsed view
+// Compute summary message for collapsed view - always shows the last event
 const computeSummaryMessage = (filteredEvents: LiveEvent[], lastThought: string | null): string => {
-  if (filteredEvents.length === 0) return '';
-
-  for (let i = filteredEvents.length - 1; i >= 0; i--) {
-    const event = filteredEvents[i];
-    if (event.type === 'tool_result') {
-      const resultStr = formatToolResult(event.result);
-      const truncated = resultStr.slice(0, 150).replace(/\n/g, ' ');
-      return `Result: ${truncated}${resultStr.length > 150 ? '...' : ''}`;
-    }
-    if (event.type === 'tool_use' && event.toolName) {
-      if (event.input?.command) {
-        return `> ${event.input.command.slice(0, 150)}${event.input.command.length > 150 ? '...' : ''}`;
-      }
-      return `Exec: ${event.toolName}`;
-    }
+  if (filteredEvents.length === 0) {
+    // Fallback to lastThought if no events
+    return lastThought ? `Thinking: ${lastThought.substring(0, 150)}${lastThought.length > 150 ? '...' : ''}` : '';
   }
 
-  return lastThought ? `Thinking: ${lastThought.substring(0, 150)}${lastThought.length > 150 ? '...' : ''}` : '';
+  // Always use the last event, regardless of type
+  const event = filteredEvents[filteredEvents.length - 1];
+
+  if (event.type === 'tool_result') {
+    const resultStr = formatToolResult(event.result);
+    const truncated = resultStr.slice(0, 150).replace(/\n/g, ' ');
+    return `Result: ${truncated}${resultStr.length > 150 ? '...' : ''}`;
+  }
+
+  if (event.type === 'tool_use' && event.toolName) {
+    if (event.input?.command) {
+      return `> ${event.input.command.slice(0, 150)}${event.input.command.length > 150 ? '...' : ''}`;
+    }
+    if (event.input?.file_path) {
+      return `${event.toolName}: ${event.input.file_path}`;
+    }
+    return `Exec: ${event.toolName}`;
+  }
+
+  if (event.type === 'thought' && event.content) {
+    const truncated = event.content.slice(0, 150).replace(/\n/g, ' ');
+    return `Thinking: ${truncated}${event.content.length > 150 ? '...' : ''}`;
+  }
+
+  return '';
 };
 
 // Compute events with their previous tool_use reference for context
