@@ -331,7 +331,15 @@ const RepositoriesPage: React.FC = () => {
     <div className="p-4 sm:p-8">
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-gray-900 text-2xl font-semibold">Manage Monitored Repositories</h2>
-        <SaveStatusIndicator status={saveStatus} error={error} />
+        <div className="flex items-center gap-4">
+          <button
+            onClick={handleOpenModal}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+          >
+            + Add Repository
+          </button>
+          <SaveStatusIndicator status={saveStatus} error={error} />
+        </div>
       </div>
 
       {/* Add Repository Modal */}
