@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Github } from 'lucide-react';
 import { IndexingStatusIndicator } from './IndexingStatusIndicator';
 import { DeleteRepoDialog } from './DeleteRepoDialog';
 import { RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
@@ -107,6 +108,17 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
             />
             <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary-600"></div>
           </label>
+
+          {/* GitHub Link */}
+          <a
+            href={`https://github.com/${repo.name}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="p-1 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors"
+            title="View on GitHub"
+          >
+            <Github className="w-3.5 h-3.5" />
+          </a>
 
           {/* Browse Button */}
           <Link
