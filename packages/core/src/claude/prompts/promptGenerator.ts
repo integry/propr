@@ -55,9 +55,11 @@ export function generateClaudePrompt(
     issueRef: IssueRef,
     branchName: string | null = null,
     modelName: string | null = null,
-    issueDetails: IssueDetails | null = null
+    issueDetails: IssueDetails | null = null,
+    baseBranch: string | null = null
 ): string {
     const branchInfo = branchName ? `\n- **BRANCH**: You are working on branch \`${branchName}\`.` : '';
+    const baseBranchInfo = baseBranch ? `\n- **BASE BRANCH**: \`${baseBranch}\` (PRs must target this branch, not main)` : '';
     const modelInfo = modelName ? `\n- **MODEL**: This task is being processed by the \`${modelName}\` model.` : '';
 
     let issueDetailsSection = '';
@@ -93,7 +95,7 @@ ${issueDetails.body || 'No description provided'}
 **REPOSITORY INFORMATION:**
 - Repository Owner: ${issueRef.repoOwner}
 - Repository Name: ${issueRef.repoName}
-- Full Repository: ${issueRef.repoOwner}/${issueRef.repoName}${branchInfo}${modelInfo}${issueDetailsSection}
+- Full Repository: ${issueRef.repoOwner}/${issueRef.repoName}${branchInfo}${baseBranchInfo}${modelInfo}${issueDetailsSection}
 
 **YOUR FOCUS: IMPLEMENTATION ONLY**
 

@@ -94,7 +94,8 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       labels: currentIssueData.data.labels,
       created_at: currentIssueData.data.created_at,
       user: currentIssueData.data.user
-    }
+    },
+    issueRef.baseBranch || null
   );
 
   // Start periodic file changes updates during agent execution
