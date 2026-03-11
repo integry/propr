@@ -108,11 +108,13 @@ async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoPar
     }
 
     const git: SimpleGit = simpleGit(localRepoPath);
-    let targetBranch = baseBranch || 'main';
+    // Treat 'HEAD' as unspecified - use default branch detection
+    const effectiveBranch = baseBranch && baseBranch !== 'HEAD' ? baseBranch : undefined;
+    let targetBranch = effectiveBranch || 'main';
     const wasEmpty = await ensureSeedCommitIfEmpty(git, { localRepoPath, owner, repoName, defaultBranch: targetBranch, authToken, repoUrl });
 
     if (!wasEmpty) {
-        if (!baseBranch) targetBranch = await detectDefaultBranch(git, owner, repoName);
+        if (!effectiveBranch) targetBranch = await detectDefaultBranch(git, owner, repoName);
         try {
             await git.checkout(targetBranch);
             logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!baseBranch }, 'Checked out target branch');
@@ -135,7 +137,9 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
 
     const cloneOptions: string[] = [];
     if (GIT_SHALLOW_CLONE_DEPTH) cloneOptions.push(`--depth=${GIT_SHALLOW_CLONE_DEPTH}`);
-    if (baseBranch) cloneOptions.push(`--branch=${baseBranch}`);
+    // Skip --branch flag when baseBranch is 'HEAD' since it's not a valid branch name
+    // and git will use the remote's default branch automatically
+    if (baseBranch && baseBranch !== 'HEAD') cloneOptions.push(`--branch=${baseBranch}`);
 
     const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
     await simpleGit().clone(authenticatedUrl, localRepoPath, cloneOptions);
@@ -143,7 +147,9 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
     const repoGit: SimpleGit = simpleGit(localRepoPath);
     await configureGcWorktreePrune(repoGit);
 
-    let targetBranch = baseBranch || 'main';
+    // Treat 'HEAD' as unspecified - use default branch detection
+    const effectiveBranch = baseBranch && baseBranch !== 'HEAD' ? baseBranch : undefined;
+    let targetBranch = effectiveBranch || 'main';
     const wasEmpty = await ensureSeedCommitIfEmpty(repoGit, { localRepoPath, owner, repoName, defaultBranch: targetBranch, authToken, repoUrl });
 
     if (!wasEmpty) {
@@ -152,15 +158,15 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
         } catch {
             // Non-fatal
         }
-        if (!baseBranch) targetBranch = await detectDefaultBranch(repoGit, owner, repoName);
+        if (!effectiveBranch) targetBranch = await detectDefaultBranch(repoGit, owner, repoName);
         try {
             await repoGit.checkout(targetBranch);
-            logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!baseBranch }, 'Checked out target branch after clone');
+            logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!effectiveBranch }, 'Checked out target branch after clone');
         } catch (checkoutError) {
             logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Failed to checkout target branch after clone');
         }
     }
-    logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath, shallow: !!GIT_SHALLOW_CLONE_DEPTH, baseBranch: baseBranch || 'default', wasEmpty }, 'Repository cloned successfully');
+    logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath, shallow: !!GIT_SHALLOW_CLONE_DEPTH, baseBranch: effectiveBranch || 'default', wasEmpty }, 'Repository cloned successfully');
 }
 
 async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<string> {
