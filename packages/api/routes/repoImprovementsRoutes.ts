@@ -21,7 +21,11 @@ type ImprovementCategory =
   | 'security'
   | 'testing'
   | 'documentation'
-  | 'architecture';
+  | 'architecture'
+  | 'new-features'
+  | 'tech-debt'
+  | 'ux-ui'
+  | 'scalability';
 
 interface RepoImprovementsRequest {
   repository: string;
@@ -50,7 +54,11 @@ const CATEGORY_DESCRIPTIONS: Record<ImprovementCategory, string> = {
   'security': 'Detect potential security vulnerabilities, unsafe practices, and security improvements',
   'testing': 'Suggest test coverage improvements, missing test cases, and testing best practices',
   'documentation': 'Identify missing or outdated documentation, unclear code sections, and documentation improvements',
-  'architecture': 'Analyze architectural patterns, suggest structural improvements, and identify design issues'
+  'architecture': 'Analyze architectural patterns, suggest structural improvements, and identify design issues',
+  'new-features': 'Identify missing features based on current project scope and suggest new functionality that would add value',
+  'tech-debt': 'Find brittle code that is hard to extend, outdated patterns, and areas requiring modernization',
+  'ux-ui': 'Refine user interfaces, improve interaction logic, and enhance overall user experience',
+  'scalability': 'Improve API design, identify throughput bottlenecks, and suggest scalability improvements'
 };
 
 /**
@@ -129,7 +137,11 @@ const VALID_CATEGORIES: ImprovementCategory[] = [
   'security',
   'testing',
   'documentation',
-  'architecture'
+  'architecture',
+  'new-features',
+  'tech-debt',
+  'ux-ui',
+  'scalability'
 ];
 
 /**
