@@ -5,10 +5,11 @@ import {
   ImprovementCategory,
   ReferenceRepo,
   RepoImprovementsPanelProps,
+  SuggestionItem,
 } from './RepoImprovementsPanel.types';
 
 // Re-export types for external consumers
-export type { ImprovementCategory, ReferenceRepo, RepoImprovementsPanelProps };
+export type { ImprovementCategory, ReferenceRepo, RepoImprovementsPanelProps, SuggestionItem };
 export { IMPROVEMENT_CATEGORIES };
 
 interface CategoryButtonProps {
@@ -171,11 +172,93 @@ const GenerateButton: React.FC<GenerateButtonProps> = ({
   </div>
 );
 
+interface SuggestionCardProps {
+  suggestion: SuggestionItem;
+  index: number;
+  onToggle: (index: number) => void;
+}
+
+const SuggestionCard: React.FC<SuggestionCardProps> = ({
+  suggestion,
+  index,
+  onToggle,
+}) => (
+  <button
+    onClick={() => onToggle(index)}
+    className={`w-full text-left p-4 rounded-lg border transition-all
+      ${suggestion.isSelected
+        ? 'bg-teal-50 border-teal-300 ring-1 ring-teal-300'
+        : 'bg-white border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+      }
+    `}
+  >
+    <div className="flex items-start gap-3">
+      <div
+        className={`w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 mt-0.5
+          ${suggestion.isSelected
+            ? 'bg-teal-500 border-teal-500'
+            : 'border-gray-300 bg-white'
+          }
+        `}
+      >
+        {suggestion.isSelected && <Check size={14} className="text-white" />}
+      </div>
+      <div className="flex-1 min-w-0">
+        <h4 className={`text-sm font-medium mb-1
+          ${suggestion.isSelected ? 'text-teal-700' : 'text-gray-700'}
+        `}>
+          {suggestion.title}
+        </h4>
+        <p className="text-xs text-gray-500 leading-relaxed">
+          {suggestion.description}
+        </p>
+      </div>
+    </div>
+  </button>
+);
+
+interface SuggestionsListProps {
+  suggestions: SuggestionItem[];
+  onToggleSuggestion: (index: number) => void;
+}
+
+const SuggestionsList: React.FC<SuggestionsListProps> = ({
+  suggestions,
+  onToggleSuggestion,
+}) => {
+  const selectedCount = suggestions.filter(s => s.isSelected).length;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <label className="block text-xs font-medium text-gray-600 uppercase tracking-wide">
+          Generated Suggestions
+        </label>
+        <span className="text-xs text-gray-500">
+          {selectedCount} of {suggestions.length} selected
+        </span>
+      </div>
+      <div className="space-y-2">
+        {suggestions.map((suggestion, index) => (
+          <SuggestionCard
+            key={index}
+            suggestion={suggestion}
+            index={index}
+            onToggle={onToggleSuggestion}
+          />
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   availableRepos = [],
   onGenerateSuggestions,
   repositoryName,
   disabled = false,
+  suggestions = [],
+  onToggleSuggestion,
 }) => {
   const [selectedCategories, setSelectedCategories] = useState<Set<ImprovementCategory>>(new Set());
   const [customPrompt, setCustomPrompt] = useState('');
@@ -296,6 +379,14 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
             disabled={isDisabledState}
             onToggleDropdown={() => !isDisabledState && setIsDropdownOpen(!isDropdownOpen)}
             onSelectRepo={handleSelectRepo}
+          />
+        )}
+
+        {/* Generated Suggestions List */}
+        {suggestions.length > 0 && onToggleSuggestion && (
+          <SuggestionsList
+            suggestions={suggestions}
+            onToggleSuggestion={onToggleSuggestion}
           />
         )}
       </div>

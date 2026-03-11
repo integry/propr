@@ -18,6 +18,15 @@ export interface ReferenceRepo {
   alias?: string;
 }
 
+/**
+ * Represents a single improvement suggestion with selection state
+ */
+export interface SuggestionItem {
+  title: string;
+  description: string;
+  isSelected: boolean;
+}
+
 export interface RepoImprovementsPanelProps {
   /** Available repositories to use as reference */
   availableRepos?: ReferenceRepo[];
@@ -31,4 +40,8 @@ export interface RepoImprovementsPanelProps {
   repositoryName?: string;
   /** Whether the panel is disabled */
   disabled?: boolean;
+  /** List of generated suggestions with selection state */
+  suggestions?: SuggestionItem[];
+  /** Callback when a suggestion's selection state is toggled */
+  onToggleSuggestion?: (index: number) => void;
 }
