@@ -57,14 +57,14 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
     ];
 
     try {
-      const response = await chatWithRepository(
-        selectedRepo.name,
+      const response = await chatWithRepository({
+        repository: selectedRepo.name,
         branch,
-        message,
-        chatHistory,
+        prompt: message,
+        history: chatHistory,
         model,
         contextLevel
-      );
+      });
 
       if (response.error) {
         throw new Error(response.error);

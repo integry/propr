@@ -18,24 +18,33 @@ export interface RepoChatResponse {
 }
 
 /**
+ * Options for the chatWithRepository function
+ */
+export interface ChatWithRepositoryOptions {
+  repository: string;
+  branch: string;
+  prompt: string;
+  history?: ChatMessage[];
+  model?: string;
+  contextLevel?: number;
+}
+
+/**
  * Sends a chat message to the repository chat endpoint and retrieves the AI's response.
  *
- * @param repository - The full repository name (e.g., "owner/repo")
- * @param branch - The branch name to query against
- * @param prompt - The user's message/prompt
- * @param history - Previous conversation history for context
- * @param model - The model ID to use for the chat
- * @param contextLevel - The context level (0-100) for codebase analysis
+ * @param options - The chat options
+ * @param options.repository - The full repository name (e.g., "owner/repo")
+ * @param options.branch - The branch name to query against
+ * @param options.prompt - The user's message/prompt
+ * @param options.history - Previous conversation history for context
+ * @param options.model - The model ID to use for the chat
+ * @param options.contextLevel - The context level (0-100) for codebase analysis
  * @returns The AI's response containing the reply
  */
 export const chatWithRepository = async (
-  repository: string,
-  branch: string,
-  prompt: string,
-  history: ChatMessage[] = [],
-  model?: string,
-  contextLevel?: number
+  options: ChatWithRepositoryOptions
 ): Promise<RepoChatResponse> => {
+  const { repository, branch, prompt, history = [], model, contextLevel } = options;
   const response = await fetch(`${API_BASE_URL}/api/repos/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
