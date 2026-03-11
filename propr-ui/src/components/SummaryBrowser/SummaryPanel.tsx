@@ -68,18 +68,18 @@ const SummaryPanel: React.FC<SummaryPanelProps> = ({ selectedEntry, owner, repo 
               ) : (
                 getFileIcon(selectedEntry.name)
               )}
-              <h4 className="font-medium text-gray-800 truncate font-mono text-sm" title={selectedEntry.path}>
-                {selectedEntry.path || '/'}
-              </h4>
               <a
                 href={`https://github.com/${owner}/${repo}/${selectedEntry.entryType === 'directory' ? 'tree' : 'blob'}/HEAD/${selectedEntry.path}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1 text-blue-600 hover:text-blue-700 ml-auto flex-shrink-0"
+                className="flex items-center gap-1 text-blue-600 hover:text-blue-700 flex-shrink-0"
                 title="View on GitHub"
               >
                 <ExternalLink className="w-4 h-4" />
               </a>
+              <h4 className="font-medium text-gray-800 truncate font-mono text-sm" title={selectedEntry.path}>
+                {selectedEntry.path || '/'}
+              </h4>
             </div>
 
             {/* Entry type badge */}

@@ -186,6 +186,12 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
             className="flex items-center gap-2 mt-1.5"
             title={indexingStatus.lastIndexedCommitMessage || undefined}
           >
+            {indexingStatus.lastIndexedAt && (
+              <span className="flex items-center gap-1 text-xs text-gray-400">
+                <Clock className="w-3 h-3" />
+                {formatRelativeTime(indexingStatus.lastIndexedAt)}
+              </span>
+            )}
             <GitCommit className="w-3.5 h-3.5 text-gray-400" />
             <a
               href={`https://github.com/${owner}/${repo}/commit/${indexingStatus.lastIndexedHash}`}
@@ -198,12 +204,6 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
             {indexingStatus.lastIndexedCommitMessage && (
               <span className="text-xs text-gray-500 truncate">
                 {truncateMessage(indexingStatus.lastIndexedCommitMessage)}
-              </span>
-            )}
-            {indexingStatus.lastIndexedAt && (
-              <span className="flex items-center gap-1 text-xs text-gray-400 ml-auto">
-                <Clock className="w-3 h-3" />
-                {formatRelativeTime(indexingStatus.lastIndexedAt)}
               </span>
             )}
           </div>
