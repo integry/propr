@@ -70,10 +70,10 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
 
   return (
     <div
-      className={`border-b border-slate-100 py-4 first:pt-0 cursor-pointer rounded-lg transition-colors ${
+      className={`border-b border-slate-100 py-3 cursor-pointer transition-colors ${
         isSelected
-          ? 'bg-primary-50 border-primary-200'
-          : 'hover:bg-gray-50'
+          ? 'bg-teal-50/50'
+          : 'hover:bg-slate-50'
       }`}
       onClick={() => onSelect?.(repo.id)}
     >

@@ -18,7 +18,9 @@ export interface CategoryButtonProps {
 }
 
 /**
- * Toggle Chip style category button - compact, easy to click, Studio-quality
+ * Toggle Pill style category button - Segmented Pills per Studio spec
+ * - Inactive: Gray outline on transparent background
+ * - Active: Solid Brand Teal with checkmark icon
  */
 export const CategoryButton: React.FC<CategoryButtonProps> = ({
   category,
@@ -31,8 +33,8 @@ export const CategoryButton: React.FC<CategoryButtonProps> = ({
     disabled={disabled}
     className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-all
       ${isSelected
-        ? 'bg-teal-600 border-teal-600 text-white shadow-sm'
-        : 'bg-white border-gray-200 text-gray-600 hover:border-teal-300 hover:bg-teal-50'
+        ? 'bg-teal-600 border-teal-600 text-white'
+        : 'bg-transparent border-slate-300 text-slate-600 hover:border-teal-400 hover:text-teal-600'
       }
       ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
     `}
@@ -129,10 +131,10 @@ export const ReferenceRepoSelector: React.FC<ReferenceRepoSelectorProps> = ({
 
   return (
     <div className="space-y-2">
-      <label className="block text-xs font-medium text-gray-600 uppercase tracking-wide">
+      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">
         Reference Repository (Optional)
       </label>
-      <p className="text-xs text-gray-500 mb-2">
+      <p className="text-xs text-slate-500 mb-2">
         Use another repository as a reference for best practices and patterns.
       </p>
       <div className="relative">
@@ -248,47 +250,50 @@ export const CreatePlanButton: React.FC<CreatePlanButtonProps> = ({
   </div>
 );
 
-export interface SuggestionCardProps {
+export interface SuggestionRowProps {
   suggestion: SuggestionItem;
   index: number;
   onToggle: (index: number) => void;
 }
 
-export const SuggestionCard: React.FC<SuggestionCardProps> = ({
+/**
+ * Dense two-line suggestion row - sits directly on tinted background
+ * with teal vertical accent line for "Live Insight" indicator
+ */
+export const SuggestionRow: React.FC<SuggestionRowProps> = ({
   suggestion,
   index,
   onToggle,
 }) => (
   <button
     onClick={() => onToggle(index)}
-    className={`w-full text-left p-4 rounded-lg border transition-all
-      ${suggestion.isSelected
-        ? 'bg-teal-50 border-teal-300 ring-1 ring-teal-300'
-        : 'bg-white border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-      }
-    `}
+    className={`w-full text-left py-3 px-3 transition-all flex items-start gap-3 border-l-2 ${
+      suggestion.isSelected
+        ? 'border-l-teal-500 bg-teal-50/30'
+        : 'border-l-teal-400 hover:bg-slate-100/50'
+    }`}
   >
-    <div className="flex items-start gap-3">
-      <div
-        className={`w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 mt-0.5
-          ${suggestion.isSelected
-            ? 'bg-teal-500 border-teal-500'
-            : 'border-gray-300 bg-white'
-          }
-        `}
-      >
-        {suggestion.isSelected && <Check size={14} className="text-white" />}
-      </div>
-      <div className="flex-1 min-w-0">
-        <h4 className={`text-sm font-medium mb-1
-          ${suggestion.isSelected ? 'text-teal-700' : 'text-gray-700'}
-        `}>
-          {suggestion.title}
-        </h4>
-        <p className="text-xs text-gray-500 leading-relaxed">
-          {suggestion.description}
-        </p>
-      </div>
+    {/* Checkbox */}
+    <div
+      className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 mt-0.5
+        ${suggestion.isSelected
+          ? 'bg-teal-500 border-teal-500'
+          : 'border-slate-300 bg-white'
+        }
+      `}
+    >
+      {suggestion.isSelected && <Check size={12} className="text-white" />}
+    </div>
+    {/* Two-line content */}
+    <div className="flex-1 min-w-0">
+      <h4 className={`text-sm font-semibold leading-tight ${
+        suggestion.isSelected ? 'text-teal-700' : 'text-slate-700'
+      }`}>
+        {suggestion.title}
+      </h4>
+      <p className="text-xs text-slate-500 leading-snug mt-0.5 line-clamp-2">
+        {suggestion.description}
+      </p>
     </div>
   </button>
 );
@@ -305,18 +310,19 @@ export const SuggestionsList: React.FC<SuggestionsListProps> = ({
   const selectedCount = suggestions.filter(s => s.isSelected).length;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <label className="block text-xs font-medium text-gray-600 uppercase tracking-wide">
+        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">
           Generated Suggestions
         </label>
-        <span className="text-xs text-gray-500">
+        <span className="text-xs text-slate-400">
           {selectedCount} of {suggestions.length} selected
         </span>
       </div>
-      <div className="space-y-2">
+      {/* Dense list directly on tinted background - no cards */}
+      <div className="divide-y divide-slate-100">
         {suggestions.map((suggestion, index) => (
-          <SuggestionCard
+          <SuggestionRow
             key={index}
             suggestion={suggestion}
             index={index}

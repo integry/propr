@@ -11,15 +11,16 @@ export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
   onAddRepository,
 }) => {
   return (
-    <div className="flex-shrink-0 border-b border-slate-200 bg-white">
+    <div className="flex-shrink-0 bg-white">
+      {/* Unified header row with aligned baseline */}
       <PanelGroup direction="horizontal">
         {/* Left Header */}
         <Panel defaultSize={40} minSize={25}>
           <div className="h-14 px-6 flex items-center justify-between">
-            <h2 className="text-gray-900 text-lg font-semibold">Repositories</h2>
+            <h2 className="text-gray-900 text-base font-semibold leading-none">Repositories</h2>
             <button
               onClick={onAddRepository}
-              className="px-3 py-1.5 text-sm font-medium rounded-md border transition-colors border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400"
+              className="px-3 py-1.5 text-xs font-medium rounded-md border transition-colors border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400"
             >
               + Add Repository
             </button>
@@ -32,12 +33,14 @@ export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
         {/* Right Header */}
         <Panel defaultSize={60} minSize={30}>
           <div className="h-14 px-6 flex items-center">
-            <h2 className="text-gray-900 text-lg font-semibold">
+            <h2 className="text-gray-900 text-base font-semibold leading-none">
               {selectedRepoName || 'Details'}
             </h2>
           </div>
         </Panel>
       </PanelGroup>
+      {/* Continuous horizon line spanning entire width */}
+      <div className="h-px bg-slate-200 w-full" />
     </div>
   );
 };

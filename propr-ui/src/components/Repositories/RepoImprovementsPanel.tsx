@@ -36,21 +36,19 @@ const formatDuration = (ms: number): string => {
   return `${minutes}m ${seconds}s`;
 };
 
-/** Header component for the improvements panel */
+/** Header component for the improvements panel - sits directly on tinted background */
 const ImprovementsPanelHeader: React.FC<{ repositoryName?: string }> = ({ repositoryName }) => (
-  <div className="px-4 pt-2">
-    <div className="flex items-center gap-3 mb-2">
-      <div className="w-10 h-10 rounded-lg bg-teal-100 flex items-center justify-center flex-shrink-0">
-        <Sparkles size={20} className="text-teal-600" />
-      </div>
-      <div>
-        <h3 className="text-sm font-semibold text-gray-900">
-          {repositoryName ? `Improve ${repositoryName}` : 'Repository Improvements'}
-        </h3>
-        <p className="text-xs text-gray-500">
-          Select categories or add custom instructions
-        </p>
-      </div>
+  <div className="flex items-center gap-3">
+    <div className="w-8 h-8 rounded-lg bg-teal-100 flex items-center justify-center flex-shrink-0">
+      <Sparkles size={16} className="text-teal-600" />
+    </div>
+    <div>
+      <h3 className="text-sm font-semibold text-slate-800">
+        {repositoryName ? `Improve ${repositoryName}` : 'Repository Improvements'}
+      </h3>
+      <p className="text-xs text-slate-500">
+        Select categories or add custom instructions
+      </p>
     </div>
   </div>
 );
@@ -203,7 +201,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
 
         {/* Custom Instructions */}
         <div className="space-y-2">
-          <label className="block text-xs font-medium text-gray-600 uppercase tracking-wide">
+          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">
             Custom Instructions
           </label>
           <textarea
