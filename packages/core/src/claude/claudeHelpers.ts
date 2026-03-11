@@ -108,7 +108,12 @@ interface JsonLineMessage {
 
 export function buildClaudePrompt(options: BuildClaudePromptOptions): string {
     const { customPrompt, issueRef, branchName, modelName, issueDetails, isRetry, retryReason } = options;
-    const basePrompt = customPrompt || generateClaudePrompt(issueRef, branchName ?? null, modelName ?? null, issueDetails ?? null);
+    const basePrompt = customPrompt || generateClaudePrompt({
+        issueRef,
+        branchName: branchName ?? null,
+        modelName: modelName ?? null,
+        issueDetails: issueDetails ?? null
+    });
     const prompt = `${basePrompt}
 
 **CRITICAL GIT SAFETY RULES:**

@@ -175,7 +175,7 @@ export {
 export type { ClaudeOutput, ConversationLogEntry, ClaudeOutputResult, BuildClaudePromptOptions, DockerArgsParams, StorePromptOptions } from './claude/claudeHelpers.js';
 export { executeDockerCommand, stopDockerContainer, ExecutionAbortedError } from './claude/docker/dockerExecutor.js';
 export { generateExecutionAnalysisPrompt, generateClaudePrompt } from './claude/prompts/promptGenerator.js';
-export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult } from './claude/prompts/promptGenerator.js';
+export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 
 // Codex helpers exports
 export { buildCodexPrompt, parseCodexStreamOutput, storeCodexPromptInRedis } from './codex/codexHelpers.js';

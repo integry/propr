@@ -1,11 +1,9 @@
 import { db } from '../db/connection.js';
-import { getAuthenticatedOctokit, getGitHubInstallationToken } from '../auth/githubAuth.js';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger, { type EnhancedLogger } from '../utils/logger.js';
 import { type Logger } from 'pino';
-import { ensureRepoCloned } from '../git/repoManager.js';
-import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import { createPlanIssue } from '../config/planIssueManager.js';
-import { buildUserNotesCommentBody, cleanGeneratedTitle, type PlanTaskAttachment } from './taskExecutionHelpers.js';
+import { buildUserNotesCommentBody, generateAndSaveTaskTitle, type PlanTaskAttachment } from './taskExecutionHelpers.js';
 
 // Re-export Epic PR functions from separate module
 export {
@@ -54,15 +52,6 @@ interface PlanTask {
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-interface GenerateTitleOptions {
-  draftId: string;
-  planJson: PlanTask[];
-  owner: string;
-  repoName: string;
-  oldName: string;
-  correlationId?: string;
-}
 
 interface CreateIssueOptions {
   octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
@@ -296,65 +285,6 @@ async function processTaskAndCreateIssue(options: ProcessTaskOptions): Promise<C
   return createdIssue;
 }
 
-async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<void> {
-  const { draftId, planJson, owner, repoName, oldName, correlationId } = options;
-  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
-
-  const githubToken = await getGitHubInstallationToken();
-  const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-
-  const worktreePath = await ensureRepoCloned({
-    repoUrl,
-    owner,
-    repoName,
-    authToken: githubToken
-  });
-
-  const planSummary = JSON.stringify(planJson).substring(0, 3000);
-  const prompt = `Generate a short, descriptive title (5-8 words) for this task based on the following plan.
-
-STRICT FORMATTING RULES:
-- Output ONLY the title text, nothing else
-- Do NOT use markdown formatting (no **, __, *, _, or # symbols)
-- Do NOT wrap the title in quotes
-- Do NOT prefix with "Title:" or any other label
-- Plain text only
-
-Plan:
-${planSummary}
-
-Title (plain text only):`;
-
-  correlatedLogger.info({ draftId }, 'Generating task title via LLM');
-
-  // Build metadata for LLM log tracking
-  const titleGenerationMetadata = {
-    planTaskCount: planJson.length,
-    planSummaryLength: planSummary.length,
-    oldName,
-  };
-
-  const generatedTitle = await runLightweightLLMAnalysis({
-    prompt,
-    model: 'haiku',
-    correlationId: correlationId || 'finalize-title-gen',
-    worktreePath,
-    githubToken,
-    issueRef: { number: 0, repoOwner: owner, repoName },
-    executionType: 'title-generation',
-    metadata: titleGenerationMetadata
-  });
-
-  const cleanTitle = cleanGeneratedTitle(generatedTitle);
-  if (cleanTitle && db) {
-    await db('task_drafts')
-      .where({ draft_id: draftId })
-      .update({ name: cleanTitle });
-
-    correlatedLogger.info({ draftId, oldName, newName: cleanTitle }, 'Updated task title');
-  }
-}
-
 export async function executeDraft(draftId: string, userId: string, correlationId?: string): Promise<ExecutionResult> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
@@ -369,7 +299,8 @@ export async function executeDraft(draftId: string, userId: string, correlationI
       owner,
       repoName,
       oldName: draft.name,
-      correlationId
+      correlationId,
+      db
     });
   } catch (err) {
     correlatedLogger.warn({ err: (err as Error).message }, 'Failed to generate task title, keeping original name');

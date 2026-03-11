@@ -83,11 +83,11 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   );
 
   // Build prompt for the agent
-  const prompt = generateClaudePrompt(
-    { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-    worktreeInfo.branchName,
+  const prompt = generateClaudePrompt({
+    issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
+    branchName: worktreeInfo.branchName,
     modelName,
-    {
+    issueDetails: {
       title: currentIssueData.data.title,
       body: localizedBody,
       comments: localizedComments,
@@ -95,7 +95,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       created_at: currentIssueData.data.created_at,
       user: currentIssueData.data.user
     }
-  );
+  });
 
   // Start periodic file changes updates during agent execution
   const FILE_CHANGES_INTERVAL_MS = 2000;

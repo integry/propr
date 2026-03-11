@@ -171,7 +171,7 @@ test('IssueRef and IssueDetails types are exported', async () => {
         repoName: 'repo'
     };
     
-    const prompt = generateClaudePrompt(testRef, null, null, null);
+    const prompt = generateClaudePrompt({ issueRef: testRef });
     assert.ok(prompt.includes('test/repo'));
     assert.ok(prompt.includes('#1'));
 });

@@ -51,18 +51,15 @@ export interface ExecutionAnalysisResult {
     recommendations: string[];
 }
 
-export function generateClaudePrompt(
-    issueRef: IssueRef,
-    branchName: string | null = null,
-    modelName: string | null = null,
-    issueDetails: IssueDetails | null = null
-): string {
-    const branchInfo = branchName ? `\n- **BRANCH**: You are working on branch \`${branchName}\`.` : '';
-    const modelInfo = modelName ? `\n- **MODEL**: This task is being processed by the \`${modelName}\` model.` : '';
+export interface GenerateClaudePromptOptions {
+    issueRef: IssueRef;
+    branchName?: string | null;
+    modelName?: string | null;
+    issueDetails?: IssueDetails | null;
+}
 
-    let issueDetailsSection = '';
-    if (issueDetails) {
-        issueDetailsSection = `
+function buildIssueDetailsSection(issueRef: IssueRef, issueDetails: IssueDetails): string {
+    let section = `
 
 **ISSUE DETAILS (Pre-fetched for reliability):**
 
@@ -76,17 +73,29 @@ ${issueDetails.body || 'No description provided'}
 **Created by:** @${issueDetails.user?.login || 'unknown'}
 **Created at:** ${issueDetails.created_at || 'unknown'}`;
 
-        if (issueDetails.comments && issueDetails.comments.length > 0) {
-            issueDetailsSection += `\n\n**Comments (${issueDetails.comments.length} total):**\n`;
-            issueDetails.comments.forEach((comment, index) => {
-                issueDetailsSection += `\n---\n**Comment ${index + 1}** by @${comment.user?.login || 'unknown'} (${comment.created_at || 'unknown'}):\n${comment.body || 'Empty comment'}\n`;
-            });
-        } else {
-            issueDetailsSection += `\n\n**Comments:** No comments on this issue yet.`;
-        }
+    section += buildCommentsSection(issueDetails.comments);
+    section += `\n\n**Note:** The above issue details have been automatically injected. You can still use \`gh issue view ${issueRef.number}\` if you need to fetch any additional information or verify the details.`;
 
-        issueDetailsSection += `\n\n**Note:** The above issue details have been automatically injected. You can still use \`gh issue view ${issueRef.number}\` if you need to fetch any additional information or verify the details.`;
+    return section;
+}
+
+function buildCommentsSection(comments: IssueComment[] | undefined): string {
+    if (comments && comments.length > 0) {
+        let section = `\n\n**Comments (${comments.length} total):**\n`;
+        comments.forEach((comment, index) => {
+            section += `\n---\n**Comment ${index + 1}** by @${comment.user?.login || 'unknown'} (${comment.created_at || 'unknown'}):\n${comment.body || 'Empty comment'}\n`;
+        });
+        return section;
     }
+    return `\n\n**Comments:** No comments on this issue yet.`;
+}
+
+export function generateClaudePrompt(options: GenerateClaudePromptOptions): string {
+    const { issueRef, branchName = null, modelName = null, issueDetails = null } = options;
+
+    const branchInfo = branchName ? `\n- **BRANCH**: You are working on branch \`${branchName}\`.` : '';
+    const modelInfo = modelName ? `\n- **MODEL**: This task is being processed by the \`${modelName}\` model.` : '';
+    const issueDetailsSection = issueDetails ? buildIssueDetailsSection(issueRef, issueDetails) : '';
 
     return `Please analyze and implement a solution for GitHub issue #${issueRef.number}.
 

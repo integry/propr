@@ -1,5 +1,10 @@
 import type { Logger } from 'pino';
 import type { EnhancedLogger } from '../utils/logger.js';
+import type { Knex } from 'knex';
+import logger from '../utils/logger.js';
+import { getGitHubInstallationToken } from '../auth/githubAuth.js';
+import { ensureRepoCloned } from '../git/repoManager.js';
+import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 
 export interface PlanTaskAttachment {
   id: string;
@@ -132,4 +137,84 @@ export function buildUserNotesCommentBody(options: BuildUserNotesOptions): strin
 
   const body = parts.join('\n').trim();
   return body || null;
+}
+
+interface PlanTask {
+  id?: string;
+  title: string;
+  body: string;
+  implementation: string;
+  notes?: string;
+  attachments?: PlanTaskAttachment[];
+  issue_number?: number;
+  issue_url?: string;
+}
+
+export interface GenerateTitleOptions {
+  draftId: string;
+  planJson: PlanTask[];
+  owner: string;
+  repoName: string;
+  oldName: string;
+  correlationId?: string;
+  db: Knex | null;
+}
+
+export async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<void> {
+  const { draftId, planJson, owner, repoName, oldName, correlationId, db } = options;
+  const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+
+  const githubToken = await getGitHubInstallationToken();
+  const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+
+  const worktreePath = await ensureRepoCloned({
+    repoUrl,
+    owner,
+    repoName,
+    authToken: githubToken
+  });
+
+  const planSummary = JSON.stringify(planJson).substring(0, 3000);
+  const prompt = `Generate a short, descriptive title (5-8 words) for this task based on the following plan.
+
+STRICT FORMATTING RULES:
+- Output ONLY the title text, nothing else
+- Do NOT use markdown formatting (no **, __, *, _, or # symbols)
+- Do NOT wrap the title in quotes
+- Do NOT prefix with "Title:" or any other label
+- Plain text only
+
+Plan:
+${planSummary}
+
+Title (plain text only):`;
+
+  correlatedLogger.info({ draftId }, 'Generating task title via LLM');
+
+  // Build metadata for LLM log tracking
+  const titleGenerationMetadata = {
+    planTaskCount: planJson.length,
+    planSummaryLength: planSummary.length,
+    oldName,
+  };
+
+  const generatedTitle = await runLightweightLLMAnalysis({
+    prompt,
+    model: 'haiku',
+    correlationId: correlationId || 'finalize-title-gen',
+    worktreePath,
+    githubToken,
+    issueRef: { number: 0, repoOwner: owner, repoName },
+    executionType: 'title-generation',
+    metadata: titleGenerationMetadata
+  });
+
+  const cleanTitle = cleanGeneratedTitle(generatedTitle);
+  if (cleanTitle && db) {
+    await db('task_drafts')
+      .where({ draft_id: draftId })
+      .update({ name: cleanTitle });
+
+    correlatedLogger.info({ draftId, oldName, newName: cleanTitle }, 'Updated task title');
+  }
 }
