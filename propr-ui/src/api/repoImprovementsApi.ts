@@ -19,10 +19,31 @@ export interface GenerateRepoImprovementsRequest {
 }
 
 /**
+ * Represents a single improvement suggestion
+ */
+export interface ImprovementSuggestion {
+  title: string;
+  description: string;
+}
+
+/**
+ * Metadata about the improvement generation request
+ */
+export interface ImprovementsMetadata {
+  repository: string;
+  branch: string;
+  categories: ImprovementCategory[];
+  referenceRepoId: string | null;
+  suggestionCount: number;
+}
+
+/**
  * Response from the repository improvements endpoint
  */
 export interface GenerateRepoImprovementsResponse {
   success: boolean;
+  suggestions?: ImprovementSuggestion[];
+  metadata?: ImprovementsMetadata;
   message?: string;
   error?: string;
 }
