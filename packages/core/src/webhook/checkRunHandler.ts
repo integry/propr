@@ -1,7 +1,8 @@
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
-import { findPlanIssueByRepoAndPR, updatePlanIssueByPR } from '../config/planIssueManager.js';
-import { isEpicBranch } from '../services/taskExecutionService.js';
+import { findPlanIssueByRepoAndPR, findPlanIssueByRepoAndNumber, updatePlanIssueByPR } from '../config/planIssueManager.js';
+import { isEpicBranch, extractFirstIssueIdFromEpicBranch } from '../services/taskExecutionService.js';
+import { triggerNextPendingIssue } from './planIssueTracking.js';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
 
 export interface MergePROptions {
@@ -339,6 +340,62 @@ async function linkedIssueHasAutoMergeLabel(owner: string, repoName: string, prN
 }
 
 /**
+ * Handles epic PR check completion by triggering the next pending issue.
+ * This is called when an epic PR's checks pass but it doesn't have auto-merge enabled.
+ */
+async function handleEpicPRCheckCompletion(
+    owner: string,
+    repoName: string,
+    epicBranchName: string,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    try {
+        // Extract the first issue ID from the epic branch name
+        const firstIssueId = extractFirstIssueIdFromEpicBranch(epicBranchName);
+        if (!firstIssueId) {
+            log.warn({
+                owner,
+                repoName,
+                epicBranchName
+            }, 'Could not extract first issue ID from epic branch name');
+            return;
+        }
+
+        const repository = `${owner}/${repoName}`;
+
+        // Find the plan issue using the first issue ID
+        const planIssue = await findPlanIssueByRepoAndNumber(repository, firstIssueId);
+        if (!planIssue || !planIssue.draft_id) {
+            log.debug({
+                owner,
+                repoName,
+                firstIssueId,
+                epicBranchName
+            }, 'No plan issue found for epic branch first issue');
+            return;
+        }
+
+        // Trigger the next pending issue with the epic label
+        const epicLabel = `base-${epicBranchName}`;
+        await triggerNextPendingIssue(planIssue.draft_id, repository, epicLabel, log);
+
+        log.info({
+            owner,
+            repoName,
+            epicBranchName,
+            draftId: planIssue.draft_id
+        }, 'Triggered next pending issue after epic PR checks passed');
+    } catch (error) {
+        log.error({
+            owner,
+            repoName,
+            epicBranchName,
+            error: (error as Error).message
+        }, 'Failed to handle epic PR check completion');
+    }
+}
+
+/**
  * Handles check_run webhook events.
  * When a check run completes successfully, checks if the PR should be auto-merged.
  */
@@ -391,7 +448,28 @@ export async function handleCheckRunEvent(
             // For Epic PRs, only auto-merge if the PR itself has the label (not inherited from linked issues)
             if (isEpicBranch(prInfo.headBranch)) {
                 if (!prInfo.hasLabel) {
-                    log.debug({ owner, repoName, prNumber, headBranch: prInfo.headBranch }, 'Epic PR does not have auto-merge label, skipping');
+                    // Epic PR without auto-merge label - check if we should trigger next issue
+                    // First verify all checks are passing for this specific commit
+                    const currentPrHead = await getCurrentPRHead(owner, repoName, prNumber);
+                    if (currentPrHead === headSha) {
+                        const allChecksPassing = await areAllChecksPassing(owner, repoName, headSha);
+                        if (allChecksPassing) {
+                            log.info({
+                                owner,
+                                repoName,
+                                prNumber,
+                                headBranch: prInfo.headBranch
+                            }, 'Epic PR checks passed, triggering next pending issue');
+
+                            await handleEpicPRCheckCompletion(
+                                owner,
+                                repoName,
+                                prInfo.headBranch,
+                                log
+                            );
+                        }
+                    }
+                    log.debug({ owner, repoName, prNumber, headBranch: prInfo.headBranch }, 'Epic PR does not have auto-merge label, skipping merge');
                     continue;
                 }
             } else {

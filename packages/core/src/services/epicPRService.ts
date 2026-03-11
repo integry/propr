@@ -92,6 +92,20 @@ export function isEpicBranch(branchName: string): boolean {
 }
 
 /**
+ * Extracts the first issue ID from an Epic branch name.
+ *
+ * @param branchName - The Epic branch name (e.g., "800-epic-short-name-x7y")
+ * @returns The first issue ID, or null if not a valid Epic branch
+ */
+export function extractFirstIssueIdFromEpicBranch(branchName: string): number | null {
+  const match = branchName.match(EPIC_BRANCH_PATTERN);
+  if (!match) {
+    return null;
+  }
+  return parseInt(match[1], 10);
+}
+
+/**
  * Ensures an Epic PR exists for a plan, creating the branch, label, and PR if needed.
  *
  * - Branch naming: {firstIssueId}-epic-{word1}-{word2}-{rand}

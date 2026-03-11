@@ -13,6 +13,7 @@ export {
   ensureEpicPR,
   generateEpicBranchName,
   isEpicBranch,
+  extractFirstIssueIdFromEpicBranch,
   EPIC_BRANCH_PATTERN,
   type EpicPRResult,
   type EnsureEpicPROptions
