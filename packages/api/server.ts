@@ -27,6 +27,7 @@ import {
   createStatsRoutes,
   createSummaryBrowserRoutes,
   createRepoChatRoutes,
+  createRepoImprovementsRoutes,
   attachmentUpload
 } from './routes/index.js';
 import { checkAndExecuteDelayedReindex } from './routes/configHelpers.js';
@@ -178,6 +179,7 @@ function setupRoutes(): void {
   const statsRoutes = createStatsRoutes({ db });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
+  const repoImprovementsRoutes = createRepoImprovementsRoutes();
 
   app.get('/api/status', statusRoutes.getStatus);
   app.get('/api/tasks', taskRoutes.getTasks);
@@ -278,6 +280,9 @@ function setupRoutes(): void {
 
   // Repository chat endpoint for LLM integration
   app.post('/api/repos/chat', repoChatRoutes.postChat);
+
+  // Repository improvements endpoint for generating suggestions
+  app.post('/api/repos/improvements', repoImprovementsRoutes.postImprovements);
 
   setupWebhookRoute();
 }

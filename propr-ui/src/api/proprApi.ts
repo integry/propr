@@ -460,3 +460,4 @@ export * from './repoIndexingApi';
 export * from './summaryApi';
 export * from './planIssuesApi';
 export * from './repoChatApi';
+export * from './repoImprovementsApi';
