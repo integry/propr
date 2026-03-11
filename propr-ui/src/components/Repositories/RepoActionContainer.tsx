@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { MessageSquareText, Sparkles } from 'lucide-react';
 import RepoChatPanel from './RepoChatPanel';
-import RepoImprovementsPanel, { ImprovementCategory } from './RepoImprovementsPanel';
+import RepoImprovementsPanel, { ImprovementCategory, SuggestionItem } from './RepoImprovementsPanel';
 import { chatWithRepository, ChatMessage } from '../../api/repoChatApi';
 import { generateRepoImprovements } from '../../api/repoImprovementsApi';
 
@@ -40,6 +40,7 @@ export interface RepoActionContainerProps {
 const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo }) => {
   const [activeTab, setActiveTab] = useState<ActionTab>('chat');
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
 
   const handleSendMessage = useCallback(async (message: string): Promise<string> => {
     if (!selectedRepo) {
@@ -80,10 +81,21 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
     }
   }, [selectedRepo, chatHistory]);
 
-  // Reset chat history when selected repo changes
+  // Reset chat history and suggestions when selected repo changes
   React.useEffect(() => {
     setChatHistory([]);
+    setSuggestions([]);
   }, [selectedRepo?.id]);
+
+  const handleToggleSuggestion = useCallback((index: number) => {
+    setSuggestions((prev) =>
+      prev.map((suggestion, i) =>
+        i === index
+          ? { ...suggestion, isSelected: !suggestion.isSelected }
+          : suggestion
+      )
+    );
+  }, []);
 
   if (!selectedRepo) {
     return (
@@ -133,6 +145,8 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
         {activeTab === 'improve' && (
           <RepoImprovementsPanel
             repositoryName={selectedRepo.alias || selectedRepo.name}
+            suggestions={suggestions}
+            onToggleSuggestion={handleToggleSuggestion}
             onGenerateSuggestions={async (params: {
               categories: ImprovementCategory[];
               customPrompt: string;
@@ -149,6 +163,18 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
 
               if (response.error) {
                 throw new Error(response.error);
+              }
+
+              // Transform API suggestions into SuggestionItems with selection state
+              if (response.suggestions) {
+                const suggestionItems: SuggestionItem[] = response.suggestions.map(
+                  (suggestion) => ({
+                    title: suggestion.title,
+                    description: suggestion.description,
+                    isSelected: false,
+                  })
+                );
+                setSuggestions(suggestionItems);
               }
             }}
           />
