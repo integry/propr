@@ -20,6 +20,27 @@ import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfiguratio
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
 const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
 
+/**
+ * Check if an error indicates a corrupted git repository that can be fixed by re-cloning.
+ */
+function isGitCorruptionError(error: Error): boolean {
+    const corruptionPatterns = [
+        /invalid index-pack output/i,
+        /--stdin requires a git repository/i,
+        /not a git repository/i,
+        /corrupted/i,
+        /bad object/i,
+        /missing blob/i,
+        /missing tree/i,
+        /missing commit/i,
+        /broken link/i,
+        /invalid sha1/i,
+        /pack.*corrupted/i,
+        /index file.*corrupted/i,
+    ];
+    return corruptionPatterns.some(pattern => pattern.test(error.message));
+}
+
 async function getRepoPath(owner: string, repoName: string): Promise<string> {
     return path.join(CLONES_BASE_PATH, owner, repoName);
 }
@@ -244,7 +265,19 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
             const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
 
             const git: SimpleGit = simpleGit();
-            await git.clone(authenticatedUrl, localRepoPath, cloneOptions);
+            try {
+                await git.clone(authenticatedUrl, localRepoPath, cloneOptions);
+            } catch (cloneError) {
+                // If clone fails with corruption-like error, cleanup and retry once
+                if (isGitCorruptionError(cloneError as Error)) {
+                    logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath, error: (cloneError as Error).message }, 'Clone failed with corruption error, cleaning up and retrying...');
+                    await fs.remove(localRepoPath);
+                    await fs.ensureDir(localRepoPath);
+                    await git.clone(authenticatedUrl, localRepoPath, cloneOptions);
+                } else {
+                    throw cloneError;
+                }
+            }
 
             const repoGit: SimpleGit = simpleGit(localRepoPath);
             await configureGcWorktreePrune(repoGit);
