@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Folder, AlertCircle, Loader2, GitCommit } from 'lucide-react';
+import { Folder, AlertCircle, Loader2, GitCommit, Clock } from 'lucide-react';
 import { motion } from 'framer-motion';
 import {
   getDirectoryTree,
@@ -9,6 +9,7 @@ import {
 } from '../../api/summaryApi';
 import TreeNode from './TreeNode';
 import SummaryPanel from './SummaryPanel';
+import { formatRelativeTime } from '../headerUtils';
 
 const shortenHash = (hash: string | null): string => {
   if (!hash) return '';
@@ -177,10 +178,7 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
     >
       {/* Header */}
       <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
-        <h3 className="font-semibold text-gray-800">
-          {owner}/{repo}
-        </h3>
-        <p className="text-xs text-gray-500 mt-0.5">
+        <p className="text-xs text-gray-500">
           {indexingStatus.fileCount} files, {indexingStatus.directoryCount} directories indexed
         </p>
         {indexingStatus.lastIndexedHash && (
@@ -200,6 +198,12 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
             {indexingStatus.lastIndexedCommitMessage && (
               <span className="text-xs text-gray-500 truncate">
                 {truncateMessage(indexingStatus.lastIndexedCommitMessage)}
+              </span>
+            )}
+            {indexingStatus.lastIndexedAt && (
+              <span className="flex items-center gap-1 text-xs text-gray-400 ml-auto">
+                <Clock className="w-3 h-3" />
+                {formatRelativeTime(indexingStatus.lastIndexedAt)}
               </span>
             )}
           </div>
@@ -228,7 +232,7 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
         </div>
 
         {/* Summary Detail Panel */}
-        <SummaryPanel selectedEntry={selectedEntry} />
+        <SummaryPanel selectedEntry={selectedEntry} owner={owner} repo={repo} />
       </div>
     </motion.div>
   );

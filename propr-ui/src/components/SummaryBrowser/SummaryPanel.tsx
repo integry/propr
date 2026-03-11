@@ -1,10 +1,12 @@
 import React from 'react';
-import { FileText, Folder, FileCode, FileJson, File } from 'lucide-react';
+import { FileText, Folder, FileCode, FileJson, File, ExternalLink } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { SummaryEntry } from '../../api/summaryApi';
 
 interface SummaryPanelProps {
   selectedEntry: SummaryEntry | null;
+  owner: string;
+  repo: string;
 }
 
 /**
@@ -47,7 +49,7 @@ function getFileIcon(fileName: string, size: string = 'w-5 h-5'): React.ReactNod
   return <File className={`${size} text-gray-400`} />;
 }
 
-const SummaryPanel: React.FC<SummaryPanelProps> = ({ selectedEntry }) => {
+const SummaryPanel: React.FC<SummaryPanelProps> = ({ selectedEntry, owner, repo }) => {
   return (
     <div className="md:w-1/2 p-4 bg-gray-50 min-h-[200px]">
       <AnimatePresence mode="wait">
@@ -69,6 +71,15 @@ const SummaryPanel: React.FC<SummaryPanelProps> = ({ selectedEntry }) => {
               <h4 className="font-medium text-gray-800 truncate font-mono text-sm" title={selectedEntry.path}>
                 {selectedEntry.path || '/'}
               </h4>
+              <a
+                href={`https://github.com/${owner}/${repo}/${selectedEntry.entryType === 'directory' ? 'tree' : 'blob'}/HEAD/${selectedEntry.path}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-blue-600 hover:text-blue-700 ml-auto flex-shrink-0"
+                title="View on GitHub"
+              >
+                <ExternalLink className="w-4 h-4" />
+              </a>
             </div>
 
             {/* Entry type badge */}
