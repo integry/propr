@@ -5,7 +5,6 @@ import type { WorktreeInfo, CommitResult, WorkerStateManager } from '@propr/core
 import { cleanupWorktree, commitChanges, pushBranch, TaskStates } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
-import { executeClaudeCode } from '@propr/core';
 import { validatePRCreation } from '@propr/core';
 import { linkPRToPlanIssue, findPlanIssueByRepoAndNumber, getPlanIssuesByDraft, updatePlanIssueStatus } from '@propr/core';
 import { getAuthenticatedOctokit, getPrimaryProcessingLabels } from '@propr/core';
@@ -164,8 +163,6 @@ export interface PRValidationOptions {
     octokit: Octokit;
     postProcessingResult: PostProcessingResult | null;
     repoValidation: RepoValidation;
-    githubToken: GitHubToken;
-    modelName: string;
     AI_PROCESSING_TAG: string;
     AI_DONE_TAG: string;
     correlationId: string;
@@ -174,7 +171,7 @@ export interface PRValidationOptions {
 }
 
 export async function handlePRValidation(options: PRValidationOptions): Promise<PostProcessingResult | null> {
-    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, githubToken, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger } = options;
+    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger } = options;
 
     if (!worktreeInfo) return postProcessingResult;
 
@@ -197,7 +194,7 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
     }
 
     if (!finalPRValidation.isValid && claudeResult?.success) {
-        await attemptEmergencyPRCreation({ worktreeInfo, issueRef, repoValidation, githubToken, modelName, correlationId, correlatedLogger });
+        await retryPRCreationViaAPI({ worktreeInfo, issueRef, repoValidation, correlatedLogger });
     }
     return postProcessingResult;
 }
@@ -234,25 +231,21 @@ export interface FinalValidationOptions {
     octokit: Octokit;
     postProcessingResult: PostProcessingResult | null;
     repoValidation: RepoValidation;
-    githubToken: GitHubToken;
-    modelName: string;
     AI_PROCESSING_TAG: string;
     AI_DONE_TAG: string;
     localRepoPath: string;
     jobId: string | undefined;
     correlationId: string;
     correlatedLogger: Logger;
-    PR_LABEL: string;
-    repoUrl: string;
 }
 
 export async function performFinalValidation(options: FinalValidationOptions): Promise<void> {
-    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, githubToken, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger } = options;
+    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger } = options;
     let resolvedPostProcessingResult = postProcessingResult;
 
     if (claudeResult?.success && worktreeInfo?.branchName) {
         try {
-            resolvedPostProcessingResult = await handlePRValidation({ claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, githubToken, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger, jobId });
+            resolvedPostProcessingResult = await handlePRValidation({ claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger, jobId });
         } catch (validationError) {
             correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (validationError as Error).message }, 'Final PR validation failed');
         }
@@ -261,61 +254,77 @@ export async function performFinalValidation(options: FinalValidationOptions): P
     await cleanupWorktreeIfExists({ worktreeInfo, localRepoPath, claudeResult, postProcessingResult: resolvedPostProcessingResult, jobId, issueRef, correlatedLogger });
 }
 
-interface EmergencyPROptions {
+interface RetryPRCreationOptions {
     worktreeInfo: WorktreeInfo;
     issueRef: IssueJobData;
     repoValidation: RepoValidation;
-    githubToken: GitHubToken;
-    modelName: string;
-    correlationId: string;
     correlatedLogger: Logger;
 }
 
-async function attemptEmergencyPRCreation(options: EmergencyPROptions): Promise<void> {
-    const { worktreeInfo, issueRef, repoValidation, githubToken, modelName, correlationId, correlatedLogger } = options;
-    const emergencyPrompt = `The code changes for GitHub issue #${issueRef.number} have already been implemented and committed to branch ${worktreeInfo.branchName}.
+/**
+ * Retries PR creation via GitHub API when the initial PR creation failed.
+ * This is a fallback that uses direct API calls instead of having Claude create the PR.
+ */
+async function retryPRCreationViaAPI(options: RetryPRCreationOptions): Promise<void> {
+    const { worktreeInfo, issueRef, repoValidation, correlatedLogger } = options;
 
-**URGENT TASK: CREATE PULL REQUEST**
+    const targetBaseBranch = issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main';
 
-**REPOSITORY INFORMATION (USE EXACTLY):**
-- Repository: ${issueRef.repoOwner}/${issueRef.repoName}
-- Branch: ${worktreeInfo.branchName}
-- Base Branch: ${repoValidation.repoData?.defaultBranch || 'main'}
-- Issue: #${issueRef.number}
-
-**CRITICAL INSTRUCTIONS:**
-1. You are in directory: ${worktreeInfo.worktreePath}
-2. The code changes are already committed
-3. Your ONLY task is to create a pull request
-4. Use: \`gh pr create --title "Fix issue #${issueRef.number}" --body "Resolves #${issueRef.number}"\`
-5. DO NOT make any code changes
-6. DO NOT commit anything
-7. ONLY create the pull request`;
-
-    const emergencyRetry = await executeClaudeCode({
-        worktreePath: worktreeInfo.worktreePath,
-        issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-        githubToken: githubToken.token,
-        customPrompt: emergencyPrompt,
-        isRetry: true,
-        retryReason: 'Emergency PR creation - main implementation complete',
+    correlatedLogger.info({
+        issueNumber: issueRef.number,
         branchName: worktreeInfo.branchName,
-        modelName
-    });
+        baseBranch: targetBaseBranch
+    }, 'Retrying PR creation via GitHub API');
 
-    if (emergencyRetry.success) {
-        const emergencyValidation: PRValidation = await validatePRCreation({
-            owner: issueRef.repoOwner, repoName: issueRef.repoName,
-            branchName: worktreeInfo.branchName, expectedPrNumber: undefined, correlationId
+    try {
+        const octokit = await getAuthenticatedOctokit();
+
+        const prResponse = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
+            owner: issueRef.repoOwner,
+            repo: issueRef.repoName,
+            title: `Fix issue #${issueRef.number}`,
+            head: worktreeInfo.branchName,
+            base: targetBaseBranch,
+            body: `Resolves #${issueRef.number}\n\n_PR created via retry mechanism_`
         });
 
-        if (emergencyValidation.isValid && emergencyValidation.pr) {
-            correlatedLogger.info({ issueNumber: issueRef.number, prNumber: emergencyValidation.pr.number }, 'Emergency PR creation successful');
+        const prNumber = prResponse.data.number;
+        correlatedLogger.info({ issueNumber: issueRef.number, prNumber }, 'PR creation retry successful');
 
-            // Link PR to plan issue after emergency creation
-            const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
-            await linkPRToPlanIssue(repository, issueRef.number, emergencyValidation.pr.number);
-            correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber: emergencyValidation.pr.number }, 'Linked PR to plan issue (emergency creation)');
+        // Link PR to plan issue
+        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+        await linkPRToPlanIssue(repository, issueRef.number, prNumber);
+        correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber }, 'Linked PR to plan issue (retry creation)');
+
+    } catch (error) {
+        const err = error as Error & { status?: number };
+
+        // If PR already exists (422), try to find it
+        if (err.status === 422) {
+            correlatedLogger.info({ issueNumber: issueRef.number }, 'PR already exists, searching for it');
+
+            const octokit = await getAuthenticatedOctokit();
+            const existingPRs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+                owner: issueRef.repoOwner,
+                repo: issueRef.repoName,
+                head: `${issueRef.repoOwner}:${worktreeInfo.branchName}`,
+                state: 'open'
+            });
+
+            if (existingPRs.data.length > 0) {
+                const existingPR = existingPRs.data[0];
+                correlatedLogger.info({ issueNumber: issueRef.number, prNumber: existingPR.number }, 'Found existing PR');
+
+                const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+                await linkPRToPlanIssue(repository, issueRef.number, existingPR.number);
+            }
+        } else {
+            correlatedLogger.error({
+                issueNumber: issueRef.number,
+                branchName: worktreeInfo.branchName,
+                error: err.message,
+                status: err.status
+            }, 'PR creation retry failed');
         }
     }
 }

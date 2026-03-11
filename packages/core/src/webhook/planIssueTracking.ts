@@ -158,20 +158,6 @@ function determinePRStatusUpdate(
     return null;
 }
 
-async function handleMergedPRAutoTrigger(
-    planIssue: PlanIssue,
-    repository: string,
-    log: ReturnType<typeof logger.withCorrelation>
-): Promise<void> {
-    if (!planIssue.draft_id) return;
-
-    const issueLabels = await getIssueLabels(repository, planIssue.issue_number, log);
-    if (!issueLabels.includes('auto-merge')) return;
-
-    const epicLabel = issueLabels.find(label => label.startsWith('base-'));
-    await triggerNextPendingIssue(planIssue.draft_id, repository, epicLabel, log);
-}
-
 /**
  * Handles PR events to track PR associations with plan issues.
  */
@@ -211,8 +197,39 @@ export async function handlePlanPRUpdate(
         await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
         log.info({ repository, prNumber, newStatus }, 'Updated plan issue status from PR event');
 
-        if (newStatus === 'merged') {
-            await handleMergedPRAutoTrigger(planIssue, repository, log);
+        // When a PR is merged, trigger the next pending issue in the same plan
+        // Only if the merged issue had auto-merge enabled (indicated by auto-merge label)
+        if (newStatus === 'merged' && planIssue.draft_id) {
+            const issueLabels = await getIssueLabels(repository, planIssue.issue_number, log);
+            const hasAutoMerge = issueLabels.includes('auto-merge');
+            log.info({ repository, issueNumber: planIssue.issue_number, issueLabels, hasAutoMerge }, 'Checking auto-merge for next issue trigger');
+            if (hasAutoMerge) {
+                // Find epic label to pass to next issue (format: base-{epicBranchName})
+                const epicLabel = issueLabels.find(label => label.startsWith('base-'));
+
+                // If merging to epic branch, check if epic PR has pending checks
+                // If checks are pending, defer triggering - the check_run handler will do it later
+                if (epicLabel) {
+                    const [owner, repo] = repository.split('/');
+                    const epicBranchName = epicLabel.replace('base-', '');
+                    const checksPending = await areEpicPRChecksPending(owner, repo, epicBranchName, log);
+
+                    if (checksPending) {
+                        log.info({
+                            repository,
+                            issueNumber: planIssue.issue_number,
+                            epicBranch: epicBranchName
+                        }, 'Deferring next issue trigger - waiting for epic PR checks');
+                        return; // check_run handler will trigger when checks pass
+                    }
+                }
+
+                await triggerNextPendingIssue(planIssue.draft_id, repository, epicLabel, log);
+            } else {
+                log.info({ repository, issueNumber: planIssue.issue_number }, 'Skipping next issue trigger - no auto-merge label');
+            }
+        } else if (newStatus === 'merged') {
+            log.warn({ repository, prNumber, hasDraftId: !!planIssue.draft_id }, 'Merged but cannot trigger next issue - missing draft_id');
         }
     } catch (error) {
         log.error({ error, repository, prNumber }, 'Failed to handle plan PR update');
@@ -250,10 +267,72 @@ async function getIssueLabels(
 }
 
 /**
+ * Checks if the epic PR has pending (in_progress or queued) checks.
+ * Returns true if checks are still running and we should defer triggering the next issue.
+ */
+async function areEpicPRChecksPending(
+    owner: string,
+    repo: string,
+    epicBranchName: string,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<boolean> {
+    try {
+        const octokit = await getAuthenticatedOctokit();
+
+        // Find the epic PR from this branch
+        const prs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+            owner,
+            repo,
+            head: `${owner}:${epicBranchName}`,
+            state: 'open'
+        });
+
+        if (prs.data.length === 0) {
+            // No epic PR yet, no checks to wait for
+            return false;
+        }
+
+        const epicPR = prs.data[0];
+        const headSha = epicPR.head.sha;
+
+        // Check if any checks are still running
+        const checkRuns = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+            owner,
+            repo,
+            ref: headSha
+        });
+
+        const hasIncomplete = checkRuns.data.check_runs.some(
+            (run: { status: string }) => run.status !== 'completed'
+        );
+
+        if (hasIncomplete) {
+            log.info({
+                epicBranch: epicBranchName,
+                prNumber: epicPR.number,
+                pendingChecks: checkRuns.data.check_runs
+                    .filter((r: { status: string; name: string }) => r.status !== 'completed')
+                    .map((r: { name: string }) => r.name)
+            }, 'Epic PR has pending checks, deferring next issue trigger');
+        }
+
+        return hasIncomplete;
+    } catch (error) {
+        log.warn({
+            owner,
+            repo,
+            epicBranch: epicBranchName,
+            error: (error as Error).message
+        }, 'Failed to check epic PR checks status, proceeding with trigger');
+        return false;
+    }
+}
+
+/**
  * Triggers the next pending issue in a plan by adding processing labels.
  * Only triggers if there are no issues currently being processed or under review.
  */
-async function triggerNextPendingIssue(
+export async function triggerNextPendingIssue(
     draftId: string,
     repository: string,
     epicLabel: string | undefined,
