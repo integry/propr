@@ -28,7 +28,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   }
 
   const context = await initializeJobContext(job);
-  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, PR_LABEL } = context;
+  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG } = context;
 
   await addModelSpecificDelay(modelName);
 
