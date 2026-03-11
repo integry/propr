@@ -115,67 +115,151 @@ Generate between 3 and 10 improvement suggestions based on the available context
 CRITICAL: Your entire response must be a valid JSON array. No explanatory text, no markdown formatting, no code blocks. Just the JSON array.`;
 }
 
+/**
+ * Valid improvement categories
+ */
+const VALID_CATEGORIES: ImprovementCategory[] = [
+  'code-quality',
+  'performance',
+  'security',
+  'testing',
+  'documentation',
+  'architecture'
+];
+
+/**
+ * Validation result type
+ */
+interface ValidationResult {
+  valid: boolean;
+  error?: string;
+  owner?: string;
+  repoName?: string;
+}
+
+/**
+ * Validates the request body for improvements endpoint
+ */
+function validateImprovementsRequest(body: RepoImprovementsRequest): ValidationResult {
+  const { repository, categories, customPrompt } = body;
+
+  if (!repository || typeof repository !== 'string') {
+    return { valid: false, error: 'repository is required and must be a string' };
+  }
+
+  const [owner, repoName] = repository.split('/');
+  if (!owner || !repoName) {
+    return { valid: false, error: 'Invalid repository format. Expected "owner/repo"' };
+  }
+
+  if (!Array.isArray(categories)) {
+    return { valid: false, error: 'categories must be an array' };
+  }
+
+  const hasCategories = categories.length > 0;
+  const hasCustomPrompt = customPrompt && typeof customPrompt === 'string' && customPrompt.trim().length > 0;
+
+  if (!hasCategories && !hasCustomPrompt) {
+    return { valid: false, error: 'At least one category or a custom prompt is required' };
+  }
+
+  for (const category of categories) {
+    if (!VALID_CATEGORIES.includes(category)) {
+      return {
+        valid: false,
+        error: `Invalid category: ${category}. Valid categories are: ${VALID_CATEGORIES.join(', ')}`
+      };
+    }
+  }
+
+  return { valid: true, owner, repoName };
+}
+
+/**
+ * Builds reference context from a reference repository
+ */
+async function buildReferenceContext(
+  referenceRepoId: string,
+  correlationId: string
+): Promise<string | null> {
+  try {
+    const referenceSummaryResult = await buildSummaryContext({
+      repoName: referenceRepoId,
+      correlationId
+    });
+    if (referenceSummaryResult.context) {
+      console.log('[repo-improvements] Reference context built:', {
+        correlationId,
+        referenceRepoId,
+        fileSummaryCount: referenceSummaryResult.fileSummaryCount,
+        dirSummaryCount: referenceSummaryResult.dirSummaryCount,
+        estimatedTokens: referenceSummaryResult.estimatedTokens
+      });
+      return referenceSummaryResult.context;
+    }
+  } catch (refError) {
+    console.warn('[repo-improvements] Failed to build reference context:', {
+      correlationId,
+      referenceRepoId,
+      error: (refError as Error).message
+    });
+  }
+  return null;
+}
+
+/**
+ * Parses and validates the LLM response into suggestions
+ */
+function parseAndValidateSuggestions(
+  llmResponse: string,
+  correlationId: string
+): { suggestions: ImprovementSuggestion[] } | { error: string } {
+  try {
+    const suggestions = parseLlmJson<ImprovementSuggestion[]>(llmResponse);
+
+    if (!Array.isArray(suggestions)) {
+      throw new Error('LLM response is not an array');
+    }
+
+    for (const suggestion of suggestions) {
+      if (typeof suggestion.title !== 'string' || typeof suggestion.description !== 'string') {
+        throw new Error('Suggestion missing required title or description field');
+      }
+    }
+
+    console.log('[repo-improvements] Successfully parsed suggestions:', {
+      correlationId,
+      count: suggestions.length
+    });
+
+    return { suggestions };
+  } catch (parseError) {
+    console.error('[repo-improvements] Failed to parse LLM response:', {
+      correlationId,
+      error: (parseError as Error).message,
+      responsePreview: llmResponse.substring(0, 500)
+    });
+    return { error: 'Failed to parse improvement suggestions from LLM response' };
+  }
+}
+
 export function createRepoImprovementsRoutes() {
   async function postImprovements(req: Request, res: Response): Promise<void> {
     const correlationId = generateCorrelationId();
 
     try {
-      const {
-        repository,
-        branch,
-        categories,
-        customPrompt,
-        referenceRepoId
-      } = req.body as RepoImprovementsRequest;
+      const body = req.body as RepoImprovementsRequest;
+      const { repository, branch, categories, customPrompt, referenceRepoId } = body;
 
-      // Validate required fields
-      if (!repository || typeof repository !== 'string') {
-        res.status(400).json({ error: 'repository is required and must be a string' });
+      // Validate request
+      const validation = validateImprovementsRequest(body);
+      if (!validation.valid) {
+        res.status(400).json({ error: validation.error });
         return;
       }
 
-      // Parse repository into owner and name
-      const [owner, repoName] = repository.split('/');
-      if (!owner || !repoName) {
-        res.status(400).json({ error: 'Invalid repository format. Expected "owner/repo"' });
-        return;
-      }
+      const { owner, repoName } = validation as { owner: string; repoName: string };
 
-      // Validate categories array
-      if (!Array.isArray(categories)) {
-        res.status(400).json({ error: 'categories must be an array' });
-        return;
-      }
-
-      // Validate that at least one category is provided or customPrompt is present
-      const hasCategories = categories.length > 0;
-      const hasCustomPrompt = customPrompt && typeof customPrompt === 'string' && customPrompt.trim().length > 0;
-
-      if (!hasCategories && !hasCustomPrompt) {
-        res.status(400).json({ error: 'At least one category or a custom prompt is required' });
-        return;
-      }
-
-      // Validate category values if provided
-      const validCategories: ImprovementCategory[] = [
-        'code-quality',
-        'performance',
-        'security',
-        'testing',
-        'documentation',
-        'architecture'
-      ];
-
-      for (const category of categories) {
-        if (!validCategories.includes(category)) {
-          res.status(400).json({
-            error: `Invalid category: ${category}. Valid categories are: ${validCategories.join(', ')}`
-          });
-          return;
-        }
-      }
-
-      // Log the request parameters for debugging
       console.log('[repo-improvements] Request received:', {
         correlationId,
         repository,
@@ -186,23 +270,11 @@ export function createRepoImprovementsRoutes() {
       });
 
       // Get GitHub authentication token
-      let authToken: string;
-      try {
-        authToken = await getGitHubInstallationToken();
-      } catch {
-        res.status(500).json({ error: 'Failed to obtain GitHub authentication' });
-        return;
-      }
+      const authToken = await getGitHubInstallationToken();
 
       // Ensure the repository is cloned/accessible
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-      let worktreePath: string;
-      try {
-        worktreePath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken, baseBranch: branch });
-      } catch (cloneError) {
-        res.status(500).json({ error: `Failed to access repository: ${(cloneError as Error).message}` });
-        return;
-      }
+      const worktreePath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken, baseBranch: branch });
 
       // Build context for the target repository
       const targetSummaryResult = await buildSummaryContext({
@@ -218,32 +290,9 @@ export function createRepoImprovementsRoutes() {
       });
 
       // Build context for reference repository if provided
-      let referenceContext: string | null = null;
-      if (referenceRepoId) {
-        try {
-          const referenceSummaryResult = await buildSummaryContext({
-            repoName: referenceRepoId,
-            correlationId
-          });
-          if (referenceSummaryResult.context) {
-            referenceContext = referenceSummaryResult.context;
-            console.log('[repo-improvements] Reference context built:', {
-              correlationId,
-              referenceRepoId,
-              fileSummaryCount: referenceSummaryResult.fileSummaryCount,
-              dirSummaryCount: referenceSummaryResult.dirSummaryCount,
-              estimatedTokens: referenceSummaryResult.estimatedTokens
-            });
-          }
-        } catch (refError) {
-          console.warn('[repo-improvements] Failed to build reference context:', {
-            correlationId,
-            referenceRepoId,
-            error: (refError as Error).message
-          });
-          // Continue without reference context - not a fatal error
-        }
-      }
+      const referenceContext = referenceRepoId
+        ? await buildReferenceContext(referenceRepoId, correlationId)
+        : null;
 
       // Build the LLM prompt
       const prompt = buildImprovementsPrompt(
@@ -253,12 +302,11 @@ export function createRepoImprovementsRoutes() {
         referenceContext
       );
 
-      // Get model settings
+      // Get model settings and call the LLM
       const settings = await loadSettings();
       const model = settings.planner_context_model || 'haiku';
-
-      // Call the LLM
       const issueRef = { number: 0, repoOwner: owner, repoName };
+
       const llmResponse = await runLightweightLLMAnalysis({
         prompt,
         model,
@@ -281,49 +329,23 @@ export function createRepoImprovementsRoutes() {
         responseLength: llmResponse.length
       });
 
-      // Parse the LLM response as JSON array
-      let suggestions: ImprovementSuggestion[];
-      try {
-        suggestions = parseLlmJson<ImprovementSuggestion[]>(llmResponse);
-
-        // Validate the parsed suggestions
-        if (!Array.isArray(suggestions)) {
-          throw new Error('LLM response is not an array');
-        }
-
-        // Validate each suggestion has required fields
-        for (const suggestion of suggestions) {
-          if (typeof suggestion.title !== 'string' || typeof suggestion.description !== 'string') {
-            throw new Error('Suggestion missing required title or description field');
-          }
-        }
-
-        console.log('[repo-improvements] Successfully parsed suggestions:', {
-          correlationId,
-          count: suggestions.length
-        });
-      } catch (parseError) {
-        console.error('[repo-improvements] Failed to parse LLM response:', {
-          correlationId,
-          error: (parseError as Error).message,
-          responsePreview: llmResponse.substring(0, 500)
-        });
-        res.status(500).json({
-          error: 'Failed to parse improvement suggestions from LLM response'
-        });
+      // Parse and validate the LLM response
+      const parseResult = parseAndValidateSuggestions(llmResponse, correlationId);
+      if ('error' in parseResult) {
+        res.status(500).json({ error: parseResult.error });
         return;
       }
 
       // Return success response with suggestions
       res.json({
         success: true,
-        suggestions,
+        suggestions: parseResult.suggestions,
         metadata: {
           repository,
           branch: branch || 'HEAD',
           categories,
           referenceRepoId: referenceRepoId || null,
-          suggestionCount: suggestions.length
+          suggestionCount: parseResult.suggestions.length
         }
       });
     } catch (error) {
