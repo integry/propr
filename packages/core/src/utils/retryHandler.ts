@@ -83,7 +83,9 @@ function isRetryableError(error: Error | unknown, config: RetryConfig): boolean 
         /server.*unavailable/i,
         /no server.*available/i,
         /service unavailable/i,
-        /bad gateway/i
+        /bad gateway/i,
+        /could not resolve to a node/i, // GitHub API propagation delay
+        /unprocessable.*node/i
     ];
 
     const errorMessage = err.message ?? '';

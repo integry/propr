@@ -4,6 +4,7 @@ import logger, { type EnhancedLogger } from '../utils/logger.js';
 import { type Logger } from 'pino';
 import { createPlanIssue } from '../config/planIssueManager.js';
 import { buildUserNotesCommentBody, generateAndSaveTaskTitle, type PlanTaskAttachment } from './taskExecutionHelpers.js';
+import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 
 // Re-export Epic PR functions from separate module
 export {
@@ -68,19 +69,23 @@ interface CreatedIssue {
   title: string;
 }
 
-async function createGitHubIssue(options: CreateIssueOptions): Promise<CreatedIssue> {
-  const { octokit, owner, repoName, task, draftId, correlatedLogger } = options;
+async function createGitHubIssue(options: CreateIssueOptions & { correlationId?: string }): Promise<CreatedIssue> {
+  const { octokit, owner, repoName, task, draftId, correlatedLogger, correlationId } = options;
 
   let issueBody = task.body || '';
   issueBody += '\n\n---\n*Created by ProPR AI Planner*';
 
-  const response = await octokit.request('POST /repos/{owner}/{repo}/issues', {
-    owner,
-    repo: repoName,
-    title: task.title,
-    body: issueBody,
-    labels: ['propr-planned']
-  });
+  const response = await withRetry(
+    () => octokit.request('POST /repos/{owner}/{repo}/issues', {
+      owner,
+      repo: repoName,
+      title: task.title,
+      body: issueBody,
+      labels: ['propr-planned']
+    }),
+    { ...retryConfigs.githubApi, correlationId },
+    `create_issue_${owner}/${repoName}`
+  );
 
   correlatedLogger.info({
     draftId,
@@ -103,21 +108,33 @@ interface PostIssueCommentsOptions {
   task: PlanTask;
   draftId: string;
   correlatedLogger: Logger | EnhancedLogger;
+  correlationId?: string;
 }
 
+// Retry config for comments - GitHub can have propagation delays after issue creation
+const commentRetryConfig = {
+  ...retryConfigs.githubApi,
+  maxAttempts: 4,
+  baseDelay: 2000, // Start with 2s delay to allow GitHub propagation
+};
+
 async function postIssueComments(options: PostIssueCommentsOptions): Promise<void> {
-  const { octokit, owner, repoName, issueNumber, task, draftId, correlatedLogger } = options;
+  const { octokit, owner, repoName, issueNumber, task, draftId, correlatedLogger, correlationId } = options;
 
   // Post implementation as a separate comment if it exists
   if (task.implementation) {
     const commentBody = '**Suggested Implementation:**\n\n' + task.implementation;
 
-    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-      owner,
-      repo: repoName,
-      issue_number: issueNumber,
-      body: commentBody
-    });
+    await withRetry(
+      () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner,
+        repo: repoName,
+        issue_number: issueNumber,
+        body: commentBody
+      }),
+      { ...commentRetryConfig, correlationId },
+      `post_implementation_comment_${issueNumber}`
+    );
 
     correlatedLogger.info({
       draftId,
@@ -140,12 +157,16 @@ async function postIssueComments(options: PostIssueCommentsOptions): Promise<voi
     });
 
     if (userNotesCommentBody) {
-      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner,
-        repo: repoName,
-        issue_number: issueNumber,
-        body: userNotesCommentBody
-      });
+      await withRetry(
+        () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+          owner,
+          repo: repoName,
+          issue_number: issueNumber,
+          body: userNotesCommentBody
+        }),
+        { ...commentRetryConfig, correlationId },
+        `post_notes_comment_${issueNumber}`
+      );
 
       correlatedLogger.info({
         draftId,
@@ -232,10 +253,17 @@ interface ProcessTaskOptions {
   draftId: string;
   repository: string;
   correlatedLogger: Logger | EnhancedLogger;
+  correlationId?: string;
 }
 
-async function processTaskAndCreateIssue(options: ProcessTaskOptions): Promise<CreatedIssue> {
-  const { octokit, owner, repoName, task, taskIndex, draftId, repository, correlatedLogger } = options;
+interface ProcessTaskResult {
+  success: boolean;
+  issue?: CreatedIssue;
+  error?: string;
+}
+
+async function processTaskAndCreateIssue(options: ProcessTaskOptions): Promise<ProcessTaskResult> {
+  const { octokit, owner, repoName, task, taskIndex, draftId, repository, correlatedLogger, correlationId } = options;
 
   correlatedLogger.info({
     draftId,
@@ -243,14 +271,26 @@ async function processTaskAndCreateIssue(options: ProcessTaskOptions): Promise<C
     taskTitle: task.title
   }, 'Creating issue');
 
-  const createdIssue = await createGitHubIssue({
-    octokit,
-    owner,
-    repoName,
-    task,
-    draftId,
-    correlatedLogger
-  });
+  let createdIssue: CreatedIssue;
+  try {
+    createdIssue = await createGitHubIssue({
+      octokit,
+      owner,
+      repoName,
+      task,
+      draftId,
+      correlatedLogger,
+      correlationId
+    });
+  } catch (issueError) {
+    correlatedLogger.error({
+      draftId,
+      taskIndex: taskIndex + 1,
+      taskTitle: task.title,
+      error: (issueError as Error).message
+    }, 'Failed to create GitHub issue after retries');
+    return { success: false, error: `Failed to create issue: ${(issueError as Error).message}` };
+  }
 
   // Create plan_issue record to track this issue
   try {
@@ -272,17 +312,30 @@ async function processTaskAndCreateIssue(options: ProcessTaskOptions): Promise<C
   }
 
   // Post implementation and user notes comments
-  await postIssueComments({
-    octokit,
-    owner,
-    repoName,
-    issueNumber: createdIssue.number,
-    task,
-    draftId,
-    correlatedLogger
-  });
+  // Small delay to allow GitHub to propagate the issue
+  await sleep(500);
 
-  return createdIssue;
+  try {
+    await postIssueComments({
+      octokit,
+      owner,
+      repoName,
+      issueNumber: createdIssue.number,
+      task,
+      draftId,
+      correlatedLogger,
+      correlationId
+    });
+  } catch (commentError) {
+    // Issue was created successfully, but comments failed - log but don't fail the whole task
+    correlatedLogger.warn({
+      draftId,
+      issueNumber: createdIssue.number,
+      error: (commentError as Error).message
+    }, 'Failed to post comments after retries, issue was created successfully');
+  }
+
+  return { success: true, issue: createdIssue };
 }
 
 export async function executeDraft(draftId: string, userId: string, correlationId?: string): Promise<ExecutionResult> {
@@ -308,13 +361,14 @@ export async function executeDraft(draftId: string, userId: string, correlationI
 
   const octokit = await getAuthenticatedOctokit();
   const results: IssueLink[] = [];
+  const failures: Array<{ taskIndex: number; title: string; error: string }> = [];
 
   correlatedLogger.info({ draftId, taskCount: planJson.length }, 'Creating GitHub issues');
 
   for (let i = 0; i < planJson.length; i++) {
     const task = planJson[i];
 
-    const createdIssue = await processTaskAndCreateIssue({
+    const result = await processTaskAndCreateIssue({
       octokit,
       owner,
       repoName,
@@ -322,41 +376,95 @@ export async function executeDraft(draftId: string, userId: string, correlationI
       taskIndex: i,
       draftId,
       repository: draft.repository,
-      correlatedLogger
+      correlatedLogger,
+      correlationId
     });
 
-    results.push(createdIssue);
-
-    // Update the task with issue information
-    planJson[i].issue_number = createdIssue.number;
-    planJson[i].issue_url = createdIssue.url;
+    if (result.success && result.issue) {
+      results.push(result.issue);
+      // Update the task with issue information
+      planJson[i].issue_number = result.issue.number;
+      planJson[i].issue_url = result.issue.url;
+    } else {
+      failures.push({
+        taskIndex: i,
+        title: task.title,
+        error: result.error || 'Unknown error'
+      });
+      correlatedLogger.warn({
+        draftId,
+        taskIndex: i + 1,
+        taskTitle: task.title,
+        error: result.error
+      }, 'Task failed, continuing with remaining tasks');
+    }
 
     if (i < planJson.length - 1) {
       await sleep(1000);
     }
   }
 
-  const existingConfig = typeof draft.context_config === 'string'
-    ? JSON.parse(draft.context_config)
-    : (draft.context_config || {});
+  // Only avoid spreading context_config - extract specific fields safely
+  let baseBranch: unknown, granularity: unknown, contextLevel: unknown, compress: unknown,
+      manualFiles: unknown, autoFiles: unknown, contextRepositories: unknown, generationModel: unknown;
+
+  if (typeof draft.context_config === 'string') {
+    try {
+      const parsed = JSON.parse(draft.context_config);
+      baseBranch = parsed.baseBranch;
+      granularity = parsed.granularity;
+      contextLevel = parsed.contextLevel;
+      compress = parsed.compress;
+      manualFiles = parsed.manualFiles;
+      autoFiles = parsed.autoFiles;
+      contextRepositories = parsed.contextRepositories;
+      generationModel = parsed.generationModel;
+    } catch {
+      // Ignore parse errors
+    }
+  } else if (draft.context_config) {
+    const config = draft.context_config as Record<string, unknown>;
+    baseBranch = config.baseBranch;
+    granularity = config.granularity;
+    contextLevel = config.contextLevel;
+    compress = config.compress;
+    manualFiles = config.manualFiles;
+    autoFiles = config.autoFiles;
+    contextRepositories = config.contextRepositories;
+    generationModel = config.generationModel;
+  }
+
+  const updatedConfig: Record<string, unknown> = {
+    baseBranch,
+    granularity,
+    contextLevel,
+    compress,
+    manualFiles,
+    autoFiles,
+    contextRepositories,
+    generationModel,
+    executionResults: results,
+    executedAt: new Date().toISOString()
+  };
+
+  if (failures.length > 0) {
+    updatedConfig.executionFailures = failures;
+  }
 
   await db!('task_drafts')
     .where({ draft_id: draftId })
     .update({
       status: 'executed',
       plan_json: JSON.stringify(planJson),
-      context_config: JSON.stringify({
-        ...existingConfig,
-        executionResults: results,
-        executedAt: new Date().toISOString()
-      }),
+      context_config: JSON.stringify(updatedConfig),
       updated_at: db!.fn.now()
     });
 
   correlatedLogger.info({
     draftId,
-    issuesCreated: results.length
+    issuesCreated: results.length,
+    issuesFailed: failures.length
   }, 'Draft execution completed');
 
-  return { success: true, results };
+  return { success: results.length > 0, results };
 }

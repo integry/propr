@@ -56,6 +56,7 @@ export interface GenerateClaudePromptOptions {
     branchName?: string | null;
     modelName?: string | null;
     issueDetails?: IssueDetails | null;
+    baseBranch?: string | null;
 }
 
 function buildIssueDetailsSection(issueRef: IssueRef, issueDetails: IssueDetails): string {
@@ -91,9 +92,10 @@ function buildCommentsSection(comments: IssueComment[] | undefined): string {
 }
 
 export function generateClaudePrompt(options: GenerateClaudePromptOptions): string {
-    const { issueRef, branchName = null, modelName = null, issueDetails = null } = options;
+    const { issueRef, branchName = null, modelName = null, issueDetails = null, baseBranch = null } = options;
 
     const branchInfo = branchName ? `\n- **BRANCH**: You are working on branch \`${branchName}\`.` : '';
+    const baseBranchInfo = baseBranch ? `\n- **BASE BRANCH**: \`${baseBranch}\` (PRs must target this branch, not main)` : '';
     const modelInfo = modelName ? `\n- **MODEL**: This task is being processed by the \`${modelName}\` model.` : '';
     const issueDetailsSection = issueDetails ? buildIssueDetailsSection(issueRef, issueDetails) : '';
 
@@ -102,7 +104,7 @@ export function generateClaudePrompt(options: GenerateClaudePromptOptions): stri
 **REPOSITORY INFORMATION:**
 - Repository Owner: ${issueRef.repoOwner}
 - Repository Name: ${issueRef.repoName}
-- Full Repository: ${issueRef.repoOwner}/${issueRef.repoName}${branchInfo}${modelInfo}${issueDetailsSection}
+- Full Repository: ${issueRef.repoOwner}/${issueRef.repoName}${branchInfo}${baseBranchInfo}${modelInfo}${issueDetailsSection}
 
 **YOUR FOCUS: IMPLEMENTATION ONLY**
 

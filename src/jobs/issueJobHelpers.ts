@@ -356,10 +356,28 @@ interface FindExistingPROptions {
 async function findExistingPR(options: FindExistingPROptions): Promise<PostProcessingResult> {
     const { octokit, issueRef, worktreeInfo, prError, correlatedLogger } = options;
     try {
-        const existingPRs = await octokit.request<{ data: Array<{ number: number; html_url: string; title: string }> }>('GET /repos/{owner}/{repo}/pulls', { owner: issueRef.repoOwner, repo: issueRef.repoName, head: `${issueRef.repoOwner}:${worktreeInfo.branchName}`, state: 'open' });
+        const existingPRs = await octokit.request<{ data: Array<{ number: number; html_url: string; title: string; base: { ref: string } }> }>('GET /repos/{owner}/{repo}/pulls', { owner: issueRef.repoOwner, repo: issueRef.repoName, head: `${issueRef.repoOwner}:${worktreeInfo.branchName}`, state: 'open' });
         if (existingPRs.data.length > 0) {
             const existingPR = existingPRs.data[0];
-            correlatedLogger.info({ issueNumber: issueRef.number, prNumber: existingPR.number, prUrl: existingPR.html_url }, 'Found existing PR for branch');
+            correlatedLogger.info({ issueNumber: issueRef.number, prNumber: existingPR.number, prUrl: existingPR.html_url, currentBase: existingPR.base.ref }, 'Found existing PR for branch');
+
+            // Check if the PR base branch is correct, update if needed
+            const expectedBase = issueRef.baseBranch;
+            if (expectedBase && existingPR.base.ref !== expectedBase) {
+                correlatedLogger.info({ prNumber: existingPR.number, currentBase: existingPR.base.ref, expectedBase }, 'PR has wrong base branch, updating...');
+                try {
+                    await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+                        owner: issueRef.repoOwner,
+                        repo: issueRef.repoName,
+                        pull_number: existingPR.number,
+                        base: expectedBase
+                    });
+                    correlatedLogger.info({ prNumber: existingPR.number, newBase: expectedBase }, 'Updated PR base branch');
+                } catch (updateError) {
+                    correlatedLogger.warn({ prNumber: existingPR.number, error: (updateError as Error).message }, 'Failed to update PR base branch');
+                }
+            }
+
             return { success: true, pr: { number: existingPR.number, url: existingPR.html_url, title: existingPR.title }, updatedLabels: [] };
         }
         throw prError;
