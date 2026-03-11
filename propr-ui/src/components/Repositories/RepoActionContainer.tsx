@@ -75,7 +75,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
 
     loadMessages();
     setSuggestions([]);
-  }, [selectedRepo?.id, selectedRepo?.name]);
+  }, [selectedRepo]);
 
   // Build chat history for API from messages
   const chatHistory: ChatMessage[] = chatMessages.map((msg) => ({
