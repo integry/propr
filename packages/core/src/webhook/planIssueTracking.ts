@@ -188,11 +188,16 @@ export async function handlePlanPRUpdate(
             if (newStatus === 'merged' && planIssue.draft_id) {
                 const issueLabels = await getIssueLabels(repository, planIssue.issue_number, log);
                 const hasAutoMerge = issueLabels.includes('auto-merge');
+                log.info({ repository, issueNumber: planIssue.issue_number, issueLabels, hasAutoMerge }, 'Checking auto-merge for next issue trigger');
                 if (hasAutoMerge) {
                     // Find epic label to pass to next issue (format: base-{epicBranchName})
                     const epicLabel = issueLabels.find(label => label.startsWith('base-'));
                     await triggerNextPendingIssue(planIssue.draft_id, repository, epicLabel, log);
+                } else {
+                    log.info({ repository, issueNumber: planIssue.issue_number }, 'Skipping next issue trigger - no auto-merge label');
                 }
+            } else if (newStatus === 'merged') {
+                log.warn({ repository, prNumber, hasDraftId: !!planIssue.draft_id }, 'Merged but cannot trigger next issue - missing draft_id');
             }
         }
     } catch (error) {
