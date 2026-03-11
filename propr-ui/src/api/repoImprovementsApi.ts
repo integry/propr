@@ -50,6 +50,12 @@ export interface GenerateRepoImprovementsResponse {
   metadata?: ImprovementsMetadata;
   message?: string;
   error?: string;
+  /** Estimated duration for the LLM call in milliseconds */
+  estimatedDurationMs?: number;
+  /** Actual duration for the LLM call in milliseconds */
+  actualDurationMs?: number;
+  /** Whether the estimate is based on historical data */
+  isHistoricalEstimate?: boolean;
 }
 
 /**

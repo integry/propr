@@ -15,6 +15,12 @@ export interface ChatMessage {
 export interface RepoChatResponse {
   reply: string;
   error?: string;
+  /** Estimated duration for the LLM call in milliseconds */
+  estimatedDurationMs?: number;
+  /** Actual duration for the LLM call in milliseconds */
+  actualDurationMs?: number;
+  /** Whether the estimate is based on historical data */
+  isHistoricalEstimate?: boolean;
 }
 
 /**

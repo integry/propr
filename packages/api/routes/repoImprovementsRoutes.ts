@@ -7,7 +7,9 @@ import {
   generateCorrelationId,
   loadSettings,
   parseLlmJson,
-  getEffectiveTokenLimit
+  getEffectiveTokenLimit,
+  estimateLlmDuration,
+  estimateTokens
 } from '@propr/core';
 
 /**
@@ -314,6 +316,16 @@ export function createRepoImprovementsRoutes() {
       const model = requestedModel || settings.planner_context_model || 'haiku';
       const issueRef = { number: 0, repoOwner: owner, repoName };
 
+      // Estimate input tokens and duration for the request
+      const estimatedInputTokens = estimateTokens(prompt);
+      const estimation = await estimateLlmDuration({
+        executionType: 'repo-improvements',
+        modelName: model,
+        inputTokenCount: estimatedInputTokens,
+        correlationId
+      });
+
+      const startTime = Date.now();
       const llmResponse = await runLightweightLLMAnalysis({
         prompt,
         model,
@@ -321,7 +333,7 @@ export function createRepoImprovementsRoutes() {
         worktreePath,
         githubToken: authToken,
         issueRef,
-        executionType: 'other',
+        executionType: 'repo-improvements',
         metadata: {
           type: 'repo-improvements',
           repository,
@@ -330,10 +342,13 @@ export function createRepoImprovementsRoutes() {
           hasReferenceRepo: !!referenceRepoId
         }
       });
+      const actualDurationMs = Date.now() - startTime;
 
       console.log('[repo-improvements] LLM response received:', {
         correlationId,
-        responseLength: llmResponse.length
+        responseLength: llmResponse.length,
+        estimatedDurationMs: estimation.estimatedDurationMs,
+        actualDurationMs
       });
 
       // Parse and validate the LLM response
@@ -353,7 +368,10 @@ export function createRepoImprovementsRoutes() {
           categories,
           referenceRepoId: referenceRepoId || null,
           suggestionCount: parseResult.suggestions.length
-        }
+        },
+        estimatedDurationMs: estimation.estimatedDurationMs,
+        actualDurationMs,
+        isHistoricalEstimate: estimation.isHistoricalEstimate
       });
     } catch (error) {
       console.error('Error in /api/repos/improvements:', error);

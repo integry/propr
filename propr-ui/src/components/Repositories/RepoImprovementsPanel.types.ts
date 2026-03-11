@@ -27,17 +27,37 @@ export interface SuggestionItem {
   isSelected: boolean;
 }
 
+/**
+ * Timing metadata for generation requests
+ */
+export interface GenerationTimingMetadata {
+  /** Estimated duration for the LLM call in milliseconds */
+  estimatedDurationMs?: number;
+  /** Actual duration for the LLM call in milliseconds */
+  actualDurationMs?: number;
+  /** Whether the estimate is based on historical data */
+  isHistoricalEstimate?: boolean;
+}
+
+/**
+ * Result from generating suggestions including timing metadata
+ */
+export interface GenerateSuggestionsResult {
+  suggestions: SuggestionItem[];
+  timing?: GenerationTimingMetadata;
+}
+
 export interface RepoImprovementsPanelProps {
   /** Available repositories to use as reference */
   availableRepos?: ReferenceRepo[];
-  /** Callback when generating suggestions is triggered */
+  /** Callback when generating suggestions is triggered - returns suggestions with timing */
   onGenerateSuggestions?: (params: {
     categories: ImprovementCategory[];
     customPrompt: string;
     referenceRepoId: string | null;
     model: string;
     contextLevel: number;
-  }) => Promise<void>;
+  }) => Promise<GenerateSuggestionsResult | void>;
   /** Repository name to display */
   repositoryName?: string;
   /** Full repository identifier (e.g., 'owner/repo') for navigation */
@@ -52,4 +72,6 @@ export interface RepoImprovementsPanelProps {
   defaultModel?: string;
   /** Default context level */
   defaultContextLevel?: number;
+  /** Last generation timing metadata */
+  lastGenerationTiming?: GenerationTimingMetadata;
 }

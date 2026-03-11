@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { MessageSquareText, Sparkles, Book } from 'lucide-react';
-import RepoChatPanel from './RepoChatPanel';
-import RepoImprovementsPanel, { ImprovementCategory, SuggestionItem } from './RepoImprovementsPanel';
+import RepoChatPanel, { ChatResponse } from './RepoChatPanel';
+import RepoImprovementsPanel, { ImprovementCategory, SuggestionItem, GenerateSuggestionsResult } from './RepoImprovementsPanel';
 import RepoBrowsePanel from './RepoBrowsePanel';
 import { chatWithRepository, ChatMessage } from '../../api/repoChatApi';
 import { generateRepoImprovements } from '../../api/repoImprovementsApi';
@@ -43,7 +43,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
 
-  const handleSendMessage = useCallback(async (message: string, model: string, contextLevel: number): Promise<string> => {
+  const handleSendMessage = useCallback(async (message: string, model: string, contextLevel: number): Promise<ChatResponse> => {
     if (!selectedRepo) {
       throw new Error('No repository selected');
     }
@@ -76,7 +76,15 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
         { role: 'assistant' as const, content: response.reply }
       ]);
 
-      return response.reply;
+      // Return response with metadata for timing display
+      return {
+        reply: response.reply,
+        metadata: {
+          estimatedDurationMs: response.estimatedDurationMs,
+          actualDurationMs: response.actualDurationMs,
+          isHistoricalEstimate: response.isHistoricalEstimate,
+        }
+      };
     } catch (error) {
       // Still update history with user message even on error
       setChatHistory(updatedHistory);
@@ -163,7 +171,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
               referenceRepoId: string | null;
               model: string;
               contextLevel: number;
-            }) => {
+            }): Promise<GenerateSuggestionsResult | void> => {
               const branch = selectedRepo.baseBranch || 'HEAD';
               const response = await generateRepoImprovements({
                 repository: selectedRepo.name,
@@ -189,6 +197,16 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
                   })
                 );
                 setSuggestions(suggestionItems);
+
+                // Return result with timing metadata
+                return {
+                  suggestions: suggestionItems,
+                  timing: {
+                    estimatedDurationMs: response.estimatedDurationMs,
+                    actualDurationMs: response.actualDurationMs,
+                    isHistoricalEstimate: response.isHistoricalEstimate,
+                  }
+                };
               }
             }}
           />

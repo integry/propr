@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, Clock } from 'lucide-react';
 import {
   IMPROVEMENT_CATEGORIES,
   ImprovementCategory,
   ReferenceRepo,
   RepoImprovementsPanelProps,
   SuggestionItem,
+  GenerationTimingMetadata,
+  GenerateSuggestionsResult,
 } from './RepoImprovementsPanel.types';
 import {
   CategoryButton,
@@ -18,8 +20,19 @@ import {
 import ModelContextSelector from './ModelContextSelector';
 
 // Re-export types for external consumers
-export type { ImprovementCategory, ReferenceRepo, RepoImprovementsPanelProps, SuggestionItem };
+export type { ImprovementCategory, ReferenceRepo, RepoImprovementsPanelProps, SuggestionItem, GenerateSuggestionsResult };
 export { IMPROVEMENT_CATEGORIES };
+
+/** Format duration for display (e.g., "1m 30s") */
+const formatDuration = (ms: number): string => {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds}s`;
+  if (seconds === 0) return `${minutes}m`;
+  return `${minutes}m ${seconds}s`;
+};
 
 const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   availableRepos = [],
@@ -31,6 +44,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   onToggleSuggestion,
   defaultModel = 'claude-haiku-4-5-20251001',
   defaultContextLevel = 50,
+  lastGenerationTiming,
 }) => {
   const navigate = useNavigate();
   const [selectedCategories, setSelectedCategories] = useState<Set<ImprovementCategory>>(new Set());
@@ -40,6 +54,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [selectedModel, setSelectedModel] = useState(defaultModel);
   const [contextLevel, setContextLevel] = useState(defaultContextLevel);
+  const [timingMetadata, setTimingMetadata] = useState<GenerationTimingMetadata | undefined>(lastGenerationTiming);
 
   useEffect(() => {
     setSelectedCategories(new Set());
@@ -48,6 +63,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
     setIsLoading(false);
     setSelectedModel(defaultModel);
     setContextLevel(defaultContextLevel);
+    setTimingMetadata(undefined);
   }, [repositoryName, defaultModel, defaultContextLevel]);
 
   const toggleCategory = (categoryId: ImprovementCategory) => {
@@ -68,15 +84,20 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
     if (selectedCategories.size === 0 && !customPrompt.trim()) return;
 
     setIsLoading(true);
+    setTimingMetadata(undefined);
     try {
       if (onGenerateSuggestions) {
-        await onGenerateSuggestions({
+        const result = await onGenerateSuggestions({
           categories: Array.from(selectedCategories),
           customPrompt: customPrompt.trim(),
           referenceRepoId: selectedReferenceRepo,
           model: selectedModel,
           contextLevel,
         });
+        // Capture timing metadata if returned
+        if (result?.timing) {
+          setTimingMetadata(result.timing);
+        }
       }
     } finally {
       setIsLoading(false);
@@ -189,10 +210,24 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
 
         {/* Generated Suggestions List */}
         {suggestions.length > 0 && onToggleSuggestion && (
-          <SuggestionsList
-            suggestions={suggestions}
-            onToggleSuggestion={onToggleSuggestion}
-          />
+          <>
+            {/* Timing metadata display */}
+            {timingMetadata?.actualDurationMs && (
+              <div className="flex items-center justify-center gap-1.5 text-xs text-slate-400 py-1">
+                <Clock size={12} />
+                <span>Generated in {formatDuration(timingMetadata.actualDurationMs)}</span>
+                {timingMetadata.estimatedDurationMs && (
+                  <span className="text-slate-300">
+                    (est. {formatDuration(timingMetadata.estimatedDurationMs)})
+                  </span>
+                )}
+              </div>
+            )}
+            <SuggestionsList
+              suggestions={suggestions}
+              onToggleSuggestion={onToggleSuggestion}
+            />
+          </>
         )}
       </div>
 

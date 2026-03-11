@@ -6,7 +6,9 @@ import {
   ensureRepoCloned,
   generateCorrelationId,
   loadSettings,
-  getEffectiveTokenLimit
+  getEffectiveTokenLimit,
+  estimateLlmDuration,
+  estimateTokens
 } from '@propr/core';
 
 interface ChatMessage {
@@ -105,8 +107,18 @@ ${summaryResult.context || 'No codebase summaries available. The repository may 
       const settings = await loadSettings();
       const model = requestedModel || settings.planner_context_model || 'haiku';
 
+      // Estimate input tokens and duration for the request
+      const estimatedInputTokens = estimateTokens(fullPrompt);
+      const estimation = await estimateLlmDuration({
+        executionType: 'repo-chat',
+        modelName: model,
+        inputTokenCount: estimatedInputTokens,
+        correlationId
+      });
+
       // Call the LLM
       const issueRef = { number: 0, repoOwner: owner, repoName };
+      const startTime = Date.now();
       const reply = await runLightweightLLMAnalysis({
         prompt: fullPrompt,
         model,
@@ -114,7 +126,7 @@ ${summaryResult.context || 'No codebase summaries available. The repository may 
         worktreePath,
         githubToken: authToken,
         issueRef,
-        executionType: 'other',
+        executionType: 'repo-chat',
         metadata: {
           type: 'repo-chat',
           repository,
@@ -122,8 +134,14 @@ ${summaryResult.context || 'No codebase summaries available. The repository may 
           historyLength: history.length
         }
       });
+      const actualDurationMs = Date.now() - startTime;
 
-      res.json({ reply });
+      res.json({
+        reply,
+        estimatedDurationMs: estimation.estimatedDurationMs,
+        actualDurationMs,
+        isHistoricalEstimate: estimation.isHistoricalEstimate
+      });
     } catch (error) {
       console.error('Error in /api/repos/chat:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });

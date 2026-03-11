@@ -1,6 +1,26 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { User, Bot, Send, Loader2 } from 'lucide-react';
+import { User, Bot, Send, Loader2, Clock } from 'lucide-react';
 import ModelContextSelector from './ModelContextSelector';
+
+/**
+ * Response metadata including timing information
+ */
+export interface ChatResponseMetadata {
+  /** Estimated duration for the LLM call in milliseconds */
+  estimatedDurationMs?: number;
+  /** Actual duration for the LLM call in milliseconds */
+  actualDurationMs?: number;
+  /** Whether the estimate is based on historical data */
+  isHistoricalEstimate?: boolean;
+}
+
+/**
+ * Response from the send message callback
+ */
+export interface ChatResponse {
+  reply: string;
+  metadata?: ChatResponseMetadata;
+}
 
 /**
  * Represents a single message in the chat history.
@@ -10,11 +30,24 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  /** Metadata for assistant messages (timing info) */
+  metadata?: ChatResponseMetadata;
 }
 
+/** Format duration for display (e.g., "1m 30s") */
+const formatDuration = (ms: number): string => {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds}s`;
+  if (seconds === 0) return `${minutes}m`;
+  return `${minutes}m ${seconds}s`;
+};
+
 export interface RepoChatPanelProps {
-  /** Callback invoked when the user sends a message */
-  onSendMessage: (message: string, model: string, contextLevel: number) => Promise<string | void>;
+  /** Callback invoked when the user sends a message - returns reply string or ChatResponse object */
+  onSendMessage: (message: string, model: string, contextLevel: number) => Promise<string | ChatResponse | void>;
   /** Initial messages to populate the chat */
   initialMessages?: Message[];
   /** Placeholder text for the input */
@@ -83,11 +116,17 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
 
       // Add assistant message if a response is returned
       if (response) {
+        // Handle both string and ChatResponse object responses
+        const isStringResponse = typeof response === 'string';
+        const reply = isStringResponse ? response : response.reply;
+        const metadata = isStringResponse ? undefined : response.metadata;
+
         const assistantMessage: Message = {
           id: generateId(),
           role: 'assistant',
-          content: response,
+          content: reply,
           timestamp: Date.now(),
+          metadata,
         };
         setMessages((prev) => [...prev, assistantMessage]);
       }
@@ -176,11 +215,25 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
               >
                 <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
               </div>
-              <div className="mt-1 text-[10px] text-gray-400">
-                {new Date(msg.timestamp).toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
+              <div className="mt-1 flex items-center gap-2 text-[10px] text-gray-400">
+                <span>
+                  {new Date(msg.timestamp).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </span>
+                {/* Show timing metadata for assistant messages */}
+                {msg.role === 'assistant' && msg.metadata?.actualDurationMs && (
+                  <span className="flex items-center gap-1 text-slate-400">
+                    <Clock size={10} />
+                    <span>{formatDuration(msg.metadata.actualDurationMs)}</span>
+                    {msg.metadata.estimatedDurationMs && (
+                      <span className="text-slate-300">
+                        (est. {formatDuration(msg.metadata.estimatedDurationMs)})
+                      </span>
+                    )}
+                  </span>
+                )}
               </div>
             </div>
           </div>
