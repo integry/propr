@@ -145,6 +145,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
         {activeTab === 'improve' && (
           <RepoImprovementsPanel
             repositoryName={selectedRepo.alias || selectedRepo.name}
+            repositoryId={selectedRepo.name}
             suggestions={suggestions}
             onToggleSuggestion={handleToggleSuggestion}
             onGenerateSuggestions={async (params: {
