@@ -24,19 +24,24 @@ async function getRepoPath(owner: string, repoName: string): Promise<string> {
     return path.join(CLONES_BASE_PATH, owner, repoName);
 }
 
+interface SeedCommitOptions {
+    localRepoPath: string;
+    owner: string;
+    repoName: string;
+    defaultBranch: string;
+    authToken: string;
+    repoUrl: string;
+}
+
 /**
  * Check if a repository is empty (has no commits) and create a seed commit if needed.
  * This allows the system to work with newly created empty repositories.
  */
 async function ensureSeedCommitIfEmpty(
     git: SimpleGit,
-    localRepoPath: string,
-    owner: string,
-    repoName: string,
-    defaultBranch: string,
-    authToken: string,
-    repoUrl: string
+    options: SeedCommitOptions
 ): Promise<boolean> {
+    const { localRepoPath, owner, repoName, defaultBranch, authToken, repoUrl } = options;
     try {
         // Check if the repo has any commits
         const logResult = await git.raw(['rev-list', '-n', '1', '--all']).catch(() => '');
@@ -207,7 +212,9 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
             let targetBranch = baseBranch || 'main';
 
             // Check if repository is empty and create seed commit if needed
-            const wasEmpty = await ensureSeedCommitIfEmpty(git, localRepoPath, owner, repoName, targetBranch, authToken, repoUrl);
+            const wasEmpty = await ensureSeedCommitIfEmpty(git, {
+                localRepoPath, owner, repoName, defaultBranch: targetBranch, authToken, repoUrl
+            });
 
             if (!wasEmpty) {
                 // Repository has commits, detect default branch if not specified
@@ -253,7 +260,9 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
             let targetBranch = baseBranch || 'main';
 
             // Check if repository is empty and create seed commit if needed
-            const wasEmpty = await ensureSeedCommitIfEmpty(repoGit, localRepoPath, owner, repoName, targetBranch, authToken, repoUrl);
+            const wasEmpty = await ensureSeedCommitIfEmpty(repoGit, {
+                localRepoPath, owner, repoName, defaultBranch: targetBranch, authToken, repoUrl
+            });
 
             if (!wasEmpty) {
                 // Repository has commits, set remote HEAD and detect default branch
