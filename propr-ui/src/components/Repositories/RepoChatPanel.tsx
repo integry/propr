@@ -1,6 +1,10 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { User, Bot, Send, Loader2, Clock } from 'lucide-react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { User, Bot, Send, Loader2, Clock, Trash2, X } from 'lucide-react';
 import ModelContextSelector from './ModelContextSelector';
+import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
+
+/** Maximum progress percentage to show when execution takes longer than estimated */
+const MAX_PROGRESS_PERCENT = 95;
 
 /**
  * Response metadata including timing information
@@ -45,18 +49,96 @@ const formatDuration = (ms: number): string => {
   return `${minutes}m ${seconds}s`;
 };
 
+/**
+ * Estimate expected duration based on context level.
+ * Higher context = more tokens = longer duration.
+ */
+const getEstimatedDuration = (contextLevel: number): number => {
+  // Base estimate: 15-60 seconds depending on context level
+  // Focused (20%): ~15s, Expanded (50%): ~30s, Full Scan (90%): ~60s
+  const baseMs = 10000; // 10 seconds minimum
+  const scaleFactor = 500; // ms per context percentage point
+  return baseMs + (contextLevel * scaleFactor);
+};
+
+/**
+ * Progress indicator component for chat loading state.
+ */
+interface ChatProgressProps {
+  startedAt: number;
+  estimatedDuration: number;
+}
+
+const ChatProgress: React.FC<ChatProgressProps> = ({ startedAt, estimatedDuration }) => {
+  const [progress, setProgress] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const updateProgress = () => {
+      const now = Date.now();
+      const elapsedMs = now - startedAt;
+      setElapsed(elapsedMs);
+
+      // Calculate progress percentage, capped at MAX_PROGRESS_PERCENT until completion
+      const rawProgress = (elapsedMs / estimatedDuration) * 100;
+      setProgress(Math.min(rawProgress, MAX_PROGRESS_PERCENT));
+    };
+
+    // Update immediately
+    updateProgress();
+
+    // Update every 500ms for smooth progress
+    const interval = setInterval(updateProgress, 500);
+
+    return () => clearInterval(interval);
+  }, [startedAt, estimatedDuration]);
+
+  const remaining = Math.max(0, estimatedDuration - elapsed);
+  // Only show "Taking longer than expected" after exceeding estimate by 10%
+  const isOverEstimate = elapsed > estimatedDuration * 1.1;
+
+  return (
+    <div className="w-full">
+      {/* Progress bar */}
+      <div className="w-full h-1 bg-slate-200 rounded-sm overflow-hidden mb-1.5">
+        <div
+          className="h-full transition-all duration-500 ease-out"
+          style={{
+            width: `${progress}%`,
+            backgroundColor: isOverEstimate ? 'rgb(234, 179, 8)' : 'rgb(29, 138, 138)'
+          }}
+        />
+      </div>
+      {/* Progress info */}
+      <div className="text-[10px] text-slate-500">
+        {isOverEstimate ? (
+          <span className="text-amber-600">Taking longer than expected...</span>
+        ) : (
+          <span>~{formatDuration(remaining)} remaining</span>
+        )}
+      </div>
+    </div>
+  );
+};
+
 export interface RepoChatPanelProps {
   /** Callback invoked when the user sends a message - returns reply string or ChatResponse object */
   onSendMessage: (message: string, model: string, contextLevel: number) => Promise<string | ChatResponse | void>;
-  /** Initial messages to populate the chat */
-  initialMessages?: Message[];
+  /** Current messages (controlled component) */
+  messages?: Message[];
+  /** Callback when messages change */
+  onMessagesChange?: (messages: Message[]) => void;
+  /** Callback to delete a single message */
+  onDeleteMessage?: (messageId: string) => void;
+  /** Callback to clear all messages */
+  onClearMessages?: () => void;
   /** Placeholder text for the input */
   placeholder?: string;
   /** Whether the panel is disabled */
   disabled?: boolean;
   /** Repository name to display in empty state */
   repositoryName?: string;
-  /** Default model to use */
+  /** Default model to use (agent:model format, e.g., 'claude:claude-haiku-4-5-20251001') */
   defaultModel?: string;
   /** Default context level */
   defaultContextLevel?: number;
@@ -64,20 +146,57 @@ export interface RepoChatPanelProps {
 
 const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
   onSendMessage,
-  initialMessages = [],
+  messages: externalMessages,
+  onMessagesChange,
+  onDeleteMessage,
+  onClearMessages,
   placeholder = 'Ask a question about this repository...',
   disabled = false,
   repositoryName,
-  defaultModel = 'claude-haiku-4-5-20251001',
+  defaultModel = 'claude:claude-haiku-4-5-20251001',
   defaultContextLevel = 50,
 }) => {
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
+  // Support both controlled and uncontrolled modes
+  const [internalMessages, setInternalMessages] = useState<Message[]>([]);
+  const messages = externalMessages ?? internalMessages;
+  const setMessages = useCallback((updater: Message[] | ((prev: Message[]) => Message[])) => {
+    if (onMessagesChange) {
+      const newMessages = typeof updater === 'function' ? updater(messages) : updater;
+      onMessagesChange(newMessages);
+    } else {
+      setInternalMessages(updater);
+    }
+  }, [onMessagesChange, messages]);
+
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingStartedAt, setLoadingStartedAt] = useState<number | null>(null);
   const [selectedModel, setSelectedModel] = useState(defaultModel);
   const [contextLevel, setContextLevel] = useState(defaultContextLevel);
+  const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Estimated duration based on current context level
+  const estimatedDuration = useMemo(() => getEstimatedDuration(contextLevel), [contextLevel]);
+
+  // Handle delete message
+  const handleDeleteMessage = useCallback((messageId: string) => {
+    if (onDeleteMessage) {
+      onDeleteMessage(messageId);
+    } else {
+      setMessages((prev) => prev.filter((msg) => msg.id !== messageId));
+    }
+  }, [onDeleteMessage, setMessages]);
+
+  // Handle clear all messages
+  const handleClearMessages = useCallback(() => {
+    if (onClearMessages) {
+      onClearMessages();
+    } else {
+      setMessages([]);
+    }
+  }, [onClearMessages, setMessages]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -110,6 +229,7 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
+    setLoadingStartedAt(Date.now());
 
     try {
       const response = await onSendMessage(trimmedInput, selectedModel, contextLevel);
@@ -141,6 +261,7 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
+      setLoadingStartedAt(null);
     }
   };
 
@@ -153,14 +274,27 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
-      {/* Model and Context Level Selector */}
-      <ModelContextSelector
-        selectedModel={selectedModel}
-        onModelChange={setSelectedModel}
-        contextLevel={contextLevel}
-        onContextLevelChange={setContextLevel}
-        disabled={isLoading || disabled}
-      />
+      {/* Model and Context Level Selector with Clear button */}
+      <div className="flex items-center justify-between border-b border-gray-100 bg-white">
+        <ModelContextSelector
+          selectedModel={selectedModel}
+          onModelChange={setSelectedModel}
+          contextLevel={contextLevel}
+          onContextLevelChange={setContextLevel}
+          disabled={isLoading || disabled}
+          className="flex-1 border-b-0"
+        />
+        {messages.length > 0 && (
+          <button
+            onClick={handleClearMessages}
+            disabled={isLoading || disabled}
+            className="mr-2 p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Clear all messages"
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
+      </div>
 
       {/* Messages Area */}
       <div
@@ -186,7 +320,12 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
         )}
 
         {messages.map((msg) => (
-          <div key={msg.id} className="flex items-start">
+          <div
+            key={msg.id}
+            className="flex items-start group"
+            onMouseEnter={() => setHoveredMessageId(msg.id)}
+            onMouseLeave={() => setHoveredMessageId(null)}
+          >
             {/* Icon column */}
             <div className="w-10 flex-shrink-0 flex justify-center">
               <div
@@ -206,14 +345,32 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
 
             {/* Message content */}
             <div className="flex-1 min-w-0 ml-3">
-              <div
-                className={`inline-block px-4 py-2 rounded-lg ${
-                  msg.role === 'user'
-                    ? 'bg-white border border-indigo-100 text-slate-800 shadow-sm'
-                    : 'bg-white border border-gray-200 text-gray-800'
-                }`}
-              >
-                <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
+              <div className="relative">
+                <div
+                  className={`inline-block px-4 py-2 rounded-lg max-w-full ${
+                    msg.role === 'user'
+                      ? 'bg-white border border-indigo-100 text-slate-800 shadow-sm'
+                      : 'bg-white border border-gray-200 text-gray-800'
+                  }`}
+                >
+                  {msg.role === 'user' ? (
+                    <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
+                  ) : (
+                    <div className="text-sm prose prose-sm max-w-none prose-slate prose-p:my-2 prose-headings:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5">
+                      <MarkdownRenderer text={msg.content} />
+                    </div>
+                  )}
+                </div>
+                {/* Delete button - visible on hover */}
+                {hoveredMessageId === msg.id && !isLoading && (
+                  <button
+                    onClick={() => handleDeleteMessage(msg.id)}
+                    className="absolute -right-1 -top-1 p-1 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors shadow-sm"
+                    title="Delete message"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
               </div>
               <div className="mt-1 flex items-center gap-2 text-[10px] text-gray-400">
                 <span>
@@ -239,17 +396,21 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
           </div>
         ))}
 
-        {/* Loading state */}
-        {isLoading && (
+        {/* Loading state with progress */}
+        {isLoading && loadingStartedAt && (
           <div className="flex items-start">
             <div className="w-10 flex-shrink-0 flex justify-center">
-              <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgb(29, 138, 138)' }}>
                 <Loader2 size={16} className="text-white animate-spin" />
               </div>
             </div>
             <div className="flex-1 min-w-0 ml-3">
-              <div className="inline-block bg-gray-100 text-gray-600 px-4 py-2 rounded-lg">
-                <p className="text-sm animate-pulse">Thinking...</p>
+              <div className="bg-gray-100 text-gray-600 px-4 py-2 rounded-lg max-w-xs">
+                <p className="text-sm mb-2">Analyzing repository...</p>
+                <ChatProgress
+                  startedAt={loadingStartedAt}
+                  estimatedDuration={estimatedDuration}
+                />
               </div>
             </div>
           </div>

@@ -73,7 +73,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   disabled = false,
   suggestions = [],
   onToggleSuggestion,
-  defaultModel = 'claude-haiku-4-5-20251001',
+  defaultModel = 'claude:claude-haiku-4-5-20251001',
   defaultContextLevel = 50,
   lastGenerationTiming,
 }) => {

@@ -278,8 +278,12 @@ function setupRoutes(): void {
   app.get('/api/summaries/:owner/:repo/tree/*', summaryBrowserRoutes.getDirectoryTree);
   app.get('/api/summaries/:owner/:repo/summary/*', summaryBrowserRoutes.getPathSummary);
 
-  // Repository chat endpoint for LLM integration
+  // Repository chat endpoints for LLM integration and message persistence
   app.post('/api/repos/chat', repoChatRoutes.postChat);
+  app.get('/api/repos/chat/messages', repoChatRoutes.getMessages);
+  app.post('/api/repos/chat/messages', repoChatRoutes.saveMessages);
+  app.delete('/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage);
+  app.delete('/api/repos/chat/messages', repoChatRoutes.clearMessages);
 
   // Repository improvements endpoint for generating suggestions
   app.post('/api/repos/improvements', repoImprovementsRoutes.postImprovements);

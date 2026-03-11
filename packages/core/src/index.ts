@@ -215,6 +215,15 @@ export type {
 export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
 export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath } from './config/configManager.js';
 
+// Repository chat message persistence
+export {
+    getMessagesForRepository,
+    saveMessage,
+    deleteMessage,
+    clearMessagesForRepository
+} from './services/repoChatMessages.js';
+export type { ChatMessage, ChatMessageRecord, SaveMessageParams } from './services/repoChatMessages.js';
+
 // Re-export event definitions from shared package for convenience
 export {
     TASK_UPDATE,

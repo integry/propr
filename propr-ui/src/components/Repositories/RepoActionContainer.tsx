@@ -1,9 +1,17 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { MessageSquareText, Sparkles, Book } from 'lucide-react';
-import RepoChatPanel, { ChatResponse } from './RepoChatPanel';
+import RepoChatPanel, { ChatResponse, Message } from './RepoChatPanel';
 import RepoImprovementsPanel, { ImprovementCategory, SuggestionItem, GenerateSuggestionsResult } from './RepoImprovementsPanel';
 import RepoBrowsePanel from './RepoBrowsePanel';
-import { chatWithRepository, ChatMessage } from '../../api/repoChatApi';
+import {
+  chatWithRepository,
+  ChatMessage,
+  getChatMessages,
+  saveChatMessages,
+  deleteChatMessage,
+  clearChatMessages,
+  PersistedChatMessage
+} from '../../api/repoChatApi';
 import { generateRepoImprovements } from '../../api/repoImprovementsApi';
 
 type ActionTab = 'chat' | 'improve' | 'browse';
@@ -40,8 +48,40 @@ export interface RepoActionContainerProps {
 
 const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo }) => {
   const [activeTab, setActiveTab] = useState<ActionTab>('chat');
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [chatMessages, setChatMessages] = useState<Message[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+
+  // Load persisted messages when repository changes
+  useEffect(() => {
+    if (!selectedRepo) {
+      setChatMessages([]);
+      setSuggestions([]);
+      return;
+    }
+
+    const loadMessages = async () => {
+      setIsLoadingMessages(true);
+      try {
+        const messages = await getChatMessages(selectedRepo.name);
+        setChatMessages(messages as Message[]);
+      } catch (error) {
+        console.error('Failed to load chat messages:', error);
+        setChatMessages([]);
+      } finally {
+        setIsLoadingMessages(false);
+      }
+    };
+
+    loadMessages();
+    setSuggestions([]);
+  }, [selectedRepo?.id, selectedRepo?.name]);
+
+  // Build chat history for API from messages
+  const chatHistory: ChatMessage[] = chatMessages.map((msg) => ({
+    role: msg.role,
+    content: msg.content
+  }));
 
   const handleSendMessage = useCallback(async (message: string, model: string, contextLevel: number): Promise<ChatResponse> => {
     if (!selectedRepo) {
@@ -50,11 +90,16 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
 
     const branch = selectedRepo.baseBranch || 'HEAD';
 
-    // Add user message to history for context
-    const updatedHistory: ChatMessage[] = [
-      ...chatHistory,
-      { role: 'user' as const, content: message }
-    ];
+    // Create user message
+    const userMessage: Message = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      role: 'user',
+      content: message,
+      timestamp: Date.now()
+    };
+
+    // Add user message to local state
+    setChatMessages((prev) => [...prev, userMessage]);
 
     try {
       const response = await chatWithRepository({
@@ -70,33 +115,75 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
         throw new Error(response.error);
       }
 
-      // Update history with both user message and assistant response
-      setChatHistory([
-        ...updatedHistory,
-        { role: 'assistant' as const, content: response.reply }
-      ]);
-
-      // Return response with metadata for timing display
-      return {
-        reply: response.reply,
+      // Create assistant message
+      const assistantMessage: Message = {
+        id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        role: 'assistant',
+        content: response.reply,
+        timestamp: Date.now(),
         metadata: {
           estimatedDurationMs: response.estimatedDurationMs,
           actualDurationMs: response.actualDurationMs,
           isHistoricalEstimate: response.isHistoricalEstimate,
         }
       };
+
+      // Add assistant message to local state
+      setChatMessages((prev) => [...prev, assistantMessage]);
+
+      // Persist both messages to backend
+      try {
+        await saveChatMessages(selectedRepo.name, [userMessage, assistantMessage] as PersistedChatMessage[]);
+      } catch (persistError) {
+        console.error('Failed to persist chat messages:', persistError);
+      }
+
+      // Return response with metadata for timing display
+      return {
+        reply: response.reply,
+        metadata: assistantMessage.metadata
+      };
     } catch (error) {
-      // Still update history with user message even on error
-      setChatHistory(updatedHistory);
+      // Try to persist the user message even on error
+      try {
+        await saveChatMessages(selectedRepo.name, [userMessage] as PersistedChatMessage[]);
+      } catch (persistError) {
+        console.error('Failed to persist user message:', persistError);
+      }
       throw error;
     }
   }, [selectedRepo, chatHistory]);
 
-  // Reset chat history and suggestions when selected repo changes
-  React.useEffect(() => {
-    setChatHistory([]);
-    setSuggestions([]);
-  }, [selectedRepo?.id]);
+  // Handle deleting a single message
+  const handleDeleteMessage = useCallback(async (messageId: string) => {
+    if (!selectedRepo) return;
+
+    // Optimistically remove from local state
+    setChatMessages((prev) => prev.filter((msg) => msg.id !== messageId));
+
+    // Delete from backend
+    try {
+      await deleteChatMessage(messageId);
+    } catch (error) {
+      console.error('Failed to delete message:', error);
+      // Could restore the message on error, but for simplicity we'll just log
+    }
+  }, [selectedRepo]);
+
+  // Handle clearing all messages
+  const handleClearMessages = useCallback(async () => {
+    if (!selectedRepo) return;
+
+    // Optimistically clear local state
+    setChatMessages([]);
+
+    // Clear from backend
+    try {
+      await clearChatMessages(selectedRepo.name);
+    } catch (error) {
+      console.error('Failed to clear messages:', error);
+    }
+  }, [selectedRepo]);
 
   const handleToggleSuggestion = useCallback((index: number) => {
     setSuggestions((prev) =>
@@ -156,7 +243,11 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
         {activeTab === 'chat' && (
           <RepoChatPanel
             onSendMessage={handleSendMessage}
+            messages={chatMessages}
+            onDeleteMessage={handleDeleteMessage}
+            onClearMessages={handleClearMessages}
             repositoryName={selectedRepo.alias || selectedRepo.name}
+            disabled={isLoadingMessages}
           />
         )}
         {activeTab === 'improve' && (

@@ -8,7 +8,11 @@ import {
   loadSettings,
   getEffectiveTokenLimit,
   estimateLlmDuration,
-  estimateTokens
+  estimateTokens,
+  getMessagesForRepository,
+  saveMessage,
+  deleteMessage as deleteMessageFromDb,
+  clearMessagesForRepository
 } from '@propr/core';
 
 interface ChatMessage {
@@ -25,7 +29,124 @@ interface RepoChatRequest {
   contextLevel?: number;
 }
 
+interface SaveMessagesRequest {
+  repository: string;
+  messages: Array<{
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: number;
+    metadata?: {
+      estimatedDurationMs?: number;
+      actualDurationMs?: number;
+      isHistoricalEstimate?: boolean;
+    };
+  }>;
+}
+
 export function createRepoChatRoutes() {
+  /**
+   * GET /api/repos/chat/messages?repository=owner/repo
+   * Get all persisted chat messages for a repository
+   */
+  async function getMessages(req: Request, res: Response): Promise<void> {
+    try {
+      const repository = req.query.repository as string;
+
+      if (!repository || typeof repository !== 'string') {
+        res.status(400).json({ error: 'repository query parameter is required' });
+        return;
+      }
+
+      const messages = await getMessagesForRepository(repository);
+      res.json({ messages });
+    } catch (error) {
+      console.error('Error getting chat messages:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+    }
+  }
+
+  /**
+   * POST /api/repos/chat/messages
+   * Save chat messages for a repository
+   */
+  async function saveMessages(req: Request, res: Response): Promise<void> {
+    try {
+      const { repository, messages } = req.body as SaveMessagesRequest;
+
+      if (!repository || typeof repository !== 'string') {
+        res.status(400).json({ error: 'repository is required' });
+        return;
+      }
+
+      if (!Array.isArray(messages)) {
+        res.status(400).json({ error: 'messages must be an array' });
+        return;
+      }
+
+      // Save each message
+      for (const msg of messages) {
+        await saveMessage({
+          messageId: msg.id,
+          repository,
+          role: msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp,
+          estimatedDurationMs: msg.metadata?.estimatedDurationMs,
+          actualDurationMs: msg.metadata?.actualDurationMs,
+          isHistoricalEstimate: msg.metadata?.isHistoricalEstimate,
+        });
+      }
+
+      res.json({ success: true, savedCount: messages.length });
+    } catch (error) {
+      console.error('Error saving chat messages:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+    }
+  }
+
+  /**
+   * DELETE /api/repos/chat/messages/:messageId
+   * Delete a single chat message
+   */
+  async function deleteMessage(req: Request, res: Response): Promise<void> {
+    try {
+      const { messageId } = req.params;
+
+      if (!messageId) {
+        res.status(400).json({ error: 'messageId is required' });
+        return;
+      }
+
+      const deleted = await deleteMessageFromDb(messageId);
+      res.json({ success: deleted });
+    } catch (error) {
+      console.error('Error deleting chat message:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+    }
+  }
+
+  /**
+   * DELETE /api/repos/chat/messages?repository=owner/repo
+   * Clear all chat messages for a repository
+   */
+  async function clearMessages(req: Request, res: Response): Promise<void> {
+    try {
+      const repository = req.query.repository as string;
+
+      if (!repository || typeof repository !== 'string') {
+        res.status(400).json({ error: 'repository query parameter is required' });
+        return;
+      }
+
+      const deletedCount = await clearMessagesForRepository(repository);
+      res.json({ success: true, deletedCount });
+    } catch (error) {
+      console.error('Error clearing chat messages:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+    }
+  }
+
   async function postChat(req: Request, res: Response): Promise<void> {
     const correlationId = generateCorrelationId();
 
@@ -149,6 +270,10 @@ ${summaryResult.context || 'No codebase summaries available. The repository may 
   }
 
   return {
-    postChat
+    postChat,
+    getMessages,
+    saveMessages,
+    deleteMessage,
+    clearMessages
   };
 }
