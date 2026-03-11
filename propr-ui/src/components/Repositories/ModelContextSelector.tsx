@@ -1,0 +1,120 @@
+import React from 'react';
+import { Cpu, Layers } from 'lucide-react';
+import { ALL_MODELS, ModelInfo } from '../../config/modelDefinitions';
+
+// Context level configuration
+type ContextLevelType = 'focused' | 'expanded' | 'fullscan';
+
+interface ContextLevelOption {
+  type: ContextLevelType;
+  label: string;
+  value: number;
+  description: string;
+}
+
+const CONTEXT_LEVELS: ContextLevelOption[] = [
+  { type: 'focused', label: 'Focused', value: 20, description: 'Fast, lower cost' },
+  { type: 'expanded', label: 'Expanded', value: 50, description: 'Balanced' },
+  { type: 'fullscan', label: 'Full Scan', value: 90, description: 'Comprehensive' },
+];
+
+export interface ModelContextSelectorProps {
+  /** Selected model ID */
+  selectedModel: string;
+  /** Callback when model changes */
+  onModelChange: (modelId: string) => void;
+  /** Selected context level (0-100) */
+  contextLevel: number;
+  /** Callback when context level changes */
+  onContextLevelChange: (level: number) => void;
+  /** Whether the selectors are disabled */
+  disabled?: boolean;
+  /** Optional className for styling */
+  className?: string;
+}
+
+/**
+ * Compact selector component for model and context level.
+ * Used in Chat and Improvements panels.
+ */
+const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({
+  selectedModel,
+  onModelChange,
+  contextLevel,
+  onContextLevelChange,
+  disabled = false,
+  className = '',
+}) => {
+  // Get current context level type
+  const getContextLevelType = (value: number): ContextLevelType => {
+    if (value <= 35) return 'focused';
+    if (value <= 70) return 'expanded';
+    return 'fullscan';
+  };
+
+  const currentLevelType = getContextLevelType(contextLevel);
+
+  // Get selected model info
+  const selectedModelInfo = ALL_MODELS.find((m: ModelInfo) => m.id === selectedModel);
+
+  return (
+    <div className={`flex items-center gap-3 p-2 bg-white border-b border-gray-100 ${className}`}>
+      {/* Model Selector */}
+      <div className="flex items-center gap-1.5">
+        <Cpu className="w-3.5 h-3.5 text-gray-400" />
+        <select
+          value={selectedModel}
+          onChange={(e) => onModelChange(e.target.value)}
+          disabled={disabled}
+          className={`text-xs bg-transparent border border-gray-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-teal-500 focus:border-teal-500 ${
+            disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-gray-300'
+          }`}
+        >
+          {ALL_MODELS.map((model: ModelInfo) => (
+            <option key={model.id} value={model.id}>
+              {model.shortName}
+            </option>
+          ))}
+        </select>
+        {selectedModelInfo && (
+          <span className="text-[10px] text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded">
+            {selectedModelInfo.contextWindow}
+          </span>
+        )}
+      </div>
+
+      {/* Divider */}
+      <div className="w-px h-4 bg-gray-200" />
+
+      {/* Context Level Selector */}
+      <div className="flex items-center gap-1.5">
+        <Layers className="w-3.5 h-3.5 text-gray-400" />
+        <div className="flex items-center gap-0.5">
+          {CONTEXT_LEVELS.map((level) => (
+            <button
+              key={level.type}
+              onClick={() => onContextLevelChange(level.value)}
+              disabled={disabled}
+              title={level.description}
+              className={`text-[10px] px-2 py-1 rounded transition-all ${
+                disabled
+                  ? 'opacity-50 cursor-not-allowed'
+                  : currentLevelType === level.type
+                  ? level.type === 'focused'
+                    ? 'bg-sky-100 text-sky-700 font-medium'
+                    : level.type === 'expanded'
+                    ? 'bg-blue-100 text-blue-700 font-medium'
+                    : 'bg-indigo-100 text-indigo-700 font-medium'
+                  : 'text-gray-500 hover:bg-gray-100'
+              }`}
+            >
+              {level.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default ModelContextSelector;

@@ -1,11 +1,12 @@
 import React, { useState, useCallback } from 'react';
-import { MessageSquareText, Sparkles } from 'lucide-react';
+import { MessageSquareText, Sparkles, Book } from 'lucide-react';
 import RepoChatPanel from './RepoChatPanel';
 import RepoImprovementsPanel, { ImprovementCategory, SuggestionItem } from './RepoImprovementsPanel';
+import RepoBrowsePanel from './RepoBrowsePanel';
 import { chatWithRepository, ChatMessage } from '../../api/repoChatApi';
 import { generateRepoImprovements } from '../../api/repoImprovementsApi';
 
-type ActionTab = 'chat' | 'improve';
+type ActionTab = 'chat' | 'improve' | 'browse';
 
 interface TabButtonProps {
   label: string;
@@ -42,7 +43,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
 
-  const handleSendMessage = useCallback(async (message: string): Promise<string> => {
+  const handleSendMessage = useCallback(async (message: string, model: string, contextLevel: number): Promise<string> => {
     if (!selectedRepo) {
       throw new Error('No repository selected');
     }
@@ -60,7 +61,9 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
         selectedRepo.name,
         branch,
         message,
-        chatHistory
+        chatHistory,
+        model,
+        contextLevel
       );
 
       if (response.error) {
@@ -131,6 +134,12 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
             isActive={activeTab === 'improve'}
             onClick={() => setActiveTab('improve')}
           />
+          <TabButton
+            label="Browse"
+            icon={<Book className="h-3 w-3" />}
+            isActive={activeTab === 'browse'}
+            onClick={() => setActiveTab('browse')}
+          />
         </div>
       </div>
 
@@ -152,6 +161,8 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
               categories: ImprovementCategory[];
               customPrompt: string;
               referenceRepoId: string | null;
+              model: string;
+              contextLevel: number;
             }) => {
               const branch = selectedRepo.baseBranch || 'HEAD';
               const response = await generateRepoImprovements({
@@ -160,6 +171,8 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
                 categories: params.categories,
                 customPrompt: params.customPrompt || undefined,
                 referenceRepoId: params.referenceRepoId,
+                model: params.model,
+                contextLevel: params.contextLevel,
               });
 
               if (response.error) {
@@ -180,6 +193,10 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
             }}
           />
         )}
+        {activeTab === 'browse' && (() => {
+          const [owner, repo] = selectedRepo.name.split('/');
+          return <RepoBrowsePanel owner={owner} repo={repo} />;
+        })()}
       </div>
     </div>
   );

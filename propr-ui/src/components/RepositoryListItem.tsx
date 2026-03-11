@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Github } from 'lucide-react';
 import { IndexingStatusIndicator } from './IndexingStatusIndicator';
 import { DeleteRepoDialog } from './DeleteRepoDialog';
@@ -11,12 +10,6 @@ import { getRepoStatusKey } from '../api/repoIndexingApi';
 const TrashIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-  </svg>
-);
-
-const ExternalLinkIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
   </svg>
 );
 
@@ -130,15 +123,6 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           >
             <Github className="w-3.5 h-3.5" />
           </a>
-
-          {/* Browse Button */}
-          <Link
-            to={`/summaries/${repo.name}`}
-            className="p-1 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded transition-colors"
-            title="Browse repository"
-          >
-            <ExternalLinkIcon className="w-3.5 h-3.5" />
-          </Link>
 
           {/* Delete Button */}
           <button

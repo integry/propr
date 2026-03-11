@@ -24,13 +24,17 @@ export interface RepoChatResponse {
  * @param branch - The branch name to query against
  * @param prompt - The user's message/prompt
  * @param history - Previous conversation history for context
+ * @param model - The model ID to use for the chat
+ * @param contextLevel - The context level (0-100) for codebase analysis
  * @returns The AI's response containing the reply
  */
 export const chatWithRepository = async (
   repository: string,
   branch: string,
   prompt: string,
-  history: ChatMessage[] = []
+  history: ChatMessage[] = [],
+  model?: string,
+  contextLevel?: number
 ): Promise<RepoChatResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/repos/chat`, {
     method: 'POST',
@@ -39,7 +43,9 @@ export const chatWithRepository = async (
       repository,
       branch,
       prompt,
-      history
+      history,
+      model,
+      contextLevel
     }),
     credentials: 'include'
   });

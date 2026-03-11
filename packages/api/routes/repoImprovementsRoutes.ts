@@ -6,7 +6,8 @@ import {
   ensureRepoCloned,
   generateCorrelationId,
   loadSettings,
-  parseLlmJson
+  parseLlmJson,
+  getEffectiveTokenLimit
 } from '@propr/core';
 
 /**
@@ -26,6 +27,8 @@ interface RepoImprovementsRequest {
   categories: ImprovementCategory[];
   customPrompt?: string;
   referenceRepoId?: string | null;
+  model?: string;
+  contextLevel?: number;
 }
 
 /**
@@ -249,7 +252,7 @@ export function createRepoImprovementsRoutes() {
 
     try {
       const body = req.body as RepoImprovementsRequest;
-      const { repository, branch, categories, customPrompt, referenceRepoId } = body;
+      const { repository, branch, categories, customPrompt, referenceRepoId, model: requestedModel, contextLevel } = body;
 
       // Validate request
       const validation = validateImprovementsRequest(body);
@@ -277,9 +280,13 @@ export function createRepoImprovementsRoutes() {
       const worktreePath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken, baseBranch: branch });
 
       // Build context for the target repository
+      // Use contextLevel to determine token budget (default 50% = expanded)
+      const contextPercentage = contextLevel ?? 50;
+      const tokenBudget = getEffectiveTokenLimit(requestedModel, contextPercentage);
       const targetSummaryResult = await buildSummaryContext({
         repoName: repository,
-        correlationId
+        correlationId,
+        tokenBudget
       });
 
       console.log('[repo-improvements] Target context built:', {
@@ -302,9 +309,9 @@ export function createRepoImprovementsRoutes() {
         referenceContext
       );
 
-      // Get model settings and call the LLM
+      // Get model settings and call the LLM - use requested model or fall back to settings
       const settings = await loadSettings();
-      const model = settings.planner_context_model || 'haiku';
+      const model = requestedModel || settings.planner_context_model || 'haiku';
       const issueRef = { number: 0, repoOwner: owner, repoName };
 
       const llmResponse = await runLightweightLLMAnalysis({

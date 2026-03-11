@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { User, Bot, Send, Loader2 } from 'lucide-react';
+import ModelContextSelector from './ModelContextSelector';
 
 /**
  * Represents a single message in the chat history.
@@ -13,7 +14,7 @@ export interface Message {
 
 export interface RepoChatPanelProps {
   /** Callback invoked when the user sends a message */
-  onSendMessage: (message: string) => Promise<string | void>;
+  onSendMessage: (message: string, model: string, contextLevel: number) => Promise<string | void>;
   /** Initial messages to populate the chat */
   initialMessages?: Message[];
   /** Placeholder text for the input */
@@ -22,6 +23,10 @@ export interface RepoChatPanelProps {
   disabled?: boolean;
   /** Repository name to display in empty state */
   repositoryName?: string;
+  /** Default model to use */
+  defaultModel?: string;
+  /** Default context level */
+  defaultContextLevel?: number;
 }
 
 const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
@@ -30,10 +35,14 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
   placeholder = 'Ask a question about this repository...',
   disabled = false,
   repositoryName,
+  defaultModel = 'claude-haiku-4-5-20251001',
+  defaultContextLevel = 50,
 }) => {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(defaultModel);
+  const [contextLevel, setContextLevel] = useState(defaultContextLevel);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -70,7 +79,7 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
     setIsLoading(true);
 
     try {
-      const response = await onSendMessage(trimmedInput);
+      const response = await onSendMessage(trimmedInput, selectedModel, contextLevel);
 
       // Add assistant message if a response is returned
       if (response) {
@@ -105,6 +114,15 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
+      {/* Model and Context Level Selector */}
+      <ModelContextSelector
+        selectedModel={selectedModel}
+        onModelChange={setSelectedModel}
+        contextLevel={contextLevel}
+        onContextLevelChange={setContextLevel}
+        disabled={isLoading || disabled}
+      />
+
       {/* Messages Area */}
       <div
         ref={scrollRef}

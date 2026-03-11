@@ -35,6 +35,8 @@ export interface RepoImprovementsPanelProps {
     categories: ImprovementCategory[];
     customPrompt: string;
     referenceRepoId: string | null;
+    model: string;
+    contextLevel: number;
   }) => Promise<void>;
   /** Repository name to display */
   repositoryName?: string;
@@ -46,4 +48,8 @@ export interface RepoImprovementsPanelProps {
   suggestions?: SuggestionItem[];
   /** Callback when a suggestion's selection state is toggled */
   onToggleSuggestion?: (index: number) => void;
+  /** Default model to use */
+  defaultModel?: string;
+  /** Default context level */
+  defaultContextLevel?: number;
 }

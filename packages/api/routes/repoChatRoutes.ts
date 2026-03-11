@@ -5,7 +5,8 @@ import {
   getGitHubInstallationToken,
   ensureRepoCloned,
   generateCorrelationId,
-  loadSettings
+  loadSettings,
+  getEffectiveTokenLimit
 } from '@propr/core';
 
 interface ChatMessage {
@@ -18,6 +19,8 @@ interface RepoChatRequest {
   branch?: string;
   prompt: string;
   history?: ChatMessage[];
+  model?: string;
+  contextLevel?: number;
 }
 
 export function createRepoChatRoutes() {
@@ -25,7 +28,7 @@ export function createRepoChatRoutes() {
     const correlationId = generateCorrelationId();
 
     try {
-      const { repository, branch, prompt, history = [] } = req.body as RepoChatRequest;
+      const { repository, branch, prompt, history = [], model: requestedModel, contextLevel } = req.body as RepoChatRequest;
 
       // Validate required fields
       if (!repository || typeof repository !== 'string') {
@@ -65,9 +68,13 @@ export function createRepoChatRoutes() {
       }
 
       // Build codebase context using summaries
+      // Use contextLevel to determine token budget (default 50% = expanded)
+      const contextPercentage = contextLevel ?? 50;
+      const tokenBudget = getEffectiveTokenLimit(requestedModel, contextPercentage);
       const summaryResult = await buildSummaryContext({
         repoName: repository,
-        correlationId
+        correlationId,
+        tokenBudget
       });
 
       // Build conversation history string
@@ -94,9 +101,9 @@ ${summaryResult.context || 'No codebase summaries available. The repository may 
         ? `${systemPrompt}\n\n## Conversation History\n${historyContext}\n\n## Current Question\n${prompt}`
         : `${systemPrompt}\n\n## Question\n${prompt}`;
 
-      // Get model settings
+      // Get model settings - use requested model or fall back to settings
       const settings = await loadSettings();
-      const model = settings.planner_context_model || 'haiku';
+      const model = requestedModel || settings.planner_context_model || 'haiku';
 
       // Call the LLM
       const issueRef = { number: 0, repoOwner: owner, repoName };

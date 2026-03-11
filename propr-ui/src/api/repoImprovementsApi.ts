@@ -16,6 +16,10 @@ export interface GenerateRepoImprovementsRequest {
   customPrompt?: string;
   /** Optional reference repository ID for best practices comparison */
   referenceRepoId?: string | null;
+  /** The model ID to use for generating improvements */
+  model?: string;
+  /** The context level (0-100) for codebase analysis */
+  contextLevel?: number;
 }
 
 /**

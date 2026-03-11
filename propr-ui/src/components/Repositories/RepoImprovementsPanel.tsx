@@ -15,6 +15,7 @@ import {
   CreatePlanButton,
   SuggestionsList,
 } from './RepoImprovementsPanelComponents';
+import ModelContextSelector from './ModelContextSelector';
 
 // Re-export types for external consumers
 export type { ImprovementCategory, ReferenceRepo, RepoImprovementsPanelProps, SuggestionItem };
@@ -28,6 +29,8 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   disabled = false,
   suggestions = [],
   onToggleSuggestion,
+  defaultModel = 'claude-haiku-4-5-20251001',
+  defaultContextLevel = 50,
 }) => {
   const navigate = useNavigate();
   const [selectedCategories, setSelectedCategories] = useState<Set<ImprovementCategory>>(new Set());
@@ -35,13 +38,17 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   const [selectedReferenceRepo, setSelectedReferenceRepo] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(defaultModel);
+  const [contextLevel, setContextLevel] = useState(defaultContextLevel);
 
   useEffect(() => {
     setSelectedCategories(new Set());
     setCustomPrompt('');
     setSelectedReferenceRepo(null);
     setIsLoading(false);
-  }, [repositoryName]);
+    setSelectedModel(defaultModel);
+    setContextLevel(defaultContextLevel);
+  }, [repositoryName, defaultModel, defaultContextLevel]);
 
   const toggleCategory = (categoryId: ImprovementCategory) => {
     if (disabled || isLoading) return;
@@ -67,6 +74,8 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
           categories: Array.from(selectedCategories),
           customPrompt: customPrompt.trim(),
           referenceRepoId: selectedReferenceRepo,
+          model: selectedModel,
+          contextLevel,
         });
       }
     } finally {
@@ -102,6 +111,15 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
+      {/* Model and Context Level Selector */}
+      <ModelContextSelector
+        selectedModel={selectedModel}
+        onModelChange={setSelectedModel}
+        contextLevel={contextLevel}
+        onContextLevelChange={setContextLevel}
+        disabled={isLoading || disabled}
+      />
+
       <div
         className="flex-1 overflow-y-auto px-4 py-4 space-y-6"
         style={{
