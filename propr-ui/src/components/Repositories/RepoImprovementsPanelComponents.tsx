@@ -1,18 +1,25 @@
 import React from 'react';
 import { Sparkles, Loader2, ChevronDown, Check, ArrowRight } from 'lucide-react';
 import {
-  IMPROVEMENT_CATEGORIES,
+  HEALTH_CATEGORIES,
+  GROWTH_CATEGORIES,
+  ImprovementCategory,
   ReferenceRepo,
   SuggestionItem,
 } from './RepoImprovementsPanel.types';
 
+type CategoryType = typeof HEALTH_CATEGORIES[number] | typeof GROWTH_CATEGORIES[number];
+
 export interface CategoryButtonProps {
-  category: typeof IMPROVEMENT_CATEGORIES[number];
+  category: CategoryType;
   isSelected: boolean;
   disabled: boolean;
   onClick: () => void;
 }
 
+/**
+ * Toggle Chip style category button - compact, easy to click, Studio-quality
+ */
 export const CategoryButton: React.FC<CategoryButtonProps> = ({
   category,
   isSelected,
@@ -22,27 +29,82 @@ export const CategoryButton: React.FC<CategoryButtonProps> = ({
   <button
     onClick={onClick}
     disabled={disabled}
-    className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-left transition-all text-sm
+    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-all
       ${isSelected
-        ? 'bg-teal-50 border-teal-300 text-teal-700'
-        : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50'
+        ? 'bg-teal-600 border-teal-600 text-white shadow-sm'
+        : 'bg-white border-gray-200 text-gray-600 hover:border-teal-300 hover:bg-teal-50'
       }
       ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
     `}
     title={category.description}
   >
-    <div
-      className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0
-        ${isSelected
-          ? 'bg-teal-500 border-teal-500'
-          : 'border-gray-300 bg-white'
-        }
-      `}
-    >
-      {isSelected && <Check size={12} className="text-white" />}
-    </div>
-    <span className="truncate">{category.label}</span>
+    {isSelected && <Check size={12} className="flex-shrink-0" />}
+    <span className="whitespace-nowrap">
+      {'emoji' in category && category.emoji} {category.label}
+    </span>
   </button>
+);
+
+/**
+ * Section header for category groups - Utility Style
+ */
+export const CategoryGroupHeader: React.FC<{ title: string }> = ({ title }) => (
+  <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-2">
+    {title}
+  </div>
+);
+
+export interface CategoryGridProps {
+  healthCategories: typeof HEALTH_CATEGORIES;
+  growthCategories: typeof GROWTH_CATEGORIES;
+  selectedCategories: Set<ImprovementCategory>;
+  disabled: boolean;
+  onToggle: (categoryId: ImprovementCategory) => void;
+}
+
+/**
+ * Grouped category grid with Health and Growth sections
+ */
+export const CategoryGrid: React.FC<CategoryGridProps> = ({
+  healthCategories,
+  growthCategories,
+  selectedCategories,
+  disabled,
+  onToggle,
+}) => (
+  <div className="space-y-4">
+    {/* System Health Group */}
+    <div>
+      <CategoryGroupHeader title="System Health" />
+      <div className="flex flex-wrap gap-2">
+        {healthCategories.map((category) => (
+          <CategoryButton
+            key={category.id}
+            category={category}
+            isSelected={selectedCategories.has(category.id as ImprovementCategory)}
+            disabled={disabled}
+            onClick={() => onToggle(category.id as ImprovementCategory)}
+          />
+        ))}
+      </div>
+    </div>
+
+    {/* Product Growth Group */}
+    <div>
+      <CategoryGroupHeader title="Product Growth" />
+      <div className="flex flex-wrap gap-2">
+        {growthCategories.map((category) => (
+          <CategoryButton
+            key={category.id}
+            category={category}
+            isSelected={selectedCategories.has(category.id as ImprovementCategory)}
+            disabled={disabled}
+            onClick={() => onToggle(category.id as ImprovementCategory)}
+          />
+        ))}
+      </div>
+    </div>
+  </div>
 );
 
 export interface ReferenceRepoSelectorProps {
@@ -135,14 +197,14 @@ export const GenerateButton: React.FC<GenerateButtonProps> = ({
   showHint,
   onClick,
 }) => (
-  <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
+  <div className="flex-shrink-0 p-4 border-t border-slate-200 bg-white shadow-[0_-2px_8px_rgba(0,0,0,0.04)]">
     <button
       onClick={onClick}
       disabled={!canGenerate}
-      className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors
+      className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all
         ${canGenerate
-          ? 'bg-teal-600 text-white hover:bg-teal-700'
-          : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+          ? 'bg-teal-600 text-white hover:bg-teal-700 shadow-sm'
+          : 'bg-slate-200 text-slate-400 cursor-not-allowed'
         }
       `}
     >
@@ -159,7 +221,7 @@ export const GenerateButton: React.FC<GenerateButtonProps> = ({
       )}
     </button>
     {showHint && (
-      <p className="text-xs text-gray-400 text-center mt-2">
+      <p className="text-xs text-slate-400 text-center mt-2">
         Select at least one category or add custom instructions
       </p>
     )}
@@ -175,10 +237,10 @@ export const CreatePlanButton: React.FC<CreatePlanButtonProps> = ({
   selectedCount,
   onClick,
 }) => (
-  <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
+  <div className="flex-shrink-0 p-4 border-t border-slate-200 bg-white shadow-[0_-2px_8px_rgba(0,0,0,0.04)]">
     <button
       onClick={onClick}
-      className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors bg-teal-600 text-white hover:bg-teal-700"
+      className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all bg-teal-600 text-white hover:bg-teal-700 shadow-sm"
     >
       <ArrowRight size={16} />
       <span>Create Plan from Selected ({selectedCount})</span>

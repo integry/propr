@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { Sparkles, Clock } from 'lucide-react';
 import {
   IMPROVEMENT_CATEGORIES,
+  HEALTH_CATEGORIES,
+  GROWTH_CATEGORIES,
   ImprovementCategory,
   ReferenceRepo,
   RepoImprovementsPanelProps,
@@ -11,7 +13,7 @@ import {
   GenerateSuggestionsResult,
 } from './RepoImprovementsPanel.types';
 import {
-  CategoryButton,
+  CategoryGrid,
   ReferenceRepoSelector,
   GenerateButton,
   CreatePlanButton,
@@ -21,7 +23,7 @@ import ModelContextSelector from './ModelContextSelector';
 
 // Re-export types for external consumers
 export type { ImprovementCategory, ReferenceRepo, RepoImprovementsPanelProps, SuggestionItem, GenerateSuggestionsResult };
-export { IMPROVEMENT_CATEGORIES };
+export { IMPROVEMENT_CATEGORIES, HEALTH_CATEGORIES, GROWTH_CATEGORIES };
 
 /** Format duration for display (e.g., "1m 30s") */
 const formatDuration = (ms: number): string => {
@@ -36,16 +38,20 @@ const formatDuration = (ms: number): string => {
 
 /** Header component for the improvements panel */
 const ImprovementsPanelHeader: React.FC<{ repositoryName?: string }> = ({ repositoryName }) => (
-  <div className="text-center px-4 pt-2">
-    <div className="w-12 h-12 rounded-full bg-teal-100 flex items-center justify-center mb-3 mx-auto">
-      <Sparkles size={24} className="text-teal-600" />
+  <div className="px-4 pt-2">
+    <div className="flex items-center gap-3 mb-2">
+      <div className="w-10 h-10 rounded-lg bg-teal-100 flex items-center justify-center flex-shrink-0">
+        <Sparkles size={20} className="text-teal-600" />
+      </div>
+      <div>
+        <h3 className="text-sm font-semibold text-gray-900">
+          {repositoryName ? `Improve ${repositoryName}` : 'Repository Improvements'}
+        </h3>
+        <p className="text-xs text-gray-500">
+          Select categories or add custom instructions
+        </p>
+      </div>
     </div>
-    <h3 className="text-sm font-medium text-gray-700 mb-1">
-      {repositoryName ? `Improve ${repositoryName}` : 'Repository Improvements'}
-    </h3>
-    <p className="text-xs text-gray-500 max-w-xs mx-auto">
-      Select improvement categories or provide custom instructions to generate AI-powered suggestions.
-    </p>
   </div>
 );
 
@@ -186,23 +192,14 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
         {/* Header */}
         <ImprovementsPanelHeader repositoryName={repositoryName} />
 
-        {/* Category Buttons */}
-        <div className="space-y-2">
-          <label className="block text-xs font-medium text-gray-600 uppercase tracking-wide">
-            Improvement Categories
-          </label>
-          <div className="grid grid-cols-2 gap-2">
-            {IMPROVEMENT_CATEGORIES.map((category) => (
-              <CategoryButton
-                key={category.id}
-                category={category}
-                isSelected={selectedCategories.has(category.id)}
-                disabled={isDisabledState}
-                onClick={() => toggleCategory(category.id)}
-              />
-            ))}
-          </div>
-        </div>
+        {/* Category Toggle Chips - Grouped by Health and Growth */}
+        <CategoryGrid
+          healthCategories={HEALTH_CATEGORIES}
+          growthCategories={GROWTH_CATEGORIES}
+          selectedCategories={selectedCategories}
+          disabled={isDisabledState}
+          onToggle={toggleCategory}
+        />
 
         {/* Custom Instructions */}
         <div className="space-y-2">

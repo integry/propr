@@ -128,7 +128,7 @@ const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({
       })();
 
   return (
-    <div className={`flex items-center gap-3 p-2 bg-white border-b border-gray-100 ${className}`}>
+    <div className={`flex items-center gap-3 px-4 py-2 bg-white border-b border-slate-200 ${className}`}>
       {/* Model Selector */}
       <div className="flex items-center gap-1.5">
         <Cpu className="w-3.5 h-3.5 text-gray-400" />

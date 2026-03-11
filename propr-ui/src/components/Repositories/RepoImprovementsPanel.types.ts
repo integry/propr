@@ -1,13 +1,28 @@
 /**
- * Available improvement categories for repository analysis
+ * Available improvement categories for repository analysis, grouped by Health and Growth
  */
+
+// System Health (Maintenance) categories
+export const HEALTH_CATEGORIES = [
+  { id: 'code-quality', label: 'Code Quality', emoji: '🔧', description: 'Identify code smells and refactoring opportunities' },
+  { id: 'security', label: 'Security', emoji: '🔒', description: 'Detect potential security vulnerabilities' },
+  { id: 'performance', label: 'Performance', emoji: '⚡', description: 'Find performance bottlenecks and optimization opportunities' },
+  { id: 'documentation', label: 'Documentation', emoji: '📚', description: 'Identify missing or outdated documentation' },
+  { id: 'testing', label: 'Testing', emoji: '🧪', description: 'Suggest test coverage improvements' },
+] as const;
+
+// Product Growth (Functional) categories
+export const GROWTH_CATEGORIES = [
+  { id: 'new-features', label: 'New Feature Ideas', emoji: '✨', description: 'What features are missing based on current project scope?' },
+  { id: 'tech-debt', label: 'Tech Debt Reduction', emoji: '🛠️', description: 'Where is the code most brittle and hard to extend?' },
+  { id: 'ux-ui', label: 'UX & UI Improvements', emoji: '📱', description: 'Refine interfaces and interaction logic' },
+  { id: 'scalability', label: 'API & Scalability', emoji: '🌍', description: 'Improve interface design and throughput bottlenecks' },
+] as const;
+
+// Combined categories for backward compatibility
 export const IMPROVEMENT_CATEGORIES = [
-  { id: 'code-quality', label: 'Code Quality', description: 'Identify code smells and refactoring opportunities' },
-  { id: 'performance', label: 'Performance', description: 'Find performance bottlenecks and optimization opportunities' },
-  { id: 'security', label: 'Security', description: 'Detect potential security vulnerabilities' },
-  { id: 'testing', label: 'Testing', description: 'Suggest test coverage improvements' },
-  { id: 'documentation', label: 'Documentation', description: 'Identify missing or outdated documentation' },
-  { id: 'architecture', label: 'Architecture', description: 'Analyze architectural patterns and suggest improvements' },
+  ...HEALTH_CATEGORIES,
+  ...GROWTH_CATEGORIES,
 ] as const;
 
 export type ImprovementCategory = typeof IMPROVEMENT_CATEGORIES[number]['id'];

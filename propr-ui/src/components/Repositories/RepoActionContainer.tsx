@@ -215,7 +215,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
   return (
     <div className="h-full flex flex-col">
       {/* Tab Header */}
-      <div className="flex items-end px-4 border-b border-gray-100 bg-white">
+      <div className="flex items-end px-4 border-b border-slate-200 bg-white">
         <div className="flex items-center">
           <TabButton
             label="Chat"
