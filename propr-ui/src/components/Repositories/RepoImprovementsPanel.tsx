@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Sparkles, Clock } from 'lucide-react';
 import {
@@ -34,6 +34,37 @@ const formatDuration = (ms: number): string => {
   return `${minutes}m ${seconds}s`;
 };
 
+/** Header component for the improvements panel */
+const ImprovementsPanelHeader: React.FC<{ repositoryName?: string }> = ({ repositoryName }) => (
+  <div className="text-center px-4 pt-2">
+    <div className="w-12 h-12 rounded-full bg-teal-100 flex items-center justify-center mb-3 mx-auto">
+      <Sparkles size={24} className="text-teal-600" />
+    </div>
+    <h3 className="text-sm font-medium text-gray-700 mb-1">
+      {repositoryName ? `Improve ${repositoryName}` : 'Repository Improvements'}
+    </h3>
+    <p className="text-xs text-gray-500 max-w-xs mx-auto">
+      Select improvement categories or provide custom instructions to generate AI-powered suggestions.
+    </p>
+  </div>
+);
+
+/** Timing display component */
+const TimingDisplay: React.FC<{ timingMetadata?: GenerationTimingMetadata }> = ({ timingMetadata }) => {
+  if (!timingMetadata?.actualDurationMs) return null;
+  return (
+    <div className="flex items-center justify-center gap-1.5 text-xs text-slate-400 py-1">
+      <Clock size={12} />
+      <span>Generated in {formatDuration(timingMetadata.actualDurationMs)}</span>
+      {timingMetadata.estimatedDurationMs && (
+        <span className="text-slate-300">
+          (est. {formatDuration(timingMetadata.estimatedDurationMs)})
+        </span>
+      )}
+    </div>
+  );
+};
+
 const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   availableRepos = [],
   onGenerateSuggestions,
@@ -66,7 +97,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
     setTimingMetadata(undefined);
   }, [repositoryName, defaultModel, defaultContextLevel]);
 
-  const toggleCategory = (categoryId: ImprovementCategory) => {
+  const toggleCategory = useCallback((categoryId: ImprovementCategory) => {
     if (disabled || isLoading) return;
     setSelectedCategories((prev) => {
       const newSet = new Set(prev);
@@ -77,9 +108,9 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
       }
       return newSet;
     });
-  };
+  }, [disabled, isLoading]);
 
-  const handleGenerate = async () => {
+  const handleGenerate = useCallback(async () => {
     if (isLoading || disabled) return;
     if (selectedCategories.size === 0 && !customPrompt.trim()) return;
 
@@ -94,7 +125,6 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
           model: selectedModel,
           contextLevel,
         });
-        // Capture timing metadata if returned
         if (result?.timing) {
           setTimingMetadata(result.timing);
         }
@@ -102,33 +132,38 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [isLoading, disabled, selectedCategories, customPrompt, onGenerateSuggestions, selectedReferenceRepo, selectedModel, contextLevel]);
 
-  const handleSelectRepo = (repoId: string | null) => {
+  const handleSelectRepo = useCallback((repoId: string | null) => {
     setSelectedReferenceRepo(repoId);
     setIsDropdownOpen(false);
-  };
+  }, []);
+
+  const handleToggleDropdown = useCallback(() => {
+    if (!disabled && !isLoading) {
+      setIsDropdownOpen((prev) => !prev);
+    }
+  }, [disabled, isLoading]);
 
   const isDisabledState = disabled || isLoading;
-  const canGenerate = (selectedCategories.size > 0 || !!customPrompt.trim()) && !isLoading && !disabled;
-  const showHint = selectedCategories.size === 0 && !customPrompt.trim() && !isLoading;
+  const hasCustomPrompt = !!customPrompt.trim();
+  const canGenerate = (selectedCategories.size > 0 || hasCustomPrompt) && !isLoading && !disabled;
+  const showHint = selectedCategories.size === 0 && !hasCustomPrompt && !isLoading;
   const selectedSuggestions = suggestions.filter(s => s.isSelected);
   const hasSelectedSuggestions = selectedSuggestions.length > 0;
 
-  const handleCreatePlanFromSelected = () => {
-    // Format suggestions into a numbered list
+  const handleCreatePlanFromSelected = useCallback(() => {
     const prompt = selectedSuggestions
       .map((suggestion, index) => `${index + 1}. ${suggestion.title}\n   ${suggestion.description}`)
       .join('\n\n');
 
-    // Navigate to the studio with the prompt and repository in state
     navigate('/studio/new', {
       state: {
         initialPrompt: prompt,
         initialRepository: repositoryId,
       },
     });
-  };
+  }, [selectedSuggestions, navigate, repositoryId]);
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
@@ -149,17 +184,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
         }}
       >
         {/* Header */}
-        <div className="text-center px-4 pt-2">
-          <div className="w-12 h-12 rounded-full bg-teal-100 flex items-center justify-center mb-3 mx-auto">
-            <Sparkles size={24} className="text-teal-600" />
-          </div>
-          <h3 className="text-sm font-medium text-gray-700 mb-1">
-            {repositoryName ? `Improve ${repositoryName}` : 'Repository Improvements'}
-          </h3>
-          <p className="text-xs text-gray-500 max-w-xs mx-auto">
-            Select improvement categories or provide custom instructions to generate AI-powered suggestions.
-          </p>
-        </div>
+        <ImprovementsPanelHeader repositoryName={repositoryName} />
 
         {/* Category Buttons */}
         <div className="space-y-2">
@@ -203,7 +228,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
             selectedReferenceRepo={selectedReferenceRepo}
             isDropdownOpen={isDropdownOpen}
             disabled={isDisabledState}
-            onToggleDropdown={() => !isDisabledState && setIsDropdownOpen(!isDropdownOpen)}
+            onToggleDropdown={handleToggleDropdown}
             onSelectRepo={handleSelectRepo}
           />
         )}
@@ -211,18 +236,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
         {/* Generated Suggestions List */}
         {suggestions.length > 0 && onToggleSuggestion && (
           <>
-            {/* Timing metadata display */}
-            {timingMetadata?.actualDurationMs && (
-              <div className="flex items-center justify-center gap-1.5 text-xs text-slate-400 py-1">
-                <Clock size={12} />
-                <span>Generated in {formatDuration(timingMetadata.actualDurationMs)}</span>
-                {timingMetadata.estimatedDurationMs && (
-                  <span className="text-slate-300">
-                    (est. {formatDuration(timingMetadata.estimatedDurationMs)})
-                  </span>
-                )}
-              </div>
-            )}
+            <TimingDisplay timingMetadata={timingMetadata} />
             <SuggestionsList
               suggestions={suggestions}
               onToggleSuggestion={onToggleSuggestion}
