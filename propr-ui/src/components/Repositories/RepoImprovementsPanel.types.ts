@@ -38,6 +38,8 @@ export interface RepoImprovementsPanelProps {
   }) => Promise<void>;
   /** Repository name to display */
   repositoryName?: string;
+  /** Full repository identifier (e.g., 'owner/repo') for navigation */
+  repositoryId?: string;
   /** Whether the panel is disabled */
   disabled?: boolean;
   /** List of generated suggestions with selection state */

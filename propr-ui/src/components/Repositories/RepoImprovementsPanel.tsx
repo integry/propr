@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Sparkles, Loader2, ChevronDown, Check } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Sparkles, Loader2, ChevronDown, Check, ArrowRight } from 'lucide-react';
 import {
   IMPROVEMENT_CATEGORIES,
   ImprovementCategory,
@@ -172,6 +173,26 @@ const GenerateButton: React.FC<GenerateButtonProps> = ({
   </div>
 );
 
+interface CreatePlanButtonProps {
+  selectedCount: number;
+  onClick: () => void;
+}
+
+const CreatePlanButton: React.FC<CreatePlanButtonProps> = ({
+  selectedCount,
+  onClick,
+}) => (
+  <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
+    <button
+      onClick={onClick}
+      className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors bg-teal-600 text-white hover:bg-teal-700"
+    >
+      <ArrowRight size={16} />
+      <span>Create Plan from Selected ({selectedCount})</span>
+    </button>
+  </div>
+);
+
 interface SuggestionCardProps {
   suggestion: SuggestionItem;
   index: number;
@@ -256,10 +277,12 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   availableRepos = [],
   onGenerateSuggestions,
   repositoryName,
+  repositoryId,
   disabled = false,
   suggestions = [],
   onToggleSuggestion,
 }) => {
+  const navigate = useNavigate();
   const [selectedCategories, setSelectedCategories] = useState<Set<ImprovementCategory>>(new Set());
   const [customPrompt, setCustomPrompt] = useState('');
   const [selectedReferenceRepo, setSelectedReferenceRepo] = useState<string | null>(null);
@@ -312,6 +335,23 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   const isDisabledState = disabled || isLoading;
   const canGenerate = (selectedCategories.size > 0 || !!customPrompt.trim()) && !isLoading && !disabled;
   const showHint = selectedCategories.size === 0 && !customPrompt.trim() && !isLoading;
+  const selectedSuggestions = suggestions.filter(s => s.isSelected);
+  const hasSelectedSuggestions = selectedSuggestions.length > 0;
+
+  const handleCreatePlanFromSelected = () => {
+    // Format suggestions into a numbered list
+    const prompt = selectedSuggestions
+      .map((suggestion, index) => `${index + 1}. ${suggestion.title}\n   ${suggestion.description}`)
+      .join('\n\n');
+
+    // Navigate to the studio with the prompt and repository in state
+    navigate('/studio/new', {
+      state: {
+        initialPrompt: prompt,
+        initialRepository: repositoryId,
+      },
+    });
+  };
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
@@ -391,13 +431,20 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
         )}
       </div>
 
-      {/* Generate Button */}
-      <GenerateButton
-        isLoading={isLoading}
-        canGenerate={canGenerate}
-        showHint={showHint}
-        onClick={handleGenerate}
-      />
+      {/* Footer Button - Show Create Plan if suggestions selected, otherwise Generate */}
+      {hasSelectedSuggestions ? (
+        <CreatePlanButton
+          selectedCount={selectedSuggestions.length}
+          onClick={handleCreatePlanFromSelected}
+        />
+      ) : (
+        <GenerateButton
+          isLoading={isLoading}
+          canGenerate={canGenerate}
+          showHint={showHint}
+          onClick={handleGenerate}
+        />
+      )}
     </div>
   );
 };
