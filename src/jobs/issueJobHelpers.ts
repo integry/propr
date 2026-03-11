@@ -8,7 +8,9 @@ import {
     formatResetTime,
     issueQueue,
     db,
-    getModelShortName
+    getModelShortName,
+    withRetry,
+    retryConfigs
 } from '@propr/core';
 export { localizeContentImages, cleanupIssueAssets, type LocalizeContentImagesOptions } from './contentUtils.js';
 import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo, CommitResult, RepoValidationResult } from '@propr/core';
@@ -312,16 +314,17 @@ Comment on this PR to request refinements — the AI agent monitors comments and
             prUrl: prResponse.data.html_url
         }, 'PR created successfully');
 
-        const labelsToAdd = [PR_LABEL];
-        if (issueRef.baseLabel) labelsToAdd.push(issueRef.baseLabel);
-        if (issueRef.modelLabel) labelsToAdd.push(issueRef.modelLabel);
-
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner: issueRef.repoOwner,
-            repo: issueRef.repoName,
-            issue_number: prResponse.data.number,
-            labels: labelsToAdd
-        });
+        // Only add PR_LABEL to PRs (baseLabel/modelLabel are for issues only)
+        await withRetry(
+            () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+                owner: issueRef.repoOwner,
+                repo: issueRef.repoName,
+                issue_number: prResponse.data.number,
+                labels: [PR_LABEL]
+            }),
+            retryConfigs.githubApi,
+            `add_pr_label_${prResponse.data.number}`
+        );
 
         return {
             success: true,
@@ -341,7 +344,7 @@ Comment on this PR to request refinements — the AI agent monitors comments and
             error: (prError as Error).message
         }, 'Direct PR creation failed, checking if PR already exists...');
 
-        return await findExistingPR({ octokit, issueRef, worktreeInfo, prError: prError as Error, correlatedLogger });
+        return await findExistingPR({ octokit, issueRef, worktreeInfo, prError: prError as Error, correlatedLogger, PR_LABEL });
     }
 }
 
@@ -351,10 +354,11 @@ interface FindExistingPROptions {
     worktreeInfo: WorktreeInfo;
     prError: Error;
     correlatedLogger: Logger;
+    PR_LABEL: string;
 }
 
 async function findExistingPR(options: FindExistingPROptions): Promise<PostProcessingResult> {
-    const { octokit, issueRef, worktreeInfo, prError, correlatedLogger } = options;
+    const { octokit, issueRef, worktreeInfo, prError, correlatedLogger, PR_LABEL } = options;
     try {
         const existingPRs = await octokit.request<{ data: Array<{ number: number; html_url: string; title: string; base: { ref: string } }> }>('GET /repos/{owner}/{repo}/pulls', { owner: issueRef.repoOwner, repo: issueRef.repoName, head: `${issueRef.repoOwner}:${worktreeInfo.branchName}`, state: 'open' });
         if (existingPRs.data.length > 0) {
@@ -376,6 +380,23 @@ async function findExistingPR(options: FindExistingPROptions): Promise<PostProce
                 } catch (updateError) {
                     correlatedLogger.warn({ prNumber: existingPR.number, error: (updateError as Error).message }, 'Failed to update PR base branch');
                 }
+            }
+
+            // Add PR label to the existing PR (only PR_LABEL, not issue labels like baseLabel/modelLabel)
+            try {
+                await withRetry(
+                    () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+                        owner: issueRef.repoOwner,
+                        repo: issueRef.repoName,
+                        issue_number: existingPR.number,
+                        labels: [PR_LABEL]
+                    }),
+                    retryConfigs.githubApi,
+                    `add_pr_label_existing_${existingPR.number}`
+                );
+                correlatedLogger.info({ prNumber: existingPR.number, label: PR_LABEL }, 'Added PR label to existing PR');
+            } catch (labelError) {
+                correlatedLogger.warn({ prNumber: existingPR.number, error: (labelError as Error).message }, 'Failed to add PR label to existing PR after retries');
             }
 
             return { success: true, pr: { number: existingPR.number, url: existingPR.html_url, title: existingPR.title }, updatedLabels: [] };
