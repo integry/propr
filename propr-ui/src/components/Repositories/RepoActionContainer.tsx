@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { MessageSquareText, Sparkles } from 'lucide-react';
 import RepoChatPanel from './RepoChatPanel';
+import RepoImprovementsPanel, { ImprovementCategory } from './RepoImprovementsPanel';
 import { chatWithRepository, ChatMessage } from '../../api/repoChatApi';
 
 type ActionTab = 'chat' | 'improve';
@@ -129,19 +130,19 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
           />
         )}
         {activeTab === 'improve' && (
-          <div className="h-full flex items-center justify-center bg-slate-50">
-            <div className="text-center p-8">
-              <div className="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center mb-3 mx-auto">
-                <Sparkles size={24} className="text-gray-400" />
-              </div>
-              <h3 className="text-sm font-medium text-gray-700 mb-1">
-                Improvements
-              </h3>
-              <p className="text-xs text-gray-500 max-w-xs">
-                AI-powered code improvements and suggestions coming soon.
-              </p>
-            </div>
-          </div>
+          <RepoImprovementsPanel
+            repositoryName={selectedRepo.alias || selectedRepo.name}
+            onGenerateSuggestions={async (params: {
+              categories: ImprovementCategory[];
+              customPrompt: string;
+              referenceRepoId: string | null;
+            }) => {
+              // API logic to be implemented in a future task
+              // For now, just simulate a loading state
+              console.log('Generating suggestions with params:', params);
+              await new Promise((resolve) => setTimeout(resolve, 2000));
+            }}
+          />
         )}
       </div>
     </div>
