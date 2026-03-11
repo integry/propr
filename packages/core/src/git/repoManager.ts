@@ -22,6 +22,27 @@ import { fetchLatestChanges, FetchLatestChangesOptions, FetchLatestChangesResult
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
 const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
 
+/**
+ * Check if an error indicates a corrupted git repository that can be fixed by re-cloning.
+ */
+function isGitCorruptionError(error: Error): boolean {
+    const corruptionPatterns = [
+        /invalid index-pack output/i,
+        /--stdin requires a git repository/i,
+        /not a git repository/i,
+        /corrupted/i,
+        /bad object/i,
+        /missing blob/i,
+        /missing tree/i,
+        /missing commit/i,
+        /broken link/i,
+        /invalid sha1/i,
+        /pack.*corrupted/i,
+        /index file.*corrupted/i,
+    ];
+    return corruptionPatterns.some(pattern => pattern.test(error.message));
+}
+
 async function getRepoPath(owner: string, repoName: string): Promise<string> {
     return path.join(CLONES_BASE_PATH, owner, repoName);
 }
