@@ -3,6 +3,7 @@ import { MessageSquareText, Sparkles } from 'lucide-react';
 import RepoChatPanel from './RepoChatPanel';
 import RepoImprovementsPanel, { ImprovementCategory } from './RepoImprovementsPanel';
 import { chatWithRepository, ChatMessage } from '../../api/repoChatApi';
+import { generateRepoImprovements } from '../../api/repoImprovementsApi';
 
 type ActionTab = 'chat' | 'improve';
 
@@ -137,10 +138,18 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
               customPrompt: string;
               referenceRepoId: string | null;
             }) => {
-              // API logic to be implemented in a future task
-              // For now, just simulate a loading state
-              console.log('Generating suggestions with params:', params);
-              await new Promise((resolve) => setTimeout(resolve, 2000));
+              const branch = selectedRepo.baseBranch || 'HEAD';
+              const response = await generateRepoImprovements({
+                repository: selectedRepo.name,
+                branch,
+                categories: params.categories,
+                customPrompt: params.customPrompt || undefined,
+                referenceRepoId: params.referenceRepoId,
+              });
+
+              if (response.error) {
+                throw new Error(response.error);
+              }
             }}
           />
         )}
