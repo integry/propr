@@ -80,17 +80,17 @@ const TreeNode: React.FC<TreeNodeProps> = ({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.15 }}
-        className={`flex items-center gap-2 py-1.5 px-2 cursor-pointer rounded transition-colors ${
+        className={`flex items-center gap-2 py-1.5 px-2 cursor-pointer rounded-sm transition-colors ${
           isSelected
-            ? 'bg-blue-50 border-l-2 border-blue-500'
-            : 'hover:bg-gray-100 border-l-2 border-transparent'
+            ? 'bg-teal-600/20 border-l-2 border-teal-500'
+            : 'hover:bg-slate-200/50 border-l-2 border-transparent'
         }`}
         style={{ paddingLeft }}
         onClick={() => onSelect(entry)}
       >
         {/* Expand/collapse icon for directories */}
         {isDirectory ? (
-          <span className="w-4 h-4 flex items-center justify-center text-gray-400 flex-shrink-0">
+          <span className="w-4 h-4 flex items-center justify-center text-slate-500 flex-shrink-0">
             {state.loading ? (
               <Loader2 className="w-3 h-3 animate-spin" />
             ) : (
@@ -125,7 +125,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
 
         {/* Entry name */}
         <span
-          className={`text-sm truncate ${isDirectory ? 'font-medium text-gray-800' : 'text-gray-700'}`}
+          className={`text-sm truncate ${isDirectory ? 'font-medium text-slate-700' : 'text-slate-600'}`}
           title={entry.name}
         >
           {entry.name}
@@ -133,7 +133,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
 
         {/* Summary indicator */}
         {entry.summary && (
-          <span className="ml-auto text-xs text-gray-400 hidden sm:inline flex-shrink-0" title="Has summary">
+          <span className="ml-auto text-xs text-slate-400 hidden sm:inline flex-shrink-0" title="Has summary">
             <FileText className="w-3 h-3" />
           </span>
         )}
@@ -150,7 +150,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
           >
             {state.children.length === 0 ? (
               <p
-                className="text-xs text-gray-400 italic py-1"
+                className="text-xs text-slate-400 italic py-1"
                 style={{ paddingLeft: paddingLeft + 24 }}
               >
                 Empty directory

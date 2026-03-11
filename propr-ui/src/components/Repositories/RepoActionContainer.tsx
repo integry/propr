@@ -26,10 +26,10 @@ interface TabButtonProps {
 const TabButton: React.FC<TabButtonProps> = ({ label, icon, isActive, onClick }) => (
   <button
     onClick={onClick}
-    className={`flex items-center gap-1.5 px-3 py-2 text-[11px] font-bold uppercase tracking-widest transition-all border-b-2 -mb-px
+    className={`flex items-center gap-1.5 px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest transition-all border-t-2 -mt-px
       ${isActive
-        ? 'text-teal-600 border-teal-500'
-        : 'text-slate-400 border-transparent hover:text-slate-600 hover:border-slate-300'
+        ? 'text-teal-600 border-t-teal-500 bg-white'
+        : 'text-slate-400 border-t-transparent hover:text-slate-600 hover:bg-slate-100/50'
       }`}
   >
     {icon}
@@ -214,9 +214,9 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
 
   return (
     <div className="h-full flex flex-col bg-[#F8FAFC]">
-      {/* Tab Header - sits on tinted background */}
-      <div className="flex items-end px-4 border-b border-slate-200 bg-[#F8FAFC]">
-        <div className="flex items-center">
+      {/* Tab Header - flush against top border */}
+      <div className="flex items-stretch border-b border-slate-200 bg-[#F8FAFC]">
+        <div className="flex items-stretch">
           <TabButton
             label="Chat"
             icon={<MessageSquareText className="h-3 w-3" />}

@@ -199,14 +199,14 @@ export const GenerateButton: React.FC<GenerateButtonProps> = ({
   showHint,
   onClick,
 }) => (
-  <div className="flex-shrink-0 p-4 border-t border-slate-200 bg-white shadow-[0_-2px_8px_rgba(0,0,0,0.04)]">
+  <div className="flex-shrink-0 px-4 py-3 border-t border-slate-200 bg-slate-100">
     <button
       onClick={onClick}
       disabled={!canGenerate}
       className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all
         ${canGenerate
           ? 'bg-teal-600 text-white hover:bg-teal-700 shadow-sm'
-          : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+          : 'bg-slate-300 text-slate-500 cursor-not-allowed'
         }
       `}
     >
@@ -239,7 +239,7 @@ export const CreatePlanButton: React.FC<CreatePlanButtonProps> = ({
   selectedCount,
   onClick,
 }) => (
-  <div className="flex-shrink-0 p-4 border-t border-slate-200 bg-white shadow-[0_-2px_8px_rgba(0,0,0,0.04)]">
+  <div className="flex-shrink-0 px-4 py-3 border-t border-slate-200 bg-slate-100">
     <button
       onClick={onClick}
       className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all bg-teal-600 text-white hover:bg-teal-700 shadow-sm"
@@ -257,8 +257,8 @@ export interface SuggestionRowProps {
 }
 
 /**
- * Dense two-line suggestion row - sits directly on tinted background
- * with teal vertical accent line for "Live Insight" indicator
+ * Dense two-line suggestion row - high-density checklist style
+ * Sits directly on tinted background per Studio spec
  */
 export const SuggestionRow: React.FC<SuggestionRowProps> = ({
   suggestion,
@@ -267,12 +267,14 @@ export const SuggestionRow: React.FC<SuggestionRowProps> = ({
 }) => (
   <button
     onClick={() => onToggle(index)}
-    className={`w-full text-left py-3 px-3 transition-all flex items-start gap-3 border-l-2 ${
+    className={`w-full text-left py-3 px-3 transition-all flex items-start gap-3 ${
       suggestion.isSelected
-        ? 'border-l-teal-500 bg-teal-50/30'
-        : 'border-l-teal-400 hover:bg-slate-100/50'
+        ? 'bg-teal-50/50'
+        : 'hover:bg-slate-100/50'
     }`}
   >
+    {/* Sparkle icon for new suggestions */}
+    <Sparkles size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
     {/* Checkbox */}
     <div
       className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 mt-0.5
@@ -286,8 +288,8 @@ export const SuggestionRow: React.FC<SuggestionRowProps> = ({
     </div>
     {/* Two-line content */}
     <div className="flex-1 min-w-0">
-      <h4 className={`text-sm font-semibold leading-tight ${
-        suggestion.isSelected ? 'text-teal-700' : 'text-slate-700'
+      <h4 className={`text-sm font-bold leading-tight ${
+        suggestion.isSelected ? 'text-teal-700' : 'text-slate-800'
       }`}>
         {suggestion.title}
       </h4>

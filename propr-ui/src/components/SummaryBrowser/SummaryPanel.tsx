@@ -51,7 +51,7 @@ function getFileIcon(fileName: string, size: string = 'w-5 h-5'): React.ReactNod
 
 const SummaryPanel: React.FC<SummaryPanelProps> = ({ selectedEntry, owner, repo }) => {
   return (
-    <div className="md:w-1/2 p-4 bg-gray-50 min-h-[200px]">
+    <div className="flex-1 flex flex-col overflow-auto bg-[#1e1e1e]">
       <AnimatePresence mode="wait">
         {selectedEntry ? (
           <motion.div
@@ -60,58 +60,61 @@ const SummaryPanel: React.FC<SummaryPanelProps> = ({ selectedEntry, owner, repo 
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -10 }}
             transition={{ duration: 0.15 }}
+            className="flex flex-col h-full"
           >
-            {/* Header with icon and path */}
-            <div className="flex items-center gap-2 mb-3">
+            {/* Header bar - VS Code style */}
+            <div className="flex items-center gap-2 px-4 py-2 bg-[#252526] border-b border-[#3c3c3c]">
               {selectedEntry.entryType === 'directory' ? (
-                <Folder className="w-5 h-5 text-yellow-500 flex-shrink-0" />
+                <Folder className="w-4 h-4 text-yellow-400 flex-shrink-0" />
               ) : (
-                getFileIcon(selectedEntry.name)
+                getFileIcon(selectedEntry.name, 'w-4 h-4')
               )}
+              <h4 className="font-medium text-slate-200 truncate font-mono text-sm" title={selectedEntry.path}>
+                {selectedEntry.path || '/'}
+              </h4>
               <a
                 href={`https://github.com/${owner}/${repo}/${selectedEntry.entryType === 'directory' ? 'tree' : 'blob'}/HEAD/${selectedEntry.path}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1 text-blue-600 hover:text-blue-700 flex-shrink-0"
+                className="flex items-center gap-1 text-slate-400 hover:text-blue-400 flex-shrink-0 ml-auto"
                 title="View on GitHub"
               >
                 <ExternalLink className="w-4 h-4" />
               </a>
-              <h4 className="font-medium text-gray-800 truncate font-mono text-sm" title={selectedEntry.path}>
-                {selectedEntry.path || '/'}
-              </h4>
             </div>
 
             {/* Entry type badge */}
-            <div className="mb-3">
+            <div className="px-4 py-2 bg-[#252526]">
               <span
                 className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
                   selectedEntry.entryType === 'directory'
-                    ? 'bg-yellow-100 text-yellow-800'
-                    : 'bg-blue-100 text-blue-800'
+                    ? 'bg-yellow-900/50 text-yellow-300'
+                    : 'bg-blue-900/50 text-blue-300'
                 }`}
               >
                 {selectedEntry.entryType === 'directory' ? 'Directory' : 'File'}
               </span>
             </div>
 
-            {/* Summary content */}
-            {selectedEntry.summary ? (
-              <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
-                <h5 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                  Summary
-                </h5>
-                <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
-                  {selectedEntry.summary}
-                </p>
-              </div>
-            ) : (
-              <div className="bg-white border border-gray-200 rounded-lg p-4">
-                <p className="text-sm text-gray-400 italic text-center">
-                  No summary available for this {selectedEntry.entryType}
-                </p>
-              </div>
-            )}
+            {/* Summary content - VS Code dark theme */}
+            <div className="flex-1 overflow-auto p-4">
+              {selectedEntry.summary ? (
+                <div>
+                  <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">
+                    Summary
+                  </h5>
+                  <p className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed font-mono">
+                    {selectedEntry.summary}
+                  </p>
+                </div>
+              ) : (
+                <div className="flex items-center justify-center h-full">
+                  <p className="text-sm text-slate-500 italic text-center">
+                    No summary available for this {selectedEntry.entryType}
+                  </p>
+                </div>
+              )}
+            </div>
           </motion.div>
         ) : (
           <motion.div
@@ -119,9 +122,9 @@ const SummaryPanel: React.FC<SummaryPanelProps> = ({ selectedEntry, owner, repo 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="flex flex-col items-center justify-center h-full min-h-[180px] text-gray-400"
+            className="flex flex-col items-center justify-center h-full min-h-[180px] text-slate-500"
           >
-            <FileText className="w-8 h-8 mb-2 text-gray-300" />
+            <FileText className="w-8 h-8 mb-2 text-slate-600" />
             <p className="text-sm">Select a file or directory to view its summary</p>
           </motion.div>
         )}

@@ -174,11 +174,11 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className="border border-gray-200 rounded-lg bg-white overflow-hidden shadow-sm"
+      className="h-full flex flex-col overflow-hidden"
     >
       {/* Header */}
-      <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
-        <p className="text-xs text-gray-500">
+      <div className="px-4 py-3 bg-slate-100 border-b border-slate-200 flex-shrink-0">
+        <p className="text-xs text-slate-500">
           {indexingStatus.fileCount} files, {indexingStatus.directoryCount} directories indexed
         </p>
         {indexingStatus.lastIndexedHash && (
@@ -187,22 +187,22 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
             title={indexingStatus.lastIndexedCommitMessage || undefined}
           >
             {indexingStatus.lastIndexedAt && (
-              <span className="flex items-center gap-1 text-xs text-gray-400">
+              <span className="flex items-center gap-1 text-xs text-slate-400">
                 <Clock className="w-3 h-3" />
                 {formatRelativeTime(indexingStatus.lastIndexedAt)}
               </span>
             )}
-            <GitCommit className="w-3.5 h-3.5 text-gray-400" />
+            <GitCommit className="w-3.5 h-3.5 text-slate-400" />
             <a
               href={`https://github.com/${owner}/${repo}/commit/${indexingStatus.lastIndexedHash}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs font-mono text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded hover:bg-gray-200 hover:text-blue-600 transition-colors"
+              className="text-xs font-mono text-slate-600 bg-slate-200 px-1.5 py-0.5 rounded hover:bg-slate-300 hover:text-blue-600 transition-colors"
             >
               {shortenHash(indexingStatus.lastIndexedHash)}
             </a>
             {indexingStatus.lastIndexedCommitMessage && (
-              <span className="text-xs text-gray-500 truncate">
+              <span className="text-xs text-slate-500 truncate">
                 {truncateMessage(indexingStatus.lastIndexedCommitMessage)}
               </span>
             )}
@@ -210,12 +210,12 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
         )}
       </div>
 
-      <div className="flex flex-col md:flex-row">
-        {/* Tree Panel */}
-        <div className="md:w-1/2 border-b md:border-b-0 md:border-r border-gray-200 md:max-h-[calc(100vh-200px)] overflow-auto">
+      <div className="flex flex-1 min-h-0">
+        {/* Tree Panel - Sidebar Explorer with darker background */}
+        <div className="w-2/5 border-r border-slate-200 bg-slate-100 overflow-auto">
           <div className="p-2">
             {rootEntries.length === 0 ? (
-              <p className="text-sm text-gray-500 p-4 text-center">No entries found</p>
+              <p className="text-sm text-slate-500 p-4 text-center">No entries found</p>
             ) : (
               rootEntries.map((entry) => (
                 <TreeNode
@@ -231,7 +231,7 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
           </div>
         </div>
 
-        {/* Summary Detail Panel */}
+        {/* Summary Detail Panel - VS Code Dark theme style */}
         <SummaryPanel selectedEntry={selectedEntry} owner={owner} repo={repo} />
       </div>
     </motion.div>
