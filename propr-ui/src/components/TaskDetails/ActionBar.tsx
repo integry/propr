@@ -120,7 +120,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
   const isCancelled = currentStatus === 'CANCELLED';
 
   return (
-    <div className="flex items-center gap-1.5 flex-shrink-0">
+    <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
       <CancelledBadge isCancelled={isCancelled} />
 
       {/* View Prompt Button - Ghost style */}
