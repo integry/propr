@@ -240,6 +240,12 @@ async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<
                     await git.checkout(targetBranch);
                     logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!baseBranch }, 'Checked out target branch in main repository');
                 } catch (checkoutError) {
+                    // If checkout fails with a corruption error, we need to re-clone
+                    if (isGitCorruptionError(checkoutError as Error)) {
+                        logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Checkout failed with corruption error, removing and re-cloning...');
+                        await fs.remove(localRepoPath);
+                        return ensureRepoClonedInternal(opts);
+                    }
                     logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Failed to checkout target branch, continuing anyway');
                 }
             }
