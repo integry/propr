@@ -199,8 +199,8 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
       </div>
       <div className="space-y-4">
         {/* Repository Select - Always visible */}
-        <div className="flex gap-4 items-end">
-          <div className="flex-shrink-0 w-64">
+        <div className="flex flex-col sm:flex-row gap-4 items-stretch sm:items-end">
+          <div className="flex-shrink-0 w-full sm:w-64">
             <label className="block text-sm font-medium text-gray-700 mb-2">Repository</label>
             <select
               value={selectedRepo}
