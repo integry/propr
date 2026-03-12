@@ -37,20 +37,20 @@ export const Filters: React.FC<FiltersProps> = ({
   };
 
   return (
-    <div className="flex justify-between items-center flex-wrap gap-4">
+    <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
       {!hideFilters && <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>}
-      <div className="flex items-center gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-4 w-full md:w-auto">
         {!hideFilters && (
           <>
             {/* Search input with icon and clear button */}
-            <div className="relative">
+            <div className="relative w-full sm:w-64">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
                 placeholder="Search tasks..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                className="pl-9 pr-8 py-2 w-full border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               />
               {searchQuery && (
                 <button

@@ -25,11 +25,11 @@ export const Pagination: React.FC<PaginationProps> = ({
   const displayPage = currentPage + 1;
 
   return (
-    <div className="flex items-center justify-between px-6 py-4">
-      <span className="text-sm text-gray-600">
+    <div className="flex flex-col sm:flex-row items-center justify-between px-6 py-4 gap-3">
+      <span className="text-sm text-gray-600 text-center sm:text-left">
         Showing {currentPage * tasksPerPage + 1}-{Math.min((currentPage + 1) * tasksPerPage, totalTasks)} of {totalTasks} tasks
       </span>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-center gap-2">
         <button
           onClick={() => setCurrentPage(prev => Math.max(prev - 1, 0))}
           disabled={currentPage === 0}
