@@ -16,116 +16,14 @@ import { cleanupExistingBranch, createWorktreeFromExistingBranch } from './workt
 import { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './repoBranching.js';
 import { commitChanges } from './commitOperations.js';
 import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations } from './branchConfig.js';
+import { ensureSeedCommitIfEmpty } from './seedCommit.js';
+import { fetchLatestChanges, FetchLatestChangesOptions, FetchLatestChangesResult } from './fetchOperations.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
 const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
 
-/**
- * Check if an error indicates a corrupted git repository that can be fixed by re-cloning.
- */
-function isGitCorruptionError(error: Error): boolean {
-    const corruptionPatterns = [
-        /invalid index-pack output/i,
-        /--stdin requires a git repository/i,
-        /not a git repository/i,
-        /corrupted/i,
-        /bad object/i,
-        /missing blob/i,
-        /missing tree/i,
-        /missing commit/i,
-        /broken link/i,
-        /invalid sha1/i,
-        /pack.*corrupted/i,
-        /index file.*corrupted/i,
-    ];
-    return corruptionPatterns.some(pattern => pattern.test(error.message));
-}
-
 async function getRepoPath(owner: string, repoName: string): Promise<string> {
     return path.join(CLONES_BASE_PATH, owner, repoName);
-}
-
-/**
- * Check if a repository is empty (has no commits) and create a seed commit if needed.
- * This allows the system to work with newly created empty repositories.
- */
-async function ensureSeedCommitIfEmpty(
-    git: SimpleGit,
-    localRepoPath: string,
-    owner: string,
-    repoName: string,
-    defaultBranch: string,
-    authToken: string,
-    repoUrl: string
-): Promise<boolean> {
-    try {
-        // Check if the repo has any commits
-        const logResult = await git.raw(['rev-list', '-n', '1', '--all']).catch(() => '');
-        if (logResult.trim()) {
-            // Repository has commits, no need for seed
-            return false;
-        }
-
-        logger.info({ repo: `${owner}/${repoName}` }, 'Empty repository detected, creating seed commit...');
-
-        // Create a basic README.md
-        const readmePath = path.join(localRepoPath, 'README.md');
-        const readmeContent = `# ${repoName}
-
-Welcome to ${repoName}! This repository was initialized automatically.
-
-## Getting Started
-
-Add your project files and documentation here.
-`;
-        await fs.writeFile(readmePath, readmeContent);
-
-        // Create a basic .gitignore
-        const gitignorePath = path.join(localRepoPath, '.gitignore');
-        const gitignoreContent = `# Dependencies
-node_modules/
-vendor/
-
-# Build outputs
-dist/
-build/
-*.log
-
-# Environment files
-.env
-.env.local
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-`;
-        await fs.writeFile(gitignorePath, gitignoreContent);
-
-        // Configure git user for the commit
-        await git.addConfig('user.email', 'bot@propr.dev');
-        await git.addConfig('user.name', 'ProPR Bot');
-
-        // Create the default branch and commit
-        await git.checkoutLocalBranch(defaultBranch);
-        await git.add([readmePath, gitignorePath]);
-        await git.commit('Initial commit\n\nRepository initialized by ProPR to enable AI-assisted development.');
-
-        // Push the seed commit to origin
-        await setupAuthenticatedRemote(git, repoUrl, authToken);
-        await git.push(['--set-upstream', 'origin', defaultBranch]);
-
-        logger.info({ repo: `${owner}/${repoName}`, branch: defaultBranch }, 'Seed commit created and pushed successfully');
-        return true;
-    } catch (error) {
-        logger.error({ repo: `${owner}/${repoName}`, error: (error as Error).message }, 'Failed to create seed commit');
-        throw new Error(`Failed to initialize empty repository ${owner}/${repoName}: ${(error as Error).message}`);
-    }
 }
 
 /**
@@ -175,151 +73,113 @@ async function configureGcWorktreePrune(git: SimpleGit): Promise<void> {
     }
 }
 
-async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<string> {
+interface UpdateExistingRepoParams {
+    localRepoPath: string;
+    opts: EnsureRepoClonedOptions;
+}
+
+async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoParams): Promise<void> {
     const { repoUrl, owner, repoName, authToken, baseBranch } = opts;
+    logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Repository exists locally. Validating and fetching updates...');
+
+    // Add to safe.directory BEFORE any git operations on this path
+    try {
+        await simpleGit().raw(['config', '--global', '--add', 'safe.directory', localRepoPath]);
+    } catch {
+        // Non-fatal - continue anyway, the directory might already be safe
+    }
+
+    try {
+        const git: SimpleGit = simpleGit(localRepoPath);
+        if (!await git.checkIsRepo()) throw new Error('Directory exists but is not a valid git repository');
+        await configureGcWorktreePrune(git);
+        await setupAuthenticatedRemote(git, repoUrl, authToken);
+        await git.fetch(['origin', '--prune']);
+    } catch (gitError) {
+        const errorMessage = (gitError as Error).message;
+        if (await hasActiveWorktrees(localRepoPath)) {
+            logger.error({ repo: `${owner}/${repoName}`, path: localRepoPath, error: errorMessage }, 'Git repository has issues but has active worktrees - cannot remove and re-clone.');
+            throw new Error(`Repository ${owner}/${repoName} is corrupted but has active worktrees: ${errorMessage}`);
+        }
+        logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath, error: errorMessage }, 'Git repository is corrupted or invalid. Removing and re-cloning...');
+        await fs.remove(localRepoPath);
+        await ensureRepoClonedInternal(opts);
+        return;
+    }
+
+    const git: SimpleGit = simpleGit(localRepoPath);
+    // Treat 'HEAD' as unspecified - use default branch detection
+    const effectiveBranch = baseBranch && baseBranch !== 'HEAD' ? baseBranch : undefined;
+    let targetBranch = effectiveBranch || 'main';
+    const wasEmpty = await ensureSeedCommitIfEmpty(git, { localRepoPath, owner, repoName, defaultBranch: targetBranch, authToken, repoUrl });
+
+    if (!wasEmpty) {
+        if (!effectiveBranch) targetBranch = await detectDefaultBranch(git, owner, repoName);
+        try {
+            await git.checkout(targetBranch);
+            logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!baseBranch }, 'Checked out target branch');
+        } catch (checkoutError) {
+            logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Failed to checkout target branch');
+        }
+    }
+    logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath, wasEmpty }, 'Repository updated successfully');
+}
+
+async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): Promise<void> {
+    const { repoUrl, owner, repoName, authToken, baseBranch } = opts;
+    logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Cloning repository...');
+
+    if (await fs.pathExists(localRepoPath)) {
+        logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Directory exists without .git folder - removing before clone');
+        await fs.remove(localRepoPath);
+    }
+    await fs.ensureDir(localRepoPath);
+
+    const cloneOptions: string[] = [];
+    if (GIT_SHALLOW_CLONE_DEPTH) cloneOptions.push(`--depth=${GIT_SHALLOW_CLONE_DEPTH}`);
+    // Skip --branch flag when baseBranch is 'HEAD' since it's not a valid branch name
+    // and git will use the remote's default branch automatically
+    if (baseBranch && baseBranch !== 'HEAD') cloneOptions.push(`--branch=${baseBranch}`);
+
+    const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
+    await simpleGit().clone(authenticatedUrl, localRepoPath, cloneOptions);
+
+    const repoGit: SimpleGit = simpleGit(localRepoPath);
+    await configureGcWorktreePrune(repoGit);
+
+    // Treat 'HEAD' as unspecified - use default branch detection
+    const effectiveBranch = baseBranch && baseBranch !== 'HEAD' ? baseBranch : undefined;
+    let targetBranch = effectiveBranch || 'main';
+    const wasEmpty = await ensureSeedCommitIfEmpty(repoGit, { localRepoPath, owner, repoName, defaultBranch: targetBranch, authToken, repoUrl });
+
+    if (!wasEmpty) {
+        try {
+            await repoGit.raw(['remote', 'set-head', 'origin', '--auto']);
+        } catch {
+            // Non-fatal
+        }
+        if (!effectiveBranch) targetBranch = await detectDefaultBranch(repoGit, owner, repoName);
+        try {
+            await repoGit.checkout(targetBranch);
+            logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!effectiveBranch }, 'Checked out target branch after clone');
+        } catch (checkoutError) {
+            logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Failed to checkout target branch after clone');
+        }
+    }
+    logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath, shallow: !!GIT_SHALLOW_CLONE_DEPTH, baseBranch: effectiveBranch || 'default', wasEmpty }, 'Repository cloned successfully');
+}
+
+async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<string> {
+    const { owner, repoName } = opts;
     const localRepoPath = await getRepoPath(owner, repoName);
 
     try {
         if (await fs.pathExists(path.join(localRepoPath, ".git"))) {
-            logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Repository exists locally. Validating and fetching updates...');
-
-            // Add to safe.directory BEFORE any git operations on this path
-            // This prevents "dubious ownership" errors in containerized environments
-            // Use simpleGit() without a path so the command runs regardless of directory ownership
-            try {
-                await simpleGit().raw(['config', '--global', '--add', 'safe.directory', localRepoPath]);
-            } catch {
-                // Non-fatal - continue anyway, the directory might already be safe
-            }
-
-            try {
-                const git: SimpleGit = simpleGit(localRepoPath);
-                const isRepo = await git.checkIsRepo();
-
-                if (!isRepo) throw new Error('Directory exists but is not a valid git repository');
-
-                await configureGcWorktreePrune(git);
-                await setupAuthenticatedRemote(git, repoUrl, authToken);
-                await git.fetch(['origin', '--prune']);
-            } catch (gitError) {
-                const errorMessage = (gitError as Error).message;
-
-                // Check if there are active worktrees before removing the clone
-                // Removing the clone would delete .git/worktrees and break any running tasks
-                if (await hasActiveWorktrees(localRepoPath)) {
-                    const worktreesDir = path.join(localRepoPath, '.git', 'worktrees');
-                    logger.error({
-                        repo: `${owner}/${repoName}`,
-                        path: localRepoPath,
-                        error: errorMessage,
-                        worktreesDir
-                    }, 'Git repository has issues but has active worktrees - cannot remove and re-clone. Throwing error instead.');
-                    throw new Error(`Repository ${owner}/${repoName} is corrupted but has active worktrees: ${errorMessage}`);
-                }
-
-                logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath, error: errorMessage }, 'Git repository is corrupted or invalid. Removing and re-cloning...');
-                await fs.remove(localRepoPath);
-                return ensureRepoClonedInternal(opts);
-            }
-
-            const git: SimpleGit = simpleGit(localRepoPath);
-
-            // Use specified baseBranch if provided, default to 'main' for empty repos
-            let targetBranch = baseBranch || 'main';
-
-            // Check if repository is empty and create seed commit if needed
-            const wasEmpty = await ensureSeedCommitIfEmpty(git, localRepoPath, owner, repoName, targetBranch, authToken, repoUrl);
-
-            if (!wasEmpty) {
-                // Repository has commits, detect default branch if not specified
-                if (!baseBranch) {
-                    targetBranch = await detectDefaultBranch(git, owner, repoName);
-                }
-
-                try {
-                    await git.checkout(targetBranch);
-                    logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!baseBranch }, 'Checked out target branch in main repository');
-                } catch (checkoutError) {
-                    // If checkout fails with a corruption error, we need to re-clone
-                    if (isGitCorruptionError(checkoutError as Error)) {
-                        logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Checkout failed with corruption error, removing and re-cloning...');
-                        await fs.remove(localRepoPath);
-                        return ensureRepoClonedInternal(opts);
-                    }
-                    logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Failed to checkout target branch, continuing anyway');
-                }
-            }
-
-            logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath, wasEmpty }, 'Repository updated successfully');
-
+            await updateExistingRepo({ localRepoPath, opts });
         } else {
-            logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Cloning repository...');
-
-            // If the directory exists but has no .git folder (e.g., from a failed clone),
-            // we need to remove it first because git clone fails on non-empty directories
-            if (await fs.pathExists(localRepoPath)) {
-                logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Directory exists without .git folder - removing before clone');
-                await fs.remove(localRepoPath);
-            }
-            await fs.ensureDir(localRepoPath);
-
-            const cloneOptions: string[] = [];
-            if (GIT_SHALLOW_CLONE_DEPTH) cloneOptions.push(`--depth=${GIT_SHALLOW_CLONE_DEPTH}`);
-            // Clone specific branch if baseBranch is specified
-            if (baseBranch) cloneOptions.push(`--branch=${baseBranch}`);
-
-            const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
-
-            const git: SimpleGit = simpleGit();
-            try {
-                await git.clone(authenticatedUrl, localRepoPath, cloneOptions);
-            } catch (cloneError) {
-                // If clone fails with corruption-like error, cleanup and retry once
-                if (isGitCorruptionError(cloneError as Error)) {
-                    logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath, error: (cloneError as Error).message }, 'Clone failed with corruption error, cleaning up and retrying...');
-                    await fs.remove(localRepoPath);
-                    await fs.ensureDir(localRepoPath);
-                    await git.clone(authenticatedUrl, localRepoPath, cloneOptions);
-                } else {
-                    throw cloneError;
-                }
-            }
-
-            const repoGit: SimpleGit = simpleGit(localRepoPath);
-            await configureGcWorktreePrune(repoGit);
-
-            // Use specified baseBranch if provided, default to 'main' for empty repos
-            let targetBranch = baseBranch || 'main';
-
-            // Check if repository is empty and create seed commit if needed
-            const wasEmpty = await ensureSeedCommitIfEmpty(repoGit, localRepoPath, owner, repoName, targetBranch, authToken, repoUrl);
-
-            if (!wasEmpty) {
-                // Repository has commits, set remote HEAD and detect default branch
-                try {
-                    await repoGit.raw(['remote', 'set-head', 'origin', '--auto']);
-                    logger.debug({ repo: `${owner}/${repoName}` }, 'Set remote HEAD to auto-detect default branch');
-                } catch (headError) {
-                    logger.debug({ repo: `${owner}/${repoName}`, error: (headError as Error).message }, 'Failed to set remote HEAD, continuing anyway');
-                }
-
-                if (!baseBranch) {
-                    targetBranch = await detectDefaultBranch(repoGit, owner, repoName);
-                }
-
-                try {
-                    await repoGit.checkout(targetBranch);
-                    logger.info({ repo: `${owner}/${repoName}`, branch: targetBranch, isBaseBranch: !!baseBranch }, 'Checked out target branch in main repository after clone');
-                } catch (checkoutError) {
-                    logger.warn({ repo: `${owner}/${repoName}`, branch: targetBranch, error: (checkoutError as Error).message }, 'Failed to checkout target branch after clone, continuing anyway');
-                }
-            }
-
-            logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath, shallow: !!GIT_SHALLOW_CLONE_DEPTH, baseBranch: baseBranch || 'default', wasEmpty }, 'Repository cloned successfully');
+            await cloneNewRepo({ localRepoPath, opts });
         }
-
         return localRepoPath;
-
     } catch (error) {
         handleError(error, `Failed to clone/fetch repository ${owner}/${repoName}`);
         throw error;
@@ -433,150 +293,7 @@ export function getRepoUrl(issue: IssueRef): string {
     return `https://github.com/${issue.repoOwner}/${issue.repoName}.git`;
 }
 
-export interface FetchLatestChangesOptions {
-    owner: string;
-    repoName: string;
-    authToken: string;
-    branch?: string;
-}
-
-export interface FetchLatestChangesResult {
-    success: boolean;
-    repoPath: string;
-    error?: string;
-}
-
-/**
- * Helper function to reset the current branch to match the remote.
- * Returns true if reset was successful, false otherwise.
- */
-async function resetCurrentBranchToRemote(
-    git: SimpleGit,
-    owner: string,
-    repoName: string
-): Promise<boolean> {
-    const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
-    if (!currentBranch || currentBranch.trim() === 'HEAD') {
-        return false;
-    }
-
-    const branchName = currentBranch.trim();
-    try {
-        const remoteHash = await git.revparse([`origin/${branchName}`]);
-        await git.reset(['--hard', `origin/${branchName}`]);
-        const newHead = await git.revparse(['HEAD']);
-        logger.info(
-            { repo: `${owner}/${repoName}`, branch: branchName, commitHash: newHead.trim(), remoteHash: remoteHash.trim() },
-            'Reset local branch to match remote'
-        );
-        return true;
-    } catch {
-        // Remote branch doesn't exist, skip reset
-        logger.debug(
-            { repo: `${owner}/${repoName}`, branch: branchName },
-            'No remote tracking branch found, skipping reset'
-        );
-        return false;
-    }
-}
-
-/**
- * Fetch latest changes from the remote repository for a specific branch.
- * This function should be called before indexing to ensure the local copy is up-to-date.
- *
- * @param options - Configuration options for fetching
- * @returns Result indicating success/failure and the repository path
- */
-export async function fetchLatestChanges(options: FetchLatestChangesOptions): Promise<FetchLatestChangesResult> {
-    const { owner, repoName, authToken, branch } = options;
-    const localRepoPath = await getRepoPath(owner, repoName);
-
-    try {
-        // Check if repo exists locally
-        if (!await fs.pathExists(path.join(localRepoPath, ".git"))) {
-            logger.warn(
-                { repo: `${owner}/${repoName}`, path: localRepoPath },
-                'Repository does not exist locally, cannot fetch. Will be cloned on next ensureRepoCloned call.'
-            );
-            return { success: false, repoPath: localRepoPath, error: 'Repository not cloned yet' };
-        }
-
-        const git: SimpleGit = simpleGit(localRepoPath);
-
-        // Validate it's a proper git repository
-        const isRepo = await git.checkIsRepo();
-        if (!isRepo) {
-            logger.warn(
-                { repo: `${owner}/${repoName}`, path: localRepoPath },
-                'Directory exists but is not a valid git repository'
-            );
-            return { success: false, repoPath: localRepoPath, error: 'Not a valid git repository' };
-        }
-
-        // Set up authenticated remote
-        const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-        await setupAuthenticatedRemote(git, repoUrl, authToken);
-
-        // Fetch latest changes
-        if (branch && branch !== 'HEAD') {
-            // Fetch specific branch
-            logger.info(
-                { repo: `${owner}/${repoName}`, branch },
-                'Fetching latest changes for specific branch...'
-            );
-            await git.fetch(['origin', branch, '--prune']);
-
-            // Also reset local branch to match remote to ensure we have latest code
-            try {
-                await git.checkout(branch);
-                await git.reset(['--hard', `origin/${branch}`]);
-                const newHead = await git.revparse(['HEAD']);
-                logger.info(
-                    { repo: `${owner}/${repoName}`, branch, commitHash: newHead.trim() },
-                    'Reset local branch to match remote'
-                );
-            } catch (resetError) {
-                // Non-fatal: branch checkout/reset may fail if local state is unusual
-                logger.warn(
-                    { repo: `${owner}/${repoName}`, branch, error: (resetError as Error).message },
-                    'Could not reset local branch to remote, continuing with fetched refs'
-                );
-            }
-        } else {
-            // Fetch all branches
-            logger.info(
-                { repo: `${owner}/${repoName}` },
-                'Fetching latest changes from origin...'
-            );
-            await git.fetch(['origin', '--prune']);
-
-            // Also reset current branch to match remote to ensure we have latest code
-            try {
-                await resetCurrentBranchToRemote(git, owner, repoName);
-            } catch (resetError) {
-                // Non-fatal: reset may fail if local state is unusual
-                logger.warn(
-                    { repo: `${owner}/${repoName}`, error: (resetError as Error).message },
-                    'Could not reset local branch to remote, continuing with fetched refs'
-                );
-            }
-        }
-
-        logger.info(
-            { repo: `${owner}/${repoName}`, branch: branch || 'all', path: localRepoPath },
-            'Successfully fetched latest changes'
-        );
-
-        return { success: true, repoPath: localRepoPath };
-    } catch (error) {
-        const errorMessage = (error as Error).message;
-        logger.warn(
-            { repo: `${owner}/${repoName}`, branch, error: errorMessage },
-            'Failed to fetch latest changes, will continue with existing local state'
-        );
-        return { success: false, repoPath: localRepoPath, error: errorMessage };
-    }
-}
-
 export { cleanupWorktree, cleanupExpiredWorktrees, safePruneWorktrees, createWorktreeFromExistingBranch, ensureBranchAndPush, pushBranch, commitChanges, detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations };
+export { fetchLatestChanges };
+export type { FetchLatestChangesOptions, FetchLatestChangesResult };
 export type { CommitResult } from './commitOperations.js';

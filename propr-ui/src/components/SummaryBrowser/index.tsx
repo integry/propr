@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Folder, AlertCircle, Loader2, GitCommit } from 'lucide-react';
+import { Folder, AlertCircle, Loader2, GitCommit, Clock } from 'lucide-react';
 import { motion } from 'framer-motion';
 import {
   getDirectoryTree,
@@ -9,17 +9,11 @@ import {
 } from '../../api/summaryApi';
 import TreeNode from './TreeNode';
 import SummaryPanel from './SummaryPanel';
+import { formatRelativeTime } from '../headerUtils';
 
 const shortenHash = (hash: string | null): string => {
   if (!hash) return '';
   return hash.substring(0, 7);
-};
-
-const truncateMessage = (message: string | null, maxLength: number = 60): string => {
-  if (!message) return '';
-  const firstLine = message.split('\n')[0];
-  if (firstLine.length <= maxLength) return firstLine;
-  return firstLine.substring(0, maxLength - 3) + '...';
 };
 
 export interface SummaryBrowserProps {
@@ -173,45 +167,53 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className="border border-gray-200 rounded-lg bg-white overflow-hidden shadow-sm"
+      className="h-full flex flex-col overflow-hidden"
     >
-      {/* Header */}
-      <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
-        <h3 className="font-semibold text-gray-800">
-          {owner}/{repo}
-        </h3>
-        <p className="text-xs text-gray-500 mt-0.5">
-          {indexingStatus.fileCount} files, {indexingStatus.directoryCount} directories indexed
-        </p>
-        {indexingStatus.lastIndexedHash && (
-          <div
-            className="flex items-center gap-2 mt-1.5"
-            title={indexingStatus.lastIndexedCommitMessage || undefined}
-          >
-            <GitCommit className="w-3.5 h-3.5 text-gray-400" />
+      {/* Context Strip - Technical metadata in single dense horizontal line */}
+      <div className="px-4 py-2 bg-white border-b border-slate-200 flex-shrink-0">
+        <div className="flex items-center gap-3 text-[11px]">
+          {/* File/directory counts */}
+          <span className="text-slate-500">
+            <span className="font-medium text-slate-600">{indexingStatus.fileCount}</span> files
+            <span className="text-slate-400 mx-1.5">·</span>
+            <span className="font-medium text-slate-600">{indexingStatus.directoryCount}</span> dirs
+          </span>
+
+          {/* Separator */}
+          {indexingStatus.lastIndexedAt && (
+            <span className="text-slate-300">|</span>
+          )}
+
+          {/* Relative timestamp */}
+          {indexingStatus.lastIndexedAt && (
+            <span className="flex items-center gap-1 text-slate-400">
+              <Clock className="w-3 h-3" />
+              {formatRelativeTime(indexingStatus.lastIndexedAt)}
+            </span>
+          )}
+
+          {/* Commit hash as monospace code chip */}
+          {indexingStatus.lastIndexedHash && (
             <a
               href={`https://github.com/${owner}/${repo}/commit/${indexingStatus.lastIndexedHash}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs font-mono text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded hover:bg-gray-200 hover:text-blue-600 transition-colors"
+              className="inline-flex items-center gap-1 font-mono text-[10px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded hover:bg-slate-200 hover:text-teal-600 transition-colors"
+              title={indexingStatus.lastIndexedCommitMessage || undefined}
             >
+              <GitCommit className="w-3 h-3 text-slate-400" />
               {shortenHash(indexingStatus.lastIndexedHash)}
             </a>
-            {indexingStatus.lastIndexedCommitMessage && (
-              <span className="text-xs text-gray-500 truncate">
-                {truncateMessage(indexingStatus.lastIndexedCommitMessage)}
-              </span>
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      <div className="flex flex-col md:flex-row">
-        {/* Tree Panel */}
-        <div className="md:w-1/2 border-b md:border-b-0 md:border-r border-gray-200 md:max-h-[calc(100vh-200px)] overflow-auto">
-          <div className="p-2">
+      <div className="flex flex-1 min-h-0">
+        {/* Tree Panel - dense IDE file explorer with monospace font and stealth scrollbar */}
+        <div className="w-2/5 border-r border-slate-200 bg-white overflow-auto scrollbar-stealth">
+          <div className="py-1">
             {rootEntries.length === 0 ? (
-              <p className="text-sm text-gray-500 p-4 text-center">No entries found</p>
+              <p className="text-[11px] text-slate-400 p-4 text-center font-mono">No entries found</p>
             ) : (
               rootEntries.map((entry) => (
                 <TreeNode
@@ -227,8 +229,8 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
           </div>
         </div>
 
-        {/* Summary Detail Panel */}
-        <SummaryPanel selectedEntry={selectedEntry} />
+        {/* Summary Detail Panel - IDE Preview pane with header tab */}
+        <SummaryPanel selectedEntry={selectedEntry} owner={owner} repo={repo} />
       </div>
     </motion.div>
   );

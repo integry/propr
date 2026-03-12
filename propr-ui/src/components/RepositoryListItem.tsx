@@ -1,7 +1,5 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Github } from 'lucide-react';
-import { IndexingStatusIndicator } from './IndexingStatusIndicator';
+import { Github, RefreshCw } from 'lucide-react';
 import { DeleteRepoDialog } from './DeleteRepoDialog';
 import { RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { getRepoStatusKey } from '../api/repoIndexingApi';
@@ -14,23 +12,135 @@ const TrashIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) 
   </svg>
 );
 
-const ExternalLinkIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-  </svg>
-);
+// Monospace Code Chip for commit hash
+const MonoCodeChip: React.FC<{ children: React.ReactNode; href?: string }> = ({ children, href }) => {
+  const baseClass = "text-[10px] font-mono text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded";
+  if (href) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={`${baseClass} hover:bg-slate-200 hover:text-slate-700 transition-colors`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {children}
+      </a>
+    );
+  }
+  return <code className={baseClass}>{children}</code>;
+};
 
-const GitBranchIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 3v12M6 21a3 3 0 100-6 3 3 0 000 6zM18 9a3 3 0 100-6 3 3 0 000 6zM6 15a3 3 0 00-3 3M18 6a9 9 0 01-9 9" />
-  </svg>
-);
+// Status dot with pulsing animation for indexing
+const StatusDot: React.FC<{ status: 'indexed' | 'indexing' | 'failed' | 'idle'; className?: string }> = ({ status, className = "" }) => {
+  const dotColors = {
+    indexed: 'bg-slate-400',
+    indexing: 'bg-blue-500 animate-pulse',
+    failed: 'bg-red-500',
+    idle: 'bg-slate-300'
+  };
+  return <span className={`inline-block w-1.5 h-1.5 rounded-full ${dotColors[status]} ${className}`} />;
+};
 
-// Code Chip component for consistent styling of technical entities
-const CodeChip: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = "" }) => (
-  <code className={`px-1.5 py-0.5 bg-gray-100 text-gray-700 text-xs font-mono rounded-md border border-gray-200 ${className}`}>
-    {children}
-  </code>
+// Helper to format relative time
+const formatRelativeTime = (timestamp: string | null): string => {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+};
+
+// Helper to shorten commit hash
+const shortenHash = (hash: string | null): string => {
+  if (!hash) return '';
+  return hash.substring(0, 7);
+};
+
+// Calculate progress text for indexing status
+const getProgressText = (status: RepositoryIndexingStatus): string => {
+  const progress = status.progress;
+  if (!progress) return 'Starting...';
+
+  if (progress.phase === 'directories') {
+    const dirPercent = progress.totalDirectories > 0
+      ? Math.round((progress.processedDirectories / progress.totalDirectories) * 100)
+      : 0;
+    return `${dirPercent}%`;
+  }
+  return `${progress.percentComplete || 0}%`;
+};
+
+// Get status info from indexing status
+const getStatusInfo = (status: RepositoryIndexingStatus | undefined): {
+  statusType: 'indexed' | 'indexing' | 'failed' | 'idle';
+  statusText: string;
+  progressText?: string;
+} => {
+  if (!status) {
+    return { statusType: 'idle', statusText: 'Not indexed' };
+  }
+
+  switch (status.indexing_status) {
+    case 'indexing':
+      return { statusType: 'indexing', statusText: 'Indexing', progressText: getProgressText(status) };
+    case 'completed':
+      return { statusType: 'indexed', statusText: 'Indexed' };
+    case 'failed':
+      return { statusType: 'failed', statusText: 'Failed' };
+    case 'idle':
+    default:
+      return { statusType: 'idle', statusText: 'Not indexed' };
+  }
+};
+
+// Action buttons component to reduce complexity
+const RepositoryActionButtons: React.FC<{
+  repo: MonitoredRepo;
+  statusType: 'indexed' | 'indexing' | 'failed' | 'idle';
+  onToggle: (repoId: string) => void;
+  onReindex: (repoName: string, baseBranch?: string) => void;
+  onDeleteClick: () => void;
+}> = ({ repo, statusType, onToggle, onReindex, onDeleteClick }) => (
+  <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+    {/* Reindex Button - Gray ghost style */}
+    <button
+      onClick={() => onReindex(repo.name, repo.baseBranch)}
+      className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded transition-colors"
+      title="Reindex Repository"
+      disabled={statusType === 'indexing'}
+    >
+      <RefreshCw className={`w-3.5 h-3.5 ${statusType === 'indexing' ? 'animate-spin opacity-50' : ''}`} />
+    </button>
+
+    {/* Toggle Switch */}
+    <label className="relative inline-flex items-center cursor-pointer">
+      <input
+        type="checkbox"
+        checked={repo.enabled}
+        onChange={() => onToggle(repo.id)}
+        className="sr-only peer"
+      />
+      <div className="w-7 h-4 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-teal-500/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-teal-500"></div>
+    </label>
+
+    {/* Delete Button - Only visible on hover */}
+    <button
+      onClick={onDeleteClick}
+      className="p-1.5 text-slate-300 opacity-0 group-hover:opacity-100 hover:text-red-600 hover:bg-red-50 rounded transition-all"
+      title="Remove repository"
+    >
+      <TrashIcon className="w-3.5 h-3.5" />
+    </button>
+  </div>
 );
 
 interface RepositoryListItemProps {
@@ -75,80 +185,103 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
     }
   };
 
+  // Get indexing status for this repo
+  const repoStatus = indexingStatuses[getRepoStatusKey(repo.name, repo.baseBranch)];
+  const { statusType, statusText, progressText } = getStatusInfo(repoStatus);
+  const shortHash = shortenHash(repoStatus?.last_indexed_hash);
+  const relativeTime = formatRelativeTime(repoStatus?.last_indexed_at);
+  const commitUrl = repoStatus?.full_name && repoStatus?.last_indexed_hash
+    ? `https://github.com/${repoStatus.full_name}/commit/${repoStatus.last_indexed_hash}`
+    : undefined;
+
   return (
     <div
-      className={`border-b border-slate-100 py-4 first:pt-0 cursor-pointer rounded-lg transition-colors ${
+      className={`border-b border-slate-100 cursor-pointer transition-colors relative group ${
         isSelected
-          ? 'bg-primary-50 border-primary-200'
-          : 'hover:bg-gray-50'
+          ? 'bg-[#F0FDFA]'
+          : 'hover:bg-slate-50/50'
       }`}
       onClick={() => onSelect?.(repo.id)}
     >
-      {/* --- Repository Header: [Name/Alias] [Branch Chip] ... [Toggle] [Browse] [Delete] --- */}
-      <div className="flex items-center justify-between px-2">
-        <div className={`flex items-center gap-2 ${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
-          {repo.alias ? (
-            <>
-              <span className="font-semibold text-gray-900">{repo.alias}</span>
-              <CodeChip>{repo.name}</CodeChip>
-            </>
-          ) : (
-            <CodeChip className="text-sm">{repo.name}</CodeChip>
-          )}
-          {repo.baseBranch && (
-            <span className="inline-flex items-center gap-1">
-              <GitBranchIcon className="w-3 h-3 text-gray-400" />
-              <CodeChip className="bg-blue-50 text-blue-700 border-blue-200">{repo.baseBranch}</CodeChip>
+      {/* Right-edge teal rail for selected state - points toward right pane */}
+      {isSelected && (
+        <div className="absolute right-0 top-0 bottom-0 w-[3px] bg-teal-500" />
+      )}
+      {/* --- Repository Row: Two-Line "Pulse" Layout --- */}
+      <div className={`flex items-start justify-between py-3 px-4 ${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
+        {/* Left Content: Identity + Status */}
+        <div className="flex-1 min-w-0 pr-3">
+          {/* Line 1: Repository Name + GitHub Link */}
+          <div className="flex items-center gap-2 mb-1">
+            <span className="font-semibold text-slate-900 truncate">
+              {repo.alias || repo.name}
             </span>
-          )}
-          <IndexingStatusIndicator
-            status={indexingStatuses[getRepoStatusKey(repo.name, repo.baseBranch)]}
-            onStop={() => onStopIndexing(repo.name, repo.baseBranch)}
-            onReindex={() => onReindex(repo.name, repo.baseBranch)}
-          />
+            {repo.alias && (
+              <span className="text-[10px] font-mono text-slate-400 truncate">
+                {repo.name}
+              </span>
+            )}
+            <a
+              href={`https://github.com/${repo.name}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-0.5 text-slate-400 hover:text-slate-700 transition-colors flex-shrink-0"
+              title="View on GitHub"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Github className="w-3 h-3" />
+            </a>
+          </div>
+
+          {/* Line 2: Status + Commit Hash + Timestamp */}
+          <div className="flex items-center gap-2 text-xs">
+            {/* Status Indicator */}
+            <span className={`inline-flex items-center gap-1.5 ${
+              statusType === 'indexing' ? 'text-blue-600' :
+              statusType === 'failed' ? 'text-red-600' :
+              'text-slate-500'
+            }`}>
+              <StatusDot status={statusType} />
+              <span>{statusText}</span>
+              {progressText && <span className="text-blue-500">({progressText})</span>}
+            </span>
+
+            {/* Commit Hash Chip */}
+            {shortHash && (
+              <MonoCodeChip href={commitUrl}>{shortHash}</MonoCodeChip>
+            )}
+
+            {/* Relative Timestamp */}
+            {relativeTime && statusType === 'indexed' && (
+              <span className="text-slate-400">{relativeTime}</span>
+            )}
+
+            {/* Stop button for indexing */}
+            {statusType === 'indexing' && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStopIndexing(repo.name, repo.baseBranch);
+                }}
+                className="p-0.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                title="Stop Indexing"
+              >
+                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-          {/* Toggle Switch */}
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={repo.enabled}
-              onChange={() => onToggle(repo.id)}
-              className="sr-only peer"
-            />
-            <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary-600"></div>
-          </label>
-
-          {/* GitHub Link */}
-          <a
-            href={`https://github.com/${repo.name}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="p-1 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors"
-            title="View on GitHub"
-          >
-            <Github className="w-3.5 h-3.5" />
-          </a>
-
-          {/* Browse Button */}
-          <Link
-            to={`/summaries/${repo.name}`}
-            className="p-1 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded transition-colors"
-            title="Browse repository"
-          >
-            <ExternalLinkIcon className="w-3.5 h-3.5" />
-          </Link>
-
-          {/* Delete Button */}
-          <button
-            onClick={handleDeleteClick}
-            className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
-            title="Remove repository"
-          >
-            <TrashIcon className="w-3.5 h-3.5" />
-          </button>
-        </div>
+        {/* Right Action Gutter: Fixed-width area for maintenance tools */}
+        <RepositoryActionButtons
+          repo={repo}
+          statusType={statusType}
+          onToggle={onToggle}
+          onReindex={onReindex}
+          onDeleteClick={handleDeleteClick}
+        />
       </div>
 
       <DeleteRepoDialog

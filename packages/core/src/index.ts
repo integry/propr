@@ -130,6 +130,8 @@ export { scorePaths } from './services/relevance/pathScorer.js';
 export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries, updateRepositoryStatus } from './services/relevance/summaryMiner.js';
 export type { FileSummary, DirectorySummary, GitFileInfo, IndexingOptions } from './services/relevance/summaryMiner.js';
 export { DEFAULT_INSTRUCTIONS } from './services/relevance/summaryMinerHelpers.js';
+export { buildSummaryContext } from './services/relevance/contextBuilder.js';
+export type { ContextBuildOptions, SmartContextResult } from './services/relevance/contextBuilder.js';
 export {
   requestIndexingCancellation,
   isIndexingCancelled,
@@ -173,7 +175,7 @@ export {
 export type { ClaudeOutput, ConversationLogEntry, ClaudeOutputResult, BuildClaudePromptOptions, DockerArgsParams, StorePromptOptions } from './claude/claudeHelpers.js';
 export { executeDockerCommand, stopDockerContainer, ExecutionAbortedError } from './claude/docker/dockerExecutor.js';
 export { generateExecutionAnalysisPrompt, generateClaudePrompt } from './claude/prompts/promptGenerator.js';
-export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult } from './claude/prompts/promptGenerator.js';
+export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 
 // Codex helpers exports
 export { buildCodexPrompt, parseCodexStreamOutput, storeCodexPromptInRedis } from './codex/codexHelpers.js';
@@ -212,6 +214,15 @@ export type {
 } from './agents/types.js';
 export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
 export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath } from './config/configManager.js';
+
+// Repository chat message persistence
+export {
+    getMessagesForRepository,
+    saveMessage,
+    deleteMessage,
+    clearMessagesForRepository
+} from './services/repoChatMessages.js';
+export type { ChatMessage, ChatMessageRecord, SaveMessageParams } from './services/repoChatMessages.js';
 
 // Re-export event definitions from shared package for convenience
 export {

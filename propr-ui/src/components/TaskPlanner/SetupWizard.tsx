@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Download, Loader2 } from 'lucide-react';
 import { PlannerDraft, createDraft, GenerationTrace, getDraft } from '../../api/proprApi';
 import { getPlannerSettings } from '../../hooks/usePlannerSettings';
@@ -228,9 +228,17 @@ const SetupWizardContent: React.FC<{
   );
 };
 
+// Location state interface for route-passed data
+interface LocationState {
+  initialPrompt?: string;
+  initialRepository?: string;
+}
+
 // Main component - handles state and hooks
 export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete, onDraftCreated, onDraftCreatedInPlace }) => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const locationState = location.state as LocationState | undefined;
   const savedSettings = useMemo(() => getPlannerSettings(), []);
   const { addToast } = useToast();
   const isNewMode = !draft;
@@ -238,7 +246,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const draftContextConfig = (draft as any)?.context_config;
   const [config, setConfig] = useState<PlannerConfig>(() => ({
-    prompt: draft?.initial_prompt ?? '',
+    prompt: draft?.initial_prompt ?? locationState?.initialPrompt ?? '',
     baseBranch: '',
     granularity: savedSettings.lastGranularity,
     contextLevel: savedSettings.lastContextLevel,
@@ -282,7 +290,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
 
   // Data loading hooks
   // Always load repositories so the dropdown shows all available repos in both new and edit modes
-  const repoLoader = useRepositoryLoader(true, savedSettings.lastRepository ?? undefined);
+  // Use initialRepository from route state if available, otherwise fallback to saved settings
+  const initialRepository = locationState?.initialRepository ?? savedSettings.lastRepository;
+  const repoLoader = useRepositoryLoader(true, initialRepository ?? undefined);
   const newModeBranches = useBranchesLoader(isNewMode ? repoLoader.selectedRepo : '', setConfig);
   const repoInfo = useRepoInfoLoader(isNewMode, draft, setConfig);
   const agents = useAgentsLoader();

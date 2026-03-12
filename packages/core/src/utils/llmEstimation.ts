@@ -35,6 +35,8 @@ const MIN_DURATION_BY_TYPE: Record<string, number> = {
   'plan-generation': 5000,     // 5 seconds minimum
   'plan-refinement': 5000,     // 5 seconds minimum
   'context-analysis': 15000,   // 15 seconds minimum - relevance analysis typically takes longer
+  'repo-chat': 3000,           // 3 seconds minimum - chat responses can be quick
+  'repo-improvements': 5000,   // 5 seconds minimum - improvement suggestions take a bit longer
   'default': 3000              // 3 seconds fallback for unknown types
 };
 
