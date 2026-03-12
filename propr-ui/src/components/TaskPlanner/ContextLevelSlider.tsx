@@ -76,7 +76,7 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
   return (
     <div className="space-y-4">
       {/* Header Row: Title on left, compact status line on right */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Layers className="w-4 h-4 text-gray-500" />
           <label className="text-sm font-medium text-gray-700">
