@@ -16,13 +16,6 @@ const shortenHash = (hash: string | null): string => {
   return hash.substring(0, 7);
 };
 
-const truncateMessage = (message: string | null, maxLength: number = 60): string => {
-  if (!message) return '';
-  const firstLine = message.split('\n')[0];
-  if (firstLine.length <= maxLength) return firstLine;
-  return firstLine.substring(0, maxLength - 3) + '...';
-};
-
 export interface SummaryBrowserProps {
   owner: string;
   repo: string;

@@ -65,6 +65,20 @@ const shortenHash = (hash: string | null): string => {
   return hash.substring(0, 7);
 };
 
+// Calculate progress text for indexing status
+const getProgressText = (status: RepositoryIndexingStatus): string => {
+  const progress = status.progress;
+  if (!progress) return 'Starting...';
+
+  if (progress.phase === 'directories') {
+    const dirPercent = progress.totalDirectories > 0
+      ? Math.round((progress.processedDirectories / progress.totalDirectories) * 100)
+      : 0;
+    return `${dirPercent}%`;
+  }
+  return `${progress.percentComplete || 0}%`;
+};
+
 // Get status info from indexing status
 const getStatusInfo = (status: RepositoryIndexingStatus | undefined): {
   statusType: 'indexed' | 'indexing' | 'failed' | 'idle';
@@ -77,19 +91,7 @@ const getStatusInfo = (status: RepositoryIndexingStatus | undefined): {
 
   switch (status.indexing_status) {
     case 'indexing':
-      const progress = status.progress;
-      let progressText = 'Starting...';
-      if (progress) {
-        if (progress.phase === 'directories') {
-          const dirPercent = progress.totalDirectories > 0
-            ? Math.round((progress.processedDirectories / progress.totalDirectories) * 100)
-            : 0;
-          progressText = `${dirPercent}%`;
-        } else {
-          progressText = `${progress.percentComplete || 0}%`;
-        }
-      }
-      return { statusType: 'indexing', statusText: 'Indexing', progressText };
+      return { statusType: 'indexing', statusText: 'Indexing', progressText: getProgressText(status) };
     case 'completed':
       return { statusType: 'indexed', statusText: 'Indexed' };
     case 'failed':
@@ -99,6 +101,47 @@ const getStatusInfo = (status: RepositoryIndexingStatus | undefined): {
       return { statusType: 'idle', statusText: 'Not indexed' };
   }
 };
+
+// Action buttons component to reduce complexity
+const RepositoryActionButtons: React.FC<{
+  repo: MonitoredRepo;
+  statusType: 'indexed' | 'indexing' | 'failed' | 'idle';
+  onToggle: (repoId: string) => void;
+  onReindex: (repoName: string, baseBranch?: string) => void;
+  onDeleteClick: () => void;
+}> = ({ repo, statusType, onToggle, onReindex, onDeleteClick }) => (
+  <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+    {/* Reindex Button - Gray ghost style */}
+    <button
+      onClick={() => onReindex(repo.name, repo.baseBranch)}
+      className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded transition-colors"
+      title="Reindex Repository"
+      disabled={statusType === 'indexing'}
+    >
+      <RefreshCw className={`w-3.5 h-3.5 ${statusType === 'indexing' ? 'animate-spin opacity-50' : ''}`} />
+    </button>
+
+    {/* Toggle Switch */}
+    <label className="relative inline-flex items-center cursor-pointer">
+      <input
+        type="checkbox"
+        checked={repo.enabled}
+        onChange={() => onToggle(repo.id)}
+        className="sr-only peer"
+      />
+      <div className="w-7 h-4 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-teal-500/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-teal-500"></div>
+    </label>
+
+    {/* Delete Button - Only visible on hover */}
+    <button
+      onClick={onDeleteClick}
+      className="p-1.5 text-slate-300 opacity-0 group-hover:opacity-100 hover:text-red-600 hover:bg-red-50 rounded transition-all"
+      title="Remove repository"
+    >
+      <TrashIcon className="w-3.5 h-3.5" />
+    </button>
+  </div>
+);
 
 interface RepositoryListItemProps {
   repo: MonitoredRepo;
@@ -232,37 +275,13 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
         </div>
 
         {/* Right Action Gutter: Fixed-width area for maintenance tools */}
-        <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
-          {/* Reindex Button - Gray ghost style */}
-          <button
-            onClick={() => onReindex(repo.name, repo.baseBranch)}
-            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded transition-colors"
-            title="Reindex Repository"
-            disabled={statusType === 'indexing'}
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${statusType === 'indexing' ? 'animate-spin opacity-50' : ''}`} />
-          </button>
-
-          {/* Toggle Switch */}
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={repo.enabled}
-              onChange={() => onToggle(repo.id)}
-              className="sr-only peer"
-            />
-            <div className="w-7 h-4 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-teal-500/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-teal-500"></div>
-          </label>
-
-          {/* Delete Button - Only visible on hover */}
-          <button
-            onClick={handleDeleteClick}
-            className="p-1.5 text-slate-300 opacity-0 group-hover:opacity-100 hover:text-red-600 hover:bg-red-50 rounded transition-all"
-            title="Remove repository"
-          >
-            <TrashIcon className="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <RepositoryActionButtons
+          repo={repo}
+          statusType={statusType}
+          onToggle={onToggle}
+          onReindex={onReindex}
+          onDeleteClick={handleDeleteClick}
+        />
       </div>
 
       <DeleteRepoDialog

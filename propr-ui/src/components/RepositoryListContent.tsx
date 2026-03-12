@@ -41,15 +41,7 @@ export const RepositoryListContent: React.FC<RepositoryListContentProps> = ({
   onSelect,
   onRetry,
 }) => {
-  if (loading && repos.length === 0) {
-    return <RepositoriesLoadingState />;
-  }
-
-  if (error && repos.length === 0 && !loading) {
-    return <RepositoriesErrorState error={error} onRetry={onRetry} />;
-  }
-
-  // Group repositories by organization (owner)
+  // Group repositories by organization (owner) - must be called unconditionally
   const groupedRepos = useMemo(() => {
     const groups: Record<string, MonitoredRepo[]> = {};
     repos.forEach(repo => {
@@ -63,6 +55,14 @@ export const RepositoryListContent: React.FC<RepositoryListContentProps> = ({
   }, [repos]);
 
   const orgNames = Object.keys(groupedRepos);
+
+  if (loading && repos.length === 0) {
+    return <RepositoriesLoadingState />;
+  }
+
+  if (error && repos.length === 0 && !loading) {
+    return <RepositoriesErrorState error={error} onRetry={onRetry} />;
+  }
 
   return (
     <div className="flex flex-col">
