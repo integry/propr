@@ -73,12 +73,12 @@ export function buildCodexPrompt(options: BuildCodexPromptOptions): string {
     } = options;
 
     // Use the shared prompt generator from Claude to ensure consistent context formatting
-    const basePrompt = customPrompt || generateClaudePrompt(
+    const basePrompt = customPrompt || generateClaudePrompt({
         issueRef,
-        branchName ?? null,
-        modelName ?? null,
-        issueDetails ?? null
-    );
+        branchName: branchName ?? null,
+        modelName: modelName ?? null,
+        issueDetails: issueDetails ?? null
+    });
 
     // Prepend system prompt if provided
     const systemContext = systemPrompt ? `SYSTEM INSTRUCTIONS:\n${systemPrompt}\n\n---\n\n` : '';

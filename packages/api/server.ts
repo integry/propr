@@ -26,6 +26,8 @@ import {
   createAgentRoutes,
   createStatsRoutes,
   createSummaryBrowserRoutes,
+  createRepoChatRoutes,
+  createRepoImprovementsRoutes,
   attachmentUpload
 } from './routes/index.js';
 import { checkAndExecuteDelayedReindex } from './routes/configHelpers.js';
@@ -176,6 +178,8 @@ function setupRoutes(): void {
   const agentRoutes = createAgentRoutes();
   const statsRoutes = createStatsRoutes({ db });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
+  const repoChatRoutes = createRepoChatRoutes();
+  const repoImprovementsRoutes = createRepoImprovementsRoutes();
 
   app.get('/api/status', statusRoutes.getStatus);
   app.get('/api/tasks', taskRoutes.getTasks);
@@ -273,6 +277,16 @@ function setupRoutes(): void {
   app.get('/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree);
   app.get('/api/summaries/:owner/:repo/tree/*', summaryBrowserRoutes.getDirectoryTree);
   app.get('/api/summaries/:owner/:repo/summary/*', summaryBrowserRoutes.getPathSummary);
+
+  // Repository chat endpoints for LLM integration and message persistence
+  app.post('/api/repos/chat', repoChatRoutes.postChat);
+  app.get('/api/repos/chat/messages', repoChatRoutes.getMessages);
+  app.post('/api/repos/chat/messages', repoChatRoutes.saveMessages);
+  app.delete('/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage);
+  app.delete('/api/repos/chat/messages', repoChatRoutes.clearMessages);
+
+  // Repository improvements endpoint for generating suggestions
+  app.post('/api/repos/improvements', repoImprovementsRoutes.postImprovements);
 
   setupWebhookRoute();
 }

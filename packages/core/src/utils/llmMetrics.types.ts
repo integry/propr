@@ -64,6 +64,8 @@ export type ExecutionType =
     | 'summarization'
     | 'context-analysis'
     | 'task-analysis'
+    | 'repo-chat'
+    | 'repo-improvements'
     | 'other';
 
 export interface RecordMetricsOptions {

@@ -292,12 +292,6 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
     additionalContext
   });
 
-  const newCache: ContextCache = {
-    contentHash, repomixContext, smartSummaries, autoFilePaths, includedFiles,
-    repomixTokens: contextData.repomixTokens, smartSummaryTokens, fileTokenCounts, cachedMaxTokenLimit: maxTokenLimit,
-    fileScores
-  };
-
   // Store cache metadata without the large repomixContext (it's already in generated_context)
   // This prevents context_config from becoming too large to spread/enumerate
   const cacheMetadata = {

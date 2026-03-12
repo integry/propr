@@ -136,6 +136,60 @@ async function handleEpicPROpened(
 }
 
 /**
+ * Handles triggering the next pending issue after a PR is merged.
+ * Checks if epic PR has pending checks and defers if necessary.
+ */
+async function handleMergedPRNextIssueTrigger(
+    repository: string,
+    issueNumber: number,
+    draftId: string,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    const issueLabels = await getIssueLabels(repository, issueNumber, log);
+    const hasAutoMerge = issueLabels.includes('auto-merge');
+    log.info({ repository, issueNumber, issueLabels, hasAutoMerge }, 'Checking auto-merge for next issue trigger');
+
+    if (!hasAutoMerge) {
+        log.info({ repository, issueNumber }, 'Skipping next issue trigger - no auto-merge label');
+        return;
+    }
+
+    // Find epic label to pass to next issue (format: base-{epicBranchName})
+    const epicLabel = issueLabels.find(label => label.startsWith('base-'));
+
+    // If merging to epic branch, check if epic PR has pending checks
+    // If checks are pending, defer triggering - the check_run handler will do it later
+    if (epicLabel) {
+        const [owner, repo] = repository.split('/');
+        const epicBranchName = epicLabel.replace('base-', '');
+        const checksPending = await areEpicPRChecksPending(owner, repo, epicBranchName, log);
+        if (checksPending) {
+            log.info({ repository, issueNumber, epicBranch: epicBranchName }, 'Deferring next issue trigger - waiting for epic PR checks');
+            return; // check_run handler will trigger when checks pass
+        }
+    }
+
+    await triggerNextPendingIssue(draftId, repository, epicLabel, log);
+}
+
+function determinePRStatusUpdate(
+    action: string,
+    merged: boolean,
+    currentStatus: PlanIssueStatus
+): PlanIssueStatus | null {
+    if (action === 'closed') {
+        return merged ? 'merged' : 'closed';
+    }
+    if (action === 'opened' || action === 'reopened') {
+        return 'under_review';
+    }
+    if (action === 'synchronize' && currentStatus === 'in_refinement') {
+        return 'refinement_processing';
+    }
+    return null;
+}
+
+/**
  * Handles PR events to track PR associations with plan issues.
  */
 export async function handlePlanPRUpdate(
@@ -148,7 +202,6 @@ export async function handlePlanPRUpdate(
     const action = payload.action;
 
     try {
-        // Handle Epic PRs separately - don't link to plan issues but do add auto-merge label
         const prTitle = payload.pull_request.title || '';
         if (prTitle.startsWith('[Epic]')) {
             if (action === 'opened') {
@@ -169,54 +222,18 @@ export async function handlePlanPRUpdate(
 
         if (!planIssue) return;
 
-        let newStatus: PlanIssueStatus | null = null;
+        const newStatus = determinePRStatusUpdate(action, payload.pull_request.merged ?? false, planIssue.status);
+        if (!newStatus) return;
 
-        if (action === 'closed') {
-            newStatus = payload.pull_request.merged ? 'merged' : 'closed';
-        } else if (action === 'opened' || action === 'reopened') {
-            newStatus = 'under_review';
-        } else if (action === 'synchronize' && planIssue.status === 'in_refinement') {
-            newStatus = 'refinement_processing';
-        }
+        await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
+        log.info({ repository, prNumber, newStatus }, 'Updated plan issue status from PR event');
 
-        if (newStatus) {
-            await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
-            log.info({ repository, prNumber, newStatus }, 'Updated plan issue status from PR event');
-
-            // When a PR is merged, trigger the next pending issue in the same plan
-            // Only if the merged issue had auto-merge enabled (indicated by auto-merge label)
-            if (newStatus === 'merged' && planIssue.draft_id) {
-                const issueLabels = await getIssueLabels(repository, planIssue.issue_number, log);
-                const hasAutoMerge = issueLabels.includes('auto-merge');
-                log.info({ repository, issueNumber: planIssue.issue_number, issueLabels, hasAutoMerge }, 'Checking auto-merge for next issue trigger');
-                if (hasAutoMerge) {
-                    // Find epic label to pass to next issue (format: base-{epicBranchName})
-                    const epicLabel = issueLabels.find(label => label.startsWith('base-'));
-
-                    // If merging to epic branch, check if epic PR has pending checks
-                    // If checks are pending, defer triggering - the check_run handler will do it later
-                    if (epicLabel) {
-                        const [owner, repo] = repository.split('/');
-                        const epicBranchName = epicLabel.replace('base-', '');
-                        const checksPending = await areEpicPRChecksPending(owner, repo, epicBranchName, log);
-
-                        if (checksPending) {
-                            log.info({
-                                repository,
-                                issueNumber: planIssue.issue_number,
-                                epicBranch: epicBranchName
-                            }, 'Deferring next issue trigger - waiting for epic PR checks');
-                            return; // check_run handler will trigger when checks pass
-                        }
-                    }
-
-                    await triggerNextPendingIssue(planIssue.draft_id, repository, epicLabel, log);
-                } else {
-                    log.info({ repository, issueNumber: planIssue.issue_number }, 'Skipping next issue trigger - no auto-merge label');
-                }
-            } else if (newStatus === 'merged') {
-                log.warn({ repository, prNumber, hasDraftId: !!planIssue.draft_id }, 'Merged but cannot trigger next issue - missing draft_id');
-            }
+        // When a PR is merged, trigger the next pending issue in the same plan
+        // Only if the merged issue had auto-merge enabled (indicated by auto-merge label)
+        if (newStatus === 'merged' && planIssue.draft_id) {
+            await handleMergedPRNextIssueTrigger(repository, planIssue.issue_number, planIssue.draft_id, log);
+        } else if (newStatus === 'merged') {
+            log.warn({ repository, prNumber, hasDraftId: !!planIssue.draft_id }, 'Merged but cannot trigger next issue - missing draft_id');
         }
     } catch (error) {
         log.error({ error, repository, prNumber }, 'Failed to handle plan PR update');
