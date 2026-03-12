@@ -23,7 +23,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
     const socketUrl = import.meta.env.VITE_API_BASE_URL || undefined;
 
     const newSocket = io(socketUrl, {
-      transports: ['websocket', 'polling'],
+      transports: ['websocket'],
       withCredentials: true,
       autoConnect: true,
       // Use path for socket.io which is the standard /socket.io/
