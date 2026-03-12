@@ -72,20 +72,34 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   const state = nodeStates[entry.path] || { expanded: false, children: null, loading: false };
   const isDirectory = entry.entryType === 'directory';
   const isSelected = selectedPath === entry.path;
-  const paddingLeft = depth * 16 + 8;
+  // IDE-style indentation with guide lines
+  const indentWidth = 16;
+  const paddingLeft = 8;
 
   return (
-    <div>
+    <div className="relative">
+      {/* Vertical guide lines for nesting - IDE style */}
+      {depth > 0 && (
+        <div className="absolute top-0 bottom-0 left-0 flex">
+          {Array.from({ length: depth }).map((_, i) => (
+            <div
+              key={i}
+              className="absolute top-0 bottom-0 border-l border-slate-300/50"
+              style={{ left: paddingLeft + i * indentWidth + indentWidth / 2 - 1 }}
+            />
+          ))}
+        </div>
+      )}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.15 }}
-        className={`flex items-center gap-2 py-1.5 px-2 cursor-pointer rounded-sm transition-colors ${
+        className={`flex items-center gap-1.5 py-1 px-2 cursor-pointer transition-colors font-mono text-xs ${
           isSelected
             ? 'bg-teal-600/20 border-l-2 border-teal-500'
             : 'hover:bg-slate-200/50 border-l-2 border-transparent'
         }`}
-        style={{ paddingLeft }}
+        style={{ paddingLeft: paddingLeft + depth * indentWidth }}
         onClick={() => onSelect(entry)}
       >
         {/* Expand/collapse icon for directories */}
@@ -123,9 +137,9 @@ const TreeNode: React.FC<TreeNodeProps> = ({
           )}
         </span>
 
-        {/* Entry name */}
+        {/* Entry name - monospace IDE style */}
         <span
-          className={`text-sm truncate ${isDirectory ? 'font-medium text-slate-700' : 'text-slate-600'}`}
+          className={`truncate ${isDirectory ? 'font-medium text-slate-700' : 'text-slate-600'}`}
           title={entry.name}
         >
           {entry.name}
@@ -150,8 +164,8 @@ const TreeNode: React.FC<TreeNodeProps> = ({
           >
             {state.children.length === 0 ? (
               <p
-                className="text-xs text-slate-400 italic py-1"
-                style={{ paddingLeft: paddingLeft + 24 }}
+                className="text-xs text-slate-400 italic py-1 font-mono"
+                style={{ paddingLeft: paddingLeft + (depth + 1) * indentWidth + 24 }}
               >
                 Empty directory
               </p>

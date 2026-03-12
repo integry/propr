@@ -258,6 +258,7 @@ export interface SuggestionRowProps {
 
 /**
  * Dense two-line suggestion row - high-density checklist style
+ * Fixed 32px left gutter for icons/checkboxes, text labels perfectly aligned
  * Sits directly on tinted background per Studio spec
  */
 export const SuggestionRow: React.FC<SuggestionRowProps> = ({
@@ -267,27 +268,29 @@ export const SuggestionRow: React.FC<SuggestionRowProps> = ({
 }) => (
   <button
     onClick={() => onToggle(index)}
-    className={`w-full text-left py-3 px-3 transition-all flex items-start gap-3 ${
+    className={`w-full text-left py-2 transition-all flex items-start relative ${
       suggestion.isSelected
         ? 'bg-teal-50/50'
         : 'hover:bg-slate-100/50'
     }`}
   >
-    {/* Sparkle icon for new suggestions */}
-    <Sparkles size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
-    {/* Checkbox */}
-    <div
-      className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 mt-0.5
-        ${suggestion.isSelected
-          ? 'bg-teal-500 border-teal-500'
-          : 'border-slate-300 bg-white'
-        }
-      `}
-    >
-      {suggestion.isSelected && <Check size={12} className="text-white" />}
+    {/* Fixed 32px gutter for icons */}
+    <div className="w-8 flex-shrink-0 flex flex-col items-center pt-0.5 relative">
+      <Sparkles size={12} className="text-amber-400" />
+      {/* Checkbox below sparkle */}
+      <div
+        className={`w-3.5 h-3.5 rounded border flex items-center justify-center mt-1
+          ${suggestion.isSelected
+            ? 'bg-teal-500 border-teal-500'
+            : 'border-slate-300 bg-white'
+          }
+        `}
+      >
+        {suggestion.isSelected && <Check size={10} className="text-white" />}
+      </div>
     </div>
-    {/* Two-line content */}
-    <div className="flex-1 min-w-0">
+    {/* Content - text starts at same horizontal position */}
+    <div className="flex-1 min-w-0 pr-3">
       <h4 className={`text-sm font-bold leading-tight ${
         suggestion.isSelected ? 'text-teal-700' : 'text-slate-800'
       }`}>
@@ -321,16 +324,25 @@ export const SuggestionsList: React.FC<SuggestionsListProps> = ({
           {selectedCount} of {suggestions.length} selected
         </span>
       </div>
-      {/* Dense list directly on tinted background - no cards */}
-      <div className="divide-y divide-slate-100">
-        {suggestions.map((suggestion, index) => (
-          <SuggestionRow
-            key={index}
-            suggestion={suggestion}
-            index={index}
-            onToggle={onToggleSuggestion}
+      {/* Dense list with vertical threading line - visually connected as a single Report */}
+      <div className="relative">
+        {/* Vertical threading line connecting items */}
+        {suggestions.length > 1 && (
+          <div
+            className="absolute left-4 top-4 bottom-4 w-px bg-slate-200"
+            style={{ transform: 'translateX(-50%)' }}
           />
-        ))}
+        )}
+        <div className="divide-y divide-slate-100/80">
+          {suggestions.map((suggestion, index) => (
+            <SuggestionRow
+              key={index}
+              suggestion={suggestion}
+              index={index}
+              onToggle={onToggleSuggestion}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );

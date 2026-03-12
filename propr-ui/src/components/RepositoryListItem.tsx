@@ -70,19 +70,19 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
 
   return (
     <div
-      className={`border-b border-slate-100 py-3 cursor-pointer transition-colors relative ${
+      className={`border-b border-slate-100 cursor-pointer transition-colors relative ${
         isSelected
           ? 'bg-white'
           : 'hover:bg-slate-50/50'
       }`}
       onClick={() => onSelect?.(repo.id)}
     >
-      {/* Teal vertical bar for active state */}
+      {/* Teal vertical bar for active state - full height touching dividers */}
       {isSelected && (
         <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-teal-500" />
       )}
       {/* --- Repository Header: [Name/Alias] [Branch Chip] ... [Toggle] [Browse] [Delete] --- */}
-      <div className="flex items-center justify-between px-2">
+      <div className="flex items-center justify-between py-3 pl-4 pr-3">
         <div className={`flex items-center gap-2 ${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
           {repo.alias ? (
             <>
