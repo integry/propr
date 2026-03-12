@@ -35,7 +35,7 @@ export const NewModeHeader: React.FC<{
   return (
     <>
       {/* Repository selector - breadcrumb style */}
-      <div className="relative inline-flex items-center max-w-[50%]">
+      <div className="relative inline-flex items-center max-w-full sm:max-w-[50%]">
         <Github className="w-4 h-4 text-gray-500 mr-1.5 flex-shrink-0" />
         <select
           value={selectedRepo}
@@ -61,7 +61,7 @@ export const NewModeHeader: React.FC<{
       {selectedRepo && (
         <>
           <span className="text-gray-400 flex-shrink-0 mx-0.5">/</span>
-          <div className="relative inline-flex items-center max-w-[50%]">
+          <div className="relative inline-flex items-center max-w-full sm:max-w-[50%]">
             {isLoadingBranches ? (
               <span className="text-gray-400 text-sm">Loading...</span>
             ) : (
@@ -115,7 +115,7 @@ export const EditModeHeader: React.FC<{
   return (
     <>
       {/* Repository - always clickable dropdown styled as breadcrumb */}
-      <div className="relative inline-flex items-center max-w-[50%]">
+      <div className="relative inline-flex items-center max-w-full sm:max-w-[50%]">
         <Github className="w-4 h-4 text-gray-500 mr-1.5 flex-shrink-0" />
         <select
           value={repository}
@@ -138,7 +138,7 @@ export const EditModeHeader: React.FC<{
       </div>
       <span className="text-gray-400 flex-shrink-0 mx-0.5">/</span>
       {/* Branch selector - breadcrumb style */}
-      <div className="relative inline-flex items-center max-w-[50%]">
+      <div className="relative inline-flex items-center max-w-full sm:max-w-[50%]">
         {isRepoLoading ? (
           <span className="text-gray-400 text-sm">Loading...</span>
         ) : (
