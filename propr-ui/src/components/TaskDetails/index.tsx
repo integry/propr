@@ -233,7 +233,7 @@ const TaskDetails: React.FC = () => {
               TIMELINE
             </div>
           </div>
-          {/* Right Pane Header (70%) - IMPLEMENTATION label aligned with TIMELINE */}
+          {/* Right Pane Header (70%) - IMPLEMENTATION label aligned with TIMELINE - hidden on mobile since it stacks vertically */}
           <div className="hidden lg:flex flex-1 px-4 items-center gap-3">
             <div className="py-2.5 text-xs font-bold uppercase tracking-widest text-slate-500">
               IMPLEMENTATION
@@ -245,9 +245,9 @@ const TaskDetails: React.FC = () => {
         </div>
 
         {/* Content Area Below the Horizon Line */}
-        <div className="flex-1 flex overflow-hidden min-w-0">
+        <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-w-0">
           {/* LEFT PANE (30%) - The Plan */}
-          <div className="w-full lg:w-[30%] flex-shrink-0 overflow-y-auto scrollbar-stealth border-r border-gray-200">
+          <div className="w-full lg:w-[30%] flex-shrink-0 lg:overflow-y-auto scrollbar-stealth border-b lg:border-b-0 lg:border-r border-gray-200">
             <div className="p-4 space-y-2">
               {/* Compact Status Timeline */}
               <TaskStatusTable history={taskData.history} compact={true} />
@@ -273,7 +273,7 @@ const TaskDetails: React.FC = () => {
           <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
 
           {/* RIGHT PANE (70%) - The Execution */}
-          <div className="hidden lg:flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
+          <div className="flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
             {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
             {/* Hidden (not unmounted) when Execution Log is expanded to preserve state */}
             <div className={`flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'hidden'}`}>
