@@ -103,7 +103,7 @@ const ModelRow: React.FC<{
   isDefault: boolean;
   customLabel?: string;
 }> = ({ modelId, modelInfo, isDefault, customLabel }) => (
-  <div className="flex items-center py-1 px-2 hover:bg-slate-50 transition-colors text-sm">
+  <div className="flex flex-wrap sm:flex-nowrap items-center py-1 px-2 hover:bg-slate-50 transition-colors text-sm">
     {/* Name + Badge column */}
     <div className="flex items-center gap-1.5 flex-1 min-w-0">
       <span className={`truncate text-[13px] ${isDefault ? 'font-medium text-gray-900' : 'text-gray-700'}`}>
@@ -121,15 +121,15 @@ const ModelRow: React.FC<{
       )}
     </div>
 
-    {/* Context Limit column - fixed width for alignment */}
-    <div className="w-14 text-right flex-shrink-0 mr-3">
+    {/* Context Limit column - fixed width for alignment, hidden on mobile */}
+    <div className="hidden sm:block w-14 text-right flex-shrink-0 mr-3">
       {modelInfo?.contextWindow && (
         <span className="font-mono text-[11px] text-gray-500">{modelInfo.contextWindow}</span>
       )}
     </div>
 
-    {/* ID/Alias column - allows wrapping to second line */}
-    <div className="flex flex-wrap items-center gap-1 flex-shrink-0 w-[220px] justify-end">
+    {/* ID/Alias column - responsive: full width on mobile, fixed width on desktop */}
+    <div className="flex flex-wrap items-center gap-1 w-full sm:w-[220px] mt-2 sm:mt-0 justify-start sm:justify-end">
       <span className="inline-flex items-center gap-0.5">
         <CodeChip className="bg-purple-50 text-purple-700 border-purple-200 text-[10px]">{modelId}</CodeChip>
         <CopyButton text={modelId} className="hover:text-purple-600" />
@@ -197,8 +197,8 @@ const AgentCard: React.FC<{
 
       {/* --- High-Density Model Rows - tighter padding --- */}
       <div className="mt-2 ml-7">
-        {/* Header row */}
-        <div className="flex items-center py-1 px-2 text-[10px] text-gray-400 uppercase tracking-wide font-medium border-b border-slate-100">
+        {/* Header row - hidden on mobile for stacked layout */}
+        <div className="hidden sm:flex items-center py-1 px-2 text-[10px] text-gray-400 uppercase tracking-wide font-medium border-b border-slate-100">
           <div className="flex-1">Model</div>
           <div className="w-14 text-right flex-shrink-0 mr-3">Context</div>
           <div className="flex items-center gap-1 w-[220px] justify-end">
