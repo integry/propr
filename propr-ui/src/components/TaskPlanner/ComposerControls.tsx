@@ -35,7 +35,7 @@ export const GranularityPills: React.FC<{
   const estimatedIssues = estimateIssueCount(value);
 
   return (
-    <div className="inline-flex items-center gap-2">
+    <div className="inline-flex flex-wrap items-center gap-2">
       <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
         {options.map((opt) => {
           const Icon = opt.icon;
