@@ -94,12 +94,12 @@ const TreeNode: React.FC<TreeNodeProps> = ({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.15 }}
-        className={`flex items-center gap-1.5 py-1 px-2 cursor-pointer transition-colors font-mono text-xs ${
+        className={`flex items-center gap-1 py-0.5 cursor-pointer transition-colors font-mono text-[11px] ${
           isSelected
-            ? 'bg-teal-600/20 border-l-2 border-teal-500'
-            : 'hover:bg-slate-200/50 border-l-2 border-transparent'
+            ? 'bg-teal-50'
+            : 'hover:bg-slate-100'
         }`}
-        style={{ paddingLeft: paddingLeft + depth * indentWidth }}
+        style={{ paddingLeft: paddingLeft + depth * indentWidth, paddingRight: 8 }}
         onClick={() => onSelect(entry)}
       >
         {/* Expand/collapse icon for directories */}

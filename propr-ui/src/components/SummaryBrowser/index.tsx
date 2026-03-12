@@ -211,11 +211,11 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
       </div>
 
       <div className="flex flex-1 min-h-0">
-        {/* Tree Panel - IDE file explorer with monospace font */}
-        <div className="w-2/5 border-r border-slate-200 bg-slate-50 overflow-auto">
-          <div className="py-2">
+        {/* Tree Panel - dense IDE file explorer with monospace font */}
+        <div className="w-2/5 border-r border-slate-200 bg-white overflow-auto">
+          <div className="py-1">
             {rootEntries.length === 0 ? (
-              <p className="text-xs text-slate-500 p-4 text-center font-mono">No entries found</p>
+              <p className="text-[11px] text-slate-400 p-4 text-center font-mono">No entries found</p>
             ) : (
               rootEntries.map((entry) => (
                 <TreeNode
@@ -231,7 +231,7 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
           </div>
         </div>
 
-        {/* Summary Detail Panel - Light IDE Preview pane style */}
+        {/* Summary Detail Panel - IDE Preview pane with header tab */}
         <SummaryPanel selectedEntry={selectedEntry} owner={owner} repo={repo} />
       </div>
     </motion.div>

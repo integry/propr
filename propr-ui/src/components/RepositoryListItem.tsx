@@ -19,9 +19,9 @@ const GitBranchIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4"
   </svg>
 );
 
-// Code Chip component for consistent styling of technical entities
-const CodeChip: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = "" }) => (
-  <code className={`px-1.5 py-0.5 bg-gray-100 text-gray-700 text-xs font-mono rounded-md border border-gray-200 ${className}`}>
+// Ghost Monospace chip - subdued styling for metadata (no background)
+const GhostMonoChip: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = "" }) => (
+  <code className={`text-[10px] font-mono text-slate-400 ${className}`}>
     {children}
   </code>
 );
@@ -70,32 +70,34 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
 
   return (
     <div
-      className={`border-b border-slate-100 cursor-pointer transition-colors relative ${
+      className={`border-b border-slate-50 cursor-pointer transition-colors relative group ${
         isSelected
           ? 'bg-white'
-          : 'hover:bg-slate-50/50'
+          : 'hover:bg-slate-50/30'
       }`}
       onClick={() => onSelect?.(repo.id)}
     >
-      {/* Teal vertical bar for active state - full height touching dividers */}
-      {isSelected && (
-        <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-teal-500" />
-      )}
-      {/* --- Repository Header: [Name/Alias] [Branch Chip] ... [Toggle] [Browse] [Delete] --- */}
+      {/* Solid 3px Teal vertical rail for active state */}
+      <div className={`absolute left-0 top-0 bottom-0 w-[3px] transition-colors ${
+        isSelected ? 'bg-teal-500' : 'bg-transparent'
+      }`} />
+      {/* --- Repository Row: Full-width, gutter-to-gutter --- */}
       <div className="flex items-center justify-between py-3 pl-4 pr-3">
-        <div className={`flex items-center gap-2 ${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
+        <div className={`flex items-center gap-2 min-w-0 ${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
+          {/* Repository name - bold slate-900 */}
           {repo.alias ? (
-            <>
-              <span className="font-bold text-slate-900">{repo.alias}</span>
-              <CodeChip>{repo.name}</CodeChip>
-            </>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="font-bold text-slate-900 truncate">{repo.alias}</span>
+              <GhostMonoChip>{repo.name}</GhostMonoChip>
+            </div>
           ) : (
-            <span className="font-bold text-slate-900">{repo.name}</span>
+            <span className="font-bold text-slate-900 truncate">{repo.name}</span>
           )}
+          {/* Branch - Ghost Monospace style */}
           {repo.baseBranch && (
-            <span className="inline-flex items-center gap-1">
-              <GitBranchIcon className="w-3 h-3 text-gray-400" />
-              <CodeChip className="bg-blue-50 text-blue-700 border-blue-200">{repo.baseBranch}</CodeChip>
+            <span className="inline-flex items-center gap-1 flex-shrink-0">
+              <GitBranchIcon className="w-3 h-3 text-slate-300" />
+              <GhostMonoChip>{repo.baseBranch}</GhostMonoChip>
             </span>
           )}
           <IndexingStatusIndicator
@@ -105,9 +107,10 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           />
         </div>
 
-        <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-          {/* Toggle Switch */}
-          <label className="relative inline-flex items-center cursor-pointer">
+        {/* Icons - ghosted by default, visible on hover */}
+        <div className="flex items-center gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+          {/* Toggle Switch - ghosted appearance */}
+          <label className="relative inline-flex items-center cursor-pointer opacity-40 group-hover:opacity-100 transition-opacity">
             <input
               type="checkbox"
               checked={repo.enabled}
@@ -117,21 +120,21 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
             <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary-600"></div>
           </label>
 
-          {/* GitHub Link */}
+          {/* GitHub Link - ghosted, visible on hover */}
           <a
             href={`https://github.com/${repo.name}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="p-1 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors"
+            className="p-1 text-slate-300 opacity-40 group-hover:opacity-100 hover:text-gray-900 hover:bg-gray-100 rounded transition-all"
             title="View on GitHub"
           >
             <Github className="w-3.5 h-3.5" />
           </a>
 
-          {/* Delete Button */}
+          {/* Delete Button - ghosted, visible on hover */}
           <button
             onClick={handleDeleteClick}
-            className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+            className="p-1 text-slate-300 opacity-40 group-hover:opacity-100 hover:text-red-600 hover:bg-red-50 rounded transition-all"
             title="Remove repository"
           >
             <TrashIcon className="w-3.5 h-3.5" />

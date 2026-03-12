@@ -12,35 +12,35 @@ export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
 }) => {
   return (
     <div className="flex-shrink-0 bg-white">
-      {/* Unified header row with aligned baseline */}
+      {/* Unified header row with aligned baseline - same height for perfect horizon alignment */}
       <PanelGroup direction="horizontal">
-        {/* Left Header */}
+        {/* Left Header - Repository Library */}
         <Panel defaultSize={40} minSize={25}>
-          <div className="h-14 px-6 flex items-center justify-between">
-            <h2 className="text-gray-900 text-base font-semibold leading-none">Repositories</h2>
+          <div className="h-12 px-4 flex items-center justify-between">
+            <h2 className="text-slate-900 text-sm font-semibold leading-none">Repositories</h2>
             <button
               onClick={onAddRepository}
-              className="px-3 py-1.5 text-xs font-medium rounded-md border transition-colors border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400"
+              className="px-2.5 py-1 text-[11px] font-medium rounded border transition-colors border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300"
             >
-              + Add Repository
+              + Add
             </button>
           </div>
         </Panel>
 
-        {/* Header spacer for resize handle */}
-        <div className="w-2" />
+        {/* Header spacer for resize handle - same width as resize handle */}
+        <div className="w-2 bg-slate-100" />
 
-        {/* Right Header */}
+        {/* Right Header - aligned on same baseline */}
         <Panel defaultSize={60} minSize={30}>
-          <div className="h-14 px-6 flex items-center">
-            <h2 className="text-gray-900 text-base font-semibold leading-none">
+          <div className="h-12 px-4 flex items-center">
+            <h2 className="text-slate-900 text-sm font-semibold leading-none">
               {selectedRepoName || 'Details'}
             </h2>
           </div>
         </Panel>
       </PanelGroup>
-      {/* Continuous horizon line spanning entire width */}
-      <div className="h-px bg-slate-200 w-full" />
+      {/* Continuous horizon line - single unbroken 1px line spanning entire width */}
+      <div className="h-px bg-slate-200" />
     </div>
   );
 };
