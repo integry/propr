@@ -340,8 +340,8 @@ const RepositoriesPage: React.FC = () => {
           {/* Left Panel (40%): Repository List - clean white canvas */}
           <Panel defaultSize={40} minSize={25}>
             <div className="h-full bg-white flex flex-col">
-              {/* Scrollable content area - solid white canvas, no padding for full-width rows */}
-              <div className="flex-1 min-h-0 overflow-y-auto">
+              {/* Scrollable content area - solid white canvas with stealth scrollbar */}
+              <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stealth">
                 <RepositoryListContent
                   repos={repos}
                   loading={loading}

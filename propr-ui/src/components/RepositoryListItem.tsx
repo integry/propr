@@ -155,11 +155,15 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
     <div
       className={`border-b border-slate-100 cursor-pointer transition-colors relative group ${
         isSelected
-          ? 'bg-teal-50/50'
+          ? 'bg-[#F0FDFA]'
           : 'hover:bg-slate-50/50'
       }`}
       onClick={() => onSelect?.(repo.id)}
     >
+      {/* Right-edge teal rail for selected state - points toward right pane */}
+      {isSelected && (
+        <div className="absolute right-0 top-0 bottom-0 w-[3px] bg-teal-500" />
+      )}
       {/* --- Repository Row: Two-Line "Pulse" Layout --- */}
       <div className={`flex items-start justify-between py-3 px-4 ${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
         {/* Left Content: Identity + Status */}

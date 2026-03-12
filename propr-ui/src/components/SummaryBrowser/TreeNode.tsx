@@ -72,19 +72,20 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   const state = nodeStates[entry.path] || { expanded: false, children: null, loading: false };
   const isDirectory = entry.entryType === 'directory';
   const isSelected = selectedPath === entry.path;
-  // IDE-style indentation with guide lines
+  // IDE-style indentation with fixed-width gutter and guide lines
   const indentWidth = 16;
   const paddingLeft = 8;
+  const iconGutterWidth = 20; // Fixed width for icons
 
   return (
     <div className="relative">
-      {/* Vertical guide lines for nesting - IDE style */}
+      {/* Vertical guide lines for nesting - 1px subtle lines for deep structures */}
       {depth > 0 && (
-        <div className="absolute top-0 bottom-0 left-0 flex">
+        <div className="absolute top-0 bottom-0 left-0 flex pointer-events-none">
           {Array.from({ length: depth }).map((_, i) => (
             <div
               key={i}
-              className="absolute top-0 bottom-0 border-l border-slate-300/50"
+              className="absolute top-0 bottom-0 border-l border-slate-100"
               style={{ left: paddingLeft + i * indentWidth + indentWidth / 2 - 1 }}
             />
           ))}
@@ -102,39 +103,42 @@ const TreeNode: React.FC<TreeNodeProps> = ({
         style={{ paddingLeft: paddingLeft + depth * indentWidth, paddingRight: 8 }}
         onClick={() => onSelect(entry)}
       >
-        {/* Expand/collapse icon for directories */}
-        {isDirectory ? (
-          <span className="w-4 h-4 flex items-center justify-center text-slate-500 flex-shrink-0">
-            {state.loading ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
+        {/* Fixed-width icon gutter for consistent alignment */}
+        <span className="flex items-center gap-0.5" style={{ width: iconGutterWidth + 20, minWidth: iconGutterWidth + 20 }}>
+          {/* Expand/collapse icon for directories */}
+          {isDirectory ? (
+            <span className="w-4 h-4 flex items-center justify-center text-slate-500 flex-shrink-0">
+              {state.loading ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <motion.span
+                  animate={{ rotate: state.expanded ? 90 : 0 }}
+                  transition={{ duration: 0.15 }}
+                >
+                  {state.expanded ? (
+                    <ChevronDown className="w-4 h-4" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4" />
+                  )}
+                </motion.span>
+              )}
+            </span>
+          ) : (
+            <span className="w-4 flex-shrink-0" />
+          )}
+
+          {/* File/folder icon */}
+          <span className="flex-shrink-0">
+            {isDirectory ? (
+              state.expanded ? (
+                <FolderOpen className="w-4 h-4 text-yellow-500" />
+              ) : (
+                <Folder className="w-4 h-4 text-yellow-500" />
+              )
             ) : (
-              <motion.span
-                animate={{ rotate: state.expanded ? 90 : 0 }}
-                transition={{ duration: 0.15 }}
-              >
-                {state.expanded ? (
-                  <ChevronDown className="w-4 h-4" />
-                ) : (
-                  <ChevronRight className="w-4 h-4" />
-                )}
-              </motion.span>
+              getFileIcon(entry.name)
             )}
           </span>
-        ) : (
-          <span className="w-4 flex-shrink-0" />
-        )}
-
-        {/* File/folder icon */}
-        <span className="flex-shrink-0">
-          {isDirectory ? (
-            state.expanded ? (
-              <FolderOpen className="w-4 h-4 text-yellow-500" />
-            ) : (
-              <Folder className="w-4 h-4 text-yellow-500" />
-            )
-          ) : (
-            getFileIcon(entry.name)
-          )}
         </span>
 
         {/* Entry name - monospace IDE style */}

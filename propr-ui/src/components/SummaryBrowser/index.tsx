@@ -176,43 +176,48 @@ const SummaryBrowser: React.FC<SummaryBrowserProps> = ({ owner, repo }) => {
       animate={{ opacity: 1, y: 0 }}
       className="h-full flex flex-col overflow-hidden"
     >
-      {/* Header */}
-      <div className="px-4 py-3 bg-slate-100 border-b border-slate-200 flex-shrink-0">
-        <p className="text-xs text-slate-500">
-          {indexingStatus.fileCount} files, {indexingStatus.directoryCount} directories indexed
-        </p>
-        {indexingStatus.lastIndexedHash && (
-          <div
-            className="flex items-center gap-2 mt-1.5"
-            title={indexingStatus.lastIndexedCommitMessage || undefined}
-          >
-            {indexingStatus.lastIndexedAt && (
-              <span className="flex items-center gap-1 text-xs text-slate-400">
-                <Clock className="w-3 h-3" />
-                {formatRelativeTime(indexingStatus.lastIndexedAt)}
-              </span>
-            )}
-            <GitCommit className="w-3.5 h-3.5 text-slate-400" />
+      {/* Context Strip - Technical metadata in single dense horizontal line */}
+      <div className="px-4 py-2 bg-white border-b border-slate-200 flex-shrink-0">
+        <div className="flex items-center gap-3 text-[11px]">
+          {/* File/directory counts */}
+          <span className="text-slate-500">
+            <span className="font-medium text-slate-600">{indexingStatus.fileCount}</span> files
+            <span className="text-slate-400 mx-1.5">·</span>
+            <span className="font-medium text-slate-600">{indexingStatus.directoryCount}</span> dirs
+          </span>
+
+          {/* Separator */}
+          {indexingStatus.lastIndexedAt && (
+            <span className="text-slate-300">|</span>
+          )}
+
+          {/* Relative timestamp */}
+          {indexingStatus.lastIndexedAt && (
+            <span className="flex items-center gap-1 text-slate-400">
+              <Clock className="w-3 h-3" />
+              {formatRelativeTime(indexingStatus.lastIndexedAt)}
+            </span>
+          )}
+
+          {/* Commit hash as monospace code chip */}
+          {indexingStatus.lastIndexedHash && (
             <a
               href={`https://github.com/${owner}/${repo}/commit/${indexingStatus.lastIndexedHash}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs font-mono text-slate-600 bg-slate-200 px-1.5 py-0.5 rounded hover:bg-slate-300 hover:text-blue-600 transition-colors"
+              className="inline-flex items-center gap-1 font-mono text-[10px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded hover:bg-slate-200 hover:text-teal-600 transition-colors"
+              title={indexingStatus.lastIndexedCommitMessage || undefined}
             >
+              <GitCommit className="w-3 h-3 text-slate-400" />
               {shortenHash(indexingStatus.lastIndexedHash)}
             </a>
-            {indexingStatus.lastIndexedCommitMessage && (
-              <span className="text-xs text-slate-500 truncate">
-                {truncateMessage(indexingStatus.lastIndexedCommitMessage)}
-              </span>
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <div className="flex flex-1 min-h-0">
-        {/* Tree Panel - dense IDE file explorer with monospace font */}
-        <div className="w-2/5 border-r border-slate-200 bg-white overflow-auto">
+        {/* Tree Panel - dense IDE file explorer with monospace font and stealth scrollbar */}
+        <div className="w-2/5 border-r border-slate-200 bg-white overflow-auto scrollbar-stealth">
           <div className="py-1">
             {rootEntries.length === 0 ? (
               <p className="text-[11px] text-slate-400 p-4 text-center font-mono">No entries found</p>
