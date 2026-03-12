@@ -110,7 +110,7 @@ const RepositoryActionButtons: React.FC<{
   onReindex: (repoName: string, baseBranch?: string) => void;
   onDeleteClick: () => void;
 }> = ({ repo, statusType, onToggle, onReindex, onDeleteClick }) => (
-  <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+  <div className="flex items-center gap-1 flex-shrink-0 w-full sm:w-auto justify-end" onClick={(e) => e.stopPropagation()}>
     {/* Reindex Button - Gray ghost style */}
     <button
       onClick={() => onReindex(repo.name, repo.baseBranch)}
@@ -208,7 +208,7 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
         <div className="absolute right-0 top-0 bottom-0 w-[3px] bg-teal-500" />
       )}
       {/* --- Repository Row: Two-Line "Pulse" Layout --- */}
-      <div className={`flex items-start justify-between py-3 px-4 ${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
+      <div className={`flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 py-3 px-4 ${repo.enabled ? 'opacity-100' : 'opacity-50'}`}>
         {/* Left Content: Identity + Status */}
         <div className="flex-1 min-w-0 pr-3">
           {/* Line 1: Repository Name + GitHub Link */}
