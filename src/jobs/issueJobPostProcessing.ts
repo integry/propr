@@ -162,6 +162,7 @@ export interface PRValidationOptions {
     issueRef: IssueJobData;
     octokit: Octokit;
     postProcessingResult: PostProcessingResult | null;
+    commitResult: CommitResult | null;
     repoValidation: RepoValidation;
     AI_PROCESSING_TAG: string;
     AI_DONE_TAG: string;
@@ -171,7 +172,7 @@ export interface PRValidationOptions {
 }
 
 export async function handlePRValidation(options: PRValidationOptions): Promise<PostProcessingResult | null> {
-    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger } = options;
+    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger } = options;
 
     if (!worktreeInfo) return postProcessingResult;
 
@@ -193,8 +194,14 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
         return { success: true, pr: finalPRValidation.pr ? { number: finalPRValidation.pr.number, url: finalPRValidation.pr.url, title: finalPRValidation.pr.title } : null, updatedLabels: postProcessingResult?.updatedLabels || [] };
     }
 
-    if (!finalPRValidation.isValid && claudeResult?.success) {
+    // Only retry PR creation if:
+    // 1. PR validation failed (no PR found)
+    // 2. Claude execution was successful
+    // 3. There were actual commits (commitResult !== null means changes were made and a PR is expected)
+    if (!finalPRValidation.isValid && claudeResult?.success && commitResult !== null) {
         await retryPRCreationViaAPI({ worktreeInfo, issueRef, repoValidation, correlatedLogger });
+    } else if (!finalPRValidation.isValid && claudeResult?.success && commitResult === null) {
+        correlatedLogger.info({ issueNumber: issueRef.number }, 'No PR validation needed - no code changes were made');
     }
     return postProcessingResult;
 }
@@ -230,6 +237,7 @@ export interface FinalValidationOptions {
     issueRef: IssueJobData;
     octokit: Octokit;
     postProcessingResult: PostProcessingResult | null;
+    commitResult: CommitResult | null;
     repoValidation: RepoValidation;
     AI_PROCESSING_TAG: string;
     AI_DONE_TAG: string;
@@ -240,12 +248,12 @@ export interface FinalValidationOptions {
 }
 
 export async function performFinalValidation(options: FinalValidationOptions): Promise<void> {
-    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger } = options;
+    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger } = options;
     let resolvedPostProcessingResult = postProcessingResult;
 
     if (claudeResult?.success && worktreeInfo?.branchName) {
         try {
-            resolvedPostProcessingResult = await handlePRValidation({ claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger, jobId });
+            resolvedPostProcessingResult = await handlePRValidation({ claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger, jobId });
         } catch (validationError) {
             correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (validationError as Error).message }, 'Final PR validation failed');
         }
