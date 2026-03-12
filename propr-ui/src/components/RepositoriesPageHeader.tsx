@@ -20,9 +20,9 @@ export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
             <h2 className="text-slate-900 text-sm font-semibold leading-none">Repositories</h2>
             <button
               onClick={onAddRepository}
-              className="px-2.5 py-1 text-[11px] font-medium rounded border transition-colors border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300"
+              className="px-3 py-1.5 text-xs font-medium rounded border transition-colors border-slate-300 text-slate-700 hover:bg-slate-50 hover:border-slate-400"
             >
-              + Add
+              + Add Repository
             </button>
           </div>
         </Panel>
