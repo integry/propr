@@ -134,3 +134,13 @@ export {
   SettingKey,
   VALID_SETTING_KEYS,
 } from "./settings.js";
+
+// LLM Logs API
+export {
+  listLlmLogs,
+  // Types
+  LlmLogEntry,
+  LlmLogsPagination,
+  ListLlmLogsResponse,
+  ListLlmLogsOptions,
+} from "./logs.js";
