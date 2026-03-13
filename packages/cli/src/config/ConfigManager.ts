@@ -219,6 +219,15 @@ export class ConfigManager {
   }
 
   /**
+   * Clears the GitHub token.
+   *
+   * @returns A promise that resolves when the token is cleared.
+   */
+  async clearGithubToken(): Promise<void> {
+    await this.set("githubToken", undefined);
+  }
+
+  /**
    * Gets the remote API URL.
    *
    * @returns The remote URL, or undefined if not set.
