@@ -7,6 +7,7 @@
 
 import { Command } from "commander";
 import { listLlmLogs, LlmLogEntry } from "../api/index.js";
+import { printOutput } from "../utils/index.js";
 
 /**
  * Truncates a string to a maximum length.
@@ -139,6 +140,7 @@ export function registerLogCommands(program: Command): void {
     .option("--failed", "Show only failed executions")
     .option("--agent <alias>", "Filter by agent alias")
     .option("--draft <draftId>", "Filter by draft/plan ID")
+    .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Output includes:
   - Execution type
@@ -153,6 +155,7 @@ Examples:
   $ propr list-logs --failed                   # Show failures only
   $ propr list-logs --draft abc123             # Filter by plan ID
   $ propr list-logs --agent my-claude          # Filter by agent
+  $ propr list-logs --json                     # JSON output
 `)
     .action(
       async (options: {
@@ -164,6 +167,7 @@ Examples:
         failed?: boolean;
         agent?: string;
         draft?: string;
+        json?: boolean;
       }) => {
         try {
           const listOptions: {
@@ -215,9 +219,14 @@ Examples:
             listOptions.draftId = options.draft;
           }
 
-          console.log("Fetching LLM logs...");
-
           const result = await listLlmLogs(listOptions);
+
+          // Handle JSON output
+          if (printOutput(result, options.json ?? false)) {
+            return;
+          }
+
+          console.log("Fetching LLM logs...");
 
           console.log("");
           displayLogsTable(result.logs);

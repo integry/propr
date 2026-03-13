@@ -43,6 +43,13 @@ export {
   resolveProject,
   ProjectOptions,
   ProjectResolutionError,
+  formatOutput,
+  printOutput,
+  readJsonInput,
+  validateJsonFields,
+  isPlainObject,
+  FormatOutputOptions,
+  JsonInputError,
 } from "./utils/index.js";
 
 // Load environment variables
@@ -55,6 +62,7 @@ program
   .description("CLI for interacting with the ProPR backend - AI-powered automated implementation of GitHub issues and pull requests")
   .version("1.0.0")
   .option("-p, --project <project>", "Specify the target project (owner/repo)")
+  .option("-j, --json", "Output results as JSON for programmatic use")
   .addHelpText("before", `
 ProPR CLI - AI-Powered GitHub Issue Implementation
 
@@ -68,6 +76,11 @@ Quick Start:
   $ propr use <owner/repo>          Set default project
   $ propr list-plans                View available implementation plans
   $ propr implement-issue <id>      Implement a GitHub issue
+
+JSON Output:
+  Use --json (-j) flag with any command for machine-readable output:
+  $ propr list-plans --json
+  $ propr list-agents -j
 
 Examples:
   $ propr remote https://api.propr.example.com
@@ -229,17 +242,25 @@ program
   .command("list-plans")
   .description("List all implementation plans for a project")
   .option("-p, --project <project>", "Target project (owner/repo)")
+  .option("-j, --json", "Output as JSON for programmatic use")
   .addHelpText("after", `
 Examples:
   $ propr list-plans                    # Use default project
   $ propr list-plans -p myorg/myrepo    # Specify project
+  $ propr list-plans --json             # JSON output
 `)
-  .action(async (options: { project?: string }) => {
+  .action(async (options: { project?: string; json?: boolean }) => {
     try {
       const configManager = await createConfigManager();
       const project = resolveProject(options, configManager);
 
       const result = await listPlans(project);
+
+      // Handle JSON output
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
 
       if (result.drafts.length === 0) {
         console.log(`No plans found for project: ${project}`);

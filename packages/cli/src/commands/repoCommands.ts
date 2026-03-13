@@ -16,6 +16,7 @@ import {
   MonitoredRepo,
   RepositoryIndexingStatus,
 } from "../api/index.js";
+import { printOutput } from "../utils/index.js";
 
 /**
  * Formats the enabled status for display.
@@ -212,15 +213,22 @@ export function registerRepoCommands(program: Command): void {
   program
     .command("list-repos")
     .description("List all repositories being monitored by ProPR")
+    .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
-Example:
+Examples:
   $ propr list-repos
+  $ propr list-repos --json
 `)
-    .action(async () => {
+    .action(async (options: { json?: boolean }) => {
       try {
-        console.log("Fetching monitored repositories...");
-
         const result = await getRepos();
+
+        // Handle JSON output
+        if (printOutput(result, options.json ?? false)) {
+          return;
+        }
+
+        console.log("Fetching monitored repositories...");
 
         if (result.repos_to_monitor.length === 0) {
           console.log("");
@@ -613,6 +621,7 @@ Examples:
   program
     .command("repo-status [fullName]")
     .description("View indexing status and progress for repositories")
+    .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Argument:
   fullName    (Optional) Repository in owner/repo format
@@ -625,12 +634,18 @@ Output includes:
 Examples:
   $ propr repo-status                    # Show all repositories
   $ propr repo-status myorg/myrepo       # Show specific repository
+  $ propr repo-status --json             # JSON output
 `)
-    .action(async (fullName?: string) => {
+    .action(async (fullName: string | undefined, options: { json?: boolean }) => {
       try {
-        console.log("Fetching indexing status...");
-
         const result = await getIndexingStatus(fullName);
+
+        // Handle JSON output
+        if (printOutput(result, options.json ?? false)) {
+          return;
+        }
+
+        console.log("Fetching indexing status...");
 
         if (result.repositories.length === 0) {
           console.log("");

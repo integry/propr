@@ -12,6 +12,7 @@ import {
   SystemStatus,
   QueueStats,
 } from "../api/index.js";
+import { printOutput } from "../utils/index.js";
 
 /**
  * Formats a status value with color-like indicators for terminal display.
@@ -218,15 +219,15 @@ Examples:
 `)
     .action(async (options: { json?: boolean }) => {
       try {
-        console.log("Checking system status...");
-
         const status = await getSystemStatus();
 
-        if (options.json) {
-          console.log(JSON.stringify(status, null, 2));
-        } else {
-          displaySystemStatus(status);
+        // Handle JSON output
+        if (printOutput(status, options.json ?? false)) {
+          return;
         }
+
+        console.log("Checking system status...");
+        displaySystemStatus(status);
       } catch (error) {
         const errorMessage = (error as Error).message;
         if (
@@ -268,15 +269,15 @@ Examples:
 `)
     .action(async (options: { json?: boolean }) => {
       try {
-        console.log("Fetching queue statistics...");
-
         const stats = await getQueueStats();
 
-        if (options.json) {
-          console.log(JSON.stringify(stats, null, 2));
-        } else {
-          displayQueueStats(stats);
+        // Handle JSON output
+        if (printOutput(stats, options.json ?? false)) {
+          return;
         }
+
+        console.log("Fetching queue statistics...");
+        displayQueueStats(stats);
       } catch (error) {
         const errorMessage = (error as Error).message;
         if (

@@ -13,6 +13,12 @@ import {
   AgentConfig,
   AgentType,
 } from "../api/agents.js";
+import {
+  printOutput,
+  readJsonInput,
+  validateJsonFields,
+  JsonInputError,
+} from "../utils/index.js";
 
 /**
  * Formats an agent type for display.
@@ -134,15 +140,22 @@ export function registerAgentCommands(program: Command): void {
   program
     .command("list-agents")
     .description("List all configured AI agents with their models and status")
+    .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
-Example:
+Examples:
   $ propr list-agents
+  $ propr list-agents --json
 `)
-    .action(async () => {
+    .action(async (options: { json?: boolean }) => {
       try {
-        console.log("Fetching agents...");
-
         const result = await listAgents();
+
+        // Handle JSON output
+        if (printOutput(result, options.json ?? false)) {
+          return;
+        }
+
+        console.log("Fetching agents...");
 
         if (result.agents.length === 0) {
           console.log("");
@@ -179,55 +192,130 @@ Example:
 
   // Add agent command
   program
-    .command("add-agent <alias>")
+    .command("add-agent [alias]")
     .description("Add a new AI agent configuration for code implementation")
-    .requiredOption("-t, --type <type>", "Agent type (claude, codex, or gemini)")
-    .requiredOption("-m, --model <models>", "Comma-separated list of supported models")
+    .option("-t, --type <type>", "Agent type (claude, codex, or gemini)")
+    .option("-m, --model <models>", "Comma-separated list of supported models")
     .option("-d, --default-model <model>", "Default model to use (defaults to first model)")
     .option("--docker-image <image>", "Docker image for the agent")
     .option("--config-path <path>", "Host path to mount for configuration")
     .option("--disabled", "Create the agent in disabled state")
+    .option("-f, --file <path>", "Load agent configuration from JSON file (use '-' for stdin)")
+    .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
 Argument:
-  alias    Unique identifier for the agent
+  alias    Unique identifier for the agent (required unless using --file)
 
 Agent Types:
   claude    Anthropic Claude models
   codex     OpenAI Codex models
   gemini    Google Gemini models
 
+JSON File Format:
+  {
+    "alias": "my-agent",
+    "type": "claude",
+    "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
+    "defaultModel": "claude-sonnet-4-20250514",
+    "dockerImage": "optional-image",
+    "configPath": "/optional/path",
+    "enabled": true
+  }
+
 Examples:
   $ propr add-agent my-claude -t claude -m claude-sonnet-4-20250514
   $ propr add-agent prod-agent -t claude -m claude-sonnet-4-20250514,claude-opus-4-20250514 -d claude-sonnet-4-20250514
   $ propr add-agent test-agent -t gemini -m gemini-pro --disabled
+  $ propr add-agent --file agent-config.json
+  $ cat config.json | propr add-agent --file -
 `)
     .action(
       async (
-        alias: string,
+        aliasArg: string | undefined,
         options: {
-          type: string;
-          model: string;
+          type?: string;
+          model?: string;
           defaultModel?: string;
           dockerImage?: string;
           configPath?: string;
           disabled?: boolean;
+          file?: string;
+          json?: boolean;
         }
       ) => {
         try {
+          let alias: string;
+          let type: string;
+          let models: string[];
+          let defaultModel: string | undefined;
+          let dockerImage: string | undefined;
+          let configPath: string | undefined;
+          let enabled: boolean;
+
+          // Handle JSON file input
+          if (options.file) {
+            try {
+              const jsonConfig = await readJsonInput<{
+                alias: string;
+                type: string;
+                models: string[];
+                defaultModel?: string;
+                dockerImage?: string;
+                configPath?: string;
+                enabled?: boolean;
+              }>(options.file);
+
+              validateJsonFields(jsonConfig, ["alias", "type", "models"]);
+
+              alias = jsonConfig.alias;
+              type = jsonConfig.type.toLowerCase();
+              models = jsonConfig.models;
+              defaultModel = jsonConfig.defaultModel;
+              dockerImage = jsonConfig.dockerImage;
+              configPath = jsonConfig.configPath;
+              enabled = jsonConfig.enabled !== false;
+            } catch (error) {
+              if (error instanceof JsonInputError) {
+                console.error(`Error: ${error.message}`);
+              } else {
+                console.error(`Error reading JSON file: ${(error as Error).message}`);
+              }
+              process.exit(1);
+            }
+          } else {
+            // Traditional CLI arguments
+            if (!aliasArg) {
+              console.error("Error: Alias is required. Provide it as an argument or use --file.");
+              process.exit(1);
+            }
+            if (!options.type) {
+              console.error("Error: --type is required when not using --file");
+              process.exit(1);
+            }
+            if (!options.model) {
+              console.error("Error: --model is required when not using --file");
+              process.exit(1);
+            }
+
+            alias = aliasArg;
+            type = options.type.toLowerCase();
+            models = options.model
+              .split(",")
+              .map((m) => m.trim())
+              .filter((m) => m.length > 0);
+            defaultModel = options.defaultModel;
+            dockerImage = options.dockerImage;
+            configPath = options.configPath;
+            enabled = !options.disabled;
+          }
+
           // Validate agent type
-          const type = options.type.toLowerCase();
           if (!isValidAgentType(type)) {
             console.error(
-              `Error: Invalid agent type '${options.type}'. Must be one of: claude, codex, gemini`
+              `Error: Invalid agent type '${type}'. Must be one of: claude, codex, gemini`
             );
             process.exit(1);
           }
-
-          // Parse models
-          const models = options.model
-            .split(",")
-            .map((m) => m.trim())
-            .filter((m) => m.length > 0);
 
           if (models.length === 0) {
             console.error("Error: At least one model must be specified");
@@ -235,34 +323,41 @@ Examples:
           }
 
           // Validate default model if specified
-          if (options.defaultModel && !models.includes(options.defaultModel)) {
+          if (defaultModel && !models.includes(defaultModel)) {
             console.error(
-              `Error: Default model '${options.defaultModel}' is not in the list of supported models`
+              `Error: Default model '${defaultModel}' is not in the list of supported models`
             );
             process.exit(1);
           }
 
-          console.log(`Adding agent '${alias}'...`);
+          if (!options.json) {
+            console.log(`Adding agent '${alias}'...`);
+          }
 
           const result = await addAgent({
             alias,
             type,
             models,
-            defaultModel: options.defaultModel,
-            dockerImage: options.dockerImage,
-            configPath: options.configPath,
-            enabled: !options.disabled,
+            defaultModel,
+            dockerImage,
+            configPath,
+            enabled,
           });
 
           if (result.success) {
+            // Handle JSON output
+            if (printOutput(result, options.json ?? false)) {
+              return;
+            }
+
             console.log("");
             console.log(`Agent '${alias}' added successfully!`);
             console.log("");
             console.log("Configuration:");
             console.log(`  Type:           ${formatType(type)}`);
-            console.log(`  Enabled:        ${!options.disabled ? "Yes" : "No"}`);
+            console.log(`  Enabled:        ${enabled ? "Yes" : "No"}`);
             console.log(`  Models:         ${models.join(", ")}`);
-            console.log(`  Default Model:  ${options.defaultModel || models[0]}`);
+            console.log(`  Default Model:  ${defaultModel || models[0]}`);
             console.log("");
             console.log(`Total agents configured: ${result.agents.length}`);
           } else {
