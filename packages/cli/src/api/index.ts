@@ -144,3 +144,12 @@ export {
   ListLlmLogsResponse,
   ListLlmLogsOptions,
 } from "./logs.js";
+
+// System Status API
+export {
+  getSystemStatus,
+  getQueueStats,
+  // Types
+  SystemStatus,
+  QueueStats,
+} from "./system.js";
