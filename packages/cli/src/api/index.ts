@@ -104,3 +104,16 @@ export {
   TriggerIndexingResponse,
   GetIndexingStatusResponse,
 } from "./repos.js";
+
+// Agents Configuration API
+export {
+  listAgents,
+  addAgent,
+  deleteAgent,
+  // Types
+  AgentType,
+  AgentConfig,
+  GetAgentsResponse,
+  AddAgentOptions,
+  SaveAgentsResponse,
+} from "./agents.js";
