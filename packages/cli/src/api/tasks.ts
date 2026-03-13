@@ -297,3 +297,77 @@ export async function deleteTask(
 
   await apiClient.delete(endpoint, { params });
 }
+
+/**
+ * Response from the revert task endpoint.
+ */
+export interface RevertTaskResponse {
+  /**
+   * Whether the revert task was queued successfully.
+   */
+  success: boolean;
+
+  /**
+   * The job ID for the queued revert task.
+   */
+  jobId: string;
+
+  /**
+   * The correlation ID for tracking the revert operation.
+   */
+  correlationId: string;
+
+  /**
+   * A message describing the result.
+   */
+  message: string;
+}
+
+/**
+ * Queues a revert task to revert changes from a specific commit in a PR.
+ *
+ * This function sends a revert request to the backend to queue a background
+ * job that will revert the specified commit from the PR.
+ *
+ * @param owner - The repository owner.
+ * @param repo - The repository name.
+ * @param prNumber - The PR number.
+ * @param commitHash - The commit hash to revert.
+ * @param commentId - The comment ID that triggered the revert.
+ * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @returns A promise resolving to the revert task response.
+ *
+ * @example
+ * ```typescript
+ * // Revert a commit from a PR
+ * const result = await revertTask("owner", "repo", 42, "abc1234", 12345);
+ * if (result.success) {
+ *   console.log(`Revert task queued: ${result.jobId}`);
+ * }
+ * ```
+ */
+export async function revertTask(
+  owner: string,
+  repo: string,
+  prNumber: number | string,
+  commitHash: string,
+  commentId: number | string,
+  client?: ApiClient
+): Promise<RevertTaskResponse> {
+  const apiClient = client ?? (await createApiClient());
+
+  const body: Record<string, unknown> = {
+    owner,
+    repo,
+    pr: String(prNumber),
+    commit: commitHash,
+    commentId: String(commentId),
+  };
+
+  const response = await apiClient.post<RevertTaskResponse>(
+    "/api/tasks/revert",
+    { body }
+  );
+
+  return response.data;
+}

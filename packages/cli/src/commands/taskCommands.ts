@@ -12,6 +12,7 @@ import {
   listTasks,
   stopTask,
   deleteTask,
+  revertTask,
   TaskSummary,
   getTaskStatus,
   TaskStatus,
@@ -523,4 +524,113 @@ export function registerTaskCommands(program: Command): void {
         process.exit(1);
       }
     });
+
+  // Revert task command
+  program
+    .command("revert-task <repo> <pr> <commit> <commentId>")
+    .description("Revert changes from a specific commit in a PR")
+    .option("-o, --owner <owner>", "Repository owner (required if repo is not in owner/repo format)")
+    .action(
+      async (
+        repo: string,
+        pr: string,
+        commit: string,
+        commentId: string,
+        options: { owner?: string }
+      ) => {
+        try {
+          // Determine owner and repo name
+          let owner = options.owner;
+          let repoName = repo;
+
+          // Check if repo is in owner/repo format
+          if (repo.includes("/")) {
+            const parts = repo.split("/");
+            if (parts.length === 2) {
+              owner = owner || parts[0];
+              repoName = parts[1];
+            }
+          }
+
+          // If owner is still not set, try to get from config
+          if (!owner) {
+            const configManager = await createConfigManager();
+            const defaultProject = configManager.getDefaultProject();
+            if (defaultProject && defaultProject.includes("/")) {
+              owner = defaultProject.split("/")[0];
+            }
+          }
+
+          if (!owner) {
+            console.error(
+              "Error: Owner must be provided via --owner flag, in repo argument as owner/repo, or in propr config"
+            );
+            process.exit(1);
+          }
+
+          const prNumber = parseInt(pr, 10);
+          const commentIdNum = parseInt(commentId, 10);
+
+          if (isNaN(prNumber) || prNumber <= 0) {
+            console.error("Error: PR number must be a positive integer");
+            process.exit(1);
+          }
+
+          if (isNaN(commentIdNum) || commentIdNum <= 0) {
+            console.error("Error: Comment ID must be a positive integer");
+            process.exit(1);
+          }
+
+          if (!commit || commit.trim().length === 0) {
+            console.error("Error: Commit hash is required");
+            process.exit(1);
+          }
+
+          console.log(
+            `Reverting commit ${commit} from PR #${pr} in ${owner}/${repoName}...`
+          );
+
+          const result = await revertTask(owner, repoName, prNumber, commit, commentIdNum);
+
+          if (result.success) {
+            console.log("");
+            console.log("Revert task queued successfully!");
+            console.log(`Job ID: ${result.jobId}`);
+            console.log(`Correlation ID: ${result.correlationId}`);
+            console.log(`Message: ${result.message}`);
+            console.log("");
+            console.log("You can check the status of this task with:");
+            console.log(`  propr list-tasks -p ${owner}/${repoName}`);
+          } else {
+            console.error(`Failed to queue revert task: ${result.message}`);
+            process.exit(1);
+          }
+        } catch (error) {
+          const errorMessage = (error as Error).message;
+          if (
+            errorMessage.includes("401") ||
+            errorMessage.includes("unauthorized")
+          ) {
+            console.error("Error: Unauthorized. Please run 'propr login' first.");
+          } else if (
+            errorMessage.includes("403") ||
+            errorMessage.includes("forbidden")
+          ) {
+            console.error(
+              "Error: Access denied. You do not have permission to revert this PR."
+            );
+          } else if (
+            errorMessage.includes("404") ||
+            errorMessage.includes("not found")
+          ) {
+            console.error("Error: Repository, PR, or commit not found.");
+          } else if (errorMessage.includes("400")) {
+            console.error("Error: Invalid parameters provided.");
+          } else {
+            console.error(`Error reverting task: ${errorMessage}`);
+          }
+          process.exit(1);
+        }
+      }
+    );
 }
