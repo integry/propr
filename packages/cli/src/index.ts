@@ -5,7 +5,7 @@ import { config } from "dotenv";
 import { createConfigManager } from "./config/index.js";
 import { resolveProject, ProjectResolutionError } from "./utils/index.js";
 import { listPlans, createPlan, getPlan, PlanSummary, Plan, PlanStatus } from "./api/index.js";
-import { registerImplementCommands, registerPlanCommands, registerTaskCommands, registerRepoCommands, registerAgentCommands } from "./commands/index.js";
+import { registerImplementCommands, registerPlanCommands, registerTaskCommands, registerRepoCommands, registerAgentCommands, registerSettingCommands } from "./commands/index.js";
 
 // Re-export configuration module for programmatic use
 export {
@@ -320,6 +320,9 @@ registerRepoCommands(program);
 
 // Register agent management commands
 registerAgentCommands(program);
+
+// Register system settings commands
+registerSettingCommands(program);
 
 program.parse();
 

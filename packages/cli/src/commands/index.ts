@@ -9,3 +9,4 @@ export { registerPlanCommands } from "./planCommands.js";
 export { registerTaskCommands } from "./taskCommands.js";
 export { registerRepoCommands } from "./repoCommands.js";
 export { registerAgentCommands } from "./agentCommands.js";
+export { registerSettingCommands } from "./settingCommands.js";

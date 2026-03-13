@@ -117,3 +117,20 @@ export {
   AddAgentOptions,
   SaveAgentsResponse,
 } from "./agents.js";
+
+// System Settings API
+export {
+  getSettings,
+  updateSettings,
+  updateSetting,
+  isValidSettingKey,
+  parseSettingValue,
+  settingsApi,
+  // Types
+  SystemSettings,
+  GetSettingsResponse,
+  UpdateSettingsOptions,
+  UpdateSettingsResponse,
+  SettingKey,
+  VALID_SETTING_KEYS,
+} from "./settings.js";
