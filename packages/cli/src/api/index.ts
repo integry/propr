@@ -75,9 +75,11 @@ export {
   listTasks,
   stopTask,
   deleteTask,
+  revertTask,
   // Types
   TaskSummary,
   ListTasksResponse,
   ListTasksOptions,
   StopTaskResponse,
+  RevertTaskResponse,
 } from "./tasks.js";
