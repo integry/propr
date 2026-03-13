@@ -37,6 +37,8 @@ export {
   listPlans,
   createPlan,
   getPlan,
+  deletePlan,
+  abortPlan,
   // Types
   PlanStatus,
   PlanIssueSummary,
@@ -48,6 +50,7 @@ export {
   ListPlansResponse,
   ListPlansOptions,
   CreatePlanOptions,
+  AbortPlanResponse,
 } from "./plans.js";
 
 // Implementation API
