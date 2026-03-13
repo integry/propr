@@ -12,6 +12,28 @@ export {
   DEFAULT_CONFIG,
 } from "./config/index.js";
 
+// Re-export API module for programmatic use
+export {
+  ApiClient,
+  createApiClient,
+  createApiClientWithConfig,
+  ApiError,
+  UnauthorizedError,
+  ForbiddenError,
+  NotFoundError,
+  BadRequestError,
+  InternalServerError,
+  NetworkError,
+  TimeoutError,
+  createApiError,
+  HttpMethod,
+  RequestOptions,
+  ApiClientOptions,
+  ApiErrorCode,
+  ApiErrorResponse,
+  ApiResponse,
+} from "./api/index.js";
+
 // Load environment variables
 config();
 
