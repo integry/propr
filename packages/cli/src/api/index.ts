@@ -31,3 +31,21 @@ export {
   ApiErrorResponse,
   ApiResponse,
 } from "./types.js";
+
+// Plan Management API
+export {
+  listPlans,
+  createPlan,
+  getPlan,
+  // Types
+  PlanStatus,
+  PlanIssueSummary,
+  PlanSummary,
+  PlanContextConfig,
+  PlanAttachment,
+  PlanChatMessage,
+  Plan,
+  ListPlansResponse,
+  ListPlansOptions,
+  CreatePlanOptions,
+} from "./plans.js";
