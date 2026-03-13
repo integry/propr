@@ -3,6 +3,15 @@
 import { Command } from "commander";
 import { config } from "dotenv";
 
+// Re-export configuration module for programmatic use
+export {
+  ConfigManager,
+  createConfigManager,
+  CLIConfig,
+  ConfigKey,
+  DEFAULT_CONFIG,
+} from "./config/index.js";
+
 // Load environment variables
 config();
 
