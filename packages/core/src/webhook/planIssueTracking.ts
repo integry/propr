@@ -177,6 +177,12 @@ function determinePRStatusUpdate(
     merged: boolean,
     currentStatus: PlanIssueStatus
 ): PlanIssueStatus | null {
+    // Never downgrade from terminal statuses - prevents race conditions where
+    // delayed PR events (e.g., 'opened') run after the PR is already merged
+    if (currentStatus === 'merged' || currentStatus === 'closed') {
+        return null;
+    }
+
     if (action === 'closed') {
         return merged ? 'merged' : 'closed';
     }
