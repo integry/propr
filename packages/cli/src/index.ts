@@ -4,7 +4,7 @@ import { Command } from "commander";
 import { config } from "dotenv";
 import { createConfigManager } from "./config/index.js";
 import { resolveProject, ProjectResolutionError } from "./utils/index.js";
-import { listPlans, PlanSummary } from "./api/index.js";
+import { listPlans, createPlan, getPlan, PlanSummary, Plan, PlanStatus } from "./api/index.js";
 
 // Re-export configuration module for programmatic use
 export {
@@ -214,6 +214,93 @@ program
         process.exit(1);
       }
       console.error(`Error fetching plans: ${(error as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+// Create-plan command - create a new implementation plan
+program
+  .command("create-plan <prompt>")
+  .description("Create a new implementation plan for a project")
+  .option("-p, --project <project>", "Target project (owner/repo)")
+  .option("-b, --branch <branch>", "Target branch (default: main)", "main")
+  .option("-w, --wait", "Wait for plan generation to complete")
+  .action(async (prompt: string, options: { project?: string; branch: string; wait?: boolean }) => {
+    try {
+      const configManager = await createConfigManager();
+      const project = resolveProject(options, configManager);
+
+      console.log(`Creating plan for ${project}...`);
+
+      // Create the plan
+      const plan = await createPlan(project, prompt, {
+        contextConfig: {
+          branch: options.branch,
+        },
+      });
+
+      console.log(`Plan created with ID: ${plan.draft_id}`);
+      console.log(`Status: ${plan.status}`);
+
+      if (!options.wait) {
+        // Return immediately with the plan ID
+        console.log("");
+        console.log(`Use 'propr list-plans' to check the status.`);
+        return;
+      }
+
+      // Poll for completion
+      console.log("");
+      console.log("Waiting for plan generation to complete...");
+
+      const terminalStatuses: PlanStatus[] = ["draft", "review", "approved", "failed", "executed", "merged", "pr_created"];
+      const pollIntervalMs = 3000;
+      const maxWaitMs = 600000; // 10 minutes
+      const startTime = Date.now();
+
+      let currentPlan: Plan = plan;
+      let lastStatus = plan.status;
+
+      while (Date.now() - startTime < maxWaitMs) {
+        // Wait before polling
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+
+        currentPlan = await getPlan(plan.draft_id);
+
+        // Print progress if status changed
+        if (currentPlan.status !== lastStatus) {
+          console.log(`Status: ${currentPlan.status}`);
+          lastStatus = currentPlan.status;
+        }
+
+        // Check if we've reached a terminal state
+        if (terminalStatuses.includes(currentPlan.status)) {
+          break;
+        }
+      }
+
+      // Final status
+      console.log("");
+      if (currentPlan.status === "failed") {
+        console.error("Plan generation failed.");
+        process.exit(1);
+      } else if (terminalStatuses.includes(currentPlan.status)) {
+        console.log(`Plan generation completed.`);
+        console.log(`Final status: ${currentPlan.status}`);
+        if (currentPlan.name) {
+          console.log(`Name: ${currentPlan.name}`);
+        }
+      } else {
+        console.log(`Timeout: Plan is still ${currentPlan.status} after ${Math.round((Date.now() - startTime) / 1000)} seconds.`);
+        console.log(`Plan ID: ${currentPlan.draft_id}`);
+        console.log(`Use 'propr list-plans' to check the status.`);
+      }
+    } catch (error) {
+      if (error instanceof ProjectResolutionError) {
+        console.error(`Error: ${error.message}`);
+        process.exit(1);
+      }
+      console.error(`Error creating plan: ${(error as Error).message}`);
       process.exit(1);
     }
   });
