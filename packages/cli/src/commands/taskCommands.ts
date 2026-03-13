@@ -7,7 +7,7 @@
 
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
-import { resolveProject, ProjectResolutionError } from "../utils/index.js";
+import { resolveProject, ProjectResolutionError, printOutput } from "../utils/index.js";
 import {
   listTasks,
   stopTask,
@@ -258,6 +258,7 @@ export function registerTaskCommands(program: Command): void {
     )
     .option("-l, --limit <limit>", "Maximum number of tasks to show", "50")
     .option("--search <term>", "Search tasks by term")
+    .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Status Values:
   pending      Task waiting to be queued
@@ -273,6 +274,7 @@ Examples:
   $ propr list-tasks -p myorg/myrepo           # Filter by project
   $ propr list-tasks -s processing             # Filter by status
   $ propr list-tasks --search "auth" -l 100    # Search with limit
+  $ propr list-tasks --json                    # JSON output
 `)
     .action(
       async (options: {
@@ -280,6 +282,7 @@ Examples:
         status: string;
         limit: string;
         search?: string;
+        json?: boolean;
       }) => {
         try {
           const listOptions: {
@@ -310,9 +313,14 @@ Examples:
             listOptions.search = options.search;
           }
 
-          console.log("Fetching tasks...");
-
           const result = await listTasks(listOptions);
+
+          // Handle JSON output
+          if (printOutput(result, options.json ?? false)) {
+            return;
+          }
+
+          console.log("Fetching tasks...");
 
           if (result.tasks.length === 0) {
             console.log("");
@@ -358,6 +366,7 @@ Examples:
   program
     .command("get-task <task-id>")
     .description("Get detailed information about a specific task including history and metadata")
+    .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Argument:
   task-id    The unique identifier of the task
@@ -369,14 +378,20 @@ Output includes:
   - Full history with timestamps
   - Token usage statistics
 
-Example:
+Examples:
   $ propr get-task abc123-task-id
+  $ propr get-task abc123-task-id --json
 `)
-    .action(async (taskId: string) => {
+    .action(async (taskId: string, options: { json?: boolean }) => {
       try {
-        console.log(`Fetching task ${taskId}...`);
-
         const status = await getTaskStatus(taskId);
+
+        // Handle JSON output
+        if (printOutput(status, options.json ?? false)) {
+          return;
+        }
+
+        console.log(`Fetching task ${taskId}...`);
         displayTaskDetails(status);
       } catch (error) {
         const errorMessage = (error as Error).message;

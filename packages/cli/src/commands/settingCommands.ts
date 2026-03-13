@@ -15,6 +15,12 @@ import {
   SystemSettings,
   SettingKey,
 } from "../api/index.js";
+import {
+  printOutput,
+  readJsonInput,
+  validateJsonFields,
+  JsonInputError,
+} from "../utils/index.js";
 
 /**
  * Formats a setting value for display.
@@ -150,9 +156,9 @@ Examples:
                 }
                 process.exit(1);
               }
-              console.log(JSON.stringify({ [options.key]: settings[options.key] }, null, 2));
+              printOutput({ [options.key]: settings[options.key] }, true);
             } else {
-              console.log(JSON.stringify(settings, null, 2));
+              printOutput(settings, true);
             }
             return;
           }

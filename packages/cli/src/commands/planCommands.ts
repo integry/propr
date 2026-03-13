@@ -13,6 +13,7 @@ import {
   Plan,
   PlanStatus,
 } from "../api/index.js";
+import { printOutput } from "../utils/index.js";
 
 /**
  * Formats a plan status for display with color hints.
@@ -145,18 +146,25 @@ export function registerPlanCommands(program: Command): void {
   program
     .command("get-plan <draft-id>")
     .description("Get detailed information about a specific plan")
+    .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Argument:
   draft-id    The unique identifier of the plan
 
-Example:
+Examples:
   $ propr get-plan abc123-def456
+  $ propr get-plan abc123-def456 --json
 `)
-    .action(async (draftId: string) => {
+    .action(async (draftId: string, options: { json?: boolean }) => {
       try {
-        console.log(`Fetching plan ${draftId}...`);
-
         const plan = await getPlan(draftId);
+
+        // Handle JSON output
+        if (printOutput(plan, options.json ?? false)) {
+          return;
+        }
+
+        console.log(`Fetching plan ${draftId}...`);
         displayPlanDetails(plan);
       } catch (error) {
         const errorMessage = (error as Error).message;
