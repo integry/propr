@@ -35,6 +35,13 @@ export {
   ApiResponse,
 } from "./api/index.js";
 
+// Re-export utilities module for programmatic use
+export {
+  resolveProject,
+  ProjectOptions,
+  ProjectResolutionError,
+} from "./utils/index.js";
+
 // Load environment variables
 config();
 
@@ -43,7 +50,8 @@ const program = new Command();
 program
   .name("propr")
   .description("CLI for interacting with the ProPR backend")
-  .version("1.0.0");
+  .version("1.0.0")
+  .option("-p, --project <project>", "Specify the target project (owner/repo)");
 
 // Remote command - set the API base URL
 program
