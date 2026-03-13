@@ -49,3 +49,20 @@ export {
   ListPlansOptions,
   CreatePlanOptions,
 } from "./plans.js";
+
+// Implementation API
+export {
+  implementIssue,
+  getTaskStatus,
+  // Types
+  AgentModelPair,
+  ImplementIssueOptions,
+  ImplementIssueResponse,
+  TaskState,
+  TokenUsage,
+  TaskHistoryMetadata,
+  TaskHistoryEntry,
+  TaskInfo,
+  TaskStatusResponse,
+  TaskStatus,
+} from "./implement.js";
