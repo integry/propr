@@ -249,3 +249,59 @@ export async function getPlan(
 
   return response.data;
 }
+
+/**
+ * Deletes a specific plan.
+ *
+ * @param planId - The unique identifier of the plan (draft_id).
+ * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @returns A promise that resolves when the plan is deleted.
+ *
+ * @example
+ * ```typescript
+ * await deletePlan("abc123-uuid");
+ * console.log("Plan deleted successfully");
+ * ```
+ */
+export async function deletePlan(
+  planId: string,
+  client?: ApiClient
+): Promise<void> {
+  const apiClient = client ?? (await createApiClient());
+
+  await apiClient.delete(`/api/planner/drafts/${encodeURIComponent(planId)}`);
+}
+
+/**
+ * Response from abort plan operations.
+ */
+export interface AbortPlanResponse {
+  success: boolean;
+  message: string;
+}
+
+/**
+ * Aborts an ongoing plan generation.
+ *
+ * @param planId - The unique identifier of the plan (draft_id).
+ * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @returns A promise resolving to the abort response.
+ *
+ * @example
+ * ```typescript
+ * const result = await abortPlan("abc123-uuid");
+ * console.log(result.message); // "Generation aborted"
+ * ```
+ */
+export async function abortPlan(
+  planId: string,
+  client?: ApiClient
+): Promise<AbortPlanResponse> {
+  const apiClient = client ?? (await createApiClient());
+
+  const response = await apiClient.post<AbortPlanResponse>("/api/planner/abort", {
+    body: { draftId: planId },
+  });
+
+  return response.data;
+}
