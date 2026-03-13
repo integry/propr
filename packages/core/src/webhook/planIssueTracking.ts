@@ -229,16 +229,20 @@ export async function handlePlanPRUpdate(
         if (!planIssue) return;
 
         const newStatus = determinePRStatusUpdate(action, payload.pull_request.merged ?? false, planIssue.status);
-        if (!newStatus) return;
 
-        await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
-        log.info({ repository, prNumber, newStatus }, 'Updated plan issue status from PR event');
+        // Update status if there's a new status to set
+        if (newStatus) {
+            await updatePlanIssueByPR(repository, prNumber, { status: newStatus });
+            log.info({ repository, prNumber, newStatus }, 'Updated plan issue status from PR event');
+        }
 
         // When a PR is merged, trigger the next pending issue in the same plan
         // Only if the merged issue had auto-merge enabled (indicated by auto-merge label)
-        if (newStatus === 'merged' && planIssue.draft_id) {
+        // Check both newStatus and current status to handle race conditions where status was already updated
+        const isMerged = newStatus === 'merged' || (action === 'closed' && payload.pull_request.merged && planIssue.status === 'merged');
+        if (isMerged && planIssue.draft_id) {
             await handleMergedPRNextIssueTrigger(repository, planIssue.issue_number, planIssue.draft_id, log);
-        } else if (newStatus === 'merged') {
+        } else if (isMerged) {
             log.warn({ repository, prNumber, hasDraftId: !!planIssue.draft_id }, 'Merged but cannot trigger next issue - missing draft_id');
         }
     } catch (error) {
