@@ -6,3 +6,4 @@
 
 export { registerImplementCommands } from "./implementCommands.js";
 export { registerPlanCommands } from "./planCommands.js";
+export { registerTaskCommands } from "./taskCommands.js";
