@@ -90,6 +90,8 @@ export {
   addRepo,
   updateRepo,
   removeRepo,
+  triggerIndexing,
+  getIndexingStatus,
   reposApi,
   // Types
   MonitoredRepo,
@@ -97,4 +99,8 @@ export {
   AddRepoOptions,
   UpdateRepoOptions,
   RepoConfigResponse,
+  RepositoryIndexingProgress,
+  RepositoryIndexingStatus,
+  TriggerIndexingResponse,
+  GetIndexingStatusResponse,
 } from "./repos.js";

@@ -8,6 +8,141 @@
 import { ApiClient, createApiClient } from "./index.js";
 
 /**
+ * Progress information for repository indexing.
+ */
+export interface RepositoryIndexingProgress {
+  /**
+   * Total number of files to process.
+   */
+  totalFiles: number;
+
+  /**
+   * Number of files already processed.
+   */
+  processedFiles: number;
+
+  /**
+   * Percentage of indexing completed (0-100).
+   */
+  percentComplete: number;
+
+  /**
+   * Total input tokens used during indexing.
+   */
+  inputTokens: number;
+
+  /**
+   * Total output tokens used during indexing.
+   */
+  outputTokens: number;
+
+  /**
+   * Current phase of indexing.
+   */
+  phase: "files" | "directories" | "done";
+
+  /**
+   * Total number of directories to process.
+   */
+  totalDirectories: number;
+
+  /**
+   * Number of directories already processed.
+   */
+  processedDirectories: number;
+}
+
+/**
+ * Status information for a repository's indexing state.
+ */
+export interface RepositoryIndexingStatus {
+  /**
+   * The full repository name in "owner/repo" format.
+   */
+  full_name: string;
+
+  /**
+   * The branch being indexed.
+   */
+  branch: string;
+
+  /**
+   * Current indexing status.
+   */
+  indexing_status: "idle" | "indexing" | "completed" | "failed";
+
+  /**
+   * Timestamp of when the repository was last indexed.
+   */
+  last_indexed_at: string | null;
+
+  /**
+   * Git hash of the last indexed commit.
+   */
+  last_indexed_hash: string | null;
+
+  /**
+   * Message of the last indexed commit.
+   */
+  last_indexed_commit_message: string | null;
+
+  /**
+   * Progress information if indexing is in progress.
+   */
+  progress?: RepositoryIndexingProgress;
+}
+
+/**
+ * Response from the trigger indexing endpoint.
+ */
+export interface TriggerIndexingResponse {
+  /**
+   * Whether the indexing was successfully triggered.
+   */
+  success: boolean;
+
+  /**
+   * The job ID for tracking the indexing job.
+   */
+  jobId?: string;
+
+  /**
+   * Correlation ID for the indexing job.
+   */
+  correlationId?: string;
+
+  /**
+   * The repository being indexed.
+   */
+  repository?: string;
+
+  /**
+   * Whether this is a full reindex.
+   */
+  fullReindex?: boolean;
+
+  /**
+   * The base branch being indexed.
+   */
+  baseBranch?: string;
+
+  /**
+   * Error message if the request failed.
+   */
+  error?: string;
+}
+
+/**
+ * Response from the get indexing status endpoint.
+ */
+export interface GetIndexingStatusResponse {
+  /**
+   * Array of repository indexing statuses.
+   */
+  repositories: RepositoryIndexingStatus[];
+}
+
+/**
  * A monitored repository configuration.
  */
 export interface MonitoredRepo {
@@ -285,6 +420,91 @@ export async function removeRepo(
 }
 
 /**
+ * Triggers indexing for a repository.
+ *
+ * @param fullName - The full repository name in "owner/repo" format.
+ * @param options - Optional indexing options.
+ * @param options.fullReindex - Whether to perform a full reindex. Defaults to true.
+ * @param options.baseBranch - The base branch to index.
+ * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @returns A promise resolving to the trigger indexing response.
+ *
+ * @example
+ * ```typescript
+ * // Trigger full reindexing for a repository
+ * const result = await triggerIndexing("owner/repo");
+ * console.log(`Indexing started with job ID: ${result.jobId}`);
+ *
+ * // Trigger indexing for a specific branch
+ * const result = await triggerIndexing("owner/repo", { baseBranch: "develop" });
+ * ```
+ */
+export async function triggerIndexing(
+  fullName: string,
+  options: { fullReindex?: boolean; baseBranch?: string } = {},
+  client?: ApiClient
+): Promise<TriggerIndexingResponse> {
+  const apiClient = client ?? (await createApiClient());
+
+  const response = await apiClient.post<TriggerIndexingResponse>(
+    "/api/config/repos/trigger-indexing",
+    {
+      body: {
+        repository: fullName,
+        fullReindex: options.fullReindex ?? true,
+        baseBranch: options.baseBranch,
+      },
+    }
+  );
+
+  return response.data;
+}
+
+/**
+ * Gets the indexing status for all repositories or filters for a specific repository.
+ *
+ * @param fullName - Optional. The full repository name in "owner/repo" format to filter by.
+ * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @returns A promise resolving to the indexing status response.
+ *
+ * @example
+ * ```typescript
+ * // Get indexing status for all repositories
+ * const result = await getIndexingStatus();
+ * for (const repo of result.repositories) {
+ *   console.log(`${repo.full_name}: ${repo.indexing_status}`);
+ * }
+ *
+ * // Get indexing status for a specific repository
+ * const result = await getIndexingStatus("owner/repo");
+ * const status = result.repositories[0];
+ * if (status?.progress) {
+ *   console.log(`Progress: ${status.progress.percentComplete}%`);
+ * }
+ * ```
+ */
+export async function getIndexingStatus(
+  fullName?: string,
+  client?: ApiClient
+): Promise<GetIndexingStatusResponse> {
+  const apiClient = client ?? (await createApiClient());
+
+  const response = await apiClient.get<GetIndexingStatusResponse>(
+    "/api/config/repos/indexing-status"
+  );
+
+  // Filter by fullName if provided
+  if (fullName) {
+    const filtered = response.data.repositories.filter(
+      (repo) => repo.full_name.toLowerCase() === fullName.toLowerCase()
+    );
+    return { repositories: filtered };
+  }
+
+  return response.data;
+}
+
+/**
  * Repository API namespace providing all repository configuration operations.
  *
  * @example
@@ -302,6 +522,12 @@ export async function removeRepo(
  *
  * // Remove a repo
  * await reposApi.removeRepo("owner/repo");
+ *
+ * // Trigger indexing
+ * await reposApi.triggerIndexing("owner/repo");
+ *
+ * // Get indexing status
+ * const status = await reposApi.getIndexingStatus("owner/repo");
  * ```
  */
 export const reposApi = {
@@ -309,4 +535,6 @@ export const reposApi = {
   addRepo,
   updateRepo,
   removeRepo,
+  triggerIndexing,
+  getIndexingStatus,
 } as const;

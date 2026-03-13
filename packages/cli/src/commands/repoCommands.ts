@@ -11,7 +11,10 @@ import {
   addRepo,
   removeRepo,
   updateRepo,
+  triggerIndexing,
+  getIndexingStatus,
   MonitoredRepo,
+  RepositoryIndexingStatus,
 } from "../api/index.js";
 
 /**
@@ -35,6 +38,120 @@ function truncate(str: string | null | undefined, maxLen: number): string {
   if (!str) return "";
   if (str.length <= maxLen) return str;
   return str.substring(0, maxLen - 3) + "...";
+}
+
+/**
+ * Formats the indexing status for display.
+ *
+ * @param status - The indexing status.
+ * @returns A formatted status string.
+ */
+function formatIndexingStatus(status: string): string {
+  switch (status) {
+    case "indexing":
+      return "Indexing";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "idle":
+    default:
+      return "Idle";
+  }
+}
+
+/**
+ * Formats token usage for display.
+ *
+ * @param inputTokens - Number of input tokens.
+ * @param outputTokens - Number of output tokens.
+ * @returns A formatted token string.
+ */
+function formatTokens(inputTokens: number, outputTokens: number): string {
+  const total = inputTokens + outputTokens;
+  if (total === 0) return "-";
+
+  // Format with K suffix for thousands
+  const formatNum = (n: number): string => {
+    if (n >= 1000) {
+      return `${(n / 1000).toFixed(1)}K`;
+    }
+    return n.toString();
+  };
+
+  return `${formatNum(inputTokens)}/${formatNum(outputTokens)}`;
+}
+
+/**
+ * Displays a table of repository indexing statuses with clean formatting.
+ *
+ * @param statuses - The repository indexing statuses to display.
+ */
+function displayIndexingStatusTable(statuses: RepositoryIndexingStatus[]): void {
+  // Calculate column widths
+  const repoWidth = Math.max(
+    "Repository".length,
+    ...statuses.map((s) => truncate(s.full_name, 40).length)
+  );
+  const branchWidth = Math.max(
+    "Branch".length,
+    ...statuses.map((s) => truncate(s.branch, 15).length || 1)
+  );
+  const statusWidth = Math.max(
+    "Status".length,
+    ...statuses.map((s) => formatIndexingStatus(s.indexing_status).length)
+  );
+  const progressWidth = Math.max(
+    "Progress".length,
+    10
+  );
+  const tokensWidth = Math.max(
+    "Tokens (In/Out)".length,
+    ...statuses.map((s) => {
+      if (s.progress) {
+        return formatTokens(s.progress.inputTokens, s.progress.outputTokens).length;
+      }
+      return 1;
+    })
+  );
+
+  // Print header
+  const header = [
+    "Repository".padEnd(repoWidth),
+    "Branch".padEnd(branchWidth),
+    "Status".padEnd(statusWidth),
+    "Progress".padEnd(progressWidth),
+    "Tokens (In/Out)".padEnd(tokensWidth),
+  ].join("  ");
+
+  console.log(header);
+  console.log("-".repeat(header.length));
+
+  // Print each repository status
+  for (const status of statuses) {
+    // Format progress
+    let progressStr = "-";
+    if (status.progress) {
+      progressStr = `${status.progress.percentComplete.toFixed(1)}%`;
+    } else if (status.indexing_status === "completed") {
+      progressStr = "100%";
+    }
+
+    // Format tokens
+    const tokensStr = status.progress
+      ? formatTokens(status.progress.inputTokens, status.progress.outputTokens)
+      : "-";
+
+    const row = [
+      truncate(status.full_name, 40).padEnd(repoWidth),
+      (truncate(status.branch, 15) || "-").padEnd(branchWidth),
+      formatIndexingStatus(status.indexing_status).padEnd(statusWidth),
+      progressStr.padEnd(progressWidth),
+      tokensStr.padEnd(tokensWidth),
+    ].join("  ");
+
+    console.log(row);
+  }
 }
 
 /**
@@ -365,4 +482,139 @@ export function registerRepoCommands(program: Command): void {
         }
       }
     );
+
+  // Index repo command
+  program
+    .command("index-repo <fullName>")
+    .description("Trigger indexing for a repository")
+    .option("-b, --branch <branch>", "Specify the base branch to index")
+    .option("--incremental", "Perform incremental indexing instead of full reindex")
+    .action(
+      async (
+        fullName: string,
+        options: { branch?: string; incremental?: boolean }
+      ) => {
+        try {
+          // Validate fullName format
+          if (!fullName.includes("/")) {
+            console.error(
+              "Error: Repository name must be in 'owner/repo' format."
+            );
+            console.log("");
+            console.log("Example: propr index-repo integry/gitfix");
+            process.exit(1);
+          }
+
+          const parts = fullName.split("/");
+          if (parts.length !== 2 || !parts[0] || !parts[1]) {
+            console.error(
+              "Error: Invalid repository format. Expected 'owner/repo'."
+            );
+            process.exit(1);
+          }
+
+          const indexType = options.incremental ? "incremental" : "full";
+          console.log(`Triggering ${indexType} indexing for repository: ${fullName}...`);
+
+          const result = await triggerIndexing(fullName, {
+            fullReindex: !options.incremental,
+            baseBranch: options.branch,
+          });
+
+          if (result.success) {
+            console.log("");
+            console.log(`Successfully triggered indexing for repository: ${fullName}`);
+            if (result.jobId) {
+              console.log(`  Job ID: ${result.jobId}`);
+            }
+            if (result.correlationId) {
+              console.log(`  Correlation ID: ${result.correlationId}`);
+            }
+            if (options.branch) {
+              console.log(`  Branch: ${options.branch}`);
+            }
+            console.log(`  Mode: ${indexType} reindex`);
+            console.log("");
+            console.log("Use 'propr repo-status <fullName>' to check indexing progress.");
+          } else {
+            console.error(`Failed to trigger indexing: ${result.error || "Unknown error"}`);
+            process.exit(1);
+          }
+        } catch (error) {
+          const errorMessage = (error as Error).message;
+          if (errorMessage.includes("already queued")) {
+            console.error(`Error: Indexing for "${fullName}" is already in progress or queued.`);
+            console.log("");
+            console.log("Use 'propr repo-status' to check the current indexing status.");
+          } else if (
+            errorMessage.includes("401") ||
+            errorMessage.includes("unauthorized")
+          ) {
+            console.error("Error: Unauthorized. Please run 'propr login' first.");
+          } else if (
+            errorMessage.includes("403") ||
+            errorMessage.includes("forbidden")
+          ) {
+            console.error(
+              "Error: Access denied. You do not have permission to trigger indexing."
+            );
+          } else {
+            console.error(`Error triggering indexing: ${errorMessage}`);
+          }
+          process.exit(1);
+        }
+      }
+    );
+
+  // Repo status command
+  program
+    .command("repo-status [fullName]")
+    .description("View indexing status for repositories")
+    .action(async (fullName?: string) => {
+      try {
+        console.log("Fetching indexing status...");
+
+        const result = await getIndexingStatus(fullName);
+
+        if (result.repositories.length === 0) {
+          console.log("");
+          if (fullName) {
+            console.log(`No indexing status found for repository: ${fullName}`);
+            console.log("");
+            console.log("Make sure the repository is being monitored:");
+            console.log("  propr list-repos");
+          } else {
+            console.log("No repositories are currently being tracked for indexing.");
+            console.log("");
+            console.log("To add a repository, use:");
+            console.log("  propr add-repo <owner/repo>");
+          }
+          return;
+        }
+
+        console.log("");
+        displayIndexingStatusTable(result.repositories);
+
+        console.log("");
+        console.log(`Total: ${result.repositories.length} repository(ies)`);
+      } catch (error) {
+        const errorMessage = (error as Error).message;
+        if (
+          errorMessage.includes("401") ||
+          errorMessage.includes("unauthorized")
+        ) {
+          console.error("Error: Unauthorized. Please run 'propr login' first.");
+        } else if (
+          errorMessage.includes("403") ||
+          errorMessage.includes("forbidden")
+        ) {
+          console.error(
+            "Error: Access denied. You do not have permission to view indexing status."
+          );
+        } else {
+          console.error(`Error fetching indexing status: ${errorMessage}`);
+        }
+        process.exit(1);
+      }
+    });
 }
