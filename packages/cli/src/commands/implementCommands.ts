@@ -110,13 +110,23 @@ async function pollTaskStatus(taskId: string): Promise<TaskStatus> {
 export function registerImplementCommands(program: Command): void {
   program
     .command("implement-issue <issue-id>")
-    .description("Implement a GitHub issue from a plan")
+    .description("Implement a GitHub issue from a plan using AI agents")
     .option("-p, --project <project>", "Target project (owner/repo)")
     .option("-w, --wait", "Wait for the implementation to complete")
     .option("-a, --agent <agent>", "Agent alias to use for implementation")
     .option("-m, --model <model>", "Model name to use for implementation")
     .option("--epic", "Create an Epic PR to collect all related PRs")
     .option("--auto-merge", "Enable auto-merge for the created PR")
+    .addHelpText("after", `
+Argument:
+  issue-id    Format: <draft-id>/<issue-number> or <draft-id>:<issue-number>
+
+Examples:
+  $ propr implement-issue abc123/1
+  $ propr implement-issue abc123:42 --wait
+  $ propr implement-issue abc123/1 -a claude -m claude-sonnet-4-20250514 --wait
+  $ propr implement-issue abc123/1 --epic --auto-merge
+`)
     .action(
       async (
         issueId: string,

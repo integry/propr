@@ -211,7 +211,11 @@ export function registerRepoCommands(program: Command): void {
   // List repos command
   program
     .command("list-repos")
-    .description("List all monitored repositories")
+    .description("List all repositories being monitored by ProPR")
+    .addHelpText("after", `
+Example:
+  $ propr list-repos
+`)
     .action(async () => {
       try {
         console.log("Fetching monitored repositories...");
@@ -258,9 +262,17 @@ export function registerRepoCommands(program: Command): void {
   // Add repo command
   program
     .command("add-repo <fullName>")
-    .description("Add a repository to the monitored list")
+    .description("Add a repository to the monitored list for ProPR")
     .option("-a, --alias <alias>", "Display alias for the repository")
     .option("-b, --branch <branch>", "Base branch name (default: main/master)")
+    .addHelpText("after", `
+Argument:
+  fullName    Repository in owner/repo format
+
+Examples:
+  $ propr add-repo myorg/myrepo
+  $ propr add-repo myorg/myrepo -a "My Project" -b develop
+`)
     .action(
       async (
         fullName: string,
@@ -344,6 +356,13 @@ export function registerRepoCommands(program: Command): void {
   program
     .command("remove-repo <fullName>")
     .description("Remove a repository from the monitored list")
+    .addHelpText("after", `
+Argument:
+  fullName    Repository in owner/repo format
+
+Example:
+  $ propr remove-repo myorg/myrepo
+`)
     .action(async (fullName: string) => {
       try {
         // Validate fullName format
@@ -402,6 +421,17 @@ export function registerRepoCommands(program: Command): void {
     .description("Enable or disable monitoring for a repository")
     .option("--enable", "Enable monitoring for the repository")
     .option("--disable", "Disable monitoring for the repository")
+    .addHelpText("after", `
+Argument:
+  fullName    Repository in owner/repo format
+
+Note:
+  Exactly one of --enable or --disable must be specified.
+
+Examples:
+  $ propr toggle-repo myorg/myrepo --enable
+  $ propr toggle-repo myorg/myrepo --disable
+`)
     .action(
       async (
         fullName: string,
@@ -486,9 +516,22 @@ export function registerRepoCommands(program: Command): void {
   // Index repo command
   program
     .command("index-repo <fullName>")
-    .description("Trigger indexing for a repository")
+    .description("Trigger codebase indexing for a repository")
     .option("-b, --branch <branch>", "Specify the base branch to index")
     .option("--incremental", "Perform incremental indexing instead of full reindex")
+    .addHelpText("after", `
+Argument:
+  fullName    Repository in owner/repo format
+
+Indexing Modes:
+  Full (default)    Re-index the entire repository
+  Incremental       Only index changes since last index
+
+Examples:
+  $ propr index-repo myorg/myrepo                    # Full reindex
+  $ propr index-repo myorg/myrepo --incremental     # Incremental index
+  $ propr index-repo myorg/myrepo -b develop        # Index specific branch
+`)
     .action(
       async (
         fullName: string,
@@ -569,7 +612,20 @@ export function registerRepoCommands(program: Command): void {
   // Repo status command
   program
     .command("repo-status [fullName]")
-    .description("View indexing status for repositories")
+    .description("View indexing status and progress for repositories")
+    .addHelpText("after", `
+Argument:
+  fullName    (Optional) Repository in owner/repo format
+
+Output includes:
+  - Indexing status (idle, indexing, completed, failed)
+  - Progress percentage
+  - Token usage
+
+Examples:
+  $ propr repo-status                    # Show all repositories
+  $ propr repo-status myorg/myrepo       # Show specific repository
+`)
     .action(async (fullName?: string) => {
       try {
         console.log("Fetching indexing status...");

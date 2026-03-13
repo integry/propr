@@ -201,8 +201,21 @@ export function registerSystemCommands(program: Command): void {
   // System status command
   program
     .command("system-status")
-    .description("Display the health status of backend components")
+    .description("Display the health status of all ProPR backend components")
     .option("--json", "Output raw JSON response")
+    .addHelpText("after", `
+Components Checked:
+  - API health
+  - Redis connection
+  - Daemon status
+  - Worker status
+  - GitHub authentication
+  - Claude authentication
+
+Examples:
+  $ propr system-status           # Human-readable output
+  $ propr system-status --json    # JSON output for scripting
+`)
     .action(async (options: { json?: boolean }) => {
       try {
         console.log("Checking system status...");
@@ -238,8 +251,21 @@ export function registerSystemCommands(program: Command): void {
   // Queue stats command
   program
     .command("queue-stats")
-    .description("Display queue statistics and job counts")
+    .description("Display job queue statistics and counts")
     .option("--json", "Output raw JSON response")
+    .addHelpText("after", `
+Statistics Shown:
+  - Waiting jobs
+  - Active jobs
+  - Completed jobs
+  - Failed jobs
+  - Delayed jobs
+  - Failure rate
+
+Examples:
+  $ propr queue-stats           # Human-readable output
+  $ propr queue-stats --json    # JSON output for scripting
+`)
     .action(async (options: { json?: boolean }) => {
       try {
         console.log("Fetching queue statistics...");

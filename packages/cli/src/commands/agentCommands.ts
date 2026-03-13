@@ -133,7 +133,11 @@ export function registerAgentCommands(program: Command): void {
   // List agents command
   program
     .command("list-agents")
-    .description("List all configured AI agents")
+    .description("List all configured AI agents with their models and status")
+    .addHelpText("after", `
+Example:
+  $ propr list-agents
+`)
     .action(async () => {
       try {
         console.log("Fetching agents...");
@@ -176,13 +180,27 @@ export function registerAgentCommands(program: Command): void {
   // Add agent command
   program
     .command("add-agent <alias>")
-    .description("Add a new AI agent configuration")
+    .description("Add a new AI agent configuration for code implementation")
     .requiredOption("-t, --type <type>", "Agent type (claude, codex, or gemini)")
     .requiredOption("-m, --model <models>", "Comma-separated list of supported models")
     .option("-d, --default-model <model>", "Default model to use (defaults to first model)")
     .option("--docker-image <image>", "Docker image for the agent")
     .option("--config-path <path>", "Host path to mount for configuration")
     .option("--disabled", "Create the agent in disabled state")
+    .addHelpText("after", `
+Argument:
+  alias    Unique identifier for the agent
+
+Agent Types:
+  claude    Anthropic Claude models
+  codex     OpenAI Codex models
+  gemini    Google Gemini models
+
+Examples:
+  $ propr add-agent my-claude -t claude -m claude-sonnet-4-20250514
+  $ propr add-agent prod-agent -t claude -m claude-sonnet-4-20250514,claude-opus-4-20250514 -d claude-sonnet-4-20250514
+  $ propr add-agent test-agent -t gemini -m gemini-pro --disabled
+`)
     .action(
       async (
         alias: string,
@@ -273,8 +291,16 @@ export function registerAgentCommands(program: Command): void {
   // Delete agent command
   program
     .command("delete-agent <alias>")
-    .description("Delete an AI agent configuration")
+    .description("Delete an AI agent configuration permanently")
     .option("-f, --force", "Skip confirmation prompt")
+    .addHelpText("after", `
+Argument:
+  alias    The alias of the agent to delete
+
+Examples:
+  $ propr delete-agent my-agent           # With confirmation
+  $ propr delete-agent my-agent --force   # Skip confirmation
+`)
     .action(async (alias: string, options: { force?: boolean }) => {
       try {
         // Confirm deletion unless --force is used
