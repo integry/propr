@@ -11,3 +11,4 @@ export { registerRepoCommands } from "./repoCommands.js";
 export { registerAgentCommands } from "./agentCommands.js";
 export { registerSettingCommands } from "./settingCommands.js";
 export { registerLogCommands } from "./logCommands.js";
+export { registerSystemCommands } from "./systemCommands.js";
