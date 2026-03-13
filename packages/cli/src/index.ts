@@ -3,6 +3,8 @@
 import { Command } from "commander";
 import { config } from "dotenv";
 import { createConfigManager } from "./config/index.js";
+import { resolveProject, ProjectResolutionError } from "./utils/index.js";
+import { listPlans, PlanSummary } from "./api/index.js";
 
 // Re-export configuration module for programmatic use
 export {
@@ -148,6 +150,70 @@ program
       console.log("GitHub token has been removed from configuration.");
     } catch (error) {
       console.error(`Error clearing token: ${(error as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+// List-plans command - list plans for a project
+program
+  .command("list-plans")
+  .description("List implementation plans for a project")
+  .option("-p, --project <project>", "Target project (owner/repo)")
+  .action(async (options: { project?: string }) => {
+    try {
+      const configManager = await createConfigManager();
+      const project = resolveProject(options, configManager);
+
+      const result = await listPlans(project);
+
+      if (result.drafts.length === 0) {
+        console.log(`No plans found for project: ${project}`);
+        console.log("");
+        console.log("To create a new plan, use the ProPR dashboard or API.");
+        return;
+      }
+
+      console.log(`Plans for ${project}:`);
+      console.log("");
+
+      // Calculate column widths for neat formatting
+      const idWidth = Math.max(
+        "ID".length,
+        ...result.drafts.map((p: PlanSummary) => p.draft_id.length)
+      );
+      const nameWidth = Math.max(
+        "Name".length,
+        ...result.drafts.map((p: PlanSummary) => p.name.length)
+      );
+      const statusWidth = Math.max(
+        "Status".length,
+        ...result.drafts.map((p: PlanSummary) => p.status.length)
+      );
+
+      // Print header
+      const header = `${"ID".padEnd(idWidth)}  ${"Name".padEnd(nameWidth)}  ${"Status".padEnd(statusWidth)}`;
+      console.log(header);
+      console.log("-".repeat(header.length));
+
+      // Print each plan
+      for (const plan of result.drafts) {
+        console.log(
+          `${plan.draft_id.padEnd(idWidth)}  ${plan.name.padEnd(nameWidth)}  ${plan.status.padEnd(statusWidth)}`
+        );
+      }
+
+      console.log("");
+      console.log(`Total: ${result.total} plan(s)`);
+
+      if (result.hasMore) {
+        console.log(`Showing page ${result.page} of results. More plans available.`);
+      }
+    } catch (error) {
+      if (error instanceof ProjectResolutionError) {
+        console.error(`Error: ${error.message}`);
+        process.exit(1);
+      }
+      console.error(`Error fetching plans: ${(error as Error).message}`);
       process.exit(1);
     }
   });
