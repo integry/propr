@@ -249,7 +249,7 @@ export function registerTaskCommands(program: Command): void {
   // List tasks command
   program
     .command("list-tasks")
-    .description("List tasks with optional filtering")
+    .description("List tasks with optional filtering by project, status, or search term")
     .option("-p, --project <project>", "Filter by project (owner/repo)")
     .option(
       "-s, --status <status>",
@@ -258,6 +258,22 @@ export function registerTaskCommands(program: Command): void {
     )
     .option("-l, --limit <limit>", "Maximum number of tasks to show", "50")
     .option("--search <term>", "Search tasks by term")
+    .addHelpText("after", `
+Status Values:
+  pending      Task waiting to be queued
+  queued       Task in queue waiting for worker
+  processing   Task being executed
+  completed    Task finished successfully
+  failed       Task failed with error
+  cancelled    Task was cancelled
+  all          Show all tasks (default)
+
+Examples:
+  $ propr list-tasks                           # List all tasks
+  $ propr list-tasks -p myorg/myrepo           # Filter by project
+  $ propr list-tasks -s processing             # Filter by status
+  $ propr list-tasks --search "auth" -l 100    # Search with limit
+`)
     .action(
       async (options: {
         project?: string;
@@ -341,7 +357,21 @@ export function registerTaskCommands(program: Command): void {
   // Get task command
   program
     .command("get-task <task-id>")
-    .description("Get detailed information about a specific task")
+    .description("Get detailed information about a specific task including history and metadata")
+    .addHelpText("after", `
+Argument:
+  task-id    The unique identifier of the task
+
+Output includes:
+  - Task status and progress
+  - Repository and issue information
+  - PR number/URL if created
+  - Full history with timestamps
+  - Token usage statistics
+
+Example:
+  $ propr get-task abc123-task-id
+`)
     .action(async (taskId: string) => {
       try {
         console.log(`Fetching task ${taskId}...`);
@@ -374,7 +404,18 @@ export function registerTaskCommands(program: Command): void {
   // Stop task command
   program
     .command("stop-task <task-id>")
-    .description("Stop a running task")
+    .description("Stop a running task (only works for active tasks)")
+    .addHelpText("after", `
+Argument:
+  task-id    The unique identifier of the task to stop
+
+Note:
+  This command only works for tasks in active states (pending, queued, processing).
+  Tasks in terminal states (completed, failed, cancelled) cannot be stopped.
+
+Example:
+  $ propr stop-task abc123-task-id
+`)
     .action(async (taskId: string) => {
       try {
         // First, check the task status
@@ -436,8 +477,20 @@ export function registerTaskCommands(program: Command): void {
   // Delete task command
   program
     .command("delete-task <task-id>")
-    .description("Delete a task from the system")
+    .description("Delete a task from the system permanently")
     .option("-f, --force", "Force deletion even for active tasks")
+    .addHelpText("after", `
+Argument:
+  task-id    The unique identifier of the task to delete
+
+Note:
+  Active tasks require --force flag to delete.
+  Consider using 'stop-task' first for running tasks.
+
+Examples:
+  $ propr delete-task abc123-task-id           # With confirmation
+  $ propr delete-task abc123-task-id --force   # Force delete active task
+`)
     .action(async (taskId: string, options: { force?: boolean }) => {
       try {
         // Fetch the task first to show what will be deleted
@@ -528,8 +581,19 @@ export function registerTaskCommands(program: Command): void {
   // Revert task command
   program
     .command("revert-task <repo> <pr> <commit> <commentId>")
-    .description("Revert changes from a specific commit in a PR")
+    .description("Revert changes from a specific commit in a pull request")
     .option("-o, --owner <owner>", "Repository owner (required if repo is not in owner/repo format)")
+    .addHelpText("after", `
+Arguments:
+  repo         Repository name (owner/repo format) or just repo name with -o flag
+  pr           Pull request number
+  commit       Commit hash to revert
+  commentId    ID of the comment that triggered the revert
+
+Examples:
+  $ propr revert-task myorg/myrepo 123 abc123def 456789
+  $ propr revert-task myrepo 123 abc123def 456789 -o myorg
+`)
     .action(
       async (
         repo: string,

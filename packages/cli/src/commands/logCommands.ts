@@ -130,7 +130,7 @@ export function registerLogCommands(program: Command): void {
   // List logs command
   program
     .command("list-logs")
-    .description("List LLM execution logs for auditing and cost analysis")
+    .description("List LLM execution logs for auditing, debugging, and cost analysis")
     .option("-l, --limit <limit>", "Maximum number of logs to show", "50")
     .option("-m, --model <model>", "Filter by model name")
     .option("-t, --type <type>", "Filter by execution type")
@@ -139,6 +139,21 @@ export function registerLogCommands(program: Command): void {
     .option("--failed", "Show only failed executions")
     .option("--agent <alias>", "Filter by agent alias")
     .option("--draft <draftId>", "Filter by draft/plan ID")
+    .addHelpText("after", `
+Output includes:
+  - Execution type
+  - Model name
+  - Token usage (input/output)
+  - Cost in USD
+
+Examples:
+  $ propr list-logs                            # List recent logs
+  $ propr list-logs -l 100 --page 2            # Paginated results
+  $ propr list-logs -m claude-sonnet-4-20250514            # Filter by model
+  $ propr list-logs --failed                   # Show failures only
+  $ propr list-logs --draft abc123             # Filter by plan ID
+  $ propr list-logs --agent my-claude          # Filter by agent
+`)
     .action(
       async (options: {
         limit: string;

@@ -114,9 +114,23 @@ export function registerSettingCommands(program: Command): void {
   // Get settings command
   program
     .command("get-settings")
-    .description("View current system settings")
+    .description("View current system settings for ProPR backend")
     .option("-k, --key <key>", "Show only a specific setting key")
     .option("-j, --json", "Output settings as JSON")
+    .addHelpText("after", `
+Valid Setting Keys:
+  worker_concurrency             Number of concurrent workers
+  github_user_whitelist          Allowed GitHub users
+  analysis_model_fast            Fast analysis model
+  planner_context_model          Planner context model
+  planner_generation_model       Planner generation model
+  auto_followup_score_threshold  Auto-followup threshold (0-9)
+
+Examples:
+  $ propr get-settings                                 # Show all settings
+  $ propr get-settings -k worker_concurrency           # Show specific setting
+  $ propr get-settings --json                          # Output as JSON
+`)
     .action(
       async (options: { key?: string; json?: boolean }) => {
         try {

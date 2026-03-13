@@ -145,6 +145,13 @@ export function registerPlanCommands(program: Command): void {
   program
     .command("get-plan <draft-id>")
     .description("Get detailed information about a specific plan")
+    .addHelpText("after", `
+Argument:
+  draft-id    The unique identifier of the plan
+
+Example:
+  $ propr get-plan abc123-def456
+`)
     .action(async (draftId: string) => {
       try {
         console.log(`Fetching plan ${draftId}...`);
@@ -169,8 +176,16 @@ export function registerPlanCommands(program: Command): void {
   // Delete plan command
   program
     .command("delete-plan <draft-id>")
-    .description("Delete a plan from the system")
+    .description("Delete a plan from the system permanently")
     .option("-f, --force", "Skip confirmation prompt")
+    .addHelpText("after", `
+Argument:
+  draft-id    The unique identifier of the plan to delete
+
+Examples:
+  $ propr delete-plan abc123-def456           # With confirmation
+  $ propr delete-plan abc123-def456 --force   # Skip confirmation
+`)
     .action(async (draftId: string, options: { force?: boolean }) => {
       try {
         // Fetch the plan first to show what will be deleted
@@ -218,7 +233,17 @@ export function registerPlanCommands(program: Command): void {
   // Abort plan command
   program
     .command("abort-plan <draft-id>")
-    .description("Abort ongoing LLM generation for a plan")
+    .description("Abort ongoing LLM generation for a plan (only works for generating/refining plans)")
+    .addHelpText("after", `
+Argument:
+  draft-id    The unique identifier of the plan with active generation
+
+Note:
+  This command only works for plans in 'generating' or 'refining' status.
+
+Example:
+  $ propr abort-plan abc123-def456
+`)
     .action(async (draftId: string) => {
       try {
         // Optionally check the plan status first

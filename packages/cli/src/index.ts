@@ -52,14 +52,55 @@ const program = new Command();
 
 program
   .name("propr")
-  .description("CLI for interacting with the ProPR backend")
+  .description("CLI for interacting with the ProPR backend - AI-powered automated implementation of GitHub issues and pull requests")
   .version("1.0.0")
-  .option("-p, --project <project>", "Specify the target project (owner/repo)");
+  .option("-p, --project <project>", "Specify the target project (owner/repo)")
+  .addHelpText("before", `
+ProPR CLI - AI-Powered GitHub Issue Implementation
+
+ProPR enables automated implementation of GitHub issues using AI agents.
+This CLI provides commands to manage plans, tasks, repositories, and agents.
+`)
+  .addHelpText("after", `
+Quick Start:
+  $ propr remote <url>              Set the backend API URL
+  $ propr login <token>             Authenticate with GitHub
+  $ propr use <owner/repo>          Set default project
+  $ propr list-plans                View available implementation plans
+  $ propr implement-issue <id>      Implement a GitHub issue
+
+Examples:
+  $ propr remote https://api.propr.example.com
+  $ propr login ghp_xxxxxxxxxxxx
+  $ propr use myorg/myrepo
+  $ propr create-plan "Add dark mode toggle" --wait
+  $ propr implement-issue abc123/1 --wait --auto-merge
+  $ propr list-tasks -s processing
+  $ propr system-status
+
+Command Groups:
+  Configuration:  remote, use, login, logout
+  Plans:          create-plan, list-plans, get-plan, delete-plan, abort-plan
+  Implementation: implement-issue
+  Tasks:          list-tasks, get-task, stop-task, delete-task, revert-task
+  Repositories:   list-repos, add-repo, remove-repo, toggle-repo, index-repo, repo-status
+  Agents:         list-agents, add-agent, delete-agent
+  Settings:       get-settings, update-setting
+  Logs:           list-logs
+  System:         system-status, queue-stats
+
+For more information on a command, run:
+  $ propr <command> --help
+`);
 
 // Remote command - set the API base URL
 program
   .command("remote <url>")
-  .description("Set the remote API base URL")
+  .description("Set the remote API base URL for ProPR backend")
+  .addHelpText("after", `
+Example:
+  $ propr remote https://api.propr.example.com
+`)
   .action(async (url: string) => {
     try {
       const configManager = await createConfigManager();
@@ -75,7 +116,14 @@ program
 // Use command - set the default project
 program
   .command("use <project>")
-  .description("Set the default project (repository)")
+  .description("Set the default project (repository) for subsequent commands")
+  .addHelpText("after", `
+Argument:
+  project    Repository in owner/repo format (e.g., myorg/myrepo)
+
+Example:
+  $ propr use myorg/myrepo
+`)
   .action(async (project: string) => {
     try {
       const configManager = await createConfigManager();
@@ -91,7 +139,24 @@ program
 // Login command - authenticate with GitHub token
 program
   .command("login [token]")
-  .description("Authenticate with a GitHub Personal Access Token")
+  .description("Authenticate with a GitHub Personal Access Token (PAT)")
+  .addHelpText("after", `
+Argument:
+  token    GitHub Personal Access Token (optional - shows instructions if omitted)
+
+Required Token Scopes:
+  - repo      Full control of private repositories
+  - read:org  Read organization membership
+
+Example:
+  $ propr login ghp_xxxxxxxxxxxx
+
+To generate a token:
+  1. Go to https://github.com/settings/tokens
+  2. Click "Generate new token (classic)"
+  3. Select scopes: repo, read:org
+  4. Copy and use the generated token
+`)
   .action(async (token?: string) => {
     try {
       const configManager = await createConfigManager();
@@ -135,7 +200,11 @@ program
 // Logout command - clear the GitHub token
 program
   .command("logout")
-  .description("Clear the stored GitHub token")
+  .description("Clear the stored GitHub token from configuration")
+  .addHelpText("after", `
+Example:
+  $ propr logout
+`)
   .action(async () => {
     try {
       const configManager = await createConfigManager();
@@ -158,8 +227,13 @@ program
 // List-plans command - list plans for a project
 program
   .command("list-plans")
-  .description("List implementation plans for a project")
+  .description("List all implementation plans for a project")
   .option("-p, --project <project>", "Target project (owner/repo)")
+  .addHelpText("after", `
+Examples:
+  $ propr list-plans                    # Use default project
+  $ propr list-plans -p myorg/myrepo    # Specify project
+`)
   .action(async (options: { project?: string }) => {
     try {
       const configManager = await createConfigManager();
@@ -222,10 +296,19 @@ program
 // Create-plan command - create a new implementation plan
 program
   .command("create-plan <prompt>")
-  .description("Create a new implementation plan for a project")
+  .description("Create a new implementation plan from a natural language prompt")
   .option("-p, --project <project>", "Target project (owner/repo)")
   .option("-b, --branch <branch>", "Target branch (default: main)", "main")
   .option("-w, --wait", "Wait for plan generation to complete")
+  .addHelpText("after", `
+Argument:
+  prompt    Natural language description of what to implement
+
+Examples:
+  $ propr create-plan "Add user authentication with JWT"
+  $ propr create-plan "Fix the login page styling" --wait
+  $ propr create-plan "Add dark mode" -b develop -p myorg/myrepo --wait
+`)
   .action(async (prompt: string, options: { project?: string; branch: string; wait?: boolean }) => {
     try {
       const configManager = await createConfigManager();
