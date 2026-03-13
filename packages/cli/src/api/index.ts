@@ -83,3 +83,18 @@ export {
   StopTaskResponse,
   RevertTaskResponse,
 } from "./tasks.js";
+
+// Repository Configuration API
+export {
+  getRepos,
+  addRepo,
+  updateRepo,
+  removeRepo,
+  reposApi,
+  // Types
+  MonitoredRepo,
+  GetReposResponse,
+  AddRepoOptions,
+  UpdateRepoOptions,
+  RepoConfigResponse,
+} from "./repos.js";
