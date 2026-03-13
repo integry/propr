@@ -69,3 +69,15 @@ export {
   TaskStatusResponse,
   TaskStatus,
 } from "./implement.js";
+
+// Tasks API
+export {
+  listTasks,
+  stopTask,
+  deleteTask,
+  // Types
+  TaskSummary,
+  ListTasksResponse,
+  ListTasksOptions,
+  StopTaskResponse,
+} from "./tasks.js";

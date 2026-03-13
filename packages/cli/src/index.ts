@@ -5,7 +5,7 @@ import { config } from "dotenv";
 import { createConfigManager } from "./config/index.js";
 import { resolveProject, ProjectResolutionError } from "./utils/index.js";
 import { listPlans, createPlan, getPlan, PlanSummary, Plan, PlanStatus } from "./api/index.js";
-import { registerImplementCommands, registerPlanCommands } from "./commands/index.js";
+import { registerImplementCommands, registerPlanCommands, registerTaskCommands } from "./commands/index.js";
 
 // Re-export configuration module for programmatic use
 export {
@@ -311,6 +311,9 @@ registerImplementCommands(program);
 
 // Register plan management commands
 registerPlanCommands(program);
+
+// Register task management commands
+registerTaskCommands(program);
 
 program.parse();
 
