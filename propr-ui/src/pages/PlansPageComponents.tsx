@@ -96,16 +96,16 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
 
   return (
     <tr className="hover:bg-gray-50 group border-b border-slate-100">
-      {/* Repository column - responsive width: hidden on mobile, narrower on larger screens to give more space to title */}
-      <td className="hidden sm:table-cell px-4 sm:px-6 py-3 sm:w-[140px] sm:min-w-[140px] sm:max-w-[140px]">
+      {/* Repository column - hidden on mobile, fixed width on desktop */}
+      <td className="hidden sm:table-cell px-4 py-3" style={{ width: '140px', minWidth: '140px', maxWidth: '140px' }}>
         <Link to={`/studio/${draft.draft_id}`} className="block">
           <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
             {draft.repository}
           </span>
         </Link>
       </td>
-      {/* Plan title and status cell - flexible width to take remaining space */}
-      <td className="px-2 sm:px-4 py-3 w-full">
+      {/* Plan title and status cell - takes all remaining space */}
+      <td className="px-2 sm:px-4 py-3">
         <Link to={`/studio/${draft.draft_id}`} className="block">
           {/* Repository badge - shown inline on mobile only */}
           <div className="sm:hidden mb-1">
@@ -115,7 +115,7 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           </div>
           {/* Plan Title */}
           <div className="mb-1">
-            <span className="text-sm font-medium text-gray-900 break-words line-clamp-4 sm:line-clamp-2">
+            <span className="text-sm font-medium text-gray-900 break-words">
               {draft.name || draft.initial_prompt}
             </span>
           </div>
@@ -125,8 +125,8 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           </div>
         </Link>
       </td>
-      {/* Actions cell - responsive: minimal on mobile to maximize title space */}
-      <td className="px-1 sm:px-6 py-3 whitespace-nowrap text-right text-sm font-medium w-[56px] sm:w-[160px] flex-shrink-0">
+      {/* Actions cell - fixed width */}
+      <td className="px-1 sm:px-4 py-3 whitespace-nowrap text-right text-sm font-medium" style={{ width: '160px', minWidth: '160px' }}>
         <div className="flex items-center justify-end gap-2 sm:gap-3">
           {/* Relative time - hidden on mobile, far right aligned on desktop */}
           <span className="hidden sm:inline text-xs text-slate-400 min-w-[80px] text-right">
@@ -232,13 +232,13 @@ export const PlansTable: React.FC<PlansTableProps> = ({
 }) => {
   return (
     <div className="flex flex-col h-full bg-white">
-      <div className="flex-1">
-        <table className="w-full table-fixed">
+      <div className="flex-1 overflow-x-hidden">
+        <table className="w-full">
           <thead className="sr-only">
             <tr>
-              <th className="hidden sm:table-cell sm:w-[140px]">Repository</th>
-              <th className="w-full">Plan</th>
-              <th className="w-[56px] sm:w-[160px]">Actions</th>
+              <th className="hidden sm:table-cell" style={{ width: '140px' }}>Repository</th>
+              <th>Plan</th>
+              <th style={{ width: '160px' }}>Actions</th>
             </tr>
           </thead>
           <tbody className="bg-white">
