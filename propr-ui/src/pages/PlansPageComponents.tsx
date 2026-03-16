@@ -125,8 +125,8 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           </div>
         </Link>
       </td>
-      {/* Actions cell - responsive: smaller on mobile, narrower to give more space to title */}
-      <td className="px-2 sm:px-6 py-3 whitespace-nowrap text-right text-sm font-medium w-[70px] sm:w-[160px]">
+      {/* Actions cell - responsive: minimal on mobile to maximize title space */}
+      <td className="px-1 sm:px-6 py-3 whitespace-nowrap text-right text-sm font-medium w-[56px] sm:w-[160px] flex-shrink-0">
         <div className="flex items-center justify-end gap-2 sm:gap-3">
           {/* Relative time - hidden on mobile, far right aligned on desktop */}
           <span className="hidden sm:inline text-xs text-slate-400 min-w-[80px] text-right">
@@ -149,12 +149,16 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
               {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
             </button>
           )}
-          {/* Primary action button - smaller on mobile */}
+          {/* Primary action button - icon only on mobile, text on desktop */}
           <Link
             to={`/studio/${draft.draft_id}`}
-            className="inline-flex items-center justify-center w-auto sm:w-[72px] px-2 sm:px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
+            className="inline-flex items-center justify-center w-8 h-8 sm:w-[72px] sm:h-auto px-0 sm:px-3 py-0 sm:py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
+            title={effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
           >
-            {effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
+            <ChevronRight size={16} className="sm:hidden" />
+            <span className="hidden sm:inline">
+              {effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
+            </span>
           </Link>
         </div>
       </td>
@@ -234,7 +238,7 @@ export const PlansTable: React.FC<PlansTableProps> = ({
             <tr>
               <th className="hidden sm:table-cell sm:w-[140px]">Repository</th>
               <th className="w-full">Plan</th>
-              <th className="w-[70px] sm:w-[160px]">Actions</th>
+              <th className="w-[56px] sm:w-[160px]">Actions</th>
             </tr>
           </thead>
           <tbody className="bg-white">
