@@ -184,11 +184,11 @@ export const PaginationControls: React.FC<PaginationControlsProps> = ({
   if (totalPages <= 1) return null;
 
   return (
-    <div className="flex flex-col sm:flex-row items-center justify-between px-4 sm:px-6 py-2 sm:py-4 gap-2 sm:gap-3">
-      <span className="text-xs sm:text-sm text-gray-600 text-center sm:text-left">
-        Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, totalDrafts)} of {totalDrafts} plans
+    <div className="flex items-center justify-between px-4 sm:px-6 py-2 gap-2">
+      <span className="text-xs sm:text-sm text-gray-600">
+        <span className="hidden sm:inline">Showing </span>{(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, totalDrafts)}<span className="hidden sm:inline"> of {totalDrafts} plans</span>
       </span>
-      <div className="flex flex-wrap items-center justify-center gap-2">
+      <div className="flex items-center gap-1 sm:gap-2">
         <button
           onClick={() => onPageChange(Math.max(1, currentPage - 1))}
           disabled={currentPage === 1 || loading}
@@ -197,8 +197,8 @@ export const PaginationControls: React.FC<PaginationControlsProps> = ({
           <ChevronLeft size={14} className="sm:w-4 sm:h-4" />
           <span className="hidden sm:inline">Previous</span>
         </button>
-        <span className="text-xs sm:text-sm text-gray-600 px-1 sm:px-2">
-          Page {currentPage} of {totalPages}
+        <span className="text-xs sm:text-sm text-gray-600 px-1">
+          {currentPage}/{totalPages}
         </span>
         <button
           onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}
@@ -228,8 +228,8 @@ export const PlansTable: React.FC<PlansTableProps> = ({
 }) => {
   return (
     <div className="flex flex-col h-full bg-white">
-      <div className="flex-1 overflow-auto">
-        <table className="w-full table-auto">
+      <div className="flex-1">
+        <table className="w-full table-fixed">
           <thead className="sr-only">
             <tr>
               <th className="hidden sm:table-cell sm:w-[140px]">Repository</th>
