@@ -105,7 +105,7 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
         </Link>
       </td>
       {/* Plan title and status cell - flexible width to take remaining space */}
-      <td className="px-3 sm:px-4 py-3 w-full">
+      <td className="px-2 sm:px-4 py-3 w-full">
         <Link to={`/studio/${draft.draft_id}`} className="block">
           {/* Repository badge - shown inline on mobile only */}
           <div className="sm:hidden mb-1">
@@ -126,7 +126,7 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
         </Link>
       </td>
       {/* Actions cell - responsive: smaller on mobile, narrower to give more space to title */}
-      <td className="px-3 sm:px-6 py-3 whitespace-nowrap text-right text-sm font-medium sm:w-[160px]">
+      <td className="px-2 sm:px-6 py-3 whitespace-nowrap text-right text-sm font-medium w-[70px] sm:w-[160px]">
         <div className="flex items-center justify-end gap-2 sm:gap-3">
           {/* Relative time - hidden on mobile, far right aligned on desktop */}
           <span className="hidden sm:inline text-xs text-slate-400 min-w-[80px] text-right">
@@ -234,7 +234,7 @@ export const PlansTable: React.FC<PlansTableProps> = ({
             <tr>
               <th className="hidden sm:table-cell sm:w-[140px]">Repository</th>
               <th className="w-full">Plan</th>
-              <th className="sm:w-[160px]">Actions</th>
+              <th className="w-[70px] sm:w-[160px]">Actions</th>
             </tr>
           </thead>
           <tbody className="bg-white">
