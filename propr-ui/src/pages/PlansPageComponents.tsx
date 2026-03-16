@@ -115,7 +115,7 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           </div>
           {/* Plan Title */}
           <div className="mb-1">
-            <span className="text-sm font-medium text-gray-900 break-words line-clamp-2">
+            <span className="text-sm font-medium text-gray-900 break-words line-clamp-4 sm:line-clamp-2">
               {draft.name || draft.initial_prompt}
             </span>
           </div>
