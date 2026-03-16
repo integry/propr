@@ -102,9 +102,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       </div>
 
       {/* New AI Plan Bay - Full height partition */}
-      <div className="hidden md:flex items-center px-4 relative">
-        {/* Subtle divider at 60-70% height */}
-        <div className="absolute left-0 top-[20%] h-[60%] w-px bg-slate-200" />
+      <div className="hidden md:flex items-center px-4">
         <button
           onClick={handleNewPlan}
           className="flex items-center gap-2 px-4 py-1.5 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors"
@@ -117,11 +115,9 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       {/* Mobile New Plan Button */}
       <button
         onClick={handleNewPlan}
-        className="md:hidden flex items-center px-4 relative bg-teal-600 text-white hover:bg-teal-700 transition-colors"
+        className="md:hidden flex items-center px-4 bg-teal-600 text-white hover:bg-teal-700 transition-colors"
         aria-label="New Plan"
       >
-        {/* Subtle divider at 60-70% height */}
-        <div className="absolute left-0 top-[20%] h-[60%] w-px bg-slate-200" />
         <ScrollText className="w-5 h-5" />
       </button>
 
