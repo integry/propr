@@ -10,6 +10,7 @@ import { useToast } from '../ui/useToast';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
 import { GranularityPills } from './ComposerControls';
+import { GenerationProgress } from './GenerationProgress';
 import { GenerateButtonContent, ModelSelector } from './SetupWizardComponents';
 import { getEstimatedIssueText } from './setupWizardUtils';
 import {
@@ -174,6 +175,13 @@ const SetupWizardContent: React.FC<{
           generationTrace={generationPolling.generationTrace}
         />
       </div>
+
+      {/* Generation Progress - mobile only, shown above footer */}
+      {isGenerating && (
+        <div className="md:hidden px-3 py-2 border-t border-gray-200 bg-white">
+          <GenerationProgress trace={generationPolling.generationTrace} onAbort={generationHandlers.handleAbortGeneration} />
+        </div>
+      )}
 
       {/* Fixed Footer Bar - Full-width anchored to bottom */}
       <div className="flex-shrink-0 px-3 md:px-6 py-2 md:py-4 bg-gray-100 border-t border-gray-300">
