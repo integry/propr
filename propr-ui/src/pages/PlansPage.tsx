@@ -219,10 +219,10 @@ const PlansPage: React.FC = () => {
   if (loading && drafts.length === 0 && totalAllDrafts === 0) {
     return (
       <div className="flex flex-col h-full">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-          <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
+        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Implementation Plans</h1>
         </div>
-        <div className="flex-1 overflow-auto px-6 py-6">
+        <div className="flex-1 overflow-auto px-4 sm:px-6 py-4 sm:py-6">
           <div className="text-gray-500">Loading plans...</div>
         </div>
       </div>
@@ -232,10 +232,10 @@ const PlansPage: React.FC = () => {
   if (error) {
     return (
       <div className="flex flex-col h-full">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-          <h1 className="text-2xl font-bold text-gray-800">Implementation Plans</h1>
+        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Implementation Plans</h1>
         </div>
-        <div className="flex-1 overflow-auto px-6 py-6">
+        <div className="flex-1 overflow-auto px-4 sm:px-6 py-4 sm:py-6">
           <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
         </div>
       </div>

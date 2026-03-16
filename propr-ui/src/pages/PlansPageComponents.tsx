@@ -25,7 +25,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 }) => {
   if (type === 'no-plans') {
     return (
-      <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+      <div className="text-center py-12 sm:py-20 mx-4 sm:mx-6 my-4 sm:my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
         <div className="mb-4">
           <svg className="w-16 h-16 mx-auto text-teal-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -48,7 +48,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 
   if (type === 'no-search-results') {
     return (
-      <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+      <div className="text-center py-12 sm:py-20 mx-4 sm:mx-6 my-4 sm:my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
         <div className="mb-4">
           <Search className="w-16 h-16 mx-auto text-gray-400" />
         </div>
@@ -64,7 +64,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   }
 
   return (
-    <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+    <div className="text-center py-12 sm:py-20 mx-4 sm:mx-6 my-4 sm:my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
       <div className="mb-4">
         <Filter className="w-16 h-16 mx-auto text-gray-400" />
       </div>
@@ -96,16 +96,16 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
 
   return (
     <tr className="hover:bg-gray-50 group border-b border-slate-100">
-      {/* Repository column - responsive width: hidden on mobile, fixed width on larger screens */}
-      <td className="hidden sm:table-cell px-4 sm:px-6 py-3 sm:w-[180px] sm:min-w-[180px] sm:max-w-[180px]">
+      {/* Repository column - responsive width: hidden on mobile, narrower on larger screens to give more space to title */}
+      <td className="hidden sm:table-cell px-4 sm:px-6 py-3 sm:w-[140px] sm:min-w-[140px] sm:max-w-[140px]">
         <Link to={`/studio/${draft.draft_id}`} className="block">
           <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
             {draft.repository}
           </span>
         </Link>
       </td>
-      {/* Plan title and status cell - takes more space on mobile since delete button is hidden */}
-      <td className="px-3 sm:px-4 py-3">
+      {/* Plan title and status cell - flexible width to take remaining space */}
+      <td className="px-3 sm:px-4 py-3 w-full">
         <Link to={`/studio/${draft.draft_id}`} className="block">
           {/* Repository badge - shown inline on mobile only */}
           <div className="sm:hidden mb-1">
@@ -125,8 +125,8 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           </div>
         </Link>
       </td>
-      {/* Actions cell - responsive: smaller on mobile */}
-      <td className="px-3 sm:px-6 py-3 whitespace-nowrap text-right text-sm font-medium sm:w-[180px]">
+      {/* Actions cell - responsive: smaller on mobile, narrower to give more space to title */}
+      <td className="px-3 sm:px-6 py-3 whitespace-nowrap text-right text-sm font-medium sm:w-[160px]">
         <div className="flex items-center justify-end gap-2 sm:gap-3">
           {/* Relative time - hidden on mobile, far right aligned on desktop */}
           <span className="hidden sm:inline text-xs text-slate-400 min-w-[80px] text-right">
@@ -229,12 +229,12 @@ export const PlansTable: React.FC<PlansTableProps> = ({
   return (
     <div className="flex flex-col h-full bg-white">
       <div className="flex-1 overflow-auto">
-        <table className="w-full table-fixed sm:table-auto">
+        <table className="w-full table-auto">
           <thead className="sr-only">
             <tr>
-              <th className="hidden sm:table-cell">Repository</th>
-              <th>Plan</th>
-              <th>Actions</th>
+              <th className="hidden sm:table-cell sm:w-[140px]">Repository</th>
+              <th className="w-full">Plan</th>
+              <th className="sm:w-[160px]">Actions</th>
             </tr>
           </thead>
           <tbody className="bg-white">
