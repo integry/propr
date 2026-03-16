@@ -117,7 +117,7 @@ const SetupWizardContent: React.FC<{
   return (
     <div className="h-full flex flex-col bg-white">
       {/* Scrollable Canvas - Middle content area */}
-      <div className="flex-1 flex min-h-0 overflow-auto">
+      <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-auto">
         <SetupWizardLeftPane
           isNewMode={isNewMode}
           repository={repository}
@@ -176,11 +176,11 @@ const SetupWizardContent: React.FC<{
       </div>
 
       {/* Fixed Footer Bar - Full-width anchored to bottom */}
-      <div className="flex-shrink-0 px-6 py-4 bg-gray-100 border-t border-gray-300">
-        <div className="flex items-center justify-between gap-4">
+      <div className="flex-shrink-0 px-4 md:px-6 py-3 md:py-4 bg-gray-100 border-t border-gray-300">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 md:gap-4">
           {/* Left side: Granularity + Generate */}
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 md:gap-6">
+            <div className="flex items-center gap-2 md:gap-3 overflow-x-auto">
               <span className="text-sm text-gray-500 whitespace-nowrap">Break plan into issues:</span>
               <GranularityPills
                 value={config.granularity}
@@ -191,7 +191,7 @@ const SetupWizardContent: React.FC<{
             <button
               onClick={handleGenerate}
               disabled={isGenerateDisabled}
-              className="flex items-center gap-2 px-6 py-2.5 text-white font-medium rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center justify-center gap-2 px-4 md:px-6 py-2 md:py-2.5 text-white font-medium rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors w-full sm:w-auto"
               style={{ backgroundColor: isGenerateDisabled ? undefined : 'rgb(29, 138, 138)' }}
               onMouseEnter={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
               onMouseLeave={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
@@ -201,7 +201,7 @@ const SetupWizardContent: React.FC<{
           </div>
 
           {/* Right side: Model + Export */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center justify-between sm:justify-end gap-3 md:gap-4">
             <ModelSelector
               agents={agents}
               generationModel={config.generationModel}
@@ -219,7 +219,7 @@ const SetupWizardContent: React.FC<{
               ) : (
                 <Download className="w-4 h-4" />
               )}
-              <span>Export Context</span>
+              <span className="hidden sm:inline">Export Context</span>
             </button>
           </div>
         </div>

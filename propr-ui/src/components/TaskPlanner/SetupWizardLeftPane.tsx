@@ -150,7 +150,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   generationTrace,
   onAbort,
 }) => (
-  <div className="w-[65%] h-full flex flex-col">
+  <div className="w-full md:w-[65%] h-auto md:h-full flex flex-col">
     {/* Header with repo/branch - Toolbar border for alignment with right pane */}
     <div className="px-6 py-3 border-b border-gray-300">
       <div className="flex items-center gap-2 text-sm flex-wrap sm:flex-nowrap overflow-hidden">

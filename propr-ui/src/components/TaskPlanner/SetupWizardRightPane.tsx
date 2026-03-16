@@ -73,7 +73,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   generationTrace,
 }) => {
   return (
-    <div className="w-[35%] h-full flex flex-col bg-white border-l border-gray-300">
+    <div className="w-full md:w-[35%] h-auto md:h-full flex flex-col bg-white border-t md:border-t-0 md:border-l border-gray-300">
       {/* Context Level Slider - Toolbar aligns with left pane header */}
       <div className="p-5 border-b border-gray-300">
         <ContextLevelSlider
