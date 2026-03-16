@@ -1,6 +1,6 @@
 import React from 'react';
 import { Loader2, Github, MessageCircle, X } from 'lucide-react';
-import { GranularityEnforcementMetadata, ChatMessage } from '../../api/proprApi';
+import { GranularityEnforcementMetadata, ChatMessage, PlanTask } from '../../api/proprApi';
 import TaskCardList from './TaskCardList';
 import RefinementChat from './RefinementChat';
 import BackToSetupDialog from './BackToSetupDialog';
@@ -21,7 +21,7 @@ export interface PlanEditorMobileLayoutProps {
   finalizeError: string | null;
   granularityEnforcement?: { enforced: boolean; message?: string; originalTaskCount?: number; finalTaskCount?: number };
   enforcementNoticeDismissed: boolean;
-  plan: any[];
+  plan: PlanTask[];
   highlightedIds: Set<string>;
   draftId: string;
   chatHistory?: ChatMessage[];
@@ -34,7 +34,7 @@ export interface PlanEditorMobileLayoutProps {
   onUndo: () => void;
   onRedo: () => void;
   onSetEnforcementNoticeDismissed: (value: boolean) => void;
-  onTaskChange: (taskId: string, field: string, value: any) => void;
+  onTaskChange: (taskId: string, updates: Partial<PlanTask>) => void;
   onDeleteTask: (taskId: string) => void;
   onReorderTasks: (taskIds: string[]) => void;
   onFinalize: () => void;
