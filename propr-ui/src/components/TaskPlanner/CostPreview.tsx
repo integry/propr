@@ -105,11 +105,11 @@ const EmptyState: React.FC<EmptyStateProps> = ({
       <div className="flex items-center justify-between">
         <span className="hidden sm:inline text-gray-500">
           {isNewMode
-            ? 'Cost estimate will be available after clicking Generate'
+            ? 'Cost estimate will be available after entering a prompt'
             : 'Enter a prompt to see cost estimate'}
         </span>
         <span className="sm:hidden text-gray-500 text-xs">
-          {isNewMode ? 'Cost after Generate' : 'Enter prompt for cost'}
+          {isNewMode ? 'Cost after entering prompt' : 'Enter prompt for cost'}
         </span>
         {showRefreshIndicator && (
           <RefreshIndicator

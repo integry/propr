@@ -94,7 +94,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
           <div className="p-3 md:p-5 space-y-4">
             <p className="hidden sm:block text-sm text-gray-400 italic">
               {isNewMode
-                ? 'Context preview will be available after clicking Generate'
+                ? 'Context preview will be available after entering a prompt'
                 : preview.data
                   ? 'No files found in repository'
                   : 'Files will be selected after context analysis'}
