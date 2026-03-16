@@ -165,30 +165,30 @@ const LlmLogsPage: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Anchored Header */}
-      <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-        <div className="flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-gray-800">LLM Log</h1>
-          <div className="flex items-center gap-4">
-            <Filter size={16} className="text-gray-500" />
+      {/* Anchored Header - compact on mobile */}
+      <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
+        <div className="flex items-center justify-between gap-2 sm:gap-4">
+          <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">LLM Log</h1>
+          <div className="flex items-center gap-2 sm:gap-4">
+            <Filter size={16} className="text-gray-500 hidden sm:block" />
 
             {/* Status Filter */}
             <select
               value={statusFilter}
               onChange={(e) => handleStatusFilterChange(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+              className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
             >
               <option value="all">All Status</option>
               <option value="success">Success</option>
               <option value="failed">Failed</option>
             </select>
 
-            {/* Type Filter */}
+            {/* Type Filter - hidden on mobile */}
             {availableTypes.length > 0 && (
               <select
                 value={typeFilter}
                 onChange={(e) => handleTypeFilterChange(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                className="hidden sm:block px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               >
                 <option value="all">All Types</option>
                 {availableTypes.map(type => (
@@ -197,12 +197,12 @@ const LlmLogsPage: React.FC = () => {
               </select>
             )}
 
-            {/* Model Filter */}
+            {/* Model Filter - hidden on mobile */}
             {availableModels.length > 0 && (
               <select
                 value={modelFilter}
                 onChange={(e) => handleModelFilterChange(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                className="hidden sm:block px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               >
                 <option value="all">All Models</option>
                 {availableModels.map(model => (
@@ -232,40 +232,40 @@ const LlmLogsPage: React.FC = () => {
                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
                       {/* Expand/Collapse column */}
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-2 sm:px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Status
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-2 sm:px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Type
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="hidden sm:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       <div className="flex items-center gap-1">
                         <Info size={14} />
                         Context
                       </div>
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="hidden md:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Model
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="hidden sm:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       <div className="flex items-center gap-1">
                         <Zap size={14} />
-                        Tokens (In/Out)
+                        Tokens
                       </div>
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-2 sm:px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       <div className="flex items-center gap-1">
                         <Coins size={14} />
                         Cost
                       </div>
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="hidden md:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       <div className="flex items-center gap-1">
                         <Clock size={14} />
                         Duration
                       </div>
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="hidden lg:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Timestamp
                     </th>
                   </tr>
@@ -277,7 +277,7 @@ const LlmLogsPage: React.FC = () => {
                         className={`hover:bg-gray-50 ${hasDetailedInfo(log) ? 'cursor-pointer' : ''}`}
                         onClick={() => hasDetailedInfo(log) && toggleRowExpansion(log.logId)}
                       >
-                        <td className="px-2 py-4 whitespace-nowrap">
+                        <td className="px-2 py-3 sm:py-4 whitespace-nowrap">
                           {hasDetailedInfo(log) && (
                             <ExpandButton
                               isExpanded={expandedRows.has(log.logId)}
@@ -288,34 +288,34 @@ const LlmLogsPage: React.FC = () => {
                             />
                           )}
                         </td>
-                        <td className="px-4 py-4 whitespace-nowrap">
+                        <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap">
                           <div className="flex items-center" title={log.success ? 'Success' : log.errorMessage || 'Failed'}>
                             <StatusIcon success={log.success} />
                           </div>
                         </td>
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          <span className="px-2 py-1 text-xs font-medium rounded-full bg-indigo-100 text-indigo-800">
+                        <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap">
+                          <span className="px-1.5 sm:px-2 py-0.5 sm:py-1 text-xs font-medium rounded-full bg-indigo-100 text-indigo-800">
                             {formatType(log.executionType)}
                           </span>
                         </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
+                        <td className="hidden sm:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700">
                           <span title={log.repository || log.draftId || log.sessionId || undefined}>
                             {getContextDisplay(log)}
                           </span>
                         </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
+                        <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
                           {log.modelName || '-'}
                         </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
+                        <td className="hidden sm:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
                           {formatTokens(log.inputTokens, log.outputTokens)}
                         </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
+                        <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap text-xs sm:text-sm text-gray-700 font-mono">
                           {formatCost(log.costUsd)}
                         </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
+                        <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700">
                           {formatDuration(log.durationMs)}
                         </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                        <td className="hidden lg:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-500">
                           {formatTimestamp(log.startTime)}
                         </td>
                       </tr>
@@ -329,32 +329,32 @@ const LlmLogsPage: React.FC = () => {
         )}
       </div>
 
-      {/* Anchored Footer */}
+      {/* Anchored Footer - compact on mobile */}
       {logs.length > 0 && totalPages > 1 && pagination && (
         <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200">
-          <div className="flex items-center justify-between px-6 py-4">
-            <span className="text-sm text-gray-600">
-              Showing {(currentPage - 1) * DEFAULT_PAGE_SIZE + 1}-{Math.min(currentPage * DEFAULT_PAGE_SIZE, pagination.total)} of {pagination.total} entries
+          <div className="flex items-center justify-between px-4 sm:px-6 py-2 sm:py-4 gap-2">
+            <span className="text-xs sm:text-sm text-gray-600">
+              <span className="hidden sm:inline">Showing </span>{(currentPage - 1) * DEFAULT_PAGE_SIZE + 1}-{Math.min(currentPage * DEFAULT_PAGE_SIZE, pagination.total)}<span className="hidden sm:inline"> of {pagination.total} entries</span>
             </span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 sm:gap-2">
               <button
                 onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
                 disabled={!pagination.hasPreviousPage || loading}
-                className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                <ChevronLeft size={16} />
-                Previous
+                <ChevronLeft size={14} className="sm:w-4 sm:h-4" />
+                <span className="hidden sm:inline">Previous</span>
               </button>
-              <span className="text-sm text-gray-600 px-2">
-                Page {currentPage} of {totalPages}
+              <span className="text-xs sm:text-sm text-gray-600 px-1">
+                {currentPage}/{totalPages}
               </span>
               <button
                 onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
                 disabled={!pagination.hasNextPage || loading}
-                className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                Next
-                <ChevronRight size={16} />
+                <span className="hidden sm:inline">Next</span>
+                <ChevronRight size={14} className="sm:w-4 sm:h-4" />
               </button>
             </div>
           </div>

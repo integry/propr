@@ -73,17 +73,17 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   generationTrace,
 }) => {
   return (
-    <div className="w-[35%] h-full flex flex-col bg-white border-l border-gray-300">
+    <div className="w-full md:w-[35%] h-auto md:h-full flex flex-col bg-white border-t md:border-t-0 md:border-l border-gray-300">
       {/* Context Level Slider - Toolbar aligns with left pane header */}
-      <div className="p-5 border-b border-gray-300">
+      <div className="p-3 md:p-5 border-b border-gray-300">
         <ContextLevelSlider
           value={contextLevel}
           onChange={onContextLevelChange}
         />
       </div>
 
-      {/* Smart file selection - scrollable area */}
-      <div className="flex-1 overflow-auto flex flex-col min-h-0">
+      {/* Smart file selection - scrollable area, hidden on mobile when empty to save space */}
+      <div className={`flex-1 overflow-auto flex flex-col min-h-0 ${!smartSelection || smartSelection.length === 0 ? 'hidden md:flex' : ''}`}>
         {smartSelection && smartSelection.length > 0 ? (
           <SmartFileSelection
             smartSelection={smartSelection}
@@ -91,10 +91,10 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
             costEstimate={stats?.costEstimate}
           />
         ) : (
-          <div className="p-5 space-y-4">
+          <div className="p-3 md:p-5 space-y-4">
             <p className="text-sm text-gray-400 italic">
               {isNewMode
-                ? 'Context preview will be available after clicking Generate'
+                ? 'Context preview will be available after entering a prompt'
                 : preview.data
                   ? 'No files found in repository'
                   : 'Files will be selected after context analysis'}
@@ -105,7 +105,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
       </div>
 
       {/* Bottom section - Context repositories and Cost preview */}
-      <div className="flex-shrink-0 border-t border-gray-300 p-5 space-y-4 bg-gray-50">
+      <div className="flex-shrink-0 border-t border-gray-300 p-3 md:p-5 space-y-3 md:space-y-4 bg-gray-50">
         {/* Context Repositories Section */}
         <ContextRepositoriesSection
           repositories={contextRepositories}

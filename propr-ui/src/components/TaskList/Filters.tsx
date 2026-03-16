@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Filter, X } from 'lucide-react';
+import { Filter, Search, X } from 'lucide-react';
 
 interface FiltersProps {
   hideFilters?: boolean;
@@ -32,29 +32,25 @@ export const Filters: React.FC<FiltersProps> = ({
     return null;
   }
 
-  const handleSearchClear = () => {
-    setSearchQuery('');
-  };
-
   return (
-    <div className="flex justify-between items-center flex-wrap gap-4">
-      {!hideFilters && <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>}
-      <div className="flex items-center gap-4">
+    <div className="flex items-center justify-between gap-2 sm:gap-4">
+      {!hideFilters && <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Tasks</h1>}
+      <div className="flex items-center gap-2 sm:gap-4 flex-1 justify-end">
         {!hideFilters && (
           <>
-            {/* Search input with icon and clear button */}
-            <div className="relative">
+            {/* Search input - hidden on mobile, shown on desktop */}
+            <div className="relative hidden sm:block">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
-                placeholder="Search tasks..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search tasks..."
                 className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               />
               {searchQuery && (
                 <button
-                  onClick={handleSearchClear}
+                  onClick={() => setSearchQuery('')}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
                   title="Clear search"
                 >
@@ -62,14 +58,13 @@ export const Filters: React.FC<FiltersProps> = ({
                 </button>
               )}
             </div>
-
-            {/* Status filter with icon */}
+            {/* Filters row - inline on all screen sizes */}
             <div className="flex items-center gap-2">
-              <Filter size={16} className="text-gray-500" />
+              <Filter size={16} className="text-gray-500 hidden sm:block" />
               <select
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               >
                 <option value="all">All Tasks</option>
                 <option value="active">Active</option>
@@ -77,27 +72,27 @@ export const Filters: React.FC<FiltersProps> = ({
                 <option value="failed">Failed</option>
                 <option value="waiting">Waiting</option>
               </select>
-            </div>
 
-            {/* Repository filter - only show if multiple repos */}
-            {availableRepos.length > 2 && (
-              <select
-                value={repoFilter}
-                onChange={(e) => setRepoFilter(e.target.value)}
-                disabled={reposLoading}
-                className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 disabled:opacity-50"
-              >
-                {reposLoading ? (
-                  <option value="all">Loading repos...</option>
-                ) : (
-                  availableRepos.map(repo => (
-                    <option key={repo} value={repo}>
-                      {repo === 'all' ? 'All Repositories' : repo}
-                    </option>
-                  ))
-                )}
-              </select>
-            )}
+              {/* Repository filter - only show if multiple repos */}
+              {availableRepos.length > 2 && (
+                <select
+                  value={repoFilter}
+                  onChange={(e) => setRepoFilter(e.target.value)}
+                  disabled={reposLoading}
+                  className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 disabled:opacity-50 max-w-[120px] sm:max-w-none truncate"
+                >
+                  {reposLoading ? (
+                    <option value="all">Loading...</option>
+                  ) : (
+                    availableRepos.map(repo => (
+                      <option key={repo} value={repo}>
+                        {repo === 'all' ? 'All Repos' : repo}
+                      </option>
+                    ))
+                  )}
+                </select>
+              )}
+            </div>
           </>
         )}
         {showViewAll && (

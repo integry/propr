@@ -175,75 +175,80 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
       )}
       {/* Unified Execution Options Toolbar */}
       {pendingCount > 0 && (
-        <div className="flex flex-col gap-4 py-3 border-y border-gray-200 bg-slate-50 px-4 -mx-4 mb-4">
+        <div className="flex flex-col gap-3 sm:gap-4 py-3 border-y border-gray-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-4">
           {/* Agent Assignment Row */}
-          <div className="flex items-center gap-3">
-            <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">
               Agent
             </span>
-            <AgentModelSelector
-              agents={agents}
-              selectedAgent={globalAgent}
-              selectedModel={globalModel}
-              onAgentChange={handleGlobalAgentChange}
-              onModelChange={handleGlobalModelChange}
-              disabled={applyingGlobal}
-              compact
-              isMulti={globalIsMulti}
-              onMultiToggle={handleGlobalMultiToggle}
-              selectedModels={globalSelectedModels}
-              onMultiModelChange={handleGlobalMultiModelChange}
-              onMultiConfirm={handleApplyToAll}
-              autoOpenMultiDropdown
-            />
-            {!globalIsMulti && (
-              <button
-                onClick={handleApplyToAll}
-                disabled={!globalAgent || applyingGlobal}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {applyingGlobal ? (
-                  <>
-                    <Loader2 size={14} className="animate-spin" />
-                    Applying...
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle size={14} />
-                    Apply to All
-                  </>
-                )}
-              </button>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <AgentModelSelector
+                agents={agents}
+                selectedAgent={globalAgent}
+                selectedModel={globalModel}
+                onAgentChange={handleGlobalAgentChange}
+                onModelChange={handleGlobalModelChange}
+                disabled={applyingGlobal}
+                compact
+                isMulti={globalIsMulti}
+                onMultiToggle={handleGlobalMultiToggle}
+                selectedModels={globalSelectedModels}
+                onMultiModelChange={handleGlobalMultiModelChange}
+                onMultiConfirm={handleApplyToAll}
+                autoOpenMultiDropdown
+              />
+              {!globalIsMulti && (
+                <button
+                  onClick={handleApplyToAll}
+                  disabled={!globalAgent || applyingGlobal}
+                  className="inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md bg-blue-600 text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                >
+                  {applyingGlobal ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" />
+                      <span className="hidden sm:inline">Applying...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle size={14} />
+                      <span className="hidden sm:inline">Apply to All</span>
+                      <span className="sm:hidden">Apply</span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
           </div>
 
           {/* PR Options Row */}
-          <div className="flex items-center gap-6">
-            <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-6">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">
               PR Options
             </span>
-            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={autoMerge || false}
-                onChange={(e) => onAutoMergeChange?.(e.target.checked)}
-                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
-              />
-              <ArrowDownToLine size={14} className="text-slate-500" />
-              <span>Auto-merge if checks pass</span>
-            </label>
-            {tasks.length >= 2 && (
-              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <div className="flex flex-wrap items-center gap-3 sm:gap-6">
+              <label className="flex items-center gap-2 text-xs sm:text-sm text-gray-700 cursor-pointer select-none">
                 <input
                   type="checkbox"
-                  checked={useEpic || false}
-                  onChange={(e) => onUseEpicChange?.(e.target.checked)}
+                  checked={autoMerge || false}
+                  onChange={(e) => onAutoMergeChange?.(e.target.checked)}
                   className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
                 />
-                <Layers size={14} className="text-slate-500" />
-                <span>Epic PR</span>
+                <ArrowDownToLine size={14} className="text-slate-500 hidden sm:block" />
+                <span>Auto-merge <span className="hidden sm:inline">if checks pass</span></span>
               </label>
-            )}
+              {tasks.length >= 2 && (
+                <label className="flex items-center gap-2 text-xs sm:text-sm text-gray-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={useEpic || false}
+                    onChange={(e) => onUseEpicChange?.(e.target.checked)}
+                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+                  />
+                  <Layers size={14} className="text-slate-500 hidden sm:block" />
+                  <span>Epic PR</span>
+                </label>
+              )}
+            </div>
           </div>
         </div>
       )}

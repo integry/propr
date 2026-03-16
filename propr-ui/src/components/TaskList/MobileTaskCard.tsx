@@ -106,9 +106,9 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+    <div className="border-b border-gray-200">
       {/* Card Header with Repository */}
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-b border-gray-100">
+      <div className="flex items-center justify-between py-2">
         <span className="text-xs font-medium text-gray-600">
           {group.repoOwner}/{group.repoName}
         </span>
@@ -118,7 +118,7 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({
       </div>
 
       {/* Main Task */}
-      <div className="px-4">
+      <div>
         <MobileTaskItemWithGroup
           task={parentTask}
           group={group}
@@ -144,7 +144,7 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({
         {hiddenCount > 0 && (
           <button
             onClick={(e) => onToggleGroup(group.key, e)}
-            className="w-full py-2 text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center justify-center gap-1 border-t border-gray-100"
+            className="w-full py-2 text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center justify-center gap-1"
           >
             <ChevronDown size={14} />
             Show {hiddenCount} more
@@ -154,7 +154,7 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({
         {shouldCollapse && isExpanded && (
           <button
             onClick={(e) => onToggleGroup(group.key, e)}
-            className="w-full py-2 text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center justify-center gap-1 border-t border-gray-100"
+            className="w-full py-2 text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center justify-center gap-1"
           >
             <ChevronUp size={14} />
             Show less

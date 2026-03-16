@@ -185,6 +185,10 @@ interface ContextStripProps {
   commitInfo?: { shortHash: string; url: string };
   duration?: number | null;
   tokenUsage?: TokenUsage;
+  /** Mobile only: Show only the repository name link */
+  mobileRepoOnly?: boolean;
+  /** Mobile only: Show only the metadata (PR, issue, model, etc.) without repo name */
+  mobileMetadataOnly?: boolean;
 }
 
 const ContextStrip: React.FC<ContextStripProps> = ({
@@ -194,7 +198,53 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   commitInfo,
   duration,
   tokenUsage,
+  mobileRepoOnly,
+  mobileMetadataOnly,
 }) => {
+  // Mobile: Show only repo name
+  if (mobileRepoOnly) {
+    return (
+      <div className="flex items-center text-sm text-gray-600 min-w-0">
+        {taskInfo && (
+          <a
+            href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-gray-700 hover:text-blue-600 transition-colors"
+          >
+            <GitHubIcon size={12} className="text-gray-500" />
+            <span className="font-medium truncate">{taskInfo.repoOwner}/{taskInfo.repoName}</span>
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  // Mobile: Show only metadata without repo name
+  if (mobileMetadataOnly) {
+    return (
+      <div className="flex items-center flex-wrap gap-1 text-sm text-gray-600">
+        {prInfo && <PRInfoChip prInfo={prInfo} />}
+        {taskInfo && <IssuePRChip taskInfo={taskInfo} />}
+        {taskInfo && <LinkedIssueChip taskInfo={taskInfo} />}
+        <ModelChip modelName={modelName} duration={duration} />
+        {commitInfo && (
+          <>
+            <Dot />
+            <CommitInfoChip commitInfo={commitInfo} />
+          </>
+        )}
+        {tokenUsage && (
+          <>
+            <Dot />
+            <TokenUsageChip tokenUsage={tokenUsage} />
+          </>
+        )}
+      </div>
+    );
+  }
+
+  // Default: Full layout
   return (
     <div className="flex items-center flex-wrap gap-y-1 text-sm text-gray-600 flex-1 min-w-0">
       {/* Left: Repo/Branch - Bold repo name */}

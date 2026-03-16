@@ -192,15 +192,21 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       className="h-full bg-white overflow-hidden flex flex-col"
     >
       {/* Pro Studio Header - Anchored with gray background */}
-      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-4">
-        <div className="flex items-center gap-4 min-w-0 flex-1">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-2 sm:gap-4">
+        <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
           {/* Plan Name - responsive width based on available space */}
-          <h1 className="text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
+          <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
             {planName}
           </h1>
-          <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
-          {/* Repository and Branch Breadcrumb */}
-          <div className="flex items-center gap-2 text-sm flex-shrink-0">
+          {draft.status === 'merged' && (
+            <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1 flex-shrink-0">
+              <GitMerge size={12} />
+              <span className="hidden sm:inline">Merged</span>
+            </span>
+          )}
+          {/* Repository and Branch Breadcrumb - hidden on mobile */}
+          <div className="hidden md:flex items-center gap-2 text-sm flex-shrink-0">
+            <div className="h-4 w-px bg-gray-300" />
             <Github size={16} className="text-gray-500" />
             <span className="font-medium text-gray-900 truncate max-w-[200px]" title={repository}>{repository}</span>
             <span className="text-gray-400">/</span>
@@ -216,15 +222,6 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
               </div>
             </>
           )}
-          {draft.status === 'merged' && (
-            <>
-              <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
-              <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1">
-                <GitMerge size={12} />
-                Merged
-              </span>
-            </>
-          )}
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -232,7 +229,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
           <button
             onClick={() => setShowReviseDialog(true)}
             disabled={isRevising}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             title="Revise Plan"
           >
             {isRevising ? (
@@ -246,7 +243,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
           <button
             onClick={() => setShowDeleteDialog(true)}
             disabled={isDeleting}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             title="Delete Plan"
           >
             {isDeleting ? (
@@ -257,15 +254,15 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
           </button>
           {repoUrl && (
             <>
-              <div className="h-6 w-px bg-gray-300 mx-1" />
+              <div className="h-6 w-px bg-gray-300 mx-1 hidden sm:block" />
               <a
                 href={repoUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm"
+                className="flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm"
               >
                 <Github size={16} />
-                View Issues on GitHub
+                <span className="hidden sm:inline">View Issues on GitHub</span>
                 <ExternalLink size={14} />
               </a>
             </>
@@ -288,37 +285,31 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       </div>
 
       {/* Pro Studio Footer - Anchored with status summary and refresh */}
-      <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
-        <div className="flex items-center gap-1 text-sm text-gray-600">
-          <span className="font-medium">{footerStats.total} {footerStats.total === 1 ? 'Issue' : 'Issues'} Total</span>
+      <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs sm:text-sm text-gray-600">
+          <span className="font-medium">{footerStats.total} {footerStats.total === 1 ? 'Issue' : 'Issues'}</span>
           {footerStats.merged > 0 && (
             <>
-              <span className="text-gray-400 mx-1">•</span>
+              <span className="text-gray-400">•</span>
               <span className="text-purple-600">{footerStats.merged} Merged</span>
-            </>
-          )}
-          {footerStats.underReview > 0 && (
-            <>
-              <span className="text-gray-400 mx-1">•</span>
-              <span className="text-blue-600">{footerStats.underReview} Review</span>
             </>
           )}
           {footerStats.processing > 0 && (
             <>
-              <span className="text-gray-400 mx-1">•</span>
+              <span className="text-gray-400">•</span>
               <span className="text-amber-600">{footerStats.processing} Processing</span>
             </>
           )}
           {footerStats.pending > 0 && (
             <>
-              <span className="text-gray-400 mx-1">•</span>
+              <span className="text-gray-400">•</span>
               <span className="text-gray-500">{footerStats.pending} Pending</span>
             </>
           )}
         </div>
         <button
           onClick={handleRefresh}
-          className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors"
+          className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors flex-shrink-0"
           title="Refresh issues"
         >
           <RefreshCw size={16} />

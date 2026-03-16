@@ -117,9 +117,9 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
   return (
     <div className="h-full flex flex-col">
       {/* Main Content - Full Height Vertical Split */}
-      <div className="flex-1 flex min-h-0">
+      <div className="flex-1 flex flex-col lg:flex-row min-h-0">
         {/* Left Panel - Prompt Area (60%) */}
-        <div className="w-[60%] h-full flex flex-col border-r border-gray-200">
+        <div className="w-full lg:w-[60%] h-full flex flex-col border-r border-gray-200">
           <div className="flex-1 overflow-auto p-6">
             {/* Hero Prompt Area - full height */}
             <HeroPromptArea
@@ -148,7 +148,7 @@ export const SetupWizardContent: React.FC<SetupWizardContentProps> = ({
         </div>
 
         {/* Right Panel - Configuration (40%) */}
-        <div className="w-[40%] h-full flex flex-col bg-gray-50">
+        <div className="w-full lg:w-[40%] h-full flex flex-col bg-gray-50">
           <div className="flex-1 overflow-auto p-5 space-y-4">
             {/* Settings container */}
             <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-5">

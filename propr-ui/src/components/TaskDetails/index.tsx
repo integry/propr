@@ -185,38 +185,76 @@ const TaskDetails: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col bg-white">
-      {/* Sticky Header Shell - Never scrolls */}
+      {/* Sticky Header Shell - Never scrolls, more compact on mobile */}
       <header className="flex-shrink-0 sticky top-0 z-20 bg-white">
         {/* Task Header Row - Title and Status */}
-        <div className="px-4 sm:px-6 py-3 border-b border-slate-100">
+        <div className="px-3 sm:px-6 py-2 sm:py-3 border-b border-slate-100">
           <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
         </div>
 
-        {/* Consolidated Context Bar - Single horizontal row with bg-slate-50 */}
-        <div className="px-4 sm:px-6 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-4">
-          {/* Left + Middle: Repo/Branch and Metadata */}
-          <ContextStrip
-            taskInfo={taskData.taskInfo}
-            modelName={derivedData.modelName}
-            prInfo={derivedData.prInfo}
-            commitInfo={commitInfo}
-            duration={totalDuration}
-            tokenUsage={tokenUsage}
-          />
+        {/* Consolidated Context Bar - Two rows on mobile, single row on desktop */}
+        <div className="px-3 sm:px-6 py-1.5 sm:py-2 bg-slate-50 border-b border-slate-200">
+          {/* Mobile: Two-row layout */}
+          <div className="flex flex-col gap-2 sm:hidden">
+            {/* Row 1: Repo name + Action buttons */}
+            <div className="flex items-center justify-between gap-2">
+              <ContextStrip
+                taskInfo={taskData.taskInfo}
+                modelName={derivedData.modelName}
+                prInfo={derivedData.prInfo}
+                commitInfo={commitInfo}
+                duration={totalDuration}
+                tokenUsage={tokenUsage}
+                mobileRepoOnly={true}
+              />
+              <ActionBar
+                currentStatus={derivedData.currentStatus}
+                historyItemWithPaths={derivedData.historyItemWithPaths}
+                stoppingExecution={taskData.stoppingExecution}
+                stopFailed={taskData.stopFailed}
+                deletingTask={taskData.deletingTask}
+                onStopExecution={taskData.handleStopExecution}
+                onViewPrompt={promptData.fetchPrompt}
+                onViewLogs={logFilesData.fetchLogFilesData}
+                onDeleteTask={handleDeleteTask}
+                onFollowUp={handleOpenFollowup}
+              />
+            </div>
+            {/* Row 2: Metadata (PR ID, task ID, model, etc.) */}
+            <ContextStrip
+              taskInfo={taskData.taskInfo}
+              modelName={derivedData.modelName}
+              prInfo={derivedData.prInfo}
+              commitInfo={commitInfo}
+              duration={totalDuration}
+              tokenUsage={tokenUsage}
+              mobileMetadataOnly={true}
+            />
+          </div>
 
-          {/* Right: Action Buttons (Ghost style) */}
-          <ActionBar
-            currentStatus={derivedData.currentStatus}
-            historyItemWithPaths={derivedData.historyItemWithPaths}
-            stoppingExecution={taskData.stoppingExecution}
-            stopFailed={taskData.stopFailed}
-            deletingTask={taskData.deletingTask}
-            onStopExecution={taskData.handleStopExecution}
-            onViewPrompt={promptData.fetchPrompt}
-            onViewLogs={logFilesData.fetchLogFilesData}
-            onDeleteTask={handleDeleteTask}
-            onFollowUp={handleOpenFollowup}
-          />
+          {/* Desktop: Single row layout */}
+          <div className="hidden sm:flex items-center justify-between gap-4">
+            <ContextStrip
+              taskInfo={taskData.taskInfo}
+              modelName={derivedData.modelName}
+              prInfo={derivedData.prInfo}
+              commitInfo={commitInfo}
+              duration={totalDuration}
+              tokenUsage={tokenUsage}
+            />
+            <ActionBar
+              currentStatus={derivedData.currentStatus}
+              historyItemWithPaths={derivedData.historyItemWithPaths}
+              stoppingExecution={taskData.stoppingExecution}
+              stopFailed={taskData.stopFailed}
+              deletingTask={taskData.deletingTask}
+              onStopExecution={taskData.handleStopExecution}
+              onViewPrompt={promptData.fetchPrompt}
+              onViewLogs={logFilesData.fetchLogFilesData}
+              onDeleteTask={handleDeleteTask}
+              onFollowUp={handleOpenFollowup}
+            />
+          </div>
         </div>
 
         {/* Progress Bar */}
@@ -224,16 +262,17 @@ const TaskDetails: React.FC = () => {
       </header>
 
       {/* Main Content Area - Anchored Shell with 30/70 Split */}
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+      {/* On mobile: single column with vertical scroll; On desktop: side-by-side with independent scrolls */}
+      <div className="flex-1 flex flex-col overflow-y-auto lg:overflow-hidden min-w-0">
         {/* Horizontal Header Row - TIMELINE and IMPLEMENTATION aligned on same baseline */}
         <div className="flex-shrink-0 flex border-b border-slate-200">
           {/* Left Pane Header (30%) */}
           <div className="w-full lg:w-[30%] flex-shrink-0 px-4 flex items-center">
-            <div className="py-2.5 text-xs font-bold uppercase tracking-widest text-slate-500">
+            <div className="py-2 lg:py-2.5 text-xs font-bold uppercase tracking-widest text-slate-500">
               TIMELINE
             </div>
           </div>
-          {/* Right Pane Header (70%) - IMPLEMENTATION label aligned with TIMELINE */}
+          {/* Right Pane Header (70%) - IMPLEMENTATION label aligned with TIMELINE - hidden on mobile since it stacks vertically */}
           <div className="hidden lg:flex flex-1 px-4 items-center gap-3">
             <div className="py-2.5 text-xs font-bold uppercase tracking-widest text-slate-500">
               IMPLEMENTATION
@@ -245,10 +284,12 @@ const TaskDetails: React.FC = () => {
         </div>
 
         {/* Content Area Below the Horizon Line */}
-        <div className="flex-1 flex overflow-hidden min-w-0">
+        {/* On mobile: stacked vertically in the scrolling container; On desktop: side-by-side with own scroll */}
+        <div className="flex-1 flex flex-col lg:flex-row lg:overflow-hidden min-w-0">
           {/* LEFT PANE (30%) - The Plan */}
-          <div className="w-full lg:w-[30%] flex-shrink-0 overflow-y-auto scrollbar-stealth border-r border-gray-200">
-            <div className="p-4 space-y-2">
+          {/* On mobile: no overflow, participates in parent scroll; On desktop: independent scroll */}
+          <div className="w-full lg:w-[30%] flex-shrink-0 lg:overflow-y-auto scrollbar-stealth border-b lg:border-b-0 lg:border-r border-gray-200">
+            <div className="p-3 lg:p-4 space-y-2">
               {/* Compact Status Timeline */}
               <TaskStatusTable history={taskData.history} compact={true} />
 
@@ -273,12 +314,23 @@ const TaskDetails: React.FC = () => {
           <div className="hidden lg:block w-px bg-gray-200 flex-shrink-0" />
 
           {/* RIGHT PANE (70%) - The Execution */}
-          <div className="hidden lg:flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
+          {/* On mobile: IMPLEMENTATION header + content inline; On desktop: independent scroll */}
+          <div className="flex flex-1 flex-col min-h-0 min-w-0 lg:overflow-hidden">
+            {/* Mobile IMPLEMENTATION header - shown only on mobile */}
+            <div className="lg:hidden flex-shrink-0 px-4 py-2 border-b border-slate-200 flex items-center gap-3">
+              <div className="text-xs font-bold uppercase tracking-widest text-slate-500">
+                IMPLEMENTATION
+              </div>
+              {parsedAnalysis?.implementation_critique_score !== undefined && (
+                <GeometricScorePill score={parsedAnalysis.implementation_critique_score} />
+              )}
+            </div>
             {/* Scrollable Content Area - Implementation Analysis + Thinking Log in same scroll flow */}
             {/* Hidden (not unmounted) when Execution Log is expanded to preserve state */}
-            <div className={`flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'hidden'}`}>
+            <div className={`flex-1 flex flex-col min-h-0 min-w-0 lg:overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'hidden'}`}>
               {/* Single scrollable area for Implementation Analysis + Thinking Log */}
-              <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-stealth min-h-0 min-w-0">
+              {/* On mobile: no overflow (parent scrolls); On desktop: independent scroll */}
+              <div className="flex-1 lg:overflow-y-auto overflow-x-hidden scrollbar-stealth min-h-0 min-w-0">
                 {/* Implementation Analysis - now scrolls with Thinking Log */}
                 {(taskData.analysis || taskData.analysisLoading || thinkingLog.extractedSummary) && (
                   <ResultOverview
@@ -292,7 +344,7 @@ const TaskDetails: React.FC = () => {
                 )}
 
                 {/* Implementation Log - Terminal Style - in same scroll flow */}
-                <div className="p-4 min-w-0 overflow-hidden">
+                <div className="p-3 lg:p-4 min-w-0 overflow-hidden">
                   <ThinkingLog
                     events={thinkingLog.thinkingLogWithTimestamps}
                     todos={taskData.liveDetails.todos}
@@ -302,22 +354,24 @@ const TaskDetails: React.FC = () => {
               </div>
             </div>
 
-            {/* VS Code Terminal Footer - Execution Event Log - Fills entire height when expanded */}
-            <div
-              ref={executionLogRef}
-              className={`transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}`}
-            >
-              <ExecutionEventLog
-                events={taskData.liveDetails.events}
-                collapsed={thinkingLog.eventsCollapsed}
-                onToggleCollapse={thinkingLog.toggleEventsCollapse}
-                lastThought={thinkingLog.lastThought}
-                isTaskActive={derivedData.isTaskActive}
-                taskInfo={taskData.taskInfo}
-              />
-            </div>
           </div>
         </div>
+      </div>
+
+      {/* VS Code Terminal Footer - Execution Event Log - Fixed at bottom */}
+      {/* On mobile, expanded log takes full height; on desktop, max 60vh */}
+      <div
+        ref={executionLogRef}
+        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'flex-1 flex flex-col min-h-0 max-h-[100vh] lg:max-h-[60vh]'}`}
+      >
+        <ExecutionEventLog
+          events={taskData.liveDetails.events}
+          collapsed={thinkingLog.eventsCollapsed}
+          onToggleCollapse={thinkingLog.toggleEventsCollapse}
+          lastThought={thinkingLog.lastThought}
+          isTaskActive={derivedData.isTaskActive}
+          taskInfo={taskData.taskInfo}
+        />
       </div>
 
       {/* Modals */}

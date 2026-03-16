@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import TaskCard from './TaskCard';
 import TaskTimeline from './TaskTimeline';
 import { PlanTask } from '../../api/proprApi';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 interface TaskCardListProps {
   tasks: PlanTask[];
@@ -21,6 +22,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
   onDeleteTask,
   onReorderTasks,
 }) => {
+  const isMobile = useIsMobile();
   const [activeTaskIndex, setActiveTaskIndex] = useState<number>(0);
 
   // Handle scroll-based timeline highlighting
@@ -73,8 +75,8 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
     );
   }
 
-  // Only show timeline when there are multiple tasks
-  const showTimeline = tasks.length > 1;
+  // Only show timeline when there are multiple tasks and not on mobile
+  const showTimeline = tasks.length > 1 && !isMobile;
 
   return (
     <div className="flex h-full">
@@ -93,7 +95,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
 
       {/* Main Task List */}
       <div
-        className={`task-list-scroll flex-1 p-4 overflow-y-auto [scrollbar-gutter:stable] ${!showTimeline ? 'px-6' : ''}`}
+        className={`task-list-scroll flex-1 overflow-y-auto [scrollbar-gutter:stable] ${isMobile ? 'p-3' : 'p-4'} ${!showTimeline && !isMobile ? 'px-6' : ''}`}
         data-task-list
         onScroll={handleScroll}
         style={{

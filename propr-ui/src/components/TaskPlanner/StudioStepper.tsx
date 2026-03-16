@@ -11,12 +11,13 @@ interface Step {
   id: StudioStage;
   number: number;
   label: string;
+  shortLabel: string;
 }
 
 const STEPS: Step[] = [
-  { id: 'draft', number: 1, label: 'Define & Context' },
-  { id: 'review', number: 2, label: 'Review Plan' },
-  { id: 'execute', number: 3, label: 'Execution' },
+  { id: 'draft', number: 1, label: 'Define & Context', shortLabel: 'Define' },
+  { id: 'review', number: 2, label: 'Review Plan', shortLabel: 'Review' },
+  { id: 'execute', number: 3, label: 'Execution', shortLabel: 'Execute' },
 ];
 
 const getStepState = (
@@ -48,7 +49,7 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                 {/* Step circle */}
                 <div
                   className={`
-                    flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium
+                    flex h-6 w-6 sm:h-8 sm:w-8 items-center justify-center rounded-full text-xs sm:text-sm font-medium
                     transition-all duration-200 ease-in-out
                     ${
                       state === 'completed'
@@ -66,10 +67,10 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                   )}
                 </div>
 
-                {/* Step label */}
+                {/* Step label - short on mobile, full on desktop */}
                 <span
                   className={`
-                    ml-2 text-sm whitespace-nowrap transition-all duration-200 ease-in-out
+                    ml-2 text-sm whitespace-nowrap transition-all duration-200 ease-in-out hidden sm:inline
                     ${
                       state === 'completed'
                         ? 'font-medium text-green-600'
@@ -81,13 +82,27 @@ const StudioStepper: React.FC<StudioStepperProps> = ({ currentStage }) => {
                 >
                   {step.label}
                 </span>
+                <span
+                  className={`
+                    ml-2 text-xs whitespace-nowrap transition-all duration-200 ease-in-out sm:hidden
+                    ${
+                      state === 'completed'
+                        ? 'font-medium text-green-600'
+                        : state === 'active'
+                        ? 'font-bold text-primary-600'
+                        : 'font-medium text-gray-500'
+                    }
+                  `}
+                >
+                  {step.shortLabel}
+                </span>
               </div>
 
               {/* Connector line */}
               {!isLast && (
                 <div
                   className={`
-                    mx-4 h-0.5 flex-1 min-w-[40px] transition-all duration-200 ease-in-out
+                    mx-2 sm:mx-4 h-0.5 flex-1 min-w-[20px] sm:min-w-[40px] transition-all duration-200 ease-in-out
                     ${
                       state === 'completed'
                         ? 'bg-primary-600'

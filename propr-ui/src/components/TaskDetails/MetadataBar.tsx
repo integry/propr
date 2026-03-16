@@ -368,7 +368,7 @@ const MetadataBar: React.FC<MetadataBarProps> = ({
       </div>
 
       {/* Right: Actions */}
-      <div className="flex items-center gap-2 self-end sm:self-auto">
+      <div className="flex items-center gap-2 self-end sm:self-auto flex-wrap justify-end">
         <CancelledBadge isCancelled={isCancelled} />
         <StopExecutionButton isActive={isActive} stoppingExecution={stoppingExecution} onStopExecution={onStopExecution} />
 

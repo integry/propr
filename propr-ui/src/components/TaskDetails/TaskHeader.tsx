@@ -15,70 +15,78 @@ const getSubtitle = (taskInfo: TaskInfo): string => {
   return `Initial implementation for Issue #${taskInfo.number}`;
 };
 
-const getStatusInfo = (status: string): { icon: React.ReactNode; label: string; color: string } => {
+const getStatusInfo = (status: string): { icon: React.ReactNode; label: string; color: string; bgColor: string } => {
   const normalizedStatus = status?.toUpperCase() || '';
 
   if (normalizedStatus === 'COMPLETED') {
     return {
-      icon: <CheckCircle2 className="h-7 w-7 text-green-500" />,
+      icon: <CheckCircle2 className="h-4 w-4 text-green-600" />,
       label: 'Completed',
-      color: 'text-green-600'
+      color: 'text-green-700',
+      bgColor: 'bg-green-50'
     };
   }
 
   if (normalizedStatus === 'FAILED') {
     return {
-      icon: <XCircle className="h-7 w-7 text-red-500" />,
+      icon: <XCircle className="h-4 w-4 text-red-600" />,
       label: 'Failed',
-      color: 'text-red-600'
+      color: 'text-red-700',
+      bgColor: 'bg-red-50'
     };
   }
 
   if (normalizedStatus === 'PENDING') {
     return {
-      icon: <Clock className="h-7 w-7 text-gray-400" />,
+      icon: <Clock className="h-4 w-4 text-gray-500" />,
       label: 'Queued',
-      color: 'text-gray-500'
+      color: 'text-gray-600',
+      bgColor: 'bg-gray-100'
     };
   }
 
   if (normalizedStatus === 'PROCESSING') {
     return {
-      icon: <Loader2 className="h-7 w-7 text-blue-500 animate-spin" />,
+      icon: <Loader2 className="h-4 w-4 text-blue-600 animate-spin" />,
       label: 'Analyzing',
-      color: 'text-blue-600'
+      color: 'text-blue-700',
+      bgColor: 'bg-blue-50'
     };
   }
 
   if (normalizedStatus === 'CLAUDE_EXECUTION' || normalizedStatus === 'CLAUDE_EXECUTION_STARTED') {
     return {
-      icon: <Play className="h-7 w-7 text-blue-500 animate-pulse" />,
+      icon: <Play className="h-4 w-4 text-blue-600 animate-pulse" />,
       label: 'Implementing',
-      color: 'text-blue-600'
+      color: 'text-blue-700',
+      bgColor: 'bg-blue-50'
     };
   }
 
   if (normalizedStatus === 'CLAUDE_EXECUTION_COMPLETED') {
     return {
-      icon: <CheckCircle2 className="h-7 w-7 text-green-500" />,
+      icon: <CheckCircle2 className="h-4 w-4 text-green-600" />,
       label: 'Implementation Done',
-      color: 'text-green-600'
+      color: 'text-green-700',
+      bgColor: 'bg-green-50'
     };
   }
 
   if (normalizedStatus === 'POST_PROCESSING') {
     return {
-      icon: <GitPullRequest className="h-7 w-7 text-purple-500 animate-pulse" />,
+      icon: <GitPullRequest className="h-4 w-4 text-purple-600 animate-pulse" />,
       label: 'Creating PR',
-      color: 'text-purple-600'
+      color: 'text-purple-700',
+      bgColor: 'bg-purple-50'
     };
   }
 
   // Default
   return {
-    icon: <Clock className="h-7 w-7 text-gray-400" />,
+    icon: <Clock className="h-4 w-4 text-gray-500" />,
     label: status || 'Unknown',
-    color: 'text-gray-500'
+    color: 'text-gray-600',
+    bgColor: 'bg-gray-100'
   };
 };
 
@@ -86,25 +94,22 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
   const statusInfo = getStatusInfo(currentStatus);
 
   return (
-    <div>
-      <div className="flex items-start gap-3">
-        <div className="flex-shrink-0 mt-0.5">
+    <div className="flex flex-col gap-1.5">
+      {/* Status badge - inline pill */}
+      <div className="flex items-center">
+        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${statusInfo.bgColor} ${statusInfo.color}`}>
           {statusInfo.icon}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 mb-1">
-            <span className={`text-xs font-medium ${statusInfo.color}`}>
-              {statusInfo.label}
-            </span>
-          </div>
-          <h2 className="text-lg font-semibold text-gray-900 leading-tight break-words">
-            {taskInfo?.title || 'Loading...'}
-          </h2>
-          {taskInfo && (
-            <p className="text-sm text-gray-500 mt-1">{getSubtitle(taskInfo)}</p>
-          )}
-        </div>
+          {statusInfo.label}
+        </span>
       </div>
+      {/* Title */}
+      <h2 className="text-base sm:text-lg font-semibold text-gray-900 leading-tight break-words">
+        {taskInfo?.title || 'Loading...'}
+      </h2>
+      {/* Subtitle - smaller on mobile */}
+      {taskInfo && (
+        <p className="text-xs sm:text-sm text-gray-500">{getSubtitle(taskInfo)}</p>
+      )}
     </div>
   );
 };

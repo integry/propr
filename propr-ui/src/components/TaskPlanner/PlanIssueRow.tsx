@@ -108,13 +108,14 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
       animate={{ opacity: 1, y: 0 }}
       className={`border rounded-lg ${getContainerClassName(isMerged)} overflow-hidden`}
     >
-      {/* High-Density Collapsed Row - Status, Title, and Actions on one line */}
+      {/* High-Density Collapsed Row - Status, Title, and Actions */}
       <div
-        className={`px-4 py-2.5 ${hasExpandableContent ? 'cursor-pointer' : ''}`}
+        className={`px-3 sm:px-4 py-2.5 ${hasExpandableContent ? 'cursor-pointer' : ''}`}
         onClick={handleRowClick}
       >
-        <div className="flex items-center justify-between gap-3">
-          {/* Left: Issue Number + Status Badge + Title - All inline */}
+        {/* Mobile: Stack layout, Desktop: Single line */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
+          {/* Top row (mobile) / Left side (desktop): Issue Number + Status Badge + Title */}
           <div className="flex items-center gap-2 flex-1 min-w-0">
             <a
               href={issueUrl}
@@ -134,8 +135,8 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
             )}
           </div>
 
-          {/* Right: Metadata + Actions */}
-          <div className="flex items-center gap-3 flex-shrink-0">
+          {/* Bottom row (mobile) / Right side (desktop): Metadata + Actions */}
+          <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-3 flex-shrink-0">
             <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} selectedModels={selectedModels} />
             <RowActions
               isPending={isPending}

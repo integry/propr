@@ -65,9 +65,9 @@ export const ModelSelector: React.FC<{
   };
 
   return (
-    <div className="flex items-center gap-2 text-sm text-gray-600">
-      <span className="text-gray-500">Model:</span>
-      <div className="relative inline-flex items-center max-w-[200px]">
+    <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-gray-600 min-w-0 flex-1 sm:flex-initial">
+      <span className="text-gray-500 hidden sm:inline">Model:</span>
+      <div className="relative inline-flex items-center flex-1 sm:flex-initial max-w-[180px] sm:max-w-[200px]">
         {selectedAgent && (
           <ProviderLogo
             provider={selectedAgent}
@@ -77,17 +77,17 @@ export const ModelSelector: React.FC<{
         <select
           value={generationModel || ''}
           onChange={handleChange}
-          className={`appearance-none bg-white border border-gray-200 rounded-md text-sm py-1.5 pr-7 text-gray-700 hover:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate w-full ${selectedAgent ? 'pl-7' : 'pl-2.5'}`}
+          className={`appearance-none bg-white border border-gray-200 rounded-md text-xs sm:text-sm py-1 sm:py-1.5 pr-6 sm:pr-7 text-gray-700 hover:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer transition-colors truncate w-full ${selectedAgent ? 'pl-7' : 'pl-2'}`}
           title="Select AI model for plan generation"
         >
-          <option value="">{modelName ? `${modelName} (default)` : 'Default model'}</option>
+          <option value="">{modelName ? `${modelName}` : 'Default'}</option>
           {modelOptions.map(opt => (
             <option key={opt.value} value={opt.value}>
               {opt.label}
             </option>
           ))}
         </select>
-        <ChevronDown className="w-4 h-4 text-gray-400 absolute right-2 pointer-events-none" />
+        <ChevronDown className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-400 absolute right-1.5 sm:right-2 pointer-events-none" />
       </div>
     </div>
   );
