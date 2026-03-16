@@ -82,8 +82,8 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
         />
       </div>
 
-      {/* Smart file selection - scrollable area */}
-      <div className="flex-1 overflow-auto flex flex-col min-h-0">
+      {/* Smart file selection - scrollable area, hidden on mobile when empty to save space */}
+      <div className={`flex-1 overflow-auto flex flex-col min-h-0 ${!smartSelection || smartSelection.length === 0 ? 'hidden md:flex' : ''}`}>
         {smartSelection && smartSelection.length > 0 ? (
           <SmartFileSelection
             smartSelection={smartSelection}
@@ -92,7 +92,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
           />
         ) : (
           <div className="p-3 md:p-5 space-y-4">
-            <p className="hidden sm:block text-sm text-gray-400 italic">
+            <p className="text-sm text-gray-400 italic">
               {isNewMode
                 ? 'Context preview will be available after entering a prompt'
                 : preview.data

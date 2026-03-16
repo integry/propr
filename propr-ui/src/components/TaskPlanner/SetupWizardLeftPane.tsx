@@ -196,7 +196,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           onPaste={onPaste}
           disabled={isGenerating || isUploading}
           placeholder="Describe the feature, bug fix, or improvement you want to implement..."
-          className={`flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none min-h-[240px] md:min-h-[160px] ${
+          className={`flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none min-h-[320px] md:min-h-[160px] ${
             isGenerating || isUploading ? 'opacity-70 cursor-not-allowed bg-gray-50' : ''
           }`}
         />
