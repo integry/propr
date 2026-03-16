@@ -252,8 +252,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   // Main Tasks page: full-height flex layout with anchored header/footer
   return (
     <>
-      {/* Anchored Header */}
-      <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
+      {/* Anchored Header - compact on mobile */}
+      <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
         <Filters {...filterProps} />
       </div>
 

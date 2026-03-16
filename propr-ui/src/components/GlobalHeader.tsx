@@ -57,7 +57,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
   }, []);
 
   return (
-    <header className="bg-white border-b border-gray-200 h-16 flex items-stretch shadow-sm z-20 sticky top-0">
+    <header className="bg-white border-b border-gray-200 h-12 sm:h-16 flex items-stretch shadow-sm z-20 sticky top-0">
       {/* Left Section: Mobile Toggle + Machine Status (no border if empty) */}
       <div className="flex items-center lg:hidden px-4">
         {/* Mobile Toggle */}

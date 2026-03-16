@@ -96,8 +96,8 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
 
   return (
     <tr className="hover:bg-gray-50 group border-b border-slate-100">
-      {/* Repository column - fixed width for scanning axis alignment */}
-      <td className="px-6 py-3 w-[180px] min-w-[180px] max-w-[180px]">
+      {/* Repository column - responsive width: hidden on mobile, fixed width on larger screens */}
+      <td className="hidden sm:table-cell px-4 sm:px-6 py-3 sm:w-[180px] sm:min-w-[180px] sm:max-w-[180px]">
         <Link to={`/studio/${draft.draft_id}`} className="block">
           <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
             {draft.repository}
@@ -107,29 +107,35 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
       {/* Plan title and status cell */}
       <td className="px-4 py-3">
         <Link to={`/studio/${draft.draft_id}`} className="block">
+          {/* Repository badge - shown inline on mobile only */}
+          <div className="sm:hidden mb-1">
+            <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
+              {draft.repository}
+            </span>
+          </div>
           {/* Plan Title */}
           <div className="mb-1">
-            <span className="text-sm font-medium text-gray-900">
+            <span className="text-sm font-medium text-gray-900 break-words">
               {draft.name || draft.initial_prompt}
             </span>
           </div>
           {/* Bottom line: Unified Status Strip */}
-          <div className="flex items-center text-xs">
+          <div className="flex flex-wrap items-center text-xs gap-1">
             {renderStatusStrip(draft.issue_summary, effectiveStatus)}
           </div>
         </Link>
       </td>
-      {/* Actions cell - right-aligned with consistent width */}
-      <td className="px-6 py-3 whitespace-nowrap text-right text-sm font-medium w-[220px]">
-        <div className="flex items-center justify-end gap-3">
-          {/* Relative time - far right aligned */}
-          <span className="text-xs text-slate-400 min-w-[80px] text-right">
+      {/* Actions cell - responsive: smaller on mobile */}
+      <td className="px-3 sm:px-6 py-3 whitespace-nowrap text-right text-sm font-medium sm:w-[220px]">
+        <div className="flex items-center justify-end gap-2 sm:gap-3">
+          {/* Relative time - hidden on mobile, far right aligned on desktop */}
+          <span className="hidden sm:inline text-xs text-slate-400 min-w-[80px] text-right">
             {formatRelativeTime(draft.updated_at)}
           </span>
           {/* Ghost Delete button - icon only, gray, turns red on hover */}
           <button
             onClick={(e) => onDelete(draft.draft_id, e)}
-            className="inline-flex items-center justify-center w-8 h-8 text-gray-400 bg-transparent rounded-md hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+            className="inline-flex items-center justify-center w-8 h-8 text-gray-400 bg-transparent rounded-md hover:text-red-600 hover:bg-red-50 transition-colors sm:opacity-0 sm:group-hover:opacity-100"
             title="Delete"
           >
             <Trash2 size={16} />
@@ -138,15 +144,15 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
             <button
               onClick={(e) => onAbort(draft.draft_id, e)}
               disabled={abortingId === draft.draft_id}
-              className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-orange-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50"
+              className="inline-flex items-center px-2 sm:px-3 py-1.5 text-xs font-medium text-orange-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50"
             >
               {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
             </button>
           )}
-          {/* Primary action button - fixed width for alignment */}
+          {/* Primary action button - smaller on mobile */}
           <Link
             to={`/studio/${draft.draft_id}`}
-            className="inline-flex items-center justify-center w-[72px] px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
+            className="inline-flex items-center justify-center w-auto sm:w-[72px] px-2 sm:px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
           >
             {effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
           </Link>
@@ -178,29 +184,29 @@ export const PaginationControls: React.FC<PaginationControlsProps> = ({
   if (totalPages <= 1) return null;
 
   return (
-    <div className="flex items-center justify-between px-6 py-4">
-      <span className="text-sm text-gray-600">
+    <div className="flex flex-col sm:flex-row items-center justify-between px-4 sm:px-6 py-2 sm:py-4 gap-2 sm:gap-3">
+      <span className="text-xs sm:text-sm text-gray-600 text-center sm:text-left">
         Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, totalDrafts)} of {totalDrafts} plans
       </span>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-center gap-2">
         <button
           onClick={() => onPageChange(Math.max(1, currentPage - 1))}
           disabled={currentPage === 1 || loading}
-          className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="inline-flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          <ChevronLeft size={16} />
-          Previous
+          <ChevronLeft size={14} className="sm:w-4 sm:h-4" />
+          <span className="hidden sm:inline">Previous</span>
         </button>
-        <span className="text-sm text-gray-600 px-2">
+        <span className="text-xs sm:text-sm text-gray-600 px-1 sm:px-2">
           Page {currentPage} of {totalPages}
         </span>
         <button
           onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}
           disabled={!hasMore || loading}
-          className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="inline-flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          Next
-          <ChevronRight size={16} />
+          <span className="hidden sm:inline">Next</span>
+          <ChevronRight size={14} className="sm:w-4 sm:h-4" />
         </button>
       </div>
     </div>
@@ -223,10 +229,10 @@ export const PlansTable: React.FC<PlansTableProps> = ({
   return (
     <div className="flex flex-col h-full bg-white">
       <div className="flex-1 overflow-auto">
-        <table className="min-w-full">
+        <table className="w-full table-fixed sm:table-auto">
           <thead className="sr-only">
             <tr>
-              <th>Repository</th>
+              <th className="hidden sm:table-cell">Repository</th>
               <th>Plan</th>
               <th>Actions</th>
             </tr>
