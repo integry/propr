@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { GripVertical } from 'lucide-react';
+import { GripVertical, MessageSquare, Settings } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import {
   getAgents,
@@ -17,6 +17,9 @@ const AiAgentsPage: React.FC = () => {
   const [agentsSaving, setAgentsSaving] = useState<boolean>(false);
   const [agentsError, setAgentsError] = useState<string | null>(null);
   const [agentsSuccess, setAgentsSuccess] = useState<string | null>(null);
+
+  // Mobile tab state: 'config' or 'playground'
+  const [mobileTab, setMobileTab] = useState<'config' | 'playground'>('playground');
 
   useEffect(() => {
     const loadAgents = async () => {
@@ -59,8 +62,86 @@ const AiAgentsPage: React.FC = () => {
     setShowAddModal(false);
   }, []);
 
-  return (
-    <div className="h-full flex flex-col overflow-hidden">
+  // Mobile layout
+  const renderMobileLayout = () => (
+    <div className="h-full flex flex-col overflow-hidden sm:hidden">
+      {/* Mobile Header with Tabs */}
+      <div className="flex-shrink-0 border-b border-slate-200 bg-white">
+        <div className="flex items-center justify-between px-4 py-2">
+          <h1 className="text-lg font-bold text-gray-800">AI Agents</h1>
+          {mobileTab === 'config' && (
+            <button
+              onClick={handleAddAgentClick}
+              disabled={agentsLoading || agentsSaving}
+              className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors ${
+                agentsLoading || agentsSaving
+                  ? 'border-gray-200 text-gray-400 cursor-not-allowed'
+                  : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              + Add
+            </button>
+          )}
+        </div>
+        {/* Tab Bar */}
+        <div className="flex border-t border-slate-100">
+          <button
+            onClick={() => setMobileTab('playground')}
+            className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+              mobileTab === 'playground'
+                ? 'text-teal-600 border-b-2 border-teal-600 bg-teal-50'
+                : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'
+            }`}
+          >
+            <MessageSquare size={16} />
+            Playground
+          </button>
+          <button
+            onClick={() => setMobileTab('config')}
+            className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+              mobileTab === 'config'
+                ? 'text-teal-600 border-b-2 border-teal-600 bg-teal-50'
+                : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'
+            }`}
+          >
+            <Settings size={16} />
+            Configuration
+          </button>
+        </div>
+      </div>
+
+      {/* Mobile Content */}
+      <div className="flex-1 overflow-auto">
+        {mobileTab === 'playground' ? (
+          <div className="h-full bg-[#F8FAFC] flex flex-col">
+            <div className="flex-1 min-h-0">
+              {!agentsLoading && <ChatPanel agents={agents} />}
+            </div>
+          </div>
+        ) : (
+          <div className="h-full bg-white">
+            <div className="px-4 py-4">
+              <AgentsListSection
+                agents={agents}
+                loading={agentsLoading}
+                saving={agentsSaving}
+                error={agentsError}
+                success={agentsSuccess}
+                onSaveAgents={handleSaveAgents}
+                showAddModal={showAddModal}
+                onCloseAddModal={handleCloseModal}
+                onAddClick={handleAddAgentClick}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  // Desktop layout (existing split-pane)
+  const renderDesktopLayout = () => (
+    <div className="h-full hidden sm:flex flex-col overflow-hidden">
       {/* Continuous Horizon Header - single toolbar across both columns */}
       <div className="flex-shrink-0 border-b border-slate-200 bg-white">
         <PanelGroup direction="horizontal">
@@ -132,6 +213,13 @@ const AiAgentsPage: React.FC = () => {
         </PanelGroup>
       </div>
     </div>
+  );
+
+  return (
+    <>
+      {renderMobileLayout()}
+      {renderDesktopLayout()}
+    </>
   );
 };
 

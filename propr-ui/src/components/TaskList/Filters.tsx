@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Filter } from 'lucide-react';
+import { Filter, Search, X } from 'lucide-react';
 
 interface FiltersProps {
   hideFilters?: boolean;
@@ -38,6 +38,26 @@ export const Filters: React.FC<FiltersProps> = ({
       <div className="flex items-center gap-2 sm:gap-4 flex-1 justify-end">
         {!hideFilters && (
           <>
+            {/* Search input - hidden on mobile, shown on desktop */}
+            <div className="relative hidden sm:block">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search tasks..."
+                className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  title="Clear search"
+                >
+                  <X size={16} />
+                </button>
+              )}
+            </div>
             {/* Filters row - inline on all screen sizes */}
             <div className="flex items-center gap-2">
               <Filter size={16} className="text-gray-500 hidden sm:block" />
