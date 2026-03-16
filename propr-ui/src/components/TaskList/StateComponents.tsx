@@ -53,7 +53,7 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
 }) => (
   <>
     {/* Mobile Card View */}
-    <div className="md:hidden space-y-3 px-4 py-4">
+    <div className="md:hidden">
       {groupedTasks.map((group) => (
         <MobileTaskCard
           key={group.key}
