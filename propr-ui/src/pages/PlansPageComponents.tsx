@@ -125,8 +125,8 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           </div>
         </Link>
       </td>
-      {/* Actions cell - flexible on mobile, fixed width on desktop */}
-      <td className="px-1 sm:px-4 py-3 whitespace-nowrap text-right text-sm font-medium w-auto sm:w-[160px] sm:min-w-[160px]">
+      {/* Actions cell - shrinks to fit content */}
+      <td className="px-1 sm:px-4 py-3 whitespace-nowrap text-right text-sm font-medium w-auto">
         <div className="flex items-center justify-end gap-2 sm:gap-3">
           {/* Relative time - hidden on mobile, far right aligned on desktop */}
           <span className="hidden sm:inline text-xs text-slate-400 min-w-[80px] text-right">
@@ -238,7 +238,7 @@ export const PlansTable: React.FC<PlansTableProps> = ({
             <tr>
               <th className="hidden sm:table-cell sm:w-[140px]">Repository</th>
               <th className="w-auto">Plan</th>
-              <th className="w-auto sm:w-[160px]">Actions</th>
+              <th className="w-auto">Actions</th>
             </tr>
           </thead>
           <tbody className="bg-white">
