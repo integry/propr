@@ -55,9 +55,9 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
     onClick={onClick}
     disabled={implementing || !hasAgent}
     className={`
-      flex items-center gap-1.5
-      px-3 py-1.5
-      text-sm font-medium
+      flex items-center gap-1 sm:gap-1.5
+      px-2 sm:px-3 py-1.5
+      text-xs sm:text-sm font-medium
       rounded-md
       transition-colors
       ${getImplementButtonClassName(implementing, hasAgent, isFirstPending)}
@@ -67,12 +67,12 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
     {implementing ? (
       <>
         <Loader2 size={14} className="animate-spin" />
-        <span>Starting...</span>
+        <span className="hidden sm:inline">Starting...</span>
       </>
     ) : (
       <>
         <Play size={14} className={!isFirstPending && hasAgent ? 'opacity-60' : ''} />
-        <span>Implement</span>
+        <span className="hidden sm:inline">Implement</span>
       </>
     )}
   </button>
@@ -178,7 +178,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
   handleImplementClick,
   handleToggleExpand
 }) => (
-  <div className="flex items-center gap-3 flex-shrink-0">
+  <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
     {isPending && (
       <AgentModelSelector
         agents={agents}
@@ -341,12 +341,12 @@ export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, 
   }
 
   return (
-    <div className="flex items-center gap-3 text-xs">
+    <div className="flex items-center gap-2 sm:gap-3 text-xs">
       {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
       {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
-      {issue.followup_count > 0 && <FollowupCount count={issue.followup_count} />}
+      {issue.followup_count > 0 && <span className="hidden sm:block"><FollowupCount count={issue.followup_count} /></span>}
       {showMultiAgentInfo && (
-        <div className="flex items-center gap-1 flex-wrap">
+        <div className="hidden sm:flex items-center gap-1 flex-wrap">
           {selectedModels.map((m, idx) => (
             <span key={`${m.agent_alias}-${m.model_name}`} className="flex items-center gap-1 text-gray-500">
               {idx > 0 && <span className="text-gray-300 mx-1">|</span>}
@@ -357,7 +357,7 @@ export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, 
         </div>
       )}
       {showAgentInfo && (
-        <AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} />
+        <span className="hidden sm:block"><AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} /></span>
       )}
     </div>
   );

@@ -200,7 +200,7 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
   const agentPadding = selectedAgent ? (compact ? 'pl-6' : 'pl-8') : '';
 
   return (
-    <div className={`flex items-center gap-2 ${className}`}>
+    <div className={`flex items-center gap-1 sm:gap-2 ${className}`}>
       <div className="relative">
         <div className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none">
           {selectedAgent && (
@@ -214,7 +214,7 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
           value={selectedAgent || ''}
           onChange={onAgentChange}
           disabled={disabled}
-          className={`${selectClass} ${agentPadding}`}
+          className={`${selectClass} ${agentPadding} max-w-[120px] sm:max-w-none`}
           title="Select AI agent"
         >
           <option value="">Select Agent</option>
@@ -238,7 +238,7 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
             value={selectedModel || ''}
             onChange={onModelChange}
             disabled={disabled}
-            className={selectClass}
+            className={`${selectClass} max-w-[120px] sm:max-w-none`}
             title="Select model"
           >
             <option value="">Select Model</option>
