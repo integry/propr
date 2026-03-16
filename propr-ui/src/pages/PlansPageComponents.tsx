@@ -97,7 +97,7 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
   return (
     <tr className="hover:bg-gray-50 group border-b border-slate-100">
       {/* Repository column - hidden on mobile, fixed width on desktop */}
-      <td className="hidden sm:table-cell px-4 py-3" style={{ width: '140px', minWidth: '140px', maxWidth: '140px' }}>
+      <td className="hidden sm:table-cell px-4 py-3 w-[140px] min-w-[140px] max-w-[140px]">
         <Link to={`/studio/${draft.draft_id}`} className="block">
           <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
             {draft.repository}
@@ -125,8 +125,8 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           </div>
         </Link>
       </td>
-      {/* Actions cell - fixed width */}
-      <td className="px-1 sm:px-4 py-3 whitespace-nowrap text-right text-sm font-medium" style={{ width: '160px', minWidth: '160px' }}>
+      {/* Actions cell - flexible on mobile, fixed width on desktop */}
+      <td className="px-1 sm:px-4 py-3 whitespace-nowrap text-right text-sm font-medium w-auto sm:w-[160px] sm:min-w-[160px]">
         <div className="flex items-center justify-end gap-2 sm:gap-3">
           {/* Relative time - hidden on mobile, far right aligned on desktop */}
           <span className="hidden sm:inline text-xs text-slate-400 min-w-[80px] text-right">
@@ -231,14 +231,14 @@ export const PlansTable: React.FC<PlansTableProps> = ({
   onAbort
 }) => {
   return (
-    <div className="flex flex-col h-full bg-white">
-      <div className="flex-1 overflow-x-hidden">
-        <table className="w-full">
+    <div className="flex flex-col h-full bg-white w-full max-w-full overflow-hidden">
+      <div className="flex-1 overflow-x-hidden w-full">
+        <table className="w-full max-w-full table-fixed">
           <thead className="sr-only">
             <tr>
-              <th className="hidden sm:table-cell" style={{ width: '140px' }}>Repository</th>
-              <th>Plan</th>
-              <th style={{ width: '160px' }}>Actions</th>
+              <th className="hidden sm:table-cell sm:w-[140px]">Repository</th>
+              <th className="w-auto">Plan</th>
+              <th className="w-auto sm:w-[160px]">Actions</th>
             </tr>
           </thead>
           <tbody className="bg-white">

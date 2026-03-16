@@ -347,7 +347,7 @@ const PlansPage: React.FC = () => {
       </div>
 
       {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-auto px-4 sm:px-6">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 sm:px-6 w-full max-w-full">
         {renderContent()}
       </div>
 
