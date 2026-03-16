@@ -40,6 +40,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     command: npm run worker
     volumes:
       - ./logs:/usr/src/app/logs
@@ -123,6 +127,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     command: sh -c "cd /usr/src/app/packages/api && npx tsx server.ts"
     extra_hosts:
       - "host.docker.internal:host-gateway"
