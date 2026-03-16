@@ -75,7 +75,7 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
   const selectedCount = repositories.length;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2 sm:space-y-4">
       {/* Collapsible header */}
       <button
         type="button"
@@ -89,9 +89,17 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
         )}
         <BookOpen className="w-4 h-4 text-gray-500" />
         <span className="text-sm font-medium text-gray-700">
-          Additional Context Repositories
+          <span className="hidden sm:inline">Additional Context Repositories</span>
+          <span className="sm:hidden">Context Repos</span>
         </span>
         <span className="text-xs text-gray-400">(optional)</span>
+        {/* Info tooltip on mobile */}
+        <span
+          className="sm:hidden relative group"
+          title="Include indexed repositories as reference context. Content from these repos will be used as reference only — all implementation will be done in the target repository."
+        >
+          <Info className="w-4 h-4 text-blue-500 cursor-help" />
+        </span>
         {!isSectionExpanded && repositories.length > 0 && (
           <span className="text-xs text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
             {repositories.length} selected
@@ -102,8 +110,8 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
       {/* Collapsible content */}
       {isSectionExpanded && (
         <>
-          {/* Info banner */}
-          <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+          {/* Info banner - hidden on mobile, visible on desktop */}
+          <div className="hidden sm:flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
             <Info className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
             <p className="text-xs text-blue-700">
               Include indexed repositories as reference context.

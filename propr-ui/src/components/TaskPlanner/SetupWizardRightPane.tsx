@@ -75,7 +75,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   return (
     <div className="w-full md:w-[35%] h-auto md:h-full flex flex-col bg-white border-t md:border-t-0 md:border-l border-gray-300">
       {/* Context Level Slider - Toolbar aligns with left pane header */}
-      <div className="p-4 md:p-5 border-b border-gray-300">
+      <div className="p-3 md:p-5 border-b border-gray-300">
         <ContextLevelSlider
           value={contextLevel}
           onChange={onContextLevelChange}
@@ -91,8 +91,8 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
             costEstimate={stats?.costEstimate}
           />
         ) : (
-          <div className="p-5 space-y-4">
-            <p className="text-sm text-gray-400 italic">
+          <div className="p-3 md:p-5 space-y-4">
+            <p className="hidden sm:block text-sm text-gray-400 italic">
               {isNewMode
                 ? 'Context preview will be available after clicking Generate'
                 : preview.data
@@ -105,7 +105,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
       </div>
 
       {/* Bottom section - Context repositories and Cost preview */}
-      <div className="flex-shrink-0 border-t border-gray-300 p-4 md:p-5 space-y-4 bg-gray-50">
+      <div className="flex-shrink-0 border-t border-gray-300 p-3 md:p-5 space-y-3 md:space-y-4 bg-gray-50">
         {/* Context Repositories Section */}
         <ContextRepositoriesSection
           repositories={contextRepositories}
