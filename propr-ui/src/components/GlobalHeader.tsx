@@ -94,9 +94,9 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       </div>
 
       {/* Spacer - pushes everything to the right */}
-      <div className="flex-1 flex items-center justify-center px-4">
-        {/* Global Search - centered in the flexible space */}
-        <div className="hidden md:block w-full max-w-md">
+      <div className="flex-1 flex items-center justify-center px-2 sm:px-4">
+        {/* Global Search - centered in the flexible space, visible on all screen sizes */}
+        <div className="w-full max-w-md">
           <GlobalSearch inputRef={searchInputRef} />
         </div>
       </div>

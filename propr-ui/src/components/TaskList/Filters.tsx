@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Filter, X } from 'lucide-react';
+import { Filter } from 'lucide-react';
 
 interface FiltersProps {
   hideFilters?: boolean;
@@ -32,44 +32,19 @@ export const Filters: React.FC<FiltersProps> = ({
     return null;
   }
 
-  const handleSearchClear = () => {
-    setSearchQuery('');
-  };
-
   return (
-    <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-4">
-      {!hideFilters && <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Tasks</h1>}
-      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 w-full sm:w-auto">
+    <div className="flex items-center justify-between gap-2 sm:gap-4">
+      {!hideFilters && <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Tasks</h1>}
+      <div className="flex items-center gap-2 sm:gap-4 flex-1 justify-end">
         {!hideFilters && (
           <>
-            {/* Search input with icon and clear button */}
-            <div className="relative w-full sm:w-64">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search tasks..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9 pr-8 py-1.5 sm:py-2 w-full border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
-              />
-              {searchQuery && (
-                <button
-                  onClick={handleSearchClear}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  title="Clear search"
-                >
-                  <X size={16} />
-                </button>
-              )}
-            </div>
-
-            {/* Filters row - inline on mobile */}
+            {/* Filters row - inline on all screen sizes */}
             <div className="flex items-center gap-2">
               <Filter size={16} className="text-gray-500 hidden sm:block" />
               <select
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                className="flex-1 sm:flex-initial px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               >
                 <option value="all">All Tasks</option>
                 <option value="active">Active</option>
@@ -84,7 +59,7 @@ export const Filters: React.FC<FiltersProps> = ({
                   value={repoFilter}
                   onChange={(e) => setRepoFilter(e.target.value)}
                   disabled={reposLoading}
-                  className="flex-1 sm:flex-initial px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 disabled:opacity-50"
+                  className="px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500 disabled:opacity-50 max-w-[120px] sm:max-w-none truncate"
                 >
                   {reposLoading ? (
                     <option value="all">Loading...</option>

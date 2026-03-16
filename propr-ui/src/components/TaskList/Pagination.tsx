@@ -25,11 +25,11 @@ export const Pagination: React.FC<PaginationProps> = ({
   const displayPage = currentPage + 1;
 
   return (
-    <div className="flex flex-col sm:flex-row items-center justify-between px-4 sm:px-6 py-2 sm:py-4 gap-2 sm:gap-3">
-      <span className="text-xs sm:text-sm text-gray-600 text-center sm:text-left">
-        Showing {currentPage * tasksPerPage + 1}-{Math.min((currentPage + 1) * tasksPerPage, totalTasks)} of {totalTasks} tasks
+    <div className="flex items-center justify-between px-4 sm:px-6 py-2 gap-2">
+      <span className="text-xs sm:text-sm text-gray-600">
+        <span className="hidden sm:inline">Showing </span>{currentPage * tasksPerPage + 1}-{Math.min((currentPage + 1) * tasksPerPage, totalTasks)}<span className="hidden sm:inline"> of {totalTasks} tasks</span>
       </span>
-      <div className="flex flex-wrap items-center justify-center gap-2">
+      <div className="flex items-center gap-1 sm:gap-2">
         <button
           onClick={() => setCurrentPage(prev => Math.max(prev - 1, 0))}
           disabled={currentPage === 0}
@@ -38,8 +38,8 @@ export const Pagination: React.FC<PaginationProps> = ({
           <ChevronLeft size={14} className="sm:w-4 sm:h-4" />
           <span className="hidden sm:inline">Previous</span>
         </button>
-        <span className="text-xs sm:text-sm text-gray-600 px-1 sm:px-2">
-          Page {displayPage} of {totalPages}
+        <span className="text-xs sm:text-sm text-gray-600 px-1">
+          {displayPage}/{totalPages}
         </span>
         <button
           onClick={() => setCurrentPage(prev => (prev + 1) * tasksPerPage < totalTasks ? prev + 1 : prev)}
