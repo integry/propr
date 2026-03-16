@@ -152,7 +152,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
 }) => (
   <div className="w-full md:w-[65%] h-auto md:h-full flex flex-col">
     {/* Header with repo/branch - Toolbar border for alignment with right pane */}
-    <div className="px-6 py-3 border-b border-gray-300">
+    <div className="px-4 py-2 md:px-6 md:py-3 border-b border-gray-300">
       <div className="flex items-center gap-2 text-sm flex-wrap sm:flex-nowrap overflow-hidden">
         {isNewMode ? (
           <NewModeHeader
@@ -185,7 +185,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
     </div>
 
     {/* Main content area */}
-    <div className="flex-1 flex flex-col p-6 min-h-0">
+    <div className="flex-1 flex flex-col p-4 md:p-6 min-h-0">
       {/* Borderless textarea - white canvas stands on its own with gray Header/Footer framing */}
       <div className="flex-1 flex flex-col min-h-0 relative">
         <textarea

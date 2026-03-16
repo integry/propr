@@ -176,7 +176,7 @@ const SetupWizardContent: React.FC<{
       </div>
 
       {/* Fixed Footer Bar - Full-width anchored to bottom */}
-      <div className="flex-shrink-0 px-4 md:px-6 py-3 md:py-4 bg-gray-100 border-t border-gray-300">
+      <div className="flex-shrink-0 px-3 md:px-6 py-2 md:py-4 bg-gray-100 border-t border-gray-300">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 md:gap-4">
           {/* Left side: Granularity + Generate */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-3 md:gap-6">
@@ -211,7 +211,7 @@ const SetupWizardContent: React.FC<{
             <button
               onClick={handleExportContext}
               disabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
               title="Export context as XML"
             >
               {contextExport.isExporting ? (
@@ -219,7 +219,7 @@ const SetupWizardContent: React.FC<{
               ) : (
                 <Download className="w-4 h-4" />
               )}
-              <span className="hidden sm:inline">Export Context</span>
+              <span>Export Context</span>
             </button>
           </div>
         </div>
