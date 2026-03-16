@@ -79,14 +79,14 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   );
 };
 
-interface PlansTableRowProps {
+interface PlansListItemProps {
   draft: DraftListItem;
   abortingId: string | null;
   onDelete: (id: string, e: React.MouseEvent) => void;
   onAbort: (id: string, e: React.MouseEvent) => void;
 }
 
-export const PlansTableRow: React.FC<PlansTableRowProps> = ({
+export const PlansListItem: React.FC<PlansListItemProps> = ({
   draft,
   abortingId,
   onDelete,
@@ -95,17 +95,17 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
   const effectiveStatus = getEffectiveStatus(draft.status, draft.issue_summary);
 
   return (
-    <tr className="hover:bg-gray-50 group border-b border-slate-100">
+    <div className="hover:bg-gray-50 group border-b border-slate-100 flex items-center px-2 sm:px-4 py-3 gap-2 sm:gap-4">
       {/* Repository column - hidden on mobile, fixed width on desktop */}
-      <td className="hidden sm:table-cell px-4 py-3 w-[140px] min-w-[140px] max-w-[140px]">
+      <div className="hidden sm:block flex-shrink-0 w-[140px]">
         <Link to={`/studio/${draft.draft_id}`} className="block">
           <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
             {draft.repository}
           </span>
         </Link>
-      </td>
-      {/* Plan title and status cell - takes all remaining space */}
-      <td className="px-2 sm:px-4 py-3">
+      </div>
+      {/* Plan title and status - takes all remaining space */}
+      <div className="flex-1 min-w-0">
         <Link to={`/studio/${draft.draft_id}`} className="block">
           {/* Repository badge - shown inline on mobile only */}
           <div className="sm:hidden mb-1">
@@ -124,45 +124,43 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
             {renderStatusStrip(draft.issue_summary, effectiveStatus)}
           </div>
         </Link>
-      </td>
-      {/* Actions cell - shrinks to fit content */}
-      <td className="px-1 sm:px-4 py-3 whitespace-nowrap text-right text-sm font-medium w-auto">
-        <div className="flex items-center justify-end gap-2 sm:gap-3">
-          {/* Relative time - hidden on mobile, far right aligned on desktop */}
-          <span className="hidden sm:inline text-xs text-slate-400 min-w-[80px] text-right">
-            {formatRelativeTime(draft.updated_at)}
-          </span>
-          {/* Ghost Delete button - hidden on mobile, shown on desktop hover */}
+      </div>
+      {/* Actions - shrinks to fit content */}
+      <div className="flex-shrink-0 flex items-center gap-2 sm:gap-3">
+        {/* Relative time - hidden on mobile, far right aligned on desktop */}
+        <span className="hidden sm:inline text-xs text-slate-400 min-w-[80px] text-right">
+          {formatRelativeTime(draft.updated_at)}
+        </span>
+        {/* Ghost Delete button - hidden on mobile, shown on desktop hover */}
+        <button
+          onClick={(e) => onDelete(draft.draft_id, e)}
+          className="hidden sm:inline-flex items-center justify-center w-8 h-8 text-gray-400 bg-transparent rounded-md hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+          title="Delete"
+        >
+          <Trash2 size={16} />
+        </button>
+        {draft.status === 'generating' && (
           <button
-            onClick={(e) => onDelete(draft.draft_id, e)}
-            className="hidden sm:inline-flex items-center justify-center w-8 h-8 text-gray-400 bg-transparent rounded-md hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
-            title="Delete"
+            onClick={(e) => onAbort(draft.draft_id, e)}
+            disabled={abortingId === draft.draft_id}
+            className="inline-flex items-center px-2 sm:px-3 py-1.5 text-xs font-medium text-orange-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50"
           >
-            <Trash2 size={16} />
+            {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
           </button>
-          {draft.status === 'generating' && (
-            <button
-              onClick={(e) => onAbort(draft.draft_id, e)}
-              disabled={abortingId === draft.draft_id}
-              className="inline-flex items-center px-2 sm:px-3 py-1.5 text-xs font-medium text-orange-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50"
-            >
-              {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
-            </button>
-          )}
-          {/* Primary action button - icon only on mobile, text on desktop */}
-          <Link
-            to={`/studio/${draft.draft_id}`}
-            className="inline-flex items-center justify-center w-8 h-8 sm:w-[72px] sm:h-auto px-0 sm:px-3 py-0 sm:py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
-            title={effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
-          >
-            <ChevronRight size={16} className="sm:hidden" />
-            <span className="hidden sm:inline">
-              {effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
-            </span>
-          </Link>
-        </div>
-      </td>
-    </tr>
+        )}
+        {/* Primary action button - icon only on mobile, text on desktop */}
+        <Link
+          to={`/studio/${draft.draft_id}`}
+          className="inline-flex items-center justify-center w-8 h-8 sm:w-[72px] sm:h-auto px-0 sm:px-3 py-0 sm:py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
+          title={effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
+        >
+          <ChevronRight size={16} className="sm:hidden" />
+          <span className="hidden sm:inline">
+            {effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
+          </span>
+        </Link>
+      </div>
+    </div>
   );
 };
 
@@ -217,43 +215,36 @@ export const PaginationControls: React.FC<PaginationControlsProps> = ({
   );
 };
 
-interface PlansTableProps {
+interface PlansListProps {
   drafts: DraftListItem[];
   abortingId: string | null;
   onDelete: (id: string, e: React.MouseEvent) => void;
   onAbort: (id: string, e: React.MouseEvent) => void;
 }
 
-export const PlansTable: React.FC<PlansTableProps> = ({
+export const PlansList: React.FC<PlansListProps> = ({
   drafts,
   abortingId,
   onDelete,
   onAbort
 }) => {
   return (
-    <div className="flex flex-col h-full bg-white w-full max-w-full overflow-hidden">
-      <div className="flex-1 overflow-x-hidden w-full">
-        <table className="w-full max-w-full table-fixed">
-          <thead className="sr-only">
-            <tr>
-              <th className="hidden sm:table-cell sm:w-[140px]">Repository</th>
-              <th className="w-auto">Plan</th>
-              <th className="w-auto">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white">
-            {drafts.map((draft) => (
-              <PlansTableRow
-                key={draft.draft_id}
-                draft={draft}
-                abortingId={abortingId}
-                onDelete={onDelete}
-                onAbort={onAbort}
-              />
-            ))}
-          </tbody>
-        </table>
+    <div className="flex flex-col h-full bg-white w-full overflow-hidden">
+      <div className="flex-1 overflow-y-auto w-full">
+        {drafts.map((draft) => (
+          <PlansListItem
+            key={draft.draft_id}
+            draft={draft}
+            abortingId={abortingId}
+            onDelete={onDelete}
+            onAbort={onAbort}
+          />
+        ))}
       </div>
     </div>
   );
 };
+
+// Keep backward compatibility alias
+export const PlansTable = PlansList;
+export const PlansTableRow = PlansListItem;
