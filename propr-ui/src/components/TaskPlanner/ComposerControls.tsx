@@ -26,10 +26,10 @@ export const GranularityPills: React.FC<{
   fileCount?: number;
   hideEstimate?: boolean;
 }> = ({ value, onChange, hideEstimate = false }) => {
-  const options: { id: Granularity; label: string; icon: typeof Square }[] = [
-    { id: 'single', label: 'Single', icon: Square },
-    { id: 'balanced', label: 'Balanced', icon: Layers },
-    { id: 'granular', label: 'Granular', icon: LayoutGrid },
+  const options: { id: Granularity; label: string; shortLabel: string; icon: typeof Square }[] = [
+    { id: 'single', label: 'Single', shortLabel: '1', icon: Square },
+    { id: 'balanced', label: 'Balanced', shortLabel: '3-5', icon: Layers },
+    { id: 'granular', label: 'Granular', shortLabel: '7+', icon: LayoutGrid },
   ];
 
   const estimatedIssues = estimateIssueCount(value);
@@ -53,7 +53,7 @@ export const GranularityPills: React.FC<{
             >
               <Icon className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
               <span className="hidden sm:inline">{opt.label}</span>
-              <span className="sm:hidden">{opt.label.substring(0, 3)}</span>
+              <span className="sm:hidden">{opt.shortLabel}</span>
             </button>
           );
         })}
