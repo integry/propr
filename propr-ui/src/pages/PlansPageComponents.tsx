@@ -104,8 +104,8 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           </span>
         </Link>
       </td>
-      {/* Plan title and status cell */}
-      <td className="px-4 py-3">
+      {/* Plan title and status cell - takes more space on mobile since delete button is hidden */}
+      <td className="px-3 sm:px-4 py-3">
         <Link to={`/studio/${draft.draft_id}`} className="block">
           {/* Repository badge - shown inline on mobile only */}
           <div className="sm:hidden mb-1">
@@ -115,7 +115,7 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
           </div>
           {/* Plan Title */}
           <div className="mb-1">
-            <span className="text-sm font-medium text-gray-900 break-words">
+            <span className="text-sm font-medium text-gray-900 break-words line-clamp-2">
               {draft.name || draft.initial_prompt}
             </span>
           </div>
@@ -126,16 +126,16 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
         </Link>
       </td>
       {/* Actions cell - responsive: smaller on mobile */}
-      <td className="px-3 sm:px-6 py-3 whitespace-nowrap text-right text-sm font-medium sm:w-[220px]">
+      <td className="px-3 sm:px-6 py-3 whitespace-nowrap text-right text-sm font-medium sm:w-[180px]">
         <div className="flex items-center justify-end gap-2 sm:gap-3">
           {/* Relative time - hidden on mobile, far right aligned on desktop */}
           <span className="hidden sm:inline text-xs text-slate-400 min-w-[80px] text-right">
             {formatRelativeTime(draft.updated_at)}
           </span>
-          {/* Ghost Delete button - icon only, gray, turns red on hover */}
+          {/* Ghost Delete button - hidden on mobile, shown on desktop hover */}
           <button
             onClick={(e) => onDelete(draft.draft_id, e)}
-            className="inline-flex items-center justify-center w-8 h-8 text-gray-400 bg-transparent rounded-md hover:text-red-600 hover:bg-red-50 transition-colors sm:opacity-0 sm:group-hover:opacity-100"
+            className="hidden sm:inline-flex items-center justify-center w-8 h-8 text-gray-400 bg-transparent rounded-md hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
             title="Delete"
           >
             <Trash2 size={16} />

@@ -316,22 +316,23 @@ const TaskDetails: React.FC = () => {
               </div>
             </div>
 
-            {/* VS Code Terminal Footer - Execution Event Log - Fills entire height when expanded */}
-            <div
-              ref={executionLogRef}
-              className={`transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? 'flex-shrink-0' : 'flex-1 flex flex-col min-h-0'}`}
-            >
-              <ExecutionEventLog
-                events={taskData.liveDetails.events}
-                collapsed={thinkingLog.eventsCollapsed}
-                onToggleCollapse={thinkingLog.toggleEventsCollapse}
-                lastThought={thinkingLog.lastThought}
-                isTaskActive={derivedData.isTaskActive}
-                taskInfo={taskData.taskInfo}
-              />
-            </div>
           </div>
         </div>
+      </div>
+
+      {/* VS Code Terminal Footer - Execution Event Log - Fixed at bottom */}
+      <div
+        ref={executionLogRef}
+        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'flex-1 flex flex-col min-h-0 max-h-[60vh]'}`}
+      >
+        <ExecutionEventLog
+          events={taskData.liveDetails.events}
+          collapsed={thinkingLog.eventsCollapsed}
+          onToggleCollapse={thinkingLog.toggleEventsCollapse}
+          lastThought={thinkingLog.lastThought}
+          isTaskActive={derivedData.isTaskActive}
+          taskInfo={taskData.taskInfo}
+        />
       </div>
 
       {/* Modals */}
