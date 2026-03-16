@@ -44,15 +44,16 @@ export const GranularityPills: React.FC<{
             <button
               key={opt.id}
               onClick={() => onChange(opt.id)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+              className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs sm:text-sm font-medium transition-all ${
                 isSelected
                   ? 'bg-white shadow-sm'
                   : 'text-gray-500 hover:text-gray-700'
               }`}
               style={isSelected ? { color: 'rgb(29, 138, 138)' } : undefined}
             >
-              <Icon className="w-3.5 h-3.5" />
-              {opt.label}
+              <Icon className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+              <span className="hidden sm:inline">{opt.label}</span>
+              <span className="sm:hidden">{opt.label.substring(0, 3)}</span>
             </button>
           );
         })}

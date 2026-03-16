@@ -153,7 +153,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   <div className="w-full md:w-[65%] h-auto md:h-full flex flex-col">
     {/* Header with repo/branch - Toolbar border for alignment with right pane */}
     <div className="px-4 py-2 md:px-6 md:py-3 border-b border-gray-300">
-      <div className="flex items-center gap-2 text-sm flex-wrap sm:flex-nowrap overflow-hidden">
+      <div className="flex items-center gap-1.5 sm:gap-2 text-sm overflow-hidden">
         {isNewMode ? (
           <NewModeHeader
             reposLoading={reposLoading}

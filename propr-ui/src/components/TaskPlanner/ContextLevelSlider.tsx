@@ -74,12 +74,12 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
   }, [onChange]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2 sm:space-y-3">
       {/* Header Row: Title on left, compact status line on right */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Layers className="w-4 h-4 text-gray-500" />
-          <label className="text-sm font-medium text-gray-700">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          <Layers className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-500" />
+          <label className="text-xs sm:text-sm font-medium text-gray-700">
             Context Scope
           </label>
           <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${levelType === 'focused' ? 'bg-sky-100 text-sky-600' : levelType === 'expanded' ? 'bg-blue-100 text-blue-600' : 'bg-indigo-100 text-indigo-600'}`}>
@@ -87,20 +87,18 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
           </span>
         </div>
         {/* Single line indicator with monotone icons - Ocean Depth color scale */}
-        <div className={`flex items-center gap-2 text-xs ${levelType === 'focused' ? 'text-sky-400' : levelType === 'expanded' ? 'text-blue-500' : 'text-indigo-600'}`}>
-          <SpeedIcon className="w-3.5 h-3.5 mr-1 text-gray-500" />
-          <span>{levelType === 'focused' ? 'Fast' : levelType === 'expanded' ? 'Moderate' : 'Slower'}</span>
+        <div className={`flex items-center gap-1 sm:gap-2 text-xs ${levelType === 'focused' ? 'text-sky-400' : levelType === 'expanded' ? 'text-blue-500' : 'text-indigo-600'}`}>
+          <SpeedIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-gray-500" />
+          <span className="hidden sm:inline">{levelType === 'focused' ? 'Fast' : levelType === 'expanded' ? 'Moderate' : 'Slower'}</span>
           <span className="text-gray-400">•</span>
-          <DollarSign className="w-3.5 h-3.5 mr-1 text-gray-500" />
           <span>{config.costText}</span>
-          <span className="text-gray-400">•</span>
-          <PrecisionIcon className="w-3.5 h-3.5 mr-1 text-gray-500" />
-          <span>{levelType === 'focused' ? 'Standard' : levelType === 'expanded' ? 'High Precision' : 'Max Precision'}</span>
+          <span className="text-gray-400 hidden sm:inline">•</span>
+          <span className="hidden sm:inline">{levelType === 'focused' ? 'Standard' : levelType === 'expanded' ? 'High' : 'Max'}</span>
         </div>
       </div>
 
       {/* Slider with Gradient Track */}
-      <div className="space-y-2">
+      <div className="space-y-1">
         <input
           type="range"
           min={10}
@@ -135,8 +133,8 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
         </div>
       </div>
 
-      {/* Dynamic Subtitle */}
-      <p className="text-xs text-gray-600 italic">
+      {/* Dynamic Subtitle - hidden on mobile */}
+      <p className="hidden sm:block text-xs text-gray-600 italic">
         {config.subtitle}
       </p>
     </div>
