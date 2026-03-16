@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Undo2, Redo2, Loader2, AlertCircle, GripVertical, ArrowLeft, Github, GitBranch, Trash2 } from 'lucide-react';
+import { Undo2, Redo2, Loader2, AlertCircle, GripVertical, ArrowLeft, Github, GitBranch, Trash2, MessageCircle, X, ChevronUp } from 'lucide-react';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { debounce } from 'lodash';
 import { usePlanRefinement } from '../../hooks/usePlanRefinement';
 import { DraftWithPlan, finalizePlan, updateDraft, ChatMessage, resetDraftToSetup, abortRefinement, deleteDraft } from '../../api/proprApi';
@@ -35,7 +36,11 @@ interface PlanEditorHeaderProps {
   onRedo: () => void;
 }
 
-const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
+interface PlanEditorHeaderMobileProps extends PlanEditorHeaderProps {
+  onOpenChat?: () => void;
+}
+
+const PlanEditorHeader: React.FC<PlanEditorHeaderProps & { isMobile?: boolean; onOpenChat?: () => void }> = ({
   planName,
   repository,
   baseBranch,
@@ -48,8 +53,71 @@ const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
   onDelete,
   onBackToSetup,
   onUndo,
-  onRedo
+  onRedo,
+  isMobile,
+  onOpenChat
 }) => {
+  // Mobile header - compact layout
+  if (isMobile) {
+    return (
+      <div className="flex flex-col border-b border-gray-200 bg-gray-100 flex-shrink-0">
+        {/* First row: Plan name and actions */}
+        <div className="flex items-center justify-between px-3 py-2 gap-2">
+          <h1 className="text-base font-semibold text-gray-900 truncate min-w-0 flex-1" title={planName}>
+            {planName}
+          </h1>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={onUndo}
+              disabled={!canUndo}
+              className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Undo"
+            >
+              <Undo2 size={16} className="text-gray-600" />
+            </button>
+            <button
+              onClick={onRedo}
+              disabled={!canRedo}
+              className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Redo"
+            >
+              <Redo2 size={16} className="text-gray-600" />
+            </button>
+            <button
+              onClick={onBackToSetup}
+              disabled={isFinalizing || isResettingToSetup || isDeleting}
+              className="p-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Back to Setup"
+            >
+              <ArrowLeft size={16} />
+            </button>
+            <button
+              onClick={onDelete}
+              disabled={isFinalizing || isResettingToSetup || isDeleting}
+              className="p-1.5 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Delete Plan"
+            >
+              {isDeleting ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Trash2 size={16} />
+              )}
+            </button>
+          </div>
+        </div>
+        {/* Second row: Repository info */}
+        <div className="flex items-center gap-2 px-3 pb-2 text-xs text-gray-600">
+          <Github size={12} className="text-gray-500 flex-shrink-0" />
+          <span className="truncate">{repository}</span>
+          <span className="text-gray-400">/</span>
+          <GitBranch size={12} className="text-gray-500 flex-shrink-0" />
+          <span className="truncate">{baseBranch}</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Desktop header - original layout
   return (
     <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-4">
       <div className="flex items-center gap-4 min-w-0 flex-1">
@@ -129,6 +197,7 @@ const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
 
 export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, onFinalize, onBackToSetup }) => {
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const [enforcementNoticeDismissed, setEnforcementNoticeDismissed] = useState(false);
@@ -136,6 +205,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isResettingToSetup, setIsResettingToSetup] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isChatExpanded, setIsChatExpanded] = useState(false);
   const { addToast } = useToast();
 
   // Plan name: prefer draft.name, fall back to initial_prompt
@@ -264,6 +334,135 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
     }
   };
 
+  // Mobile Layout
+  if (isMobile) {
+    return (
+      <div className="h-full flex flex-col bg-white overflow-hidden">
+        {/* Mobile Header */}
+        <PlanEditorHeader
+          planName={planName}
+          repository={repository}
+          baseBranch={baseBranch}
+          originalPrompt={originalPrompt}
+          isDeleting={isDeleting}
+          isFinalizing={isFinalizing}
+          isResettingToSetup={isResettingToSetup}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          onDelete={() => setShowDeleteDialog(true)}
+          onBackToSetup={() => setShowBackToSetupDialog(true)}
+          onUndo={undo}
+          onRedo={redo}
+          isMobile={true}
+        />
+
+        {/* Error and Notice Banners */}
+        {finalizeError && (
+          <div className="px-3 py-2 bg-red-50 border-b border-red-200 text-red-700 text-xs flex items-center gap-2 flex-shrink-0">
+            <AlertCircle size={12} />
+            {finalizeError}
+          </div>
+        )}
+
+        {granularityEnforcement && granularityEnforcement.enforced && !enforcementNoticeDismissed && (
+          <GranularityEnforcementNotice
+            enforcement={granularityEnforcement}
+            onDismiss={() => setEnforcementNoticeDismissed(true)}
+          />
+        )}
+
+        {/* Main Content - Full width task list */}
+        <div className="flex-1 overflow-hidden">
+          <div className="h-full bg-white">
+            <TaskCardList
+              tasks={plan}
+              highlightedIds={highlightedIds}
+              draftId={draft.draft_id}
+              onTaskChange={updateTask}
+              onDeleteTask={handleDeleteTask}
+              onReorderTasks={reorderTasks}
+            />
+          </div>
+        </div>
+
+        {/* Mobile Footer - Compact with chat toggle */}
+        <div className="flex items-center justify-between px-3 py-3 border-t border-gray-200 bg-gray-100 flex-shrink-0 gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsChatExpanded(true)}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              <MessageCircle size={16} />
+              <span>Refine</span>
+            </button>
+            <span className="text-xs text-gray-500">
+              {plan.length} {plan.length === 1 ? 'task' : 'tasks'}
+            </span>
+          </div>
+          <button
+            onClick={handleFinalize}
+            disabled={isFinalizing || plan.length === 0}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
+            style={{ backgroundColor: isFinalizing || plan.length === 0 ? undefined : 'rgb(29, 138, 138)' }}
+          >
+            {isFinalizing ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                <span>Creating...</span>
+              </>
+            ) : (
+              <>
+                <Github size={14} />
+                <span>Create Issues</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Mobile Chat Bottom Sheet */}
+        {isChatExpanded && (
+          <div className="fixed inset-0 z-50 flex flex-col bg-white">
+            {/* Chat Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-slate-50 flex-shrink-0">
+              <h3 className="font-semibold text-gray-900">Refine Plan</h3>
+              <button
+                onClick={() => setIsChatExpanded(false)}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            {/* Chat Content */}
+            <div className="flex-1 overflow-hidden">
+              <RefinementChat
+                onSendMessage={handleRefine}
+                initialMessages={draft.chat_history}
+                onMessagesChange={handleChatMessagesChange}
+                refinementProgress={refinementProgress}
+                onStop={handleStopRefinement}
+              />
+            </div>
+          </div>
+        )}
+
+        <BackToSetupDialog
+          isOpen={showBackToSetupDialog}
+          onClose={() => setShowBackToSetupDialog(false)}
+          onConfirm={handleBackToSetup}
+          isLoading={isResettingToSetup}
+        />
+
+        <DeletePlanDialog
+          isOpen={showDeleteDialog}
+          onClose={() => setShowDeleteDialog(false)}
+          onConfirm={handleDeletePlanConfirm}
+          isLoading={isDeleting}
+        />
+      </div>
+    );
+  }
+
+  // Desktop Layout
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden">
       {/* Pro Studio Header - Gray background with repo/branch breadcrumb */}
@@ -326,7 +525,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
                 onSendMessage={handleRefine}
                 initialMessages={draft.chat_history}
                 onMessagesChange={handleChatMessagesChange}
-refinementProgress={refinementProgress}
+                refinementProgress={refinementProgress}
                 onStop={handleStopRefinement}
               />
             </div>
