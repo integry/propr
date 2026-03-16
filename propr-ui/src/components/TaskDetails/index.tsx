@@ -192,31 +192,69 @@ const TaskDetails: React.FC = () => {
           <TaskHeader taskInfo={taskData.taskInfo} currentStatus={derivedData.currentStatus} />
         </div>
 
-        {/* Consolidated Context Bar - Single horizontal row with bg-slate-50 */}
-        <div className="px-3 sm:px-6 py-1.5 sm:py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2 sm:gap-4">
-          {/* Left + Middle: Repo/Branch and Metadata */}
-          <ContextStrip
-            taskInfo={taskData.taskInfo}
-            modelName={derivedData.modelName}
-            prInfo={derivedData.prInfo}
-            commitInfo={commitInfo}
-            duration={totalDuration}
-            tokenUsage={tokenUsage}
-          />
+        {/* Consolidated Context Bar - Two rows on mobile, single row on desktop */}
+        <div className="px-3 sm:px-6 py-1.5 sm:py-2 bg-slate-50 border-b border-slate-200">
+          {/* Mobile: Two-row layout */}
+          <div className="flex flex-col gap-2 sm:hidden">
+            {/* Row 1: Repo name + Action buttons */}
+            <div className="flex items-center justify-between gap-2">
+              <ContextStrip
+                taskInfo={taskData.taskInfo}
+                modelName={derivedData.modelName}
+                prInfo={derivedData.prInfo}
+                commitInfo={commitInfo}
+                duration={totalDuration}
+                tokenUsage={tokenUsage}
+                mobileRepoOnly={true}
+              />
+              <ActionBar
+                currentStatus={derivedData.currentStatus}
+                historyItemWithPaths={derivedData.historyItemWithPaths}
+                stoppingExecution={taskData.stoppingExecution}
+                stopFailed={taskData.stopFailed}
+                deletingTask={taskData.deletingTask}
+                onStopExecution={taskData.handleStopExecution}
+                onViewPrompt={promptData.fetchPrompt}
+                onViewLogs={logFilesData.fetchLogFilesData}
+                onDeleteTask={handleDeleteTask}
+                onFollowUp={handleOpenFollowup}
+              />
+            </div>
+            {/* Row 2: Metadata (PR ID, task ID, model, etc.) */}
+            <ContextStrip
+              taskInfo={taskData.taskInfo}
+              modelName={derivedData.modelName}
+              prInfo={derivedData.prInfo}
+              commitInfo={commitInfo}
+              duration={totalDuration}
+              tokenUsage={tokenUsage}
+              mobileMetadataOnly={true}
+            />
+          </div>
 
-          {/* Right: Action Buttons (Ghost style) */}
-          <ActionBar
-            currentStatus={derivedData.currentStatus}
-            historyItemWithPaths={derivedData.historyItemWithPaths}
-            stoppingExecution={taskData.stoppingExecution}
-            stopFailed={taskData.stopFailed}
-            deletingTask={taskData.deletingTask}
-            onStopExecution={taskData.handleStopExecution}
-            onViewPrompt={promptData.fetchPrompt}
-            onViewLogs={logFilesData.fetchLogFilesData}
-            onDeleteTask={handleDeleteTask}
-            onFollowUp={handleOpenFollowup}
-          />
+          {/* Desktop: Single row layout */}
+          <div className="hidden sm:flex items-center justify-between gap-4">
+            <ContextStrip
+              taskInfo={taskData.taskInfo}
+              modelName={derivedData.modelName}
+              prInfo={derivedData.prInfo}
+              commitInfo={commitInfo}
+              duration={totalDuration}
+              tokenUsage={tokenUsage}
+            />
+            <ActionBar
+              currentStatus={derivedData.currentStatus}
+              historyItemWithPaths={derivedData.historyItemWithPaths}
+              stoppingExecution={taskData.stoppingExecution}
+              stopFailed={taskData.stopFailed}
+              deletingTask={taskData.deletingTask}
+              onStopExecution={taskData.handleStopExecution}
+              onViewPrompt={promptData.fetchPrompt}
+              onViewLogs={logFilesData.fetchLogFilesData}
+              onDeleteTask={handleDeleteTask}
+              onFollowUp={handleOpenFollowup}
+            />
+          </div>
         </div>
 
         {/* Progress Bar */}
@@ -321,9 +359,10 @@ const TaskDetails: React.FC = () => {
       </div>
 
       {/* VS Code Terminal Footer - Execution Event Log - Fixed at bottom */}
+      {/* On mobile, expanded log takes full height; on desktop, max 60vh */}
       <div
         ref={executionLogRef}
-        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'flex-1 flex flex-col min-h-0 max-h-[60vh]'}`}
+        className={`flex-shrink-0 transition-all duration-300 ease-in-out min-w-0 overflow-hidden ${thinkingLog.eventsCollapsed ? '' : 'flex-1 flex flex-col min-h-0 max-h-[100vh] lg:max-h-[60vh]'}`}
       >
         <ExecutionEventLog
           events={taskData.liveDetails.events}

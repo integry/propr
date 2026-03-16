@@ -334,8 +334,30 @@ const RepositoriesPage: React.FC = () => {
         onAddRepository={handleOpenModal}
       />
 
-      {/* Split-Pane Container - Resizable 40/60 layout */}
-      <div className="flex-1 overflow-hidden">
+      {/* Mobile Layout: Full-width list only */}
+      <div className="flex-1 overflow-hidden lg:hidden">
+        <div className="h-full bg-white flex flex-col">
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stealth">
+            <RepositoryListContent
+              repos={repos}
+              loading={loading}
+              error={error}
+              indexingStatuses={indexingStatuses}
+              selectedRepoId={selectedRepoId}
+              onToggle={handleToggleRepo}
+              onRemove={handleRemoveRepo}
+              onStopIndexing={handleStopIndexing}
+              onReindex={handleReindexRepo}
+              onSelect={handleSelectRepo}
+              onRetry={handleRetry}
+            />
+          </div>
+          <RepositorySaveStatusFooter saveStatus={saveStatus} error={error} />
+        </div>
+      </div>
+
+      {/* Desktop Layout: Split-Pane Container - Resizable 40/60 layout */}
+      <div className="flex-1 overflow-hidden hidden lg:block">
         <PanelGroup direction="horizontal">
           {/* Left Panel (40%): Repository List - clean white canvas */}
           <Panel defaultSize={40} minSize={25}>
