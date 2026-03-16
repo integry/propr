@@ -123,9 +123,10 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
     if (textarea) {
       // Reset height to calculate new scroll height
       textarea.style.height = 'auto';
-      // Set minimum height (6 rows ~ 144px) and max height
-      const minHeight = 144;
-      const maxHeight = 400;
+      // Set minimum height (10 rows ~ 240px on mobile, 8 rows ~ 192px on desktop) and max height
+      const isMobile = window.innerWidth < 640;
+      const minHeight = isMobile ? 240 : 192;
+      const maxHeight = isMobile ? 500 : 400;
       const newHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
       textarea.style.height = `${newHeight}px`;
     }
@@ -249,8 +250,8 @@ export const NewPlanForm: React.FC<NewPlanFormProps> = ({
                 }}
                 onPaste={onPaste}
                 placeholder="Describe the feature or task you want to implement..."
-                rows={6}
-                className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 resize-y min-h-[144px]"
+                rows={10}
+                className="w-full px-3 py-2 bg-white text-gray-900 placeholder-gray-400 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 resize-y min-h-[240px] sm:min-h-[192px]"
               />
               <p className="text-xs text-gray-400 mt-1">Tip: You can paste screenshots directly into this field</p>
             </div>
