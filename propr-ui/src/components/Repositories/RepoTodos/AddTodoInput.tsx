@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Check, X } from 'lucide-react';
 
 export interface AddTodoInputProps {
@@ -9,6 +9,20 @@ export interface AddTodoInputProps {
 
 const AddTodoInput: React.FC<AddTodoInputProps> = ({ onAdd, onCancel }) => {
   const [content, setContent] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize textarea
+  const adjustTextareaHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    }
+  }, []);
+
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [content, adjustTextareaHeight]);
 
   const handleSubmit = () => {
     if (content.trim()) {
@@ -17,15 +31,21 @@ const AddTodoInput: React.FC<AddTodoInputProps> = ({ onAdd, onCancel }) => {
     }
   };
 
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setContent(e.target.value);
+    adjustTextareaHeight();
+  };
+
   return (
     <div className="flex items-start gap-2 p-2.5 rounded-lg border border-teal-300 bg-teal-50">
       <textarea
+        ref={textareaRef}
         value={content}
-        onChange={(e) => setContent(e.target.value)}
+        onChange={handleChange}
         placeholder="What needs to be done?"
         autoFocus
-        className="flex-1 px-2 py-1 text-sm border border-slate-200 rounded focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none bg-white"
-        rows={2}
+        className="flex-1 px-2 py-1 text-sm border border-slate-200 rounded focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none overflow-hidden bg-white"
+        style={{ minHeight: '2rem' }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();

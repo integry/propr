@@ -11,8 +11,14 @@ import {
   DragStartEvent,
   DragOverlay,
   UniqueIdentifier,
+  pointerWithin,
+  rectIntersection,
 } from '@dnd-kit/core';
-import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
+import {
+  sortableKeyboardCoordinates,
+  SortableContext,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
 import { ListTodo, Plus, Check, Folder, X, Sparkles } from 'lucide-react';
 import {
   TodoItemOverlay,
@@ -41,7 +47,7 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
     selectedTodoIds, selectedTodos, isLoading, error, loadData,
     handleToggleSelect, handleToggleComplete, handleDeleteTodo, handleEditTodo,
     handleConfirmAddTodo, handleEditCategory, handleDeleteCategory, handleAddCategory,
-    handleReorderTodos,
+    handleReorderTodos, handleReorderCategories, handleMoveTodoToCategory,
   } = useRepoTodos({ repositoryId });
 
   useEffect(() => {
@@ -88,8 +94,57 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
     const { active, over } = event;
     setActiveId(null);
     if (!over || active.id === over.id) return;
-    await handleReorderTodos(active.id as string, over.id as string, todosByCategory);
+
+    const activeIdStr = active.id as string;
+    const overIdStr = over.id as string;
+
+    // Check if we're reordering categories
+    const isActiveCategory = categories.some(c => c.categoryId === activeIdStr);
+    const isOverCategory = categories.some(c => c.categoryId === overIdStr);
+
+    if (isActiveCategory && isOverCategory) {
+      // Reordering categories
+      await handleReorderCategories(activeIdStr, overIdStr);
+      return;
+    }
+
+    // Check if dropping on a category drop zone (for empty categories)
+    if (overIdStr.startsWith('category-drop-')) {
+      const targetCategoryId = overIdStr.replace('category-drop-', '');
+      const newCategoryId = targetCategoryId === 'uncategorized' ? null : targetCategoryId;
+      await handleMoveTodoToCategory(activeIdStr, newCategoryId);
+      return;
+    }
+
+    // Otherwise, standard todo reordering
+    await handleReorderTodos(activeIdStr, overIdStr, todosByCategory);
   };
+
+  // Custom collision detection that prefers droppable areas when no todo items overlap
+  const collisionDetectionStrategy = useCallback((args: Parameters<typeof closestCenter>[0]) => {
+    // First try to find intersecting todos
+    const pointerCollisions = pointerWithin(args);
+    if (pointerCollisions.length > 0) {
+      // Filter out category droppables if we have todo collisions
+      const todoCollisions = pointerCollisions.filter(
+        collision => !String(collision.id).startsWith('category-drop-')
+      );
+      if (todoCollisions.length > 0) {
+        return todoCollisions;
+      }
+    }
+
+    // Fall back to rect intersection for category drop zones
+    const rectCollisions = rectIntersection(args);
+    if (rectCollisions.length > 0) {
+      return rectCollisions;
+    }
+
+    // Default to closest center
+    return closestCenter(args);
+  }, []);
+
+  const categoryIds = categories.map(c => c.categoryId);
 
   const handleCreatePlan = useCallback(() => {
     const prompt = selectedTodos.map((todo, index) => `${index + 1}. ${todo.content}`).join('\n');
@@ -175,36 +230,39 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, disabled 
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4" style={{ scrollbarWidth: 'thin', scrollbarColor: '#d1d5db transparent' }}>
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+        <DndContext sensors={sensors} collisionDetection={collisionDetectionStrategy} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
           {addingToCategory === null && (
             <div className="mb-4">
               <AddTodoInput categoryId={null} onAdd={onConfirmAddTodo} onCancel={() => setAddingToCategory(false)} />
             </div>
           )}
-          {categories.map((category) => (
-            <React.Fragment key={category.categoryId}>
-              {addingToCategory === category.categoryId && (
-                <div className="mb-2 ml-4">
-                  <AddTodoInput categoryId={category.categoryId} onAdd={onConfirmAddTodo} onCancel={() => setAddingToCategory(false)} />
-                </div>
-              )}
-              <CategorySection
-                category={category}
-                todos={todosByCategory[category.categoryId] || []}
-                selectedTodoIds={selectedTodoIds}
-                onToggleSelect={handleToggleSelect}
-                onToggleComplete={handleToggleComplete}
-                onDeleteTodo={handleDeleteTodo}
-                onEditTodo={handleEditTodo}
-                onAddTodo={handleAddTodo}
-                onEditCategory={handleEditCategory}
-                onDeleteCategory={handleDeleteCategory}
-                disabled={disabled}
-                isExpanded={expandedCategories.has(category.categoryId)}
-                onToggleExpand={() => handleToggleCategoryExpand(category.categoryId)}
-              />
-            </React.Fragment>
-          ))}
+          <SortableContext items={categoryIds} strategy={verticalListSortingStrategy}>
+            {categories.map((category) => (
+              <React.Fragment key={category.categoryId}>
+                {addingToCategory === category.categoryId && (
+                  <div className="mb-2 ml-4">
+                    <AddTodoInput categoryId={category.categoryId} onAdd={onConfirmAddTodo} onCancel={() => setAddingToCategory(false)} />
+                  </div>
+                )}
+                <CategorySection
+                  category={category}
+                  todos={todosByCategory[category.categoryId] || []}
+                  selectedTodoIds={selectedTodoIds}
+                  onToggleSelect={handleToggleSelect}
+                  onToggleComplete={handleToggleComplete}
+                  onDeleteTodo={handleDeleteTodo}
+                  onEditTodo={handleEditTodo}
+                  onAddTodo={handleAddTodo}
+                  onEditCategory={handleEditCategory}
+                  onDeleteCategory={handleDeleteCategory}
+                  disabled={disabled}
+                  isExpanded={expandedCategories.has(category.categoryId)}
+                  onToggleExpand={() => handleToggleCategoryExpand(category.categoryId)}
+                  isSortable={true}
+                />
+              </React.Fragment>
+            ))}
+          </SortableContext>
           <CategorySection
             category={null}
             todos={todosByCategory['uncategorized'] || []}

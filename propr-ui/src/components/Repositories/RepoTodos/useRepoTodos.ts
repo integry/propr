@@ -9,6 +9,7 @@ import {
   updateTodo,
   deleteTodo,
   reorderTodos,
+  reorderCategories,
   RepoTodoCategory,
   RepoTodo,
   BatchReorderItem,
@@ -43,6 +44,8 @@ export interface UseRepoTodosReturn {
     overId: string,
     todosByCategory: Record<string, RepoTodo[]>
   ) => Promise<void>;
+  handleReorderCategories: (draggedId: string, overId: string) => Promise<void>;
+  handleMoveTodoToCategory: (todoId: string, categoryId: string | null) => Promise<void>;
 }
 
 export function useRepoTodos({ repositoryId }: UseRepoTodosOptions): UseRepoTodosReturn {
@@ -252,6 +255,56 @@ export function useRepoTodos({ repositoryId }: UseRepoTodosOptions): UseRepoTodo
     }
   }, [todos, repositoryId, loadData]);
 
+  const handleReorderCategories = useCallback(async (draggedId: string, overId: string) => {
+    const oldIndex = categories.findIndex((c) => c.categoryId === draggedId);
+    const newIndex = categories.findIndex((c) => c.categoryId === overId);
+
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const reordered = arrayMove(categories, oldIndex, newIndex);
+    const reorderItems: BatchReorderItem[] = reordered.map((cat, index) => ({
+      id: cat.categoryId,
+      orderIndex: index,
+    }));
+
+    // Optimistic update
+    setCategories(reordered.map((cat, index) => ({ ...cat, orderIndex: index })));
+
+    try {
+      await reorderCategories({ repository: repositoryId, items: reorderItems });
+    } catch (err) {
+      console.error('Failed to reorder categories:', err);
+      loadData();
+    }
+  }, [categories, repositoryId, loadData]);
+
+  const handleMoveTodoToCategory = useCallback(async (todoId: string, newCategoryId: string | null) => {
+    const todo = todos.find((t) => t.todoId === todoId);
+    if (!todo) return;
+
+    // Get todos in the target category to determine the orderIndex
+    const targetCategoryKey = newCategoryId || 'uncategorized';
+    const targetCategoryTodos = todos.filter(
+      (t) => (t.categoryId || 'uncategorized') === targetCategoryKey && !t.isCompleted
+    );
+    const newOrderIndex = targetCategoryTodos.length;
+
+    const movedTodo = { ...todo, categoryId: newCategoryId, orderIndex: newOrderIndex };
+
+    // Optimistic update
+    setTodos((prev) => prev.map((t) => (t.todoId === todoId ? movedTodo : t)));
+
+    try {
+      await reorderTodos({
+        repository: repositoryId,
+        items: [{ id: todoId, orderIndex: newOrderIndex, categoryId: newCategoryId }],
+      });
+    } catch (err) {
+      console.error('Failed to move todo to category:', err);
+      loadData();
+    }
+  }, [todos, repositoryId, loadData]);
+
   return {
     categories,
     todos,
@@ -272,5 +325,7 @@ export function useRepoTodos({ repositoryId }: UseRepoTodosOptions): UseRepoTodo
     handleDeleteCategory,
     handleAddCategory,
     handleReorderTodos,
+    handleReorderCategories,
+    handleMoveTodoToCategory,
   };
 }

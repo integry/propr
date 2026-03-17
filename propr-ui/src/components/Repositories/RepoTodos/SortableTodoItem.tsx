@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical, Check, Trash2, Edit3, Sparkles } from 'lucide-react';
@@ -25,6 +25,7 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(todo.content);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const {
     attributes,
@@ -39,6 +40,21 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
     transform: CSS.Transform.toString(transform),
     transition,
   };
+
+  // Auto-resize textarea
+  const adjustTextareaHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isEditing) {
+      adjustTextareaHeight();
+    }
+  }, [isEditing, editContent, adjustTextareaHeight]);
 
   const handleSaveEdit = () => {
     if (editContent.trim() && editContent !== todo.content) {
@@ -55,6 +71,11 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
       setEditContent(todo.content);
       setIsEditing(false);
     }
+  };
+
+  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setEditContent(e.target.value);
+    adjustTextareaHeight();
   };
 
   return (
@@ -115,13 +136,14 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
       <div className="flex-1 min-w-0">
         {isEditing ? (
           <textarea
+            ref={textareaRef}
             value={editContent}
-            onChange={(e) => setEditContent(e.target.value)}
+            onChange={handleTextareaChange}
             onBlur={handleSaveEdit}
             onKeyDown={handleKeyDown}
             autoFocus
-            className="w-full px-2 py-1 text-sm border border-teal-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none"
-            rows={2}
+            className="w-full px-2 py-1 text-sm border border-teal-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none overflow-hidden"
+            style={{ minHeight: '2rem' }}
           />
         ) : (
           <p

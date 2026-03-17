@@ -2,7 +2,10 @@ import React, { useState } from 'react';
 import {
   SortableContext,
   verticalListSortingStrategy,
+  useSortable,
 } from '@dnd-kit/sortable';
+import { useDroppable } from '@dnd-kit/core';
+import { CSS } from '@dnd-kit/utilities';
 import {
   Plus,
   ChevronDown,
@@ -11,6 +14,7 @@ import {
   FolderOpen,
   Trash2,
   Edit3,
+  GripVertical,
 } from 'lucide-react';
 import { RepoTodoCategory, RepoTodo } from '../../../api/repoTodosApi';
 import SortableTodoItem from './SortableTodoItem';
@@ -29,6 +33,7 @@ export interface CategorySectionProps {
   disabled?: boolean;
   isExpanded: boolean;
   onToggleExpand: () => void;
+  isSortable?: boolean;
 }
 
 const CategorySection: React.FC<CategorySectionProps> = ({
@@ -45,12 +50,41 @@ const CategorySection: React.FC<CategorySectionProps> = ({
   disabled,
   isExpanded,
   onToggleExpand,
+  isSortable = false,
 }) => {
   const [isEditingName, setIsEditingName] = useState(false);
   const [editName, setEditName] = useState(category?.name || '');
   const categoryId = category?.categoryId || null;
   const categoryName = category?.name || 'Uncategorized';
   const todoIds = todos.map((t) => t.todoId);
+  const droppableId = `category-drop-${categoryId || 'uncategorized'}`;
+
+  // Make category sortable (for reordering categories themselves)
+  const {
+    attributes: sortableAttributes,
+    listeners: sortableListeners,
+    setNodeRef: setSortableNodeRef,
+    transform: sortableTransform,
+    transition: sortableTransition,
+    isDragging: isCategoryDragging,
+  } = useSortable({
+    id: category?.categoryId || 'uncategorized',
+    disabled: !isSortable || !category, // Don't allow sorting uncategorized
+  });
+
+  // Make category a drop target for empty categories
+  const { setNodeRef: setDroppableNodeRef, isOver } = useDroppable({
+    id: droppableId,
+    data: {
+      type: 'category',
+      categoryId: categoryId,
+    },
+  });
+
+  const sortableStyle = isSortable && category ? {
+    transform: CSS.Transform.toString(sortableTransform),
+    transition: sortableTransition,
+  } : {};
 
   const handleSaveName = () => {
     if (category && editName.trim() && editName !== category.name && onEditCategory) {
@@ -60,9 +94,25 @@ const CategorySection: React.FC<CategorySectionProps> = ({
   };
 
   return (
-    <div className="mb-4">
+    <div
+      ref={isSortable && category ? setSortableNodeRef : undefined}
+      style={sortableStyle}
+      className={`mb-4 ${isCategoryDragging ? 'opacity-50 z-50' : ''}`}
+    >
       {/* Category Header */}
       <div className="group flex items-center gap-2 py-1.5 px-2 rounded-md hover:bg-slate-100 transition-colors">
+        {/* Drag handle for category reordering */}
+        {isSortable && category && (
+          <div
+            {...sortableAttributes}
+            {...sortableListeners}
+            className={`flex-shrink-0 cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500 transition-colors
+              ${disabled ? 'pointer-events-none' : ''}
+            `}
+          >
+            <GripVertical size={14} />
+          </div>
+        )}
         <button
           onClick={onToggleExpand}
           className="flex-shrink-0 text-slate-400 hover:text-slate-600"
@@ -126,7 +176,12 @@ const CategorySection: React.FC<CategorySectionProps> = ({
 
       {/* Todos */}
       {isExpanded && (
-        <div className="ml-4 mt-1 space-y-1.5">
+        <div
+          ref={setDroppableNodeRef}
+          className={`ml-4 mt-1 space-y-1.5 min-h-[40px] rounded-md transition-colors ${
+            isOver ? 'bg-teal-50 border-2 border-dashed border-teal-300' : ''
+          }`}
+        >
           <SortableContext items={todoIds} strategy={verticalListSortingStrategy}>
             {todos.map((todo) => (
               <SortableTodoItem
@@ -142,7 +197,9 @@ const CategorySection: React.FC<CategorySectionProps> = ({
             ))}
           </SortableContext>
           {todos.length === 0 && (
-            <p className="text-xs text-slate-400 italic py-2 px-2">No items in this category</p>
+            <p className={`text-xs text-slate-400 italic py-2 px-2 ${isOver ? 'text-teal-600' : ''}`}>
+              {isOver ? 'Drop here to add to this category' : 'No items in this category'}
+            </p>
           )}
         </div>
       )}
