@@ -11,6 +11,7 @@ import {
   createAgentCommand,
   createSettingCommand,
   createLogCommand,
+  createTodoCommand,
   createStatusCommand,
   createQueueCommand,
 } from "./commands/index.js";
@@ -106,6 +107,7 @@ Command Groups:
   Repositories:   repo [list|add|remove|toggle|index|status]
   Agents:         agent [list|add|delete]
   Settings:       setting [get|update]
+  To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
   System:         status, queue
 
@@ -290,6 +292,7 @@ program.addCommand(createRepoCommand());
 program.addCommand(createAgentCommand());
 program.addCommand(createSettingCommand());
 program.addCommand(createLogCommand());
+program.addCommand(createTodoCommand());
 program.addCommand(createStatusCommand());
 program.addCommand(createQueueCommand());
 

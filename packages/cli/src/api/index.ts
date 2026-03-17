@@ -145,6 +145,24 @@ export {
   ListLlmLogsOptions,
 } from "./logs.js";
 
+// Repository To-Dos API
+export {
+  listTodos,
+  getTodo,
+  createTodo,
+  updateTodo,
+  deleteTodo,
+  listCategories,
+  createCategory,
+  updateCategory,
+  deleteCategory,
+  // Types
+  RepoTodo,
+  RepoTodoCategory,
+  ListTodosResponse,
+  ListCategoriesResponse,
+} from "./todos.js";
+
 // System Status API
 export {
   getSystemStatus,

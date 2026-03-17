@@ -59,7 +59,7 @@ function truncate(str: string | null | undefined, maxLen: number): string {
 function displayTasksTable(tasks: TaskSummary[]): void {
   const idWidth = Math.max(
     "ID".length,
-    ...tasks.map((t) => truncate(t.id, 12).length)
+    ...tasks.map((t) => t.id.length)
   );
   const repoWidth = Math.max(
     "Repository".length,
@@ -91,7 +91,7 @@ function displayTasksTable(tasks: TaskSummary[]): void {
 
   for (const task of tasks) {
     const row = [
-      truncate(task.id, 12).padEnd(idWidth),
+      task.id.padEnd(idWidth),
       truncate(task.repository, 25).padEnd(repoWidth),
       String(task.issueNumber || "-").padEnd(issueWidth),
       formatStatus(task.status).padEnd(statusWidth),
