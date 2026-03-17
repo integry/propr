@@ -13,7 +13,7 @@ const TodoItemOverlay: React.FC<TodoItemOverlayProps> = ({ todo }) => (
     </div>
     <div className="flex-shrink-0 w-4 h-4 mt-0.5 rounded border border-slate-300" />
     <div className="flex-shrink-0 w-4 h-4 mt-0.5 rounded-full border-2 border-slate-300" />
-    <p className="flex-1 text-sm text-slate-700 break-words">{todo.content}</p>
+    <p className="flex-1 text-sm text-slate-700 break-words whitespace-pre-wrap">{todo.content}</p>
   </div>
 );
 

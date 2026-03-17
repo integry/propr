@@ -147,7 +147,7 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
           />
         ) : (
           <p
-            className={`text-sm leading-relaxed break-words
+            className={`text-sm leading-relaxed break-words whitespace-pre-wrap
               ${todo.isCompleted ? 'line-through text-slate-400' : 'text-slate-700'}
             `}
           >
