@@ -115,3 +115,31 @@ export async function deleteCategory(categoryId: string): Promise<{ success: boo
   const response = await client.delete<{ success: boolean }>(`/api/repos/todos/categories/${categoryId}`);
   return response.data;
 }
+
+export interface BatchReorderItem {
+  id: string;
+  orderIndex: number;
+  categoryId?: string | null;
+}
+
+export async function reorderTodos(
+  repository: string,
+  items: BatchReorderItem[]
+): Promise<{ success: boolean }> {
+  const client = await createApiClient();
+  const response = await client.post<{ success: boolean }>("/api/repos/todos/reorder", {
+    body: { repository, items },
+  });
+  return response.data;
+}
+
+export async function reorderCategories(
+  repository: string,
+  items: { id: string; orderIndex: number }[]
+): Promise<{ success: boolean }> {
+  const client = await createApiClient();
+  const response = await client.post<{ success: boolean }>("/api/repos/todos/categories/reorder", {
+    body: { repository, items },
+  });
+  return response.data;
+}

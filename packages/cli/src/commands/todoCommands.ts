@@ -18,6 +18,8 @@ import {
   createCategory,
   updateCategory,
   deleteCategory,
+  reorderTodos,
+  reorderCategories,
   RepoTodo,
   RepoTodoCategory,
 } from "../api/index.js";
@@ -144,16 +146,18 @@ Examples:
     .command("list")
     .description("List to-dos for a repository")
     .option("-p, --project <project>", "Target project (owner/repo)")
-    .option("-a, --all", "Show completed todos too (default: open only)")
+    .option("-a, --all", "Show all todos (open and completed)")
+    .option("-d, --done", "Show only completed todos")
     .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Examples:
   $ propr todo list                    # Open todos for default project
-  $ propr todo list -a                 # Include completed todos
+  $ propr todo list -a                 # All todos (open + completed)
+  $ propr todo list -d                 # Completed todos only
   $ propr todo list -p myorg/myrepo    # Specify project
   $ propr todo list --json             # JSON output
 `)
-    .action(async (options: { project?: string; all?: boolean; json?: boolean }) => {
+    .action(async (options: { project?: string; all?: boolean; done?: boolean; json?: boolean }) => {
       try {
         const configManager = await createConfigManager();
         const project = resolveProject(options, configManager);
@@ -166,7 +170,9 @@ Examples:
         let todos = todosResult.todos || [];
         const categories = categoriesResult.categories || [];
 
-        if (!options.all) {
+        if (options.done) {
+          todos = todos.filter((t) => t.isCompleted);
+        } else if (!options.all) {
           todos = todos.filter((t) => !t.isCompleted);
         }
 
@@ -174,8 +180,10 @@ Examples:
           return;
         }
 
+        const filterLabel = options.done ? "completed " : options.all ? "" : "open ";
+
         if (todos.length === 0) {
-          console.log(`No ${options.all ? "" : "open "}to-dos found for project: ${project}`);
+          console.log(`No ${filterLabel}to-dos found for project: ${project}`);
           console.log("");
           console.log("To add a to-do, use:");
           console.log("  propr todo add \"<content>\"");
@@ -186,13 +194,13 @@ Examples:
         console.log("");
         displayTodosTable(todos, categories);
 
-        const openCount = todos.filter((t) => !t.isCompleted).length;
-        const doneCount = todos.filter((t) => t.isCompleted).length;
         console.log("");
         if (options.all) {
+          const openCount = todos.filter((t) => !t.isCompleted).length;
+          const doneCount = todos.filter((t) => t.isCompleted).length;
           console.log(`Total: ${todos.length} to-do(s) (${openCount} open, ${doneCount} completed)`);
         } else {
-          console.log(`Total: ${todos.length} open to-do(s)`);
+          console.log(`Total: ${todos.length} ${filterLabel}to-do(s)`);
         }
       } catch (error) {
         if (error instanceof ProjectResolutionError) {
@@ -372,6 +380,81 @@ Examples:
       }
     });
 
+  // todo move
+  todo
+    .command("move <todo-id> <position>")
+    .description("Move a to-do to a different position or category")
+    .option("-p, --project <project>", "Target project (owner/repo)")
+    .option("-c, --category <categoryId>", "Move to a different category (use 'none' for uncategorized)")
+    .addHelpText("after", `
+Arguments:
+  todo-id     The to-do ID to move
+  position    Target position (1-based)
+
+Examples:
+  $ propr todo move abc123 1                    # Move to top
+  $ propr todo move abc123 3                    # Move to position 3
+  $ propr todo move abc123 1 -c category-uuid   # Move to top of another category
+  $ propr todo move abc123 1 -c none            # Move to uncategorized
+`)
+    .action(async (todoId: string, positionStr: string, options: { project?: string; category?: string }) => {
+      try {
+        const position = parseInt(positionStr, 10);
+        if (isNaN(position) || position < 1) {
+          console.error("Error: Position must be a positive integer (1-based).");
+          process.exit(1);
+        }
+
+        const configManager = await createConfigManager();
+        const project = resolveProject(options, configManager);
+
+        // Fetch current todo to know its category
+        const currentTodo = await getTodo(todoId);
+        const targetCategoryId = options.category === "none"
+          ? null
+          : options.category ?? currentTodo.categoryId;
+
+        // Fetch all todos to compute new order
+        const todosResult = await listTodos(project);
+        const allTodos = todosResult.todos || [];
+
+        // Get todos in the target category, excluding the one being moved
+        const categoryTodos = allTodos
+          .filter((t) => t.categoryId === targetCategoryId && t.todoId !== todoId)
+          .sort((a, b) => a.orderIndex - b.orderIndex);
+
+        // Clamp position
+        const clampedPos = Math.min(position, categoryTodos.length + 1);
+
+        // Insert at the target position (1-based -> 0-based index)
+        categoryTodos.splice(clampedPos - 1, 0, currentTodo);
+
+        // Build reorder items
+        const items = categoryTodos.map((t, i) => ({
+          id: t.todoId,
+          orderIndex: i,
+          categoryId: targetCategoryId,
+        }));
+
+        await reorderTodos(project, items);
+
+        const categoryLabel = targetCategoryId ?? "uncategorized";
+        console.log(`Moved "${truncate(currentTodo.content, 40)}" to position ${clampedPos} in ${options.category ? categoryLabel : "its category"}.`);
+      } catch (error) {
+        if (error instanceof ProjectResolutionError) {
+          console.error(`Error: ${error.message}`);
+          process.exit(1);
+        }
+        const errorMessage = (error as Error).message;
+        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+          console.error(`Error: To-do not found: ${todoId}`);
+        } else {
+          console.error(`Error moving to-do: ${errorMessage}`);
+        }
+        process.exit(1);
+      }
+    });
+
   // todo category (nested subcommand group)
   const category = new Command("category")
     .description("Manage to-do categories")
@@ -546,6 +629,62 @@ Examples:
         } else {
           console.error(`Error deleting category: ${errorMessage}`);
         }
+        process.exit(1);
+      }
+    });
+
+  // todo category move
+  category
+    .command("move <category-id> <position>")
+    .description("Move a category to a different position")
+    .option("-p, --project <project>", "Target project (owner/repo)")
+    .addHelpText("after", `
+Arguments:
+  category-id    The category ID to move
+  position       Target position (1-based)
+
+Examples:
+  $ propr todo category move abc123 1    # Move to top
+  $ propr todo category move abc123 3    # Move to position 3
+`)
+    .action(async (categoryId: string, positionStr: string, options: { project?: string }) => {
+      try {
+        const position = parseInt(positionStr, 10);
+        if (isNaN(position) || position < 1) {
+          console.error("Error: Position must be a positive integer (1-based).");
+          process.exit(1);
+        }
+
+        const configManager = await createConfigManager();
+        const project = resolveProject(options, configManager);
+
+        const result = await listCategories(project);
+        const categories = (result.categories || []).sort((a, b) => a.orderIndex - b.orderIndex);
+
+        const targetIndex = categories.findIndex((c) => c.categoryId === categoryId);
+        if (targetIndex === -1) {
+          console.error(`Error: Category not found: ${categoryId}`);
+          process.exit(1);
+        }
+
+        const [moved] = categories.splice(targetIndex, 1);
+        const clampedPos = Math.min(position, categories.length + 1);
+        categories.splice(clampedPos - 1, 0, moved);
+
+        const items = categories.map((c, i) => ({
+          id: c.categoryId,
+          orderIndex: i,
+        }));
+
+        await reorderCategories(project, items);
+
+        console.log(`Moved category "${moved.name}" to position ${clampedPos}.`);
+      } catch (error) {
+        if (error instanceof ProjectResolutionError) {
+          console.error(`Error: ${error.message}`);
+          process.exit(1);
+        }
+        console.error(`Error moving category: ${(error as Error).message}`);
         process.exit(1);
       }
     });

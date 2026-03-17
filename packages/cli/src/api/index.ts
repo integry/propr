@@ -156,11 +156,14 @@ export {
   createCategory,
   updateCategory,
   deleteCategory,
+  reorderTodos,
+  reorderCategories,
   // Types
   RepoTodo,
   RepoTodoCategory,
   ListTodosResponse,
   ListCategoriesResponse,
+  BatchReorderItem,
 } from "./todos.js";
 
 // System Status API
