@@ -248,7 +248,7 @@ export function ensureAuthenticated(req: Request, res: Response, next: NextFunct
             .then((user) => {
                 if (user) {
                     // Populate req.user so downstream handlers work the same way
-                    (req as any).user = user;
+                    (req as Request & { user: GitHubUser }).user = user;
                     return next();
                 }
                 res.status(401).json({ error: 'Unauthorized: invalid token' });
