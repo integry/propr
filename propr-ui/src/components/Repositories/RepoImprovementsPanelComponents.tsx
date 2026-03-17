@@ -1,5 +1,5 @@
 import React from 'react';
-import { Sparkles, Loader2, ChevronDown, Check, ArrowRight } from 'lucide-react';
+import { Sparkles, Loader2, ChevronDown, Check, ArrowRight, ListTodo } from 'lucide-react';
 import {
   HEALTH_CATEGORIES,
   GROWTH_CATEGORIES,
@@ -239,14 +239,58 @@ export const CreatePlanButton: React.FC<CreatePlanButtonProps> = ({
   selectedCount,
   onClick,
 }) => (
+  <button
+    onClick={onClick}
+    className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all bg-teal-600 text-white hover:bg-teal-700 shadow-sm"
+  >
+    <ArrowRight size={16} />
+    <span>Create Plan ({selectedCount})</span>
+  </button>
+);
+
+export interface SaveToTodosButtonProps {
+  selectedCount: number;
+  onClick: () => void;
+  isLoading?: boolean;
+}
+
+export const SaveToTodosButton: React.FC<SaveToTodosButtonProps> = ({
+  selectedCount,
+  onClick,
+  isLoading = false,
+}) => (
+  <button
+    onClick={onClick}
+    disabled={isLoading}
+    className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all bg-slate-600 text-white hover:bg-slate-700 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+  >
+    {isLoading ? (
+      <Loader2 size={16} className="animate-spin" />
+    ) : (
+      <ListTodo size={16} />
+    )}
+    <span>{isLoading ? 'Saving...' : `Save to To-Dos`}</span>
+  </button>
+);
+
+export interface SelectedSuggestionsFooterProps {
+  selectedCount: number;
+  onCreatePlan: () => void;
+  onSaveToTodos: () => void;
+  isSavingTodos?: boolean;
+}
+
+export const SelectedSuggestionsFooter: React.FC<SelectedSuggestionsFooterProps> = ({
+  selectedCount,
+  onCreatePlan,
+  onSaveToTodos,
+  isSavingTodos = false,
+}) => (
   <div className="flex-shrink-0 px-4 py-3 border-t border-slate-200 bg-slate-100">
-    <button
-      onClick={onClick}
-      className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all bg-teal-600 text-white hover:bg-teal-700 shadow-sm"
-    >
-      <ArrowRight size={16} />
-      <span>Create Plan from Selected ({selectedCount})</span>
-    </button>
+    <div className="flex gap-2">
+      <CreatePlanButton selectedCount={selectedCount} onClick={onCreatePlan} />
+      <SaveToTodosButton selectedCount={selectedCount} onClick={onSaveToTodos} isLoading={isSavingTodos} />
+    </div>
   </div>
 );
 

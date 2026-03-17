@@ -243,9 +243,11 @@ interface DraftCreationParams {
   navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
   setIsCreating: React.Dispatch<React.SetStateAction<boolean>>;
+  /** Optional array of to-do IDs to link to the draft */
+  todoIds?: string[];
 }
 
-export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating }: DraftCreationParams) {
+export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating, todoIds }: DraftCreationParams) {
   const handleCreateDraftAndGenerate = useCallback(async () => {
     if (!selectedRepo || !config.prompt.trim()) {
       setError('Please select a repository and enter a prompt');
@@ -255,7 +257,7 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
     setError(null);
     try {
       const { createDraft } = await import('../../api/proprApi');
-      const newDraft = await createDraft(selectedRepo, config.prompt.trim());
+      const newDraft = await createDraft(selectedRepo, config.prompt.trim(), { todoIds });
       // Upload any local files
       for (const file of localFiles) {
         try { await uploadAttachment(newDraft.draft_id, file); }
@@ -280,7 +282,7 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
       setError((err as Error).message || 'Failed to create draft');
       setIsCreating(false);
     }
-  }, [selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating]);
+  }, [selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating, todoIds]);
 
   return handleCreateDraftAndGenerate;
 }
