@@ -239,3 +239,32 @@ export type {
     IndexingUpdatePayload,
     EventPayload
 } from '@propr/shared';
+
+// Repository to-do management
+export {
+    getCategoriesForRepository,
+    createCategory,
+    updateCategory,
+    deleteCategory,
+    batchReorderCategories,
+    getTodosForRepository,
+    getTodo,
+    createTodo,
+    updateTodo,
+    deleteTodo,
+    batchReorderTodos,
+    linkTodosToDraft,
+    completeTodosForDraft,
+    getTodosForDraft
+} from './services/repoTodosService.js';
+export type {
+    RepoTodoCategoryRecord,
+    RepoTodoRecord,
+    RepoTodoCategory,
+    RepoTodo,
+    CreateCategoryParams,
+    UpdateCategoryParams,
+    CreateTodoParams,
+    UpdateTodoParams,
+    BatchReorderItem
+} from './services/repoTodosService.js';

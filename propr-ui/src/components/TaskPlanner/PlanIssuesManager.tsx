@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle, Layers, ArrowDownToLine } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2, CheckCircle, AlertCircle, Layers, ArrowDownToLine, Info } from 'lucide-react';
 import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
@@ -226,7 +226,10 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
               PR Options
             </span>
             <div className="flex flex-wrap items-center gap-3 sm:gap-6">
-              <label className="flex items-center gap-2 text-xs sm:text-sm text-gray-700 cursor-pointer select-none">
+              <label
+                className="flex items-center gap-2 text-xs sm:text-sm text-gray-700 cursor-pointer select-none"
+                title="Automatically merges the PR when all CI checks pass"
+              >
                 <input
                   type="checkbox"
                   checked={autoMerge || false}
@@ -235,9 +238,13 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                 />
                 <ArrowDownToLine size={14} className="text-slate-500 hidden sm:block" />
                 <span>Auto-merge <span className="hidden sm:inline">if checks pass</span></span>
+                <Info size={14} className="text-slate-400 hover:text-slate-600 transition-colors" />
               </label>
               {tasks.length >= 2 && (
-                <label className="flex items-center gap-2 text-xs sm:text-sm text-gray-700 cursor-pointer select-none">
+                <label
+                  className="flex items-center gap-2 text-xs sm:text-sm text-gray-700 cursor-pointer select-none"
+                  title="Creates an overarching PR that aggregates all individual task PRs"
+                >
                   <input
                     type="checkbox"
                     checked={useEpic || false}
@@ -246,6 +253,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                   />
                   <Layers size={14} className="text-slate-500 hidden sm:block" />
                   <span>Epic PR</span>
+                  <Info size={14} className="text-slate-400 hover:text-slate-600 transition-colors" />
                 </label>
               )}
             </div>

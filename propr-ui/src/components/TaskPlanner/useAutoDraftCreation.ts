@@ -31,6 +31,8 @@ interface AutoDraftCreationParams {
   // Called to update draft in-place without navigation (preserves focus)
   onDraftCreatedInPlace?: (draft: PlannerDraft) => void;
   navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void;
+  /** Optional array of to-do IDs to link to the draft */
+  todoIds?: string[];
 }
 
 export function useAutoDraftCreation({
@@ -40,7 +42,8 @@ export function useAutoDraftCreation({
   localFiles,
   onDraftCreated,
   onDraftCreatedInPlace,
-  navigate
+  navigate,
+  todoIds
 }: AutoDraftCreationParams) {
   const [isAutoCreating, setIsAutoCreating] = useState(false);
   const [autoCreateError, setAutoCreateError] = useState<string | null>(null);
@@ -63,7 +66,7 @@ export function useAutoDraftCreation({
     setAutoCreateError(null);
 
     try {
-      const newDraft = await apiCreateDraft(repo, currentPrompt.trim());
+      const newDraft = await apiCreateDraft(repo, currentPrompt.trim(), { todoIds });
       draftCreatedRef.current = true;
 
       // Upload any local files
@@ -88,7 +91,7 @@ export function useAutoDraftCreation({
       setAutoCreateError((err as Error).message || 'Failed to auto-save draft');
       setIsAutoCreating(false);
     }
-  }, [localFiles, onDraftCreated, onDraftCreatedInPlace, navigate]);
+  }, [localFiles, onDraftCreated, onDraftCreatedInPlace, navigate, todoIds]);
 
   // Debounced create draft
   const debouncedCreateDraft = useMemo(

@@ -130,11 +130,16 @@ export interface PlanGenerationOptions {
   generationModel?: string;
 }
 
-export const createDraft = async (repository: string, prompt: string): Promise<PlannerDraft> => {
+export interface CreateDraftOptions {
+  /** Optional array of to-do IDs to link to the draft */
+  todoIds?: string[];
+}
+
+export const createDraft = async (repository: string, prompt: string, options?: CreateDraftOptions): Promise<PlannerDraft> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/drafts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repository, prompt }),
+    body: JSON.stringify({ repository, prompt, todoIds: options?.todoIds }),
     credentials: 'include'
   });
   await handleApiResponse(response);

@@ -42,6 +42,7 @@ import {
   createAbortRefinementHandler,
   createReviseDraftHandler
 } from './plannerActionHandlers.js';
+import { linkTodosToDraft } from '@propr/core';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
@@ -147,7 +148,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    const { repository, prompt } = req.body;
+    const { repository, prompt, todoIds } = req.body;
     if (!repository) { res.status(400).json({ error: 'Repository is required' }); return; }
 
     try {
@@ -156,6 +157,11 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const name = prompt || 'Untitled Plan';
       await db!('task_drafts')
         .insert({ draft_id: draftId, user_id: req.user!.id, repository, initial_prompt: prompt, name });
+
+      // Link todos to the newly created draft if todoIds provided
+      if (Array.isArray(todoIds) && todoIds.length > 0) {
+        await linkTodosToDraft(todoIds, draftId, req.user!.id);
+      }
 
       // Fetch the created draft (SQLite doesn't support returning() properly)
       const draft = await db!('task_drafts').where({ draft_id: draftId }).first();

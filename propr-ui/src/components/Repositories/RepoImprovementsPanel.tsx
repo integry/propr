@@ -16,9 +16,10 @@ import {
   CategoryGrid,
   ReferenceRepoSelector,
   GenerateButton,
-  CreatePlanButton,
+  SelectedSuggestionsFooter,
   SuggestionsList,
 } from './RepoImprovementsPanelComponents';
+import { createTodo } from '../../api/repoTodosApi';
 import ModelContextSelector from './ModelContextSelector';
 
 // Re-export types for external consumers
@@ -80,6 +81,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   defaultModel = 'claude:claude-haiku-4-5-20251001',
   defaultContextLevel = 50,
   lastGenerationTiming,
+  onTodosSaved,
 }) => {
   const navigate = useNavigate();
   const [selectedCategories, setSelectedCategories] = useState<Set<ImprovementCategory>>(new Set());
@@ -90,6 +92,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   const [selectedModel, setSelectedModel] = useState(defaultModel);
   const [contextLevel, setContextLevel] = useState(defaultContextLevel);
   const [timingMetadata, setTimingMetadata] = useState<GenerationTimingMetadata | undefined>(lastGenerationTiming);
+  const [isSavingTodos, setIsSavingTodos] = useState(false);
 
   useEffect(() => {
     setSelectedCategories(new Set());
@@ -169,6 +172,31 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
     });
   }, [selectedSuggestions, navigate, repositoryId]);
 
+  const handleSaveToTodos = useCallback(async () => {
+    if (!repositoryId || selectedSuggestions.length === 0) return;
+
+    setIsSavingTodos(true);
+    try {
+      const createdTodoIds: string[] = [];
+      for (const suggestion of selectedSuggestions) {
+        const content = `${suggestion.title}\n${suggestion.description}`;
+        const todo = await createTodo({
+          repository: repositoryId,
+          content,
+        });
+        createdTodoIds.push(todo.todoId);
+      }
+      // Notify parent that todos were saved successfully
+      if (onTodosSaved) {
+        onTodosSaved(createdTodoIds);
+      }
+    } catch (err) {
+      console.error('Failed to save todos:', err);
+    } finally {
+      setIsSavingTodos(false);
+    }
+  }, [repositoryId, selectedSuggestions, onTodosSaved]);
+
   return (
     <div className="flex flex-col h-full bg-slate-50">
       {/* Model and Context Level Selector */}
@@ -240,11 +268,13 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
         )}
       </div>
 
-      {/* Footer Button - Show Create Plan if suggestions selected, otherwise Generate */}
+      {/* Footer Button - Show Create Plan + Save to To-Dos if suggestions selected, otherwise Generate */}
       {hasSelectedSuggestions ? (
-        <CreatePlanButton
+        <SelectedSuggestionsFooter
           selectedCount={selectedSuggestions.length}
-          onClick={handleCreatePlanFromSelected}
+          onCreatePlan={handleCreatePlanFromSelected}
+          onSaveToTodos={handleSaveToTodos}
+          isSavingTodos={isSavingTodos}
         />
       ) : (
         <GenerateButton
