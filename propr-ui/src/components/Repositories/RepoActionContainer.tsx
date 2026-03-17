@@ -1,8 +1,9 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { MessageSquareText, Sparkles, Book } from 'lucide-react';
+import { MessageSquareText, Sparkles, Book, ListTodo } from 'lucide-react';
 import RepoChatPanel, { ChatResponse, Message } from './RepoChatPanel';
 import RepoImprovementsPanel, { ImprovementCategory, SuggestionItem, GenerateSuggestionsResult } from './RepoImprovementsPanel';
 import RepoBrowsePanel from './RepoBrowsePanel';
+import RepoTodosPanel from './RepoTodosPanel';
 import {
   chatWithRepository,
   ChatMessage,
@@ -14,7 +15,7 @@ import {
 } from '../../api/repoChatApi';
 import { generateRepoImprovements } from '../../api/repoImprovementsApi';
 
-type ActionTab = 'chat' | 'improve' | 'browse';
+type ActionTab = 'chat' | 'improve' | 'browse' | 'todos';
 
 interface TabButtonProps {
   label: string;
@@ -235,6 +236,12 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
             isActive={activeTab === 'browse'}
             onClick={() => setActiveTab('browse')}
           />
+          <TabButton
+            label="To-Dos"
+            icon={<ListTodo className="h-3 w-3" />}
+            isActive={activeTab === 'todos'}
+            onClick={() => setActiveTab('todos')}
+          />
         </div>
       </div>
 
@@ -306,6 +313,12 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo 
           const [owner, repo] = selectedRepo.name.split('/');
           return <RepoBrowsePanel owner={owner} repo={repo} />;
         })()}
+        {activeTab === 'todos' && (
+          <RepoTodosPanel
+            repositoryName={selectedRepo.alias || selectedRepo.name}
+            repositoryId={selectedRepo.name}
+          />
+        )}
       </div>
     </div>
   );
