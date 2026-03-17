@@ -2,7 +2,7 @@
  * System Settings Commands
  *
  * CLI commands for managing system settings using the ProPR backend.
- * Provides the `get-settings` and `update-setting` commands.
+ * Provides the `setting` command group with `get` and `update` subcommands.
  */
 
 import { Command } from "commander";
@@ -17,16 +17,10 @@ import {
 } from "../api/index.js";
 import {
   printOutput,
-  readJsonInput,
-  validateJsonFields,
-  JsonInputError,
 } from "../utils/index.js";
 
 /**
  * Formats a setting value for display.
- *
- * @param value - The setting value to format.
- * @returns A formatted string representation of the value.
  */
 function formatValue(value: unknown): string {
   if (Array.isArray(value)) {
@@ -43,9 +37,6 @@ function formatValue(value: unknown): string {
 
 /**
  * Gets a human-readable description for a setting key.
- *
- * @param key - The setting key.
- * @returns A description of the setting.
  */
 function getSettingDescription(key: SettingKey): string {
   const descriptions: Record<SettingKey, string> = {
@@ -61,11 +52,8 @@ function getSettingDescription(key: SettingKey): string {
 
 /**
  * Displays all settings in a formatted table.
- *
- * @param settings - The settings object to display.
  */
 function displaySettingsTable(settings: SystemSettings): void {
-  // Calculate column widths
   const keys = Object.keys(settings) as SettingKey[];
   const keyWidth = Math.max("Setting".length, ...keys.map((k) => k.length));
   const valueWidth = Math.max(
@@ -73,7 +61,6 @@ function displaySettingsTable(settings: SystemSettings): void {
     ...keys.map((k) => formatValue(settings[k]).length)
   );
 
-  // Print header
   const header = [
     "Setting".padEnd(keyWidth),
     "Value".padEnd(valueWidth),
@@ -82,7 +69,6 @@ function displaySettingsTable(settings: SystemSettings): void {
   console.log(header);
   console.log("-".repeat(header.length));
 
-  // Print each setting
   for (const key of keys) {
     const value = settings[key];
     const row = [
@@ -96,9 +82,6 @@ function displaySettingsTable(settings: SystemSettings): void {
 
 /**
  * Displays detailed information about a single setting.
- *
- * @param key - The setting key.
- * @param value - The setting value.
  */
 function displaySettingDetail(key: SettingKey, value: unknown): void {
   console.log("");
@@ -112,14 +95,21 @@ function displaySettingDetail(key: SettingKey, value: unknown): void {
 }
 
 /**
- * Registers system settings commands on the given program.
- *
- * @param program - The Commander program to add commands to.
+ * Creates the `setting` command group.
  */
-export function registerSettingCommands(program: Command): void {
-  // Get settings command
-  program
-    .command("get-settings")
+export function createSettingCommand(): Command {
+  const setting = new Command("setting")
+    .description("Manage system settings")
+    .addHelpText("after", `
+Examples:
+  $ propr setting get                                    # Show all settings
+  $ propr setting get -k worker_concurrency              # Show specific setting
+  $ propr setting update worker_concurrency 10           # Update a setting
+`);
+
+  // setting get
+  setting
+    .command("get")
     .description("View current system settings for ProPR backend")
     .option("-k, --key <key>", "Show only a specific setting key")
     .option("-j, --json", "Output settings as JSON")
@@ -133,9 +123,9 @@ Valid Setting Keys:
   auto_followup_score_threshold  Auto-followup threshold (0-9)
 
 Examples:
-  $ propr get-settings                                 # Show all settings
-  $ propr get-settings -k worker_concurrency           # Show specific setting
-  $ propr get-settings --json                          # Output as JSON
+  $ propr setting get                                 # Show all settings
+  $ propr setting get -k worker_concurrency           # Show specific setting
+  $ propr setting get --json                          # Output as JSON
 `)
     .action(
       async (options: { key?: string; json?: boolean }) => {
@@ -144,7 +134,6 @@ Examples:
 
           const settings = await getSettings();
 
-          // If JSON output requested
           if (options.json) {
             if (options.key) {
               if (!isValidSettingKey(options.key)) {
@@ -163,7 +152,6 @@ Examples:
             return;
           }
 
-          // If specific key requested
           if (options.key) {
             if (!isValidSettingKey(options.key)) {
               console.error(`Error: Invalid setting key: ${options.key}`);
@@ -178,7 +166,6 @@ Examples:
             return;
           }
 
-          // Display all settings
           console.log("");
           displaySettingsTable(settings);
           console.log("");
@@ -207,9 +194,9 @@ Examples:
       }
     );
 
-  // Update setting command
-  program
-    .command("update-setting <key> <value>")
+  // setting update
+  setting
+    .command("update <key> <value>")
     .description("Update a system setting")
     .addHelpText(
       "after",
@@ -223,15 +210,14 @@ Valid setting keys:
   auto_followup_score_threshold  Score threshold 0-9 for auto-followup
 
 Examples:
-  $ propr update-setting worker_concurrency 10
-  $ propr update-setting auto_followup_score_threshold 7
-  $ propr update-setting github_user_whitelist "user1,user2,user3"
-  $ propr update-setting analysis_model_fast claude-3-5-sonnet-20241022
+  $ propr setting update worker_concurrency 10
+  $ propr setting update auto_followup_score_threshold 7
+  $ propr setting update github_user_whitelist "user1,user2,user3"
+  $ propr setting update analysis_model_fast claude-3-5-sonnet-20241022
 `
     )
     .action(async (key: string, value: string) => {
       try {
-        // Validate the key
         if (!isValidSettingKey(key)) {
           console.error(`Error: Invalid setting key: ${key}`);
           console.log("");
@@ -242,7 +228,6 @@ Examples:
           process.exit(1);
         }
 
-        // Parse the value to the appropriate type
         let parsedValue: number | string | string[];
         try {
           parsedValue = parseSettingValue(key, value);
@@ -291,4 +276,6 @@ Examples:
         process.exit(1);
       }
     });
+
+  return setting;
 }

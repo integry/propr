@@ -2,7 +2,7 @@
  * Implementation Commands
  *
  * CLI commands for implementing issues using the ProPR backend.
- * Provides the `implement-issue` command with optional polling for task completion.
+ * Provides the `issue` command group with the `implement` subcommand.
  */
 
 import { Command } from "commander";
@@ -32,12 +32,8 @@ const MAX_WAIT_MS = 600000;
 
 /**
  * Parses an issue identifier in the format "draft-id/issue-number" or "draft-id:issue-number".
- *
- * @param issueId - The issue identifier string.
- * @returns An object containing draftId and issueNumber, or null if parsing fails.
  */
 function parseIssueId(issueId: string): { draftId: string; issueNumber: number } | null {
-  // Support both / and : as separators
   const separatorMatch = issueId.match(/^(.+)[\/:](\d+)$/);
   if (separatorMatch) {
     const draftId = separatorMatch[1];
@@ -51,9 +47,6 @@ function parseIssueId(issueId: string): { draftId: string; issueNumber: number }
 
 /**
  * Formats the current task state for display.
- *
- * @param state - The current task state.
- * @returns A human-readable status string.
  */
 function formatState(state: TaskState | string): string {
   const stateMap: Record<string, string> = {
@@ -71,9 +64,6 @@ function formatState(state: TaskState | string): string {
 
 /**
  * Polls the task status until it reaches a terminal state.
- *
- * @param taskId - The task ID to poll.
- * @returns The final task status.
  */
 async function pollTaskStatus(taskId: string): Promise<TaskStatus> {
   const startTime = Date.now();
@@ -82,34 +72,37 @@ async function pollTaskStatus(taskId: string): Promise<TaskStatus> {
   while (Date.now() - startTime < MAX_WAIT_MS) {
     const status = await getTaskStatus(taskId);
 
-    // Print progress if state changed
     if (status.currentState !== lastState) {
       console.log(`Status: ${formatState(status.currentState)}`);
       lastState = status.currentState;
     }
 
-    // Check if we've reached a terminal state
     if (TERMINAL_STATES.includes(status.currentState as TaskState)) {
       return status;
     }
 
-    // Wait before polling again
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
 
-  // Timeout - return the last known status
   const finalStatus = await getTaskStatus(taskId);
   return finalStatus;
 }
 
 /**
- * Registers implementation-related commands on the given program.
- *
- * @param program - The Commander program to add commands to.
+ * Creates the `issue` command group.
  */
-export function registerImplementCommands(program: Command): void {
-  program
-    .command("implement-issue <issue-id>")
+export function createIssueCommand(): Command {
+  const issue = new Command("issue")
+    .description("Manage GitHub issue implementation")
+    .addHelpText("after", `
+Examples:
+  $ propr issue implement abc123/1
+  $ propr issue implement abc123:42 --wait
+  $ propr issue implement abc123/1 -a claude --wait --auto-merge
+`);
+
+  issue
+    .command("implement <issue-id>")
     .description("Implement a GitHub issue from a plan using AI agents")
     .option("-p, --project <project>", "Target project (owner/repo)")
     .option("-w, --wait", "Wait for the implementation to complete")
@@ -122,10 +115,10 @@ Argument:
   issue-id    Format: <draft-id>/<issue-number> or <draft-id>:<issue-number>
 
 Examples:
-  $ propr implement-issue abc123/1
-  $ propr implement-issue abc123:42 --wait
-  $ propr implement-issue abc123/1 -a claude -m claude-sonnet-4-20250514 --wait
-  $ propr implement-issue abc123/1 --epic --auto-merge
+  $ propr issue implement abc123/1
+  $ propr issue implement abc123:42 --wait
+  $ propr issue implement abc123/1 -a claude -m claude-sonnet-4-20250514 --wait
+  $ propr issue implement abc123/1 --epic --auto-merge
 `)
     .action(
       async (
@@ -140,7 +133,6 @@ Examples:
         }
       ) => {
         try {
-          // Parse the issue ID
           const parsed = parseIssueId(issueId);
           if (!parsed) {
             console.error(
@@ -148,8 +140,8 @@ Examples:
             );
             console.error("");
             console.error("Examples:");
-            console.error("  propr implement-issue abc123/1");
-            console.error("  propr implement-issue draft-uuid-here:42");
+            console.error("  propr issue implement abc123/1");
+            console.error("  propr issue implement draft-uuid-here:42");
             process.exit(1);
           }
 
@@ -157,7 +149,6 @@ Examples:
 
           console.log(`Implementing issue #${issueNumber} from draft ${draftId}...`);
 
-          // Trigger the implementation
           const result = await implementIssue(draftId, issueNumber, {
             agent_alias: options.agent,
             model_name: options.model,
@@ -172,23 +163,20 @@ Examples:
 
           console.log(result.message);
 
-          // If a task ID was returned, show it
           if (result.taskId) {
             console.log(`Task ID: ${result.taskId}`);
           }
 
-          // If --wait flag is not set, exit here
           if (!options.wait) {
             if (result.taskId) {
               console.log("");
               console.log(
-                "Use 'propr implement-issue <issue-id> --wait' to wait for completion."
+                "Use 'propr issue implement <issue-id> --wait' to wait for completion."
               );
             }
             return;
           }
 
-          // If no task ID was returned, we can't poll
           if (!result.taskId) {
             console.log("");
             console.log(
@@ -197,13 +185,11 @@ Examples:
             return;
           }
 
-          // Poll for completion
           console.log("");
           console.log("Waiting for implementation to complete...");
 
           const finalStatus = await pollTaskStatus(result.taskId);
 
-          // Print final result
           console.log("");
 
           if (finalStatus.isCompleted) {
@@ -221,9 +207,8 @@ Examples:
             }
             process.exit(1);
           } else {
-            // Timeout or unknown state
             console.log(
-              `Implementation is still ${formatState(finalStatus.currentState)} after ${Math.round((Date.now() - Date.now()) / 1000)} seconds.`
+              `Implementation is still ${formatState(finalStatus.currentState)}.`
             );
             console.log(`Task ID: ${result.taskId}`);
             console.log("You can check the status later using the ProPR dashboard.");
@@ -240,4 +225,6 @@ Examples:
         }
       }
     );
+
+  return issue;
 }

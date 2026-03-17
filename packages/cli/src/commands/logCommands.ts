@@ -2,7 +2,7 @@
  * LLM Log Management Commands
  *
  * CLI commands for viewing LLM execution logs.
- * Provides the `list-logs` command for auditing and cost analysis.
+ * Provides the `log` command group with the `list` subcommand.
  */
 
 import { Command } from "commander";
@@ -11,10 +11,6 @@ import { printOutput } from "../utils/index.js";
 
 /**
  * Truncates a string to a maximum length.
- *
- * @param str - The string to truncate.
- * @param maxLen - The maximum length.
- * @returns The truncated string with "..." if it was too long.
  */
 function truncate(str: string | null | undefined, maxLen: number): string {
   if (!str) return "-";
@@ -24,9 +20,6 @@ function truncate(str: string | null | undefined, maxLen: number): string {
 
 /**
  * Formats a number with commas for readability.
- *
- * @param num - The number to format.
- * @returns Formatted string or "-" if null/undefined.
  */
 function formatNumber(num: number | null | undefined): string {
   if (num === null || num === undefined) return "-";
@@ -35,10 +28,6 @@ function formatNumber(num: number | null | undefined): string {
 
 /**
  * Formats tokens count (input + output).
- *
- * @param input - Input tokens.
- * @param output - Output tokens.
- * @returns Formatted tokens string.
  */
 function formatTokens(
   input: number | null | undefined,
@@ -56,13 +45,9 @@ function formatTokens(
 
 /**
  * Formats cost in USD.
- *
- * @param cost - The cost in USD.
- * @returns Formatted cost string.
  */
 function formatCost(cost: number | null | undefined): string {
   if (cost === null || cost === undefined) return "-";
-  // Show cost with appropriate precision
   if (cost < 0.01) {
     return `$${cost.toFixed(4)}`;
   }
@@ -71,8 +56,6 @@ function formatCost(cost: number | null | undefined): string {
 
 /**
  * Displays a table of LLM logs with clean formatting.
- *
- * @param logs - The logs to display.
  */
 function displayLogsTable(logs: LlmLogEntry[]): void {
   if (logs.length === 0) {
@@ -80,7 +63,6 @@ function displayLogsTable(logs: LlmLogEntry[]): void {
     return;
   }
 
-  // Calculate column widths
   const typeWidth = Math.max(
     "Type".length,
     ...logs.map((l) => truncate(l.executionType, 15).length)
@@ -98,7 +80,6 @@ function displayLogsTable(logs: LlmLogEntry[]): void {
     ...logs.map((l) => formatCost(l.costUsd).length)
   );
 
-  // Print header
   const header = [
     "Type".padEnd(typeWidth),
     "Model".padEnd(modelWidth),
@@ -109,7 +90,6 @@ function displayLogsTable(logs: LlmLogEntry[]): void {
   console.log(header);
   console.log("-".repeat(header.length));
 
-  // Print each log
   for (const log of logs) {
     const row = [
       truncate(log.executionType, 15).padEnd(typeWidth),
@@ -123,14 +103,21 @@ function displayLogsTable(logs: LlmLogEntry[]): void {
 }
 
 /**
- * Registers LLM log management commands on the given program.
- *
- * @param program - The Commander program to add commands to.
+ * Creates the `log` command group.
  */
-export function registerLogCommands(program: Command): void {
-  // List logs command
-  program
-    .command("list-logs")
+export function createLogCommand(): Command {
+  const log = new Command("log")
+    .description("View LLM execution logs")
+    .addHelpText("after", `
+Examples:
+  $ propr log list                      # List recent logs
+  $ propr log list -m claude-sonnet-4-20250514  # Filter by model
+  $ propr log list --failed             # Show failures only
+`);
+
+  // log list
+  log
+    .command("list")
     .description("List LLM execution logs for auditing, debugging, and cost analysis")
     .option("-l, --limit <limit>", "Maximum number of logs to show", "50")
     .option("-m, --model <model>", "Filter by model name")
@@ -142,20 +129,14 @@ export function registerLogCommands(program: Command): void {
     .option("--draft <draftId>", "Filter by draft/plan ID")
     .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
-Output includes:
-  - Execution type
-  - Model name
-  - Token usage (input/output)
-  - Cost in USD
-
 Examples:
-  $ propr list-logs                            # List recent logs
-  $ propr list-logs -l 100 --page 2            # Paginated results
-  $ propr list-logs -m claude-sonnet-4-20250514            # Filter by model
-  $ propr list-logs --failed                   # Show failures only
-  $ propr list-logs --draft abc123             # Filter by plan ID
-  $ propr list-logs --agent my-claude          # Filter by agent
-  $ propr list-logs --json                     # JSON output
+  $ propr log list                            # List recent logs
+  $ propr log list -l 100 --page 2            # Paginated results
+  $ propr log list -m claude-sonnet-4-20250514            # Filter by model
+  $ propr log list --failed                   # Show failures only
+  $ propr log list --draft abc123             # Filter by plan ID
+  $ propr log list --agent my-claude          # Filter by agent
+  $ propr log list --json                     # JSON output
 `)
     .action(
       async (options: {
@@ -180,48 +161,40 @@ Examples:
             draftId?: string;
           } = {};
 
-          // Handle limit
           const limit = parseInt(options.limit, 10);
           if (!isNaN(limit) && limit > 0) {
-            listOptions.limit = Math.min(limit, 100); // API max is 100
+            listOptions.limit = Math.min(limit, 100);
           }
 
-          // Handle page
           const page = parseInt(options.page, 10);
           if (!isNaN(page) && page > 0) {
             listOptions.page = page;
           }
 
-          // Handle model filter
           if (options.model) {
             listOptions.model = options.model;
           }
 
-          // Handle type filter
           if (options.type) {
             listOptions.executionType = options.type;
           }
 
-          // Handle success/failed filters
           if (options.success) {
             listOptions.success = true;
           } else if (options.failed) {
             listOptions.success = false;
           }
 
-          // Handle agent filter
           if (options.agent) {
             listOptions.agentAlias = options.agent;
           }
 
-          // Handle draft filter
           if (options.draft) {
             listOptions.draftId = options.draft;
           }
 
           const result = await listLlmLogs(listOptions);
 
-          // Handle JSON output
           if (printOutput(result, options.json ?? false)) {
             return;
           }
@@ -257,4 +230,6 @@ Examples:
         }
       }
     );
+
+  return log;
 }

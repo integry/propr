@@ -2,24 +2,25 @@
  * Plan Management Commands
  *
  * CLI commands for managing plans using the ProPR backend.
- * Provides the `get-plan`, `delete-plan`, and `abort-plan` commands.
+ * Provides the `plan` command group with `list`, `create`, `get`, `delete`, and `abort` subcommands.
  */
 
 import { Command } from "commander";
 import {
+  listPlans,
+  createPlan,
   getPlan,
   deletePlan,
   abortPlan,
   Plan,
+  PlanSummary,
   PlanStatus,
 } from "../api/index.js";
-import { printOutput } from "../utils/index.js";
+import { createConfigManager } from "../config/index.js";
+import { resolveProject, ProjectResolutionError, printOutput } from "../utils/index.js";
 
 /**
  * Formats a plan status for display with color hints.
- *
- * @param status - The plan status.
- * @returns A formatted status string.
  */
 function formatStatus(status: PlanStatus): string {
   const statusMap: Record<PlanStatus, string> = {
@@ -38,9 +39,6 @@ function formatStatus(status: PlanStatus): string {
 
 /**
  * Formats a date string for display.
- *
- * @param dateStr - The ISO date string.
- * @returns A formatted date string.
  */
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr);
@@ -49,8 +47,6 @@ function formatDate(dateStr: string): string {
 
 /**
  * Displays detailed plan information.
- *
- * @param plan - The plan to display.
  */
 function displayPlanDetails(plan: Plan): void {
   console.log("");
@@ -85,7 +81,6 @@ function displayPlanDetails(plan: Plan): void {
       const description = item.description || "";
       console.log(`${i + 1}. ${title}`);
       if (description) {
-        // Truncate long descriptions
         const truncated = description.toString().length > 100
           ? description.toString().substring(0, 100) + "..."
           : description;
@@ -116,12 +111,8 @@ function displayPlanDetails(plan: Plan): void {
 
 /**
  * Prompts the user for confirmation.
- *
- * @param message - The confirmation message.
- * @returns A promise resolving to true if confirmed, false otherwise.
  */
 async function confirm(message: string): Promise<boolean> {
-  // Use readline for simple confirmation
   const readline = await import("readline");
   const rl = readline.createInterface({
     input: process.stdin,
@@ -137,14 +128,186 @@ async function confirm(message: string): Promise<boolean> {
 }
 
 /**
- * Registers plan management commands on the given program.
- *
- * @param program - The Commander program to add commands to.
+ * Creates the `plan` command group.
  */
-export function registerPlanCommands(program: Command): void {
-  // Get plan command
-  program
-    .command("get-plan <draft-id>")
+export function createPlanCommand(): Command {
+  const plan = new Command("plan")
+    .description("Manage implementation plans")
+    .addHelpText("after", `
+Examples:
+  $ propr plan list                          # List all plans
+  $ propr plan create "Add dark mode"        # Create a new plan
+  $ propr plan get abc123                    # View plan details
+  $ propr plan delete abc123                 # Delete a plan
+  $ propr plan abort abc123                  # Abort generation
+`);
+
+  // plan list
+  plan
+    .command("list")
+    .description("List all implementation plans for a project")
+    .option("-p, --project <project>", "Target project (owner/repo)")
+    .option("-j, --json", "Output as JSON for programmatic use")
+    .addHelpText("after", `
+Examples:
+  $ propr plan list                    # Use default project
+  $ propr plan list -p myorg/myrepo    # Specify project
+  $ propr plan list --json             # JSON output
+`)
+    .action(async (options: { project?: string; json?: boolean }) => {
+      try {
+        const configManager = await createConfigManager();
+        const project = resolveProject(options, configManager);
+
+        const result = await listPlans(project);
+
+        if (options.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+
+        if (result.drafts.length === 0) {
+          console.log(`No plans found for project: ${project}`);
+          console.log("");
+          console.log("To create a new plan, use:");
+          console.log("  propr plan create \"<prompt>\"");
+          return;
+        }
+
+        console.log(`Plans for ${project}:`);
+        console.log("");
+
+        const idWidth = Math.max(
+          "ID".length,
+          ...result.drafts.map((p: PlanSummary) => p.draft_id.length)
+        );
+        const nameWidth = Math.max(
+          "Name".length,
+          ...result.drafts.map((p: PlanSummary) => p.name.length)
+        );
+        const statusWidth = Math.max(
+          "Status".length,
+          ...result.drafts.map((p: PlanSummary) => p.status.length)
+        );
+
+        const header = `${"ID".padEnd(idWidth)}  ${"Name".padEnd(nameWidth)}  ${"Status".padEnd(statusWidth)}`;
+        console.log(header);
+        console.log("-".repeat(header.length));
+
+        for (const p of result.drafts) {
+          console.log(
+            `${p.draft_id.padEnd(idWidth)}  ${p.name.padEnd(nameWidth)}  ${p.status.padEnd(statusWidth)}`
+          );
+        }
+
+        console.log("");
+        console.log(`Total: ${result.total} plan(s)`);
+
+        if (result.hasMore) {
+          console.log(`Showing page ${result.page} of results. More plans available.`);
+        }
+      } catch (error) {
+        if (error instanceof ProjectResolutionError) {
+          console.error(`Error: ${error.message}`);
+          process.exit(1);
+        }
+        console.error(`Error fetching plans: ${(error as Error).message}`);
+        process.exit(1);
+      }
+    });
+
+  // plan create
+  plan
+    .command("create <prompt>")
+    .description("Create a new implementation plan from a natural language prompt")
+    .option("-p, --project <project>", "Target project (owner/repo)")
+    .option("-b, --branch <branch>", "Target branch (default: main)", "main")
+    .option("-w, --wait", "Wait for plan generation to complete")
+    .addHelpText("after", `
+Argument:
+  prompt    Natural language description of what to implement
+
+Examples:
+  $ propr plan create "Add user authentication with JWT"
+  $ propr plan create "Fix the login page styling" --wait
+  $ propr plan create "Add dark mode" -b develop -p myorg/myrepo --wait
+`)
+    .action(async (prompt: string, options: { project?: string; branch: string; wait?: boolean }) => {
+      try {
+        const configManager = await createConfigManager();
+        const project = resolveProject(options, configManager);
+
+        console.log(`Creating plan for ${project}...`);
+
+        const planResult = await createPlan(project, prompt, {
+          contextConfig: {
+            branch: options.branch,
+          },
+        });
+
+        console.log(`Plan created with ID: ${planResult.draft_id}`);
+        console.log(`Status: ${planResult.status}`);
+
+        if (!options.wait) {
+          console.log("");
+          console.log(`Use 'propr plan list' to check the status.`);
+          return;
+        }
+
+        console.log("");
+        console.log("Waiting for plan generation to complete...");
+
+        const terminalStatuses: PlanStatus[] = ["draft", "review", "approved", "failed", "executed", "merged", "pr_created"];
+        const pollIntervalMs = 3000;
+        const maxWaitMs = 600000;
+        const startTime = Date.now();
+
+        let currentPlan: Plan = planResult;
+        let lastStatus = planResult.status;
+
+        while (Date.now() - startTime < maxWaitMs) {
+          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+
+          currentPlan = await getPlan(planResult.draft_id);
+
+          if (currentPlan.status !== lastStatus) {
+            console.log(`Status: ${currentPlan.status}`);
+            lastStatus = currentPlan.status;
+          }
+
+          if (terminalStatuses.includes(currentPlan.status)) {
+            break;
+          }
+        }
+
+        console.log("");
+        if (currentPlan.status === "failed") {
+          console.error("Plan generation failed.");
+          process.exit(1);
+        } else if (terminalStatuses.includes(currentPlan.status)) {
+          console.log(`Plan generation completed.`);
+          console.log(`Final status: ${currentPlan.status}`);
+          if (currentPlan.name) {
+            console.log(`Name: ${currentPlan.name}`);
+          }
+        } else {
+          console.log(`Timeout: Plan is still ${currentPlan.status} after ${Math.round((Date.now() - startTime) / 1000)} seconds.`);
+          console.log(`Plan ID: ${currentPlan.draft_id}`);
+          console.log(`Use 'propr plan list' to check the status.`);
+        }
+      } catch (error) {
+        if (error instanceof ProjectResolutionError) {
+          console.error(`Error: ${error.message}`);
+          process.exit(1);
+        }
+        console.error(`Error creating plan: ${(error as Error).message}`);
+        process.exit(1);
+      }
+    });
+
+  // plan get
+  plan
+    .command("get <draft-id>")
     .description("Get detailed information about a specific plan")
     .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
@@ -152,20 +315,19 @@ Argument:
   draft-id    The unique identifier of the plan
 
 Examples:
-  $ propr get-plan abc123-def456
-  $ propr get-plan abc123-def456 --json
+  $ propr plan get abc123-def456
+  $ propr plan get abc123-def456 --json
 `)
     .action(async (draftId: string, options: { json?: boolean }) => {
       try {
-        const plan = await getPlan(draftId);
+        const fetchedPlan = await getPlan(draftId);
 
-        // Handle JSON output
-        if (printOutput(plan, options.json ?? false)) {
+        if (printOutput(fetchedPlan, options.json ?? false)) {
           return;
         }
 
         console.log(`Fetching plan ${draftId}...`);
-        displayPlanDetails(plan);
+        displayPlanDetails(fetchedPlan);
       } catch (error) {
         const errorMessage = (error as Error).message;
         if (errorMessage.includes("404") || errorMessage.includes("not found")) {
@@ -181,9 +343,9 @@ Examples:
       }
     });
 
-  // Delete plan command
-  program
-    .command("delete-plan <draft-id>")
+  // plan delete
+  plan
+    .command("delete <draft-id>")
     .description("Delete a plan from the system permanently")
     .option("-f, --force", "Skip confirmation prompt")
     .addHelpText("after", `
@@ -191,27 +353,24 @@ Argument:
   draft-id    The unique identifier of the plan to delete
 
 Examples:
-  $ propr delete-plan abc123-def456           # With confirmation
-  $ propr delete-plan abc123-def456 --force   # Skip confirmation
+  $ propr plan delete abc123-def456           # With confirmation
+  $ propr plan delete abc123-def456 --force   # Skip confirmation
 `)
     .action(async (draftId: string, options: { force?: boolean }) => {
       try {
-        // Fetch the plan first to show what will be deleted
         let planName = draftId;
         try {
-          const plan = await getPlan(draftId);
-          planName = plan.name || plan.task_title || draftId;
+          const fetchedPlan = await getPlan(draftId);
+          planName = fetchedPlan.name || fetchedPlan.task_title || draftId;
           console.log(`Plan: ${planName}`);
-          console.log(`Repository: ${plan.repository}`);
-          console.log(`Status: ${formatStatus(plan.status)}`);
+          console.log(`Repository: ${fetchedPlan.repository}`);
+          console.log(`Status: ${formatStatus(fetchedPlan.status)}`);
           console.log("");
         } catch {
-          // If we can't fetch the plan, continue with deletion using just the ID
           console.log(`Plan ID: ${draftId}`);
           console.log("");
         }
 
-        // Confirm deletion unless --force is used
         if (!options.force) {
           const confirmed = await confirm(`Are you sure you want to delete this plan?`);
           if (!confirmed) {
@@ -238,9 +397,9 @@ Examples:
       }
     });
 
-  // Abort plan command
-  program
-    .command("abort-plan <draft-id>")
+  // plan abort
+  plan
+    .command("abort <draft-id>")
     .description("Abort ongoing LLM generation for a plan (only works for generating/refining plans)")
     .addHelpText("after", `
 Argument:
@@ -250,15 +409,14 @@ Note:
   This command only works for plans in 'generating' or 'refining' status.
 
 Example:
-  $ propr abort-plan abc123-def456
+  $ propr plan abort abc123-def456
 `)
     .action(async (draftId: string) => {
       try {
-        // Optionally check the plan status first
         try {
-          const plan = await getPlan(draftId);
-          if (plan.status !== "generating" && plan.status !== "refining") {
-            console.log(`Plan status: ${formatStatus(plan.status)}`);
+          const fetchedPlan = await getPlan(draftId);
+          if (fetchedPlan.status !== "generating" && fetchedPlan.status !== "refining") {
+            console.log(`Plan status: ${formatStatus(fetchedPlan.status)}`);
             console.log("");
             console.log("Warning: This plan is not currently generating or refining.");
             console.log("The abort command is only effective for plans in 'generating' or 'refining' status.");
@@ -293,4 +451,6 @@ Example:
         process.exit(1);
       }
     });
+
+  return plan;
 }

@@ -3,9 +3,17 @@
 import { Command } from "commander";
 import { config } from "dotenv";
 import { createConfigManager } from "./config/index.js";
-import { resolveProject, ProjectResolutionError } from "./utils/index.js";
-import { listPlans, createPlan, getPlan, PlanSummary, Plan, PlanStatus } from "./api/index.js";
-import { registerImplementCommands, registerPlanCommands, registerTaskCommands, registerRepoCommands, registerAgentCommands, registerSettingCommands, registerLogCommands, registerSystemCommands } from "./commands/index.js";
+import {
+  createIssueCommand,
+  createPlanCommand,
+  createTaskCommand,
+  createRepoCommand,
+  createAgentCommand,
+  createSettingCommand,
+  createLogCommand,
+  createStatusCommand,
+  createQueueCommand,
+} from "./commands/index.js";
 
 // Re-export configuration module for programmatic use
 export {
@@ -74,33 +82,33 @@ Quick Start:
   $ propr remote <url>              Set the backend API URL
   $ propr login <token>             Authenticate with GitHub
   $ propr use <owner/repo>          Set default project
-  $ propr list-plans                View available implementation plans
-  $ propr implement-issue <id>      Implement a GitHub issue
+  $ propr plan list                 View available implementation plans
+  $ propr issue implement <id>      Implement a GitHub issue
 
 JSON Output:
   Use --json (-j) flag with any command for machine-readable output:
-  $ propr list-plans --json
-  $ propr list-agents -j
+  $ propr plan list --json
+  $ propr agent list -j
 
 Examples:
   $ propr remote https://api.propr.example.com
   $ propr login ghp_xxxxxxxxxxxx
   $ propr use myorg/myrepo
-  $ propr create-plan "Add dark mode toggle" --wait
-  $ propr implement-issue abc123/1 --wait --auto-merge
-  $ propr list-tasks -s processing
-  $ propr system-status
+  $ propr plan create "Add dark mode toggle" --wait
+  $ propr issue implement abc123/1 --wait --auto-merge
+  $ propr task list -s processing
+  $ propr status
 
 Command Groups:
   Configuration:  remote, use, login, logout
-  Plans:          create-plan, list-plans, get-plan, delete-plan, abort-plan
-  Implementation: implement-issue
-  Tasks:          list-tasks, get-task, stop-task, delete-task, revert-task
-  Repositories:   list-repos, add-repo, remove-repo, toggle-repo, index-repo, repo-status
-  Agents:         list-agents, add-agent, delete-agent
-  Settings:       get-settings, update-setting
-  Logs:           list-logs
-  System:         system-status, queue-stats
+  Plans:          plan [create|list|get|delete|abort]
+  Implementation: issue [implement]
+  Tasks:          task [list|get|stop|delete|revert]
+  Repositories:   repo [list|add|remove|toggle|index|status]
+  Agents:         agent [list|add|delete]
+  Settings:       setting [get|update]
+  Logs:           log [list]
+  System:         status, queue
 
 For more information on a command, run:
   $ propr <command> --help
@@ -175,7 +183,6 @@ To generate a token:
       const configManager = await createConfigManager();
 
       if (!token) {
-        // No token provided - show instructions
         console.log("No token provided.");
         console.log("");
         console.log("Usage: propr login <token>");
@@ -189,7 +196,6 @@ To generate a token:
         process.exit(1);
       }
 
-      // Validate token format (basic check - GitHub tokens start with specific prefixes)
       const validPrefixes = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"];
       const hasValidPrefix = validPrefixes.some((prefix) => token.startsWith(prefix));
 
@@ -237,202 +243,16 @@ Example:
     }
   });
 
-// List-plans command - list plans for a project
-program
-  .command("list-plans")
-  .description("List all implementation plans for a project")
-  .option("-p, --project <project>", "Target project (owner/repo)")
-  .option("-j, --json", "Output as JSON for programmatic use")
-  .addHelpText("after", `
-Examples:
-  $ propr list-plans                    # Use default project
-  $ propr list-plans -p myorg/myrepo    # Specify project
-  $ propr list-plans --json             # JSON output
-`)
-  .action(async (options: { project?: string; json?: boolean }) => {
-    try {
-      const configManager = await createConfigManager();
-      const project = resolveProject(options, configManager);
-
-      const result = await listPlans(project);
-
-      // Handle JSON output
-      if (options.json) {
-        console.log(JSON.stringify(result, null, 2));
-        return;
-      }
-
-      if (result.drafts.length === 0) {
-        console.log(`No plans found for project: ${project}`);
-        console.log("");
-        console.log("To create a new plan, use the ProPR dashboard or API.");
-        return;
-      }
-
-      console.log(`Plans for ${project}:`);
-      console.log("");
-
-      // Calculate column widths for neat formatting
-      const idWidth = Math.max(
-        "ID".length,
-        ...result.drafts.map((p: PlanSummary) => p.draft_id.length)
-      );
-      const nameWidth = Math.max(
-        "Name".length,
-        ...result.drafts.map((p: PlanSummary) => p.name.length)
-      );
-      const statusWidth = Math.max(
-        "Status".length,
-        ...result.drafts.map((p: PlanSummary) => p.status.length)
-      );
-
-      // Print header
-      const header = `${"ID".padEnd(idWidth)}  ${"Name".padEnd(nameWidth)}  ${"Status".padEnd(statusWidth)}`;
-      console.log(header);
-      console.log("-".repeat(header.length));
-
-      // Print each plan
-      for (const plan of result.drafts) {
-        console.log(
-          `${plan.draft_id.padEnd(idWidth)}  ${plan.name.padEnd(nameWidth)}  ${plan.status.padEnd(statusWidth)}`
-        );
-      }
-
-      console.log("");
-      console.log(`Total: ${result.total} plan(s)`);
-
-      if (result.hasMore) {
-        console.log(`Showing page ${result.page} of results. More plans available.`);
-      }
-    } catch (error) {
-      if (error instanceof ProjectResolutionError) {
-        console.error(`Error: ${error.message}`);
-        process.exit(1);
-      }
-      console.error(`Error fetching plans: ${(error as Error).message}`);
-      process.exit(1);
-    }
-  });
-
-// Create-plan command - create a new implementation plan
-program
-  .command("create-plan <prompt>")
-  .description("Create a new implementation plan from a natural language prompt")
-  .option("-p, --project <project>", "Target project (owner/repo)")
-  .option("-b, --branch <branch>", "Target branch (default: main)", "main")
-  .option("-w, --wait", "Wait for plan generation to complete")
-  .addHelpText("after", `
-Argument:
-  prompt    Natural language description of what to implement
-
-Examples:
-  $ propr create-plan "Add user authentication with JWT"
-  $ propr create-plan "Fix the login page styling" --wait
-  $ propr create-plan "Add dark mode" -b develop -p myorg/myrepo --wait
-`)
-  .action(async (prompt: string, options: { project?: string; branch: string; wait?: boolean }) => {
-    try {
-      const configManager = await createConfigManager();
-      const project = resolveProject(options, configManager);
-
-      console.log(`Creating plan for ${project}...`);
-
-      // Create the plan
-      const plan = await createPlan(project, prompt, {
-        contextConfig: {
-          branch: options.branch,
-        },
-      });
-
-      console.log(`Plan created with ID: ${plan.draft_id}`);
-      console.log(`Status: ${plan.status}`);
-
-      if (!options.wait) {
-        // Return immediately with the plan ID
-        console.log("");
-        console.log(`Use 'propr list-plans' to check the status.`);
-        return;
-      }
-
-      // Poll for completion
-      console.log("");
-      console.log("Waiting for plan generation to complete...");
-
-      const terminalStatuses: PlanStatus[] = ["draft", "review", "approved", "failed", "executed", "merged", "pr_created"];
-      const pollIntervalMs = 3000;
-      const maxWaitMs = 600000; // 10 minutes
-      const startTime = Date.now();
-
-      let currentPlan: Plan = plan;
-      let lastStatus = plan.status;
-
-      while (Date.now() - startTime < maxWaitMs) {
-        // Wait before polling
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-
-        currentPlan = await getPlan(plan.draft_id);
-
-        // Print progress if status changed
-        if (currentPlan.status !== lastStatus) {
-          console.log(`Status: ${currentPlan.status}`);
-          lastStatus = currentPlan.status;
-        }
-
-        // Check if we've reached a terminal state
-        if (terminalStatuses.includes(currentPlan.status)) {
-          break;
-        }
-      }
-
-      // Final status
-      console.log("");
-      if (currentPlan.status === "failed") {
-        console.error("Plan generation failed.");
-        process.exit(1);
-      } else if (terminalStatuses.includes(currentPlan.status)) {
-        console.log(`Plan generation completed.`);
-        console.log(`Final status: ${currentPlan.status}`);
-        if (currentPlan.name) {
-          console.log(`Name: ${currentPlan.name}`);
-        }
-      } else {
-        console.log(`Timeout: Plan is still ${currentPlan.status} after ${Math.round((Date.now() - startTime) / 1000)} seconds.`);
-        console.log(`Plan ID: ${currentPlan.draft_id}`);
-        console.log(`Use 'propr list-plans' to check the status.`);
-      }
-    } catch (error) {
-      if (error instanceof ProjectResolutionError) {
-        console.error(`Error: ${error.message}`);
-        process.exit(1);
-      }
-      console.error(`Error creating plan: ${(error as Error).message}`);
-      process.exit(1);
-    }
-  });
-
-// Register implementation commands
-registerImplementCommands(program);
-
-// Register plan management commands
-registerPlanCommands(program);
-
-// Register task management commands
-registerTaskCommands(program);
-
-// Register repository management commands
-registerRepoCommands(program);
-
-// Register agent management commands
-registerAgentCommands(program);
-
-// Register system settings commands
-registerSettingCommands(program);
-
-// Register LLM log commands
-registerLogCommands(program);
-
-// Register system status commands
-registerSystemCommands(program);
+// Register command groups
+program.addCommand(createPlanCommand());
+program.addCommand(createIssueCommand());
+program.addCommand(createTaskCommand());
+program.addCommand(createRepoCommand());
+program.addCommand(createAgentCommand());
+program.addCommand(createSettingCommand());
+program.addCommand(createLogCommand());
+program.addCommand(createStatusCommand());
+program.addCommand(createQueueCommand());
 
 program.parse();
 

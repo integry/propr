@@ -2,7 +2,7 @@
  * Agent Management Commands
  *
  * CLI commands for managing AI agent configurations.
- * Provides the `list-agents`, `add-agent`, and `delete-agent` commands.
+ * Provides the `agent` command group with `list`, `add`, and `delete` subcommands.
  */
 
 import { Command } from "commander";
@@ -22,9 +22,6 @@ import {
 
 /**
  * Formats an agent type for display.
- *
- * @param type - The agent type.
- * @returns A formatted type string.
  */
 function formatType(type: string): string {
   const typeMap: Record<string, string> = {
@@ -37,10 +34,6 @@ function formatType(type: string): string {
 
 /**
  * Truncates a string to a maximum length.
- *
- * @param str - The string to truncate.
- * @param maxLen - The maximum length.
- * @returns The truncated string with "..." if it was too long.
  */
 function truncate(str: string | null | undefined, maxLen: number): string {
   if (!str) return "";
@@ -50,11 +43,8 @@ function truncate(str: string | null | undefined, maxLen: number): string {
 
 /**
  * Displays a table of agents with clean formatting.
- *
- * @param agents - The agents to display.
  */
 function displayAgentsTable(agents: AgentConfig[]): void {
-  // Calculate column widths
   const aliasWidth = Math.max(
     "Alias".length,
     ...agents.map((a) => a.alias.length)
@@ -73,7 +63,6 @@ function displayAgentsTable(agents: AgentConfig[]): void {
     ...agents.map((a) => truncate(a.supportedModels.join(", "), 40).length)
   );
 
-  // Print header
   const header = [
     "Alias".padEnd(aliasWidth),
     "Type".padEnd(typeWidth),
@@ -85,7 +74,6 @@ function displayAgentsTable(agents: AgentConfig[]): void {
   console.log(header);
   console.log("-".repeat(header.length));
 
-  // Print each agent
   for (const agent of agents) {
     const row = [
       agent.alias.padEnd(aliasWidth),
@@ -101,9 +89,6 @@ function displayAgentsTable(agents: AgentConfig[]): void {
 
 /**
  * Validates that the agent type is valid.
- *
- * @param type - The type string to validate.
- * @returns True if valid, false otherwise.
  */
 function isValidAgentType(type: string): type is AgentType {
   return ["claude", "codex", "gemini"].includes(type.toLowerCase());
@@ -111,9 +96,6 @@ function isValidAgentType(type: string): type is AgentType {
 
 /**
  * Prompts the user for confirmation.
- *
- * @param message - The confirmation message.
- * @returns A promise resolving to true if confirmed, false otherwise.
  */
 async function confirm(message: string): Promise<boolean> {
   const readline = await import("readline");
@@ -131,26 +113,32 @@ async function confirm(message: string): Promise<boolean> {
 }
 
 /**
- * Registers agent management commands on the given program.
- *
- * @param program - The Commander program to add commands to.
+ * Creates the `agent` command group.
  */
-export function registerAgentCommands(program: Command): void {
-  // List agents command
-  program
-    .command("list-agents")
+export function createAgentCommand(): Command {
+  const agent = new Command("agent")
+    .description("Manage AI agent configurations")
+    .addHelpText("after", `
+Examples:
+  $ propr agent list                              # List all agents
+  $ propr agent add my-claude -t claude -m ...    # Add an agent
+  $ propr agent delete my-agent                   # Delete an agent
+`);
+
+  // agent list
+  agent
+    .command("list")
     .description("List all configured AI agents with their models and status")
     .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Examples:
-  $ propr list-agents
-  $ propr list-agents --json
+  $ propr agent list
+  $ propr agent list --json
 `)
     .action(async (options: { json?: boolean }) => {
       try {
         const result = await listAgents();
 
-        // Handle JSON output
         if (printOutput(result, options.json ?? false)) {
           return;
         }
@@ -162,10 +150,10 @@ Examples:
           console.log("No agents configured.");
           console.log("");
           console.log("To add an agent, use:");
-          console.log("  propr add-agent <alias> --type <type> --model <models>");
+          console.log("  propr agent add <alias> --type <type> --model <models>");
           console.log("");
           console.log("Example:");
-          console.log("  propr add-agent claude-prod --type claude --model claude-sonnet-4-20250514,claude-opus-4-20250514");
+          console.log("  propr agent add claude-prod --type claude --model claude-sonnet-4-20250514,claude-opus-4-20250514");
           return;
         }
 
@@ -190,9 +178,9 @@ Examples:
       }
     });
 
-  // Add agent command
-  program
-    .command("add-agent [alias]")
+  // agent add
+  agent
+    .command("add [alias]")
     .description("Add a new AI agent configuration for code implementation")
     .option("-t, --type <type>", "Agent type (claude, codex, or gemini)")
     .option("-m, --model <models>", "Comma-separated list of supported models")
@@ -223,11 +211,11 @@ JSON File Format:
   }
 
 Examples:
-  $ propr add-agent my-claude -t claude -m claude-sonnet-4-20250514
-  $ propr add-agent prod-agent -t claude -m claude-sonnet-4-20250514,claude-opus-4-20250514 -d claude-sonnet-4-20250514
-  $ propr add-agent test-agent -t gemini -m gemini-pro --disabled
-  $ propr add-agent --file agent-config.json
-  $ cat config.json | propr add-agent --file -
+  $ propr agent add my-claude -t claude -m claude-sonnet-4-20250514
+  $ propr agent add prod-agent -t claude -m claude-sonnet-4-20250514,claude-opus-4-20250514 -d claude-sonnet-4-20250514
+  $ propr agent add test-agent -t gemini -m gemini-pro --disabled
+  $ propr agent add --file agent-config.json
+  $ cat config.json | propr agent add --file -
 `)
     .action(
       async (
@@ -252,7 +240,6 @@ Examples:
           let configPath: string | undefined;
           let enabled: boolean;
 
-          // Handle JSON file input
           if (options.file) {
             try {
               const jsonConfig = await readJsonInput<{
@@ -283,7 +270,6 @@ Examples:
               process.exit(1);
             }
           } else {
-            // Traditional CLI arguments
             if (!aliasArg) {
               console.error("Error: Alias is required. Provide it as an argument or use --file.");
               process.exit(1);
@@ -309,7 +295,6 @@ Examples:
             enabled = !options.disabled;
           }
 
-          // Validate agent type
           if (!isValidAgentType(type)) {
             console.error(
               `Error: Invalid agent type '${type}'. Must be one of: claude, codex, gemini`
@@ -322,7 +307,6 @@ Examples:
             process.exit(1);
           }
 
-          // Validate default model if specified
           if (defaultModel && !models.includes(defaultModel)) {
             console.error(
               `Error: Default model '${defaultModel}' is not in the list of supported models`
@@ -345,7 +329,6 @@ Examples:
           });
 
           if (result.success) {
-            // Handle JSON output
             if (printOutput(result, options.json ?? false)) {
               return;
             }
@@ -383,9 +366,9 @@ Examples:
       }
     );
 
-  // Delete agent command
-  program
-    .command("delete-agent <alias>")
+  // agent delete
+  agent
+    .command("delete <alias>")
     .description("Delete an AI agent configuration permanently")
     .option("-f, --force", "Skip confirmation prompt")
     .addHelpText("after", `
@@ -393,12 +376,11 @@ Argument:
   alias    The alias of the agent to delete
 
 Examples:
-  $ propr delete-agent my-agent           # With confirmation
-  $ propr delete-agent my-agent --force   # Skip confirmation
+  $ propr agent delete my-agent           # With confirmation
+  $ propr agent delete my-agent --force   # Skip confirmation
 `)
     .action(async (alias: string, options: { force?: boolean }) => {
       try {
-        // Confirm deletion unless --force is used
         if (!options.force) {
           console.log(`About to delete agent: ${alias}`);
           console.log("");
@@ -440,4 +422,6 @@ Examples:
         process.exit(1);
       }
     });
+
+  return agent;
 }

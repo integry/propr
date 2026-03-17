@@ -2,7 +2,7 @@
  * Repository Management Commands
  *
  * CLI commands for managing monitored repositories using the ProPR backend.
- * Provides the `list-repos`, `add-repo`, `remove-repo`, and `toggle-repo` commands.
+ * Provides the `repo` command group with `list`, `add`, `remove`, `toggle`, `index`, and `status` subcommands.
  */
 
 import { Command } from "commander";
@@ -20,9 +20,6 @@ import { printOutput } from "../utils/index.js";
 
 /**
  * Formats the enabled status for display.
- *
- * @param enabled - Whether the repository is enabled.
- * @returns A formatted status string.
  */
 function formatEnabled(enabled: boolean): string {
   return enabled ? "Enabled" : "Disabled";
@@ -30,10 +27,6 @@ function formatEnabled(enabled: boolean): string {
 
 /**
  * Truncates a string to a maximum length.
- *
- * @param str - The string to truncate.
- * @param maxLen - The maximum length.
- * @returns The truncated string with "..." if it was too long.
  */
 function truncate(str: string | null | undefined, maxLen: number): string {
   if (!str) return "";
@@ -43,9 +36,6 @@ function truncate(str: string | null | undefined, maxLen: number): string {
 
 /**
  * Formats the indexing status for display.
- *
- * @param status - The indexing status.
- * @returns A formatted status string.
  */
 function formatIndexingStatus(status: string): string {
   switch (status) {
@@ -63,16 +53,11 @@ function formatIndexingStatus(status: string): string {
 
 /**
  * Formats token usage for display.
- *
- * @param inputTokens - Number of input tokens.
- * @param outputTokens - Number of output tokens.
- * @returns A formatted token string.
  */
 function formatTokens(inputTokens: number, outputTokens: number): string {
   const total = inputTokens + outputTokens;
   if (total === 0) return "-";
 
-  // Format with K suffix for thousands
   const formatNum = (n: number): string => {
     if (n >= 1000) {
       return `${(n / 1000).toFixed(1)}K`;
@@ -85,11 +70,8 @@ function formatTokens(inputTokens: number, outputTokens: number): string {
 
 /**
  * Displays a table of repository indexing statuses with clean formatting.
- *
- * @param statuses - The repository indexing statuses to display.
  */
 function displayIndexingStatusTable(statuses: RepositoryIndexingStatus[]): void {
-  // Calculate column widths
   const repoWidth = Math.max(
     "Repository".length,
     ...statuses.map((s) => truncate(s.full_name, 40).length)
@@ -116,7 +98,6 @@ function displayIndexingStatusTable(statuses: RepositoryIndexingStatus[]): void 
     })
   );
 
-  // Print header
   const header = [
     "Repository".padEnd(repoWidth),
     "Branch".padEnd(branchWidth),
@@ -128,9 +109,7 @@ function displayIndexingStatusTable(statuses: RepositoryIndexingStatus[]): void 
   console.log(header);
   console.log("-".repeat(header.length));
 
-  // Print each repository status
   for (const status of statuses) {
-    // Format progress
     let progressStr = "-";
     if (status.progress) {
       progressStr = `${status.progress.percentComplete.toFixed(1)}%`;
@@ -138,7 +117,6 @@ function displayIndexingStatusTable(statuses: RepositoryIndexingStatus[]): void 
       progressStr = "100%";
     }
 
-    // Format tokens
     const tokensStr = status.progress
       ? formatTokens(status.progress.inputTokens, status.progress.outputTokens)
       : "-";
@@ -157,11 +135,8 @@ function displayIndexingStatusTable(statuses: RepositoryIndexingStatus[]): void 
 
 /**
  * Displays a table of repositories with clean formatting.
- *
- * @param repos - The repositories to display.
  */
 function displayReposTable(repos: MonitoredRepo[]): void {
-  // Calculate column widths
   const nameWidth = Math.max(
     "Repository".length,
     ...repos.map((r) => truncate(r.name, 40).length)
@@ -179,7 +154,6 @@ function displayReposTable(repos: MonitoredRepo[]): void {
     ...repos.map((r) => formatEnabled(r.enabled).length)
   );
 
-  // Print header
   const header = [
     "Repository".padEnd(nameWidth),
     "Alias".padEnd(aliasWidth),
@@ -190,7 +164,6 @@ function displayReposTable(repos: MonitoredRepo[]): void {
   console.log(header);
   console.log("-".repeat(header.length));
 
-  // Print each repository
   for (const repo of repos) {
     const row = [
       truncate(repo.name, 40).padEnd(nameWidth),
@@ -204,26 +177,35 @@ function displayReposTable(repos: MonitoredRepo[]): void {
 }
 
 /**
- * Registers repository management commands on the given program.
- *
- * @param program - The Commander program to add commands to.
+ * Creates the `repo` command group.
  */
-export function registerRepoCommands(program: Command): void {
-  // List repos command
-  program
-    .command("list-repos")
+export function createRepoCommand(): Command {
+  const repo = new Command("repo")
+    .description("Manage monitored repositories")
+    .addHelpText("after", `
+Examples:
+  $ propr repo list                              # List repositories
+  $ propr repo add myorg/myrepo                  # Add a repository
+  $ propr repo remove myorg/myrepo               # Remove a repository
+  $ propr repo toggle myorg/myrepo --enable      # Enable monitoring
+  $ propr repo index myorg/myrepo                # Trigger indexing
+  $ propr repo status                            # View indexing status
+`);
+
+  // repo list
+  repo
+    .command("list")
     .description("List all repositories being monitored by ProPR")
     .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Examples:
-  $ propr list-repos
-  $ propr list-repos --json
+  $ propr repo list
+  $ propr repo list --json
 `)
     .action(async (options: { json?: boolean }) => {
       try {
         const result = await getRepos();
 
-        // Handle JSON output
         if (printOutput(result, options.json ?? false)) {
           return;
         }
@@ -235,7 +217,7 @@ Examples:
           console.log("No repositories are currently being monitored.");
           console.log("");
           console.log("To add a repository, use:");
-          console.log("  propr add-repo <owner/repo>");
+          console.log("  propr repo add <owner/repo>");
           return;
         }
 
@@ -267,9 +249,9 @@ Examples:
       }
     });
 
-  // Add repo command
-  program
-    .command("add-repo <fullName>")
+  // repo add
+  repo
+    .command("add <fullName>")
     .description("Add a repository to the monitored list for ProPR")
     .option("-a, --alias <alias>", "Display alias for the repository")
     .option("-b, --branch <branch>", "Base branch name (default: main/master)")
@@ -278,8 +260,8 @@ Argument:
   fullName    Repository in owner/repo format
 
 Examples:
-  $ propr add-repo myorg/myrepo
-  $ propr add-repo myorg/myrepo -a "My Project" -b develop
+  $ propr repo add myorg/myrepo
+  $ propr repo add myorg/myrepo -a "My Project" -b develop
 `)
     .action(
       async (
@@ -287,13 +269,12 @@ Examples:
         options: { alias?: string; branch?: string }
       ) => {
         try {
-          // Validate fullName format
           if (!fullName.includes("/")) {
             console.error(
               "Error: Repository name must be in 'owner/repo' format."
             );
             console.log("");
-            console.log("Example: propr add-repo integry/gitfix");
+            console.log("Example: propr repo add integry/gitfix");
             process.exit(1);
           }
 
@@ -336,8 +317,8 @@ Examples:
             console.error(`Error: Repository "${fullName}" is already being monitored.`);
             console.log("");
             console.log("To update the repository settings, you can:");
-            console.log(`  1. Remove it first: propr remove-repo ${fullName}`);
-            console.log(`  2. Add it again with new options: propr add-repo ${fullName} [options]`);
+            console.log(`  1. Remove it first: propr repo remove ${fullName}`);
+            console.log(`  2. Add it again with new options: propr repo add ${fullName} [options]`);
           } else if (
             errorMessage.includes("401") ||
             errorMessage.includes("unauthorized")
@@ -360,26 +341,25 @@ Examples:
       }
     );
 
-  // Remove repo command
-  program
-    .command("remove-repo <fullName>")
+  // repo remove
+  repo
+    .command("remove <fullName>")
     .description("Remove a repository from the monitored list")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
 
 Example:
-  $ propr remove-repo myorg/myrepo
+  $ propr repo remove myorg/myrepo
 `)
     .action(async (fullName: string) => {
       try {
-        // Validate fullName format
         if (!fullName.includes("/")) {
           console.error(
             "Error: Repository name must be in 'owner/repo' format."
           );
           console.log("");
-          console.log("Example: propr remove-repo integry/gitfix");
+          console.log("Example: propr repo remove integry/gitfix");
           process.exit(1);
         }
 
@@ -403,7 +383,7 @@ Example:
         if (errorMessage.includes("not being monitored")) {
           console.error(`Error: Repository "${fullName}" is not being monitored.`);
           console.log("");
-          console.log("Use 'propr list-repos' to see currently monitored repositories.");
+          console.log("Use 'propr repo list' to see currently monitored repositories.");
         } else if (
           errorMessage.includes("401") ||
           errorMessage.includes("unauthorized")
@@ -423,9 +403,9 @@ Example:
       }
     });
 
-  // Toggle repo command
-  program
-    .command("toggle-repo <fullName>")
+  // repo toggle
+  repo
+    .command("toggle <fullName>")
     .description("Enable or disable monitoring for a repository")
     .option("--enable", "Enable monitoring for the repository")
     .option("--disable", "Disable monitoring for the repository")
@@ -437,8 +417,8 @@ Note:
   Exactly one of --enable or --disable must be specified.
 
 Examples:
-  $ propr toggle-repo myorg/myrepo --enable
-  $ propr toggle-repo myorg/myrepo --disable
+  $ propr repo toggle myorg/myrepo --enable
+  $ propr repo toggle myorg/myrepo --disable
 `)
     .action(
       async (
@@ -446,7 +426,6 @@ Examples:
         options: { enable?: boolean; disable?: boolean }
       ) => {
         try {
-          // Validate that exactly one of --enable or --disable is provided
           if (options.enable && options.disable) {
             console.error(
               "Error: Cannot specify both --enable and --disable."
@@ -460,18 +439,17 @@ Examples:
             );
             console.log("");
             console.log("Usage:");
-            console.log(`  propr toggle-repo ${fullName} --enable`);
-            console.log(`  propr toggle-repo ${fullName} --disable`);
+            console.log(`  propr repo toggle ${fullName} --enable`);
+            console.log(`  propr repo toggle ${fullName} --disable`);
             process.exit(1);
           }
 
-          // Validate fullName format
           if (!fullName.includes("/")) {
             console.error(
               "Error: Repository name must be in 'owner/repo' format."
             );
             console.log("");
-            console.log("Example: propr toggle-repo integry/gitfix --enable");
+            console.log("Example: propr repo toggle integry/gitfix --enable");
             process.exit(1);
           }
 
@@ -497,9 +475,9 @@ Examples:
           if (errorMessage.includes("not being monitored")) {
             console.error(`Error: Repository "${fullName}" is not being monitored.`);
             console.log("");
-            console.log("Use 'propr list-repos' to see currently monitored repositories.");
+            console.log("Use 'propr repo list' to see currently monitored repositories.");
             console.log(
-              "To add a new repository, use 'propr add-repo <owner/repo>'."
+              "To add a new repository, use 'propr repo add <owner/repo>'."
             );
           } else if (
             errorMessage.includes("401") ||
@@ -521,9 +499,9 @@ Examples:
       }
     );
 
-  // Index repo command
-  program
-    .command("index-repo <fullName>")
+  // repo index
+  repo
+    .command("index <fullName>")
     .description("Trigger codebase indexing for a repository")
     .option("-b, --branch <branch>", "Specify the base branch to index")
     .option("--incremental", "Perform incremental indexing instead of full reindex")
@@ -536,9 +514,9 @@ Indexing Modes:
   Incremental       Only index changes since last index
 
 Examples:
-  $ propr index-repo myorg/myrepo                    # Full reindex
-  $ propr index-repo myorg/myrepo --incremental     # Incremental index
-  $ propr index-repo myorg/myrepo -b develop        # Index specific branch
+  $ propr repo index myorg/myrepo                    # Full reindex
+  $ propr repo index myorg/myrepo --incremental     # Incremental index
+  $ propr repo index myorg/myrepo -b develop        # Index specific branch
 `)
     .action(
       async (
@@ -546,13 +524,12 @@ Examples:
         options: { branch?: string; incremental?: boolean }
       ) => {
         try {
-          // Validate fullName format
           if (!fullName.includes("/")) {
             console.error(
               "Error: Repository name must be in 'owner/repo' format."
             );
             console.log("");
-            console.log("Example: propr index-repo integry/gitfix");
+            console.log("Example: propr repo index integry/gitfix");
             process.exit(1);
           }
 
@@ -586,7 +563,7 @@ Examples:
             }
             console.log(`  Mode: ${indexType} reindex`);
             console.log("");
-            console.log("Use 'propr repo-status <fullName>' to check indexing progress.");
+            console.log("Use 'propr repo status <fullName>' to check indexing progress.");
           } else {
             console.error(`Failed to trigger indexing: ${result.error || "Unknown error"}`);
             process.exit(1);
@@ -596,7 +573,7 @@ Examples:
           if (errorMessage.includes("already queued")) {
             console.error(`Error: Indexing for "${fullName}" is already in progress or queued.`);
             console.log("");
-            console.log("Use 'propr repo-status' to check the current indexing status.");
+            console.log("Use 'propr repo status' to check the current indexing status.");
           } else if (
             errorMessage.includes("401") ||
             errorMessage.includes("unauthorized")
@@ -617,30 +594,24 @@ Examples:
       }
     );
 
-  // Repo status command
-  program
-    .command("repo-status [fullName]")
+  // repo status
+  repo
+    .command("status [fullName]")
     .description("View indexing status and progress for repositories")
     .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Argument:
   fullName    (Optional) Repository in owner/repo format
 
-Output includes:
-  - Indexing status (idle, indexing, completed, failed)
-  - Progress percentage
-  - Token usage
-
 Examples:
-  $ propr repo-status                    # Show all repositories
-  $ propr repo-status myorg/myrepo       # Show specific repository
-  $ propr repo-status --json             # JSON output
+  $ propr repo status                    # Show all repositories
+  $ propr repo status myorg/myrepo       # Show specific repository
+  $ propr repo status --json             # JSON output
 `)
     .action(async (fullName: string | undefined, options: { json?: boolean }) => {
       try {
         const result = await getIndexingStatus(fullName);
 
-        // Handle JSON output
         if (printOutput(result, options.json ?? false)) {
           return;
         }
@@ -653,12 +624,12 @@ Examples:
             console.log(`No indexing status found for repository: ${fullName}`);
             console.log("");
             console.log("Make sure the repository is being monitored:");
-            console.log("  propr list-repos");
+            console.log("  propr repo list");
           } else {
             console.log("No repositories are currently being tracked for indexing.");
             console.log("");
             console.log("To add a repository, use:");
-            console.log("  propr add-repo <owner/repo>");
+            console.log("  propr repo add <owner/repo>");
           }
           return;
         }
@@ -688,4 +659,6 @@ Examples:
         process.exit(1);
       }
     });
+
+  return repo;
 }

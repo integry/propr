@@ -2,7 +2,7 @@
  * System Status Commands
  *
  * CLI commands for checking system health and queue statistics.
- * Provides the `system-status` and `queue-stats` commands.
+ * Provides `status` and `queue` as top-level commands.
  */
 
 import { Command } from "commander";
@@ -16,9 +16,6 @@ import { printOutput } from "../utils/index.js";
 
 /**
  * Formats a status value with color-like indicators for terminal display.
- *
- * @param status - The status string to format.
- * @returns A formatted status string with indicator.
  */
 function formatStatusIndicator(status: string): string {
   const normalizedStatus = status.toLowerCase();
@@ -44,8 +41,6 @@ function formatStatusIndicator(status: string): string {
 
 /**
  * Displays the system status in a formatted table.
- *
- * @param status - The system status to display.
  */
 function displaySystemStatus(status: SystemStatus): void {
   console.log("");
@@ -54,7 +49,6 @@ function displaySystemStatus(status: SystemStatus): void {
   console.log("=".repeat(50));
   console.log("");
 
-  // Calculate label width for alignment
   const labels = [
     "API",
     "Redis",
@@ -99,7 +93,6 @@ function displaySystemStatus(status: SystemStatus): void {
   console.log("");
   console.log("=".repeat(50));
 
-  // Summary
   const allHealthy =
     status.api === "healthy" &&
     status.redis === "connected" &&
@@ -133,8 +126,6 @@ function displaySystemStatus(status: SystemStatus): void {
 
 /**
  * Displays the queue statistics in a formatted table.
- *
- * @param stats - The queue statistics to display.
  */
 function displayQueueStats(stats: QueueStats): void {
   console.log("");
@@ -143,11 +134,9 @@ function displayQueueStats(stats: QueueStats): void {
   console.log("=".repeat(50));
   console.log("");
 
-  // Calculate label width for alignment
   const labels = ["Waiting", "Active", "Completed", "Failed", "Delayed", "Total"];
   const maxLabelWidth = Math.max(...labels.map((l) => l.length));
 
-  // Format numbers with thousands separator for large values
   const formatNumber = (n: number): string => n.toLocaleString();
 
   console.log(
@@ -173,7 +162,6 @@ function displayQueueStats(stats: QueueStats): void {
   console.log("");
   console.log("=".repeat(50));
 
-  // Summary
   console.log("");
   if (stats.active > 0) {
     console.log(`Currently processing ${stats.active} job(s).`);
@@ -194,14 +182,10 @@ function displayQueueStats(stats: QueueStats): void {
 }
 
 /**
- * Registers system status commands on the given program.
- *
- * @param program - The Commander program to add commands to.
+ * Creates the `status` command.
  */
-export function registerSystemCommands(program: Command): void {
-  // System status command
-  program
-    .command("system-status")
+export function createStatusCommand(): Command {
+  return new Command("status")
     .description("Display the health status of all ProPR backend components")
     .option("--json", "Output raw JSON response")
     .addHelpText("after", `
@@ -214,14 +198,13 @@ Components Checked:
   - Claude authentication
 
 Examples:
-  $ propr system-status           # Human-readable output
-  $ propr system-status --json    # JSON output for scripting
+  $ propr status           # Human-readable output
+  $ propr status --json    # JSON output for scripting
 `)
     .action(async (options: { json?: boolean }) => {
       try {
         const status = await getSystemStatus();
 
-        // Handle JSON output
         if (printOutput(status, options.json ?? false)) {
           return;
         }
@@ -248,10 +231,13 @@ Examples:
         process.exit(1);
       }
     });
+}
 
-  // Queue stats command
-  program
-    .command("queue-stats")
+/**
+ * Creates the `queue` command.
+ */
+export function createQueueCommand(): Command {
+  return new Command("queue")
     .description("Display job queue statistics and counts")
     .option("--json", "Output raw JSON response")
     .addHelpText("after", `
@@ -264,14 +250,13 @@ Statistics Shown:
   - Failure rate
 
 Examples:
-  $ propr queue-stats           # Human-readable output
-  $ propr queue-stats --json    # JSON output for scripting
+  $ propr queue           # Human-readable output
+  $ propr queue --json    # JSON output for scripting
 `)
     .action(async (options: { json?: boolean }) => {
       try {
         const stats = await getQueueStats();
 
-        // Handle JSON output
         if (printOutput(stats, options.json ?? false)) {
           return;
         }

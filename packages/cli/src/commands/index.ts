@@ -1,14 +1,14 @@
 /**
  * CLI Commands Module
  *
- * Exports command registration functions for the ProPR CLI.
+ * Exports command creation functions for the ProPR CLI.
  */
 
-export { registerImplementCommands } from "./implementCommands.js";
-export { registerPlanCommands } from "./planCommands.js";
-export { registerTaskCommands } from "./taskCommands.js";
-export { registerRepoCommands } from "./repoCommands.js";
-export { registerAgentCommands } from "./agentCommands.js";
-export { registerSettingCommands } from "./settingCommands.js";
-export { registerLogCommands } from "./logCommands.js";
-export { registerSystemCommands } from "./systemCommands.js";
+export { createIssueCommand } from "./implementCommands.js";
+export { createPlanCommand } from "./planCommands.js";
+export { createTaskCommand } from "./taskCommands.js";
+export { createRepoCommand } from "./repoCommands.js";
+export { createAgentCommand } from "./agentCommands.js";
+export { createSettingCommand } from "./settingCommands.js";
+export { createLogCommand } from "./logCommands.js";
+export { createStatusCommand, createQueueCommand } from "./systemCommands.js";
