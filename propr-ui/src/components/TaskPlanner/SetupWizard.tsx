@@ -237,6 +237,8 @@ const SetupWizardContent: React.FC<{
 interface LocationState {
   initialPrompt?: string;
   initialRepository?: string;
+  /** Optional array of to-do IDs to link to the draft when creating from To-Dos */
+  todoIds?: string[];
 }
 
 // Main component - handles state and hooks
@@ -372,9 +374,12 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     startPolling: generationPolling.startPolling, stopPolling: generationPolling.stopPolling, setError, setGenerationError: generationPolling.setGenerationError
   });
 
+  // Extract todoIds from location state for linking to-dos when creating from To-Dos tab
+  const todoIds = locationState?.todoIds;
+
   const handleCreateDraftAndGenerate = useDraftCreation({
     selectedRepo: repoLoader.selectedRepo, config, localFiles: fileHandling.localFiles,
-    onDraftCreated, navigate, setError, setIsCreating
+    onDraftCreated, navigate, setError, setIsCreating, todoIds
   });
 
   // Auto-create draft when user starts typing in new mode
@@ -385,7 +390,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
     localFiles: fileHandling.localFiles,
     onDraftCreated,
     onDraftCreatedInPlace,
-    navigate
+    navigate,
+    todoIds
   });
 
   useEffect(() => { if (autoCreateError) addToast({ type: 'error', message: autoCreateError }); }, [autoCreateError, addToast]);

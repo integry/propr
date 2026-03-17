@@ -89,4 +89,6 @@ export interface RepoImprovementsPanelProps {
   defaultContextLevel?: number;
   /** Last generation timing metadata */
   lastGenerationTiming?: GenerationTimingMetadata;
+  /** Callback when todos are saved successfully - receives the created todo IDs */
+  onTodosSaved?: (todoIds: string[]) => void;
 }
