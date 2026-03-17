@@ -4,6 +4,7 @@
 
 import { db } from '../../db/connection.js';
 import logger from '../../utils/logger.js';
+import { completeTodosForDraft } from '../repoTodosService.js';
 
 /**
  * Checks plan issue statuses and updates the draft status accordingly.
@@ -74,6 +75,25 @@ export async function checkAndUpdateDraftStatus(draftId: string): Promise<void> 
         { draftId, oldStatus: draft.status, newStatus, totalIssues: planIssues.length, allMerged, hasActivePr },
         'Updated draft status based on plan issue statuses'
       );
+
+      // When a draft is merged, automatically complete all linked to-dos
+      if (newStatus === 'merged') {
+        try {
+          const completedCount = await completeTodosForDraft(draftId);
+          if (completedCount > 0) {
+            logger.info(
+              { draftId, completedCount },
+              'Automatically completed linked to-dos for merged draft'
+            );
+          }
+        } catch (todoError) {
+          // Log but don't fail the status update if todo completion fails
+          logger.error(
+            { draftId, error: (todoError as Error).message },
+            'Failed to complete linked to-dos for merged draft'
+          );
+        }
+      }
     }
   } catch (error) {
     const err = error as Error;

@@ -28,6 +28,7 @@ import {
   createSummaryBrowserRoutes,
   createRepoChatRoutes,
   createRepoImprovementsRoutes,
+  createRepoTodoRoutes,
   attachmentUpload
 } from './routes/index.js';
 import { checkAndExecuteDelayedReindex } from './routes/configHelpers.js';
@@ -180,6 +181,7 @@ function setupRoutes(): void {
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
+  const repoTodoRoutes = createRepoTodoRoutes();
 
   app.get('/api/status', statusRoutes.getStatus);
   app.get('/api/tasks', taskRoutes.getTasks);
@@ -287,6 +289,21 @@ function setupRoutes(): void {
 
   // Repository improvements endpoint for generating suggestions
   app.post('/api/repos/improvements', repoImprovementsRoutes.postImprovements);
+
+  // Repository to-do endpoints for managing ideas, notes, and future tasks
+  // Category endpoints
+  app.get('/api/repos/todos/categories', repoTodoRoutes.getCategories);
+  app.post('/api/repos/todos/categories', repoTodoRoutes.createCategory);
+  app.put('/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory);
+  app.delete('/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory);
+  app.post('/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories);
+  // Todo endpoints
+  app.get('/api/repos/todos', repoTodoRoutes.getTodos);
+  app.get('/api/repos/todos/:todoId', repoTodoRoutes.getTodo);
+  app.post('/api/repos/todos', repoTodoRoutes.createTodo);
+  app.put('/api/repos/todos/:todoId', repoTodoRoutes.updateTodo);
+  app.delete('/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo);
+  app.post('/api/repos/todos/reorder', repoTodoRoutes.reorderTodos);
 
   setupWebhookRoute();
 }
