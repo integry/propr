@@ -17,3 +17,4 @@ export { createStatsRoutes } from './statsRoutes.js';
 export { createSummaryBrowserRoutes } from './summaryBrowserRoutes.js';
 export { createRepoChatRoutes } from './repoChatRoutes.js';
 export { createRepoImprovementsRoutes } from './repoImprovementsRoutes.js';
+export { createRepoTodoRoutes } from './repoTodoRoutes.js';
