@@ -47,6 +47,12 @@ When no token is provided, `propr login` uses the GitHub CLI (`gh`) for interact
 - If you're already logged in to `gh`, your token is used automatically
 - If not, `gh auth login` is launched interactively
 
+To use a Personal Access Token instead:
+1. Go to https://github.com/settings/tokens
+2. Click "Generate new token (classic)"
+3. Select scopes: `repo`, `read:org`
+4. Run: `propr login <your-token>`
+
 ## Commands Reference
 
 ### Global Options
@@ -63,20 +69,32 @@ Most commands support `--json` (`-j`) for machine-readable output.
 
 ### Plans
 
+Manage implementation plans for AI-powered issue resolution.
+
 ```bash
 propr plan list                                  # List plans for default project
 propr plan list -p owner/repo                    # List plans for specific project
 propr plan create "Add dark mode" --wait         # Create plan and wait for generation
 propr plan create "Fix bug" -b develop           # Target a specific branch
 propr plan get <draft-id>                        # View plan details
+propr plan get <draft-id> --json                 # View as JSON
 propr plan delete <draft-id>                     # Delete a plan (with confirmation)
 propr plan delete <draft-id> --force             # Delete without confirmation
 propr plan abort <draft-id>                      # Abort ongoing generation
 ```
 
+| Option | Command | Description |
+|--------|---------|-------------|
+| `-p, --project` | `list`, `create` | Target project (owner/repo) |
+| `-b, --branch` | `create` | Target branch (default: main) |
+| `-w, --wait` | `create` | Wait for plan generation to complete |
+| `-f, --force` | `delete` | Skip confirmation prompt |
+
 ---
 
 ### Issue Implementation
+
+Implement GitHub issues from plans using AI agents.
 
 ```bash
 propr issue implement <draft-id>/<issue-number>              # Trigger implementation
@@ -85,29 +103,51 @@ propr issue implement <draft-id>/1 -a claude -m model-name   # Use specific agen
 propr issue implement <draft-id>/1 --epic --auto-merge       # Epic PR + auto-merge
 ```
 
-**Options:** `-w, --wait`, `-a, --agent`, `-m, --model`, `--epic`, `--auto-merge`
+| Option | Description |
+|--------|-------------|
+| `-p, --project` | Target project (owner/repo) |
+| `-w, --wait` | Wait for the implementation to complete |
+| `-a, --agent` | Agent alias to use for implementation |
+| `-m, --model` | Model name to use for implementation |
+| `--epic` | Create an Epic PR to collect all related PRs |
+| `--auto-merge` | Enable auto-merge when CI checks pass |
+
+The issue ID format is `<draft-id>/<issue-number>` or `<draft-id>:<issue-number>`.
 
 ---
 
 ### Tasks
 
+View and manage implementation tasks.
+
 ```bash
 propr task list                          # List all tasks
 propr task list -s processing            # Filter by status
 propr task list -p owner/repo            # Filter by project
-propr task list --search "auth"          # Search tasks
-propr task get <task-id>                 # View task details
+propr task list --search "auth" -l 100   # Search with limit
+propr task get <task-id>                 # View task details with history
 propr task stop <task-id>                # Stop a running task
-propr task delete <task-id>              # Delete a task
+propr task delete <task-id>              # Delete a task (with confirmation)
 propr task delete <task-id> --force      # Force delete active task
-propr task revert owner/repo 123 abc 456 # Revert a commit
+propr task revert owner/repo 123 abc 456 # Revert a commit from a PR
 ```
+
+| Option | Command | Description |
+|--------|---------|-------------|
+| `-p, --project` | `list` | Filter by project (owner/repo) |
+| `-s, --status` | `list` | Filter by status (see below) |
+| `-l, --limit` | `list` | Max results (default: 50) |
+| `--search` | `list` | Search by term |
+| `-f, --force` | `delete` | Force deletion of active tasks |
+| `-o, --owner` | `revert` | Repo owner if not in owner/repo format |
 
 **Status values:** `pending`, `queued`, `processing`, `completed`, `failed`, `cancelled`, `all`
 
 ---
 
 ### Repositories
+
+Manage monitored repositories and their indexing.
 
 ```bash
 propr repo list                              # List monitored repositories
@@ -118,6 +158,7 @@ propr repo toggle owner/repo --enable        # Enable monitoring
 propr repo toggle owner/repo --disable       # Disable monitoring
 propr repo index owner/repo                  # Trigger full indexing
 propr repo index owner/repo --incremental    # Incremental indexing
+propr repo index owner/repo -b feature       # Index specific branch
 propr repo status                            # View all indexing status
 propr repo status owner/repo                 # View specific repo status
 ```
@@ -126,16 +167,34 @@ propr repo status owner/repo                 # View specific repo status
 
 ### Agents
 
+Manage AI agent configurations for code implementation.
+
 ```bash
 propr agent list                                         # List configured agents
 propr agent add my-claude -t claude -m model1,model2     # Add an agent
 propr agent add my-agent -t claude -m model -d model     # With default model
+propr agent add test -t gemini -m gemini-pro --disabled   # Add in disabled state
 propr agent add --file agent-config.json                 # From JSON file
+cat config.json | propr agent add --file -               # From stdin
 propr agent delete my-agent                              # Delete (with confirmation)
 propr agent delete my-agent --force                      # Delete without confirmation
 ```
 
 **Agent types:** `claude`, `codex`, `gemini`
+
+**JSON file format** for `--file`:
+
+```json
+{
+  "alias": "my-agent",
+  "type": "claude",
+  "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
+  "defaultModel": "claude-sonnet-4-20250514",
+  "dockerImage": "optional-image",
+  "configPath": "/optional/path",
+  "enabled": true
+}
+```
 
 ---
 
@@ -240,6 +299,77 @@ import {
 const config = await createConfigManager();
 const client = await createApiClient();
 const response = await client.get('/api/status');
+```
+
+---
+
+## Examples
+
+### Complete Workflow
+
+```bash
+# Setup
+propr remote https://api.propr.example.com
+propr login
+propr use myorg/myrepo
+
+# Add and index a repository
+propr repo add myorg/myrepo -b main
+propr repo index myorg/myrepo
+
+# Create an implementation plan
+propr plan create "Add user authentication with JWT tokens" --wait
+
+# List plans to get the draft ID
+propr plan list
+
+# Implement the first issue from the plan
+propr issue implement <draft-id>/1 --wait --auto-merge
+
+# Monitor tasks
+propr task list -s processing
+propr task get <task-id>
+```
+
+### Managing To-Dos
+
+```bash
+# Create categories and todos
+propr todo category add "Sprint 1"
+propr todo add "Implement auth" -c <category-id>
+propr todo add "Write tests" -c <category-id>
+
+# Prioritize by reordering
+propr todo move <todo-id> 1              # Move to top priority
+
+# Track progress
+propr todo complete <todo-id>
+propr todo list -d                       # View completed items
+```
+
+### Monitoring and Debugging
+
+```bash
+propr status                             # System health
+propr queue                              # Queue statistics
+propr log list --failed                  # Failed LLM executions
+propr log list -l 100 --success          # Successful executions
+propr task get <task-id>                 # Detailed task info
+```
+
+### Managing Multiple Projects
+
+```bash
+# Switch default project
+propr use org1/repo1
+propr plan list
+
+propr use org2/repo2
+propr plan list
+
+# Or use -p flag for one-off commands
+propr plan list -p org3/repo3
+propr todo list -p org3/repo3
 ```
 
 ---
