@@ -269,7 +269,7 @@ export const SaveToTodosButton: React.FC<SaveToTodosButtonProps> = ({
     ) : (
       <ListTodo size={16} />
     )}
-    <span>{isLoading ? 'Saving...' : `Save to To-Dos`}</span>
+    <span>{isLoading ? 'Saving...' : `Save ${selectedCount} to To-Dos`}</span>
   </button>
 );
 
