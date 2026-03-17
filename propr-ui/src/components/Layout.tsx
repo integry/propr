@@ -187,7 +187,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         transform transition-transform duration-200 ease-in-out
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
-        <div className="flex items-center justify-between px-4 py-6 h-16">
+        <div className="flex items-center justify-between px-4 py-4 sm:py-6 h-12 sm:h-16">
           <Link to="/" className="flex items-center">
             <img src="/media/logo-and-name.png" alt="ProPR" className="h-8 w-auto" />
           </Link>
@@ -199,7 +199,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             <CloseIcon className="w-6 h-6" />
           </button>
         </div>
-        <nav className="flex flex-col gap-1 overflow-y-auto h-[calc(100%-4rem)]">
+        <nav className="flex flex-col gap-1 overflow-y-auto h-[calc(100%-3rem)] sm:h-[calc(100%-4rem)]">
           {navigation.map((item) => (
             <Link
               key={item.name}

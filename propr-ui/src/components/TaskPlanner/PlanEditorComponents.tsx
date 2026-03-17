@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FileQuestion, Info, X } from 'lucide-react';
+import { FileQuestion, Info, X, Undo2, Redo2, Loader2, ArrowLeft, Github, GitBranch, Trash2, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GranularityEnforcementMetadata } from '../../api/proprApi';
 
@@ -81,6 +81,195 @@ export const GranularityEnforcementNotice: React.FC<GranularityEnforcementNotice
       >
         <X size={14} />
       </button>
+    </div>
+  );
+};
+
+// Plan Editor Header Props
+export interface PlanEditorHeaderProps {
+  planName: string;
+  repository: string;
+  baseBranch: string;
+  originalPrompt?: string;
+  isDeleting: boolean;
+  isFinalizing: boolean;
+  isResettingToSetup: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  onDelete: () => void;
+  onBackToSetup: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  isMobile?: boolean;
+}
+
+export const PlanEditorHeader: React.FC<PlanEditorHeaderProps> = ({
+  planName,
+  repository,
+  baseBranch,
+  originalPrompt,
+  isDeleting,
+  isFinalizing,
+  isResettingToSetup,
+  canUndo,
+  canRedo,
+  onDelete,
+  onBackToSetup,
+  onUndo,
+  onRedo,
+  isMobile
+}) => {
+  // Mobile header - compact layout
+  if (isMobile) {
+    return (
+      <div className="flex flex-col border-b border-gray-200 bg-gray-100 flex-shrink-0">
+        {/* First row: Plan name and actions */}
+        <div className="flex items-center justify-between px-3 py-2 gap-2">
+          <h1 className="text-base font-semibold text-gray-900 truncate min-w-0 flex-1" title={planName}>
+            {planName}
+          </h1>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={onUndo}
+              disabled={!canUndo}
+              className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Undo"
+            >
+              <Undo2 size={16} className="text-gray-600" />
+            </button>
+            <button
+              onClick={onRedo}
+              disabled={!canRedo}
+              className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Redo"
+            >
+              <Redo2 size={16} className="text-gray-600" />
+            </button>
+            <button
+              onClick={onBackToSetup}
+              disabled={isFinalizing || isResettingToSetup || isDeleting}
+              className="p-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Back to Setup"
+            >
+              <ArrowLeft size={16} />
+            </button>
+            <button
+              onClick={onDelete}
+              disabled={isFinalizing || isResettingToSetup || isDeleting}
+              className="p-1.5 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Delete Plan"
+            >
+              {isDeleting ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Trash2 size={16} />
+              )}
+            </button>
+          </div>
+        </div>
+        {/* Second row: Repository info */}
+        <div className="flex items-center gap-2 px-3 pb-2 text-xs text-gray-600">
+          <Github size={12} className="text-gray-500 flex-shrink-0" />
+          <span className="truncate">{repository}</span>
+          <span className="text-gray-400">/</span>
+          <GitBranch size={12} className="text-gray-500 flex-shrink-0" />
+          <span className="truncate">{baseBranch}</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Desktop header - original layout
+  return (
+    <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-4">
+      <div className="flex items-center gap-4 min-w-0 flex-1">
+        {/* Plan Name - responsive width based on available space */}
+        <h1 className="text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
+          {planName}
+        </h1>
+        <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
+        {/* Repository and Branch Breadcrumb */}
+        <div className="flex items-center gap-2 text-sm flex-shrink-0">
+          <Github size={16} className="text-gray-500" />
+          <span className="font-medium text-gray-900 truncate max-w-[200px]" title={repository}>{repository}</span>
+          <span className="text-gray-400">/</span>
+          <GitBranch size={14} className="text-gray-500" />
+          <span className="text-gray-600">{baseBranch}</span>
+        </div>
+        {/* Original Prompt - moved to header */}
+        {originalPrompt && (
+          <>
+            <div className="h-4 w-px bg-gray-300 flex-shrink-0 hidden lg:block" />
+            <div className="hidden lg:block">
+              <OriginalPromptPopover prompt={originalPrompt} />
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {/* Delete Plan */}
+        <button
+          onClick={onDelete}
+          disabled={isFinalizing || isResettingToSetup || isDeleting}
+          className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Delete Plan"
+        >
+          {isDeleting ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : (
+            <Trash2 size={16} />
+          )}
+        </button>
+        <div className="h-6 w-px bg-gray-300 mx-1" />
+        {/* Back to Setup */}
+        <button
+          onClick={onBackToSetup}
+          disabled={isFinalizing || isResettingToSetup || isDeleting}
+          className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Back to Setup"
+        >
+          <ArrowLeft size={16} />
+          Back to Setup
+        </button>
+        <div className="h-6 w-px bg-gray-300 mx-1" />
+        {/* Undo/Redo */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onUndo}
+            disabled={!canUndo}
+            className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            title="Undo"
+          >
+            <Undo2 size={18} className="text-gray-600" />
+          </button>
+          <button
+            onClick={onRedo}
+            disabled={!canRedo}
+            className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            title="Redo"
+          >
+            <Redo2 size={18} className="text-gray-600" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Error banner component
+interface PlanEditorErrorBannerProps {
+  error: string | null;
+  isMobile?: boolean;
+}
+
+export const PlanEditorErrorBanner: React.FC<PlanEditorErrorBannerProps> = ({ error, isMobile }) => {
+  if (!error) return null;
+
+  return (
+    <div className={`${isMobile ? 'px-3 py-2 text-xs' : 'px-4 py-2 text-sm'} bg-red-50 border-b border-red-200 text-red-700 flex items-center gap-2 flex-shrink-0`}>
+      <AlertCircle size={isMobile ? 12 : 14} />
+      {error}
     </div>
   );
 };

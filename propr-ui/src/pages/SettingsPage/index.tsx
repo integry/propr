@@ -65,9 +65,9 @@ const SettingsPage: React.FC = () => {
       </div>
 
       {/* Main Content Area - 2 Column Split */}
-      <div className="flex-1 flex min-h-0 overflow-hidden">
+      <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-y-auto md:overflow-hidden">
         {/* Left Column - AI Engine Configuration */}
-        <div className="w-1/2 overflow-y-auto border-r border-gray-200 p-6">
+        <div className="w-full md:w-1/2 md:overflow-y-auto border-b md:border-b-0 md:border-r border-gray-200 p-6">
           <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-4">AI Engine Configuration</h3>
 
           <div className="space-y-6">
@@ -95,7 +95,7 @@ const SettingsPage: React.FC = () => {
         </div>
 
         {/* Right Column - Automation Rules */}
-        <div className="w-1/2 overflow-y-auto p-6">
+        <div className="w-full md:w-1/2 md:overflow-y-auto p-6">
           <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-4">Automation Rules</h3>
 
           <div className="space-y-6">

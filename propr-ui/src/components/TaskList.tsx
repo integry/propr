@@ -252,15 +252,15 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   // Main Tasks page: full-height flex layout with anchored header/footer
   return (
     <>
-      {/* Anchored Header */}
-      <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
+      {/* Anchored Header - compact on mobile */}
+      <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
         <Filters {...filterProps} />
       </div>
 
       {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto px-4 sm:px-6">
         {tasks.length === 0 ? (
-          <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+          <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
             <p className="text-gray-500">No tasks found</p>
           </div>
         ) : (

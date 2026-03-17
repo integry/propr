@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { GripVertical } from 'lucide-react';
+import { GripVertical, ArrowLeft } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getRepoConfig, updateRepoConfig, getAvailableGithubRepos, getRepositoriesIndexingStatus, stopRepositoryIndexing, RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexingApi';
@@ -334,8 +334,54 @@ const RepositoriesPage: React.FC = () => {
         onAddRepository={handleOpenModal}
       />
 
-      {/* Split-Pane Container - Resizable 40/60 layout */}
-      <div className="flex-1 overflow-hidden">
+      {/* Mobile Layout: Show list or action container based on selection */}
+      <div className="flex-1 overflow-hidden lg:hidden">
+        {selectedRepoId && selectedRepo ? (
+          /* Mobile: Show RepoActionContainer when a repo is selected */
+          <div className="h-full bg-[#F8FAFC] flex flex-col">
+            {/* Mobile Back Button Header */}
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 bg-white">
+              <button
+                onClick={() => setSelectedRepoId(null)}
+                className="p-1.5 -ml-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded transition-colors"
+                title="Back to repositories"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+              <span className="font-medium text-slate-900 truncate">
+                {selectedRepo.alias || selectedRepo.name}
+              </span>
+            </div>
+            {/* Action Container (Chat/Improve/Browse) */}
+            <div className="flex-1 min-h-0">
+              <RepoActionContainer selectedRepo={selectedRepo} />
+            </div>
+          </div>
+        ) : (
+          /* Mobile: Show repository list when no repo is selected */
+          <div className="h-full bg-white flex flex-col">
+            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stealth">
+              <RepositoryListContent
+                repos={repos}
+                loading={loading}
+                error={error}
+                indexingStatuses={indexingStatuses}
+                selectedRepoId={selectedRepoId}
+                onToggle={handleToggleRepo}
+                onRemove={handleRemoveRepo}
+                onStopIndexing={handleStopIndexing}
+                onReindex={handleReindexRepo}
+                onSelect={handleSelectRepo}
+                onRetry={handleRetry}
+              />
+            </div>
+            <RepositorySaveStatusFooter saveStatus={saveStatus} error={error} />
+          </div>
+        )}
+      </div>
+
+      {/* Desktop Layout: Split-Pane Container - Resizable 40/60 layout */}
+      <div className="flex-1 overflow-hidden hidden lg:block">
         <PanelGroup direction="horizontal">
           {/* Left Panel (40%): Repository List - clean white canvas */}
           <Panel defaultSize={40} minSize={25}>

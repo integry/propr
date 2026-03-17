@@ -26,16 +26,16 @@ export const GranularityPills: React.FC<{
   fileCount?: number;
   hideEstimate?: boolean;
 }> = ({ value, onChange, hideEstimate = false }) => {
-  const options: { id: Granularity; label: string; icon: typeof Square }[] = [
-    { id: 'single', label: 'Single', icon: Square },
-    { id: 'balanced', label: 'Balanced', icon: Layers },
-    { id: 'granular', label: 'Granular', icon: LayoutGrid },
+  const options: { id: Granularity; label: string; shortLabel: string; icon: typeof Square }[] = [
+    { id: 'single', label: 'Single', shortLabel: '1', icon: Square },
+    { id: 'balanced', label: 'Balanced', shortLabel: '3-5', icon: Layers },
+    { id: 'granular', label: 'Granular', shortLabel: '7+', icon: LayoutGrid },
   ];
 
   const estimatedIssues = estimateIssueCount(value);
 
   return (
-    <div className="inline-flex items-center gap-2">
+    <div className="inline-flex flex-wrap items-center gap-2">
       <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
         {options.map((opt) => {
           const Icon = opt.icon;
@@ -44,15 +44,16 @@ export const GranularityPills: React.FC<{
             <button
               key={opt.id}
               onClick={() => onChange(opt.id)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+              className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs sm:text-sm font-medium transition-all ${
                 isSelected
                   ? 'bg-white shadow-sm'
                   : 'text-gray-500 hover:text-gray-700'
               }`}
               style={isSelected ? { color: 'rgb(29, 138, 138)' } : undefined}
             >
-              <Icon className="w-3.5 h-3.5" />
-              {opt.label}
+              <Icon className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+              <span className="hidden sm:inline">{opt.label}</span>
+              <span className="sm:hidden">{opt.shortLabel}</span>
             </button>
           );
         })}

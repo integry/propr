@@ -35,8 +35,8 @@ export const NewModeHeader: React.FC<{
   return (
     <>
       {/* Repository selector - breadcrumb style */}
-      <div className="relative inline-flex items-center max-w-[50%]">
-        <Github className="w-4 h-4 text-gray-500 mr-1.5 flex-shrink-0" />
+      <div className="relative inline-flex items-center max-w-[55%] sm:max-w-[50%]">
+        <Github className="w-4 h-4 text-gray-500 mr-1 sm:mr-1.5 flex-shrink-0" />
         <select
           value={selectedRepo}
           onChange={(e) => onRepoChange?.(e.target.value)}
@@ -60,8 +60,8 @@ export const NewModeHeader: React.FC<{
       {/* Show branch selector when repo is selected */}
       {selectedRepo && (
         <>
-          <span className="text-gray-400 flex-shrink-0 mx-0.5">/</span>
-          <div className="relative inline-flex items-center max-w-[50%]">
+          <span className="text-gray-400 flex-shrink-0">/</span>
+          <div className="relative inline-flex items-center max-w-[40%] sm:max-w-[50%]">
             {isLoadingBranches ? (
               <span className="text-gray-400 text-sm">Loading...</span>
             ) : (
@@ -115,8 +115,8 @@ export const EditModeHeader: React.FC<{
   return (
     <>
       {/* Repository - always clickable dropdown styled as breadcrumb */}
-      <div className="relative inline-flex items-center max-w-[50%]">
-        <Github className="w-4 h-4 text-gray-500 mr-1.5 flex-shrink-0" />
+      <div className="relative inline-flex items-center max-w-[55%] sm:max-w-[50%]">
+        <Github className="w-4 h-4 text-gray-500 mr-1 sm:mr-1.5 flex-shrink-0" />
         <select
           value={repository}
           onChange={(e) => onRepoChange(e.target.value)}
@@ -136,9 +136,9 @@ export const EditModeHeader: React.FC<{
         </select>
         <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
       </div>
-      <span className="text-gray-400 flex-shrink-0 mx-0.5">/</span>
+      <span className="text-gray-400 flex-shrink-0">/</span>
       {/* Branch selector - breadcrumb style */}
-      <div className="relative inline-flex items-center max-w-[50%]">
+      <div className="relative inline-flex items-center max-w-[40%] sm:max-w-[50%]">
         {isRepoLoading ? (
           <span className="text-gray-400 text-sm">Loading...</span>
         ) : (

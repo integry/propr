@@ -57,7 +57,7 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
   }, []);
 
   return (
-    <header className="bg-white border-b border-gray-200 h-16 flex items-stretch shadow-sm z-20 sticky top-0">
+    <header className="bg-white border-b border-gray-200 h-12 sm:h-16 flex items-stretch shadow-sm z-20 sticky top-0">
       {/* Left Section: Mobile Toggle + Machine Status (no border if empty) */}
       <div className="flex items-center lg:hidden px-4">
         {/* Mobile Toggle */}
@@ -94,17 +94,15 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       </div>
 
       {/* Spacer - pushes everything to the right */}
-      <div className="flex-1 flex items-center justify-center px-4">
-        {/* Global Search - centered in the flexible space */}
-        <div className="hidden md:block w-full max-w-md">
+      <div className="flex-1 flex items-center justify-center px-2 sm:px-4">
+        {/* Global Search - centered in the flexible space, visible on all screen sizes */}
+        <div className="w-full max-w-md">
           <GlobalSearch inputRef={searchInputRef} />
         </div>
       </div>
 
       {/* New AI Plan Bay - Full height partition */}
-      <div className="hidden md:flex items-center px-4 relative">
-        {/* Subtle divider at 60-70% height */}
-        <div className="absolute left-0 top-[20%] h-[60%] w-px bg-slate-200" />
+      <div className="hidden md:flex items-center px-4">
         <button
           onClick={handleNewPlan}
           className="flex items-center gap-2 px-4 py-1.5 bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition-colors"
@@ -117,11 +115,9 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
       {/* Mobile New Plan Button */}
       <button
         onClick={handleNewPlan}
-        className="md:hidden flex items-center px-4 relative bg-teal-600 text-white hover:bg-teal-700 transition-colors"
+        className="md:hidden flex items-center px-4 bg-teal-600 text-white hover:bg-teal-700 transition-colors"
         aria-label="New Plan"
       >
-        {/* Subtle divider at 60-70% height */}
-        <div className="absolute left-0 top-[20%] h-[60%] w-px bg-slate-200" />
         <ScrollText className="w-5 h-5" />
       </button>
 

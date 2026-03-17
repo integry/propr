@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Send, Bot, User, Loader2, Square } from 'lucide-react';
 import { ChatMessage } from '../../api/proprApi';
 import type { RefinementProgress } from '../../hooks/usePlanRefinement';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 interface Message {
   id: string;
@@ -94,6 +95,7 @@ const RefinementProgressBar: React.FC<RefinementProgressBarProps> = ({ startedAt
 };
 
 export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop }) => {
+  const isMobile = useIsMobile();
   const [messages, setMessages] = useState<Message[]>(() => {
     if (initialMessages && initialMessages.length > 0) {
       // Map initial messages directly to internal format - seeded messages from backend should be displayed
@@ -269,21 +271,23 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
-      {/* Header */}
-      <div className="px-4 py-3">
-        <div className="flex items-center">
-          {/* Fixed 40px icon column to match message gutter alignment */}
-          <div className="w-10 flex-shrink-0 flex justify-center">
-            <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
-              <Bot size={16} className="text-white" />
+      {/* Header - hidden on mobile since it's shown in the parent bottom sheet */}
+      {!isMobile && (
+        <div className="px-4 py-3">
+          <div className="flex items-center">
+            {/* Fixed 40px icon column to match message gutter alignment */}
+            <div className="w-10 flex-shrink-0 flex justify-center">
+              <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
+                <Bot size={16} className="text-white" />
+              </div>
             </div>
+            <h3 className="font-semibold text-gray-900 ml-3">Assistant</h3>
           </div>
-          <h3 className="font-semibold text-gray-900 ml-3">Assistant</h3>
+          {messages.length === 0 && (
+            <p className="text-xs text-gray-500 mt-0.5 ml-[52px]">Refine your plan through conversation</p>
+          )}
         </div>
-        {messages.length === 0 && (
-          <p className="text-xs text-gray-500 mt-0.5 ml-[52px]">Refine your plan through conversation</p>
-        )}
-      </div>
+      )}
 
       {/* Messages area - no border, fills available space */}
       <div
@@ -371,9 +375,9 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
       </div>
 
       {/* Input area - floating command bar style with margin */}
-      <div className="flex-shrink-0 m-4">
+      <div className={`flex-shrink-0 ${isMobile ? 'm-3' : 'm-4'}`}>
         <form onSubmit={handleSubmit}>
-          <div className="flex gap-2 items-end bg-white rounded-lg shadow-lg border border-slate-200 p-4">
+          <div className={`flex gap-2 items-end bg-white rounded-lg shadow-lg border border-slate-200 ${isMobile ? 'p-3' : 'p-4'}`}>
             <textarea
               ref={textareaRef}
               value={input}
@@ -382,10 +386,10 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
               placeholder="Ask the AI to refine the plan..."
               disabled={isLoading}
               rows={1}
-              className="flex-1 px-3 py-2 bg-transparent focus:outline-none disabled:bg-gray-50 resize-none min-h-[40px] max-h-[200px] overflow-y-auto text-sm"
+              className={`flex-1 px-3 py-2 bg-transparent focus:outline-none disabled:bg-gray-50 resize-none min-h-[40px] overflow-y-auto text-sm ${isMobile ? 'max-h-[120px]' : 'max-h-[200px]'}`}
             />
-            {/* Keyboard shortcut hint */}
-            <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>
+            {/* Keyboard shortcut hint - hidden on mobile */}
+            {!isMobile && <span className="text-xs text-gray-400 self-center mr-1 flex-shrink-0">↵</span>}
             {isLoading ? (
               <button
                 type="button"

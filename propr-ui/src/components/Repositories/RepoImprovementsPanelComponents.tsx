@@ -296,7 +296,7 @@ export const SuggestionRow: React.FC<SuggestionRowProps> = ({
       }`}>
         {suggestion.title}
       </h4>
-      <p className="text-xs text-slate-500 leading-snug mt-0.5 line-clamp-2">
+      <p className="text-xs text-slate-500 leading-snug mt-0.5">
         {suggestion.description}
       </p>
     </div>

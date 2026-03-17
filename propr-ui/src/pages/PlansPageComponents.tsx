@@ -25,7 +25,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 }) => {
   if (type === 'no-plans') {
     return (
-      <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+      <div className="text-center py-12 sm:py-20 mx-4 sm:mx-6 my-4 sm:my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
         <div className="mb-4">
           <svg className="w-16 h-16 mx-auto text-teal-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -48,7 +48,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 
   if (type === 'no-search-results') {
     return (
-      <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+      <div className="text-center py-12 sm:py-20 mx-4 sm:mx-6 my-4 sm:my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
         <div className="mb-4">
           <Search className="w-16 h-16 mx-auto text-gray-400" />
         </div>
@@ -64,7 +64,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   }
 
   return (
-    <div className="text-center py-20 mx-6 my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
+    <div className="text-center py-12 sm:py-20 mx-4 sm:mx-6 my-4 sm:my-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">
       <div className="mb-4">
         <Filter className="w-16 h-16 mx-auto text-gray-400" />
       </div>
@@ -79,14 +79,14 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   );
 };
 
-interface PlansTableRowProps {
+interface PlansListItemProps {
   draft: DraftListItem;
   abortingId: string | null;
   onDelete: (id: string, e: React.MouseEvent) => void;
   onAbort: (id: string, e: React.MouseEvent) => void;
 }
 
-export const PlansTableRow: React.FC<PlansTableRowProps> = ({
+export const PlansListItem: React.FC<PlansListItemProps> = ({
   draft,
   abortingId,
   onDelete,
@@ -95,64 +95,72 @@ export const PlansTableRow: React.FC<PlansTableRowProps> = ({
   const effectiveStatus = getEffectiveStatus(draft.status, draft.issue_summary);
 
   return (
-    <tr className="hover:bg-gray-50 group border-b border-slate-100">
-      {/* Repository column - fixed width for scanning axis alignment */}
-      <td className="px-6 py-3 w-[180px] min-w-[180px] max-w-[180px]">
+    <div className="hover:bg-gray-50 group border-b border-slate-100 flex items-center px-2 sm:px-4 py-3 gap-2 sm:gap-4">
+      {/* Repository column - hidden on mobile, fixed width on desktop */}
+      <div className="hidden sm:block flex-shrink-0 w-[140px]">
         <Link to={`/studio/${draft.draft_id}`} className="block">
           <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
             {draft.repository}
           </span>
         </Link>
-      </td>
-      {/* Plan title and status cell */}
-      <td className="px-4 py-3">
+      </div>
+      {/* Plan title and status - takes all remaining space */}
+      <div className="flex-1 min-w-0">
         <Link to={`/studio/${draft.draft_id}`} className="block">
+          {/* Repository badge - shown inline on mobile only */}
+          <div className="sm:hidden mb-1">
+            <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
+              {draft.repository}
+            </span>
+          </div>
           {/* Plan Title */}
           <div className="mb-1">
-            <span className="text-sm font-medium text-gray-900">
+            <span className="text-sm font-medium text-gray-900 break-words">
               {draft.name || draft.initial_prompt}
             </span>
           </div>
           {/* Bottom line: Unified Status Strip */}
-          <div className="flex items-center text-xs">
+          <div className="flex flex-wrap items-center text-xs gap-1">
             {renderStatusStrip(draft.issue_summary, effectiveStatus)}
           </div>
         </Link>
-      </td>
-      {/* Actions cell - right-aligned with consistent width */}
-      <td className="px-6 py-3 whitespace-nowrap text-right text-sm font-medium w-[220px]">
-        <div className="flex items-center justify-end gap-3">
-          {/* Relative time - far right aligned */}
-          <span className="text-xs text-slate-400 min-w-[80px] text-right">
-            {formatRelativeTime(draft.updated_at)}
-          </span>
-          {/* Ghost Delete button - icon only, gray, turns red on hover */}
+      </div>
+      {/* Actions - shrinks to fit content */}
+      <div className="flex-shrink-0 flex items-center gap-2 sm:gap-3">
+        {/* Relative time - hidden on mobile, far right aligned on desktop */}
+        <span className="hidden sm:inline text-xs text-slate-400 min-w-[80px] text-right">
+          {formatRelativeTime(draft.updated_at)}
+        </span>
+        {/* Ghost Delete button - hidden on mobile, shown on desktop hover */}
+        <button
+          onClick={(e) => onDelete(draft.draft_id, e)}
+          className="hidden sm:inline-flex items-center justify-center w-8 h-8 text-gray-400 bg-transparent rounded-md hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+          title="Delete"
+        >
+          <Trash2 size={16} />
+        </button>
+        {draft.status === 'generating' && (
           <button
-            onClick={(e) => onDelete(draft.draft_id, e)}
-            className="inline-flex items-center justify-center w-8 h-8 text-gray-400 bg-transparent rounded-md hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
-            title="Delete"
+            onClick={(e) => onAbort(draft.draft_id, e)}
+            disabled={abortingId === draft.draft_id}
+            className="inline-flex items-center px-2 sm:px-3 py-1.5 text-xs font-medium text-orange-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50"
           >
-            <Trash2 size={16} />
+            {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
           </button>
-          {draft.status === 'generating' && (
-            <button
-              onClick={(e) => onAbort(draft.draft_id, e)}
-              disabled={abortingId === draft.draft_id}
-              className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-orange-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors disabled:opacity-50"
-            >
-              {abortingId === draft.draft_id ? 'Stopping...' : 'Stop'}
-            </button>
-          )}
-          {/* Primary action button - fixed width for alignment */}
-          <Link
-            to={`/studio/${draft.draft_id}`}
-            className="inline-flex items-center justify-center w-[72px] px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
-          >
+        )}
+        {/* Primary action button - icon only on mobile, text on desktop */}
+        <Link
+          to={`/studio/${draft.draft_id}`}
+          className="inline-flex items-center justify-center w-8 h-8 sm:w-[72px] sm:h-auto px-0 sm:px-3 py-0 sm:py-1.5 text-xs font-medium text-gray-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors"
+          title={effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
+        >
+          <ChevronRight size={16} className="sm:hidden" />
+          <span className="hidden sm:inline">
             {effectiveStatus === 'merged' ? 'View' : (effectiveStatus === 'executed' || effectiveStatus === 'pr_created') ? 'Manage' : 'Resume'}
-          </Link>
-        </div>
-      </td>
-    </tr>
+          </span>
+        </Link>
+      </div>
+    </div>
   );
 };
 
@@ -178,72 +186,65 @@ export const PaginationControls: React.FC<PaginationControlsProps> = ({
   if (totalPages <= 1) return null;
 
   return (
-    <div className="flex items-center justify-between px-6 py-4">
-      <span className="text-sm text-gray-600">
-        Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, totalDrafts)} of {totalDrafts} plans
+    <div className="flex items-center justify-between px-4 sm:px-6 py-2 gap-2">
+      <span className="text-xs sm:text-sm text-gray-600">
+        <span className="hidden sm:inline">Showing </span>{(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, totalDrafts)}<span className="hidden sm:inline"> of {totalDrafts} plans</span>
       </span>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1 sm:gap-2">
         <button
           onClick={() => onPageChange(Math.max(1, currentPage - 1))}
           disabled={currentPage === 1 || loading}
-          className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="inline-flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          <ChevronLeft size={16} />
-          Previous
+          <ChevronLeft size={14} className="sm:w-4 sm:h-4" />
+          <span className="hidden sm:inline">Previous</span>
         </button>
-        <span className="text-sm text-gray-600 px-2">
-          Page {currentPage} of {totalPages}
+        <span className="text-xs sm:text-sm text-gray-600 px-1">
+          {currentPage}/{totalPages}
         </span>
         <button
           onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}
           disabled={!hasMore || loading}
-          className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="inline-flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          Next
-          <ChevronRight size={16} />
+          <span className="hidden sm:inline">Next</span>
+          <ChevronRight size={14} className="sm:w-4 sm:h-4" />
         </button>
       </div>
     </div>
   );
 };
 
-interface PlansTableProps {
+interface PlansListProps {
   drafts: DraftListItem[];
   abortingId: string | null;
   onDelete: (id: string, e: React.MouseEvent) => void;
   onAbort: (id: string, e: React.MouseEvent) => void;
 }
 
-export const PlansTable: React.FC<PlansTableProps> = ({
+export const PlansList: React.FC<PlansListProps> = ({
   drafts,
   abortingId,
   onDelete,
   onAbort
 }) => {
   return (
-    <div className="flex flex-col h-full bg-white">
-      <div className="flex-1 overflow-auto">
-        <table className="min-w-full">
-          <thead className="sr-only">
-            <tr>
-              <th>Repository</th>
-              <th>Plan</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white">
-            {drafts.map((draft) => (
-              <PlansTableRow
-                key={draft.draft_id}
-                draft={draft}
-                abortingId={abortingId}
-                onDelete={onDelete}
-                onAbort={onAbort}
-              />
-            ))}
-          </tbody>
-        </table>
+    <div className="flex flex-col h-full bg-white w-full overflow-hidden">
+      <div className="flex-1 overflow-y-auto w-full">
+        {drafts.map((draft) => (
+          <PlansListItem
+            key={draft.draft_id}
+            draft={draft}
+            abortingId={abortingId}
+            onDelete={onDelete}
+            onAbort={onAbort}
+          />
+        ))}
       </div>
     </div>
   );
 };
+
+// Keep backward compatibility alias
+export const PlansTable = PlansList;
+export const PlansTableRow = PlansListItem;

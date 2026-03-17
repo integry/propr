@@ -87,7 +87,7 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft;
   return (
     <div className="h-[calc(100vh-64px)] flex flex-col">
       {/* Fixed Header */}
-      <div className="bg-gray-100 px-6 py-4 border-b border-gray-300">
+      <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
         <StudioStepper currentStage={currentStage} />
       </div>
 
@@ -124,7 +124,7 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft;
 const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
-    <div className="bg-gray-100 px-6 py-4 border-b border-gray-300">
+    <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
       <StudioStepper currentStage={currentStage} />
     </div>
 
@@ -138,7 +138,7 @@ const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; 
 const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
-    <div className="bg-gray-100 px-6 py-4 border-b border-gray-300">
+    <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
       <StudioStepper currentStage={currentStage} />
     </div>
 
@@ -157,7 +157,7 @@ const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; on
 const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
-    <div className="bg-gray-100 px-6 py-4 border-b border-gray-300">
+    <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
       <StudioStepper currentStage={currentStage} />
     </div>
 
@@ -202,7 +202,7 @@ const NewDraftView: React.FC<{
 }> = ({ draft, onDraftCreated, onRefetch }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
-    <div className="bg-gray-100 px-6 py-4 border-b border-gray-300">
+    <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
       <StudioStepper currentStage="draft" />
     </div>
 
