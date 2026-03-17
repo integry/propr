@@ -157,61 +157,101 @@ Example:
     }
   });
 
-// Login command - authenticate with GitHub token
+// Login command - authenticate with GitHub
 program
   .command("login [token]")
-  .description("Authenticate with a GitHub Personal Access Token (PAT)")
+  .description("Authenticate with GitHub (interactive via gh CLI, or provide a PAT)")
   .addHelpText("after", `
 Argument:
-  token    GitHub Personal Access Token (optional - shows instructions if omitted)
+  token    GitHub Personal Access Token (optional)
 
-Required Token Scopes:
-  - repo      Full control of private repositories
-  - read:org  Read organization membership
+When no token is provided, the CLI uses 'gh' (GitHub CLI) to authenticate:
+  - If you're already logged in to gh, your token is used automatically
+  - If not, 'gh auth login' is launched interactively
 
-Example:
-  $ propr login ghp_xxxxxxxxxxxx
-
-To generate a token:
-  1. Go to https://github.com/settings/tokens
-  2. Click "Generate new token (classic)"
-  3. Select scopes: repo, read:org
-  4. Copy and use the generated token
+Examples:
+  $ propr login                       # Interactive login via gh CLI
+  $ propr login ghp_xxxxxxxxxxxx      # Use a PAT directly
 `)
   .action(async (token?: string) => {
     try {
       const configManager = await createConfigManager();
 
-      if (!token) {
-        console.log("No token provided.");
+      if (token) {
+        // Direct PAT flow
+        const validPrefixes = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"];
+        const hasValidPrefix = validPrefixes.some((prefix) => token.startsWith(prefix));
+
+        if (!hasValidPrefix && token.length < 40) {
+          console.warn(
+            "Warning: The provided token does not appear to be a valid GitHub token format."
+          );
+          console.warn("GitHub personal access tokens typically start with 'ghp_'.");
+          console.log("");
+        }
+
+        await configManager.setGithubToken(token);
+        console.log("Authentication successful!");
+        console.log(`Token saved to: ${configManager.getConfigFilePath()}`);
+        return;
+      }
+
+      // Interactive flow via gh CLI
+      const { execSync, spawnSync } = await import("child_process");
+
+      // Check if gh is installed
+      try {
+        execSync("gh --version", { stdio: "ignore" });
+      } catch {
+        console.error("Error: GitHub CLI (gh) is not installed.");
         console.log("");
-        console.log("Usage: propr login <token>");
+        console.log("Install it from: https://cli.github.com");
         console.log("");
-        console.log("To generate a GitHub Personal Access Token:");
-        console.log("  1. Go to https://github.com/settings/tokens");
-        console.log("  2. Click 'Generate new token (classic)'");
-        console.log("  3. Select the required scopes (repo, read:org)");
-        console.log("  4. Copy the generated token");
-        console.log("  5. Run: propr login <your-token>");
+        console.log("Or provide a token directly:");
+        console.log("  $ propr login <token>");
         process.exit(1);
       }
 
-      const validPrefixes = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"];
-      const hasValidPrefix = validPrefixes.some((prefix) => token.startsWith(prefix));
-
-      if (!hasValidPrefix && token.length < 40) {
-        console.warn(
-          "Warning: The provided token does not appear to be a valid GitHub token format."
-        );
-        console.warn("GitHub personal access tokens typically start with 'ghp_'.");
-        console.log("");
+      // Try to get an existing token
+      try {
+        const existingToken = execSync("gh auth token", { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] }).trim();
+        if (existingToken) {
+          await configManager.setGithubToken(existingToken);
+          console.log("Authenticated using existing gh CLI session.");
+          console.log(`Token saved to: ${configManager.getConfigFilePath()}`);
+          return;
+        }
+      } catch {
+        // Not logged in yet — proceed to interactive login
       }
 
-      await configManager.setGithubToken(token);
+      // Launch interactive gh auth login
+      console.log("No existing gh session found. Starting interactive login...");
+      console.log("");
+
+      const result = spawnSync("gh", ["auth", "login", "-s", "repo,read:org"], {
+        stdio: "inherit",
+      });
+
+      if (result.status !== 0) {
+        console.error("Error: GitHub login failed or was cancelled.");
+        process.exit(1);
+      }
+
+      // Grab the token after successful login
+      const ghToken = execSync("gh auth token", { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] }).trim();
+
+      if (!ghToken) {
+        console.error("Error: Could not retrieve token after login.");
+        process.exit(1);
+      }
+
+      await configManager.setGithubToken(ghToken);
+      console.log("");
       console.log("Authentication successful!");
       console.log(`Token saved to: ${configManager.getConfigFilePath()}`);
     } catch (error) {
-      console.error(`Error saving token: ${(error as Error).message}`);
+      console.error(`Error during login: ${(error as Error).message}`);
       process.exit(1);
     }
   });
