@@ -70,7 +70,6 @@ program
   .description("CLI for interacting with the ProPR backend - AI-powered automated implementation of GitHub issues and pull requests")
   .version("1.0.0")
   .option("-p, --project <project>", "Specify the target project (owner/repo)")
-  .option("-j, --json", "Output results as JSON for programmatic use")
   .addHelpText("before", `
 ProPR CLI - AI-Powered GitHub Issue Implementation
 
@@ -86,7 +85,7 @@ Quick Start:
   $ propr issue implement <id>      Implement a GitHub issue
 
 JSON Output:
-  Use --json (-j) flag with any command for machine-readable output:
+  Most commands support --json (-j) for machine-readable output:
   $ propr plan list --json
   $ propr agent list -j
 

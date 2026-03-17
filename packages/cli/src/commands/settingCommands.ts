@@ -130,8 +130,6 @@ Examples:
     .action(
       async (options: { key?: string; json?: boolean }) => {
         try {
-          console.log("Fetching system settings...");
-
           const settings = await getSettings();
 
           if (options.json) {
@@ -166,6 +164,7 @@ Examples:
             return;
           }
 
+          console.log("Fetching system settings...");
           console.log("");
           displaySettingsTable(settings);
           console.log("");
