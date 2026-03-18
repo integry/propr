@@ -20,6 +20,10 @@ export interface CodexEventItem {
     aggregated_output?: string;
     exit_code?: number;
     status?: string;
+    // For file_change events
+    changes?: Array<{ path: string; kind: string }>;
+    // For todo_list events
+    items?: Array<{ text: string; completed: boolean }>;
 }
 
 export interface CodexEvent {
@@ -136,6 +140,12 @@ function handleItemCompleted(event: CodexEvent, state: ParseState): void {
         if (item.aggregated_output) {
             state.logs += `[Output] ${item.aggregated_output}\n`;
         }
+    } else if (item.type === 'file_change' && item.changes) {
+        const changesList = item.changes.map(c => `  ${c.kind}: ${c.path}`).join('\n');
+        state.logs += `[File Changes]\n${changesList}\n`;
+    } else if (item.type === 'todo_list' && item.items) {
+        const todoList = item.items.map(t => `  [${t.completed ? 'x' : ' '}] ${t.text}`).join('\n');
+        state.logs += `[Todo List]\n${todoList}\n`;
     }
 }
 
@@ -197,6 +207,17 @@ function processEvent(event: CodexEvent, state: ParseState): void {
             handleTurnCompleted(event, state);
             break;
         case 'item.started':
+            // Log command starts for real-time feedback
+            if (event.item?.type === 'command_execution' && event.item?.command) {
+                state.logs += `[Running] ${event.item.command}\n`;
+            }
+            break;
+        case 'item.updated':
+            // Handle todo list updates
+            if (event.item?.type === 'todo_list' && event.item?.items) {
+                const todoList = event.item.items.map(t => `  [${t.completed ? 'x' : ' '}] ${t.text}`).join('\n');
+                state.logs += `[Todo Update]\n${todoList}\n`;
+            }
             break;
         default:
             state.logs += `[${event.type || 'unknown'}] ${JSON.stringify(event)}\n`;
