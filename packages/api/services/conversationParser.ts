@@ -67,6 +67,82 @@ interface CodexEvent {
   usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number };
 }
 
+/**
+ * Process a single Codex item.completed event item
+ */
+function processCodexItemCompleted(
+  item: CodexEventItem,
+  timestamp: string,
+  events: ConversationEvent[]
+): TodoItem[] | null {
+  switch (item.type) {
+    case 'reasoning':
+      if (item.text) {
+        events.push({ type: 'thought', content: item.text, timestamp });
+      }
+      break;
+    case 'command_execution':
+      events.push({
+        type: 'tool_use',
+        toolName: 'Bash',
+        input: { command: item.command },
+        timestamp
+      });
+      if (item.aggregated_output) {
+        events.push({
+          type: 'tool_result',
+          result: truncateResult(item.aggregated_output),
+          isError: item.exit_code !== 0,
+          timestamp
+        });
+      }
+      break;
+    case 'file_change':
+      if (item.changes) {
+        const changesList = item.changes.map(c => `${c.kind}: ${c.path}`).join('\n');
+        events.push({
+          type: 'tool_use',
+          toolName: 'FileChange',
+          input: { changes: item.changes },
+          timestamp
+        });
+        events.push({
+          type: 'tool_result',
+          result: changesList,
+          isError: false,
+          timestamp
+        });
+      }
+      break;
+    case 'agent_message':
+      if (item.text) {
+        events.push({ type: 'thought', content: `**Result:** ${item.text}`, timestamp });
+      }
+      break;
+    case 'todo_list':
+      if (item.items) {
+        return item.items.map((t, i) => ({
+          id: `todo-${i}`,
+          content: t.text,
+          status: t.completed ? 'completed' as const : 'pending' as const
+        }));
+      }
+      break;
+  }
+  return null;
+}
+
+/**
+ * Parse todo items from Codex event
+ */
+function parseTodoItems(items: Array<{ text: string; completed: boolean }>): TodoItem[] {
+  return items.map((t, i) => ({
+    id: `todo-${i}`,
+    content: t.text,
+    status: t.completed ? 'completed' as const : 'pending' as const
+  }));
+}
+
 /** Result from parsing a conversation file */
 export interface ParsedConversation {
   events: ConversationEvent[];
@@ -250,54 +326,12 @@ function parseCodexConversation(lines: string[]): ParsedConversation {
       const timestamp = new Date().toISOString();
 
       if (event.type === 'item.completed' && event.item) {
-        const item = event.item;
-
-        if (item.type === 'reasoning' && item.text) {
-          events.push({ type: 'thought', content: item.text, timestamp });
-        } else if (item.type === 'command_execution') {
-          events.push({
-            type: 'tool_use',
-            toolName: 'Bash',
-            input: { command: item.command },
-            timestamp
-          });
-          if (item.aggregated_output) {
-            events.push({
-              type: 'tool_result',
-              result: truncateResult(item.aggregated_output),
-              isError: item.exit_code !== 0,
-              timestamp
-            });
-          }
-        } else if (item.type === 'file_change' && item.changes) {
-          const changesList = item.changes.map(c => `${c.kind}: ${c.path}`).join('\n');
-          events.push({
-            type: 'tool_use',
-            toolName: 'FileChange',
-            input: { changes: item.changes },
-            timestamp
-          });
-          events.push({
-            type: 'tool_result',
-            result: changesList,
-            isError: false,
-            timestamp
-          });
-        } else if (item.type === 'agent_message' && item.text) {
-          events.push({ type: 'thought', content: `**Result:** ${item.text}`, timestamp });
-        } else if (item.type === 'todo_list' && item.items) {
-          todos = item.items.map((t, i) => ({
-            id: `todo-${i}`,
-            content: t.text,
-            status: t.completed ? 'completed' as const : 'pending' as const
-          }));
+        const updatedTodos = processCodexItemCompleted(event.item, timestamp, events);
+        if (updatedTodos) {
+          todos = updatedTodos;
         }
       } else if (event.type === 'item.updated' && event.item?.type === 'todo_list' && event.item?.items) {
-        todos = event.item.items.map((t, i) => ({
-          id: `todo-${i}`,
-          content: t.text,
-          status: t.completed ? 'completed' as const : 'pending' as const
-        }));
+        todos = parseTodoItems(event.item.items);
       } else if (event.type === 'turn.completed' && event.usage) {
         tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
         tokenUsage.output_tokens += event.usage.output_tokens ?? 0;

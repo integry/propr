@@ -5,8 +5,9 @@ import * as chokidar from 'chokidar';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
-import { TASK_LIVE_UPDATE, type TaskLiveUpdatePayload, type ConversationEvent, type TodoItem, type TokenUsageInfo } from '@propr/shared';
+import { TASK_LIVE_UPDATE, type TaskLiveUpdatePayload } from '@propr/shared';
 import { parseConversationFile } from './conversationParser.js';
+import { parseRedisOutput } from './redisOutputParser.js';
 import { loadAgents, resolveConfigPath, type AgentConfig } from '@propr/core';
 
 /** Active task watcher info */
@@ -386,11 +387,9 @@ export class TaskWatcherManager {
       }
       watcherInfo.lastRedisLength = output.length;
 
-      // Parse the output using the conversation parser (which now handles Codex format)
+      // Parse the output using the Redis output parser
       const lines = output.trim().split('\n').filter((line: string) => line.trim());
-
-      // Import and use parseCodexConversation logic inline
-      const result = this.parseRedisOutput(lines);
+      const result = parseRedisOutput(lines);
 
       // Determine which events to send
       let eventsToSend = result.events;
@@ -424,115 +423,6 @@ export class TaskWatcherManager {
     } catch (error) {
       console.error(`[TaskWatcher] Error sending Redis live update for task ${taskId}:`, error);
     }
-  }
-
-  /**
-   * Parse Redis output (Codex NDJSON or Gemini JSONL format)
-   */
-  private parseRedisOutput(lines: string[]): { events: ConversationEvent[]; todos: TodoItem[]; currentTask: string | null; tokenUsage: TokenUsageInfo | null; totalEventCount: number } {
-    const events: ConversationEvent[] = [];
-    let todos: TodoItem[] = [];
-    const tokenUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
-    let pendingAssistantMessage = '';
-
-    for (const line of lines) {
-      try {
-        const event = JSON.parse(line);
-        const timestamp = event.timestamp || new Date().toISOString();
-
-        // === Codex event types ===
-        if (event.type === 'item.completed' && event.item) {
-          const item = event.item;
-          if (item.type === 'reasoning' && item.text) {
-            events.push({ type: 'thought' as const, content: item.text, timestamp });
-          } else if (item.type === 'command_execution') {
-            events.push({ type: 'tool_use' as const, toolName: 'Bash', input: { command: item.command }, timestamp });
-            if (item.aggregated_output) {
-              const truncated = item.aggregated_output.length > 2000
-                ? item.aggregated_output.substring(0, 2000) + '... [truncated]'
-                : item.aggregated_output;
-              events.push({ type: 'tool_result' as const, result: truncated, isError: item.exit_code !== 0, timestamp });
-            }
-          } else if (item.type === 'file_change' && item.changes) {
-            const changesList = item.changes.map((c: { kind: string; path: string }) => `${c.kind}: ${c.path}`).join('\n');
-            events.push({ type: 'tool_use' as const, toolName: 'FileChange', input: { changes: item.changes }, timestamp });
-            events.push({ type: 'tool_result' as const, result: changesList, isError: false, timestamp });
-          } else if (item.type === 'agent_message' && item.text) {
-            events.push({ type: 'thought' as const, content: `**Result:** ${item.text}`, timestamp });
-          } else if (item.type === 'todo_list' && item.items) {
-            todos = item.items.map((t: { text: string; completed: boolean }, i: number) => ({
-              id: `todo-${i}`,
-              content: t.text,
-              status: t.completed ? 'completed' as const : 'pending' as const
-            }));
-          }
-        } else if (event.type === 'item.updated' && event.item?.type === 'todo_list' && event.item?.items) {
-          todos = event.item.items.map((t: { text: string; completed: boolean }, i: number) => ({
-            id: `todo-${i}`,
-            content: t.text,
-            status: t.completed ? 'completed' as const : 'pending' as const
-          }));
-        } else if (event.type === 'turn.completed' && event.usage) {
-          tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
-          tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
-        }
-        // === Gemini event types ===
-        else if (event.type === 'message' && event.role === 'assistant') {
-          // Gemini streams assistant messages with delta flag
-          if (event.delta) {
-            pendingAssistantMessage += event.content || '';
-          } else {
-            // Complete message
-            if (pendingAssistantMessage) {
-              events.push({ type: 'thought' as const, content: pendingAssistantMessage, timestamp });
-              pendingAssistantMessage = '';
-            }
-            if (event.content) {
-              events.push({ type: 'thought' as const, content: event.content, timestamp });
-            }
-          }
-        } else if (event.type === 'tool_use') {
-          // Flush pending assistant message before tool use
-          if (pendingAssistantMessage) {
-            events.push({ type: 'thought' as const, content: pendingAssistantMessage, timestamp });
-            pendingAssistantMessage = '';
-          }
-          events.push({ type: 'tool_use' as const, toolName: event.tool_name, input: event.parameters, id: event.tool_id, timestamp });
-        } else if (event.type === 'tool_result') {
-          const truncated = event.output?.length > 2000
-            ? event.output.substring(0, 2000) + '... [truncated]'
-            : event.output;
-          events.push({ type: 'tool_result' as const, toolUseId: event.tool_id, result: truncated, isError: event.status === 'error', timestamp });
-        } else if (event.type === 'result' && event.stats) {
-          // Flush pending assistant message at end
-          if (pendingAssistantMessage) {
-            events.push({ type: 'thought' as const, content: pendingAssistantMessage, timestamp });
-            pendingAssistantMessage = '';
-          }
-          tokenUsage.input_tokens += event.stats.input_tokens ?? 0;
-          tokenUsage.output_tokens += event.stats.output_tokens ?? 0;
-        }
-      } catch {
-        // Skip non-JSON lines
-        continue;
-      }
-    }
-
-    // Flush any remaining pending message
-    if (pendingAssistantMessage) {
-      events.push({ type: 'thought' as const, content: pendingAssistantMessage, timestamp: new Date().toISOString() });
-    }
-
-    const inProgressTask = todos.find(t => t.status === 'in_progress');
-    const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0;
-
-    return {
-      events,
-      todos,
-      currentTask: inProgressTask ? inProgressTask.content : null,
-      tokenUsage: hasTokens ? tokenUsage : null,
-      totalEventCount: events.length
-    };
   }
 
   /**
