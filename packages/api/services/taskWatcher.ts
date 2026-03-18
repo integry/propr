@@ -5,12 +5,13 @@ import * as chokidar from 'chokidar';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
-import { TASK_LIVE_UPDATE, type TaskLiveUpdatePayload } from '@propr/shared';
+import { TASK_LIVE_UPDATE, type TaskLiveUpdatePayload, type ConversationEvent, type TodoItem, type TokenUsageInfo } from '@propr/shared';
 import { parseConversationFile } from './conversationParser.js';
+import { loadAgents, resolveConfigPath, type AgentConfig } from '@propr/core';
 
 /** Active task watcher info */
 export interface TaskWatcherInfo {
-  watcher: chokidar.FSWatcher;
+  watcher: chokidar.FSWatcher | null;
   sessionId: string;
   taskId: string;
   lastSize: number;
@@ -19,6 +20,10 @@ export interface TaskWatcherInfo {
   lastSentEventCount: number;
   /** Whether we're watching for file creation (true) or file changes (false) */
   watchingForCreation: boolean;
+  /** Polling interval for Redis-based streaming (Codex) */
+  redisPollingInterval?: ReturnType<typeof setInterval>;
+  /** Last content length from Redis (for change detection) */
+  lastRedisLength?: number;
 }
 
 /** Dependencies for task watching */
@@ -47,7 +52,7 @@ export class TaskWatcherManager {
   }
 
   /**
-   * Start watching a task's Claude log file for changes
+   * Start watching a task's log for changes (file-based for Claude, Redis-based for Codex)
    */
   async startTaskWatcher(taskId: string): Promise<void> {
     // Check if already watching
@@ -60,17 +65,39 @@ export class TaskWatcherManager {
     // Find the session ID for this task
     const sessionId = await this.findSessionIdForTask(taskId);
     if (!sessionId) {
-      console.log(`[TaskWatcher] No session found for task ${taskId}, cannot start watcher`);
+      console.log(`[TaskWatcher] No session found for task ${taskId}, trying Redis watcher`);
+      await this.startRedisWatcher(taskId);
       return;
     }
 
-    const conversationPath = path.join(
-      os.homedir(),
-      '.claude',
-      'projects',
-      '-home-node-workspace',
-      `${sessionId}.jsonl`
-    );
+    // Get agent config to find the correct log path
+    const agentConfig = await this.findAgentConfigForTask(taskId);
+    const agentType = agentConfig?.type || 'claude';
+    const agentRoot = agentConfig ? resolveConfigPath(agentConfig.configPath) : path.join(os.homedir(), '.claude');
+
+    let conversationPath: string;
+    if (agentType === 'codex') {
+      // Codex logs are at {agentRoot}/sessions/YYYY/MM/DD/rollout-TIMESTAMP-SESSIONID.jsonl
+      const today = new Date();
+      const dateDir = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
+      // Use Redis watcher for Codex since file naming includes timestamp we don't know
+      console.log(`[TaskWatcher] Codex task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
+      await this.startRedisWatcher(taskId);
+      return;
+    } else if (agentType === 'gemini') {
+      // Gemini - use Redis watcher for now
+      console.log(`[TaskWatcher] Gemini task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
+      await this.startRedisWatcher(taskId);
+      return;
+    } else {
+      // Claude logs are at {agentRoot}/projects/-home-node-workspace/SESSIONID.jsonl
+      conversationPath = path.join(
+        agentRoot,
+        'projects',
+        '-home-node-workspace',
+        `${sessionId}.jsonl`
+      );
+    }
 
     // Check if file exists
     const exists = await fs.pathExists(conversationPath);
@@ -172,7 +199,9 @@ export class TaskWatcherManager {
     if (!existing) return;
 
     // Close the directory watcher
-    await existing.watcher.close();
+    if (existing.watcher) {
+      await existing.watcher.close();
+    }
 
     // Create a new watcher for the file itself
     const watcher = chokidar.watch(conversationPath, {
@@ -220,9 +249,14 @@ export class TaskWatcherManager {
     const hasClients = room && room.size > 0;
 
     if (watcher.subscriberCount <= 0 && !hasClients) {
-      await watcher.watcher.close();
+      if (watcher.watcher) {
+        await watcher.watcher.close();
+      }
+      if (watcher.redisPollingInterval) {
+        clearInterval(watcher.redisPollingInterval);
+      }
       this.taskWatchers.delete(taskId);
-      console.log(`[TaskWatcher] Stopped watching Claude log for task ${taskId}`);
+      console.log(`[TaskWatcher] Stopped watching for task ${taskId}`);
     }
   }
 
@@ -297,6 +331,196 @@ export class TaskWatcherManager {
   }
 
   /**
+   * Check if task has Redis output (indicates Codex/non-Claude agent)
+   */
+  private async hasRedisOutput(taskId: string): Promise<boolean> {
+    if (!this.deps) return false;
+    try {
+      const output = await this.deps.redisClient.get(`agent:output:${taskId}`);
+      return output !== null && output.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Start Redis-based watcher for Codex tasks
+   */
+  private async startRedisWatcher(taskId: string): Promise<void> {
+    console.log(`[TaskWatcher] Starting Redis watcher for task ${taskId}`);
+
+    // Poll Redis every 2 seconds for output changes
+    const interval = setInterval(async () => {
+      await this.sendRedisLiveUpdate(taskId);
+    }, 2000);
+
+    this.taskWatchers.set(taskId, {
+      watcher: null,
+      sessionId: taskId, // Use taskId as identifier
+      taskId,
+      lastSize: 0,
+      subscriberCount: 1,
+      lastSentEventCount: 0,
+      watchingForCreation: false,
+      redisPollingInterval: interval,
+      lastRedisLength: 0
+    });
+
+    // Send initial update
+    await this.sendRedisLiveUpdate(taskId, true);
+  }
+
+  /**
+   * Send live update from Redis output (for Codex tasks)
+   */
+  private async sendRedisLiveUpdate(taskId: string, isInitial = false): Promise<void> {
+    if (!this.deps) return;
+
+    const watcherInfo = this.taskWatchers.get(taskId);
+    if (!watcherInfo) return;
+
+    try {
+      const output = await this.deps.redisClient.get(`agent:output:${taskId}`);
+      if (!output) return;
+
+      // Check if content changed
+      if (!isInitial && output.length === watcherInfo.lastRedisLength) {
+        return; // No change
+      }
+      watcherInfo.lastRedisLength = output.length;
+
+      // Parse the output using the conversation parser (which now handles Codex format)
+      const lines = output.trim().split('\n').filter((line: string) => line.trim());
+
+      // Import and use parseCodexConversation logic inline
+      const result = this.parseRedisOutput(lines);
+
+      // Determine which events to send
+      let eventsToSend = result.events;
+      if (!isInitial) {
+        const lastSentCount = watcherInfo.lastSentEventCount;
+        const totalCount = result.totalEventCount;
+        if (totalCount > lastSentCount) {
+          const newEventCount = totalCount - lastSentCount;
+          eventsToSend = result.events.slice(-newEventCount);
+          console.log(`[TaskWatcher] Redis update for task ${taskId}: sending ${eventsToSend.length} new events`);
+        } else {
+          eventsToSend = [];
+        }
+      } else {
+        console.log(`[TaskWatcher] Initial Redis update for task ${taskId}: sending ${result.events.length} events`);
+      }
+
+      watcherInfo.lastSentEventCount = result.totalEventCount;
+
+      const payload: TaskLiveUpdatePayload = {
+        eventType: TASK_LIVE_UPDATE,
+        taskId,
+        events: eventsToSend,
+        todos: result.todos,
+        currentTask: result.currentTask,
+        tokenUsage: result.tokenUsage,
+        timestamp: new Date().toISOString()
+      };
+
+      this.io.to(`task:live:${taskId}`).emit(TASK_LIVE_UPDATE, payload);
+    } catch (error) {
+      console.error(`[TaskWatcher] Error sending Redis live update for task ${taskId}:`, error);
+    }
+  }
+
+  /**
+   * Parse Redis output (Codex NDJSON format)
+   */
+  private parseRedisOutput(lines: string[]): { events: ConversationEvent[]; todos: TodoItem[]; currentTask: string | null; tokenUsage: TokenUsageInfo | null; totalEventCount: number } {
+    const events: ConversationEvent[] = [];
+    let todos: TodoItem[] = [];
+    const tokenUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+
+    for (const line of lines) {
+      try {
+        const event = JSON.parse(line);
+        const timestamp = new Date().toISOString();
+
+        if (event.type === 'item.completed' && event.item) {
+          const item = event.item;
+          if (item.type === 'reasoning' && item.text) {
+            events.push({ type: 'thought' as const, content: item.text, timestamp });
+          } else if (item.type === 'command_execution') {
+            events.push({ type: 'tool_use' as const, toolName: 'Bash', input: { command: item.command }, timestamp });
+            if (item.aggregated_output) {
+              const truncated = item.aggregated_output.length > 2000
+                ? item.aggregated_output.substring(0, 2000) + '... [truncated]'
+                : item.aggregated_output;
+              events.push({ type: 'tool_result' as const, result: truncated, isError: item.exit_code !== 0, timestamp });
+            }
+          } else if (item.type === 'file_change' && item.changes) {
+            const changesList = item.changes.map((c: { kind: string; path: string }) => `${c.kind}: ${c.path}`).join('\n');
+            events.push({ type: 'tool_use' as const, toolName: 'FileChange', input: { changes: item.changes }, timestamp });
+            events.push({ type: 'tool_result' as const, result: changesList, isError: false, timestamp });
+          } else if (item.type === 'agent_message' && item.text) {
+            events.push({ type: 'thought' as const, content: `**Result:** ${item.text}`, timestamp });
+          } else if (item.type === 'todo_list' && item.items) {
+            todos = item.items.map((t: { text: string; completed: boolean }, i: number) => ({
+              id: `todo-${i}`,
+              content: t.text,
+              status: t.completed ? 'completed' as const : 'pending' as const
+            }));
+          }
+        } else if (event.type === 'item.updated' && event.item?.type === 'todo_list' && event.item?.items) {
+          todos = event.item.items.map((t: { text: string; completed: boolean }, i: number) => ({
+            id: `todo-${i}`,
+            content: t.text,
+            status: t.completed ? 'completed' as const : 'pending' as const
+          }));
+        } else if (event.type === 'turn.completed' && event.usage) {
+          tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
+          tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
+        }
+      } catch {
+        // Skip non-JSON lines
+        continue;
+      }
+    }
+
+    const inProgressTask = todos.find(t => t.status === 'in_progress');
+    const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0;
+
+    return {
+      events,
+      todos,
+      currentTask: inProgressTask ? inProgressTask.content : null,
+      tokenUsage: hasTokens ? tokenUsage : null,
+      totalEventCount: events.length
+    };
+  }
+
+  /**
+   * Find the agent config for a task based on agent alias in task ID
+   */
+  private async findAgentConfigForTask(taskId: string): Promise<AgentConfig | null> {
+    try {
+      const agents = await loadAgents();
+      // Extract agent alias from task ID (e.g., "integry-propr-test-48-codex-gpt-5.2-xxx" -> "codex")
+      for (const agent of agents) {
+        if (taskId.includes(`-${agent.alias}-`)) {
+          return agent;
+        }
+      }
+      // Fallback: check by type
+      for (const agent of agents) {
+        if (taskId.includes(`-${agent.type}-`)) {
+          return agent;
+        }
+      }
+      return null;
+    } catch (error) {
+      console.error('[TaskWatcher] Error loading agent config:', error);
+      return null;
+    }
+  }
+
+  /**
    * Find the session ID for a task from Redis or database
    */
   private async findSessionIdForTask(taskId: string): Promise<string | null> {
@@ -362,7 +586,12 @@ export class TaskWatcherManager {
    */
   async closeAll(): Promise<void> {
     for (const [taskId, watcher] of this.taskWatchers) {
-      await watcher.watcher.close();
+      if (watcher.watcher) {
+        await watcher.watcher.close();
+      }
+      if (watcher.redisPollingInterval) {
+        clearInterval(watcher.redisPollingInterval);
+      }
       console.log(`[TaskWatcher] Closed watcher for task ${taskId}`);
     }
     this.taskWatchers.clear();
