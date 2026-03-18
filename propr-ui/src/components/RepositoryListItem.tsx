@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Github, RefreshCw } from 'lucide-react';
+import { Github, RefreshCw, Star, Eye, EyeOff } from 'lucide-react';
 import { DeleteRepoDialog } from './DeleteRepoDialog';
 import { RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
 import { getRepoStatusKey } from '../api/repoIndexingApi';
@@ -109,8 +109,36 @@ const RepositoryActionButtons: React.FC<{
   onToggle: (repoId: string) => void;
   onReindex: (repoName: string, baseBranch?: string) => void;
   onDeleteClick: () => void;
-}> = ({ repo, statusType, onToggle, onReindex, onDeleteClick }) => (
+  onToggleStar: (repoId: string) => void;
+  onToggleHidden: (repoId: string) => void;
+}> = ({ repo, statusType, onToggle, onReindex, onDeleteClick, onToggleStar, onToggleHidden }) => (
   <div className="flex items-center gap-1 flex-shrink-0 w-full sm:w-auto justify-end" onClick={(e) => e.stopPropagation()}>
+    {/* Star Button */}
+    <button
+      onClick={() => onToggleStar(repo.id)}
+      className={`p-1.5 rounded transition-colors ${
+        repo.starred
+          ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50'
+          : 'text-slate-300 opacity-0 group-hover:opacity-100 hover:text-amber-500 hover:bg-amber-50'
+      }`}
+      title={repo.starred ? 'Unstar repository' : 'Star repository'}
+    >
+      <Star className={`w-3.5 h-3.5 ${repo.starred ? 'fill-current' : ''}`} />
+    </button>
+
+    {/* Hide/Unhide Button */}
+    <button
+      onClick={() => onToggleHidden(repo.id)}
+      className={`p-1.5 rounded transition-colors ${
+        repo.hidden
+          ? 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
+          : 'text-slate-300 opacity-0 group-hover:opacity-100 hover:text-slate-500 hover:bg-slate-100'
+      }`}
+      title={repo.hidden ? 'Unhide repository' : 'Hide repository'}
+    >
+      {repo.hidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+    </button>
+
     {/* Reindex Button - Gray ghost style */}
     <button
       onClick={() => onReindex(repo.name, repo.baseBranch)}
@@ -150,6 +178,8 @@ interface RepositoryListItemProps {
   onRemove: (repoId: string) => void | Promise<void>;
   onStopIndexing: (repoName: string, baseBranch?: string) => void;
   onReindex: (repoName: string, baseBranch?: string) => void;
+  onToggleStar: (repoId: string) => void;
+  onToggleHidden: (repoId: string) => void;
   isSelected?: boolean;
   onSelect?: (repoId: string) => void;
 }
@@ -161,6 +191,8 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
   onRemove,
   onStopIndexing,
   onReindex,
+  onToggleStar,
+  onToggleHidden,
   isSelected = false,
   onSelect,
 }) => {
@@ -281,6 +313,8 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           onToggle={onToggle}
           onReindex={onReindex}
           onDeleteClick={handleDeleteClick}
+          onToggleStar={onToggleStar}
+          onToggleHidden={onToggleHidden}
         />
       </div>
 
