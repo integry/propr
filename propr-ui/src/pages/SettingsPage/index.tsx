@@ -6,6 +6,7 @@ import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
 import KnowledgeBaseSection from './KnowledgeBaseSection';
 import { useSettingsState } from './useSettingsState';
+import { API_BASE_URL } from '../../api/proprApi';
 
 const SettingsPage: React.FC = () => {
   useDocumentTitle('Settings');
@@ -171,6 +172,34 @@ const SettingsPage: React.FC = () => {
                 }}
                 onBlur={triggerAutoSave}
               />
+            </div>
+
+            {/* CLI Quick Start */}
+            <div className="border-t border-gray-200 pt-6">
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                <h4 className="text-xs font-semibold text-gray-700 mb-2">ProPR CLI</h4>
+                <p className="text-xs text-gray-500 mb-3">
+                  Manage plans, tasks, and repos from the command line.
+                </p>
+                <div className="space-y-1.5 font-mono text-[11px] text-gray-600 bg-white rounded border border-gray-200 p-3">
+                  <div className="text-gray-400"># Install & authenticate</div>
+                  <div>npm install -g @propr/cli</div>
+                  <div>propr remote {API_BASE_URL || window.location.origin}</div>
+                  <div>propr login</div>
+                  <div>propr use owner/repo</div>
+                  <div className="mt-2 text-gray-400"># Create a plan</div>
+                  <div>propr plan create "Add auth" --wait</div>
+                  <div>propr plan finalize &lt;draft-id&gt;</div>
+                  <div>propr plan issues &lt;draft-id&gt;</div>
+                  <div className="mt-2 text-gray-400"># Implement & monitor</div>
+                  <div>propr issue implement &lt;id&gt;/1 --wait</div>
+                  <div>propr task list -s processing</div>
+                  <div>propr task get &lt;task-id&gt;</div>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-2">
+                  Run <span className="font-mono">propr --help</span> for all commands.
+                </p>
+              </div>
             </div>
           </div>
         </div>

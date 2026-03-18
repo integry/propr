@@ -20,6 +20,10 @@ export interface CodexEventItem {
     aggregated_output?: string;
     exit_code?: number;
     status?: string;
+    // For file_change events
+    changes?: Array<{ path: string; kind: string }>;
+    // For todo_list events
+    items?: Array<{ text: string; completed: boolean }>;
 }
 
 export interface CodexEvent {
@@ -136,6 +140,12 @@ function handleItemCompleted(event: CodexEvent, state: ParseState): void {
         if (item.aggregated_output) {
             state.logs += `[Output] ${item.aggregated_output}\n`;
         }
+    } else if (item.type === 'file_change' && item.changes) {
+        const changesList = item.changes.map(c => `  ${c.kind}: ${c.path}`).join('\n');
+        state.logs += `[File Changes]\n${changesList}\n`;
+    } else if (item.type === 'todo_list' && item.items) {
+        const todoList = item.items.map(t => `  [${t.completed ? 'x' : ' '}] ${t.text}`).join('\n');
+        state.logs += `[Todo List]\n${todoList}\n`;
     }
 }
 
@@ -168,39 +178,62 @@ function handleErrorEvent(event: CodexEvent, state: ParseState): void {
     state.logs += `[Error] ${event.message}\n`;
 }
 
+function handleThreadStarted(event: CodexEvent, state: ParseState): void {
+    if (event.thread_id) state.sessionId = event.thread_id;
+}
+
+function handleMessage(event: CodexEvent, state: ParseState): void {
+    state.logs += `[${event.role || 'unknown'}] ${event.content || ''}\n`;
+}
+
+function handleToolUse(event: CodexEvent, state: ParseState): void {
+    state.logs += `[Tool] ${event.tool} params: ${JSON.stringify(event.params)}\n`;
+}
+
+function handleTurnStarted(event: CodexEvent, state: ParseState): void {
+    state.logs += `[${event.type}]\n`;
+}
+
+function handleItemStarted(event: CodexEvent, state: ParseState): void {
+    if (event.item?.type === 'command_execution' && event.item?.command) {
+        state.logs += `[Running] ${event.item.command}\n`;
+    }
+}
+
+function handleItemUpdated(event: CodexEvent, state: ParseState): void {
+    if (event.item?.type === 'todo_list' && event.item?.items) {
+        const todoList = event.item.items.map(t => `  [${t.completed ? 'x' : ' '}] ${t.text}`).join('\n');
+        state.logs += `[Todo Update]\n${todoList}\n`;
+    }
+}
+
+function handleUnknownEvent(event: CodexEvent, state: ParseState): void {
+    state.logs += `[${event.type || 'unknown'}] ${JSON.stringify(event)}\n`;
+}
+
+type EventHandler = (event: CodexEvent, state: ParseState) => void;
+
+const eventHandlers: Record<string, EventHandler> = {
+    'item.completed': handleItemCompleted,
+    'thread.started': handleThreadStarted,
+    'message': handleMessage,
+    'tool_use': handleToolUse,
+    'error': handleErrorEvent,
+    'result': handleResultEvent,
+    'turn.started': handleTurnStarted,
+    'turn.completed': handleTurnCompleted,
+    'item.started': handleItemStarted,
+    'item.updated': handleItemUpdated
+};
+
 function processEvent(event: CodexEvent, state: ParseState): void {
     captureEventMetadata(event, state);
 
-    switch (event.type) {
-        case 'item.completed':
-            handleItemCompleted(event, state);
-            break;
-        case 'thread.started':
-            if (event.thread_id) state.sessionId = event.thread_id;
-            break;
-        case 'message':
-            state.logs += `[${event.role || 'unknown'}] ${event.content || ''}\n`;
-            break;
-        case 'tool_use':
-            state.logs += `[Tool] ${event.tool} params: ${JSON.stringify(event.params)}\n`;
-            break;
-        case 'error':
-            handleErrorEvent(event, state);
-            break;
-        case 'result':
-            handleResultEvent(event, state);
-            break;
-        case 'turn.started':
-            state.logs += `[${event.type}]\n`;
-            break;
-        case 'turn.completed':
-            handleTurnCompleted(event, state);
-            break;
-        case 'item.started':
-            break;
-        default:
-            state.logs += `[${event.type || 'unknown'}] ${JSON.stringify(event)}\n`;
-            break;
+    const handler = event.type ? eventHandlers[event.type] : undefined;
+    if (handler) {
+        handler(event, state);
+    } else {
+        handleUnknownEvent(event, state);
     }
 }
 

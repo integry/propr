@@ -12,6 +12,7 @@
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
+    "test:e2e": "npx tsx --test test/e2e.test.ts",
     "test:docker": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker npx tsx --test test/*.test.ts",
     "test:docker:single": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker npx tsx --test",
     "test:docker:quick": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker sh -c 'npx tsx --test test/*.test.ts --test-exclude=\"**/agentRegistry.test.ts\"'",

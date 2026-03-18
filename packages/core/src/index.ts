@@ -213,7 +213,7 @@ export type {
     AnalysisResult
 } from './agents/types.js';
 export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
-export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath } from './config/configManager.js';
+export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents } from './config/configManager.js';
 
 // Repository chat message persistence
 export {

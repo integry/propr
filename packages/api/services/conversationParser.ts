@@ -46,6 +46,103 @@ const MAX_RESULT_LENGTH = 2000;
 /** Maximum number of events to include in WebSocket payloads */
 const MAX_EVENTS_FOR_SOCKET = 100;
 
+/** Codex event item structure */
+interface CodexEventItem {
+  id?: string;
+  type?: string;
+  text?: string;
+  command?: string;
+  aggregated_output?: string;
+  exit_code?: number;
+  status?: string;
+  changes?: Array<{ path: string; kind: string }>;
+  items?: Array<{ text: string; completed: boolean }>;
+}
+
+/** Codex event structure */
+interface CodexEvent {
+  type?: string;
+  thread_id?: string;
+  item?: CodexEventItem;
+  usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number };
+}
+
+/**
+ * Process a single Codex item.completed event item
+ */
+function processCodexItemCompleted(
+  item: CodexEventItem,
+  timestamp: string,
+  events: ConversationEvent[]
+): TodoItem[] | null {
+  switch (item.type) {
+    case 'reasoning':
+      if (item.text) {
+        events.push({ type: 'thought', content: item.text, timestamp });
+      }
+      break;
+    case 'command_execution':
+      events.push({
+        type: 'tool_use',
+        toolName: 'Bash',
+        input: { command: item.command },
+        timestamp
+      });
+      if (item.aggregated_output) {
+        events.push({
+          type: 'tool_result',
+          result: truncateResult(item.aggregated_output),
+          isError: item.exit_code !== 0,
+          timestamp
+        });
+      }
+      break;
+    case 'file_change':
+      if (item.changes) {
+        const changesList = item.changes.map(c => `${c.kind}: ${c.path}`).join('\n');
+        events.push({
+          type: 'tool_use',
+          toolName: 'FileChange',
+          input: { changes: item.changes },
+          timestamp
+        });
+        events.push({
+          type: 'tool_result',
+          result: changesList,
+          isError: false,
+          timestamp
+        });
+      }
+      break;
+    case 'agent_message':
+      if (item.text) {
+        events.push({ type: 'thought', content: `**Result:** ${item.text}`, timestamp });
+      }
+      break;
+    case 'todo_list':
+      if (item.items) {
+        return item.items.map((t, i) => ({
+          id: `todo-${i}`,
+          content: t.text,
+          status: t.completed ? 'completed' as const : 'pending' as const
+        }));
+      }
+      break;
+  }
+  return null;
+}
+
+/**
+ * Parse todo items from Codex event
+ */
+function parseTodoItems(items: Array<{ text: string; completed: boolean }>): TodoItem[] {
+  return items.map((t, i) => ({
+    id: `todo-${i}`,
+    content: t.text,
+    status: t.completed ? 'completed' as const : 'pending' as const
+  }));
+}
+
 /** Result from parsing a conversation file */
 export interface ParsedConversation {
   events: ConversationEvent[];
@@ -194,11 +291,85 @@ function accumulateTokenUsage(
 }
 
 /**
+ * Detect if content is Codex format (has thread.started or item.completed events)
+ */
+function isCodexFormat(lines: string[]): boolean {
+  for (const line of lines.slice(0, 10)) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed.type === 'thread.started' || parsed.type === 'item.completed' || parsed.type === 'turn.started') {
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+/**
+ * Parse Codex conversation file (NDJSON format with item events)
+ */
+function parseCodexConversation(lines: string[]): ParsedConversation {
+  const events: ConversationEvent[] = [];
+  let todos: TodoItem[] = [];
+  const tokenUsage: TokenUsageInfo = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0
+  };
+
+  for (const line of lines) {
+    try {
+      const event = JSON.parse(line) as CodexEvent;
+      const timestamp = new Date().toISOString();
+
+      if (event.type === 'item.completed' && event.item) {
+        const updatedTodos = processCodexItemCompleted(event.item, timestamp, events);
+        if (updatedTodos) {
+          todos = updatedTodos;
+        }
+      } else if (event.type === 'item.updated' && event.item?.type === 'todo_list' && event.item?.items) {
+        todos = parseTodoItems(event.item.items);
+      } else if (event.type === 'turn.completed' && event.usage) {
+        tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
+        tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
+      }
+    } catch {
+      // Skip non-JSON lines (like entrypoint output)
+      continue;
+    }
+  }
+
+  const inProgressTask = todos.find(t => t.status === 'in_progress');
+  const currentTask = inProgressTask ? inProgressTask.content : null;
+  const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0;
+  const totalEventCount = events.length;
+  const limitedEvents = events.length > MAX_EVENTS_FOR_SOCKET
+    ? events.slice(-MAX_EVENTS_FOR_SOCKET)
+    : events;
+
+  return {
+    events: limitedEvents,
+    todos,
+    currentTask,
+    tokenUsage: hasTokens ? tokenUsage : null,
+    totalEventCount
+  };
+}
+
+/**
  * Parse Claude conversation file (JSONL format)
  */
 export async function parseConversationFile(conversationPath: string): Promise<ParsedConversation> {
   const conversationContent = await fs.readFile(conversationPath, 'utf8');
   const lines = conversationContent.trim().split('\n').filter(line => line.trim());
+
+  // Detect and handle Codex format
+  if (isCodexFormat(lines)) {
+    return parseCodexConversation(lines);
+  }
 
   const events: ConversationEvent[] = [];
   let todos: TodoItem[] = [];
