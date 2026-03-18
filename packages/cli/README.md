@@ -78,6 +78,10 @@ propr plan create "Add dark mode" --wait         # Create plan and wait for gene
 propr plan create "Fix bug" -b develop           # Target a specific branch
 propr plan get <draft-id>                        # View plan details
 propr plan get <draft-id> --json                 # View as JSON
+propr plan generate <draft-id> --wait            # Trigger generation for existing draft
+propr plan finalize <draft-id>                   # Create GitHub issues from plan items
+propr plan issues <draft-id>                     # List plan issues
+propr plan issues <draft-id> --json              # List issues as JSON
 propr plan delete <draft-id>                     # Delete a plan (with confirmation)
 propr plan delete <draft-id> --force             # Delete without confirmation
 propr plan abort <draft-id>                      # Abort ongoing generation
@@ -87,7 +91,8 @@ propr plan abort <draft-id>                      # Abort ongoing generation
 |--------|---------|-------------|
 | `-p, --project` | `list`, `create` | Target project (owner/repo) |
 | `-b, --branch` | `create` | Target branch (default: main) |
-| `-w, --wait` | `create` | Wait for plan generation to complete |
+| `-w, --wait` | `create`, `generate` | Wait for plan generation to complete |
+| `-j, --json` | `get`, `finalize`, `issues` | Output as JSON |
 | `-f, --force` | `delete` | Skip confirmation prompt |
 
 ---
@@ -317,11 +322,14 @@ propr use myorg/myrepo
 propr repo add myorg/myrepo -b main
 propr repo index myorg/myrepo
 
-# Create an implementation plan
+# Create an implementation plan and wait for generation
 propr plan create "Add user authentication with JWT tokens" --wait
 
-# List plans to get the draft ID
-propr plan list
+# Finalize plan to create GitHub issues
+propr plan finalize <draft-id>
+
+# View plan issues
+propr plan issues <draft-id>
 
 # Implement the first issue from the plan
 propr issue implement <draft-id>/1 --wait --auto-merge

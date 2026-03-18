@@ -108,6 +108,21 @@ let brownfieldTaskId: string | null = null;
 let greenfieldDraftId: string | null = null;
 let brownfieldDraftId: string | null = null;
 
+// All-models implementation tracking
+interface ModelTestResult {
+  agent_alias: string;
+  model_name: string;
+  issueNumber: number;
+  taskId: string | null;
+  finalState: string | null;
+  observedStates: Set<string>;
+  hasHistory: boolean;
+  hasLogs: boolean;
+  logCount: number;
+}
+const modelTestResults: ModelTestResult[] = [];
+let allModelsPlanId: string | null = null;
+
 // Todo cleanup tracking
 const createdTodoIds: string[] = [];
 const createdCategoryIds: string[] = [];
@@ -139,8 +154,13 @@ describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROP
     }
 
     // Stop & delete implementation tasks
-    for (const taskId of [greenfieldTaskId, brownfieldTaskId]) {
-      if (!taskId) continue;
+    const allTaskIds = [
+      greenfieldTaskId,
+      brownfieldTaskId,
+      ...modelTestResults.map((r) => r.taskId),
+    ].filter(Boolean) as string[];
+
+    for (const taskId of allTaskIds) {
       try { await stopTask(taskId, client); } catch { /* ignore */ }
       try { await deleteTask(taskId, true, client); } catch { /* ignore */ }
     }
@@ -582,193 +602,292 @@ describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROP
   });
 
   // =========================================================================
-  // 10. Multi-model implementation + live log verification
+  // 10. All-models implementation — create plan, assign each model an issue
   // =========================================================================
 
-  describe("10. Multi-model implementation + live log verification", {
-    timeout: 900_000,
+  describe("10. All-models implementation", {
+    timeout: 1_800_000, // 30 min — many models
     skip: SKIP_SLOW ? "PROPR_E2E_SKIP_SLOW=1" : false,
   }, () => {
-    it("implement issues from both plans with different models", async () => {
-      // Need both plans and >= 2 agents
-      if (!greenfieldPlan || !brownfieldPlan) {
-        console.log("    Skipping: plans not available from groups 8/9");
-        return;
-      }
-
-      // Build agent/model pairs from available agents
-      const agentModelPairs: { agent_alias: string; model_name: string }[] = [];
+    it("create plan with enough issues for all models", async () => {
+      const allPairs: { agent_alias: string; model_name: string }[] = [];
       for (const agent of availableAgents) {
-        if (agent.supportedModels.length > 0) {
-          agentModelPairs.push({
-            agent_alias: agent.alias,
-            model_name: agent.defaultModel ?? agent.supportedModels[0],
-          });
+        for (const model of agent.supportedModels) {
+          allPairs.push({ agent_alias: agent.alias, model_name: model });
         }
-        if (agentModelPairs.length >= 2) break;
       }
 
-      if (agentModelPairs.length < 2) {
-        console.log(`    Skipping: need >= 2 agent/model pairs, have ${agentModelPairs.length}`);
+      if (allPairs.length === 0) {
+        console.log("    Skipping: no agent/model pairs available");
         return;
       }
 
-      console.log(`    Model A: ${agentModelPairs[0].agent_alias}/${agentModelPairs[0].model_name}`);
-      console.log(`    Model B: ${agentModelPairs[1].agent_alias}/${agentModelPairs[1].model_name}`);
+      console.log(`    Total agent/model pairs: ${allPairs.length}`);
+      for (const p of allPairs) {
+        console.log(`      ${p.agent_alias}/${p.model_name}`);
+      }
 
-      // Fetch plan issues from the dedicated endpoint
-      const [greenfieldIssues, brownfieldIssues] = await Promise.all([
-        listPlanIssues(greenfieldPlan.draft_id, client),
-        listPlanIssues(brownfieldPlan.draft_id, client),
-      ]);
+      const prompt = [
+        `Create ${allPairs.length} separate small improvements for this project.`,
+        "Each should be a self-contained task like: add a utility function, improve a config file,",
+        "add documentation, add error handling, add input validation, add a helper script,",
+        "improve logging, add type annotations, add constants file, add a health check.",
+        `Generate exactly ${allPairs.length} issues.`,
+      ].join(" ");
 
-      if (greenfieldIssues.length === 0 || brownfieldIssues.length === 0) {
-        console.log(`    Skipping: greenfield issues=${greenfieldIssues.length}, brownfield issues=${brownfieldIssues.length}`);
+      console.log(`    Creating plan for ${allPairs.length} issues...`);
+      const plan = await createPlan(REPO!, prompt, {}, client);
+      allModelsPlanId = plan.draft_id;
+      createdPlanIds.push(plan.draft_id);
+
+      console.log(`    Triggering generation...`);
+      await generatePlan(plan.draft_id, {}, client);
+
+      const doneStatuses = new Set(["review", "executed", "approved", "merged", "pr_created", "failed"]);
+      let lastStatus = "draft";
+      let sawGenerating = false;
+
+      for (let i = 0; i < 120; i++) {
+        await sleep(5000);
+        const current = await getPlan(plan.draft_id, client);
+        if (current.status !== lastStatus) {
+          console.log(`    Plan status: ${lastStatus} -> ${current.status}`);
+          lastStatus = current.status;
+        }
+        if (current.status === "generating" || current.status === "refining") sawGenerating = true;
+        if (doneStatuses.has(current.status)) break;
+        if (current.status === "draft" && sawGenerating) break;
+      }
+
+      assert.ok(sawGenerating, `Plan never started generating. Observed: ${lastStatus}`);
+      assert.notStrictEqual(lastStatus, "failed", "Plan generation failed");
+
+      console.log(`    Finalizing plan...`);
+      const finalizeResult = await finalizePlan(plan.draft_id, client);
+      assert.ok(finalizeResult.success, "Finalize failed");
+      console.log(`    Issues created: ${finalizeResult.issuesCreated}`);
+    });
+
+    it("implement one issue per model and track execution", async () => {
+      if (!allModelsPlanId) {
+        console.log("    Skipping: no plan available");
         return;
       }
 
-      const gfIssueNum = greenfieldIssues[0].issue_number;
-      const bfIssueNum = brownfieldIssues[0].issue_number;
-      console.log(`    Greenfield issue #${gfIssueNum}, Brownfield issue #${bfIssueNum}`);
+      const allPairs: { agent_alias: string; model_name: string }[] = [];
+      for (const agent of availableAgents) {
+        for (const model of agent.supportedModels) {
+          allPairs.push({ agent_alias: agent.alias, model_name: model });
+        }
+      }
 
-      // Trigger implementations (adds labels — worker picks up asynchronously)
-      // Use the `models` array format for multi-agent assignment
-      const [gfResult, bfResult] = await Promise.all([
-        implementIssue(greenfieldPlan.draft_id, gfIssueNum, {
-          models: [agentModelPairs[0]],
-        }, client),
-        implementIssue(brownfieldPlan.draft_id, bfIssueNum, {
-          models: [agentModelPairs[1]],
-        }, client),
-      ]);
+      const issues = await listPlanIssues(allModelsPlanId, client);
+      const pendingIssues = issues.filter((i) => i.status === "pending");
+      const modelsToTest = allPairs.slice(0, pendingIssues.length);
 
-      assert.ok(gfResult.success, `Greenfield implement failed: ${gfResult.message}`);
-      assert.ok(bfResult.success, `Brownfield implement failed: ${bfResult.message}`);
-      console.log(`    Greenfield: ${gfResult.message}`);
-      console.log(`    Brownfield: ${bfResult.message}`);
+      if (modelsToTest.length === 0) {
+        console.log("    Skipping: no pending issues available");
+        return;
+      }
 
-      // Wait for worker to pick up the labeled issues and create tasks.
-      // Poll listTasks to find tasks matching our issue numbers.
+      console.log(`    Testing ${modelsToTest.length} models (${pendingIssues.length} issues available)`);
+      if (modelsToTest.length < allPairs.length) {
+        console.log(`    Warning: only ${pendingIssues.length} issues, skipping ${allPairs.length - modelsToTest.length} models`);
+      }
+
+      for (let i = 0; i < modelsToTest.length; i++) {
+        const pair = modelsToTest[i];
+        const issue = pendingIssues[i];
+        console.log(`    Implementing #${issue.issue_number} with ${pair.agent_alias}/${pair.model_name}`);
+
+        const result = await implementIssue(allModelsPlanId, issue.issue_number, {
+          models: [pair],
+        }, client);
+
+        modelTestResults.push({
+          agent_alias: pair.agent_alias,
+          model_name: pair.model_name,
+          issueNumber: issue.issue_number,
+          taskId: null,
+          finalState: null,
+          observedStates: new Set(),
+          hasHistory: false,
+          hasLogs: false,
+          logCount: 0,
+        });
+
+        if (!result.success) {
+          console.log(`    Warning: implement failed for ${pair.model_name}: ${result.message}`);
+        }
+      }
+
+      // Wait for tasks to appear
       console.log(`    Waiting for tasks to appear...`);
+      const terminalStates = new Set(["completed", "failed", "cancelled"]);
 
-      const findTask = async (issueNum: number): Promise<string | null> => {
-        const result = await listTasks({ repository: REPO! }, client);
-        const task = result.tasks.find((t) => t.issueNumber === issueNum);
-        return task?.id ?? null;
-      };
-
-      for (let i = 0; i < 30; i++) {
+      for (let poll = 0; poll < 60; poll++) {
         await sleep(10_000);
-        if (!greenfieldTaskId) greenfieldTaskId = await findTask(gfIssueNum);
-        if (!brownfieldTaskId) brownfieldTaskId = await findTask(bfIssueNum);
-        if (greenfieldTaskId && brownfieldTaskId) break;
-        if (i % 3 === 0) {
-          console.log(`    Waiting... gf=${greenfieldTaskId ? "found" : "pending"} bf=${brownfieldTaskId ? "found" : "pending"}`);
+        const taskList = await listTasks({ repository: REPO! }, client);
+
+        let allFound = true;
+        for (const r of modelTestResults) {
+          if (r.taskId) continue;
+          const task = taskList.tasks.find((t) => t.issueNumber === r.issueNumber);
+          if (task) {
+            r.taskId = task.id;
+            console.log(`    Found task for #${r.issueNumber} (${r.model_name}): ${task.id.substring(0, 40)}...`);
+          } else {
+            allFound = false;
+          }
+        }
+        if (allFound) break;
+
+        if (poll % 6 === 0) {
+          const found = modelTestResults.filter((r) => r.taskId).length;
+          console.log(`    Tasks found: ${found}/${modelTestResults.length}`);
         }
       }
 
-      if (!greenfieldTaskId && !brownfieldTaskId) {
-        console.log(`    No tasks appeared after 5 minutes — worker may not be processing`);
+      const withTasks = modelTestResults.filter((r) => r.taskId);
+      console.log(`    Tasks found: ${withTasks.length}/${modelTestResults.length}`);
+
+      if (withTasks.length === 0) {
+        console.log("    No tasks appeared - worker may not be processing");
         return;
       }
 
-      console.log(`    Greenfield task: ${greenfieldTaskId ?? "not found"}`);
-      console.log(`    Brownfield task: ${brownfieldTaskId ?? "not found"}`);
-
-      // Poll tasks until terminal state
-      const terminalStates = new Set(["completed", "failed", "cancelled"]);
-      const taskIds = [greenfieldTaskId, brownfieldTaskId].filter(Boolean) as string[];
-      const observedByTask = new Map<string, Set<string>>();
-      const doneSet = new Set<string>();
-
-      for (const id of taskIds) {
-        observedByTask.set(id, new Set());
-      }
-
+      // Poll all tasks until they reach terminal state
+      console.log(`    Polling ${withTasks.length} tasks until completion...`);
       let pollCount = 0;
-      while (doneSet.size < taskIds.length) {
+
+      while (true) {
         await sleep(10_000);
         pollCount++;
 
-        for (const taskId of taskIds) {
-          if (doneSet.has(taskId)) continue;
-          const status = await getTaskStatus(taskId, client);
-          const observed = observedByTask.get(taskId)!;
-          const prevSize = observed.size;
-          observed.add(status.currentState);
-          if (observed.size > prevSize) {
-            const label = taskId === greenfieldTaskId ? "greenfield" : "brownfield";
-            console.log(`    Task [${label}] status: ${status.currentState}`);
+        let allDone = true;
+        for (const r of withTasks) {
+          if (r.finalState && terminalStates.has(r.finalState)) continue;
+          allDone = false;
+
+          const status = await getTaskStatus(r.taskId!, client);
+          const prevSize = r.observedStates.size;
+          r.observedStates.add(status.currentState);
+          if (r.observedStates.size > prevSize) {
+            console.log(`    [${r.agent_alias}/${r.model_name}] #${r.issueNumber}: ${status.currentState}`);
           }
-          if (terminalStates.has(status.currentState)) doneSet.add(taskId);
+          if (terminalStates.has(status.currentState)) {
+            r.finalState = status.currentState;
+            r.hasHistory = status.history.length > 0;
+
+            if (status.isCompleted && status.prNumber) {
+              console.log(`    [${r.agent_alias}/${r.model_name}] PR: #${status.prNumber}`);
+            }
+            if (status.isFailed) {
+              console.log(`    [${r.agent_alias}/${r.model_name}] FAILED: ${status.failureReason}`);
+            }
+          }
         }
 
-        // Live log checks every 3rd poll
-        if (pollCount % 3 === 0) {
-          for (const draftId of [greenfieldDraftId, brownfieldDraftId].filter(Boolean) as string[]) {
-            const logs = await listLlmLogs({ draftId }, client);
-            const label = draftId === greenfieldDraftId ? "greenfield" : "brownfield";
-            console.log(`    [${label}] Logs so far: ${logs.pagination.total}`);
-          }
+        if (pollCount % 5 === 0 && allModelsPlanId) {
+          const logs = await listLlmLogs({ draftId: allModelsPlanId }, client);
+          console.log(`    Total logs so far: ${logs.pagination.total}`);
         }
+
+        if (allDone) break;
+      }
+    });
+
+    it("every model produced execution status updates (history)", async () => {
+      const withTasks = modelTestResults.filter((r) => r.taskId);
+      if (withTasks.length === 0) {
+        console.log("    Skipping: no tasks ran");
+        return;
       }
 
-      // Post-completion assertions
-      for (const taskId of taskIds) {
-        const status = await getTaskStatus(taskId, client);
-        const label = taskId === greenfieldTaskId ? "greenfield" : "brownfield";
-        const observed = observedByTask.get(taskId)!;
-        console.log(`    ${label} observed: ${[...observed].join(", ")}`);
+      for (const r of withTasks) {
+        const status = await getTaskStatus(r.taskId!, client);
+        r.hasHistory = status.history.length > 1;
 
-        if (status.isCompleted && status.prNumber) {
-          console.log(`    ${label} PR: #${status.prNumber} ${status.prUrl}`);
-        }
-        if (status.isFailed) {
-          console.log(`    ${label} failed: ${status.failureReason}`);
-        }
+        console.log(`    ${r.agent_alias}/${r.model_name}: ${status.history.length} history entries, states: ${[...r.observedStates].join(" -> ")}`);
+        assert.ok(
+          status.history.length > 0,
+          `${r.agent_alias}/${r.model_name} (#${r.issueNumber}) has no history entries`
+        );
       }
+    });
+
+    it("every model produced LLM logs", async () => {
+      if (!allModelsPlanId) return;
+
+      const withTasks = modelTestResults.filter((r) => r.taskId && r.finalState);
+      if (withTasks.length === 0) {
+        console.log("    Skipping: no completed tasks");
+        return;
+      }
+
+      const allLogs = await listLlmLogs({ draftId: allModelsPlanId, limit: 100 }, client);
+
+      for (const r of withTasks) {
+        const modelLogs = allLogs.logs.filter((l) =>
+          l.agentAlias === r.agent_alias
+        );
+        r.logCount = modelLogs.length;
+        r.hasLogs = modelLogs.length > 0;
+
+        console.log(`    ${r.agent_alias}/${r.model_name}: ${modelLogs.length} logs, state=${r.finalState}`);
+      }
+
+      assert.ok(allLogs.logs.length > 0, "Expected at least some LLM logs for the draft");
+      console.log(`    Total draft logs: ${allLogs.pagination.total}`);
     });
   });
 
   // =========================================================================
-  // 11. Final log verification
+  // 11. Summary + log verification
   // =========================================================================
 
-  describe("11. Final log verification", {
+  describe("11. Summary + log verification", {
     skip: SKIP_SLOW ? "PROPR_E2E_SKIP_SLOW=1" : false,
   }, () => {
-    it("greenfield draft has logs", async () => {
-      if (!greenfieldTaskId) {
-        console.log("    Skipping: no greenfield implementation ran");
+    it("all-models summary", async () => {
+      if (modelTestResults.length === 0) {
+        console.log("    No models were tested");
         return;
       }
-      const result = await listLlmLogs({ draftId: greenfieldDraftId! }, client);
-      assert.ok(result.logs.length > 0, "Expected logs for greenfield draft");
-      console.log(`    Greenfield logs: ${result.pagination.total}`);
-    });
 
-    it("brownfield draft has logs", async () => {
-      if (!brownfieldTaskId) {
-        console.log("    Skipping: no brownfield implementation ran");
-        return;
+      console.log("");
+      console.log("    Agent/Model                                  | Issue | State     | History | Logs");
+      console.log("    " + "-".repeat(85));
+
+      for (const r of modelTestResults) {
+        const name = `${r.agent_alias}/${r.model_name}`.padEnd(48);
+        const issue = `#${r.issueNumber}`.padEnd(5);
+        const state = (r.finalState ?? "no task").padEnd(9);
+        const hist = r.hasHistory ? "yes" : "no ";
+        const logs = r.hasLogs ? `yes (${r.logCount})` : "no";
+        console.log(`    ${name} | ${issue} | ${state} | ${hist}     | ${logs}`);
       }
-      const result = await listLlmLogs({ draftId: brownfieldDraftId! }, client);
-      assert.ok(result.logs.length > 0, "Expected logs for brownfield draft");
-      console.log(`    Brownfield logs: ${result.pagination.total}`);
+
+      const total = modelTestResults.length;
+      const withTasks = modelTestResults.filter((r) => r.taskId).length;
+      const completed = modelTestResults.filter((r) => r.finalState === "completed").length;
+      const failed = modelTestResults.filter((r) => r.finalState === "failed").length;
+      const withHistory = modelTestResults.filter((r) => r.hasHistory).length;
+      const withLogs = modelTestResults.filter((r) => r.hasLogs).length;
+
+      console.log("");
+      console.log(`    Models tested: ${total}`);
+      console.log(`    Tasks created: ${withTasks}`);
+      console.log(`    Completed: ${completed}, Failed: ${failed}`);
+      console.log(`    With history: ${withHistory}, With logs: ${withLogs}`);
     });
 
     it("completed logs have valid token/duration fields", async () => {
-      if (!greenfieldTaskId && !brownfieldTaskId) {
-        console.log("    Skipping: no implementations ran");
-        return;
-      }
-
-      const draftIds = [greenfieldDraftId, brownfieldDraftId].filter(
-        (id, i) => id && [greenfieldTaskId, brownfieldTaskId][i]
-      ) as string[];
+      const draftIds = [allModelsPlanId, greenfieldDraftId, brownfieldDraftId].filter(Boolean) as string[];
+      if (draftIds.length === 0) return;
 
       for (const draftId of draftIds) {
-        const result = await listLlmLogs({ draftId, success: true }, client);
+        const result = await listLlmLogs({ draftId, success: true, limit: 100 }, client);
         for (const log of result.logs) {
           if (log.inputTokens !== null) {
             assert.ok(log.inputTokens > 0, `Log ${log.logId}: inputTokens should be > 0`);
@@ -784,14 +903,9 @@ describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROP
     });
 
     it("successful logs have no errorMessage", async () => {
-      if (!greenfieldTaskId && !brownfieldTaskId) return;
-
-      const draftIds = [greenfieldDraftId, brownfieldDraftId].filter(
-        (id, i) => id && [greenfieldTaskId, brownfieldTaskId][i]
-      ) as string[];
-
+      const draftIds = [allModelsPlanId, greenfieldDraftId, brownfieldDraftId].filter(Boolean) as string[];
       for (const draftId of draftIds) {
-        const result = await listLlmLogs({ draftId, success: true }, client);
+        const result = await listLlmLogs({ draftId, success: true, limit: 100 }, client);
         for (const log of result.logs) {
           assert.strictEqual(log.errorMessage, null, `Successful log ${log.logId} has errorMessage: ${log.errorMessage}`);
         }
@@ -799,41 +913,34 @@ describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROP
     });
 
     it("failed logs (if any) have errorMessage", async () => {
-      if (!greenfieldTaskId && !brownfieldTaskId) return;
-
-      const draftIds = [greenfieldDraftId, brownfieldDraftId].filter(
-        (id, i) => id && [greenfieldTaskId, brownfieldTaskId][i]
-      ) as string[];
-
+      const draftIds = [allModelsPlanId, greenfieldDraftId, brownfieldDraftId].filter(Boolean) as string[];
       for (const draftId of draftIds) {
-        const result = await listLlmLogs({ draftId, success: false }, client);
+        const result = await listLlmLogs({ draftId, success: false, limit: 100 }, client);
         for (const log of result.logs) {
           assert.ok(log.errorMessage, `Failed log ${log.logId} has no errorMessage`);
         }
       }
     });
 
-    it("compare total token usage between models", async () => {
-      if (!greenfieldTaskId || !brownfieldTaskId) return;
+    it("token usage comparison across agents", async () => {
+      if (!allModelsPlanId || modelTestResults.length === 0) return;
 
-      const gfLogs = await listLlmLogs({ draftId: greenfieldDraftId }, client);
-      const bfLogs = await listLlmLogs({ draftId: brownfieldDraftId }, client);
+      const allLogs = await listLlmLogs({ draftId: allModelsPlanId, limit: 200 }, client);
 
-      const sumTokens = (logs: LlmLogEntry[]) => {
-        let input = 0;
-        let output = 0;
-        for (const log of logs) {
-          input += log.inputTokens ?? 0;
-          output += log.outputTokens ?? 0;
-        }
-        return { input, output, total: input + output };
-      };
+      const byAgent = new Map<string, { input: number; output: number; count: number }>();
+      for (const log of allLogs.logs) {
+        const key = log.agentAlias ?? "unknown";
+        const existing = byAgent.get(key) ?? { input: 0, output: 0, count: 0 };
+        existing.input += log.inputTokens ?? 0;
+        existing.output += log.outputTokens ?? 0;
+        existing.count++;
+        byAgent.set(key, existing);
+      }
 
-      const gfTokens = sumTokens(gfLogs.logs);
-      const bfTokens = sumTokens(bfLogs.logs);
-
-      console.log(`    Greenfield tokens: input=${gfTokens.input} output=${gfTokens.output} total=${gfTokens.total}`);
-      console.log(`    Brownfield tokens: input=${bfTokens.input} output=${bfTokens.output} total=${bfTokens.total}`);
+      console.log(`    Token usage by agent:`);
+      for (const [agent, usage] of byAgent) {
+        console.log(`      ${agent}: ${usage.count} logs, input=${usage.input} output=${usage.output} total=${usage.input + usage.output}`);
+      }
     });
   });
 });
