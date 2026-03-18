@@ -382,6 +382,87 @@ propr todo list -p org3/repo3
 
 ---
 
+## E2E Testing
+
+End-to-end tests run against a live ProPR instance and exercise the full workflow: system health, repo management, todo CRUD, plan lifecycle (create → generate → finalize), and multi-model implementation across all agents (Claude, Gemini, Codex).
+
+### Prerequisites
+
+- A running ProPR backend (e.g., `https://api.gitfix.dev`)
+- GitHub authentication (via `gh auth login` or a token)
+- A dedicated test repo on GitHub (e.g., `integry/propr-e2e-test`) — the tests will auto-add and index it if needed
+
+### Environment Variables
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `PROPR_E2E_API_URL` | Yes | — | Backend URL |
+| `PROPR_E2E_TOKEN` | No | `gh auth token` | GitHub token (falls back to `gh` CLI) |
+| `PROPR_E2E_REPO` | Yes | — | Test repo (e.g., `integry/propr-e2e-test`) |
+| `PROPR_E2E_SKIP_SLOW` | No | — | Set to `1` to skip plan/implementation tests |
+| `PROPR_E2E_NO_CLEANUP` | No | — | Set to `1` to keep all created resources |
+
+### Running
+
+```bash
+# Fast tests only (~20s) — system health, repos, settings, logs, tasks, agents, todo CRUD
+PROPR_E2E_REPO=owner/repo PROPR_E2E_API_URL=https://api.example.com \
+  PROPR_E2E_SKIP_SLOW=1 npm run test:e2e
+
+# Full suite (~20-30min) — includes plan generation, all-models implementation, report
+PROPR_E2E_REPO=owner/repo PROPR_E2E_API_URL=https://api.example.com \
+  npm run test:e2e
+
+# Keep everything for manual inspection
+PROPR_E2E_REPO=owner/repo PROPR_E2E_API_URL=https://api.example.com \
+  PROPR_E2E_NO_CLEANUP=1 npm run test:e2e
+```
+
+### Test Groups
+
+| # | Group | Speed | What it tests |
+|---|-------|-------|---------------|
+| 1 | System health | Fast | API status, queue stats |
+| 2 | Repositories | Fast | List repos, auto-add test repo, ensure indexed |
+| 3 | Settings | Fast | Setting types and values |
+| 4 | Logs | Fast | LLM log listing, filtering, pagination |
+| 5 | Tasks | Fast | Task listing and repo filtering |
+| 6 | Agents | Fast | Agent listing, stores available models |
+| 7 | Todo CRUD | Fast | Full lifecycle: create → list → get → update → reorder → delete |
+| 8 | Plan — greenfield | Slow | Create plan → generate → finalize → verify issues |
+| 9 | Plan — brownfield | Slow | Same flow with a different prompt type |
+| 10 | All-models | Slow | Creates multiple plans, tests multi-model parallel (all models on one issue) + single-model (each model on a separate issue) for every agent/model pair |
+| 11 | Report | Slow | Writes markdown report, validates log fields |
+
+### Report
+
+After each full run, a markdown report is written to:
+
+- **`test/reports/e2e-{timestamp}.md`** — timestamped report
+- **`test/reports/latest.md`** — symlink to most recent
+
+The report includes:
+
+- **Plans** — ID, name, status, prompt, issues with their agent/model/task assignments
+- **Multi-model parallel results** — all models implementing the same issue simultaneously, with state, duration, tokens, PR number, history entries, and log counts
+- **Single-model results** — grouped by agent (Claude, Gemini, Codex), showing each model's performance on its own issue
+- **Totals** — models tested, tasks created, completion rate, token usage
+
+### File Structure
+
+```
+test/
+  e2e.test.ts          # Main test file (groups 1-11)
+  e2e/
+    helpers.ts          # Shared types, client setup, polling utilities
+    report.ts           # Markdown report generator
+  reports/              # Generated reports (gitignored)
+    latest.md
+    e2e-2026-03-18T18-55-26.md
+```
+
+---
+
 ## Troubleshooting
 
 ### Authentication Errors
