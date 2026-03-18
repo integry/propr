@@ -12,6 +12,9 @@ import {
   getPlan,
   deletePlan,
   abortPlan,
+  generatePlan,
+  finalizePlan,
+  listPlanIssues,
   Plan,
   PlanSummary,
   PlanStatus,
@@ -136,8 +139,11 @@ export function createPlanCommand(): Command {
     .addHelpText("after", `
 Examples:
   $ propr plan list                          # List all plans
-  $ propr plan create "Add dark mode"        # Create a new plan
+  $ propr plan create "Add dark mode" -w     # Create and wait for generation
   $ propr plan get abc123                    # View plan details
+  $ propr plan generate abc123 --wait        # Trigger generation for existing draft
+  $ propr plan finalize abc123               # Create GitHub issues from plan
+  $ propr plan issues abc123                 # List plan issues
   $ propr plan delete abc123                 # Delete a plan
   $ propr plan abort abc123                  # Abort generation
 `);
@@ -248,22 +254,29 @@ Examples:
         console.log(`Plan created with ID: ${planResult.draft_id}`);
         console.log(`Status: ${planResult.status}`);
 
+        // Trigger generation
+        console.log("Triggering plan generation...");
+        await generatePlan(planResult.draft_id);
+
         if (!options.wait) {
           console.log("");
-          console.log(`Use 'propr plan list' to check the status.`);
+          console.log(`Generation started. Use 'propr plan get ${planResult.draft_id}' to check status.`);
           return;
         }
 
         console.log("");
         console.log("Waiting for plan generation to complete...");
 
-        const terminalStatuses: PlanStatus[] = ["draft", "review", "approved", "failed", "executed", "merged", "pr_created"];
+        // "review" is the terminal success state after generation completes.
+        // "draft" is only terminal if we already saw generation activity.
+        const doneStatuses: PlanStatus[] = ["review", "approved", "failed", "executed", "merged", "pr_created"];
         const pollIntervalMs = 3000;
         const maxWaitMs = 600000;
         const startTime = Date.now();
 
         let currentPlan: Plan = planResult;
         let lastStatus = planResult.status;
+        let sawGenerating = false;
 
         while (Date.now() - startTime < maxWaitMs) {
           await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
@@ -271,29 +284,38 @@ Examples:
           currentPlan = await getPlan(planResult.draft_id);
 
           if (currentPlan.status !== lastStatus) {
-            console.log(`Status: ${currentPlan.status}`);
+            console.log(`Status: ${formatStatus(currentPlan.status)}`);
             lastStatus = currentPlan.status;
           }
 
-          if (terminalStatuses.includes(currentPlan.status)) {
+          if (currentPlan.status === "generating" || currentPlan.status === "refining") {
+            sawGenerating = true;
+          }
+
+          if (doneStatuses.includes(currentPlan.status)) {
+            break;
+          }
+          // "draft" after generation means it returned to draft (generation done)
+          if (currentPlan.status === "draft" && sawGenerating) {
             break;
           }
         }
 
         console.log("");
+        const isDone = doneStatuses.includes(currentPlan.status) || (currentPlan.status === "draft" && sawGenerating);
         if (currentPlan.status === "failed") {
           console.error("Plan generation failed.");
           process.exit(1);
-        } else if (terminalStatuses.includes(currentPlan.status)) {
+        } else if (isDone) {
           console.log(`Plan generation completed.`);
-          console.log(`Final status: ${currentPlan.status}`);
+          console.log(`Final status: ${formatStatus(currentPlan.status)}`);
           if (currentPlan.name) {
             console.log(`Name: ${currentPlan.name}`);
           }
         } else {
-          console.log(`Timeout: Plan is still ${currentPlan.status} after ${Math.round((Date.now() - startTime) / 1000)} seconds.`);
+          console.log(`Timeout: Plan is still ${formatStatus(currentPlan.status)} after ${Math.round((Date.now() - startTime) / 1000)} seconds.`);
           console.log(`Plan ID: ${currentPlan.draft_id}`);
-          console.log(`Use 'propr plan list' to check the status.`);
+          console.log(`Use 'propr plan get ${currentPlan.draft_id}' to check status.`);
         }
       } catch (error) {
         if (error instanceof ProjectResolutionError) {
@@ -448,6 +470,150 @@ Example:
         } else {
           console.error(`Error aborting plan: ${errorMessage}`);
         }
+        process.exit(1);
+      }
+    });
+
+  // plan generate
+  plan
+    .command("generate <draft-id>")
+    .description("Trigger plan generation for an existing draft")
+    .option("-w, --wait", "Wait for generation to complete")
+    .addHelpText("after", `
+Argument:
+  draft-id    The unique identifier of the plan draft
+
+Examples:
+  $ propr plan generate abc123-def456
+  $ propr plan generate abc123-def456 --wait
+`)
+    .action(async (draftId: string, options: { wait?: boolean }) => {
+      try {
+        console.log(`Triggering generation for plan ${draftId}...`);
+        await generatePlan(draftId);
+        console.log("Generation started.");
+
+        if (!options.wait) {
+          console.log(`Use 'propr plan get ${draftId}' to check status.`);
+          return;
+        }
+
+        console.log("");
+        console.log("Waiting for generation to complete...");
+
+        const terminalStatuses: PlanStatus[] = ["draft", "review", "approved", "failed", "executed", "merged", "pr_created"];
+        const pollIntervalMs = 3000;
+        const maxWaitMs = 600000;
+        const startTime = Date.now();
+        let lastStatus = "generating" as PlanStatus;
+
+        while (Date.now() - startTime < maxWaitMs) {
+          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+
+          const currentPlan = await getPlan(draftId);
+
+          if (currentPlan.status !== lastStatus) {
+            console.log(`Status: ${formatStatus(currentPlan.status)}`);
+            lastStatus = currentPlan.status;
+          }
+
+          if (terminalStatuses.includes(currentPlan.status)) {
+            if (currentPlan.status === "failed") {
+              console.error("Plan generation failed.");
+              process.exit(1);
+            }
+            console.log("Generation completed.");
+            return;
+          }
+        }
+
+        console.log(`Timeout after ${Math.round((Date.now() - startTime) / 1000)} seconds.`);
+      } catch (error) {
+        console.error(`Error generating plan: ${(error as Error).message}`);
+        process.exit(1);
+      }
+    });
+
+  // plan finalize
+  plan
+    .command("finalize <draft-id>")
+    .description("Finalize a plan by creating GitHub issues from its items")
+    .option("-j, --json", "Output as JSON for programmatic use")
+    .addHelpText("after", `
+Argument:
+  draft-id    The unique identifier of the plan to finalize
+
+Example:
+  $ propr plan finalize abc123-def456
+`)
+    .action(async (draftId: string, options: { json?: boolean }) => {
+      try {
+        console.log(`Finalizing plan ${draftId}...`);
+        const result = await finalizePlan(draftId);
+
+        if (printOutput(result, options.json ?? false)) {
+          return;
+        }
+
+        if (result.alreadyExecuted) {
+          console.log("Plan was already finalized.");
+        } else {
+          console.log(`Created ${result.issuesCreated} GitHub issue(s).`);
+        }
+      } catch (error) {
+        console.error(`Error finalizing plan: ${(error as Error).message}`);
+        process.exit(1);
+      }
+    });
+
+  // plan issues
+  plan
+    .command("issues <draft-id>")
+    .description("List GitHub issues created from a plan")
+    .option("-j, --json", "Output as JSON for programmatic use")
+    .addHelpText("after", `
+Argument:
+  draft-id    The unique identifier of the plan
+
+Example:
+  $ propr plan issues abc123-def456
+  $ propr plan issues abc123-def456 --json
+`)
+    .action(async (draftId: string, options: { json?: boolean }) => {
+      try {
+        const issues = await listPlanIssues(draftId);
+
+        if (printOutput(issues, options.json ?? false)) {
+          return;
+        }
+
+        if (issues.length === 0) {
+          console.log("No issues found for this plan.");
+          console.log("Use 'propr plan finalize' to create issues from plan items.");
+          return;
+        }
+
+        console.log(`Issues for plan ${draftId}:`);
+        console.log("");
+
+        const numWidth = Math.max("Issue".length, ...issues.map((i) => String(i.issue_number).length));
+        const statusWidth = Math.max("Status".length, ...issues.map((i) => i.status.length));
+        const modelWidth = Math.max("Model".length, ...issues.map((i) => (i.model_name || "-").length));
+
+        const header = `${"Issue".padEnd(numWidth)}  ${"Status".padEnd(statusWidth)}  ${"Model".padEnd(modelWidth)}  Task ID`;
+        console.log(header);
+        console.log("-".repeat(header.length + 20));
+
+        for (const issue of issues) {
+          console.log(
+            `#${String(issue.issue_number).padEnd(numWidth - 1)}  ${issue.status.padEnd(statusWidth)}  ${(issue.model_name || "-").padEnd(modelWidth)}  ${issue.task_id || "-"}`
+          );
+        }
+
+        console.log("");
+        console.log(`Total: ${issues.length} issue(s)`);
+      } catch (error) {
+        console.error(`Error listing plan issues: ${(error as Error).message}`);
         process.exit(1);
       }
     });
