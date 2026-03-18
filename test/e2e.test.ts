@@ -117,8 +117,15 @@ interface ModelTestResult {
   finalState: string | null;
   observedStates: Set<string>;
   hasHistory: boolean;
+  historyCount: number;
   hasLogs: boolean;
   logCount: number;
+  prNumber: number | null;
+  prUrl: string | null;
+  failureReason: string | null;
+  durationMs: number | null;
+  inputTokens: number;
+  outputTokens: number;
 }
 const modelTestResults: ModelTestResult[] = [];
 let allModelsPlanId: string | null = null;
@@ -712,8 +719,15 @@ describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROP
           finalState: null,
           observedStates: new Set(),
           hasHistory: false,
+          historyCount: 0,
           hasLogs: false,
           logCount: 0,
+          prNumber: null,
+          prUrl: null,
+          failureReason: null,
+          durationMs: null,
+          inputTokens: 0,
+          outputTokens: 0,
         });
 
         if (!result.success) {
@@ -778,6 +792,17 @@ describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROP
           if (terminalStates.has(status.currentState)) {
             r.finalState = status.currentState;
             r.hasHistory = status.history.length > 0;
+            r.historyCount = status.history.length;
+            r.prNumber = status.prNumber ?? null;
+            r.prUrl = status.prUrl ?? null;
+            r.failureReason = status.failureReason ?? null;
+
+            // Compute duration from first to last history entry
+            if (status.history.length >= 2) {
+              const first = new Date(status.history[0].timestamp).getTime();
+              const last = new Date(status.history[status.history.length - 1].timestamp).getTime();
+              r.durationMs = last - first;
+            }
 
             if (status.isCompleted && status.prNumber) {
               console.log(`    [${r.agent_alias}/${r.model_name}] PR: #${status.prNumber}`);
@@ -833,6 +858,8 @@ describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROP
         );
         r.logCount = modelLogs.length;
         r.hasLogs = modelLogs.length > 0;
+        r.inputTokens = modelLogs.reduce((sum, l) => sum + (l.inputTokens ?? 0), 0);
+        r.outputTokens = modelLogs.reduce((sum, l) => sum + (l.outputTokens ?? 0), 0);
 
         console.log(`    ${r.agent_alias}/${r.model_name}: ${modelLogs.length} logs, state=${r.finalState}`);
       }
@@ -849,37 +876,114 @@ describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROP
   describe("11. Summary + log verification", {
     skip: SKIP_SLOW ? "PROPR_E2E_SKIP_SLOW=1" : false,
   }, () => {
-    it("all-models summary", async () => {
-      if (modelTestResults.length === 0) {
-        console.log("    No models were tested");
-        return;
+    it("detailed run report", async () => {
+      const sep = "=".repeat(100);
+      const line = "-".repeat(100);
+
+      console.log("");
+      console.log(`    ${sep}`);
+      console.log(`    E2E TEST RUN REPORT — ${new Date().toISOString()}`);
+      console.log(`    ${sep}`);
+
+      // --- Plans ---
+      console.log("");
+      console.log("    PLANS");
+      console.log(`    ${line}`);
+      const plans = [
+        { label: "Greenfield", id: greenfieldDraftId, plan: greenfieldPlan },
+        { label: "Brownfield", id: brownfieldDraftId, plan: brownfieldPlan },
+        { label: "All-models", id: allModelsPlanId, plan: null as Plan | null },
+      ];
+
+      for (const p of plans) {
+        if (!p.id) { console.log(`    ${p.label}: not created`); continue; }
+        try {
+          const plan = p.plan ?? await getPlan(p.id, client);
+          const issues = await listPlanIssues(p.id, client);
+          console.log(`    ${p.label}:`);
+          console.log(`      ID:      ${p.id}`);
+          console.log(`      Name:    ${plan.name || "(untitled)"}`);
+          console.log(`      Status:  ${plan.status}`);
+          console.log(`      Prompt:  ${(plan.initial_prompt ?? "").substring(0, 80)}...`);
+          console.log(`      Items:   ${(plan.plan_json ?? []).length} plan items, ${issues.length} GitHub issues`);
+          if (issues.length > 0) {
+            for (const iss of issues) {
+              console.log(`        #${iss.issue_number} [${iss.status}] agent=${iss.agent_alias ?? "-"} model=${iss.model_name ?? "-"} task=${iss.task_id ?? "-"}`);
+            }
+          }
+        } catch {
+          console.log(`    ${p.label}: ${p.id} (could not fetch details)`);
+        }
+      }
+
+      // --- Model implementation results ---
+      if (modelTestResults.length > 0) {
+        console.log("");
+        console.log("    MODEL IMPLEMENTATION RESULTS");
+        console.log(`    ${line}`);
+
+        // Group by agent
+        const byAgent = new Map<string, ModelTestResult[]>();
+        for (const r of modelTestResults) {
+          const list = byAgent.get(r.agent_alias) ?? [];
+          list.push(r);
+          byAgent.set(r.agent_alias, list);
+        }
+
+        for (const [agent, results] of byAgent) {
+          console.log("");
+          console.log(`    Agent: ${agent}`);
+          console.log(`    ${"Model".padEnd(35)} ${"Issue".padEnd(7)} ${"State".padEnd(11)} ${"Duration".padEnd(10)} ${"Tokens".padEnd(16)} ${"PR".padEnd(6)} History  Logs`);
+          console.log(`    ${"-".repeat(35)} ${"-".repeat(7)} ${"-".repeat(11)} ${"-".repeat(10)} ${"-".repeat(16)} ${"-".repeat(6)} ${"-".repeat(7)}  ${"-".repeat(4)}`);
+
+          for (const r of results) {
+            const model = r.model_name.padEnd(35);
+            const issue = `#${r.issueNumber}`.padEnd(7);
+            const state = (r.finalState ?? "no task").padEnd(11);
+            const dur = r.durationMs ? `${Math.round(r.durationMs / 1000)}s`.padEnd(10) : "-".padEnd(10);
+            const tokens = r.inputTokens || r.outputTokens
+              ? `${r.inputTokens}/${r.outputTokens}`.padEnd(16)
+              : "-".padEnd(16);
+            const pr = r.prNumber ? `#${r.prNumber}`.padEnd(6) : "-".padEnd(6);
+            const hist = `${r.historyCount}`.padEnd(7);
+            const logs = `${r.logCount}`;
+            console.log(`    ${model} ${issue} ${state} ${dur} ${tokens} ${pr} ${hist}  ${logs}`);
+
+            if (r.failureReason) {
+              console.log(`      FAILURE: ${r.failureReason.substring(0, 120)}`);
+            }
+          }
+        }
+
+        // Totals
+        console.log("");
+        console.log("    TOTALS");
+        console.log(`    ${line}`);
+        const total = modelTestResults.length;
+        const withTasks = modelTestResults.filter((r) => r.taskId).length;
+        const completed = modelTestResults.filter((r) => r.finalState === "completed").length;
+        const failed = modelTestResults.filter((r) => r.finalState === "failed").length;
+        const cancelled = modelTestResults.filter((r) => r.finalState === "cancelled").length;
+        const noTask = modelTestResults.filter((r) => !r.taskId).length;
+        const withHistory = modelTestResults.filter((r) => r.hasHistory).length;
+        const withLogs = modelTestResults.filter((r) => r.hasLogs).length;
+        const totalInput = modelTestResults.reduce((s, r) => s + r.inputTokens, 0);
+        const totalOutput = modelTestResults.reduce((s, r) => s + r.outputTokens, 0);
+
+        console.log(`    Models tested:   ${total}`);
+        console.log(`    Tasks created:   ${withTasks} (${noTask} never picked up)`);
+        console.log(`    Completed:       ${completed}`);
+        console.log(`    Failed:          ${failed}`);
+        if (cancelled > 0) console.log(`    Cancelled:       ${cancelled}`);
+        console.log(`    With history:    ${withHistory}/${withTasks}`);
+        console.log(`    With LLM logs:   ${withLogs}/${withTasks}`);
+        console.log(`    Total tokens:    input=${totalInput} output=${totalOutput} total=${totalInput + totalOutput}`);
       }
 
       console.log("");
-      console.log("    Agent/Model                                  | Issue | State     | History | Logs");
-      console.log("    " + "-".repeat(85));
-
-      for (const r of modelTestResults) {
-        const name = `${r.agent_alias}/${r.model_name}`.padEnd(48);
-        const issue = `#${r.issueNumber}`.padEnd(5);
-        const state = (r.finalState ?? "no task").padEnd(9);
-        const hist = r.hasHistory ? "yes" : "no ";
-        const logs = r.hasLogs ? `yes (${r.logCount})` : "no";
-        console.log(`    ${name} | ${issue} | ${state} | ${hist}     | ${logs}`);
-      }
-
-      const total = modelTestResults.length;
-      const withTasks = modelTestResults.filter((r) => r.taskId).length;
-      const completed = modelTestResults.filter((r) => r.finalState === "completed").length;
-      const failed = modelTestResults.filter((r) => r.finalState === "failed").length;
-      const withHistory = modelTestResults.filter((r) => r.hasHistory).length;
-      const withLogs = modelTestResults.filter((r) => r.hasLogs).length;
-
-      console.log("");
-      console.log(`    Models tested: ${total}`);
-      console.log(`    Tasks created: ${withTasks}`);
-      console.log(`    Completed: ${completed}, Failed: ${failed}`);
-      console.log(`    With history: ${withHistory}, With logs: ${withLogs}`);
+      console.log(`    ${sep}`);
+      console.log(`    END OF REPORT`);
+      console.log(`    ${sep}`);
     });
 
     it("completed logs have valid token/duration fields", async () => {
