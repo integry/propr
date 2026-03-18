@@ -13,6 +13,8 @@
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 
 // Import from CLI package API modules directly (not via barrel exports)
 // to avoid tsx resolution issues with .js extension re-exports in dist/.
@@ -876,51 +878,60 @@ describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROP
   describe("11. Summary + log verification", {
     skip: SKIP_SLOW ? "PROPR_E2E_SKIP_SLOW=1" : false,
   }, () => {
-    it("detailed run report", async () => {
-      const sep = "=".repeat(100);
-      const line = "-".repeat(100);
+    it("write run report to file", async () => {
+      const lines: string[] = [];
+      const w = (s = "") => lines.push(s);
 
-      console.log("");
-      console.log(`    ${sep}`);
-      console.log(`    E2E TEST RUN REPORT — ${new Date().toISOString()}`);
-      console.log(`    ${sep}`);
+      const now = new Date();
+      const ts = now.toISOString().replace(/[:.]/g, "-").substring(0, 19);
+
+      w(`# E2E Test Run Report`);
+      w(`**Date:** ${now.toISOString()}  `);
+      w(`**Repo:** ${REPO}  `);
+      w(`**API:** ${API_URL}  `);
+      w();
 
       // --- Plans ---
-      console.log("");
-      console.log("    PLANS");
-      console.log(`    ${line}`);
-      const plans = [
+      w(`## Plans`);
+      w();
+
+      const planEntries = [
         { label: "Greenfield", id: greenfieldDraftId, plan: greenfieldPlan },
         { label: "Brownfield", id: brownfieldDraftId, plan: brownfieldPlan },
         { label: "All-models", id: allModelsPlanId, plan: null as Plan | null },
       ];
 
-      for (const p of plans) {
-        if (!p.id) { console.log(`    ${p.label}: not created`); continue; }
+      for (const p of planEntries) {
+        if (!p.id) { w(`### ${p.label}\nNot created.\n`); continue; }
         try {
           const plan = p.plan ?? await getPlan(p.id, client);
           const issues = await listPlanIssues(p.id, client);
-          console.log(`    ${p.label}:`);
-          console.log(`      ID:      ${p.id}`);
-          console.log(`      Name:    ${plan.name || "(untitled)"}`);
-          console.log(`      Status:  ${plan.status}`);
-          console.log(`      Prompt:  ${(plan.initial_prompt ?? "").substring(0, 80)}...`);
-          console.log(`      Items:   ${(plan.plan_json ?? []).length} plan items, ${issues.length} GitHub issues`);
+
+          w(`### ${p.label}`);
+          w(`- **ID:** \`${p.id}\``);
+          w(`- **Name:** ${plan.name || "(untitled)"}`);
+          w(`- **Status:** ${plan.status}`);
+          w(`- **Prompt:** ${plan.initial_prompt ?? "(none)"}`);
+          w(`- **Plan items:** ${(plan.plan_json ?? []).length}, **GitHub issues:** ${issues.length}`);
+          w();
+
           if (issues.length > 0) {
+            w(`| Issue | Status | Agent | Model | Task |`);
+            w(`|-------|--------|-------|-------|------|`);
             for (const iss of issues) {
-              console.log(`        #${iss.issue_number} [${iss.status}] agent=${iss.agent_alias ?? "-"} model=${iss.model_name ?? "-"} task=${iss.task_id ?? "-"}`);
+              w(`| #${iss.issue_number} | ${iss.status} | ${iss.agent_alias ?? "-"} | ${iss.model_name ?? "-"} | ${iss.task_id ? `\`${iss.task_id.substring(0, 30)}...\`` : "-"} |`);
             }
+            w();
           }
         } catch {
-          console.log(`    ${p.label}: ${p.id} (could not fetch details)`);
+          w(`### ${p.label}\n\`${p.id}\` — could not fetch details.\n`);
         }
       }
 
       // --- Model implementation results ---
       if (modelTestResults.length > 0) {
-        console.log("");
-        console.log("    MODEL IMPLEMENTATION RESULTS");
-        console.log(`    ${line}`);
+        w(`## Model Implementation Results`);
+        w();
 
         // Group by agent
         const byAgent = new Map<string, ModelTestResult[]>();
@@ -931,34 +942,34 @@ describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROP
         }
 
         for (const [agent, results] of byAgent) {
-          console.log("");
-          console.log(`    Agent: ${agent}`);
-          console.log(`    ${"Model".padEnd(35)} ${"Issue".padEnd(7)} ${"State".padEnd(11)} ${"Duration".padEnd(10)} ${"Tokens".padEnd(16)} ${"PR".padEnd(6)} History  Logs`);
-          console.log(`    ${"-".repeat(35)} ${"-".repeat(7)} ${"-".repeat(11)} ${"-".repeat(10)} ${"-".repeat(16)} ${"-".repeat(6)} ${"-".repeat(7)}  ${"-".repeat(4)}`);
+          w(`### Agent: ${agent}`);
+          w();
+          w(`| Model | Issue | State | Duration | Tokens (in/out) | PR | History | Logs |`);
+          w(`|-------|-------|-------|----------|-----------------|-----|---------|------|`);
 
           for (const r of results) {
-            const model = r.model_name.padEnd(35);
-            const issue = `#${r.issueNumber}`.padEnd(7);
-            const state = (r.finalState ?? "no task").padEnd(11);
-            const dur = r.durationMs ? `${Math.round(r.durationMs / 1000)}s`.padEnd(10) : "-".padEnd(10);
-            const tokens = r.inputTokens || r.outputTokens
-              ? `${r.inputTokens}/${r.outputTokens}`.padEnd(16)
-              : "-".padEnd(16);
-            const pr = r.prNumber ? `#${r.prNumber}`.padEnd(6) : "-".padEnd(6);
-            const hist = `${r.historyCount}`.padEnd(7);
-            const logs = `${r.logCount}`;
-            console.log(`    ${model} ${issue} ${state} ${dur} ${tokens} ${pr} ${hist}  ${logs}`);
+            const dur = r.durationMs ? `${Math.round(r.durationMs / 1000)}s` : "-";
+            const tokens = r.inputTokens || r.outputTokens ? `${r.inputTokens} / ${r.outputTokens}` : "-";
+            const pr = r.prNumber ? `#${r.prNumber}` : "-";
+            w(`| ${r.model_name} | #${r.issueNumber} | **${r.finalState ?? "no task"}** | ${dur} | ${tokens} | ${pr} | ${r.historyCount} | ${r.logCount} |`);
+          }
+          w();
 
-            if (r.failureReason) {
-              console.log(`      FAILURE: ${r.failureReason.substring(0, 120)}`);
+          // Show failures inline
+          const failures = results.filter((r) => r.failureReason);
+          if (failures.length > 0) {
+            w(`**Failures:**`);
+            for (const r of failures) {
+              w(`- **${r.model_name}** (#${r.issueNumber}): ${r.failureReason}`);
             }
+            w();
           }
         }
 
-        // Totals
-        console.log("");
-        console.log("    TOTALS");
-        console.log(`    ${line}`);
+        // --- Totals ---
+        w(`## Totals`);
+        w();
+
         const total = modelTestResults.length;
         const withTasks = modelTestResults.filter((r) => r.taskId).length;
         const completed = modelTestResults.filter((r) => r.finalState === "completed").length;
@@ -970,20 +981,32 @@ describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROP
         const totalInput = modelTestResults.reduce((s, r) => s + r.inputTokens, 0);
         const totalOutput = modelTestResults.reduce((s, r) => s + r.outputTokens, 0);
 
-        console.log(`    Models tested:   ${total}`);
-        console.log(`    Tasks created:   ${withTasks} (${noTask} never picked up)`);
-        console.log(`    Completed:       ${completed}`);
-        console.log(`    Failed:          ${failed}`);
-        if (cancelled > 0) console.log(`    Cancelled:       ${cancelled}`);
-        console.log(`    With history:    ${withHistory}/${withTasks}`);
-        console.log(`    With LLM logs:   ${withLogs}/${withTasks}`);
-        console.log(`    Total tokens:    input=${totalInput} output=${totalOutput} total=${totalInput + totalOutput}`);
+        w(`| Metric | Value |`);
+        w(`|--------|-------|`);
+        w(`| Models tested | ${total} |`);
+        w(`| Tasks created | ${withTasks} (${noTask} never picked up) |`);
+        w(`| Completed | ${completed} |`);
+        w(`| Failed | ${failed} |`);
+        if (cancelled > 0) w(`| Cancelled | ${cancelled} |`);
+        w(`| With execution history | ${withHistory} / ${withTasks} |`);
+        w(`| With LLM logs | ${withLogs} / ${withTasks} |`);
+        w(`| Total tokens | ${totalInput} in / ${totalOutput} out / ${totalInput + totalOutput} total |`);
+        w();
       }
 
-      console.log("");
-      console.log(`    ${sep}`);
-      console.log(`    END OF REPORT`);
-      console.log(`    ${sep}`);
+      // Write file
+      const reportsDir = path.join(process.cwd(), "test", "reports");
+      fs.mkdirSync(reportsDir, { recursive: true });
+      const reportPath = path.join(reportsDir, `e2e-${ts}.md`);
+      fs.writeFileSync(reportPath, lines.join("\n"), "utf-8");
+
+      // Also write a symlink/copy as latest
+      const latestPath = path.join(reportsDir, "latest.md");
+      try { fs.unlinkSync(latestPath); } catch { /* ignore */ }
+      fs.copyFileSync(reportPath, latestPath);
+
+      console.log(`    Report written to ${reportPath}`);
+      console.log(`    Latest: ${latestPath}`);
     });
 
     it("completed logs have valid token/duration fields", async () => {
