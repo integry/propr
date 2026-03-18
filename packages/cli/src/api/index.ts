@@ -23,7 +23,7 @@ export {
   createApiError,
 } from "./errors.js";
 
-export {
+export type {
   HttpMethod,
   RequestOptions,
   ApiClientOptions,
@@ -39,7 +39,12 @@ export {
   getPlan,
   deletePlan,
   abortPlan,
-  // Types
+  listPlanIssues,
+  generatePlan,
+  finalizePlan,
+} from "./plans.js";
+
+export type {
   PlanStatus,
   PlanIssueSummary,
   PlanSummary,
@@ -51,13 +56,18 @@ export {
   ListPlansOptions,
   CreatePlanOptions,
   AbortPlanResponse,
+  PlanIssue,
+  GeneratePlanOptions,
+  FinalizePlanResponse,
 } from "./plans.js";
 
 // Implementation API
 export {
   implementIssue,
   getTaskStatus,
-  // Types
+} from "./implement.js";
+
+export type {
   AgentModelPair,
   ImplementIssueOptions,
   ImplementIssueResponse,
@@ -76,7 +86,9 @@ export {
   stopTask,
   deleteTask,
   revertTask,
-  // Types
+} from "./tasks.js";
+
+export type {
   TaskSummary,
   ListTasksResponse,
   ListTasksOptions,
@@ -93,7 +105,9 @@ export {
   triggerIndexing,
   getIndexingStatus,
   reposApi,
-  // Types
+} from "./repos.js";
+
+export type {
   MonitoredRepo,
   GetReposResponse,
   AddRepoOptions,
@@ -110,7 +124,9 @@ export {
   listAgents,
   addAgent,
   deleteAgent,
-  // Types
+} from "./agents.js";
+
+export type {
   AgentType,
   AgentConfig,
   GetAgentsResponse,
@@ -126,30 +142,59 @@ export {
   isValidSettingKey,
   parseSettingValue,
   settingsApi,
-  // Types
+  VALID_SETTING_KEYS,
+} from "./settings.js";
+
+export type {
   SystemSettings,
   GetSettingsResponse,
   UpdateSettingsOptions,
   UpdateSettingsResponse,
   SettingKey,
-  VALID_SETTING_KEYS,
 } from "./settings.js";
 
 // LLM Logs API
 export {
   listLlmLogs,
-  // Types
+} from "./logs.js";
+
+export type {
   LlmLogEntry,
   LlmLogsPagination,
   ListLlmLogsResponse,
   ListLlmLogsOptions,
 } from "./logs.js";
 
+// Repository To-Dos API
+export {
+  listTodos,
+  getTodo,
+  createTodo,
+  updateTodo,
+  deleteTodo,
+  listCategories,
+  createCategory,
+  updateCategory,
+  deleteCategory,
+  reorderTodos,
+  reorderCategories,
+} from "./todos.js";
+
+export type {
+  RepoTodo,
+  RepoTodoCategory,
+  ListTodosResponse,
+  ListCategoriesResponse,
+  BatchReorderItem,
+} from "./todos.js";
+
 // System Status API
 export {
   getSystemStatus,
   getQueueStats,
-  // Types
+} from "./system.js";
+
+export type {
   SystemStatus,
   QueueStats,
 } from "./system.js";

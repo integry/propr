@@ -11,4 +11,5 @@ export { createRepoCommand } from "./repoCommands.js";
 export { createAgentCommand } from "./agentCommands.js";
 export { createSettingCommand } from "./settingCommands.js";
 export { createLogCommand } from "./logCommands.js";
+export { createTodoCommand } from "./todoCommands.js";
 export { createStatusCommand, createQueueCommand } from "./systemCommands.js";

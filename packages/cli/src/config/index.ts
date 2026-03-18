@@ -6,4 +6,5 @@
  */
 
 export { ConfigManager, createConfigManager } from "./ConfigManager.js";
-export { CLIConfig, ConfigKey, DEFAULT_CONFIG } from "./types.js";
+export type { CLIConfig, ConfigKey } from "./types.js";
+export { DEFAULT_CONFIG } from "./types.js";

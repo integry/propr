@@ -26,6 +26,10 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 // Note: Available models depend on account type (ChatGPT login vs API key)
 // These are the models shown for ChatGPT Plus accounts as of Jan 2026
 export const CODEX_MODELS: ModelInfo[] = [
+  { id: 'gpt-5.4', name: 'GPT-5.4', shortName: 'GPT-5.4', shortAlias: 'gpt54', githubLabel: 'llm-codex-gpt54', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.4' },
+  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', shortName: 'GPT-5.4 Mini', shortAlias: 'gpt54-mini', githubLabel: 'llm-codex-gpt54-mini', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.4-mini' },
+  { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', shortName: 'GPT-5.3 Codex', shortAlias: 'gpt53-codex', githubLabel: 'llm-codex-gpt53-codex', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.3-codex' },
+  { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', shortName: 'Codex Spark', shortAlias: 'codex-spark', githubLabel: 'llm-codex-spark', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.3-codex-spark' },
   { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', shortName: 'GPT-5.2 Codex', shortAlias: 'gpt52-codex', githubLabel: 'llm-codex-gpt52-codex', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.2-codex' },
   { id: 'gpt-5.2', name: 'GPT-5.2', shortName: 'GPT-5.2', shortAlias: 'gpt52', githubLabel: 'llm-codex-gpt52', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.2' },
   { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max', shortName: 'Codex Max', shortAlias: 'codex-max', githubLabel: 'llm-codex-max', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.1-codex-max' },

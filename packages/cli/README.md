@@ -5,14 +5,7 @@ Command-line interface for interacting with the ProPR backend. ProPR enables AI-
 ## Installation
 
 ```bash
-# Using npm
 npm install -g @propr/cli
-
-# Using yarn
-yarn global add @propr/cli
-
-# Using pnpm
-pnpm add -g @propr/cli
 ```
 
 ## Quick Start
@@ -21,59 +14,44 @@ pnpm add -g @propr/cli
 # 1. Configure the backend URL
 propr remote https://api.propr.example.com
 
-# 2. Authenticate with your GitHub token
-propr login <your-github-token>
+# 2. Authenticate with GitHub (interactive via gh CLI)
+propr login
 
-# 3. Set a default project (optional, but recommended)
+# Or use a Personal Access Token directly
+propr login ghp_xxxxxxxxxxxx
+
+# 3. Set a default project
 propr use owner/repo
 
 # 4. List available plans
-propr list-plans
+propr plan list
 
 # 5. Implement an issue
-propr implement-issue <draft-id>/<issue-number> --wait
+propr issue implement <draft-id>/<issue-number> --wait
 ```
 
 ## Configuration
 
-ProPR CLI stores configuration in `~/.propr/config.json`. You can configure it using CLI commands:
-
-### Set Remote URL
-
-Connect to your ProPR backend:
+ProPR CLI stores configuration in `~/.propr/config.json`.
 
 ```bash
-propr remote https://api.propr.example.com
+propr remote <url>       # Set backend API URL
+propr use <owner/repo>   # Set default project
+propr login [token]      # Authenticate (interactive or PAT)
+propr logout             # Clear stored token
 ```
 
 ### Authentication
 
-Authenticate using a GitHub Personal Access Token:
+When no token is provided, `propr login` uses the GitHub CLI (`gh`) for interactive authentication:
+- If you're already logged in to `gh`, your token is used automatically
+- If not, `gh auth login` is launched interactively
 
-```bash
-propr login <token>
-```
-
-To generate a token:
+To use a Personal Access Token instead:
 1. Go to https://github.com/settings/tokens
 2. Click "Generate new token (classic)"
-3. Select the required scopes: `repo`, `read:org`
-4. Copy the generated token
-5. Run: `propr login <your-token>`
-
-To clear authentication:
-
-```bash
-propr logout
-```
-
-### Default Project
-
-Set a default repository to avoid specifying `-p/--project` for every command:
-
-```bash
-propr use owner/repo
-```
+3. Select scopes: `repo`, `read:org`
+4. Run: `propr login <your-token>`
 
 ## Commands Reference
 
@@ -85,564 +63,229 @@ propr use owner/repo
 | `-V, --version` | Output the version number |
 | `-h, --help` | Display help information |
 
----
-
-### Configuration Commands
-
-#### `propr remote <url>`
-
-Set the backend API base URL.
-
-```bash
-propr remote https://api.propr.example.com
-```
-
-#### `propr use <project>`
-
-Set the default project for subsequent commands.
-
-```bash
-propr use integry/my-repo
-```
-
-#### `propr login [token]`
-
-Authenticate with a GitHub Personal Access Token.
-
-```bash
-# Interactive mode (shows instructions)
-propr login
-
-# Direct token input
-propr login ghp_xxxxxxxxxxxx
-```
-
-#### `propr logout`
-
-Clear the stored GitHub token.
-
-```bash
-propr logout
-```
+Most commands support `--json` (`-j`) for machine-readable output.
 
 ---
 
-### Plan Management Commands
+### Plans
 
-#### `propr list-plans`
-
-List all implementation plans for a project.
+Manage implementation plans for AI-powered issue resolution.
 
 ```bash
-# List plans for default project
-propr list-plans
-
-# List plans for a specific project
-propr list-plans -p owner/repo
+propr plan list                                  # List plans for default project
+propr plan list -p owner/repo                    # List plans for specific project
+propr plan create "Add dark mode" --wait         # Create plan and wait for generation
+propr plan create "Fix bug" -b develop           # Target a specific branch
+propr plan get <draft-id>                        # View plan details
+propr plan get <draft-id> --json                 # View as JSON
+propr plan generate <draft-id> --wait            # Trigger generation for existing draft
+propr plan finalize <draft-id>                   # Create GitHub issues from plan items
+propr plan issues <draft-id>                     # List plan issues
+propr plan issues <draft-id> --json              # List issues as JSON
+propr plan delete <draft-id>                     # Delete a plan (with confirmation)
+propr plan delete <draft-id> --force             # Delete without confirmation
+propr plan abort <draft-id>                      # Abort ongoing generation
 ```
 
-**Options:**
-- `-p, --project <project>` - Target project (owner/repo)
+| Option | Command | Description |
+|--------|---------|-------------|
+| `-p, --project` | `list`, `create` | Target project (owner/repo) |
+| `-b, --branch` | `create` | Target branch (default: main) |
+| `-w, --wait` | `create`, `generate` | Wait for plan generation to complete |
+| `-j, --json` | `get`, `finalize`, `issues` | Output as JSON |
+| `-f, --force` | `delete` | Skip confirmation prompt |
 
-#### `propr create-plan <prompt>`
+---
 
-Create a new implementation plan from a prompt.
+### Issue Implementation
+
+Implement GitHub issues from plans using AI agents.
 
 ```bash
-# Create a plan and return immediately
-propr create-plan "Add a dark mode toggle to the settings page"
-
-# Create a plan and wait for generation to complete
-propr create-plan "Implement user authentication" --wait
-
-# Create a plan targeting a specific branch
-propr create-plan "Fix login bug" -b develop --wait
+propr issue implement <draft-id>/<issue-number>              # Trigger implementation
+propr issue implement <draft-id>/1 --wait                    # Wait for completion
+propr issue implement <draft-id>/1 -a claude -m model-name   # Use specific agent/model
+propr issue implement <draft-id>/1 --epic --auto-merge       # Epic PR + auto-merge
 ```
 
-**Options:**
-- `-p, --project <project>` - Target project (owner/repo)
-- `-b, --branch <branch>` - Target branch (default: main)
-- `-w, --wait` - Wait for plan generation to complete
+| Option | Description |
+|--------|-------------|
+| `-p, --project` | Target project (owner/repo) |
+| `-w, --wait` | Wait for the implementation to complete |
+| `-a, --agent` | Agent alias to use for implementation |
+| `-m, --model` | Model name to use for implementation |
+| `--epic` | Create an Epic PR to collect all related PRs |
+| `--auto-merge` | Enable auto-merge when CI checks pass |
 
-#### `propr get-plan <draft-id>`
+The issue ID format is `<draft-id>/<issue-number>` or `<draft-id>:<issue-number>`.
 
-Get detailed information about a specific plan.
+---
+
+### Tasks
+
+View and manage implementation tasks.
 
 ```bash
-propr get-plan abc123-def456
+propr task list                          # List all tasks
+propr task list -s processing            # Filter by status
+propr task list -p owner/repo            # Filter by project
+propr task list --search "auth" -l 100   # Search with limit
+propr task get <task-id>                 # View task details with history
+propr task stop <task-id>                # Stop a running task
+propr task delete <task-id>              # Delete a task (with confirmation)
+propr task delete <task-id> --force      # Force delete active task
+propr task revert owner/repo 123 abc 456 # Revert a commit from a PR
 ```
 
-**Output includes:**
-- Plan status and details
-- Items in the plan
-- Attachments
-- Chat history
+| Option | Command | Description |
+|--------|---------|-------------|
+| `-p, --project` | `list` | Filter by project (owner/repo) |
+| `-s, --status` | `list` | Filter by status (see below) |
+| `-l, --limit` | `list` | Max results (default: 50) |
+| `--search` | `list` | Search by term |
+| `-f, --force` | `delete` | Force deletion of active tasks |
+| `-o, --owner` | `revert` | Repo owner if not in owner/repo format |
 
-#### `propr delete-plan <draft-id>`
+**Status values:** `pending`, `queued`, `processing`, `completed`, `failed`, `cancelled`, `all`
 
-Delete a plan from the system.
+---
 
-```bash
-# With confirmation prompt
-propr delete-plan abc123-def456
+### Repositories
 
-# Skip confirmation
-propr delete-plan abc123-def456 --force
-```
-
-**Options:**
-- `-f, --force` - Skip the confirmation prompt
-
-#### `propr abort-plan <draft-id>`
-
-Abort ongoing LLM generation for a plan.
+Manage monitored repositories and their indexing.
 
 ```bash
-propr abort-plan abc123-def456
+propr repo list                              # List monitored repositories
+propr repo add owner/repo                    # Add a repository
+propr repo add owner/repo -a "Alias" -b dev  # With alias and branch
+propr repo remove owner/repo                 # Remove a repository
+propr repo toggle owner/repo --enable        # Enable monitoring
+propr repo toggle owner/repo --disable       # Disable monitoring
+propr repo index owner/repo                  # Trigger full indexing
+propr repo index owner/repo --incremental    # Incremental indexing
+propr repo index owner/repo -b feature       # Index specific branch
+propr repo status                            # View all indexing status
+propr repo status owner/repo                 # View specific repo status
 ```
 
 ---
 
-### Implementation Commands
+### Agents
 
-#### `propr implement-issue <issue-id>`
-
-Implement a GitHub issue from a plan. The issue ID format is `<draft-id>/<issue-number>` or `<draft-id>:<issue-number>`.
+Manage AI agent configurations for code implementation.
 
 ```bash
-# Trigger implementation and return immediately
-propr implement-issue abc123/1
-
-# Wait for implementation to complete
-propr implement-issue abc123/1 --wait
-
-# Use a specific agent and model
-propr implement-issue abc123/1 -a claude -m claude-sonnet-4-20250514
-
-# Create an Epic PR
-propr implement-issue abc123/1 --epic
-
-# Enable auto-merge for the PR
-propr implement-issue abc123/1 --auto-merge
+propr agent list                                         # List configured agents
+propr agent add my-claude -t claude -m model1,model2     # Add an agent
+propr agent add my-agent -t claude -m model -d model     # With default model
+propr agent add test -t gemini -m gemini-pro --disabled   # Add in disabled state
+propr agent add --file agent-config.json                 # From JSON file
+cat config.json | propr agent add --file -               # From stdin
+propr agent delete my-agent                              # Delete (with confirmation)
+propr agent delete my-agent --force                      # Delete without confirmation
 ```
 
-**Options:**
-- `-p, --project <project>` - Target project (owner/repo)
-- `-w, --wait` - Wait for the implementation to complete
-- `-a, --agent <agent>` - Agent alias to use for implementation
-- `-m, --model <model>` - Model name to use for implementation
-- `--epic` - Create an Epic PR to collect all related PRs
-- `--auto-merge` - Enable auto-merge for the created PR
+**Agent types:** `claude`, `codex`, `gemini`
 
----
+**JSON file format** for `--file`:
 
-### Task Management Commands
-
-#### `propr list-tasks`
-
-List tasks with optional filtering.
-
-```bash
-# List all tasks
-propr list-tasks
-
-# Filter by project
-propr list-tasks -p owner/repo
-
-# Filter by status
-propr list-tasks -s processing
-
-# Search tasks
-propr list-tasks --search "authentication"
-
-# Limit results
-propr list-tasks -l 100
-```
-
-**Options:**
-- `-p, --project <project>` - Filter by project (owner/repo)
-- `-s, --status <status>` - Filter by status: `pending`, `queued`, `processing`, `completed`, `failed`, `cancelled`, or `all` (default: all)
-- `-l, --limit <limit>` - Maximum number of tasks to show (default: 50)
-- `--search <term>` - Search tasks by term
-
-#### `propr get-task <task-id>`
-
-Get detailed information about a specific task.
-
-```bash
-propr get-task task-uuid-here
-```
-
-**Output includes:**
-- Task status and metadata
-- Repository and issue information
-- History with timestamps
-- Token usage statistics
-
-#### `propr stop-task <task-id>`
-
-Stop a running task.
-
-```bash
-propr stop-task task-uuid-here
-```
-
-#### `propr delete-task <task-id>`
-
-Delete a task from the system.
-
-```bash
-# With confirmation prompt
-propr delete-task task-uuid-here
-
-# Force deletion for active tasks
-propr delete-task task-uuid-here --force
-```
-
-**Options:**
-- `-f, --force` - Force deletion even for active tasks
-
-#### `propr revert-task <repo> <pr> <commit> <commentId>`
-
-Revert changes from a specific commit in a PR.
-
-```bash
-# Using owner/repo format
-propr revert-task owner/repo 123 abc123def 456789
-
-# Using separate owner flag
-propr revert-task repo-name 123 abc123def 456789 -o owner
-```
-
-**Options:**
-- `-o, --owner <owner>` - Repository owner (required if repo is not in owner/repo format)
-
----
-
-### Repository Management Commands
-
-#### `propr list-repos`
-
-List all monitored repositories.
-
-```bash
-propr list-repos
-```
-
-#### `propr add-repo <fullName>`
-
-Add a repository to the monitored list.
-
-```bash
-# Basic usage
-propr add-repo owner/repo
-
-# With alias and branch
-propr add-repo owner/repo -a my-alias -b develop
-```
-
-**Options:**
-- `-a, --alias <alias>` - Display alias for the repository
-- `-b, --branch <branch>` - Base branch name
-
-#### `propr remove-repo <fullName>`
-
-Remove a repository from the monitored list.
-
-```bash
-propr remove-repo owner/repo
-```
-
-#### `propr toggle-repo <fullName>`
-
-Enable or disable monitoring for a repository.
-
-```bash
-# Enable monitoring
-propr toggle-repo owner/repo --enable
-
-# Disable monitoring
-propr toggle-repo owner/repo --disable
-```
-
-**Options:**
-- `--enable` - Enable monitoring
-- `--disable` - Disable monitoring
-
-#### `propr index-repo <fullName>`
-
-Trigger indexing for a repository.
-
-```bash
-# Full indexing
-propr index-repo owner/repo
-
-# Incremental indexing
-propr index-repo owner/repo --incremental
-
-# Index a specific branch
-propr index-repo owner/repo -b feature-branch
-```
-
-**Options:**
-- `-b, --branch <branch>` - Specify base branch
-- `--incremental` - Perform incremental indexing
-
-#### `propr repo-status [fullName]`
-
-View indexing status for repositories.
-
-```bash
-# View all repositories status
-propr repo-status
-
-# View specific repository status
-propr repo-status owner/repo
+```json
+{
+  "alias": "my-agent",
+  "type": "claude",
+  "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
+  "defaultModel": "claude-sonnet-4-20250514",
+  "dockerImage": "optional-image",
+  "configPath": "/optional/path",
+  "enabled": true
+}
 ```
 
 ---
 
-### Agent Management Commands
+### To-Dos
 
-#### `propr list-agents`
-
-List all configured AI agents.
+Manage repository-level to-dos for tracking work items.
 
 ```bash
-propr list-agents
+# List and filter
+propr todo list                          # List open todos
+propr todo list -a                       # All todos (open + completed)
+propr todo list -d                       # Completed todos only
+propr todo list -p owner/repo            # Specify project
+
+# CRUD
+propr todo get <todo-id>                 # View todo details
+propr todo add "Fix login page"          # Create a todo
+propr todo add "Task" -c <category-id>   # Create in a category
+propr todo complete <todo-id>            # Mark as completed
+propr todo complete <todo-id> --undo     # Reopen
+propr todo delete <todo-id>              # Delete (with confirmation)
+
+# Reorder and move
+propr todo move <todo-id> 1              # Move to top of category
+propr todo move <todo-id> 3              # Move to position 3
+propr todo move <todo-id> 1 -c <cat-id>  # Move to different category
+propr todo move <todo-id> 1 -c none      # Move to uncategorized
 ```
 
-#### `propr add-agent <alias>`
-
-Add a new AI agent configuration.
+#### Categories
 
 ```bash
-# Add a Claude agent
-propr add-agent my-claude -t claude -m claude-sonnet-4-20250514,claude-opus-4-20250514
-
-# Add with default model
-propr add-agent my-agent -t claude -m claude-sonnet-4-20250514 -d claude-sonnet-4-20250514
-
-# Add in disabled state
-propr add-agent test-agent -t gemini -m gemini-pro --disabled
-```
-
-**Options:**
-- `-t, --type <type>` - Agent type: `claude`, `codex`, or `gemini` (required)
-- `-m, --model <models>` - Comma-separated list of models (required)
-- `-d, --default-model <model>` - Default model to use
-- `--docker-image <image>` - Docker image for the agent
-- `--config-path <path>` - Config path to mount
-- `--disabled` - Create agent in disabled state
-
-#### `propr delete-agent <alias>`
-
-Delete an AI agent configuration.
-
-```bash
-# With confirmation
-propr delete-agent my-agent
-
-# Skip confirmation
-propr delete-agent my-agent --force
-```
-
-**Options:**
-- `-f, --force` - Skip the confirmation prompt
-
----
-
-### System Settings Commands
-
-#### `propr get-settings`
-
-View current system settings.
-
-```bash
-# View all settings
-propr get-settings
-
-# View a specific setting
-propr get-settings -k worker_concurrency
-
-# Output as JSON
-propr get-settings --json
-```
-
-**Options:**
-- `-k, --key <key>` - Show a specific setting
-- `-j, --json` - Output as JSON
-
-**Available Settings:**
-- `worker_concurrency` - Number of concurrent workers
-- `github_user_whitelist` - Allowed GitHub users
-- `analysis_model_fast` - Fast analysis model
-- `planner_context_model` - Planner context model
-- `planner_generation_model` - Planner generation model
-- `auto_followup_score_threshold` - Auto-followup threshold (0-9)
-
-#### `propr update-setting <key> <value>`
-
-Update a system setting.
-
-```bash
-propr update-setting worker_concurrency 4
-propr update-setting auto_followup_score_threshold 7
+propr todo category list                          # List categories
+propr todo category add "Bug fixes"               # Create a category
+propr todo category rename <id> "New name"        # Rename a category
+propr todo category delete <id>                   # Delete (todos go uncategorized)
+propr todo category move <id> 1                   # Move to position
 ```
 
 ---
 
-### LLM Log Commands
-
-#### `propr list-logs`
-
-List LLM execution logs for auditing and cost analysis.
+### Settings
 
 ```bash
-# List recent logs
-propr list-logs
-
-# Filter by model
-propr list-logs -m claude-sonnet-4-20250514
-
-# Filter by execution type
-propr list-logs -t implementation
-
-# Filter by agent
-propr list-logs --agent my-claude
-
-# Filter by draft/plan
-propr list-logs --draft abc123
-
-# Show only successful/failed executions
-propr list-logs --success
-propr list-logs --failed
-
-# Pagination
-propr list-logs --page 2 -l 100
+propr setting get                                    # View all settings
+propr setting get -k worker_concurrency              # View specific setting
+propr setting update worker_concurrency 4            # Update a setting
+propr setting update github_user_whitelist "a,b,c"   # Update whitelist
 ```
 
-**Options:**
-- `-l, --limit <limit>` - Maximum logs to return (default: 50)
-- `-m, --model <model>` - Filter by model name
-- `-t, --type <type>` - Filter by execution type
-- `--page <page>` - Page number (default: 1)
-- `--success` - Show only successful executions
-- `--failed` - Show only failed executions
-- `--agent <alias>` - Filter by agent alias
-- `--draft <draftId>` - Filter by draft/plan ID
+**Available settings:** `worker_concurrency`, `github_user_whitelist`, `analysis_model_fast`, `planner_context_model`, `planner_generation_model`, `auto_followup_score_threshold`
 
 ---
 
-### System Status Commands
-
-#### `propr system-status`
-
-Display the health status of backend components.
+### Logs
 
 ```bash
-# Human-readable output
-propr system-status
-
-# JSON output
-propr system-status --json
+propr log list                       # List recent LLM logs
+propr log list -m model-name         # Filter by model
+propr log list --failed              # Failed executions only
+propr log list --agent my-claude     # Filter by agent
+propr log list --draft <draft-id>    # Filter by plan
+propr log list --page 2 -l 100      # Pagination
 ```
-
-**Options:**
-- `--json` - Output raw JSON
-
-**Displays status for:**
-- API health
-- Redis connection
-- Daemon status
-- Worker status
-- GitHub authentication
-- Claude authentication
-
-#### `propr queue-stats`
-
-Display queue statistics and job counts.
-
-```bash
-# Human-readable output
-propr queue-stats
-
-# JSON output
-propr queue-stats --json
-```
-
-**Options:**
-- `--json` - Output raw JSON
-
-**Displays:**
-- Waiting jobs
-- Active jobs
-- Completed jobs
-- Failed jobs
-- Delayed jobs
-- Failure rate
 
 ---
 
-## Examples
-
-### Complete Workflow Example
+### System
 
 ```bash
-# Setup
-propr remote https://api.propr.example.com
-propr login ghp_your_token_here
-propr use myorg/myrepo
-
-# Add and index a repository
-propr add-repo myorg/myrepo -b main
-propr index-repo myorg/myrepo
-
-# Create an implementation plan
-propr create-plan "Add user authentication with JWT tokens" --wait
-
-# List plans to get the draft ID
-propr list-plans
-
-# Implement the first issue from the plan
-propr implement-issue <draft-id>/1 --wait --auto-merge
-
-# Monitor tasks
-propr list-tasks -s processing
-propr get-task <task-id>
-
-# Check system health
-propr system-status
+propr status             # System health check
+propr status --json      # JSON output
+propr queue              # Queue statistics
+propr queue --json       # JSON output
 ```
 
-### Monitoring and Debugging
+---
+
+## JSON Output
+
+Most commands support `--json` (`-j`) for programmatic use:
 
 ```bash
-# Check system health
-propr system-status
-
-# View queue statistics
-propr queue-stats
-
-# Review LLM logs for cost analysis
-propr list-logs -l 100 --success
-
-# View detailed task information
-propr get-task <task-id>
-```
-
-### Managing Multiple Projects
-
-```bash
-# Switch between projects
-propr use org1/repo1
-propr list-plans
-
-propr use org2/repo2
-propr list-plans
-
-# Or use -p flag for one-off commands
-propr list-plans -p org3/repo3
+propr plan list --json
+propr task list -j
+propr repo list --json | jq '.repos_to_monitor[].name'
 ```
 
 ---
@@ -655,21 +298,86 @@ The CLI package also exports modules for programmatic use:
 import {
   createConfigManager,
   createApiClient,
-  createApiClientWithConfig,
   resolveProject,
 } from '@propr/cli';
 
-// Create a config manager
-const configManager = await createConfigManager();
+const config = await createConfigManager();
+const client = await createApiClient();
+const response = await client.get('/api/status');
+```
 
-// Create an API client with custom options
-const client = await createApiClientWithConfig({
-  baseUrl: 'https://api.propr.example.com',
-  timeout: 30000,
-});
+---
 
-// Use the API
-const plans = await client.listPlans('owner/repo');
+## Examples
+
+### Complete Workflow
+
+```bash
+# Setup
+propr remote https://api.propr.example.com
+propr login
+propr use myorg/myrepo
+
+# Add and index a repository
+propr repo add myorg/myrepo -b main
+propr repo index myorg/myrepo
+
+# Create an implementation plan and wait for generation
+propr plan create "Add user authentication with JWT tokens" --wait
+
+# Finalize plan to create GitHub issues
+propr plan finalize <draft-id>
+
+# View plan issues
+propr plan issues <draft-id>
+
+# Implement the first issue from the plan
+propr issue implement <draft-id>/1 --wait --auto-merge
+
+# Monitor tasks
+propr task list -s processing
+propr task get <task-id>
+```
+
+### Managing To-Dos
+
+```bash
+# Create categories and todos
+propr todo category add "Sprint 1"
+propr todo add "Implement auth" -c <category-id>
+propr todo add "Write tests" -c <category-id>
+
+# Prioritize by reordering
+propr todo move <todo-id> 1              # Move to top priority
+
+# Track progress
+propr todo complete <todo-id>
+propr todo list -d                       # View completed items
+```
+
+### Monitoring and Debugging
+
+```bash
+propr status                             # System health
+propr queue                              # Queue statistics
+propr log list --failed                  # Failed LLM executions
+propr log list -l 100 --success          # Successful executions
+propr task get <task-id>                 # Detailed task info
+```
+
+### Managing Multiple Projects
+
+```bash
+# Switch default project
+propr use org1/repo1
+propr plan list
+
+propr use org2/repo2
+propr plan list
+
+# Or use -p flag for one-off commands
+propr plan list -p org3/repo3
+propr todo list -p org3/repo3
 ```
 
 ---
@@ -678,60 +386,34 @@ const plans = await client.listPlans('owner/repo');
 
 ### Authentication Errors
 
-If you see "Unauthorized" errors:
-
 ```bash
-# Check if you're logged in
 propr logout
-propr login <your-token>
+propr login          # Interactive login via gh CLI
 ```
 
 Make sure your GitHub token has the required scopes: `repo` and `read:org`.
 
 ### Connection Errors
 
-If you can't connect to the backend:
-
 ```bash
-# Verify the remote URL
 propr remote https://correct-api-url.example.com
-
-# Check system status
-propr system-status
+propr status
 ```
 
 ### Task Failures
 
-To debug failed tasks:
-
 ```bash
-# Get detailed task information
-propr get-task <task-id>
-
-# Check LLM logs
-propr list-logs --draft <draft-id> --failed
+propr task get <task-id>
+propr log list --draft <draft-id> --failed
 ```
 
 ---
 
 ## Getting Help
 
-For additional help:
-
 ```bash
-# General help
-propr --help
-
-# Command-specific help
-propr <command> --help
-
-# Examples
-propr implement-issue --help
-propr create-plan --help
+propr --help                    # General help
+propr <command> --help          # Command group help
+propr plan --help               # Plan commands
+propr todo category --help      # Category commands
 ```
-
----
-
-## License
-
-See the main repository LICENSE file for details.
