@@ -33,6 +33,7 @@ const RepositoriesPage: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
+  const [showHiddenRepos, setShowHiddenRepos] = useState<boolean>(false);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Track repositories with pending optimistic updates to prevent server responses from overwriting them
   const pendingOptimisticUpdatesRef = useRef<Set<string>>(new Set());
@@ -45,7 +46,7 @@ const RepositoriesPage: React.FC = () => {
       const rawRepos = data.repos_to_monitor || [];
 
       // Transform and validate the data to ensure correct format
-      // Handle both object format {id, name, enabled, alias?, baseBranch?} and legacy formats
+      // Handle both object format {id, name, enabled, alias?, baseBranch?, starred?, hidden?} and legacy formats
       const validRepos: Repo[] = rawRepos
         .map((repo: unknown) => {
           if (typeof repo === 'string') {
@@ -53,14 +54,16 @@ const RepositoriesPage: React.FC = () => {
             return { id: generateId(), name: repo, enabled: true };
           } else if (repo && typeof repo === 'object') {
             const repoObj = repo as Record<string, unknown>;
-            // Object format: {id?, name, enabled, alias?, baseBranch?} or possibly {full_name, ...}
+            // Object format: {id?, name, enabled, alias?, baseBranch?, starred?, hidden?} or possibly {full_name, ...}
             const name = (repoObj.name as string) || (repoObj.full_name as string);
             const enabled = typeof repoObj.enabled === 'boolean' ? repoObj.enabled : true;
             const id = (repoObj.id as string) || generateId();
             const alias = repoObj.alias as string | undefined;
             const baseBranch = repoObj.baseBranch as string | undefined;
+            const starred = typeof repoObj.starred === 'boolean' ? repoObj.starred : undefined;
+            const hidden = typeof repoObj.hidden === 'boolean' ? repoObj.hidden : undefined;
             if (name) {
-              return { id, name, enabled, alias, baseBranch };
+              return { id, name, enabled, alias, baseBranch, starred, hidden };
             }
           }
           return null;
@@ -298,6 +301,30 @@ const RepositoriesPage: React.FC = () => {
     performAutoSave(newRepos);
   };
 
+  const handleToggleStar = (repoId: string) => {
+    const newRepos = repos.map(repo =>
+      repo.id === repoId
+        ? { ...repo, starred: !repo.starred }
+        : repo
+    );
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
+  const handleToggleHidden = (repoId: string) => {
+    const newRepos = repos.map(repo =>
+      repo.id === repoId
+        ? { ...repo, hidden: !repo.hidden }
+        : repo
+    );
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
+  const handleToggleShowHidden = () => {
+    setShowHiddenRepos(prev => !prev);
+  };
+
   const handleOpenModal = () => {
     setNewRepo('');
     setNewAlias('');
@@ -317,6 +344,10 @@ const RepositoriesPage: React.FC = () => {
     setSelectedRepoId(prevId => prevId === repoId ? null : repoId);
   };
 
+  // Filter repositories: hide hidden repos unless showHiddenRepos is true
+  const hiddenCount = repos.filter(r => r.hidden).length;
+  const filteredRepos = showHiddenRepos ? repos : repos.filter(r => !r.hidden);
+
   // Get currently selected repository
   const selectedRepo = repos.find(r => r.id === selectedRepoId);
 
@@ -332,6 +363,9 @@ const RepositoriesPage: React.FC = () => {
       <RepositoriesPageHeader
         selectedRepoName={selectedRepo?.alias || selectedRepo?.name}
         onAddRepository={handleOpenModal}
+        showHiddenRepos={showHiddenRepos}
+        onToggleShowHidden={handleToggleShowHidden}
+        hiddenCount={hiddenCount}
       />
 
       {/* Mobile Layout: Show list or action container based on selection */}
@@ -362,7 +396,7 @@ const RepositoriesPage: React.FC = () => {
           <div className="h-full bg-white flex flex-col">
             <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stealth">
               <RepositoryListContent
-                repos={repos}
+                repos={filteredRepos}
                 loading={loading}
                 error={error}
                 indexingStatuses={indexingStatuses}
@@ -371,6 +405,8 @@ const RepositoriesPage: React.FC = () => {
                 onRemove={handleRemoveRepo}
                 onStopIndexing={handleStopIndexing}
                 onReindex={handleReindexRepo}
+                onToggleStar={handleToggleStar}
+                onToggleHidden={handleToggleHidden}
                 onSelect={handleSelectRepo}
                 onRetry={handleRetry}
               />
@@ -389,7 +425,7 @@ const RepositoriesPage: React.FC = () => {
               {/* Scrollable content area - solid white canvas with stealth scrollbar */}
               <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stealth">
                 <RepositoryListContent
-                  repos={repos}
+                  repos={filteredRepos}
                   loading={loading}
                   error={error}
                   indexingStatuses={indexingStatuses}
@@ -398,6 +434,8 @@ const RepositoriesPage: React.FC = () => {
                   onRemove={handleRemoveRepo}
                   onStopIndexing={handleStopIndexing}
                   onReindex={handleReindexRepo}
+                  onToggleStar={handleToggleStar}
+                  onToggleHidden={handleToggleHidden}
                   onSelect={handleSelectRepo}
                   onRetry={handleRetry}
                 />

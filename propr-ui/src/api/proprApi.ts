@@ -160,6 +160,8 @@ export interface MonitoredRepo {
   enabled: boolean;
   alias?: string;
   baseBranch?: string;
+  starred?: boolean;
+  hidden?: boolean;
 }
 
 export interface RepoConfigResponse {
