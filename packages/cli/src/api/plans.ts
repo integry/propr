@@ -305,3 +305,107 @@ export async function abortPlan(
 
   return response.data;
 }
+
+/**
+ * Response from finalizing a plan.
+ */
+export interface FinalizePlanResponse {
+  success: boolean;
+  alreadyExecuted?: boolean;
+  issuesCreated: number;
+  results?: Array<{ issueNumber: number; title: string }>;
+}
+
+/**
+ * Finalizes a plan by creating GitHub issues from its plan items.
+ *
+ * @param draftId - The unique identifier of the plan draft.
+ * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @returns A promise resolving to the finalization response.
+ */
+export async function finalizePlan(
+  draftId: string,
+  client?: ApiClient
+): Promise<FinalizePlanResponse> {
+  const apiClient = client ?? (await createApiClient());
+
+  const response = await apiClient.post<FinalizePlanResponse>(
+    "/api/planner/finalize",
+    { body: { draftId } }
+  );
+
+  return response.data;
+}
+
+/**
+ * Options for triggering plan generation.
+ */
+export interface GeneratePlanOptions {
+  baseBranch?: string;
+  granularity?: string;
+  contextLevel?: string;
+  compress?: boolean;
+  generationModel?: string;
+}
+
+/**
+ * Triggers plan generation for an existing draft.
+ *
+ * @param draftId - The unique identifier of the plan draft.
+ * @param options - Optional generation configuration.
+ * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @returns A promise resolving to the generation response.
+ */
+export async function generatePlan(
+  draftId: string,
+  options: GeneratePlanOptions = {},
+  client?: ApiClient
+): Promise<{ success: boolean; message?: string }> {
+  const apiClient = client ?? (await createApiClient());
+
+  const body: Record<string, unknown> = { draftId, ...options };
+
+  const response = await apiClient.post<{ success: boolean; message?: string }>(
+    "/api/planner/generate",
+    { body }
+  );
+
+  return response.data;
+}
+
+/**
+ * A plan issue record from the backend.
+ */
+export interface PlanIssue {
+  id: number;
+  draft_id: string;
+  repository: string;
+  issue_number: number;
+  pr_number: number | null;
+  status: string;
+  agent_alias: string | null;
+  model_name: string | null;
+  task_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Lists issues associated with a plan.
+ *
+ * @param planId - The unique identifier of the plan (draft_id).
+ * @param client - Optional ApiClient instance. If not provided, one will be created.
+ * @returns A promise resolving to the list of plan issues.
+ */
+export async function listPlanIssues(
+  planId: string,
+  client?: ApiClient
+): Promise<PlanIssue[]> {
+  const apiClient = client ?? (await createApiClient());
+
+  const response = await apiClient.get<PlanIssue[]>(
+    `/api/planner/drafts/${encodeURIComponent(planId)}/issues`
+  );
+
+  return response.data;
+}
