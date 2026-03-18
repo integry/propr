@@ -77,15 +77,12 @@ export class TaskWatcherManager {
 
     let conversationPath: string;
     if (agentType === 'codex') {
-      // Codex logs are at {agentRoot}/sessions/YYYY/MM/DD/rollout-TIMESTAMP-SESSIONID.jsonl
-      const today = new Date();
-      const dateDir = `${today.getFullYear()}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
-      // Use Redis watcher for Codex since file naming includes timestamp we don't know
+      // Codex streams to Redis, use Redis watcher
       console.log(`[TaskWatcher] Codex task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
       await this.startRedisWatcher(taskId);
       return;
     } else if (agentType === 'gemini') {
-      // Gemini - use Redis watcher for now
+      // Gemini streams to Redis, use Redis watcher
       console.log(`[TaskWatcher] Gemini task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
       await this.startRedisWatcher(taskId);
       return;
@@ -430,18 +427,20 @@ export class TaskWatcherManager {
   }
 
   /**
-   * Parse Redis output (Codex NDJSON format)
+   * Parse Redis output (Codex NDJSON or Gemini JSONL format)
    */
   private parseRedisOutput(lines: string[]): { events: ConversationEvent[]; todos: TodoItem[]; currentTask: string | null; tokenUsage: TokenUsageInfo | null; totalEventCount: number } {
     const events: ConversationEvent[] = [];
     let todos: TodoItem[] = [];
     const tokenUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+    let pendingAssistantMessage = '';
 
     for (const line of lines) {
       try {
         const event = JSON.parse(line);
-        const timestamp = new Date().toISOString();
+        const timestamp = event.timestamp || new Date().toISOString();
 
+        // === Codex event types ===
         if (event.type === 'item.completed' && event.item) {
           const item = event.item;
           if (item.type === 'reasoning' && item.text) {
@@ -477,10 +476,51 @@ export class TaskWatcherManager {
           tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
           tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
         }
+        // === Gemini event types ===
+        else if (event.type === 'message' && event.role === 'assistant') {
+          // Gemini streams assistant messages with delta flag
+          if (event.delta) {
+            pendingAssistantMessage += event.content || '';
+          } else {
+            // Complete message
+            if (pendingAssistantMessage) {
+              events.push({ type: 'thought' as const, content: pendingAssistantMessage, timestamp });
+              pendingAssistantMessage = '';
+            }
+            if (event.content) {
+              events.push({ type: 'thought' as const, content: event.content, timestamp });
+            }
+          }
+        } else if (event.type === 'tool_use') {
+          // Flush pending assistant message before tool use
+          if (pendingAssistantMessage) {
+            events.push({ type: 'thought' as const, content: pendingAssistantMessage, timestamp });
+            pendingAssistantMessage = '';
+          }
+          events.push({ type: 'tool_use' as const, toolName: event.tool_name, input: event.parameters, id: event.tool_id, timestamp });
+        } else if (event.type === 'tool_result') {
+          const truncated = event.output?.length > 2000
+            ? event.output.substring(0, 2000) + '... [truncated]'
+            : event.output;
+          events.push({ type: 'tool_result' as const, toolUseId: event.tool_id, result: truncated, isError: event.status === 'error', timestamp });
+        } else if (event.type === 'result' && event.stats) {
+          // Flush pending assistant message at end
+          if (pendingAssistantMessage) {
+            events.push({ type: 'thought' as const, content: pendingAssistantMessage, timestamp });
+            pendingAssistantMessage = '';
+          }
+          tokenUsage.input_tokens += event.stats.input_tokens ?? 0;
+          tokenUsage.output_tokens += event.stats.output_tokens ?? 0;
+        }
       } catch {
         // Skip non-JSON lines
         continue;
       }
+    }
+
+    // Flush any remaining pending message
+    if (pendingAssistantMessage) {
+      events.push({ type: 'thought' as const, content: pendingAssistantMessage, timestamp: new Date().toISOString() });
     }
 
     const inProgressTask = todos.find(t => t.status === 'in_progress');
