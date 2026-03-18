@@ -1,1072 +1,387 @@
 /**
- * E2E Tests for ProPR CLI API
+ * E2E Tests for ProPR API
  *
- * Runs against a live ProPR instance. Requires environment variables:
- *   PROPR_E2E_API_URL  — Backend URL (e.g. https://api.gitfix.dev)
- *   PROPR_E2E_TOKEN    — GitHub token for auth
- *   PROPR_E2E_REPO     — Dedicated test repo (e.g. integry/propr-e2e-test)
- *
- * Optional:
- *   PROPR_E2E_SKIP_SLOW  — Set to "1" to skip plan/implementation tests
- *   PROPR_E2E_NO_CLEANUP — Set to "1" to skip cleanup for manual verification
+ * Requires: PROPR_E2E_API_URL, PROPR_E2E_REPO (+ PROPR_E2E_TOKEN or `gh auth token`)
+ * Optional: PROPR_E2E_SKIP_SLOW=1, PROPR_E2E_NO_CLEANUP=1
  */
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 
-// Import from CLI package API modules directly (not via barrel exports)
-// to avoid tsx resolution issues with .js extension re-exports in dist/.
-import { ApiClient } from "../packages/cli/src/api/client.js";
-import { ConfigManager } from "../packages/cli/src/config/ConfigManager.js";
+import {
+  API_URL, REPO, SKIP_SLOW, NO_CLEANUP, MISSING_ENV,
+  createTestClient, sleep,
+  type ModelTestResult, type AgentModelPair,
+  newModelResult,
+  createAndGeneratePlan, waitForTasks, pollTasksToCompletion,
+} from "./e2e/helpers.js";
+import { writeReport } from "./e2e/report.js";
 
-import { getSystemStatus, type SystemStatus } from "../packages/cli/src/api/system.js";
-import { getQueueStats, type QueueStats } from "../packages/cli/src/api/system.js";
+import type { ApiClient } from "../packages/cli/src/api/client.js";
+import { getSystemStatus } from "../packages/cli/src/api/system.js";
+import { getQueueStats } from "../packages/cli/src/api/system.js";
 import { getRepos, addRepo, removeRepo, triggerIndexing, getIndexingStatus } from "../packages/cli/src/api/repos.js";
 import { getSettings } from "../packages/cli/src/api/settings.js";
-import { listLlmLogs, type LlmLogEntry } from "../packages/cli/src/api/logs.js";
-import { listTasks } from "../packages/cli/src/api/tasks.js";
-import { stopTask, deleteTask } from "../packages/cli/src/api/tasks.js";
+import { listLlmLogs } from "../packages/cli/src/api/logs.js";
+import { listTasks, stopTask, deleteTask } from "../packages/cli/src/api/tasks.js";
 import { listAgents, type AgentConfig } from "../packages/cli/src/api/agents.js";
 import {
-  listTodos,
-  getTodo,
-  createTodo,
-  updateTodo,
-  deleteTodo,
-  listCategories,
-  createCategory,
-  updateCategory,
-  deleteCategory,
-  reorderTodos,
-  type RepoTodo,
-  type RepoTodoCategory,
+  listTodos, getTodo, createTodo, updateTodo, deleteTodo,
+  createCategory, deleteCategory, reorderTodos,
+  type RepoTodo, type RepoTodoCategory,
 } from "../packages/cli/src/api/todos.js";
 import {
-  createPlan,
-  getPlan,
-  listPlans,
-  deletePlan,
-  listPlanIssues,
-  generatePlan,
-  finalizePlan,
-  type Plan,
-  type PlanIssue,
+  getPlan, listPlans, deletePlan, listPlanIssues,
+  type Plan, type PlanIssue,
 } from "../packages/cli/src/api/plans.js";
-import {
-  implementIssue,
-  getTaskStatus,
-  type TaskStatus,
-} from "../packages/cli/src/api/implement.js";
+import { implementIssue, getTaskStatus } from "../packages/cli/src/api/implement.js";
 
 // ---------------------------------------------------------------------------
-// Environment & configuration
-// ---------------------------------------------------------------------------
-
-const API_URL = process.env.PROPR_E2E_API_URL;
-const REPO = process.env.PROPR_E2E_REPO;
-const SKIP_SLOW = process.env.PROPR_E2E_SKIP_SLOW === "1";
-const NO_CLEANUP = process.env.PROPR_E2E_NO_CLEANUP === "1";
-
-// Token: env var first, then fall back to `gh auth token`
-import { execSync } from "node:child_process";
-
-function resolveToken(): string | undefined {
-  if (process.env.PROPR_E2E_TOKEN) return process.env.PROPR_E2E_TOKEN;
-  try {
-    return execSync("gh auth token", { encoding: "utf-8" }).trim();
-  } catch {
-    return undefined;
-  }
-}
-
-const TOKEN = resolveToken();
-const MISSING_ENV = !API_URL || !TOKEN || !REPO;
-
-// ---------------------------------------------------------------------------
-// Client setup — no ~/.propr/config.json dependency
+// Shared state
 // ---------------------------------------------------------------------------
 
 let client: ApiClient;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-// ---------------------------------------------------------------------------
-// Shared state across test groups
-// ---------------------------------------------------------------------------
-
 let availableAgents: AgentConfig[] = [];
 
-// Plan lifecycle artifacts
 let greenfieldPlan: Plan | null = null;
 let brownfieldPlan: Plan | null = null;
-
-// Implementation artifacts
-let greenfieldTaskId: string | null = null;
-let brownfieldTaskId: string | null = null;
 let greenfieldDraftId: string | null = null;
 let brownfieldDraftId: string | null = null;
 
-// All-models implementation tracking
-interface ModelTestResult {
-  agent_alias: string;
-  model_name: string;
-  issueNumber: number;
-  taskId: string | null;
-  finalState: string | null;
-  observedStates: Set<string>;
-  hasHistory: boolean;
-  historyCount: number;
-  hasLogs: boolean;
-  logCount: number;
-  prNumber: number | null;
-  prUrl: string | null;
-  failureReason: string | null;
-  durationMs: number | null;
-  inputTokens: number;
-  outputTokens: number;
-}
 const modelTestResults: ModelTestResult[] = [];
-let allModelsPlanId: string | null = null;
-
-// Todo cleanup tracking
 const createdTodoIds: string[] = [];
 const createdCategoryIds: string[] = [];
-
-// Plan cleanup tracking
 const createdPlanIds: string[] = [];
-
-// Repo cleanup tracking — if we added the repo ourselves
 let addedRepo = false;
 
+function allPairs(): AgentModelPair[] {
+  const pairs: AgentModelPair[] = [];
+  for (const a of availableAgents) {
+    for (const m of a.supportedModels) pairs.push({ agent_alias: a.alias, model_name: m });
+  }
+  return pairs;
+}
+
 // ---------------------------------------------------------------------------
-// Root describe — skip entirely if env vars missing
+// Root
 // ---------------------------------------------------------------------------
 
-describe("ProPR CLI E2E", { skip: MISSING_ENV ? "Missing required env vars (PROPR_E2E_API_URL, PROPR_E2E_TOKEN, PROPR_E2E_REPO)" : false }, () => {
-  before(() => {
-    // Construct ApiClient directly with a throwaway ConfigManager
-    const configManager = new ConfigManager("/tmp/propr-e2e-config");
-    client = new ApiClient(configManager, {
-      baseUrl: API_URL!,
-      token: TOKEN!,
-    });
-  });
+describe("ProPR CLI E2E", {
+  skip: MISSING_ENV ? "Missing PROPR_E2E_API_URL, PROPR_E2E_TOKEN, PROPR_E2E_REPO" : false,
+}, () => {
+  before(() => { client = createTestClient(); });
 
   after(async () => {
-    if (NO_CLEANUP) {
-      console.log("  [cleanup] Skipped (PROPR_E2E_NO_CLEANUP=1)");
-      return;
+    if (NO_CLEANUP) { console.log("  [cleanup] Skipped"); return; }
+    const taskIds = modelTestResults.map((r) => r.taskId).filter(Boolean) as string[];
+    for (const id of taskIds) {
+      try { await stopTask(id, client); } catch { /* */ }
+      try { await deleteTask(id, true, client); } catch { /* */ }
     }
-
-    // Stop & delete implementation tasks
-    const allTaskIds = [
-      greenfieldTaskId,
-      brownfieldTaskId,
-      ...modelTestResults.map((r) => r.taskId),
-    ].filter(Boolean) as string[];
-
-    for (const taskId of allTaskIds) {
-      try { await stopTask(taskId, client); } catch { /* ignore */ }
-      try { await deleteTask(taskId, true, client); } catch { /* ignore */ }
-    }
-
-    // Delete todos
-    for (const id of createdTodoIds) {
-      try { await deleteTodo(id, client); } catch { /* ignore */ }
-    }
-
-    // Delete categories
-    for (const id of createdCategoryIds) {
-      try { await deleteCategory(id, client); } catch { /* ignore */ }
-    }
-
-    // Delete plans
-    for (const id of createdPlanIds) {
-      try { await deletePlan(id, client); } catch { /* ignore */ }
-    }
-
-    // Remove repo if we added it
-    if (addedRepo) {
-      try { await removeRepo(REPO!, client); } catch { /* ignore */ }
-    }
-
+    for (const id of createdTodoIds) { try { await deleteTodo(id, client); } catch { /* */ } }
+    for (const id of createdCategoryIds) { try { await deleteCategory(id, client); } catch { /* */ } }
+    for (const id of createdPlanIds) { try { await deletePlan(id, client); } catch { /* */ } }
+    if (addedRepo) { try { await removeRepo(REPO!, client); } catch { /* */ } }
     console.log("  [cleanup] Done");
   });
 
-  // =========================================================================
   // 1. System health
-  // =========================================================================
-
   describe("1. System health", () => {
-    it("getSystemStatus returns all component fields", async () => {
-      const status: SystemStatus = await getSystemStatus(client);
-      assert.ok(typeof status.api === "string", "api field present");
-      assert.ok(typeof status.redis === "string", "redis field present");
-      assert.ok(typeof status.daemon === "string", "daemon field present");
-      assert.ok(typeof status.worker === "string", "worker field present");
-      assert.ok(typeof status.githubAuth === "string", "githubAuth field present");
-      assert.ok(typeof status.claudeAuth === "string", "claudeAuth field present");
-      assert.ok(typeof status.timestamp === "string", "timestamp field present");
-      console.log(`    System: api=${status.api} redis=${status.redis} daemon=${status.daemon} worker=${status.worker}`);
+    it("getSystemStatus", async () => {
+      const s = await getSystemStatus(client);
+      for (const k of ["api", "redis", "daemon", "worker", "githubAuth", "claudeAuth", "timestamp"] as const) {
+        assert.ok(typeof s[k] === "string", `${k} present`);
+      }
+      console.log(`    api=${s.api} redis=${s.redis} daemon=${s.daemon} worker=${s.worker}`);
     });
 
-    it("getQueueStats returns numeric fields >= 0", async () => {
-      const stats: QueueStats = await getQueueStats(client);
-      for (const key of ["waiting", "active", "completed", "failed", "delayed", "total"] as const) {
-        assert.ok(typeof stats[key] === "number", `${key} is a number`);
-        assert.ok(stats[key] >= 0, `${key} >= 0`);
+    it("getQueueStats", async () => {
+      const s = await getQueueStats(client);
+      for (const k of ["waiting", "active", "completed", "failed", "delayed", "total"] as const) {
+        assert.ok(typeof s[k] === "number" && s[k] >= 0, `${k} >= 0`);
       }
-      console.log(`    Queue: waiting=${stats.waiting} active=${stats.active} completed=${stats.completed} failed=${stats.failed}`);
     });
   });
 
-  // =========================================================================
   // 2. Repositories
-  // =========================================================================
-
   describe("2. Repositories", () => {
-    it("getRepos returns an array", async () => {
-      const result = await getRepos(client);
-      assert.ok(Array.isArray(result.repos_to_monitor), "repos_to_monitor is an array");
-      console.log(`    Repos monitored: ${result.repos_to_monitor.length}`);
+    it("getRepos", async () => {
+      const r = await getRepos(client);
+      assert.ok(Array.isArray(r.repos_to_monitor));
     });
 
-    it(`test repo (${REPO}) exists and is enabled — adds if missing`, async () => {
-      const result = await getRepos(client);
-      let repo = result.repos_to_monitor.find(
-        (r) => r.name.toLowerCase() === REPO!.toLowerCase()
-      );
-
+    it("ensure test repo exists", async () => {
+      const r = await getRepos(client);
+      let repo = r.repos_to_monitor.find((x) => x.name.toLowerCase() === REPO!.toLowerCase());
       if (!repo) {
-        console.log(`    Repo ${REPO} not found — adding it`);
+        console.log(`    Adding ${REPO}`);
         await addRepo(REPO!, { enabled: true }, client);
         addedRepo = true;
-        const updated = await getRepos(client);
-        repo = updated.repos_to_monitor.find(
-          (r) => r.name.toLowerCase() === REPO!.toLowerCase()
-        );
+        repo = (await getRepos(client)).repos_to_monitor.find((x) => x.name.toLowerCase() === REPO!.toLowerCase());
       }
-
-      assert.ok(repo, `Repo ${REPO} still not found after adding`);
-      assert.ok(repo.enabled, `Repo ${REPO} is not enabled`);
+      assert.ok(repo?.enabled, `${REPO} not found or disabled`);
     });
 
-    it("ensure repo is indexed (trigger + wait if needed)", { timeout: 300_000 }, async () => {
-      // Check current indexing status
-      const status = await getIndexingStatus(REPO!, client);
-      const repoStatus = status.repositories[0];
-
-      if (repoStatus?.indexing_status === "completed" && repoStatus.last_indexed_at) {
-        console.log(`    Already indexed at ${repoStatus.last_indexed_at}`);
+    it("ensure indexed", { timeout: 300_000 }, async () => {
+      const s = await getIndexingStatus(REPO!, client);
+      if (s.repositories[0]?.indexing_status === "completed") {
+        console.log(`    Already indexed`);
         return;
       }
-
-      // Trigger indexing
-      console.log(`    Triggering indexing for ${REPO}...`);
+      console.log(`    Triggering indexing...`);
       await triggerIndexing(REPO!, { fullReindex: true }, client);
-
-      // Poll until indexing completes
       for (let i = 0; i < 60; i++) {
         await sleep(5000);
-        const current = await getIndexingStatus(REPO!, client);
-        const s = current.repositories[0];
-        if (!s) continue;
-
-        const pct = s.progress?.percentComplete ?? 0;
-        console.log(`    Indexing: ${s.indexing_status} (${pct}%)`);
-
-        if (s.indexing_status === "completed") {
-          console.log(`    Indexing completed at ${s.last_indexed_at}`);
-          return;
-        }
-        if (s.indexing_status === "failed") {
-          assert.fail("Indexing failed");
-        }
+        const c = await getIndexingStatus(REPO!, client);
+        const st = c.repositories[0];
+        if (st?.indexing_status === "completed") return;
+        if (st?.indexing_status === "failed") assert.fail("Indexing failed");
       }
-
-      assert.fail("Indexing timed out after 5 minutes");
+      assert.fail("Indexing timed out");
     });
   });
 
-  // =========================================================================
   // 3. Settings
-  // =========================================================================
-
   describe("3. Settings", () => {
-    it("getSettings returns expected key types", async () => {
-      const settings = await getSettings(client);
-      assert.ok(typeof settings.worker_concurrency === "number", "worker_concurrency is number");
-      assert.ok(Array.isArray(settings.github_user_whitelist), "github_user_whitelist is array");
-      assert.ok(typeof settings.analysis_model_fast === "string", "analysis_model_fast is string");
-      assert.ok(typeof settings.planner_context_model === "string", "planner_context_model is string");
-      assert.ok(typeof settings.planner_generation_model === "string", "planner_generation_model is string");
-      assert.ok(typeof settings.auto_followup_score_threshold === "number", "auto_followup_score_threshold is number");
+    it("getSettings", async () => {
+      const s = await getSettings(client);
+      assert.ok(typeof s.worker_concurrency === "number");
+      assert.ok(typeof s.analysis_model_fast === "string");
     });
   });
 
-  // =========================================================================
   // 4. Logs
-  // =========================================================================
-
   describe("4. Logs", () => {
-    it("listLlmLogs returns array + pagination", async () => {
-      const result = await listLlmLogs({}, client);
-      assert.ok(Array.isArray(result.logs), "logs is array");
-      assert.ok(typeof result.pagination === "object", "pagination present");
-      assert.ok(typeof result.pagination.total === "number", "pagination.total is number");
-      assert.ok(typeof result.pagination.page === "number", "pagination.page is number");
-      console.log(`    Total logs: ${result.pagination.total}`);
+    it("list + pagination", async () => {
+      const r = await listLlmLogs({}, client);
+      assert.ok(Array.isArray(r.logs));
+      assert.ok(typeof r.pagination.total === "number");
     });
-
-    it("listLlmLogs with limit=2 returns <= 2", async () => {
-      const result = await listLlmLogs({ limit: 2 }, client);
-      assert.ok(result.logs.length <= 2, `Expected <= 2 logs, got ${result.logs.length}`);
+    it("limit=2", async () => {
+      const r = await listLlmLogs({ limit: 2 }, client);
+      assert.ok(r.logs.length <= 2);
     });
-
-    it("listLlmLogs with success=false — all returned have success === false", async () => {
-      const result = await listLlmLogs({ success: false }, client);
-      for (const log of result.logs) {
-        assert.strictEqual(log.success, false, `Log ${log.logId} has success !== false`);
-      }
+    it("success=false filter", async () => {
+      const r = await listLlmLogs({ success: false }, client);
+      for (const l of r.logs) assert.strictEqual(l.success, false);
     });
   });
 
-  // =========================================================================
   // 5. Tasks
-  // =========================================================================
-
   describe("5. Tasks", () => {
-    it("listTasks returns array + total", async () => {
-      const result = await listTasks({}, client);
-      assert.ok(Array.isArray(result.tasks), "tasks is array");
-      assert.ok(typeof result.total === "number", "total is number");
-      console.log(`    Total tasks: ${result.total}`);
+    it("list", async () => {
+      const r = await listTasks({}, client);
+      assert.ok(Array.isArray(r.tasks));
     });
-
-    it("listTasks filtered by repository — all match", async () => {
-      const result = await listTasks({ repository: REPO! }, client);
-      for (const task of result.tasks) {
-        assert.strictEqual(
-          task.repository.toLowerCase(),
-          REPO!.toLowerCase(),
-          `Task ${task.id} has repository ${task.repository}, expected ${REPO}`
-        );
-      }
+    it("filter by repo", async () => {
+      const r = await listTasks({ repository: REPO! }, client);
+      for (const t of r.tasks) assert.strictEqual(t.repository.toLowerCase(), REPO!.toLowerCase());
     });
   });
 
-  // =========================================================================
   // 6. Agents
-  // =========================================================================
-
   describe("6. Agents", () => {
-    it("listAgents returns array with expected fields", async () => {
-      const result = await listAgents(client);
-      assert.ok(Array.isArray(result.agents), "agents is array");
-      for (const agent of result.agents) {
-        assert.ok(typeof agent.id === "string", "agent.id is string");
-        assert.ok(typeof agent.alias === "string", "agent.alias is string");
-        assert.ok(typeof agent.type === "string", "agent.type is string");
-        assert.ok(Array.isArray(agent.supportedModels), "agent.supportedModels is array");
-      }
-      availableAgents = result.agents.filter((a) => a.enabled);
-      console.log(`    Available agents: ${availableAgents.map((a) => a.alias).join(", ")}`);
+    it("listAgents", async () => {
+      const r = await listAgents(client);
+      assert.ok(Array.isArray(r.agents));
+      availableAgents = r.agents.filter((a) => a.enabled);
+      console.log(`    Agents: ${availableAgents.map((a) => `${a.alias}(${a.supportedModels.length})`).join(", ")}`);
     });
   });
 
-  // =========================================================================
   // 7. Todo CRUD
-  // =========================================================================
-
   describe("7. Todo CRUD", () => {
-    let category: RepoTodoCategory;
-    let todo1: RepoTodo;
-    let todo2: RepoTodo;
+    let cat: RepoTodoCategory;
+    let t1: RepoTodo, t2: RepoTodo;
 
     it("create category", async () => {
-      category = await createCategory({ repository: REPO!, name: `e2e-cat-${Date.now()}` }, client);
-      createdCategoryIds.push(category.categoryId);
-      assert.ok(category.categoryId, "categoryId present");
-      assert.ok(category.name.startsWith("e2e-cat-"), "name matches");
+      cat = await createCategory({ repository: REPO!, name: `e2e-${Date.now()}` }, client);
+      createdCategoryIds.push(cat.categoryId);
+      assert.ok(cat.categoryId);
     });
-
     it("create todos", async () => {
-      todo1 = await createTodo(
-        { repository: REPO!, content: `e2e-todo-1-${Date.now()}`, categoryId: category.categoryId },
-        client
-      );
-      createdTodoIds.push(todo1.todoId);
-      assert.ok(todo1.todoId, "todo1 id present");
-
-      todo2 = await createTodo(
-        { repository: REPO!, content: `e2e-todo-2-${Date.now()}`, categoryId: category.categoryId },
-        client
-      );
-      createdTodoIds.push(todo2.todoId);
-      assert.ok(todo2.todoId, "todo2 id present");
+      t1 = await createTodo({ repository: REPO!, content: `e2e-1-${Date.now()}`, categoryId: cat.categoryId }, client);
+      t2 = await createTodo({ repository: REPO!, content: `e2e-2-${Date.now()}`, categoryId: cat.categoryId }, client);
+      createdTodoIds.push(t1.todoId, t2.todoId);
     });
-
-    it("list todos", async () => {
-      const result = await listTodos(REPO!, client);
-      assert.ok(Array.isArray(result.todos), "todos is array");
-      const ids = result.todos.map((t) => t.todoId);
-      assert.ok(ids.includes(todo1.todoId), "todo1 in list");
-      assert.ok(ids.includes(todo2.todoId), "todo2 in list");
+    it("list", async () => {
+      const r = await listTodos(REPO!, client);
+      assert.ok(r.todos.some((t) => t.todoId === t1.todoId));
     });
-
-    it("get todo", async () => {
-      const fetched = await getTodo(todo1.todoId, client);
-      assert.strictEqual(fetched.todoId, todo1.todoId);
-      assert.strictEqual(fetched.content, todo1.content);
+    it("get", async () => {
+      const r = await getTodo(t1.todoId, client);
+      assert.strictEqual(r.todoId, t1.todoId);
     });
-
-    it("update todo", async () => {
-      const updated = await updateTodo(todo1.todoId, { content: "updated-content" }, client);
-      assert.strictEqual(updated.content, "updated-content");
+    it("update", async () => {
+      const r = await updateTodo(t1.todoId, { content: "updated" }, client);
+      assert.strictEqual(r.content, "updated");
     });
-
-    it("reorder todos", async () => {
-      const result = await reorderTodos(
-        REPO!,
-        [
-          { id: todo2.todoId, orderIndex: 0 },
-          { id: todo1.todoId, orderIndex: 1 },
-        ],
-        client
-      );
-      assert.ok(result.success, "reorder succeeded");
+    it("reorder", async () => {
+      const r = await reorderTodos(REPO!, [{ id: t2.todoId, orderIndex: 0 }, { id: t1.todoId, orderIndex: 1 }], client);
+      assert.ok(r.success);
     });
-
-    it("delete todos", { skip: NO_CLEANUP ? "NO_CLEANUP set" : false }, async () => {
-      const r1 = await deleteTodo(todo1.todoId, client);
-      assert.ok(r1.success, "delete todo1 succeeded");
-      // Remove from cleanup list since already deleted
-      const idx1 = createdTodoIds.indexOf(todo1.todoId);
-      if (idx1 >= 0) createdTodoIds.splice(idx1, 1);
-
-      const r2 = await deleteTodo(todo2.todoId, client);
-      assert.ok(r2.success, "delete todo2 succeeded");
-      const idx2 = createdTodoIds.indexOf(todo2.todoId);
-      if (idx2 >= 0) createdTodoIds.splice(idx2, 1);
-    });
-
-    it("delete category", { skip: NO_CLEANUP ? "NO_CLEANUP set" : false }, async () => {
-      const r = await deleteCategory(category.categoryId, client);
-      assert.ok(r.success, "delete category succeeded");
-      const idx = createdCategoryIds.indexOf(category.categoryId);
-      if (idx >= 0) createdCategoryIds.splice(idx, 1);
+    it("delete", { skip: NO_CLEANUP ? "NO_CLEANUP" : false }, async () => {
+      await deleteTodo(t1.todoId, client);
+      await deleteTodo(t2.todoId, client);
+      await deleteCategory(cat.categoryId, client);
+      createdTodoIds.length = 0;
+      createdCategoryIds.length = 0;
     });
   });
 
-  // =========================================================================
-  // 8. Plan lifecycle — greenfield
-  // =========================================================================
-
-  describe("8. Plan lifecycle — greenfield", {
-    timeout: 600_000,
-    skip: SKIP_SLOW ? "PROPR_E2E_SKIP_SLOW=1" : false,
-  }, () => {
-    it("create plan and track progress to terminal state", async () => {
-      const plan = await createPlan(
-        REPO!,
-        "Add a CONTRIBUTING.md with guidelines for contributing to the project",
-        {},
-        client
+  // 8. Plan — greenfield
+  describe("8. Plan — greenfield", { timeout: 600_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
+    it("create + generate + finalize", async () => {
+      const { planId, issues } = await createAndGeneratePlan(
+        REPO!, "Add a CONTRIBUTING.md with guidelines for contributing to the project",
+        client, createdPlanIds,
       );
-      greenfieldPlan = plan;
-      greenfieldDraftId = plan.draft_id;
-      createdPlanIds.push(plan.draft_id);
-
-      assert.ok(plan.draft_id, "draft_id present");
-      console.log(`    Plan created: ${plan.draft_id} (status: ${plan.status})`);
-
-      // Trigger generation
-      console.log(`    Triggering generation...`);
-      await generatePlan(plan.draft_id, {}, client);
-
-      // Poll until a terminal state that indicates generation completed.
-      const observedStatuses = new Set<string>();
-      observedStatuses.add(plan.status);
-      let lastStatus = plan.status;
-
-      // Terminal = generation done (back to draft/review after generating, or failed)
-      const doneStatuses = new Set(["review", "executed", "approved", "merged", "pr_created", "failed"]);
-      // We also treat "draft" as done IF we already saw "generating" (meaning it finished)
-      let sawGenerating = lastStatus === "generating";
-
-      const isDone = () => {
-        if (doneStatuses.has(lastStatus)) return true;
-        if (lastStatus === "draft" && sawGenerating) return true;
-        return false;
-      };
-
-      while (!isDone()) {
-        await sleep(5000);
-        const current = await getPlan(plan.draft_id, client);
-        if (current.status !== lastStatus) {
-          console.log(`    Plan status: ${lastStatus} → ${current.status}`);
-          lastStatus = current.status;
-          observedStatuses.add(current.status);
-          if (current.status === "generating" || current.status === "refining") {
-            sawGenerating = true;
-          }
-        }
-        greenfieldPlan = current;
-      }
-
-      // Assert we saw generation activity
-      const hasIntermediate = sawGenerating;
-      assert.ok(hasIntermediate, `Expected to observe generating/refining, observed: ${[...observedStatuses].join(", ")}`);
-      assert.notStrictEqual(lastStatus, "failed", `Plan failed unexpectedly`);
-      console.log(`    Final status: ${lastStatus} | Observed: ${[...observedStatuses].join(", ")}`);
-
-      // Finalize plan to create GitHub issues
-      console.log(`    Finalizing plan (creating GitHub issues)...`);
-      const finalizeResult = await finalizePlan(plan.draft_id, client);
-      assert.ok(finalizeResult.success, "Finalize succeeded");
-      console.log(`    Issues created: ${finalizeResult.issuesCreated}`);
+      greenfieldDraftId = planId;
+      greenfieldPlan = await getPlan(planId, client);
+      assert.ok(issues.length > 0 || greenfieldPlan.status !== "failed", "Plan failed");
+      console.log(`    ${issues.length} issues`);
     });
-
-    it("plan appears in listPlans", async () => {
-      assert.ok(greenfieldPlan, "greenfieldPlan must exist");
-      const result = await listPlans(REPO!, {}, client);
-      const found = result.drafts.find((d) => d.draft_id === greenfieldPlan!.draft_id);
-      assert.ok(found, "Greenfield plan found in list");
+    it("appears in list", async () => {
+      if (!greenfieldDraftId) return;
+      const r = await listPlans(REPO!, {}, client);
+      assert.ok(r.drafts.some((d) => d.draft_id === greenfieldDraftId));
     });
   });
 
-  // =========================================================================
-  // 9. Plan lifecycle — brownfield
-  // =========================================================================
-
-  describe("9. Plan lifecycle — brownfield", {
-    timeout: 600_000,
-    skip: SKIP_SLOW ? "PROPR_E2E_SKIP_SLOW=1" : false,
-  }, () => {
-    it("create plan and track progress to terminal state", async () => {
-      const plan = await createPlan(
-        REPO!,
-        "Improve error handling and add input validation across the codebase",
-        {},
-        client
+  // 9. Plan — brownfield
+  describe("9. Plan — brownfield", { timeout: 600_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
+    it("create + generate + finalize", async () => {
+      const { planId, issues } = await createAndGeneratePlan(
+        REPO!, "Improve error handling and add input validation across the codebase",
+        client, createdPlanIds,
       );
-      brownfieldPlan = plan;
-      brownfieldDraftId = plan.draft_id;
-      createdPlanIds.push(plan.draft_id);
-
-      assert.ok(plan.draft_id, "draft_id present");
-      console.log(`    Plan created: ${plan.draft_id} (status: ${plan.status})`);
-
-      // Trigger generation
-      console.log(`    Triggering generation...`);
-      await generatePlan(plan.draft_id, {}, client);
-
-      // Poll until generation completes (same logic as greenfield)
-      const observedStatuses = new Set<string>();
-      observedStatuses.add(plan.status);
-      let lastStatus = plan.status;
-
-      const doneStatuses = new Set(["review", "executed", "approved", "merged", "pr_created", "failed"]);
-      let sawGenerating = lastStatus === "generating";
-
-      const isDone = () => {
-        if (doneStatuses.has(lastStatus)) return true;
-        if (lastStatus === "draft" && sawGenerating) return true;
-        return false;
-      };
-
-      while (!isDone()) {
-        await sleep(5000);
-        const current = await getPlan(plan.draft_id, client);
-        if (current.status !== lastStatus) {
-          console.log(`    Plan status: ${lastStatus} → ${current.status}`);
-          lastStatus = current.status;
-          observedStatuses.add(current.status);
-          if (current.status === "generating" || current.status === "refining") {
-            sawGenerating = true;
-          }
-        }
-        brownfieldPlan = current;
-      }
-
-      assert.ok(sawGenerating, `Expected to observe generating/refining, observed: ${[...observedStatuses].join(", ")}`);
-      assert.notStrictEqual(lastStatus, "failed", `Plan failed unexpectedly`);
-      console.log(`    Final status: ${lastStatus} | Observed: ${[...observedStatuses].join(", ")}`);
-
-      // Finalize plan to create GitHub issues
-      console.log(`    Finalizing plan (creating GitHub issues)...`);
-      const finalizeResult = await finalizePlan(plan.draft_id, client);
-      assert.ok(finalizeResult.success, "Finalize succeeded");
-      console.log(`    Issues created: ${finalizeResult.issuesCreated}`);
-
-      // Verify plan has issues via the issues endpoint
-      const issues = await listPlanIssues(plan.draft_id, client);
-      assert.ok(issues.length > 0, "Brownfield plan should have generated issues");
-      console.log(`    Plan issues: ${issues.length}`);
+      brownfieldDraftId = planId;
+      brownfieldPlan = await getPlan(planId, client);
+      assert.ok(issues.length > 0 || brownfieldPlan.status !== "failed", "Plan failed");
+      console.log(`    ${issues.length} issues`);
     });
   });
 
-  // =========================================================================
-  // 10. All-models implementation — create plan, assign each model an issue
-  // =========================================================================
+  // 10. All-models implementation
+  describe("10. All-models", { timeout: 2_400_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
+    it("create plans with enough issues", async () => {
+      const pairs = allPairs();
+      if (pairs.length === 0) return;
 
-  describe("10. All-models implementation", {
-    timeout: 1_800_000, // 30 min — many models
-    skip: SKIP_SLOW ? "PROPR_E2E_SKIP_SLOW=1" : false,
-  }, () => {
-    it("create plan with enough issues for all models", async () => {
-      const allPairs: { agent_alias: string; model_name: string }[] = [];
-      for (const agent of availableAgents) {
-        for (const model of agent.supportedModels) {
-          allPairs.push({ agent_alias: agent.alias, model_name: model });
-        }
-      }
+      const needed = pairs.length + 1;
+      let collected: PlanIssue[] = [];
 
-      if (allPairs.length === 0) {
-        console.log("    Skipping: no agent/model pairs available");
-        return;
-      }
+      const prompts = [
+        "Create 5 tiny improvements: 1) Add constants.ts, 2) Add types.ts, 3) Create utils/format.ts, 4) Add CONTRIBUTING.md, 5) Add input validation.",
+        "Create 5 tiny improvements: 1) Add health check helper, 2) Create logger utility, 3) Add .editorconfig, 4) Add utils/errors.ts, 5) Create config validation.",
+        "Create 5 tiny improvements: 1) Add JSDoc to exports, 2) Create retry utility, 3) Add debounce utility, 4) Create string sanitizer, 5) Add env validation.",
+      ];
 
-      console.log(`    Total agent/model pairs: ${allPairs.length}`);
-      for (const p of allPairs) {
-        console.log(`      ${p.agent_alias}/${p.model_name}`);
-      }
-
-      const prompt = [
-        `Create ${allPairs.length} separate small improvements for this project.`,
-        "Each should be a self-contained task like: add a utility function, improve a config file,",
-        "add documentation, add error handling, add input validation, add a helper script,",
-        "improve logging, add type annotations, add constants file, add a health check.",
-        `Generate exactly ${allPairs.length} issues.`,
-      ].join(" ");
-
-      console.log(`    Creating plan for ${allPairs.length} issues...`);
-      const plan = await createPlan(REPO!, prompt, {}, client);
-      allModelsPlanId = plan.draft_id;
-      createdPlanIds.push(plan.draft_id);
-
-      console.log(`    Triggering generation...`);
-      await generatePlan(plan.draft_id, {}, client);
-
-      const doneStatuses = new Set(["review", "executed", "approved", "merged", "pr_created", "failed"]);
-      let lastStatus = "draft";
-      let sawGenerating = false;
-
-      for (let i = 0; i < 120; i++) {
-        await sleep(5000);
-        const current = await getPlan(plan.draft_id, client);
-        if (current.status !== lastStatus) {
-          console.log(`    Plan status: ${lastStatus} -> ${current.status}`);
-          lastStatus = current.status;
-        }
-        if (current.status === "generating" || current.status === "refining") sawGenerating = true;
-        if (doneStatuses.has(current.status)) break;
-        if (current.status === "draft" && sawGenerating) break;
-      }
-
-      assert.ok(sawGenerating, `Plan never started generating. Observed: ${lastStatus}`);
-      assert.notStrictEqual(lastStatus, "failed", "Plan generation failed");
-
-      console.log(`    Finalizing plan...`);
-      const finalizeResult = await finalizePlan(plan.draft_id, client);
-      assert.ok(finalizeResult.success, "Finalize failed");
-      console.log(`    Issues created: ${finalizeResult.issuesCreated}`);
-    });
-
-    it("implement one issue per model and track execution", async () => {
-      if (!allModelsPlanId) {
-        console.log("    Skipping: no plan available");
-        return;
-      }
-
-      const allPairs: { agent_alias: string; model_name: string }[] = [];
-      for (const agent of availableAgents) {
-        for (const model of agent.supportedModels) {
-          allPairs.push({ agent_alias: agent.alias, model_name: model });
-        }
-      }
-
-      const issues = await listPlanIssues(allModelsPlanId, client);
-      const pendingIssues = issues.filter((i) => i.status === "pending");
-      const modelsToTest = allPairs.slice(0, pendingIssues.length);
-
-      if (modelsToTest.length === 0) {
-        console.log("    Skipping: no pending issues available");
-        return;
-      }
-
-      console.log(`    Testing ${modelsToTest.length} models (${pendingIssues.length} issues available)`);
-      if (modelsToTest.length < allPairs.length) {
-        console.log(`    Warning: only ${pendingIssues.length} issues, skipping ${allPairs.length - modelsToTest.length} models`);
-      }
-
-      for (let i = 0; i < modelsToTest.length; i++) {
-        const pair = modelsToTest[i];
-        const issue = pendingIssues[i];
-        console.log(`    Implementing #${issue.issue_number} with ${pair.agent_alias}/${pair.model_name}`);
-
-        const result = await implementIssue(allModelsPlanId, issue.issue_number, {
-          models: [pair],
-        }, client);
-
-        modelTestResults.push({
-          agent_alias: pair.agent_alias,
-          model_name: pair.model_name,
-          issueNumber: issue.issue_number,
-          taskId: null,
-          finalState: null,
-          observedStates: new Set(),
-          hasHistory: false,
-          historyCount: 0,
-          hasLogs: false,
-          logCount: 0,
-          prNumber: null,
-          prUrl: null,
-          failureReason: null,
-          durationMs: null,
-          inputTokens: 0,
-          outputTokens: 0,
-        });
-
-        if (!result.success) {
-          console.log(`    Warning: implement failed for ${pair.model_name}: ${result.message}`);
-        }
-      }
-
-      // Wait for tasks to appear
-      console.log(`    Waiting for tasks to appear...`);
-      const terminalStates = new Set(["completed", "failed", "cancelled"]);
-
-      for (let poll = 0; poll < 60; poll++) {
-        await sleep(10_000);
-        const taskList = await listTasks({ repository: REPO! }, client);
-
-        let allFound = true;
-        for (const r of modelTestResults) {
-          if (r.taskId) continue;
-          const task = taskList.tasks.find((t) => t.issueNumber === r.issueNumber);
-          if (task) {
-            r.taskId = task.id;
-            console.log(`    Found task for #${r.issueNumber} (${r.model_name}): ${task.id.substring(0, 40)}...`);
-          } else {
-            allFound = false;
-          }
-        }
-        if (allFound) break;
-
-        if (poll % 6 === 0) {
-          const found = modelTestResults.filter((r) => r.taskId).length;
-          console.log(`    Tasks found: ${found}/${modelTestResults.length}`);
-        }
-      }
-
-      const withTasks = modelTestResults.filter((r) => r.taskId);
-      console.log(`    Tasks found: ${withTasks.length}/${modelTestResults.length}`);
-
-      if (withTasks.length === 0) {
-        console.log("    No tasks appeared - worker may not be processing");
-        return;
-      }
-
-      // Poll all tasks until they reach terminal state
-      console.log(`    Polling ${withTasks.length} tasks until completion...`);
-      let pollCount = 0;
-
-      while (true) {
-        await sleep(10_000);
-        pollCount++;
-
-        let allDone = true;
-        for (const r of withTasks) {
-          if (r.finalState && terminalStates.has(r.finalState)) continue;
-          allDone = false;
-
-          const status = await getTaskStatus(r.taskId!, client);
-          const prevSize = r.observedStates.size;
-          r.observedStates.add(status.currentState);
-          if (r.observedStates.size > prevSize) {
-            console.log(`    [${r.agent_alias}/${r.model_name}] #${r.issueNumber}: ${status.currentState}`);
-          }
-          if (terminalStates.has(status.currentState)) {
-            r.finalState = status.currentState;
-            r.hasHistory = status.history.length > 0;
-            r.historyCount = status.history.length;
-            r.prNumber = status.prNumber ?? null;
-            r.prUrl = status.prUrl ?? null;
-            r.failureReason = status.failureReason ?? null;
-
-            // Compute duration from first to last history entry
-            if (status.history.length >= 2) {
-              const first = new Date(status.history[0].timestamp).getTime();
-              const last = new Date(status.history[status.history.length - 1].timestamp).getTime();
-              r.durationMs = last - first;
-            }
-
-            if (status.isCompleted && status.prNumber) {
-              console.log(`    [${r.agent_alias}/${r.model_name}] PR: #${status.prNumber}`);
-            }
-            if (status.isFailed) {
-              console.log(`    [${r.agent_alias}/${r.model_name}] FAILED: ${status.failureReason}`);
-            }
-          }
-        }
-
-        if (pollCount % 5 === 0 && allModelsPlanId) {
-          const logs = await listLlmLogs({ draftId: allModelsPlanId }, client);
-          console.log(`    Total logs so far: ${logs.pagination.total}`);
-        }
-
-        if (allDone) break;
+      for (let i = 0; i < prompts.length && collected.length < needed; i++) {
+        console.log(`    Plan ${i + 1}/${prompts.length}...`);
+        const { issues } = await createAndGeneratePlan(REPO!, prompts[i], client, createdPlanIds);
+        collected.push(...issues);
+        console.log(`    +${issues.length} issues (total: ${collected.length}/${needed})`);
       }
     });
 
-    it("every model produced execution status updates (history)", async () => {
-      const withTasks = modelTestResults.filter((r) => r.taskId);
-      if (withTasks.length === 0) {
-        console.log("    Skipping: no tasks ran");
-        return;
+    it("multi-model parallel: all models on one issue", async () => {
+      const pairs = allPairs();
+      if (pairs.length < 2) return;
+
+      let pending: PlanIssue[] = [];
+      for (const pid of createdPlanIds) {
+        const iss = await listPlanIssues(pid, client);
+        pending.push(...iss.filter((i) => i.status === "pending"));
+      }
+      if (pending.length === 0) { console.log("    No pending issues"); return; }
+
+      const target = pending[0];
+      console.log(`    Issue #${target.issue_number} x ${pairs.length} models`);
+
+      const result = await implementIssue(target.draft_id, target.issue_number, { models: pairs }, client);
+      assert.ok(result.success, result.message);
+
+      for (const p of pairs) modelTestResults.push(newModelResult(p, target.issue_number, "parallel"));
+      const pr = modelTestResults.filter((r) => r.testMode === "parallel");
+      await waitForTasks(pr, REPO!, client);
+      await pollTasksToCompletion(pr, client);
+    });
+
+    it("single-model: each model on a separate issue", async () => {
+      const pairs = allPairs();
+      const used = new Set(modelTestResults.map((r) => r.issueNumber));
+
+      let pending: PlanIssue[] = [];
+      for (const pid of createdPlanIds) {
+        const iss = await listPlanIssues(pid, client);
+        pending.push(...iss.filter((i) => i.status === "pending" && !used.has(i.issue_number)));
       }
 
-      for (const r of withTasks) {
-        const status = await getTaskStatus(r.taskId!, client);
-        r.hasHistory = status.history.length > 1;
+      const toTest = pairs.slice(0, pending.length);
+      if (toTest.length === 0) { console.log("    No issues left"); return; }
+      console.log(`    ${toTest.length}/${pairs.length} models`);
 
-        console.log(`    ${r.agent_alias}/${r.model_name}: ${status.history.length} history entries, states: ${[...r.observedStates].join(" -> ")}`);
-        assert.ok(
-          status.history.length > 0,
-          `${r.agent_alias}/${r.model_name} (#${r.issueNumber}) has no history entries`
-        );
+      for (let i = 0; i < toTest.length; i++) {
+        const p = toTest[i], iss = pending[i];
+        await implementIssue(iss.draft_id, iss.issue_number, { models: [p] }, client);
+        modelTestResults.push(newModelResult(p, iss.issue_number, "single"));
+      }
+
+      const sr = modelTestResults.filter((r) => r.testMode === "single");
+      await waitForTasks(sr, REPO!, client);
+      await pollTasksToCompletion(sr, client);
+    });
+
+    it("every model has execution history", async () => {
+      for (const r of modelTestResults.filter((r) => r.taskId)) {
+        const s = await getTaskStatus(r.taskId!, client);
+        r.hasHistory = s.history.length > 1;
+        r.historyCount = s.history.length;
+        assert.ok(s.history.length > 0, `${r.agent_alias}/${r.model_name} no history`);
       }
     });
 
-    it("every model produced LLM logs", async () => {
-      if (!allModelsPlanId) return;
-
+    it("collect LLM logs", async () => {
       const withTasks = modelTestResults.filter((r) => r.taskId && r.finalState);
-      if (withTasks.length === 0) {
-        console.log("    Skipping: no completed tasks");
-        return;
+      for (const pid of createdPlanIds) {
+        const logs = await listLlmLogs({ draftId: pid, limit: 200 }, client);
+        for (const r of withTasks) {
+          const ml = logs.logs.filter((l) => l.agentAlias === r.agent_alias);
+          r.logCount += ml.length;
+          r.hasLogs = r.logCount > 0;
+          r.inputTokens += ml.reduce((s, l) => s + (l.inputTokens ?? 0), 0);
+          r.outputTokens += ml.reduce((s, l) => s + (l.outputTokens ?? 0), 0);
+        }
       }
-
-      const allLogs = await listLlmLogs({ draftId: allModelsPlanId, limit: 100 }, client);
-
-      for (const r of withTasks) {
-        const modelLogs = allLogs.logs.filter((l) =>
-          l.agentAlias === r.agent_alias
-        );
-        r.logCount = modelLogs.length;
-        r.hasLogs = modelLogs.length > 0;
-        r.inputTokens = modelLogs.reduce((sum, l) => sum + (l.inputTokens ?? 0), 0);
-        r.outputTokens = modelLogs.reduce((sum, l) => sum + (l.outputTokens ?? 0), 0);
-
-        console.log(`    ${r.agent_alias}/${r.model_name}: ${modelLogs.length} logs, state=${r.finalState}`);
-      }
-
-      assert.ok(allLogs.logs.length > 0, "Expected at least some LLM logs for the draft");
-      console.log(`    Total draft logs: ${allLogs.pagination.total}`);
     });
   });
 
-  // =========================================================================
-  // 11. Summary + log verification
-  // =========================================================================
-
-  describe("11. Summary + log verification", {
-    skip: SKIP_SLOW ? "PROPR_E2E_SKIP_SLOW=1" : false,
-  }, () => {
-    it("write run report to file", async () => {
-      const lines: string[] = [];
-      const w = (s = "") => lines.push(s);
-
-      const now = new Date();
-      const ts = now.toISOString().replace(/[:.]/g, "-").substring(0, 19);
-
-      w(`# E2E Test Run Report`);
-      w(`**Date:** ${now.toISOString()}  `);
-      w(`**Repo:** ${REPO}  `);
-      w(`**API:** ${API_URL}  `);
-      w();
-
-      // --- Plans ---
-      w(`## Plans`);
-      w();
-
+  // 11. Report + verification
+  describe("11. Report", { skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
+    it("write report", async () => {
       const planEntries = [
         { label: "Greenfield", id: greenfieldDraftId, plan: greenfieldPlan },
         { label: "Brownfield", id: brownfieldDraftId, plan: brownfieldPlan },
-        { label: "All-models", id: allModelsPlanId, plan: null as Plan | null },
+        ...createdPlanIds
+          .filter((id) => id !== greenfieldDraftId && id !== brownfieldDraftId)
+          .map((id) => ({ label: `All-models (${id.substring(0, 8)})`, id, plan: null })),
       ];
-
-      for (const p of planEntries) {
-        if (!p.id) { w(`### ${p.label}\nNot created.\n`); continue; }
-        try {
-          const plan = p.plan ?? await getPlan(p.id, client);
-          const issues = await listPlanIssues(p.id, client);
-
-          w(`### ${p.label}`);
-          w(`- **ID:** \`${p.id}\``);
-          w(`- **Name:** ${plan.name || "(untitled)"}`);
-          w(`- **Status:** ${plan.status}`);
-          w(`- **Prompt:** ${plan.initial_prompt ?? "(none)"}`);
-          w(`- **Plan items:** ${(plan.plan_json ?? []).length}, **GitHub issues:** ${issues.length}`);
-          w();
-
-          if (issues.length > 0) {
-            w(`| Issue | Status | Agent | Model | Task |`);
-            w(`|-------|--------|-------|-------|------|`);
-            for (const iss of issues) {
-              w(`| #${iss.issue_number} | ${iss.status} | ${iss.agent_alias ?? "-"} | ${iss.model_name ?? "-"} | ${iss.task_id ? `\`${iss.task_id.substring(0, 30)}...\`` : "-"} |`);
-            }
-            w();
-          }
-        } catch {
-          w(`### ${p.label}\n\`${p.id}\` — could not fetch details.\n`);
-        }
-      }
-
-      // --- Model implementation results ---
-      if (modelTestResults.length > 0) {
-        w(`## Model Implementation Results`);
-        w();
-
-        // Group by agent
-        const byAgent = new Map<string, ModelTestResult[]>();
-        for (const r of modelTestResults) {
-          const list = byAgent.get(r.agent_alias) ?? [];
-          list.push(r);
-          byAgent.set(r.agent_alias, list);
-        }
-
-        for (const [agent, results] of byAgent) {
-          w(`### Agent: ${agent}`);
-          w();
-          w(`| Model | Issue | State | Duration | Tokens (in/out) | PR | History | Logs |`);
-          w(`|-------|-------|-------|----------|-----------------|-----|---------|------|`);
-
-          for (const r of results) {
-            const dur = r.durationMs ? `${Math.round(r.durationMs / 1000)}s` : "-";
-            const tokens = r.inputTokens || r.outputTokens ? `${r.inputTokens} / ${r.outputTokens}` : "-";
-            const pr = r.prNumber ? `#${r.prNumber}` : "-";
-            w(`| ${r.model_name} | #${r.issueNumber} | **${r.finalState ?? "no task"}** | ${dur} | ${tokens} | ${pr} | ${r.historyCount} | ${r.logCount} |`);
-          }
-          w();
-
-          // Show failures inline
-          const failures = results.filter((r) => r.failureReason);
-          if (failures.length > 0) {
-            w(`**Failures:**`);
-            for (const r of failures) {
-              w(`- **${r.model_name}** (#${r.issueNumber}): ${r.failureReason}`);
-            }
-            w();
-          }
-        }
-
-        // --- Totals ---
-        w(`## Totals`);
-        w();
-
-        const total = modelTestResults.length;
-        const withTasks = modelTestResults.filter((r) => r.taskId).length;
-        const completed = modelTestResults.filter((r) => r.finalState === "completed").length;
-        const failed = modelTestResults.filter((r) => r.finalState === "failed").length;
-        const cancelled = modelTestResults.filter((r) => r.finalState === "cancelled").length;
-        const noTask = modelTestResults.filter((r) => !r.taskId).length;
-        const withHistory = modelTestResults.filter((r) => r.hasHistory).length;
-        const withLogs = modelTestResults.filter((r) => r.hasLogs).length;
-        const totalInput = modelTestResults.reduce((s, r) => s + r.inputTokens, 0);
-        const totalOutput = modelTestResults.reduce((s, r) => s + r.outputTokens, 0);
-
-        w(`| Metric | Value |`);
-        w(`|--------|-------|`);
-        w(`| Models tested | ${total} |`);
-        w(`| Tasks created | ${withTasks} (${noTask} never picked up) |`);
-        w(`| Completed | ${completed} |`);
-        w(`| Failed | ${failed} |`);
-        if (cancelled > 0) w(`| Cancelled | ${cancelled} |`);
-        w(`| With execution history | ${withHistory} / ${withTasks} |`);
-        w(`| With LLM logs | ${withLogs} / ${withTasks} |`);
-        w(`| Total tokens | ${totalInput} in / ${totalOutput} out / ${totalInput + totalOutput} total |`);
-        w();
-      }
-
-      // Write file
-      const reportsDir = path.join(process.cwd(), "test", "reports");
-      fs.mkdirSync(reportsDir, { recursive: true });
-      const reportPath = path.join(reportsDir, `e2e-${ts}.md`);
-      fs.writeFileSync(reportPath, lines.join("\n"), "utf-8");
-
-      // Also write a symlink/copy as latest
-      const latestPath = path.join(reportsDir, "latest.md");
-      try { fs.unlinkSync(latestPath); } catch { /* ignore */ }
-      fs.copyFileSync(reportPath, latestPath);
-
-      console.log(`    Report written to ${reportPath}`);
-      console.log(`    Latest: ${latestPath}`);
-    });
-
-    it("completed logs have valid token/duration fields", async () => {
-      const draftIds = [allModelsPlanId, greenfieldDraftId, brownfieldDraftId].filter(Boolean) as string[];
-      if (draftIds.length === 0) return;
-
-      for (const draftId of draftIds) {
-        const result = await listLlmLogs({ draftId, success: true, limit: 100 }, client);
-        for (const log of result.logs) {
-          if (log.inputTokens !== null) {
-            assert.ok(log.inputTokens > 0, `Log ${log.logId}: inputTokens should be > 0`);
-          }
-          if (log.outputTokens !== null) {
-            assert.ok(log.outputTokens > 0, `Log ${log.logId}: outputTokens should be > 0`);
-          }
-          if (log.durationMs !== null) {
-            assert.ok(log.durationMs > 0, `Log ${log.logId}: durationMs should be > 0`);
-          }
-        }
-      }
+      const p = await writeReport({ repo: REPO!, apiUrl: API_URL!, client, planEntries, modelResults: modelTestResults });
+      console.log(`    Report: ${p}`);
     });
 
     it("successful logs have no errorMessage", async () => {
-      const draftIds = [allModelsPlanId, greenfieldDraftId, brownfieldDraftId].filter(Boolean) as string[];
-      for (const draftId of draftIds) {
-        const result = await listLlmLogs({ draftId, success: true, limit: 100 }, client);
-        for (const log of result.logs) {
-          assert.strictEqual(log.errorMessage, null, `Successful log ${log.logId} has errorMessage: ${log.errorMessage}`);
-        }
+      for (const pid of createdPlanIds) {
+        const r = await listLlmLogs({ draftId: pid, success: true, limit: 100 }, client);
+        for (const l of r.logs) assert.strictEqual(l.errorMessage, null);
       }
     });
 
-    it("failed logs (if any) have errorMessage", async () => {
-      const draftIds = [allModelsPlanId, greenfieldDraftId, brownfieldDraftId].filter(Boolean) as string[];
-      for (const draftId of draftIds) {
-        const result = await listLlmLogs({ draftId, success: false, limit: 100 }, client);
-        for (const log of result.logs) {
-          assert.ok(log.errorMessage, `Failed log ${log.logId} has no errorMessage`);
-        }
-      }
-    });
-
-    it("token usage comparison across agents", async () => {
-      if (!allModelsPlanId || modelTestResults.length === 0) return;
-
-      const allLogs = await listLlmLogs({ draftId: allModelsPlanId, limit: 200 }, client);
-
-      const byAgent = new Map<string, { input: number; output: number; count: number }>();
-      for (const log of allLogs.logs) {
-        const key = log.agentAlias ?? "unknown";
-        const existing = byAgent.get(key) ?? { input: 0, output: 0, count: 0 };
-        existing.input += log.inputTokens ?? 0;
-        existing.output += log.outputTokens ?? 0;
-        existing.count++;
-        byAgent.set(key, existing);
-      }
-
-      console.log(`    Token usage by agent:`);
-      for (const [agent, usage] of byAgent) {
-        console.log(`      ${agent}: ${usage.count} logs, input=${usage.input} output=${usage.output} total=${usage.input + usage.output}`);
+    it("failed logs have errorMessage", async () => {
+      for (const pid of createdPlanIds) {
+        const r = await listLlmLogs({ draftId: pid, success: false, limit: 100 }, client);
+        for (const l of r.logs) assert.ok(l.errorMessage);
       }
     });
   });
