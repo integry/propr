@@ -6,6 +6,7 @@ import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
 import KnowledgeBaseSection from './KnowledgeBaseSection';
 import { useSettingsState } from './useSettingsState';
+import { API_BASE_URL } from '../../api/proprApi';
 
 const SettingsPage: React.FC = () => {
   useDocumentTitle('Settings');
@@ -183,6 +184,7 @@ const SettingsPage: React.FC = () => {
                 <div className="space-y-1.5 font-mono text-[11px] text-gray-600 bg-white rounded border border-gray-200 p-3">
                   <div className="text-gray-400"># Install & authenticate</div>
                   <div>npm install -g @propr/cli</div>
+                  <div>propr remote {API_BASE_URL || window.location.origin}</div>
                   <div>propr login</div>
                   <div>propr use owner/repo</div>
                   <div className="mt-2 text-gray-400"># Create a plan</div>
