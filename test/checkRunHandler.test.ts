@@ -305,6 +305,180 @@ describe('areAllChecksPassing', () => {
         const result = await areAllChecksPassing('owner', 'repo', 'sha123');
         assert.strictEqual(result, false);
     });
+
+    test('returns true when all checks are skipped', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'Optional CI', status: 'completed', conclusion: 'skipped' },
+                    { name: 'Optional Lint', status: 'completed', conclusion: 'skipped' }
+                ]
+            }
+        }));
+
+        const result = await areAllChecksPassing('owner', 'repo', 'sha123');
+        assert.strictEqual(result, true);
+    });
+
+    test('returns true with single successful check', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'CI', status: 'completed', conclusion: 'success' }
+                ]
+            }
+        }));
+
+        const result = await areAllChecksPassing('owner', 'repo', 'sha123');
+        assert.strictEqual(result, true);
+    });
+
+    test('returns false when any check has queued status', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'CI', status: 'completed', conclusion: 'success' },
+                    { name: 'Deploy', status: 'queued', conclusion: null }
+                ]
+            }
+        }));
+
+        const result = await areAllChecksPassing('owner', 'repo', 'sha123');
+        assert.strictEqual(result, false);
+    });
+
+    test('returns false when any check has cancelled conclusion', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'CI', status: 'completed', conclusion: 'success' },
+                    { name: 'Build', status: 'completed', conclusion: 'cancelled' }
+                ]
+            }
+        }));
+
+        const result = await areAllChecksPassing('owner', 'repo', 'sha123');
+        assert.strictEqual(result, false);
+    });
+
+    test('returns false when any check has neutral conclusion', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'CI', status: 'completed', conclusion: 'success' },
+                    { name: 'Code Quality', status: 'completed', conclusion: 'neutral' }
+                ]
+            }
+        }));
+
+        const result = await areAllChecksPassing('owner', 'repo', 'sha123');
+        assert.strictEqual(result, false);
+    });
+
+    test('returns false when any check has timed_out conclusion', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'CI', status: 'completed', conclusion: 'success' },
+                    { name: 'Integration', status: 'completed', conclusion: 'timed_out' }
+                ]
+            }
+        }));
+
+        const result = await areAllChecksPassing('owner', 'repo', 'sha123');
+        assert.strictEqual(result, false);
+    });
+
+    test('returns false when any check has action_required conclusion', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'CI', status: 'completed', conclusion: 'success' },
+                    { name: 'Security Scan', status: 'completed', conclusion: 'action_required' }
+                ]
+            }
+        }));
+
+        const result = await areAllChecksPassing('owner', 'repo', 'sha123');
+        assert.strictEqual(result, false);
+    });
+
+    test('returns false when any check has stale conclusion', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'CI', status: 'completed', conclusion: 'success' },
+                    { name: 'Old Check', status: 'completed', conclusion: 'stale' }
+                ]
+            }
+        }));
+
+        const result = await areAllChecksPassing('owner', 'repo', 'sha123');
+        assert.strictEqual(result, false);
+    });
+
+    test('correctly aggregates many checks with mixed success/skipped', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+                    { name: 'Integration Tests', status: 'completed', conclusion: 'success' },
+                    { name: 'E2E Tests', status: 'completed', conclusion: 'skipped' },
+                    { name: 'Lint', status: 'completed', conclusion: 'success' },
+                    { name: 'Type Check', status: 'completed', conclusion: 'success' },
+                    { name: 'Optional Coverage', status: 'completed', conclusion: 'skipped' }
+                ]
+            }
+        }));
+
+        const result = await areAllChecksPassing('owner', 'repo', 'sha123');
+        assert.strictEqual(result, true);
+    });
+
+    test('returns false when one check among many fails', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+                    { name: 'Integration Tests', status: 'completed', conclusion: 'success' },
+                    { name: 'E2E Tests', status: 'completed', conclusion: 'failure' },
+                    { name: 'Lint', status: 'completed', conclusion: 'success' },
+                    { name: 'Type Check', status: 'completed', conclusion: 'success' }
+                ]
+            }
+        }));
+
+        const result = await areAllChecksPassing('owner', 'repo', 'sha123');
+        assert.strictEqual(result, false);
+    });
+
+    test('returns false when one check among many is in_progress', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                check_runs: [
+                    { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+                    { name: 'Integration Tests', status: 'completed', conclusion: 'success' },
+                    { name: 'E2E Tests', status: 'in_progress', conclusion: null },
+                    { name: 'Lint', status: 'completed', conclusion: 'success' },
+                    { name: 'Type Check', status: 'completed', conclusion: 'success' }
+                ]
+            }
+        }));
+
+        const result = await areAllChecksPassing('owner', 'repo', 'sha123');
+        assert.strictEqual(result, false);
+    });
 });
 
 // ============= getCurrentPRHead Tests =============
