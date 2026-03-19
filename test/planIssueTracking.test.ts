@@ -2067,3 +2067,775 @@ describe('handlePlanPRCommentTracking', () => {
         });
     });
 });
+
+/**
+ * Interface representing a plan issue for triggerNextPendingIssue testing.
+ */
+interface MockPlanIssueForTrigger {
+    draft_id: string;
+    repository: string;
+    issue_number: number;
+    status: PlanIssueStatus;
+    pr_number?: number;
+}
+
+/**
+ * Test context for triggerNextPendingIssue tests.
+ * Tracks mock function calls and allows verifying behavior.
+ */
+interface TriggerNextPendingIssueTestContext {
+    getPlanIssuesByDraftCalls: Array<{ draftId: string }>;
+    addLabelsCalls: Array<{ owner: string; repo: string; issueNumber: number; labels: string[] }>;
+    loggedDebug: Array<Record<string, unknown>>;
+    loggedInfo: Array<Record<string, unknown>>;
+    loggedWarnings: Array<Record<string, unknown>>;
+}
+
+/**
+ * Creates a fresh test context for triggerNextPendingIssue tests.
+ */
+function createTriggerNextPendingIssueTestContext(): TriggerNextPendingIssueTestContext {
+    return {
+        getPlanIssuesByDraftCalls: [],
+        addLabelsCalls: [],
+        loggedDebug: [],
+        loggedInfo: [],
+        loggedWarnings: []
+    };
+}
+
+/**
+ * Simulates the core logic of triggerNextPendingIssue for isolated unit testing.
+ * This is a pure function that replicates the handler's behavior without
+ * external dependencies (database, GitHub API, logging module initialization).
+ *
+ * The original function is at: packages/core/src/webhook/planIssueTracking.ts:278
+ */
+function simulateTriggerNextPendingIssue(
+    draftId: string,
+    repository: string,
+    epicLabel: string | undefined,
+    context: TriggerNextPendingIssueTestContext,
+    mockDependencies: {
+        getPlanIssuesByDraft: (draftId: string) => MockPlanIssueForTrigger[];
+        processingLabels?: string[];
+    }
+): { triggered: boolean; reason?: string; issueNumber?: number; labels?: string[] } {
+    // Record the call to getPlanIssuesByDraft
+    context.getPlanIssuesByDraftCalls.push({ draftId });
+
+    try {
+        // Get all issues in the same plan
+        const planIssues = mockDependencies.getPlanIssuesByDraft(draftId);
+
+        // Check if there are any issues currently in progress
+        const inProgressStatuses = ['processing', 'under_review', 'in_refinement', 'refinement_processing'];
+        const hasInProgressIssue = planIssues.some(issue => inProgressStatuses.includes(issue.status));
+
+        if (hasInProgressIssue) {
+            const inProgressIssues = planIssues.filter(issue => inProgressStatuses.includes(issue.status));
+            context.loggedDebug.push({
+                draftId,
+                inProgressIssues: inProgressIssues.map(i => ({ number: i.issue_number, status: i.status }))
+            });
+            return { triggered: false, reason: 'Issues still in progress' };
+        }
+
+        // Find the next pending issue
+        const nextPending = planIssues.find(issue => issue.status === 'pending');
+        if (!nextPending) {
+            context.loggedDebug.push({ draftId, reason: 'No more pending issues in plan' });
+            return { triggered: false, reason: 'No pending issues' };
+        }
+
+        const [owner, repo] = repository.split('/');
+        const processingLabels = mockDependencies.processingLabels || ['AI'];
+        const primaryLabel = processingLabels[0] || 'AI';
+
+        // Build labels list: processing label, auto-merge, and epic label if present
+        const labelsToAdd = [primaryLabel, 'auto-merge'];
+        if (epicLabel) {
+            labelsToAdd.push(epicLabel);
+        }
+
+        context.loggedInfo.push({
+            draftId,
+            nextIssueNumber: nextPending.issue_number,
+            labels: labelsToAdd
+        });
+
+        // Record the GitHub API call to add labels
+        context.addLabelsCalls.push({
+            owner,
+            repo,
+            issueNumber: nextPending.issue_number,
+            labels: labelsToAdd
+        });
+
+        context.loggedInfo.push({
+            draftId,
+            issueNumber: nextPending.issue_number,
+            labels: labelsToAdd,
+            message: 'Added processing labels to next pending issue'
+        });
+
+        return {
+            triggered: true,
+            issueNumber: nextPending.issue_number,
+            labels: labelsToAdd
+        };
+    } catch (error) {
+        context.loggedWarnings.push({
+            draftId,
+            error: (error as Error).message
+        });
+        return { triggered: false, reason: 'Error occurred' };
+    }
+}
+
+describe('triggerNextPendingIssue', () => {
+    describe('finds and labels next pending issue', () => {
+        test('triggers next pending issue when all previous issues are merged', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'pending' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 4, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, true);
+            assert.strictEqual(result.issueNumber, 3);
+            assert.deepStrictEqual(result.labels, ['AI', 'auto-merge']);
+            assert.strictEqual(context.addLabelsCalls.length, 1);
+            assert.deepStrictEqual(context.addLabelsCalls[0], {
+                owner: 'owner',
+                repo: 'repo',
+                issueNumber: 3,
+                labels: ['AI', 'auto-merge']
+            });
+        });
+
+        test('triggers first pending issue when no issues have been processed yet', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-abc', repository: 'test/project', issue_number: 10, status: 'pending' },
+                { draft_id: 'draft-abc', repository: 'test/project', issue_number: 11, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-abc',
+                'test/project',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, true);
+            assert.strictEqual(result.issueNumber, 10);
+        });
+
+        test('triggers pending issue with custom processing labels', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-xyz', repository: 'org/app', issue_number: 100, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-xyz',
+                'org/app',
+                undefined,
+                context,
+                {
+                    getPlanIssuesByDraft: () => planIssues,
+                    processingLabels: ['auto-fix', 'bot-task']
+                }
+            );
+
+            assert.strictEqual(result.triggered, true);
+            assert.deepStrictEqual(result.labels, ['auto-fix', 'auto-merge']);
+        });
+
+        test('uses AI as default when processingLabels is empty array', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-xyz', repository: 'org/app', issue_number: 100, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-xyz',
+                'org/app',
+                undefined,
+                context,
+                {
+                    getPlanIssuesByDraft: () => planIssues,
+                    processingLabels: []
+                }
+            );
+
+            assert.strictEqual(result.triggered, true);
+            assert.deepStrictEqual(result.labels, ['AI', 'auto-merge']);
+        });
+    });
+
+    describe('skips when issues are already in progress', () => {
+        test('skips when there is an issue in processing status', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'processing' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, false);
+            assert.strictEqual(result.reason, 'Issues still in progress');
+            assert.strictEqual(context.addLabelsCalls.length, 0);
+            assert.strictEqual(context.loggedDebug.length, 1);
+            assert.deepStrictEqual(context.loggedDebug[0].inProgressIssues, [{ number: 2, status: 'processing' }]);
+        });
+
+        test('skips when there is an issue under_review', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'under_review', pr_number: 50 },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, false);
+            assert.strictEqual(result.reason, 'Issues still in progress');
+        });
+
+        test('skips when there is an issue in_refinement', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'in_refinement' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, false);
+            assert.strictEqual(result.reason, 'Issues still in progress');
+        });
+
+        test('skips when there is an issue in refinement_processing', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'refinement_processing' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, false);
+            assert.strictEqual(result.reason, 'Issues still in progress');
+        });
+
+        test('logs all in-progress issues when multiple are found', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'processing' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'under_review' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, false);
+            assert.strictEqual(context.loggedDebug.length, 1);
+            assert.deepStrictEqual(context.loggedDebug[0].inProgressIssues, [
+                { number: 1, status: 'processing' },
+                { number: 2, status: 'under_review' }
+            ]);
+        });
+
+        test('does not consider merged status as in-progress', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, true);
+            assert.strictEqual(result.issueNumber, 3);
+        });
+
+        test('does not consider closed status as in-progress', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'closed' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, true);
+            assert.strictEqual(result.issueNumber, 3);
+        });
+    });
+
+    describe('preserves epic label when triggering next', () => {
+        test('adds epic label to labels list when epicLabel is provided', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                'epic:feature-xyz',
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, true);
+            assert.deepStrictEqual(result.labels, ['AI', 'auto-merge', 'epic:feature-xyz']);
+            assert.strictEqual(context.addLabelsCalls.length, 1);
+            assert.deepStrictEqual(context.addLabelsCalls[0].labels, ['AI', 'auto-merge', 'epic:feature-xyz']);
+        });
+
+        test('does not add epic label when epicLabel is undefined', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, true);
+            assert.deepStrictEqual(result.labels, ['AI', 'auto-merge']);
+        });
+
+        test('handles empty string epic label (does not add it)', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                '',
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            // Empty string is falsy, so it won't be added
+            assert.strictEqual(result.triggered, true);
+            assert.deepStrictEqual(result.labels, ['AI', 'auto-merge']);
+        });
+
+        test('preserves epic label with special characters', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                'epic:v2.0-auth-overhaul',
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, true);
+            assert.deepStrictEqual(result.labels, ['AI', 'auto-merge', 'epic:v2.0-auth-overhaul']);
+        });
+
+        test('combines custom processing labels with epic label', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                'epic:refactor',
+                context,
+                {
+                    getPlanIssuesByDraft: () => planIssues,
+                    processingLabels: ['bot-process']
+                }
+            );
+
+            assert.strictEqual(result.triggered, true);
+            assert.deepStrictEqual(result.labels, ['bot-process', 'auto-merge', 'epic:refactor']);
+        });
+    });
+
+    describe('adds auto-merge label', () => {
+        test('always includes auto-merge label in labels list', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, true);
+            assert.ok(result.labels?.includes('auto-merge'));
+        });
+
+        test('auto-merge is second label after processing label', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.labels?.[0], 'AI');
+            assert.strictEqual(result.labels?.[1], 'auto-merge');
+        });
+    });
+
+    describe('does nothing when no pending issues remain', () => {
+        test('returns early when all issues are merged', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'merged' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, false);
+            assert.strictEqual(result.reason, 'No pending issues');
+            assert.strictEqual(context.addLabelsCalls.length, 0);
+        });
+
+        test('returns early when all issues are closed', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'closed' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'closed' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, false);
+            assert.strictEqual(result.reason, 'No pending issues');
+        });
+
+        test('returns early when plan has empty issue list', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => [] }
+            );
+
+            assert.strictEqual(result.triggered, false);
+            assert.strictEqual(result.reason, 'No pending issues');
+        });
+
+        test('returns early when all issues are in mixed terminal states', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'closed' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'merged' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result.triggered, false);
+            assert.strictEqual(result.reason, 'No pending issues');
+        });
+    });
+
+    describe('handles errors gracefully', () => {
+        test('catches and logs errors from getPlanIssuesByDraft', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                {
+                    getPlanIssuesByDraft: () => {
+                        throw new Error('Database connection failed');
+                    }
+                }
+            );
+
+            assert.strictEqual(result.triggered, false);
+            assert.strictEqual(result.reason, 'Error occurred');
+            assert.strictEqual(context.loggedWarnings.length, 1);
+            assert.strictEqual(context.loggedWarnings[0].error, 'Database connection failed');
+            assert.strictEqual(context.loggedWarnings[0].draftId, 'draft-123');
+        });
+    });
+
+    describe('GitHub API call verification', () => {
+        test('correctly extracts owner and repo from repository string', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'my-org/my-repo', issue_number: 42, status: 'pending' }
+            ];
+
+            simulateTriggerNextPendingIssue(
+                'draft-123',
+                'my-org/my-repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(context.addLabelsCalls.length, 1);
+            assert.strictEqual(context.addLabelsCalls[0].owner, 'my-org');
+            assert.strictEqual(context.addLabelsCalls[0].repo, 'my-repo');
+        });
+
+        test('handles repository names with hyphens and underscores', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'my_org-name/repo-name_v2', issue_number: 99, status: 'pending' }
+            ];
+
+            simulateTriggerNextPendingIssue(
+                'draft-123',
+                'my_org-name/repo-name_v2',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(context.addLabelsCalls[0].owner, 'my_org-name');
+            assert.strictEqual(context.addLabelsCalls[0].repo, 'repo-name_v2');
+        });
+    });
+
+    describe('logging behavior', () => {
+        test('logs info when triggering next issue', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-xyz', repository: 'org/project', issue_number: 77, status: 'pending' }
+            ];
+
+            simulateTriggerNextPendingIssue(
+                'draft-xyz',
+                'org/project',
+                'epic:test',
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(context.loggedInfo.length, 2);
+            // First log is about triggering
+            assert.strictEqual(context.loggedInfo[0].draftId, 'draft-xyz');
+            assert.strictEqual(context.loggedInfo[0].nextIssueNumber, 77);
+            assert.deepStrictEqual(context.loggedInfo[0].labels, ['AI', 'auto-merge', 'epic:test']);
+            // Second log is about success
+            assert.strictEqual(context.loggedInfo[1].issueNumber, 77);
+        });
+
+        test('logs debug when skipping due to in-progress issues', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-xyz', repository: 'org/project', issue_number: 1, status: 'processing' },
+                { draft_id: 'draft-xyz', repository: 'org/project', issue_number: 2, status: 'pending' }
+            ];
+
+            simulateTriggerNextPendingIssue(
+                'draft-xyz',
+                'org/project',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(context.loggedDebug.length, 1);
+            assert.strictEqual(context.loggedDebug[0].draftId, 'draft-xyz');
+            assert.ok(context.loggedDebug[0].inProgressIssues);
+        });
+
+        test('logs debug when no pending issues found', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-xyz', repository: 'org/project', issue_number: 1, status: 'merged' }
+            ];
+
+            simulateTriggerNextPendingIssue(
+                'draft-xyz',
+                'org/project',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(context.loggedDebug.length, 1);
+            assert.strictEqual(context.loggedDebug[0].draftId, 'draft-xyz');
+            assert.strictEqual(context.loggedDebug[0].reason, 'No more pending issues in plan');
+        });
+    });
+
+    describe('issue ordering', () => {
+        test('triggers the first pending issue in array order', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 5, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 10, status: 'pending' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'pending' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 7, status: 'pending' }
+            ];
+
+            const result = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            // Should trigger issue 10 (first pending in array order)
+            assert.strictEqual(result.issueNumber, 10);
+        });
+    });
+
+    describe('sequential processing guarantee', () => {
+        test('prevents parallel processing by checking in-progress status first', () => {
+            const context = createTriggerNextPendingIssueTestContext();
+            const planIssues: MockPlanIssueForTrigger[] = [
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 1, status: 'merged' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 2, status: 'under_review' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 3, status: 'pending' },
+                { draft_id: 'draft-123', repository: 'owner/repo', issue_number: 4, status: 'pending' }
+            ];
+
+            // First call with in-progress issue - should skip
+            const result1 = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result1.triggered, false);
+            assert.strictEqual(result1.reason, 'Issues still in progress');
+
+            // After issue 2 merges, update the status
+            planIssues[1].status = 'merged';
+
+            // Second call - should now trigger issue 3
+            const result2 = simulateTriggerNextPendingIssue(
+                'draft-123',
+                'owner/repo',
+                undefined,
+                context,
+                { getPlanIssuesByDraft: () => planIssues }
+            );
+
+            assert.strictEqual(result2.triggered, true);
+            assert.strictEqual(result2.issueNumber, 3);
+        });
+    });
+});
