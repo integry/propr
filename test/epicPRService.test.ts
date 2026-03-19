@@ -292,63 +292,248 @@ describe('generateEpicBranchName', () => {
 
 describe('isEpicBranch', () => {
 
-    test('returns true for valid epic branch format', () => {
-        assert.strictEqual(isEpicBranch('800-epic-short-name-x7y'), true);
+    describe('valid epic branch patterns', () => {
+
+        test('returns true for valid epic branch format', () => {
+            assert.strictEqual(isEpicBranch('800-epic-short-name-x7y'), true);
+        });
+
+        test('returns true for epic branch with numeric words', () => {
+            assert.strictEqual(isEpicBranch('123-epic-v2-release-abc'), true);
+        });
+
+        test('returns true for epic branch with all numeric suffix', () => {
+            assert.strictEqual(isEpicBranch('100-epic-test-plan-999'), true);
+        });
+
+        test('returns true for single digit issue ID', () => {
+            assert.strictEqual(isEpicBranch('1-epic-test-plan-abc'), true);
+        });
+
+        test('returns true for large issue ID', () => {
+            assert.strictEqual(isEpicBranch('999999-epic-test-plan-xyz'), true);
+        });
+
+        test('returns true for mixed alphanumeric words', () => {
+            assert.strictEqual(isEpicBranch('42-epic-v1beta-release2-abc'), true);
+        });
+
+        test('returns true for all-numeric words', () => {
+            assert.strictEqual(isEpicBranch('100-epic-123-456-abc'), true);
+        });
+
+        test('returns true for minimum length words', () => {
+            assert.strictEqual(isEpicBranch('1-epic-a-b-xyz'), true);
+        });
+
     });
 
-    test('returns true for epic branch with numeric words', () => {
-        assert.strictEqual(isEpicBranch('123-epic-v2-release-abc'), true);
+    describe('rejects non-epic branches', () => {
+
+        test('returns false for common branch names', () => {
+            assert.strictEqual(isEpicBranch('main'), false);
+            assert.strictEqual(isEpicBranch('master'), false);
+            assert.strictEqual(isEpicBranch('develop'), false);
+            assert.strictEqual(isEpicBranch('staging'), false);
+            assert.strictEqual(isEpicBranch('production'), false);
+        });
+
+        test('returns false for feature branches', () => {
+            assert.strictEqual(isEpicBranch('feature/my-feature'), false);
+            assert.strictEqual(isEpicBranch('feature/123-add-feature'), false);
+        });
+
+        test('returns false for bugfix branches', () => {
+            assert.strictEqual(isEpicBranch('bugfix/fix-something'), false);
+            assert.strictEqual(isEpicBranch('hotfix/urgent-fix'), false);
+        });
+
+        test('returns false for release branches', () => {
+            assert.strictEqual(isEpicBranch('release/v1.0.0'), false);
+            assert.strictEqual(isEpicBranch('release/2024-01'), false);
+        });
+
     });
 
-    test('returns true for epic branch with all numeric suffix', () => {
-        assert.strictEqual(isEpicBranch('100-epic-test-plan-999'), true);
+    describe('rejects malformed epic-like branches', () => {
+
+        test('returns false for missing epic keyword', () => {
+            assert.strictEqual(isEpicBranch('800-short-name-x7y'), false);
+            assert.strictEqual(isEpicBranch('800-feature-short-name-x7y'), false);
+        });
+
+        test('returns false for missing random suffix', () => {
+            assert.strictEqual(isEpicBranch('800-epic-short-name'), false);
+        });
+
+        test('returns false for wrong suffix length', () => {
+            // Suffix too short (2 chars)
+            assert.strictEqual(isEpicBranch('800-epic-short-name-xy'), false);
+            // Suffix too short (1 char)
+            assert.strictEqual(isEpicBranch('800-epic-short-name-x'), false);
+            // Suffix too long (4 chars)
+            assert.strictEqual(isEpicBranch('800-epic-short-name-xyza'), false);
+            // Suffix too long (5 chars)
+            assert.strictEqual(isEpicBranch('800-epic-short-name-xyzab'), false);
+        });
+
+        test('returns false for missing issue ID', () => {
+            assert.strictEqual(isEpicBranch('epic-short-name-xyz'), false);
+        });
+
+        test('returns false for non-numeric issue ID', () => {
+            assert.strictEqual(isEpicBranch('abc-epic-short-name-xyz'), false);
+            assert.strictEqual(isEpicBranch('issue-epic-short-name-xyz'), false);
+        });
+
+        test('returns false for missing words', () => {
+            // Only one word before suffix
+            assert.strictEqual(isEpicBranch('800-epic-name-xyz'), false);
+            // No words at all
+            assert.strictEqual(isEpicBranch('800-epic-xyz'), false);
+        });
+
+        test('returns false for extra segments', () => {
+            assert.strictEqual(isEpicBranch('800-epic-one-two-three-xyz'), false);
+            assert.strictEqual(isEpicBranch('800-epic-a-b-c-d-xyz'), false);
+        });
+
     });
 
-    test('returns false for non-epic branches', () => {
-        assert.strictEqual(isEpicBranch('feature/my-feature'), false);
-        assert.strictEqual(isEpicBranch('main'), false);
-        assert.strictEqual(isEpicBranch('develop'), false);
-        assert.strictEqual(isEpicBranch('bugfix/fix-something'), false);
+    describe('rejects branches with invalid characters', () => {
+
+        test('returns false for uppercase letters in words', () => {
+            assert.strictEqual(isEpicBranch('800-epic-SHORT-name-x7y'), false);
+            assert.strictEqual(isEpicBranch('800-epic-short-NAME-x7y'), false);
+            assert.strictEqual(isEpicBranch('800-epic-Short-Name-x7y'), false);
+        });
+
+        test('returns false for uppercase EPIC keyword', () => {
+            assert.strictEqual(isEpicBranch('800-EPIC-short-name-x7y'), false);
+            assert.strictEqual(isEpicBranch('800-Epic-short-name-x7y'), false);
+        });
+
+        test('returns false for uppercase suffix', () => {
+            assert.strictEqual(isEpicBranch('800-epic-short-name-X7Y'), false);
+            assert.strictEqual(isEpicBranch('800-epic-short-name-XYZ'), false);
+        });
+
+        test('returns false for underscores', () => {
+            assert.strictEqual(isEpicBranch('800-epic-short_name-xyz'), false);
+            assert.strictEqual(isEpicBranch('800_epic-short-name-xyz'), false);
+        });
+
+        test('returns false for dots', () => {
+            assert.strictEqual(isEpicBranch('800-epic-short.name-xyz'), false);
+            assert.strictEqual(isEpicBranch('800.epic-short-name-xyz'), false);
+        });
+
+        test('returns false for slashes', () => {
+            assert.strictEqual(isEpicBranch('800-epic-short/name-xyz'), false);
+            assert.strictEqual(isEpicBranch('800/epic-short-name-xyz'), false);
+        });
+
+        test('returns false for special characters', () => {
+            assert.strictEqual(isEpicBranch('800-epic-short@name-xyz'), false);
+            assert.strictEqual(isEpicBranch('800-epic-short#name-xyz'), false);
+            assert.strictEqual(isEpicBranch('800-epic-short!name-xyz'), false);
+        });
+
     });
 
-    test('returns false for branches with wrong format', () => {
-        // Missing epic keyword
-        assert.strictEqual(isEpicBranch('800-short-name-x7y'), false,
-            'Missing epic keyword');
+    describe('edge cases', () => {
 
-        // Missing random suffix
-        assert.strictEqual(isEpicBranch('800-epic-short-name'), false,
-            'Missing random suffix');
+        test('returns false for empty string', () => {
+            assert.strictEqual(isEpicBranch(''), false);
+        });
 
-        // Wrong suffix length (not 3 chars)
-        assert.strictEqual(isEpicBranch('800-epic-short-name-xy'), false,
-            'Suffix too short');
-        assert.strictEqual(isEpicBranch('800-epic-short-name-xyza'), false,
-            'Suffix too long');
+        test('returns false for whitespace only', () => {
+            assert.strictEqual(isEpicBranch('   '), false);
+            assert.strictEqual(isEpicBranch('\t\n'), false);
+        });
 
-        // Missing issue ID
-        assert.strictEqual(isEpicBranch('epic-short-name-xyz'), false,
-            'Missing issue ID');
+        test('returns false for partial matches at start', () => {
+            // Should not match if there is a prefix
+            assert.strictEqual(isEpicBranch('prefix-800-epic-short-name-xyz'), false);
+        });
+
+        test('returns false for partial matches at end', () => {
+            // Should not match if there is a suffix beyond the random suffix
+            assert.strictEqual(isEpicBranch('800-epic-short-name-xyz-suffix'), false);
+        });
+
+        test('returns false for leading zeros in issue ID', () => {
+            // Leading zeros are technically valid digits but unusual
+            // The pattern accepts them since \d+ matches any digits
+            // This test documents current behavior
+            assert.strictEqual(isEpicBranch('007-epic-short-name-xyz'), true);
+        });
+
+        test('returns false for issue ID of zero', () => {
+            // Zero is a valid digit match for the pattern
+            // This test documents current behavior
+            assert.strictEqual(isEpicBranch('0-epic-short-name-xyz'), true);
+        });
+
     });
 
-    test('returns false for epic branch with uppercase letters', () => {
-        assert.strictEqual(isEpicBranch('800-epic-SHORT-name-x7y'), false);
-        assert.strictEqual(isEpicBranch('800-EPIC-short-name-x7y'), false);
-        assert.strictEqual(isEpicBranch('800-epic-short-name-X7Y'), false);
-    });
+    describe('issue ID extraction integration', () => {
 
-    test('returns false for branches with special characters', () => {
-        assert.strictEqual(isEpicBranch('800-epic-short_name-xyz'), false);
-        assert.strictEqual(isEpicBranch('800-epic-short.name-xyz'), false);
-        assert.strictEqual(isEpicBranch('800-epic-short/name-xyz'), false);
-    });
+        test('valid epic branches allow correct issue ID extraction', () => {
+            const testCases = [
+                { branch: '1-epic-test-plan-abc', expectedId: 1 },
+                { branch: '42-epic-foo-bar-xyz', expectedId: 42 },
+                { branch: '100-epic-short-name-x7y', expectedId: 100 },
+                { branch: '999-epic-v2-release-abc', expectedId: 999 },
+                { branch: '12345-epic-long-name-z9z', expectedId: 12345 },
+                { branch: '999999-epic-max-size-000', expectedId: 999999 },
+            ];
 
-    test('returns false for empty string', () => {
-        assert.strictEqual(isEpicBranch(''), false);
-    });
+            for (const tc of testCases) {
+                // First verify isEpicBranch returns true
+                assert.strictEqual(isEpicBranch(tc.branch), true,
+                    `isEpicBranch should return true for: ${tc.branch}`);
 
-    test('returns false for branch with extra segments', () => {
-        assert.strictEqual(isEpicBranch('800-epic-one-two-three-xyz'), false);
+                // Then verify issue ID can be extracted correctly
+                const extractedId = extractFirstIssueIdFromEpicBranch(tc.branch);
+                assert.strictEqual(extractedId, tc.expectedId,
+                    `Should extract ID ${tc.expectedId} from ${tc.branch}`);
+            }
+        });
+
+        test('invalid branches return null for issue ID extraction', () => {
+            const invalidBranches = [
+                'main',
+                'feature/123-feature',
+                'abc-epic-short-name-xyz',
+                '800-short-name-xyz',
+                '800-epic-short-name',
+            ];
+
+            for (const branch of invalidBranches) {
+                assert.strictEqual(isEpicBranch(branch), false,
+                    `isEpicBranch should return false for: ${branch}`);
+                assert.strictEqual(extractFirstIssueIdFromEpicBranch(branch), null,
+                    `extractFirstIssueIdFromEpicBranch should return null for: ${branch}`);
+            }
+        });
+
+        test('issue ID extraction matches pattern capture group', () => {
+            const branch = '800-epic-short-name-x7y';
+
+            // Verify pattern matches
+            assert.strictEqual(isEpicBranch(branch), true);
+
+            // Get capture groups from pattern
+            const match = branch.match(EPIC_BRANCH_PATTERN);
+            assert.ok(match, 'Should match EPIC_BRANCH_PATTERN');
+
+            // Verify extracted ID matches first capture group
+            const extractedId = extractFirstIssueIdFromEpicBranch(branch);
+            assert.strictEqual(extractedId, parseInt(match![1], 10),
+                'Extracted ID should match pattern capture group');
+        });
+
     });
 
 });
