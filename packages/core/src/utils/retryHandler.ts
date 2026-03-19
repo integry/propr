@@ -58,7 +58,7 @@ export function calculateDelay(attempt: number, config: RetryConfig): number {
  * @param config - Retry configuration
  * @returns Whether the error is retryable
  */
-function isRetryableError(error: Error | unknown, config: RetryConfig): boolean {
+export function isRetryableError(error: Error | unknown, config: RetryConfig): boolean {
     const err = error as ErrorLike;
 
     if (err.code && config.retryableErrors.includes(err.code)) {
