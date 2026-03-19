@@ -59,15 +59,15 @@ export const TaskStepsPreview: React.FC<TaskStepsPreviewProps> = ({
       style={{
         left: timelineRect.right,
         top: stepsTop - 9,
-        minWidth: 280,
-        maxWidth: 400,
+        minWidth: 384,
+        maxWidth: 512,
       }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
       {/* Step titles - aligned with step numbers */}
       <div
-        className="max-h-[600px] overflow-y-auto scrollbar-stealth relative"
+        className="max-h-[800px] overflow-y-auto scrollbar-stealth relative"
       >
         {tasks.map((task, index) => {
           const isActive = index === activeIndex;
