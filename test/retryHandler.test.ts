@@ -1,6 +1,6 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert';
-import { calculateDelay } from '../packages/core/src/utils/retryHandler.js';
+import { calculateDelay, isRetryableError } from '../packages/core/src/utils/retryHandler.js';
 import type { RetryConfig } from '../packages/core/src/utils/retryHandler.js';
 
 /**
@@ -279,6 +279,398 @@ describe('calculateDelay', () => {
             assert.strictEqual(delay2, 2000);  // 500 * 2^2
             assert.strictEqual(delay3, 4000);  // 500 * 2^3
             assert.strictEqual(delay4, 5000);  // 500 * 2^4 = 8000, capped at 5000
+        });
+    });
+});
+
+/**
+ * Unit tests for isRetryableError function
+ *
+ * The isRetryableError function determines if an error should trigger a retry:
+ * - Checks if error.code is in the retryableErrors list
+ * - Checks if error.status is a retryable HTTP status (429, 500, 502, 503, 504)
+ * - Checks error message/toString against retryable patterns
+ */
+describe('isRetryableError', () => {
+    const baseConfig: RetryConfig = {
+        maxAttempts: 3,
+        baseDelay: 1000,
+        maxDelay: 30000,
+        exponentialBase: 2,
+        jitter: false,
+        retryableErrors: [
+            'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND',
+            'NETWORK_ERROR', 'API_RATE_LIMIT', 'TEMPORARY_FAILURE'
+        ]
+    };
+
+    describe('error code matching', () => {
+        test('returns true for ECONNRESET error code', () => {
+            const error = { code: 'ECONNRESET', message: 'Connection reset' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for ECONNREFUSED error code', () => {
+            const error = { code: 'ECONNREFUSED', message: 'Connection refused' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for ETIMEDOUT error code', () => {
+            const error = { code: 'ETIMEDOUT', message: 'Connection timed out' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for ENOTFOUND error code', () => {
+            const error = { code: 'ENOTFOUND', message: 'DNS lookup failed' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for NETWORK_ERROR error code', () => {
+            const error = { code: 'NETWORK_ERROR', message: 'Network error' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for API_RATE_LIMIT error code', () => {
+            const error = { code: 'API_RATE_LIMIT', message: 'Rate limited' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for TEMPORARY_FAILURE error code', () => {
+            const error = { code: 'TEMPORARY_FAILURE', message: 'Temporary failure' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns false for error code not in retryableErrors list', () => {
+            const error = { code: 'ENOENT', message: 'File not found' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('returns false for EPERM error code', () => {
+            const error = { code: 'EPERM', message: 'Permission denied' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('respects custom retryableErrors configuration', () => {
+            const customConfig: RetryConfig = {
+                ...baseConfig,
+                retryableErrors: ['CUSTOM_ERROR']
+            };
+            const error = { code: 'CUSTOM_ERROR', message: 'Custom error' };
+            assert.strictEqual(isRetryableError(error, customConfig), true);
+        });
+
+        test('returns false when error code is not in custom retryableErrors', () => {
+            const customConfig: RetryConfig = {
+                ...baseConfig,
+                retryableErrors: ['CUSTOM_ERROR']
+            };
+            const error = { code: 'ECONNRESET', message: 'Connection reset' };
+            assert.strictEqual(isRetryableError(error, customConfig), false);
+        });
+    });
+
+    describe('HTTP status code handling', () => {
+        test('returns true for 429 Too Many Requests', () => {
+            const error = { status: 429, message: 'Too Many Requests' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for 500 Internal Server Error', () => {
+            const error = { status: 500, message: 'Internal Server Error' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for 502 Bad Gateway', () => {
+            const error = { status: 502, message: 'Bad Gateway' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for 503 Service Unavailable', () => {
+            const error = { status: 503, message: 'Service Unavailable' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for 504 Gateway Timeout', () => {
+            const error = { status: 504, message: 'Gateway Timeout' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns false for 400 Bad Request', () => {
+            const error = { status: 400, message: 'Bad Request' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('returns false for 401 Unauthorized', () => {
+            const error = { status: 401, message: 'Unauthorized' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('returns false for 403 Forbidden', () => {
+            const error = { status: 403, message: 'Forbidden' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('returns false for 404 Not Found', () => {
+            const error = { status: 404, message: 'Not Found' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('returns false for 422 Unprocessable Entity', () => {
+            const error = { status: 422, message: 'Unprocessable Entity' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('returns false for 200 OK (success status)', () => {
+            const error = { status: 200, message: 'OK' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('returns false for 201 Created (success status)', () => {
+            const error = { status: 201, message: 'Created' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('returns false for 301 Moved Permanently', () => {
+            const error = { status: 301, message: 'Moved Permanently' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+    });
+
+    describe('error message pattern matching', () => {
+        test('returns true for rate limit messages', () => {
+            const error = new Error('API rate limit exceeded');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for rate limit messages (case insensitive)', () => {
+            const error = new Error('Rate Limit exceeded');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for timeout messages', () => {
+            const error = new Error('Request timeout');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for network error messages', () => {
+            const error = new Error('Network error occurred');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for connection error messages', () => {
+            const error = new Error('Connection failed');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for temporary error messages', () => {
+            const error = new Error('Temporary error, please retry');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for "try again" messages', () => {
+            const error = new Error('Please try again later');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for authentication failed messages', () => {
+            const error = new Error('Authentication failed');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for invalid username or token messages', () => {
+            const error = new Error('Invalid username or token provided');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for credentials error messages', () => {
+            const error = new Error('Invalid credentials');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for server unavailable messages', () => {
+            const error = new Error('Server is currently unavailable');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for "no server available" messages', () => {
+            const error = new Error('No server is available');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for service unavailable messages', () => {
+            const error = new Error('Service unavailable');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for bad gateway messages', () => {
+            const error = new Error('Bad gateway response');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for GitHub API propagation delay messages', () => {
+            const error = new Error('Could not resolve to a node with the given global ID');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns true for unprocessable node messages', () => {
+            const error = new Error('Unprocessable node data');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns false for generic error without retryable patterns', () => {
+            const error = new Error('Something went wrong');
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('returns false for file not found errors', () => {
+            const error = new Error('File not found');
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('returns false for syntax errors', () => {
+            const error = new Error('Syntax error in configuration');
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('returns false for validation errors', () => {
+            const error = new Error('Validation failed: invalid input');
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+    });
+
+    describe('error toString matching', () => {
+        test('matches patterns in error toString output', () => {
+            const error = {
+                message: 'Some error',
+                toString: () => 'Error: Connection refused by server'
+            };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('matches network pattern in toString', () => {
+            const error = {
+                message: '',
+                toString: () => 'NetworkError: Failed to fetch'
+            };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+    });
+
+    describe('edge cases', () => {
+        test('handles null error gracefully', () => {
+            assert.strictEqual(isRetryableError(null, baseConfig), false);
+        });
+
+        test('handles undefined error gracefully', () => {
+            assert.strictEqual(isRetryableError(undefined, baseConfig), false);
+        });
+
+        test('handles error with no properties', () => {
+            const error = {};
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('handles error with undefined message', () => {
+            const error = { code: undefined, status: undefined, message: undefined };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('handles error with empty message', () => {
+            const error = { message: '' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('prioritizes error code over status', () => {
+            // If code matches, returns true even if status would be non-retryable
+            const error = { code: 'ECONNRESET', status: 404, message: 'Error' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('falls back to status when code does not match', () => {
+            const error = { code: 'UNKNOWN', status: 503, message: 'Service Unavailable' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('handles actual Error instance', () => {
+            const error = new Error('Connection timeout occurred');
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('handles Error with code property', () => {
+            const error = new Error('Connection reset');
+            (error as Error & { code: string }).code = 'ECONNRESET';
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('handles empty retryableErrors configuration', () => {
+            const customConfig: RetryConfig = {
+                ...baseConfig,
+                retryableErrors: []
+            };
+            const error = { code: 'ECONNRESET', message: 'Connection reset' };
+            // Should still return true based on message pattern
+            assert.strictEqual(isRetryableError(error, customConfig), true);
+        });
+
+        test('handles string thrown as error', () => {
+            const error = 'Network connection failed';
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns false for non-matching string error', () => {
+            const error = 'Invalid parameter provided';
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+    });
+
+    describe('network error scenarios (acceptance criteria)', () => {
+        test('retries ECONNRESET network error', () => {
+            const error = { code: 'ECONNRESET' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('retries ECONNREFUSED network error', () => {
+            const error = { code: 'ECONNREFUSED' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('retries ETIMEDOUT network error', () => {
+            const error = { code: 'ETIMEDOUT' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('retries ENOTFOUND DNS error', () => {
+            const error = { code: 'ENOTFOUND' };
+            assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('does not retry 404 Not Found', () => {
+            const error = { status: 404, message: 'Not Found' };
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('handles API status codes correctly - retryable statuses', () => {
+            const retryableStatuses = [429, 500, 502, 503, 504];
+            for (const status of retryableStatuses) {
+                const error = { status, message: `HTTP ${status}` };
+                assert.strictEqual(
+                    isRetryableError(error, baseConfig),
+                    true,
+                    `Status ${status} should be retryable`
+                );
+            }
+        });
+
+        test('handles API status codes correctly - non-retryable statuses', () => {
+            const nonRetryableStatuses = [400, 401, 403, 404, 405, 409, 422];
+            for (const status of nonRetryableStatuses) {
+                const error = { status, message: `HTTP ${status}` };
+                assert.strictEqual(
+                    isRetryableError(error, baseConfig),
+                    false,
+                    `Status ${status} should not be retryable`
+                );
+            }
         });
     });
 });
