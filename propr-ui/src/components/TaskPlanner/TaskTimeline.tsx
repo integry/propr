@@ -247,7 +247,7 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   return (
     <div
       ref={timelineRef}
-      className="sticky top-0 h-full w-24 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 pl-4"
+      className="sticky top-0 h-full w-24 flex-shrink-0 bg-gray-50 border-r border-gray-200 py-4 pl-4 overflow-y-auto min-h-0"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
