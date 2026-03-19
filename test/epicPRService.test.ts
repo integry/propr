@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
 /**
- * Unit tests for generateEpicBranchName and related functions
+ * Unit tests for generateEpicBranchName and related pure functions
  *
  * These tests validate:
  * - Plan name truncation to max 2 words
@@ -10,6 +10,8 @@ import assert from 'node:assert';
  * - Valid git branch name format
  * - EPIC_BRANCH_PATTERN regex matching
  * - Issue ID extraction
+ *
+ * For ensureEpicPR tests (async function with mocking), see ensureEpicPR.test.ts
  */
 
 // Import the module under test directly (no mocking needed for these pure functions)
