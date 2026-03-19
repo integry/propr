@@ -650,34 +650,375 @@ describe('performPostProcessing - Integration with Mocks', () => {
 });
 
 describe('handlePRValidation - Core Logic', () => {
-    test('should validate PR and return updated result when PR is found', async () => {
-        // This tests the logic of handlePRValidation
-        const prValidationResult = {
-            isValid: true,
-            pr: {
-                number: 42,
-                url: 'https://github.com/test/repo/pull/42',
-                title: 'Test PR'
-            }
-        };
+    // Type definitions for PR validation options
+    interface PRValidationOptions {
+        claudeResult: ClaudeCodeResponse | null;
+        worktreeInfo: WorktreeInfo | undefined;
+        issueRef: IssueJobData;
+        octokit: Octokit;
+        postProcessingResult: PostProcessingResult | null;
+        commitResult: CommitResult | null;
+        repoValidation: RepoValidationResult;
+        AI_PROCESSING_TAG: string;
+        AI_DONE_TAG: string;
+        correlationId: string;
+        correlatedLogger: Logger;
+        jobId: string | undefined;
+    }
 
-        const postProcessingResult: PostProcessingResult = {
-            success: false,
-            pr: null,
-            updatedLabels: []
+    interface PRValidationResult {
+        isValid: boolean;
+        pr?: {
+            number: number;
+            url: string;
+            title: string;
+            state?: string;
         };
+        error?: string;
+    }
 
-        // When validation finds a PR that wasn't in postProcessingResult
-        if (prValidationResult.isValid && !postProcessingResult.pr) {
-            const updatedResult: PostProcessingResult = {
+    // Pure function that simulates handlePRValidation logic for testing
+    function handlePRValidationLogic(
+        options: PRValidationOptions,
+        prValidationResult: PRValidationResult
+    ): { result: PostProcessingResult | null; shouldRetry: boolean; shouldLog: boolean } {
+        const { worktreeInfo, postProcessingResult, claudeResult, commitResult } = options;
+
+        // Early return if no worktreeInfo
+        if (!worktreeInfo) {
+            return { result: postProcessingResult, shouldRetry: false, shouldLog: false };
+        }
+
+        // If validation found a PR that wasn't in postProcessingResult
+        if (prValidationResult.isValid && !postProcessingResult?.pr) {
+            return {
+                result: {
+                    success: true,
+                    pr: prValidationResult.pr ? {
+                        number: prValidationResult.pr.number,
+                        url: prValidationResult.pr.url,
+                        title: prValidationResult.pr.title
+                    } : null,
+                    updatedLabels: postProcessingResult?.updatedLabels || []
+                },
+                shouldRetry: false,
+                shouldLog: false
+            };
+        }
+
+        // Determine if retry is needed
+        // Only retry PR creation if:
+        // 1. PR validation failed (no PR found)
+        // 2. Claude execution was successful
+        // 3. There were actual commits (commitResult !== null)
+        if (!prValidationResult.isValid && claudeResult?.success && commitResult !== null) {
+            return { result: postProcessingResult, shouldRetry: true, shouldLog: false };
+        }
+
+        // Log but don't retry if validation failed, Claude succeeded, but no commits
+        if (!prValidationResult.isValid && claudeResult?.success && commitResult === null) {
+            return { result: postProcessingResult, shouldRetry: false, shouldLog: true };
+        }
+
+        return { result: postProcessingResult, shouldRetry: false, shouldLog: false };
+    }
+
+    // Helper to create default test options
+    function createDefaultOptions(): PRValidationOptions {
+        return {
+            claudeResult: { success: true },
+            worktreeInfo: { worktreePath: '/tmp/worktree', branchName: 'feature-branch' },
+            issueRef: { repoOwner: 'testowner', repoName: 'testrepo', number: 123 },
+            octokit: createMockOctokit(),
+            postProcessingResult: { success: false, pr: null, updatedLabels: [] },
+            commitResult: { commitHash: 'abc123', filesChanged: 1, message: 'test commit' },
+            repoValidation: { isValid: true, repoData: { defaultBranch: 'main' } },
+            AI_PROCESSING_TAG: 'AI-processing',
+            AI_DONE_TAG: 'AI-done',
+            correlationId: 'test-correlation-id',
+            correlatedLogger: createMockLogger(),
+            jobId: 'job-123'
+        };
+    }
+
+    describe('returns existing result', () => {
+        test('should return postProcessingResult when worktreeInfo is undefined', () => {
+            const options = createDefaultOptions();
+            options.worktreeInfo = undefined;
+            options.postProcessingResult = {
                 success: true,
-                pr: prValidationResult.pr,
-                updatedLabels: postProcessingResult.updatedLabels
+                pr: { number: 42, url: 'https://github.com/test/repo/pull/42', title: 'Test PR' },
+                updatedLabels: ['AI-done']
             };
 
-            assert.strictEqual(updatedResult.success, true);
-            assert.strictEqual(updatedResult.pr?.number, 42);
-        }
+            const prValidationResult: PRValidationResult = { isValid: true };
+            const { result, shouldRetry, shouldLog } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.deepStrictEqual(result, options.postProcessingResult);
+            assert.strictEqual(shouldRetry, false);
+            assert.strictEqual(shouldLog, false);
+        });
+
+        test('should return null postProcessingResult when worktreeInfo is undefined and postProcessingResult is null', () => {
+            const options = createDefaultOptions();
+            options.worktreeInfo = undefined;
+            options.postProcessingResult = null;
+
+            const prValidationResult: PRValidationResult = { isValid: true };
+            const { result, shouldRetry } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.strictEqual(result, null);
+            assert.strictEqual(shouldRetry, false);
+        });
+
+        test('should return existing postProcessingResult when validation passes and PR already exists', () => {
+            const options = createDefaultOptions();
+            options.postProcessingResult = {
+                success: true,
+                pr: { number: 99, url: 'https://github.com/test/repo/pull/99', title: 'Existing PR' },
+                updatedLabels: ['AI-done']
+            };
+
+            // Validation passes, PR exists in postProcessingResult
+            const prValidationResult: PRValidationResult = {
+                isValid: true,
+                pr: { number: 99, url: 'https://github.com/test/repo/pull/99', title: 'Existing PR' }
+            };
+
+            const { result, shouldRetry } = handlePRValidationLogic(options, prValidationResult);
+
+            // Since postProcessingResult.pr exists, we go to the retry check block
+            // Validation is valid, so no retry needed
+            assert.deepStrictEqual(result, options.postProcessingResult);
+            assert.strictEqual(shouldRetry, false);
+        });
+    });
+
+    describe('skips retry on null commitResult', () => {
+        test('should not retry when commitResult is null even if validation failed and Claude succeeded', () => {
+            const options = createDefaultOptions();
+            options.commitResult = null; // No commits made
+            options.claudeResult = { success: true };
+
+            const prValidationResult: PRValidationResult = {
+                isValid: false,
+                error: 'No PR found'
+            };
+
+            const { result, shouldRetry, shouldLog } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.strictEqual(shouldRetry, false);
+            assert.strictEqual(shouldLog, true); // Should log the "no code changes made" message
+            assert.deepStrictEqual(result, options.postProcessingResult);
+        });
+
+        test('should return postProcessingResult unchanged when no retry needed due to null commitResult', () => {
+            const options = createDefaultOptions();
+            options.commitResult = null;
+            options.claudeResult = { success: true };
+            options.postProcessingResult = {
+                success: false,
+                pr: null,
+                updatedLabels: ['AI-processing']
+            };
+
+            const prValidationResult: PRValidationResult = { isValid: false };
+            const { result } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.deepStrictEqual(result, options.postProcessingResult);
+        });
+
+        test('should not log when commitResult is null and claudeResult is not successful', () => {
+            const options = createDefaultOptions();
+            options.commitResult = null;
+            options.claudeResult = { success: false };
+
+            const prValidationResult: PRValidationResult = { isValid: false };
+            const { shouldRetry, shouldLog } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.strictEqual(shouldRetry, false);
+            assert.strictEqual(shouldLog, false);
+        });
+    });
+
+    describe('retries PR creation', () => {
+        test('should retry PR creation when validation failed, Claude succeeded, and commits exist', () => {
+            const options = createDefaultOptions();
+            options.claudeResult = { success: true };
+            options.commitResult = { commitHash: 'abc123', filesChanged: 3, message: 'Fix issue' };
+
+            const prValidationResult: PRValidationResult = {
+                isValid: false,
+                error: 'No PR found for branch'
+            };
+
+            const { shouldRetry, result } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.strictEqual(shouldRetry, true);
+            assert.deepStrictEqual(result, options.postProcessingResult);
+        });
+
+        test('should not retry when Claude execution failed even with commits', () => {
+            const options = createDefaultOptions();
+            options.claudeResult = { success: false };
+            options.commitResult = { commitHash: 'abc123', filesChanged: 1, message: 'test' };
+
+            const prValidationResult: PRValidationResult = { isValid: false };
+            const { shouldRetry } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.strictEqual(shouldRetry, false);
+        });
+
+        test('should not retry when claudeResult is null', () => {
+            const options = createDefaultOptions();
+            options.claudeResult = null;
+            options.commitResult = { commitHash: 'abc123', filesChanged: 1, message: 'test' };
+
+            const prValidationResult: PRValidationResult = { isValid: false };
+            const { shouldRetry } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.strictEqual(shouldRetry, false);
+        });
+
+        test('should not retry when validation passed', () => {
+            const options = createDefaultOptions();
+            options.claudeResult = { success: true };
+            options.commitResult = { commitHash: 'abc123', filesChanged: 1, message: 'test' };
+
+            const prValidationResult: PRValidationResult = {
+                isValid: true,
+                pr: { number: 42, url: 'url', title: 'title' }
+            };
+
+            const { shouldRetry } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.strictEqual(shouldRetry, false);
+        });
+    });
+
+    describe('updates result when PR found during validation', () => {
+        test('should return updated result when validation finds PR that was not in postProcessingResult', () => {
+            const options = createDefaultOptions();
+            options.postProcessingResult = {
+                success: false,
+                pr: null,
+                updatedLabels: ['AI-processing']
+            };
+
+            const prValidationResult: PRValidationResult = {
+                isValid: true,
+                pr: {
+                    number: 42,
+                    url: 'https://github.com/test/repo/pull/42',
+                    title: 'Test PR'
+                }
+            };
+
+            const { result, shouldRetry } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.strictEqual(result?.success, true);
+            assert.strictEqual(result?.pr?.number, 42);
+            assert.strictEqual(result?.pr?.url, 'https://github.com/test/repo/pull/42');
+            assert.strictEqual(result?.pr?.title, 'Test PR');
+            assert.deepStrictEqual(result?.updatedLabels, ['AI-processing']);
+            assert.strictEqual(shouldRetry, false);
+        });
+
+        test('should preserve empty updatedLabels when updating result', () => {
+            const options = createDefaultOptions();
+            options.postProcessingResult = {
+                success: false,
+                pr: null,
+                updatedLabels: []
+            };
+
+            const prValidationResult: PRValidationResult = {
+                isValid: true,
+                pr: { number: 42, url: 'url', title: 'title' }
+            };
+
+            const { result } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.deepStrictEqual(result?.updatedLabels, []);
+        });
+
+        test('should handle null postProcessingResult when creating updated result', () => {
+            const options = createDefaultOptions();
+            options.postProcessingResult = null;
+
+            const prValidationResult: PRValidationResult = {
+                isValid: true,
+                pr: { number: 42, url: 'url', title: 'title' }
+            };
+
+            const { result } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.strictEqual(result?.success, true);
+            assert.strictEqual(result?.pr?.number, 42);
+            assert.deepStrictEqual(result?.updatedLabels, []);
+        });
+
+        test('should return result with null pr when validation is valid but no pr info', () => {
+            const options = createDefaultOptions();
+            options.postProcessingResult = null;
+
+            const prValidationResult: PRValidationResult = {
+                isValid: true
+                // No pr property
+            };
+
+            const { result } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.strictEqual(result?.success, true);
+            assert.strictEqual(result?.pr, null);
+        });
+    });
+
+    describe('combined scenarios', () => {
+        test('should handle all conditions being false', () => {
+            const options = createDefaultOptions();
+            options.claudeResult = { success: false };
+            options.commitResult = null;
+            options.postProcessingResult = {
+                success: false,
+                pr: null,
+                updatedLabels: []
+            };
+
+            const prValidationResult: PRValidationResult = {
+                isValid: false
+            };
+
+            const { result, shouldRetry, shouldLog } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.deepStrictEqual(result, options.postProcessingResult);
+            assert.strictEqual(shouldRetry, false);
+            assert.strictEqual(shouldLog, false);
+        });
+
+        test('should prioritize returning updated result over retry logic', () => {
+            const options = createDefaultOptions();
+            options.claudeResult = { success: true };
+            options.commitResult = { commitHash: 'abc', filesChanged: 1, message: 'test' };
+            options.postProcessingResult = {
+                success: false,
+                pr: null,
+                updatedLabels: []
+            };
+
+            // Validation is valid and finds a PR, so we should return updated result
+            // not go into retry logic
+            const prValidationResult: PRValidationResult = {
+                isValid: true,
+                pr: { number: 42, url: 'url', title: 'title' }
+            };
+
+            const { result, shouldRetry } = handlePRValidationLogic(options, prValidationResult);
+
+            assert.strictEqual(result?.success, true);
+            assert.strictEqual(result?.pr?.number, 42);
+            assert.strictEqual(shouldRetry, false);
+        });
     });
 });
 
