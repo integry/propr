@@ -53,21 +53,28 @@ export const TaskStepsPreview: React.FC<TaskStepsPreviewProps> = ({
     return (hasLineAbove ? lineHeight : 0) + buttonHeight + (hasLineBelow ? lineHeight : 0);
   };
 
+  // Calculate popup position: never go above the left column (timelineRect.top)
+  const popupTop = Math.max(timelineRect.top, stepsTop - 9);
+  // Calculate available height from popup top to bottom of left column
+  const maxPopupHeight = timelineRect.bottom - popupTop;
+
   const previewContent = (
     <div
       className="fixed bg-white border border-slate-200 shadow-xl ring-1 ring-black/5 z-[10000] overflow-hidden rounded-r-lg py-3"
       style={{
         left: timelineRect.right,
-        top: stepsTop - 9,
-        minWidth: 384,
-        maxWidth: 512,
+        top: popupTop,
+        minWidth: 480,
+        maxWidth: 640,
+        maxHeight: maxPopupHeight,
       }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
       {/* Step titles - aligned with step numbers */}
       <div
-        className="max-h-[800px] overflow-y-auto scrollbar-stealth relative"
+        className="overflow-y-auto scrollbar-thin relative"
+        style={{ maxHeight: maxPopupHeight - 24 }}
       >
         {tasks.map((task, index) => {
           const isActive = index === activeIndex;
@@ -103,7 +110,7 @@ export const TaskStepsPreview: React.FC<TaskStepsPreviewProps> = ({
             >
               {/* Task title - no duplicate step number */}
               <span
-                className={`text-sm truncate leading-5 ${
+                className={`text-sm leading-5 ${
                   isActive
                     ? 'text-slate-900 font-medium'
                     : isCompleted
