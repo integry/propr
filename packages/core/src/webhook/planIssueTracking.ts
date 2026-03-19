@@ -163,7 +163,7 @@ async function handleMergedPRNextIssueTrigger(
     await triggerNextPendingIssue(draftId, repository, epicLabel, log);
 }
 
-function determinePRStatusUpdate(
+export function determinePRStatusUpdate(
     action: string,
     merged: boolean,
     currentStatus: PlanIssueStatus
