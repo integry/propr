@@ -1085,7 +1085,409 @@ describe('performFinalValidation - Core Logic', () => {
 });
 
 describe('triggerNextPlanIssueIfNeeded - Core Logic', () => {
-    describe('auto-merge label detection', () => {
+    /**
+     * Pure function that determines if the next plan issue should be triggered.
+     * Extracted from triggerNextPlanIssueIfNeeded for testability.
+     *
+     * @param planIssue - The plan issue associated with the current issue (or null if not part of a plan)
+     * @param labels - Labels on the current issue
+     * @returns Decision object indicating whether to proceed and the reason
+     */
+    function shouldTriggerNextIssue(
+        planIssue: { draft_id?: string } | null,
+        labels: Array<{ name: string }>
+    ): { shouldTrigger: boolean; reason: string } {
+        // Check if this issue is part of a plan
+        if (!planIssue) {
+            return { shouldTrigger: false, reason: 'not_part_of_plan' };
+        }
+
+        // Check if plan issue has a draft_id (required to find other issues in the plan)
+        if (!planIssue.draft_id) {
+            return { shouldTrigger: false, reason: 'no_draft_id' };
+        }
+
+        // Check if the issue has auto-merge label (indicates it's part of auto-processing flow)
+        const labelNames = labels.map(l => l.name);
+        const hasAutoMerge = labelNames.includes('auto-merge');
+        if (!hasAutoMerge) {
+            return { shouldTrigger: false, reason: 'no_auto_merge_label' };
+        }
+
+        return { shouldTrigger: true, reason: 'proceed' };
+    }
+
+    /**
+     * Pure function that determines which issue to trigger next.
+     * Extracted from triggerNextPlanIssueIfNeeded for testability.
+     *
+     * @param planIssues - All issues in the plan
+     * @param currentIssueNumber - The current issue number being processed
+     * @returns The next pending issue or null if none found
+     */
+    function findNextPendingIssue(
+        planIssues: Array<{ issue_number: number; status: string }>,
+        currentIssueNumber: number
+    ): { issue_number: number; status: string } | null {
+        const inProgressStatuses = ['processing', 'under_review', 'in_refinement', 'refinement_processing'];
+
+        // Check if there are any issues currently in progress (other than current)
+        const hasInProgressIssue = planIssues.some(issue =>
+            inProgressStatuses.includes(issue.status) && issue.issue_number !== currentIssueNumber
+        );
+
+        if (hasInProgressIssue) {
+            return null; // Don't trigger next issue if one is already in progress
+        }
+
+        // Find the next pending issue
+        const nextPending = planIssues.find(issue => issue.status === 'pending');
+        return nextPending || null;
+    }
+
+    /**
+     * Pure function that builds the labels to add to the next issue.
+     * Extracted from triggerNextPlanIssueIfNeeded for testability.
+     *
+     * @param currentLabels - Labels from the current issue
+     * @param primaryLabel - The primary processing label (default 'AI')
+     * @returns Array of labels to add to the next issue
+     */
+    function buildLabelsForNextIssue(
+        currentLabels: Array<{ name: string }>,
+        primaryLabel: string = 'AI'
+    ): string[] {
+        const labels = currentLabels.map(l => l.name);
+        const epicLabel = labels.find(label => label.startsWith('base-'));
+
+        const labelsToAdd = [primaryLabel, 'auto-merge'];
+        if (epicLabel) {
+            labelsToAdd.push(epicLabel);
+        }
+
+        return labelsToAdd;
+    }
+
+    describe('shouldTriggerNextIssue', () => {
+        describe('skips without draft_id', () => {
+            test('should skip when planIssue is null (not part of a plan)', () => {
+                const result = shouldTriggerNextIssue(null, [{ name: 'auto-merge' }]);
+
+                assert.strictEqual(result.shouldTrigger, false);
+                assert.strictEqual(result.reason, 'not_part_of_plan');
+            });
+
+            test('should skip when planIssue has no draft_id', () => {
+                const planIssue = { draft_id: undefined };
+                const labels = [{ name: 'auto-merge' }, { name: 'AI' }];
+
+                const result = shouldTriggerNextIssue(planIssue, labels);
+
+                assert.strictEqual(result.shouldTrigger, false);
+                assert.strictEqual(result.reason, 'no_draft_id');
+            });
+
+            test('should skip when planIssue has empty string draft_id', () => {
+                const planIssue = { draft_id: '' };
+                const labels = [{ name: 'auto-merge' }, { name: 'AI' }];
+
+                const result = shouldTriggerNextIssue(planIssue, labels);
+
+                assert.strictEqual(result.shouldTrigger, false);
+                assert.strictEqual(result.reason, 'no_draft_id');
+            });
+        });
+
+        describe('triggers when auto-merge label is present', () => {
+            test('should trigger when planIssue has draft_id and auto-merge label is present', () => {
+                const planIssue = { draft_id: 'draft-123' };
+                const labels = [{ name: 'auto-merge' }, { name: 'AI' }];
+
+                const result = shouldTriggerNextIssue(planIssue, labels);
+
+                assert.strictEqual(result.shouldTrigger, true);
+                assert.strictEqual(result.reason, 'proceed');
+            });
+
+            test('should trigger when auto-merge is the only label', () => {
+                const planIssue = { draft_id: 'draft-456' };
+                const labels = [{ name: 'auto-merge' }];
+
+                const result = shouldTriggerNextIssue(planIssue, labels);
+
+                assert.strictEqual(result.shouldTrigger, true);
+                assert.strictEqual(result.reason, 'proceed');
+            });
+
+            test('should trigger when auto-merge label appears among many labels', () => {
+                const planIssue = { draft_id: 'draft-789' };
+                const labels = [
+                    { name: 'AI' },
+                    { name: 'bug' },
+                    { name: 'auto-merge' },
+                    { name: 'enhancement' },
+                    { name: 'base-1092-epic' }
+                ];
+
+                const result = shouldTriggerNextIssue(planIssue, labels);
+
+                assert.strictEqual(result.shouldTrigger, true);
+                assert.strictEqual(result.reason, 'proceed');
+            });
+        });
+
+        describe('skips without auto-merge label', () => {
+            test('should skip when auto-merge label is not present', () => {
+                const planIssue = { draft_id: 'draft-123' };
+                const labels = [{ name: 'AI' }, { name: 'bug' }];
+
+                const result = shouldTriggerNextIssue(planIssue, labels);
+
+                assert.strictEqual(result.shouldTrigger, false);
+                assert.strictEqual(result.reason, 'no_auto_merge_label');
+            });
+
+            test('should skip when labels array is empty', () => {
+                const planIssue = { draft_id: 'draft-123' };
+                const labels: Array<{ name: string }> = [];
+
+                const result = shouldTriggerNextIssue(planIssue, labels);
+
+                assert.strictEqual(result.shouldTrigger, false);
+                assert.strictEqual(result.reason, 'no_auto_merge_label');
+            });
+
+            test('should be case sensitive for auto-merge label', () => {
+                const planIssue = { draft_id: 'draft-123' };
+                const labelsWithWrongCase = [{ name: 'Auto-Merge' }, { name: 'AI' }];
+
+                const result = shouldTriggerNextIssue(planIssue, labelsWithWrongCase);
+
+                assert.strictEqual(result.shouldTrigger, false);
+                assert.strictEqual(result.reason, 'no_auto_merge_label');
+            });
+
+            test('should be case sensitive - AUTO-MERGE uppercase should not match', () => {
+                const planIssue = { draft_id: 'draft-123' };
+                const labels = [{ name: 'AUTO-MERGE' }, { name: 'AI' }];
+
+                const result = shouldTriggerNextIssue(planIssue, labels);
+
+                assert.strictEqual(result.shouldTrigger, false);
+                assert.strictEqual(result.reason, 'no_auto_merge_label');
+            });
+        });
+
+        describe('condition ordering', () => {
+            test('should check planIssue existence before draft_id', () => {
+                // If planIssue is null, we get 'not_part_of_plan', not 'no_draft_id'
+                const result = shouldTriggerNextIssue(null, [{ name: 'auto-merge' }]);
+
+                assert.strictEqual(result.reason, 'not_part_of_plan');
+            });
+
+            test('should check draft_id before auto-merge label', () => {
+                // If draft_id is missing, we get 'no_draft_id', not 'no_auto_merge_label'
+                const planIssue = { draft_id: undefined };
+                const labels: Array<{ name: string }> = []; // No auto-merge label either
+
+                const result = shouldTriggerNextIssue(planIssue, labels);
+
+                assert.strictEqual(result.reason, 'no_draft_id');
+            });
+        });
+    });
+
+    describe('findNextPendingIssue', () => {
+        describe('in-progress issue detection', () => {
+            test('should return null when there are issues in processing status', () => {
+                const planIssues = [
+                    { issue_number: 123, status: 'merged' },
+                    { issue_number: 124, status: 'processing' },
+                    { issue_number: 125, status: 'pending' }
+                ];
+
+                const result = findNextPendingIssue(planIssues, 123);
+
+                assert.strictEqual(result, null);
+            });
+
+            test('should return null when there are issues under_review', () => {
+                const planIssues = [
+                    { issue_number: 123, status: 'merged' },
+                    { issue_number: 124, status: 'under_review' },
+                    { issue_number: 125, status: 'pending' }
+                ];
+
+                const result = findNextPendingIssue(planIssues, 123);
+
+                assert.strictEqual(result, null);
+            });
+
+            test('should return null when there are issues in_refinement', () => {
+                const planIssues = [
+                    { issue_number: 123, status: 'merged' },
+                    { issue_number: 124, status: 'in_refinement' },
+                    { issue_number: 125, status: 'pending' }
+                ];
+
+                const result = findNextPendingIssue(planIssues, 123);
+
+                assert.strictEqual(result, null);
+            });
+
+            test('should return null when there are issues in refinement_processing', () => {
+                const planIssues = [
+                    { issue_number: 123, status: 'merged' },
+                    { issue_number: 124, status: 'refinement_processing' },
+                    { issue_number: 125, status: 'pending' }
+                ];
+
+                const result = findNextPendingIssue(planIssues, 123);
+
+                assert.strictEqual(result, null);
+            });
+
+            test('should not count current issue as in-progress', () => {
+                const planIssues = [
+                    { issue_number: 123, status: 'processing' }, // Current issue
+                    { issue_number: 124, status: 'pending' }
+                ];
+
+                const result = findNextPendingIssue(planIssues, 123);
+
+                assert.deepStrictEqual(result, { issue_number: 124, status: 'pending' });
+            });
+        });
+
+        describe('finding next pending issue', () => {
+            test('should find first pending issue when no in-progress issues exist', () => {
+                const planIssues = [
+                    { issue_number: 123, status: 'merged' },
+                    { issue_number: 124, status: 'merged' },
+                    { issue_number: 125, status: 'pending' },
+                    { issue_number: 126, status: 'pending' }
+                ];
+
+                const result = findNextPendingIssue(planIssues, 123);
+
+                assert.deepStrictEqual(result, { issue_number: 125, status: 'pending' });
+            });
+
+            test('should return null when no pending issues exist', () => {
+                const planIssues = [
+                    { issue_number: 123, status: 'merged' },
+                    { issue_number: 124, status: 'merged' },
+                    { issue_number: 125, status: 'merged' }
+                ];
+
+                const result = findNextPendingIssue(planIssues, 123);
+
+                assert.strictEqual(result, null);
+            });
+
+            test('should return null when plan issues array is empty', () => {
+                const planIssues: Array<{ issue_number: number; status: string }> = [];
+
+                const result = findNextPendingIssue(planIssues, 123);
+
+                assert.strictEqual(result, null);
+            });
+
+            test('should find pending issue even when all others have failed status', () => {
+                const planIssues = [
+                    { issue_number: 123, status: 'failed' },
+                    { issue_number: 124, status: 'failed' },
+                    { issue_number: 125, status: 'pending' }
+                ];
+
+                const result = findNextPendingIssue(planIssues, 123);
+
+                assert.deepStrictEqual(result, { issue_number: 125, status: 'pending' });
+            });
+        });
+    });
+
+    describe('buildLabelsForNextIssue', () => {
+        describe('epic label extraction', () => {
+            test('should extract base- label for epic tracking', () => {
+                const labels = [
+                    { name: 'AI' },
+                    { name: 'base-1092-epic' },
+                    { name: 'auto-merge' }
+                ];
+
+                const result = buildLabelsForNextIssue(labels);
+
+                assert.ok(result.includes('base-1092-epic'));
+            });
+
+            test('should return array without epic label when no base- label exists', () => {
+                const labels = [{ name: 'AI' }, { name: 'auto-merge' }];
+
+                const result = buildLabelsForNextIssue(labels);
+
+                assert.deepStrictEqual(result, ['AI', 'auto-merge']);
+            });
+
+            test('should include only the first base- label if multiple exist', () => {
+                const labels = [
+                    { name: 'base-first-epic' },
+                    { name: 'AI' },
+                    { name: 'base-second-epic' }
+                ];
+
+                const result = buildLabelsForNextIssue(labels);
+
+                // find() returns the first match
+                assert.ok(result.includes('base-first-epic'));
+                assert.ok(!result.includes('base-second-epic'));
+            });
+        });
+
+        describe('label building', () => {
+            test('should always include primary label and auto-merge', () => {
+                const labels = [{ name: 'bug' }];
+
+                const result = buildLabelsForNextIssue(labels);
+
+                assert.ok(result.includes('AI'));
+                assert.ok(result.includes('auto-merge'));
+            });
+
+            test('should use custom primary label when provided', () => {
+                const labels = [{ name: 'bug' }];
+
+                const result = buildLabelsForNextIssue(labels, 'custom-ai');
+
+                assert.ok(result.includes('custom-ai'));
+                assert.ok(!result.includes('AI'));
+            });
+
+            test('should build complete label set with epic', () => {
+                const labels = [
+                    { name: 'AI' },
+                    { name: 'auto-merge' },
+                    { name: 'base-1092-epic-add-unit-tests' }
+                ];
+
+                const result = buildLabelsForNextIssue(labels);
+
+                assert.deepStrictEqual(result, ['AI', 'auto-merge', 'base-1092-epic-add-unit-tests']);
+            });
+
+            test('should handle empty labels array', () => {
+                const labels: Array<{ name: string }> = [];
+
+                const result = buildLabelsForNextIssue(labels);
+
+                assert.deepStrictEqual(result, ['AI', 'auto-merge']);
+            });
+        });
+    });
+
+    // Legacy tests preserved for backwards compatibility
+    describe('auto-merge label detection (legacy)', () => {
         test('should detect auto-merge label correctly', () => {
             const labels = [{ name: 'AI' }, { name: 'auto-merge' }];
             const labelNames = labels.map(l => l.name);
@@ -1103,7 +1505,7 @@ describe('triggerNextPlanIssueIfNeeded - Core Logic', () => {
         });
     });
 
-    describe('epic label extraction', () => {
+    describe('epic label extraction (legacy)', () => {
         test('should extract base- label for epic tracking', () => {
             const labels = [{ name: 'AI' }, { name: 'base-1092-epic' }, { name: 'auto-merge' }];
             const labelNames = labels.map(l => l.name);
@@ -1121,7 +1523,7 @@ describe('triggerNextPlanIssueIfNeeded - Core Logic', () => {
         });
     });
 
-    describe('in-progress issue detection', () => {
+    describe('in-progress issue detection (legacy)', () => {
         test('should detect in-progress issues', () => {
             const planIssues = [
                 { issue_number: 123, status: 'merged' },
