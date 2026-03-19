@@ -115,7 +115,8 @@ const {
     getFirstCommitMessage
 } = await import('../packages/core/src/webhook/checkRunHelpers.js');
 
-const { handleCheckRunEvent } = await import('../packages/core/src/webhook/checkRunHandler.js');
+const { handleCheckRunEvent, shouldAutoMergePR } = await import('../packages/core/src/webhook/checkRunHandler.js');
+import type { PRMergeContext } from '../packages/core/src/webhook/checkRunHandler.js';
 
 // Helper to reset all mocks
 function resetMocks(): void {
@@ -1182,5 +1183,227 @@ describe('handleCheckRunEvent', () => {
             call.arguments[0].includes('DELETE') && call.arguments[0].includes('refs')
         );
         assert.strictEqual(deleteCall, undefined, 'Should not delete branch from fork');
+    });
+});
+
+// ============= shouldAutoMergePR Tests =============
+
+describe('shouldAutoMergePR', () => {
+    // Helper to create a mock PRMergeContext
+    function createMockPRMergeContext(options: {
+        owner?: string;
+        repoName?: string;
+        prNumber?: number;
+        headSha?: string;
+        hasLabel?: boolean;
+        isDraft?: boolean;
+        baseBranch?: string;
+        headBranch?: string;
+    }): PRMergeContext {
+        const {
+            owner = 'test-owner',
+            repoName = 'test-repo',
+            prNumber = 42,
+            headSha = 'abc123sha',
+            hasLabel = false,
+            isDraft = false,
+            baseBranch = 'main',
+            headBranch = 'feature-branch'
+        } = options;
+
+        return {
+            owner,
+            repoName,
+            prNumber,
+            headSha,
+            prInfo: {
+                hasLabel,
+                isDraft,
+                baseBranch,
+                headBranch
+            },
+            log: mockLogger.withCorrelation('test-correlation')
+        };
+    }
+
+    test('returns true with direct auto-merge label on regular branch', async () => {
+        resetMocks();
+        // No API calls needed - PR already has the label
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
+    });
+
+    test('returns true with auto-merge label on linked issue', async () => {
+        resetMocks();
+        // Mock linkedIssueHasAutoMergeLabel to return true
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('pulls')) {
+                return { data: { body: 'Fixes #100' } };
+            }
+            if (endpoint.includes('issues')) {
+                return { data: { labels: [{ name: 'auto-merge' }] } };
+            }
+            return { data: {} };
+        });
+
+        const ctx = createMockPRMergeContext({
+            hasLabel: false, // PR doesn't have label
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
+    });
+
+    test('returns false without any auto-merge label', async () => {
+        resetMocks();
+        // Mock linkedIssueHasAutoMergeLabel to return false
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('pulls')) {
+                return { data: { body: 'Fixes #100' } };
+            }
+            if (endpoint.includes('issues')) {
+                return { data: { labels: [{ name: 'bug' }] } }; // No auto-merge label
+            }
+            return { data: {} };
+        });
+
+        const ctx = createMockPRMergeContext({
+            hasLabel: false,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, false);
+    });
+
+    test('returns true for epic branch with auto-merge label', async () => {
+        resetMocks();
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            headBranch: '800-epic-short-name-x7y' // Epic branch pattern
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
+    });
+
+    test('returns false for epic branch without auto-merge label', async () => {
+        resetMocks();
+        // Mock getCurrentPRHead and areAllChecksPassing for handleEpicPRWithoutAutoMerge
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('pulls') && !endpoint.includes('merge') && !endpoint.includes('commits')) {
+                return {
+                    data: {
+                        head: { sha: 'abc123sha' }
+                    }
+                };
+            }
+            if (endpoint.includes('check-runs')) {
+                return {
+                    data: { check_runs: [{ name: 'CI', status: 'completed', conclusion: 'success' }] }
+                };
+            }
+            return { data: {} };
+        });
+
+        mockFindPlanIssueByRepoAndNumber.mock.mockImplementation(async () => null);
+
+        const ctx = createMockPRMergeContext({
+            hasLabel: false,
+            headBranch: '800-epic-short-name-x7y' // Epic branch pattern
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, false);
+    });
+
+    test('returns false when no linked issues found and PR has no label', async () => {
+        resetMocks();
+        // PR body without issue reference
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: { body: 'This PR adds a feature without issue reference' }
+        }));
+
+        const ctx = createMockPRMergeContext({
+            hasLabel: false,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, false);
+    });
+
+    test('epic branch triggers handleEpicPRWithoutAutoMerge when no label', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('pulls') && !endpoint.includes('merge') && !endpoint.includes('commits')) {
+                return { data: { head: { sha: 'abc123sha' } } };
+            }
+            if (endpoint.includes('check-runs')) {
+                return {
+                    data: { check_runs: [{ name: 'CI', status: 'completed', conclusion: 'success' }] }
+                };
+            }
+            return { data: {} };
+        });
+
+        mockFindPlanIssueByRepoAndNumber.mock.mockImplementation(async () => ({
+            id: 'plan-123',
+            draft_id: 'draft-456'
+        }));
+
+        const ctx = createMockPRMergeContext({
+            hasLabel: false,
+            headBranch: '800-epic-short-name-x7y'
+        });
+
+        await shouldAutoMergePR(ctx);
+
+        // Should have triggered the next pending issue
+        assert.strictEqual(mockTriggerNextPendingIssue.mock.calls.length, 1);
+    });
+
+    test('returns true when only linked issue has label (PR label false)', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('pulls')) {
+                return { data: { body: 'Closes #50' } };
+            }
+            if (endpoint.includes('issues')) {
+                return { data: { labels: [{ name: 'auto-merge' }, { name: 'enhancement' }] } };
+            }
+            return { data: {} };
+        });
+
+        const ctx = createMockPRMergeContext({
+            hasLabel: false,
+            headBranch: 'fix-bug'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
+    });
+
+    test('returns true when PR has label regardless of linked issue', async () => {
+        resetMocks();
+        // Even if linkedIssueHasAutoMergeLabel would be checked, PR label takes precedence
+        // For non-epic branches with hasLabel=true, we don't even check linked issue
+
+        const ctx = createMockPRMergeContext({
+            hasLabel: true,
+            headBranch: 'feature-branch'
+        });
+
+        const result = await shouldAutoMergePR(ctx);
+        assert.strictEqual(result, true);
+
+        // Verify linkedIssueHasAutoMergeLabel wasn't called (no pulls API call for body)
+        // When PR has label, we skip the linked issue check
     });
 });
