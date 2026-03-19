@@ -1068,6 +1068,476 @@ test('updateTaskState includes commitHash in database metadata', async () => {
     await stateManager.close();
 });
 
+// ============================================================================
+// markTaskFailed tests
+// ============================================================================
+
+test('markTaskFailed sets state to FAILED', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-1',
+        issueRef: { number: 200, repoOwner: 'fail-owner', repoName: 'fail-repo' },
+        correlationId: 'corr-fail-1',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Processing started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const error = new Error('Something went wrong');
+    const result = await stateManager.markTaskFailed('task-fail-1', error);
+
+    // Verify state is set to FAILED
+    assert.strictEqual(result.state, TaskStates.FAILED);
+
+    await stateManager.close();
+});
+
+test('markTaskFailed stores error message in lastError', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-2',
+        issueRef: { number: 201, repoOwner: 'fail-owner', repoName: 'fail-repo' },
+        correlationId: 'corr-fail-2',
+        state: TaskStates.CLAUDE_EXECUTION,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 1,
+        history: [{ state: TaskStates.CLAUDE_EXECUTION, timestamp: new Date().toISOString(), reason: 'Claude running' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const errorMessage = 'Connection timeout while communicating with Claude';
+    const error = new Error(errorMessage);
+    const result = await stateManager.markTaskFailed('task-fail-2', error);
+
+    // Verify error message is stored in lastError
+    assert.ok(result.lastError);
+    assert.strictEqual(result.lastError.message, errorMessage);
+    assert.ok(result.lastError.timestamp);
+
+    await stateManager.close();
+});
+
+test('markTaskFailed defaults errorCategory to unknown when not specified', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-default-cat',
+        issueRef: { number: 202, repoOwner: 'fail-owner', repoName: 'fail-repo' },
+        correlationId: 'corr-fail-default',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const error = new Error('Generic error');
+    const result = await stateManager.markTaskFailed('task-fail-default-cat', error);
+
+    // Verify errorCategory defaults to 'unknown'
+    assert.ok(result.lastError);
+    assert.strictEqual(result.lastError.category, 'unknown');
+
+    await stateManager.close();
+});
+
+test('markTaskFailed uses provided errorCategory from metadata', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-custom-cat',
+        issueRef: { number: 203, repoOwner: 'fail-owner', repoName: 'fail-repo' },
+        correlationId: 'corr-fail-custom',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const error = new Error('Network timeout');
+    const result = await stateManager.markTaskFailed('task-fail-custom-cat', error, {
+        errorCategory: 'network'
+    });
+
+    // Verify custom errorCategory is used
+    assert.ok(result.lastError);
+    assert.strictEqual(result.lastError.category, 'network');
+
+    await stateManager.close();
+});
+
+test('markTaskFailed sets appropriate failure reason', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-reason',
+        issueRef: { number: 204, repoOwner: 'fail-owner', repoName: 'fail-repo' },
+        correlationId: 'corr-fail-reason',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const errorMessage = 'Out of memory';
+    const error = new Error(errorMessage);
+    const result = await stateManager.markTaskFailed('task-fail-reason', error);
+
+    // Verify reason is set to "Task failed: {error.message}"
+    const latestHistory = result.history[result.history.length - 1];
+    assert.strictEqual(latestHistory.reason, `Task failed: ${errorMessage}`);
+
+    await stateManager.close();
+});
+
+test('markTaskFailed appends failure to history', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-history',
+        issueRef: { number: 205, repoOwner: 'fail-owner', repoName: 'fail-repo' },
+        correlationId: 'corr-fail-history',
+        state: TaskStates.CLAUDE_EXECUTION,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [
+            { state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' },
+            { state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Processing started' },
+            { state: TaskStates.CLAUDE_EXECUTION, timestamp: new Date().toISOString(), reason: 'Claude execution' }
+        ]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const error = new Error('Claude execution failed');
+    const result = await stateManager.markTaskFailed('task-fail-history', error);
+
+    // Verify failure state is appended to history
+    assert.strictEqual(result.history.length, 4);
+    assert.strictEqual(result.history[3].state, TaskStates.FAILED);
+    assert.ok(result.history[3].timestamp);
+
+    await stateManager.close();
+});
+
+test('markTaskFailed preserves additional metadata', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-meta',
+        issueRef: { number: 206, repoOwner: 'fail-owner', repoName: 'fail-repo' },
+        correlationId: 'corr-fail-meta',
+        state: TaskStates.POST_PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.POST_PROCESSING, timestamp: new Date().toISOString(), reason: 'Post-processing' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const error = new Error('PR creation failed');
+    const result = await stateManager.markTaskFailed('task-fail-meta', error, {
+        errorCategory: 'github_api',
+        historyMetadata: { attemptedAction: 'create_pr', statusCode: 500 }
+    });
+
+    // Verify additional metadata is preserved
+    const latestHistory = result.history[result.history.length - 1];
+    assert.ok(latestHistory.metadata);
+    assert.strictEqual(latestHistory.metadata.attemptedAction, 'create_pr');
+    assert.strictEqual(latestHistory.metadata.statusCode, 500);
+
+    await stateManager.close();
+});
+
+test('markTaskFailed publishes real-time event', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-event',
+        issueRef: { number: 207, repoOwner: 'event-owner', repoName: 'event-repo' },
+        correlationId: 'corr-fail-event',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const error = new Error('Task execution failed');
+    await stateManager.markTaskFailed('task-fail-event', error);
+
+    // Verify event was published
+    assert.strictEqual(mockPublishTaskUpdate.mock.calls.length, 1);
+    const eventCall = mockPublishTaskUpdate.mock.calls[0];
+    const eventPayload = eventCall.arguments[0] as {
+        taskId: string;
+        state: string;
+        previousState: string;
+        repository: string;
+        issueNumber: number;
+    };
+
+    assert.strictEqual(eventPayload.taskId, 'task-fail-event');
+    assert.strictEqual(eventPayload.state, TaskStates.FAILED);
+    assert.strictEqual(eventPayload.previousState, TaskStates.PROCESSING);
+    assert.strictEqual(eventPayload.repository, 'event-owner/event-repo');
+    assert.strictEqual(eventPayload.issueNumber, 207);
+
+    await stateManager.close();
+});
+
+test('markTaskFailed persists failure to Redis', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-redis',
+        issueRef: { number: 208, repoOwner: 'redis-owner', repoName: 'redis-repo' },
+        correlationId: 'corr-fail-redis',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const error = new Error('System failure');
+    await stateManager.markTaskFailed('task-fail-redis', error);
+
+    // Verify Redis setex was called
+    assert.strictEqual(mockRedisInstance.setex.mock.calls.length, 1);
+    const setexCall = mockRedisInstance.setex.mock.calls[0];
+    assert.strictEqual(setexCall.arguments[0], `${TEST_KEY_PREFIX}task-fail-redis`);
+    assert.strictEqual(setexCall.arguments[1], TEST_STATE_EXPIRY);
+
+    // Verify stored state has FAILED status
+    const storedState = JSON.parse(setexCall.arguments[2] as string) as TaskStateData;
+    assert.strictEqual(storedState.state, TaskStates.FAILED);
+    assert.ok(storedState.lastError);
+    assert.strictEqual(storedState.lastError.message, 'System failure');
+
+    await stateManager.close();
+});
+
+test('markTaskFailed inserts failure record into database', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-db',
+        issueRef: { number: 209, repoOwner: 'db-owner', repoName: 'db-repo' },
+        correlationId: 'corr-fail-db',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const error = new Error('Database error occurred');
+    await stateManager.markTaskFailed('task-fail-db', error, {
+        errorCategory: 'database'
+    });
+
+    // Verify database history insert was called
+    assert.ok(mockDbHistoryInsert.mock.calls.length >= 1, 'Should insert into task_history table');
+
+    const insertCall = mockDbHistoryInsert.mock.calls[0];
+    const historyData = insertCall.arguments[0] as Record<string, unknown>;
+    assert.strictEqual(historyData.task_id, 'task-fail-db');
+    assert.strictEqual(historyData.state, TaskStates.FAILED);
+    assert.ok(historyData.reason?.toString().includes('Task failed'));
+
+    // Verify error metadata is included
+    const metadata = JSON.parse(historyData.metadata as string);
+    assert.ok(metadata.error);
+    assert.strictEqual(metadata.error.message, 'Database error occurred');
+    assert.strictEqual(metadata.error.category, 'database');
+
+    await stateManager.close();
+});
+
+test('markTaskFailed throws when task not found', async () => {
+    mockRedisInstance.get.mock.mockImplementation(async () => null);
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const error = new Error('Some error');
+
+    await assert.rejects(
+        async () => {
+            await stateManager.markTaskFailed('non-existent-task', error);
+        },
+        {
+            message: 'Task state not found for taskId: non-existent-task'
+        }
+    );
+
+    await stateManager.close();
+});
+
+test('markTaskFailed handles different error categories', async () => {
+    const categories = ['network', 'timeout', 'authentication', 'rate_limit', 'validation', 'internal'];
+
+    for (const category of categories) {
+        const existingState: TaskStateData = {
+            taskId: `task-fail-cat-${category}`,
+            issueRef: { number: 300, repoOwner: 'owner', repoName: 'repo' },
+            correlationId: `corr-cat-${category}`,
+            state: TaskStates.PROCESSING,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            attempts: 0,
+            history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+        };
+
+        mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+        mockRedisInstance.setex.mock.resetCalls();
+        mockDbHistoryInsert.mock.resetCalls();
+        mockPublishTaskUpdate.mock.resetCalls();
+
+        const stateManager = new WorkerStateManager({
+            keyPrefix: TEST_KEY_PREFIX,
+            stateExpiry: TEST_STATE_EXPIRY
+        });
+
+        const error = new Error(`Error of type ${category}`);
+        const result = await stateManager.markTaskFailed(`task-fail-cat-${category}`, error, {
+            errorCategory: category
+        });
+
+        // Verify category is correctly stored
+        assert.ok(result.lastError);
+        assert.strictEqual(result.lastError.category, category);
+
+        await stateManager.close();
+    }
+});
+
+test('markTaskFailed updates timestamp in lastError', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-fail-timestamp',
+        issueRef: { number: 210, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-fail-timestamp',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const beforeTime = new Date();
+    const error = new Error('Timing test error');
+    const result = await stateManager.markTaskFailed('task-fail-timestamp', error);
+    const afterTime = new Date();
+
+    // Verify timestamp is set and is within the expected range
+    assert.ok(result.lastError);
+    assert.ok(result.lastError.timestamp);
+
+    const errorTimestamp = new Date(result.lastError.timestamp);
+    assert.ok(errorTimestamp >= beforeTime, 'Timestamp should be after test start');
+    assert.ok(errorTimestamp <= afterTime, 'Timestamp should be before test end');
+
+    await stateManager.close();
+});
+
 // Force exit due to module-level initialization in @propr/core
 after(() => {
     process.exit(0);
