@@ -79,7 +79,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
   const showTimeline = tasks.length > 1 && !isMobile;
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full min-h-full">
       {/* Sticky Timeline Sidebar with Drag & Drop - only show when multiple tasks */}
       {showTimeline && (
         <TaskTimeline
@@ -115,7 +115,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
             border-radius: 3px;
           }
         `}</style>
-        <div>
+        <div className="pb-4">
           <AnimatePresence mode="popLayout">
             {tasks.map((task, index) => {
               const isHighlighted = highlightedIds.includes(task.id);
