@@ -1334,3 +1334,736 @@ describe('handlePlanPRUpdate', () => {
         });
     });
 });
+
+/**
+ * Type definition for comment event types.
+ */
+type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
+
+/**
+ * Interface representing an IssueCommentEvent payload for testing.
+ */
+interface MockIssueCommentEvent {
+    action: string;
+    repository: { full_name: string };
+    issue: {
+        number: number;
+        pull_request?: object;
+    };
+    comment: {
+        user?: { login: string };
+        body?: string;
+    };
+}
+
+/**
+ * Interface representing a PullRequestReviewCommentEvent payload for testing.
+ */
+interface MockPullRequestReviewCommentEvent {
+    action: string;
+    repository: { full_name: string };
+    pull_request: {
+        number: number;
+    };
+    comment: {
+        user?: { login: string };
+        body?: string;
+    };
+}
+
+/**
+ * Test context for handlePlanPRCommentTracking tests.
+ */
+interface HandlePlanPRCommentTrackingTestContext {
+    findPlanIssueByRepoAndPRCalls: Array<{ repository: string; prNumber: number }>;
+    updatePlanIssueByPRCalls: Array<{ repository: string; prNumber: number; updates: { followup_count?: number; status?: PlanIssueStatus } }>;
+    loggedInfo: Array<Record<string, unknown>>;
+    loggedDebug: Array<Record<string, unknown>>;
+    loggedErrors: Array<Record<string, unknown>>;
+}
+
+/**
+ * Creates a fresh test context for handlePlanPRCommentTracking tests.
+ */
+function createCommentTrackingTestContext(): HandlePlanPRCommentTrackingTestContext {
+    return {
+        findPlanIssueByRepoAndPRCalls: [],
+        updatePlanIssueByPRCalls: [],
+        loggedInfo: [],
+        loggedDebug: [],
+        loggedErrors: []
+    };
+}
+
+/**
+ * Simulates the core logic of handlePlanPRCommentTracking for isolated unit testing.
+ * This is a pure function that replicates the handler's behavior without
+ * external dependencies (database, logging module initialization).
+ *
+ * The original function is at: packages/core/src/webhook/planIssueTracking.ts:351
+ */
+function simulateHandlePlanPRCommentTracking(
+    payload: MockIssueCommentEvent | MockPullRequestReviewCommentEvent,
+    eventType: CommentEventType,
+    context: HandlePlanPRCommentTrackingTestContext,
+    mockDependencies: {
+        findPlanIssueByRepoAndPR: (repo: string, prNumber: number) => MockPlanIssueFromDB | null;
+        botUsername?: string;
+    }
+): { skipped: boolean; reason?: string; updatedFollowupCount?: number; updatedStatus?: PlanIssueStatus } {
+    const repository = payload.repository.full_name;
+    const botUsername = mockDependencies.botUsername || 'propr.dev[bot]';
+
+    // Determine PR number based on event type
+    let prNumber: number | null = null;
+
+    if (eventType === 'pull_request_review_comment') {
+        prNumber = (payload as MockPullRequestReviewCommentEvent).pull_request.number;
+    } else if (eventType === 'issue_comment') {
+        const issuePayload = payload as MockIssueCommentEvent;
+        if ('pull_request' in issuePayload.issue && issuePayload.issue.pull_request) {
+            prNumber = issuePayload.issue.number;
+        }
+    }
+
+    if (!prNumber) {
+        return { skipped: true, reason: 'Not a PR comment' };
+    }
+
+    // Find plan issue by PR
+    context.findPlanIssueByRepoAndPRCalls.push({ repository, prNumber });
+    const planIssue = mockDependencies.findPlanIssueByRepoAndPR(repository, prNumber);
+
+    if (!planIssue) {
+        return { skipped: true, reason: 'No plan issue found' };
+    }
+
+    if (payload.action === 'created') {
+        // Skip bot comments
+        const commentAuthor = payload.comment.user?.login;
+        if (commentAuthor === botUsername) {
+            return { skipped: true, reason: 'Bot comment' };
+        }
+
+        // Don't update status if issue is already merged or closed
+        if (planIssue.status === 'merged' || planIssue.status === 'closed') {
+            context.loggedDebug.push({
+                repository,
+                prNumber,
+                currentStatus: planIssue.status
+            });
+            return { skipped: true, reason: 'Plan issue already completed' };
+        }
+
+        // Increment followup count and set status to in_refinement
+        const newFollowupCount = (planIssue.followup_count || 0) + 1;
+        const newStatus: PlanIssueStatus = 'in_refinement';
+
+        context.updatePlanIssueByPRCalls.push({
+            repository,
+            prNumber,
+            updates: { followup_count: newFollowupCount, status: newStatus }
+        });
+        context.loggedInfo.push({ repository, prNumber, followupCount: newFollowupCount });
+
+        return { skipped: false, updatedFollowupCount: newFollowupCount, updatedStatus: newStatus };
+    }
+
+    return { skipped: true, reason: 'Non-created action' };
+}
+
+describe('handlePlanPRCommentTracking', () => {
+    describe('PR number extraction', () => {
+        test('extracts PR number from pull_request_review_comment event', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'developer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'under_review',
+                followup_count: 0
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.skipped, false);
+            assert.strictEqual(context.findPlanIssueByRepoAndPRCalls.length, 1);
+            assert.strictEqual(context.findPlanIssueByRepoAndPRCalls[0].prNumber, 42);
+        });
+
+        test('extracts PR number from issue_comment event on a PR', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockIssueCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                issue: { number: 55, pull_request: {} },
+                comment: { user: { login: 'developer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 55,
+                status: 'under_review',
+                followup_count: 0
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'issue_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.skipped, false);
+            assert.strictEqual(context.findPlanIssueByRepoAndPRCalls.length, 1);
+            assert.strictEqual(context.findPlanIssueByRepoAndPRCalls[0].prNumber, 55);
+        });
+
+        test('returns early for issue_comment on a regular issue (not a PR)', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockIssueCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                issue: { number: 55 }, // No pull_request property
+                comment: { user: { login: 'developer' } }
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'issue_comment', context, {
+                findPlanIssueByRepoAndPR: () => null
+            });
+
+            assert.strictEqual(result.skipped, true);
+            assert.strictEqual(result.reason, 'Not a PR comment');
+            assert.strictEqual(context.findPlanIssueByRepoAndPRCalls.length, 0);
+        });
+    });
+
+    describe('skip bot comments', () => {
+        test('skips comments from default bot username (propr.dev[bot])', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'propr.dev[bot]' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'under_review',
+                followup_count: 0
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.skipped, true);
+            assert.strictEqual(result.reason, 'Bot comment');
+            assert.strictEqual(context.updatePlanIssueByPRCalls.length, 0);
+        });
+
+        test('skips comments from custom bot username', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'my-custom-bot' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'under_review',
+                followup_count: 0
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue,
+                botUsername: 'my-custom-bot'
+            });
+
+            assert.strictEqual(result.skipped, true);
+            assert.strictEqual(result.reason, 'Bot comment');
+        });
+
+        test('does not skip comments from non-bot users', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'human-developer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'under_review',
+                followup_count: 0
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.skipped, false);
+            assert.strictEqual(context.updatePlanIssueByPRCalls.length, 1);
+        });
+
+        test('handles comments with missing user field', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: {} // No user field
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'under_review',
+                followup_count: 0
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            // When user is undefined, commentAuthor will be undefined, which !== botUsername
+            assert.strictEqual(result.skipped, false);
+        });
+    });
+
+    describe('increment followup count', () => {
+        test('increments followup_count from 0 to 1 on first comment', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'developer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'under_review',
+                followup_count: 0
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.updatedFollowupCount, 1);
+            assert.strictEqual(context.updatePlanIssueByPRCalls.length, 1);
+            assert.strictEqual(context.updatePlanIssueByPRCalls[0].updates.followup_count, 1);
+        });
+
+        test('increments followup_count from 5 to 6', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'developer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'under_review',
+                followup_count: 5
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.updatedFollowupCount, 6);
+        });
+
+        test('handles undefined followup_count (treats as 0)', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'developer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'under_review'
+                // No followup_count field
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.updatedFollowupCount, 1);
+        });
+    });
+
+    describe('sets status to in_refinement', () => {
+        test('transitions from under_review to in_refinement', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'reviewer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'under_review',
+                followup_count: 0
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.updatedStatus, 'in_refinement');
+            assert.strictEqual(context.updatePlanIssueByPRCalls[0].updates.status, 'in_refinement');
+        });
+
+        test('transitions from processing to in_refinement', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'reviewer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'processing',
+                followup_count: 0
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.updatedStatus, 'in_refinement');
+        });
+
+        test('transitions from refinement_processing to in_refinement', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'reviewer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'refinement_processing',
+                followup_count: 2
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.updatedStatus, 'in_refinement');
+            assert.strictEqual(result.updatedFollowupCount, 3);
+        });
+
+        test('stays at in_refinement if already in that status (increments count)', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'reviewer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'in_refinement',
+                followup_count: 3
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.updatedStatus, 'in_refinement');
+            assert.strictEqual(result.updatedFollowupCount, 4);
+        });
+    });
+
+    describe('skip completed issues (merged/closed)', () => {
+        test('skips comments on merged plan issues', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'developer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'merged',
+                followup_count: 2
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.skipped, true);
+            assert.strictEqual(result.reason, 'Plan issue already completed');
+            assert.strictEqual(context.updatePlanIssueByPRCalls.length, 0);
+            assert.strictEqual(context.loggedDebug.length, 1);
+            assert.strictEqual(context.loggedDebug[0].currentStatus, 'merged');
+        });
+
+        test('skips comments on closed plan issues', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'developer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'closed',
+                followup_count: 1
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.skipped, true);
+            assert.strictEqual(result.reason, 'Plan issue already completed');
+            assert.strictEqual(context.loggedDebug.length, 1);
+            assert.strictEqual(context.loggedDebug[0].currentStatus, 'closed');
+        });
+    });
+
+    describe('no plan issue found', () => {
+        test('returns early when no plan issue found for PR', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'developer' } }
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => null
+            });
+
+            assert.strictEqual(result.skipped, true);
+            assert.strictEqual(result.reason, 'No plan issue found');
+            assert.strictEqual(context.findPlanIssueByRepoAndPRCalls.length, 1);
+            assert.strictEqual(context.updatePlanIssueByPRCalls.length, 0);
+        });
+    });
+
+    describe('non-created actions', () => {
+        test('ignores edited action', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'edited',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'developer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'under_review',
+                followup_count: 0
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.skipped, true);
+            assert.strictEqual(result.reason, 'Non-created action');
+            assert.strictEqual(context.updatePlanIssueByPRCalls.length, 0);
+        });
+
+        test('ignores deleted action', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'deleted',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 42 },
+                comment: { user: { login: 'developer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 100,
+                pr_number: 42,
+                status: 'under_review',
+                followup_count: 5
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.skipped, true);
+            assert.strictEqual(result.reason, 'Non-created action');
+        });
+    });
+
+    describe('both event types work correctly', () => {
+        test('handles issue_comment on PR correctly', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockIssueCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                issue: { number: 55, pull_request: {} },
+                comment: { user: { login: 'contributor' }, body: 'Please fix the typo' }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 200,
+                pr_number: 55,
+                status: 'under_review',
+                followup_count: 1
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'issue_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.skipped, false);
+            assert.strictEqual(result.updatedFollowupCount, 2);
+            assert.strictEqual(result.updatedStatus, 'in_refinement');
+        });
+
+        test('handles pull_request_review_comment correctly', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'owner/repo' },
+                pull_request: { number: 77 },
+                comment: { user: { login: 'code-reviewer' }, body: 'Need to add error handling' }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 300,
+                pr_number: 77,
+                status: 'under_review',
+                followup_count: 0
+            };
+
+            const result = simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(result.skipped, false);
+            assert.strictEqual(result.updatedFollowupCount, 1);
+            assert.strictEqual(result.updatedStatus, 'in_refinement');
+        });
+    });
+
+    describe('logging verification', () => {
+        test('logs info when updating followup count', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'test-org/test-repo' },
+                pull_request: { number: 99 },
+                comment: { user: { login: 'reviewer' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'test-org/test-repo',
+                issue_number: 500,
+                pr_number: 99,
+                status: 'under_review',
+                followup_count: 10
+            };
+
+            simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(context.loggedInfo.length, 1);
+            assert.strictEqual(context.loggedInfo[0].repository, 'test-org/test-repo');
+            assert.strictEqual(context.loggedInfo[0].prNumber, 99);
+            assert.strictEqual(context.loggedInfo[0].followupCount, 11);
+        });
+
+        test('logs debug when skipping completed issue', () => {
+            const context = createCommentTrackingTestContext();
+            const payload: MockPullRequestReviewCommentEvent = {
+                action: 'created',
+                repository: { full_name: 'test-org/test-repo' },
+                pull_request: { number: 88 },
+                comment: { user: { login: 'late-commenter' } }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'test-org/test-repo',
+                issue_number: 400,
+                pr_number: 88,
+                status: 'merged',
+                followup_count: 3
+            };
+
+            simulateHandlePlanPRCommentTracking(payload, 'pull_request_review_comment', context, {
+                findPlanIssueByRepoAndPR: () => mockPlanIssue
+            });
+
+            assert.strictEqual(context.loggedDebug.length, 1);
+            assert.strictEqual(context.loggedDebug[0].repository, 'test-org/test-repo');
+            assert.strictEqual(context.loggedDebug[0].prNumber, 88);
+            assert.strictEqual(context.loggedDebug[0].currentStatus, 'merged');
+        });
+    });
+});
