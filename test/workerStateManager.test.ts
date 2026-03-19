@@ -478,6 +478,596 @@ test('createTaskState uses correct repository format in database', async () => {
     await stateManager.close();
 });
 
+// ============================================================================
+// updateTaskState tests
+// ============================================================================
+
+test('updateTaskState throws when task not found', async () => {
+    mockRedisInstance.get.mock.resetCalls();
+    mockRedisInstance.get.mock.mockImplementation(async () => null);
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const nonExistentTaskId = 'non-existent-task';
+
+    await assert.rejects(
+        async () => {
+            await stateManager.updateTaskState(nonExistentTaskId, TaskStates.PROCESSING);
+        },
+        {
+            message: `Task state not found for taskId: ${nonExistentTaskId}`
+        }
+    );
+
+    await stateManager.close();
+});
+
+test('updateTaskState transitions state and appends to history', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-update-1',
+        issueRef: { number: 42, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-123',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.updateTaskState('task-update-1', TaskStates.PROCESSING, {
+        reason: 'Starting processing'
+    });
+
+    // Verify state transition
+    assert.strictEqual(result.state, TaskStates.PROCESSING);
+
+    // Verify history was appended correctly
+    assert.strictEqual(result.history.length, 2);
+    assert.strictEqual(result.history[0].state, TaskStates.PENDING);
+    assert.strictEqual(result.history[1].state, TaskStates.PROCESSING);
+    assert.strictEqual(result.history[1].reason, 'Starting processing');
+    assert.ok(result.history[1].timestamp);
+
+    // Verify updatedAt was updated
+    assert.ok(new Date(result.updatedAt).getTime() >= new Date(existingState.updatedAt).getTime());
+
+    await stateManager.close();
+});
+
+test('updateTaskState publishes real-time event', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-event-update',
+        issueRef: { number: 88, repoOwner: 'event-owner', repoName: 'event-repo' },
+        correlationId: 'corr-event',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    await stateManager.updateTaskState('task-event-update', TaskStates.CLAUDE_EXECUTION, {
+        reason: 'Claude execution started'
+    });
+
+    // Verify event was published
+    assert.strictEqual(mockPublishTaskUpdate.mock.calls.length, 1);
+    const eventCall = mockPublishTaskUpdate.mock.calls[0];
+    const eventPayload = eventCall.arguments[0] as {
+        taskId: string;
+        state: string;
+        previousState: string;
+        repository: string;
+        issueNumber: number;
+        metadata?: { attempts: number; reason?: string };
+    };
+
+    assert.strictEqual(eventPayload.taskId, 'task-event-update');
+    assert.strictEqual(eventPayload.state, TaskStates.CLAUDE_EXECUTION);
+    assert.strictEqual(eventPayload.previousState, TaskStates.PENDING);
+    assert.strictEqual(eventPayload.repository, 'event-owner/event-repo');
+    assert.strictEqual(eventPayload.issueNumber, 88);
+    assert.strictEqual(eventPayload.metadata?.reason, 'Claude execution started');
+
+    await stateManager.close();
+});
+
+test('updateTaskState increments attempts on retry', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-retry',
+        issueRef: { number: 50, repoOwner: 'retry-owner', repoName: 'retry-repo' },
+        correlationId: 'corr-retry',
+        state: TaskStates.FAILED,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 1,
+        history: [
+            { state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' },
+            { state: TaskStates.FAILED, timestamp: new Date().toISOString(), reason: 'First failure' }
+        ]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.updateTaskState('task-retry', TaskStates.PROCESSING, {
+        isRetry: true,
+        reason: 'Retrying task'
+    });
+
+    // Verify attempts was incremented
+    assert.strictEqual(result.attempts, 2);
+
+    await stateManager.close();
+});
+
+test('updateTaskState does not increment attempts when not a retry', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-no-retry',
+        issueRef: { number: 51, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-no-retry',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.updateTaskState('task-no-retry', TaskStates.PROCESSING, {
+        reason: 'Normal transition'
+    });
+
+    // Verify attempts was not incremented
+    assert.strictEqual(result.attempts, 0);
+
+    await stateManager.close();
+});
+
+test('updateTaskState stores error metadata', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-error',
+        issueRef: { number: 60, repoOwner: 'error-owner', repoName: 'error-repo' },
+        correlationId: 'corr-error',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.updateTaskState('task-error', TaskStates.FAILED, {
+        error: { message: 'Connection timeout', category: 'network' },
+        reason: 'Task failed due to network error'
+    });
+
+    // Verify error was stored
+    assert.ok(result.lastError);
+    assert.strictEqual(result.lastError.message, 'Connection timeout');
+    assert.strictEqual(result.lastError.category, 'network');
+    assert.ok(result.lastError.timestamp);
+
+    await stateManager.close();
+});
+
+test('updateTaskState uses default error category when not specified', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-error-default',
+        issueRef: { number: 61, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-default-error',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.updateTaskState('task-error-default', TaskStates.FAILED, {
+        error: { message: 'Unknown error' },
+        reason: 'Task failed'
+    });
+
+    // Verify default category 'unknown' is used
+    assert.ok(result.lastError);
+    assert.strictEqual(result.lastError.category, 'unknown');
+
+    await stateManager.close();
+});
+
+test('updateTaskState stores worktreeInfo metadata', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-worktree',
+        issueRef: { number: 70, repoOwner: 'wt-owner', repoName: 'wt-repo' },
+        correlationId: 'corr-worktree',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const worktreeInfo = { path: '/tmp/worktrees/task-70', branch: 'feature/task-70' };
+    const result = await stateManager.updateTaskState('task-worktree', TaskStates.PROCESSING, {
+        worktreeInfo,
+        reason: 'Worktree created'
+    });
+
+    // Verify worktreeInfo was stored
+    assert.deepStrictEqual(result.worktreeInfo, worktreeInfo);
+
+    await stateManager.close();
+});
+
+test('updateTaskState stores claudeResult metadata', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-claude',
+        issueRef: { number: 80, repoOwner: 'claude-owner', repoName: 'claude-repo' },
+        correlationId: 'corr-claude',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const claudeResult = { success: true, sessionId: 'session-abc123', executionTime: 45000 };
+    const result = await stateManager.updateTaskState('task-claude', TaskStates.POST_PROCESSING, {
+        claudeResult,
+        reason: 'Claude execution completed'
+    });
+
+    // Verify claudeResult was stored
+    assert.ok(result.claudeResult);
+    assert.strictEqual(result.claudeResult.success, true);
+    assert.strictEqual(result.claudeResult.sessionId, 'session-abc123');
+    assert.strictEqual(result.claudeResult.executionTime, 45000);
+
+    await stateManager.close();
+});
+
+test('updateTaskState stores prResult metadata', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-pr',
+        issueRef: { number: 90, repoOwner: 'pr-owner', repoName: 'pr-repo' },
+        correlationId: 'corr-pr',
+        state: TaskStates.POST_PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.POST_PROCESSING, timestamp: new Date().toISOString(), reason: 'Post-processing' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const prResult = { prNumber: 456, prUrl: 'https://github.com/pr-owner/pr-repo/pull/456' };
+    const result = await stateManager.updateTaskState('task-pr', TaskStates.COMPLETED, {
+        prResult,
+        reason: 'PR created successfully'
+    });
+
+    // Verify prResult was stored
+    assert.deepStrictEqual(result.prResult, prResult);
+
+    await stateManager.close();
+});
+
+test('updateTaskState persists to Redis with TTL renewal', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-redis-persist',
+        issueRef: { number: 100, repoOwner: 'redis-owner', repoName: 'redis-repo' },
+        correlationId: 'corr-redis',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    await stateManager.updateTaskState('task-redis-persist', TaskStates.PROCESSING);
+
+    // Verify Redis setex was called with correct key and TTL
+    assert.strictEqual(mockRedisInstance.setex.mock.calls.length, 1);
+    const setexCall = mockRedisInstance.setex.mock.calls[0];
+    assert.strictEqual(setexCall.arguments[0], `${TEST_KEY_PREFIX}task-redis-persist`);
+    assert.strictEqual(setexCall.arguments[1], TEST_STATE_EXPIRY);
+
+    // Verify state was stored correctly
+    const storedState = JSON.parse(setexCall.arguments[2] as string) as TaskStateData;
+    assert.strictEqual(storedState.state, TaskStates.PROCESSING);
+    assert.strictEqual(storedState.history.length, 2);
+
+    await stateManager.close();
+});
+
+test('updateTaskState inserts history record into database', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-db-history',
+        issueRef: { number: 110, repoOwner: 'db-owner', repoName: 'db-repo' },
+        correlationId: 'corr-db-history',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    await stateManager.updateTaskState('task-db-history', TaskStates.PROCESSING, {
+        reason: 'Starting processing',
+        historyMetadata: { customField: 'customValue' }
+    });
+
+    // Verify database history insert was called
+    assert.ok(mockDbHistoryInsert.mock.calls.length >= 1, 'Should insert into task_history table');
+
+    const insertCall = mockDbHistoryInsert.mock.calls[0];
+    const historyData = insertCall.arguments[0] as Record<string, unknown>;
+    assert.strictEqual(historyData.task_id, 'task-db-history');
+    assert.strictEqual(historyData.state, TaskStates.PROCESSING);
+    assert.strictEqual(historyData.reason, 'Starting processing');
+
+    // Verify metadata contains the custom field
+    const metadata = JSON.parse(historyData.metadata as string);
+    assert.strictEqual(metadata.customField, 'customValue');
+    assert.strictEqual(metadata.previousState, TaskStates.PENDING);
+
+    await stateManager.close();
+});
+
+test('updateTaskState uses default reason when not provided', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-default-reason',
+        issueRef: { number: 120, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-default-reason',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.updateTaskState('task-default-reason', TaskStates.PROCESSING);
+
+    // Verify default reason was used
+    assert.strictEqual(result.history[1].reason, `State changed from ${TaskStates.PENDING}`);
+
+    await stateManager.close();
+});
+
+test('updateTaskState stores historyMetadata in history entry', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-history-meta',
+        issueRef: { number: 130, repoOwner: 'meta-owner', repoName: 'meta-repo' },
+        correlationId: 'corr-history-meta',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Started' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.updateTaskState('task-history-meta', TaskStates.CLAUDE_EXECUTION, {
+        reason: 'Claude execution started',
+        historyMetadata: { sessionId: 'sess-123', conversationId: 'conv-456', model: 'claude-3' }
+    });
+
+    // Verify historyMetadata was stored in the history entry
+    const latestHistory = result.history[result.history.length - 1];
+    assert.ok(latestHistory.metadata);
+    assert.strictEqual(latestHistory.metadata.sessionId, 'sess-123');
+    assert.strictEqual(latestHistory.metadata.conversationId, 'conv-456');
+    assert.strictEqual(latestHistory.metadata.model, 'claude-3');
+
+    await stateManager.close();
+});
+
+test('updateTaskState handles database error gracefully', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-db-error-update',
+        issueRef: { number: 140, repoOwner: 'error-owner', repoName: 'error-repo' },
+        correlationId: 'corr-db-error',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockCorrelatedLogger.error.mock.resetCalls();
+
+    // Make db history insert throw an error
+    const originalHistoryInsert = mockDbHistoryInsert.mock.mockImplementation;
+    mockDbHistoryInsert.mock.mockImplementation(() => {
+        throw new Error('Database connection failed');
+    });
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    // Should not throw - database errors are caught and logged
+    const result = await stateManager.updateTaskState('task-db-error-update', TaskStates.PROCESSING, {
+        reason: 'Processing started'
+    });
+
+    // State should still be updated in Redis
+    assert.strictEqual(result.state, TaskStates.PROCESSING);
+    assert.strictEqual(result.history.length, 2);
+
+    // Verify error was logged
+    assert.ok(mockCorrelatedLogger.error.mock.calls.length >= 1, 'Error should be logged');
+
+    // Restore original mock
+    mockDbHistoryInsert.mock.mockImplementation(originalHistoryInsert);
+
+    await stateManager.close();
+});
+
+test('updateTaskState includes commitHash in database metadata', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-commit',
+        issueRef: { number: 150, repoOwner: 'commit-owner', repoName: 'commit-repo' },
+        correlationId: 'corr-commit',
+        state: TaskStates.POST_PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.POST_PROCESSING, timestamp: new Date().toISOString(), reason: 'Post-processing' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    await stateManager.updateTaskState('task-commit', TaskStates.COMPLETED, {
+        reason: 'Task completed',
+        commitHash: 'abc123def456'
+    });
+
+    // Verify commitHash is included in database metadata
+    const insertCall = mockDbHistoryInsert.mock.calls[0];
+    const historyData = insertCall.arguments[0] as Record<string, unknown>;
+    const metadata = JSON.parse(historyData.metadata as string);
+    assert.strictEqual(metadata.commitHash, 'abc123def456');
+
+    await stateManager.close();
+});
+
 // Force exit due to module-level initialization in @propr/core
 after(() => {
     process.exit(0);
