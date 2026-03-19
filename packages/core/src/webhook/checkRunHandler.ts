@@ -18,6 +18,9 @@ import type { CheckRunEvent } from '@octokit/webhooks-types';
 
 export { mergePR, type MergePROptions, type MergePRResult };
 
+// Export types and internal functions for testing
+export type { PRMergeContext };
+
 interface PRContext {
     owner: string;
     repoName: string;
@@ -76,7 +79,7 @@ async function handleEpicPRWithoutAutoMerge(ctx: PRMergeContext): Promise<void> 
 /**
  * Determines if a PR should be auto-merged based on labels.
  */
-async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
+export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
     const { owner, repoName, prNumber, prInfo, log } = ctx;
 
     if (isEpicBranch(prInfo.headBranch)) {
