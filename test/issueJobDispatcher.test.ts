@@ -902,3 +902,727 @@ describe('issueJobDispatcher - JobResult', () => {
         assert.strictEqual(result.jobsEnqueued, 0);
     });
 });
+
+describe('issueJobDispatcher - Label Resolution', () => {
+    /**
+     * Pure function for parsing the branch name from a base-* label.
+     * Mirrors the logic at line 108: l.substring('base-'.length)
+     */
+    function parseBranchFromBaseLabel(baseLabel: string): string {
+        return baseLabel.substring('base-'.length);
+    }
+
+    /**
+     * Pure function for parsing the LLM name from an llm-* label.
+     * Mirrors the logic at line 117: label.substring('llm-'.length)
+     */
+    function parseLlmFromLabel(llmLabel: string): string {
+        return llmLabel.substring('llm-'.length);
+    }
+
+    /**
+     * Mock resolution function for LLM labels.
+     * In production, this calls resolveLlmLabel() from @propr/core.
+     * Here we simulate the resolution logic for testing.
+     */
+    interface MockAgentConfig {
+        alias: string;
+        type: 'claude' | 'codex' | 'gemini';
+        defaultModel: string;
+        supportedModels: string[];
+    }
+
+    interface LlmLabelResolution {
+        agentAlias: string;
+        model: string;
+    }
+
+    const MODEL_ALIASES: Record<string, string> = {
+        'opus': 'claude-opus-4-5',
+        'opus4': 'claude-opus-4-5',
+        'sonnet': 'claude-sonnet-4-5',
+        'sonnet4': 'claude-sonnet-4-5',
+        'haiku': 'claude-haiku-4-5',
+        'haiku4': 'claude-haiku-4-5'
+    };
+
+    function mockResolveLlmLabel(
+        label: string,
+        agents: MockAgentConfig[],
+        defaultAgentAlias: string
+    ): LlmLabelResolution {
+        const lowerLabel = label.toLowerCase();
+
+        // Check if label matches an agent alias exactly
+        for (const agent of agents) {
+            if (agent.alias.toLowerCase() === lowerLabel) {
+                return {
+                    agentAlias: agent.alias,
+                    model: agent.defaultModel
+                };
+            }
+        }
+
+        // Check if label starts with an agent alias (e.g., "gemini-pro")
+        for (const agent of agents) {
+            const aliasLower = agent.alias.toLowerCase();
+            if (lowerLabel.startsWith(aliasLower + '-')) {
+                const modelPart = label.substring(aliasLower.length + 1);
+                // Find matching model
+                const matchedModel = agent.supportedModels.find(m =>
+                    m.toLowerCase().includes(modelPart.toLowerCase())
+                );
+                return {
+                    agentAlias: agent.alias,
+                    model: matchedModel || agent.defaultModel
+                };
+            }
+        }
+
+        // Check static MODEL_ALIASES
+        if (MODEL_ALIASES[lowerLabel]) {
+            return {
+                agentAlias: defaultAgentAlias,
+                model: MODEL_ALIASES[lowerLabel]
+            };
+        }
+
+        // Fall back to default agent with label as model name
+        return {
+            agentAlias: defaultAgentAlias,
+            model: label
+        };
+    }
+
+    /**
+     * Mock resolution function for custom labels.
+     * Custom labels are configured per-model in agent config.
+     */
+    interface MockAgentWithCustomLabels extends MockAgentConfig {
+        modelCustomLabels?: Record<string, string>;
+    }
+
+    function mockResolveCustomLabel(
+        label: string,
+        agents: MockAgentWithCustomLabels[]
+    ): LlmLabelResolution | null {
+        const lowerLabel = label.toLowerCase();
+
+        for (const agent of agents) {
+            if (agent.modelCustomLabels) {
+                for (const [modelId, customLabel] of Object.entries(agent.modelCustomLabels)) {
+                    if (customLabel && customLabel.toLowerCase() === lowerLabel) {
+                        return {
+                            agentAlias: agent.alias,
+                            model: modelId
+                        };
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    describe('parseBranchFromBaseLabel', () => {
+        test('should parse simple branch name', () => {
+            const branch = parseBranchFromBaseLabel('base-main');
+            assert.strictEqual(branch, 'main');
+        });
+
+        test('should parse develop branch', () => {
+            const branch = parseBranchFromBaseLabel('base-develop');
+            assert.strictEqual(branch, 'develop');
+        });
+
+        test('should parse feature branch with slashes', () => {
+            const branch = parseBranchFromBaseLabel('base-feature/new-feature');
+            assert.strictEqual(branch, 'feature/new-feature');
+        });
+
+        test('should parse epic branch with numbers', () => {
+            const branch = parseBranchFromBaseLabel('base-1092-epic-add-unit-q9c');
+            assert.strictEqual(branch, '1092-epic-add-unit-q9c');
+        });
+
+        test('should parse release branch', () => {
+            const branch = parseBranchFromBaseLabel('base-release/v2.0.0');
+            assert.strictEqual(branch, 'release/v2.0.0');
+        });
+
+        test('should handle branch names with multiple dashes', () => {
+            const branch = parseBranchFromBaseLabel('base-fix-bug-123-urgent');
+            assert.strictEqual(branch, 'fix-bug-123-urgent');
+        });
+
+        test('should handle branch names with underscores', () => {
+            const branch = parseBranchFromBaseLabel('base-my_feature_branch');
+            assert.strictEqual(branch, 'my_feature_branch');
+        });
+
+        test('should handle branch names with dots', () => {
+            const branch = parseBranchFromBaseLabel('base-v1.0.0-hotfix');
+            assert.strictEqual(branch, 'v1.0.0-hotfix');
+        });
+    });
+
+    describe('parseLlmFromLabel', () => {
+        test('should parse simple model alias', () => {
+            const llm = parseLlmFromLabel('llm-opus');
+            assert.strictEqual(llm, 'opus');
+        });
+
+        test('should parse model alias with version', () => {
+            const llm = parseLlmFromLabel('llm-sonnet4');
+            assert.strictEqual(llm, 'sonnet4');
+        });
+
+        test('should parse full model name', () => {
+            const llm = parseLlmFromLabel('llm-claude-opus-4-5');
+            assert.strictEqual(llm, 'claude-opus-4-5');
+        });
+
+        test('should parse agent-prefixed model', () => {
+            const llm = parseLlmFromLabel('llm-gemini-pro');
+            assert.strictEqual(llm, 'gemini-pro');
+        });
+
+        test('should parse model with date suffix', () => {
+            const llm = parseLlmFromLabel('llm-claude-opus-4-5-20251101');
+            assert.strictEqual(llm, 'claude-opus-4-5-20251101');
+        });
+
+        test('should handle codex models', () => {
+            const llm = parseLlmFromLabel('llm-codex-mini');
+            assert.strictEqual(llm, 'codex-mini');
+        });
+    });
+
+    describe('mockResolveLlmLabel (agent + model resolution)', () => {
+        const mockAgents: MockAgentConfig[] = [
+            {
+                alias: 'claude',
+                type: 'claude',
+                defaultModel: 'claude-sonnet-4-5',
+                supportedModels: ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-haiku-4-5']
+            },
+            {
+                alias: 'gemini',
+                type: 'gemini',
+                defaultModel: 'gemini-2.5-pro',
+                supportedModels: ['gemini-2.5-pro', 'gemini-3-flash-preview']
+            },
+            {
+                alias: 'codex',
+                type: 'codex',
+                defaultModel: 'codex-mini',
+                supportedModels: ['codex-mini', 'gpt-4o']
+            }
+        ];
+
+        test('should resolve exact agent alias to default model', () => {
+            const result = mockResolveLlmLabel('claude', mockAgents, 'default');
+
+            assert.strictEqual(result.agentAlias, 'claude');
+            assert.strictEqual(result.model, 'claude-sonnet-4-5');
+        });
+
+        test('should resolve gemini agent alias to default model', () => {
+            const result = mockResolveLlmLabel('gemini', mockAgents, 'default');
+
+            assert.strictEqual(result.agentAlias, 'gemini');
+            assert.strictEqual(result.model, 'gemini-2.5-pro');
+        });
+
+        test('should resolve agent-prefixed model: gemini-pro', () => {
+            const result = mockResolveLlmLabel('gemini-pro', mockAgents, 'default');
+
+            assert.strictEqual(result.agentAlias, 'gemini');
+            assert.strictEqual(result.model, 'gemini-2.5-pro');
+        });
+
+        test('should resolve agent-prefixed model: claude-opus', () => {
+            const result = mockResolveLlmLabel('claude-opus', mockAgents, 'default');
+
+            assert.strictEqual(result.agentAlias, 'claude');
+            assert.strictEqual(result.model, 'claude-opus-4-5');
+        });
+
+        test('should resolve agent-prefixed model: claude-haiku', () => {
+            const result = mockResolveLlmLabel('claude-haiku', mockAgents, 'default');
+
+            assert.strictEqual(result.agentAlias, 'claude');
+            assert.strictEqual(result.model, 'claude-haiku-4-5');
+        });
+
+        test('should resolve static alias: opus', () => {
+            const result = mockResolveLlmLabel('opus', mockAgents, 'default');
+
+            assert.strictEqual(result.agentAlias, 'default');
+            assert.strictEqual(result.model, 'claude-opus-4-5');
+        });
+
+        test('should resolve static alias: sonnet', () => {
+            const result = mockResolveLlmLabel('sonnet', mockAgents, 'default');
+
+            assert.strictEqual(result.agentAlias, 'default');
+            assert.strictEqual(result.model, 'claude-sonnet-4-5');
+        });
+
+        test('should fall back to default agent for unknown label', () => {
+            const result = mockResolveLlmLabel('unknown-model', mockAgents, 'default');
+
+            assert.strictEqual(result.agentAlias, 'default');
+            assert.strictEqual(result.model, 'unknown-model');
+        });
+
+        test('should be case-insensitive for agent alias', () => {
+            const result = mockResolveLlmLabel('CLAUDE', mockAgents, 'default');
+
+            assert.strictEqual(result.agentAlias, 'claude');
+            assert.strictEqual(result.model, 'claude-sonnet-4-5');
+        });
+
+        test('should be case-insensitive for static aliases', () => {
+            const result = mockResolveLlmLabel('OPUS', mockAgents, 'default');
+
+            assert.strictEqual(result.agentAlias, 'default');
+            assert.strictEqual(result.model, 'claude-opus-4-5');
+        });
+    });
+
+    describe('mockResolveCustomLabel (custom agent label resolution)', () => {
+        const mockAgentsWithCustomLabels: MockAgentWithCustomLabels[] = [
+            {
+                alias: 'claude-prod',
+                type: 'claude',
+                defaultModel: 'claude-sonnet-4-5',
+                supportedModels: ['claude-opus-4-5', 'claude-sonnet-4-5'],
+                modelCustomLabels: {
+                    'claude-opus-4-5': 'my-opus-bot',
+                    'claude-sonnet-4-5': 'my-sonnet-helper'
+                }
+            },
+            {
+                alias: 'gemini-dev',
+                type: 'gemini',
+                defaultModel: 'gemini-2.5-pro',
+                supportedModels: ['gemini-2.5-pro'],
+                modelCustomLabels: {
+                    'gemini-2.5-pro': 'custom-gemini'
+                }
+            },
+            {
+                alias: 'claude-no-custom',
+                type: 'claude',
+                defaultModel: 'claude-sonnet-4-5',
+                supportedModels: ['claude-sonnet-4-5']
+                // No modelCustomLabels
+            }
+        ];
+
+        test('should resolve custom label to specific agent and model', () => {
+            const result = mockResolveCustomLabel('my-opus-bot', mockAgentsWithCustomLabels);
+
+            assert.ok(result !== null);
+            assert.strictEqual(result.agentAlias, 'claude-prod');
+            assert.strictEqual(result.model, 'claude-opus-4-5');
+        });
+
+        test('should resolve another custom label', () => {
+            const result = mockResolveCustomLabel('my-sonnet-helper', mockAgentsWithCustomLabels);
+
+            assert.ok(result !== null);
+            assert.strictEqual(result.agentAlias, 'claude-prod');
+            assert.strictEqual(result.model, 'claude-sonnet-4-5');
+        });
+
+        test('should resolve gemini custom label', () => {
+            const result = mockResolveCustomLabel('custom-gemini', mockAgentsWithCustomLabels);
+
+            assert.ok(result !== null);
+            assert.strictEqual(result.agentAlias, 'gemini-dev');
+            assert.strictEqual(result.model, 'gemini-2.5-pro');
+        });
+
+        test('should return null for non-matching label', () => {
+            const result = mockResolveCustomLabel('unknown-label', mockAgentsWithCustomLabels);
+
+            assert.strictEqual(result, null);
+        });
+
+        test('should be case-insensitive', () => {
+            const result = mockResolveCustomLabel('MY-OPUS-BOT', mockAgentsWithCustomLabels);
+
+            assert.ok(result !== null);
+            assert.strictEqual(result.agentAlias, 'claude-prod');
+            assert.strictEqual(result.model, 'claude-opus-4-5');
+        });
+
+        test('should handle agents without custom labels gracefully', () => {
+            const result = mockResolveCustomLabel('claude-no-custom', mockAgentsWithCustomLabels);
+
+            // This should not match because 'claude-no-custom' is an alias, not a custom label
+            assert.strictEqual(result, null);
+        });
+    });
+
+    describe('label resolution integration scenarios', () => {
+        const mockAgents: MockAgentWithCustomLabels[] = [
+            {
+                alias: 'claude',
+                type: 'claude',
+                defaultModel: 'claude-sonnet-4-5',
+                supportedModels: ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-haiku-4-5'],
+                modelCustomLabels: {
+                    'claude-opus-4-5': 'enterprise-bot'
+                }
+            },
+            {
+                alias: 'gemini',
+                type: 'gemini',
+                defaultModel: 'gemini-2.5-pro',
+                supportedModels: ['gemini-2.5-pro', 'gemini-3-flash-preview']
+            }
+        ];
+
+        test('should correctly build agentModelsToProcess from mixed labels', () => {
+            const labels = ['AI', 'llm-opus', 'llm-gemini', 'enterprise-bot', 'bug'];
+            const agentModelsToProcess: { agentAlias: string; model: string; label: string | null }[] = [];
+
+            // Extract and process llm- labels
+            const llmLabels = labels.filter(l => l.startsWith('llm-'));
+            for (const label of llmLabels) {
+                const llmPart = label.substring('llm-'.length);
+                const resolution = mockResolveLlmLabel(llmPart, mockAgents, 'default');
+                agentModelsToProcess.push({
+                    agentAlias: resolution.agentAlias,
+                    model: resolution.model,
+                    label
+                });
+            }
+
+            // Extract and process custom labels
+            const customLabels = ['enterprise-bot']; // configured custom labels
+            const customLabelMatches = labels.filter(l =>
+                customLabels.some(cl => cl.toLowerCase() === l.toLowerCase())
+            );
+            for (const label of customLabelMatches) {
+                const resolution = mockResolveCustomLabel(label, mockAgents);
+                if (resolution) {
+                    agentModelsToProcess.push({
+                        agentAlias: resolution.agentAlias,
+                        model: resolution.model,
+                        label
+                    });
+                }
+            }
+
+            // Should have 3 agent models: opus, gemini, enterprise-bot
+            assert.strictEqual(agentModelsToProcess.length, 3);
+
+            // Verify llm-opus resolved correctly
+            const opusEntry = agentModelsToProcess.find(a => a.label === 'llm-opus');
+            assert.ok(opusEntry);
+            assert.strictEqual(opusEntry.model, 'claude-opus-4-5');
+
+            // Verify llm-gemini resolved correctly
+            const geminiEntry = agentModelsToProcess.find(a => a.label === 'llm-gemini');
+            assert.ok(geminiEntry);
+            assert.strictEqual(geminiEntry.agentAlias, 'gemini');
+            assert.strictEqual(geminiEntry.model, 'gemini-2.5-pro');
+
+            // Verify enterprise-bot resolved correctly
+            const customEntry = agentModelsToProcess.find(a => a.label === 'enterprise-bot');
+            assert.ok(customEntry);
+            assert.strictEqual(customEntry.agentAlias, 'claude');
+            assert.strictEqual(customEntry.model, 'claude-opus-4-5');
+        });
+
+        test('should process real-world issue labels scenario', () => {
+            // Scenario: Issue with base label and multiple model labels
+            const labels = ['AI', 'base-1092-epic-add-unit-q9c', 'auto-merge', 'propr-planned', 'llm-claude-opus-4-5-20251101'];
+            const defaultBranch = 'main';
+
+            // Extract bases
+            const baseLabels = labels.filter(l => l.startsWith('base-'));
+            const basesToProcess = baseLabels.length > 0
+                ? baseLabels.map(l => ({
+                    branch: l.substring('base-'.length),
+                    label: l
+                }))
+                : [{ branch: defaultBranch, label: null }];
+
+            assert.strictEqual(basesToProcess.length, 1);
+            assert.strictEqual(basesToProcess[0].branch, '1092-epic-add-unit-q9c');
+            assert.strictEqual(basesToProcess[0].label, 'base-1092-epic-add-unit-q9c');
+
+            // Extract LLM labels
+            const llmLabels = labels.filter(l => l.startsWith('llm-'));
+            assert.deepStrictEqual(llmLabels, ['llm-claude-opus-4-5-20251101']);
+        });
+
+        test('should handle issue with no special labels (default agent scenario)', () => {
+            const labels = ['AI', 'bug', 'enhancement'];
+            const defaultBranch = 'main';
+            const configuredCustomLabels: string[] = [];
+
+            // Extract bases
+            const baseLabels = labels.filter(l => l.startsWith('base-'));
+            const basesToProcess = baseLabels.length > 0
+                ? baseLabels.map(l => ({
+                    branch: l.substring('base-'.length),
+                    label: l
+                }))
+                : [{ branch: defaultBranch, label: null }];
+
+            // Extract LLM labels
+            const llmLabels = labels.filter(l => l.startsWith('llm-'));
+
+            // Find custom label matches
+            const customLabelMatches = labels.filter(l =>
+                configuredCustomLabels.some(cl => cl.toLowerCase() === l.toLowerCase())
+            );
+
+            // Should use default agent
+            const shouldUseDefault = llmLabels.length === 0 && customLabelMatches.length === 0;
+
+            assert.strictEqual(basesToProcess.length, 1);
+            assert.strictEqual(basesToProcess[0].branch, 'main');
+            assert.strictEqual(basesToProcess[0].label, null);
+            assert.strictEqual(llmLabels.length, 0);
+            assert.strictEqual(customLabelMatches.length, 0);
+            assert.strictEqual(shouldUseDefault, true);
+        });
+    });
+});
+
+describe('issueJobDispatcher - Matrix Expansion Edge Cases', () => {
+    interface BaseToProcess {
+        branch: string;
+        label: string | null;
+    }
+
+    interface AgentModelToProcess {
+        agentAlias: string;
+        model: string;
+        label: string | null;
+    }
+
+    /**
+     * Generates all combinations for matrix expansion.
+     * This mirrors the nested loop at lines 164-196 of issueJobDispatcher.ts.
+     */
+    function generateMatrixCombinations(
+        bases: BaseToProcess[],
+        agents: AgentModelToProcess[]
+    ): Array<{ base: BaseToProcess; agent: AgentModelToProcess }> {
+        const combinations: Array<{ base: BaseToProcess; agent: AgentModelToProcess }> = [];
+
+        for (const base of bases) {
+            for (const agent of agents) {
+                combinations.push({ base, agent });
+            }
+        }
+
+        return combinations;
+    }
+
+    describe('generateMatrixCombinations', () => {
+        test('should generate 1 combination for 1×1', () => {
+            const bases: BaseToProcess[] = [{ branch: 'main', label: null }];
+            const agents: AgentModelToProcess[] = [
+                { agentAlias: 'claude', model: 'sonnet', label: null }
+            ];
+
+            const combos = generateMatrixCombinations(bases, agents);
+
+            assert.strictEqual(combos.length, 1);
+            assert.strictEqual(combos[0].base.branch, 'main');
+            assert.strictEqual(combos[0].agent.agentAlias, 'claude');
+        });
+
+        test('should generate 4 combinations for 2×2', () => {
+            const bases: BaseToProcess[] = [
+                { branch: 'main', label: 'base-main' },
+                { branch: 'develop', label: 'base-develop' }
+            ];
+            const agents: AgentModelToProcess[] = [
+                { agentAlias: 'claude', model: 'opus', label: 'llm-opus' },
+                { agentAlias: 'claude', model: 'sonnet', label: 'llm-sonnet' }
+            ];
+
+            const combos = generateMatrixCombinations(bases, agents);
+
+            assert.strictEqual(combos.length, 4);
+
+            // Verify all combinations exist
+            const hasMainOpus = combos.some(c => c.base.branch === 'main' && c.agent.model === 'opus');
+            const hasMainSonnet = combos.some(c => c.base.branch === 'main' && c.agent.model === 'sonnet');
+            const hasDevelopOpus = combos.some(c => c.base.branch === 'develop' && c.agent.model === 'opus');
+            const hasDevelopSonnet = combos.some(c => c.base.branch === 'develop' && c.agent.model === 'sonnet');
+
+            assert.strictEqual(hasMainOpus, true);
+            assert.strictEqual(hasMainSonnet, true);
+            assert.strictEqual(hasDevelopOpus, true);
+            assert.strictEqual(hasDevelopSonnet, true);
+        });
+
+        test('should generate 6 combinations for 3×2', () => {
+            const bases: BaseToProcess[] = [
+                { branch: 'main', label: null },
+                { branch: 'develop', label: null },
+                { branch: 'staging', label: null }
+            ];
+            const agents: AgentModelToProcess[] = [
+                { agentAlias: 'claude', model: 'opus', label: null },
+                { agentAlias: 'gemini', model: 'pro', label: null }
+            ];
+
+            const combos = generateMatrixCombinations(bases, agents);
+
+            assert.strictEqual(combos.length, 6);
+        });
+
+        test('should generate 9 combinations for 3×3', () => {
+            const bases: BaseToProcess[] = [
+                { branch: 'main', label: null },
+                { branch: 'develop', label: null },
+                { branch: 'staging', label: null }
+            ];
+            const agents: AgentModelToProcess[] = [
+                { agentAlias: 'claude', model: 'opus', label: null },
+                { agentAlias: 'claude', model: 'sonnet', label: null },
+                { agentAlias: 'gemini', model: 'pro', label: null }
+            ];
+
+            const combos = generateMatrixCombinations(bases, agents);
+
+            assert.strictEqual(combos.length, 9);
+        });
+
+        test('should generate 0 combinations when bases is empty', () => {
+            const bases: BaseToProcess[] = [];
+            const agents: AgentModelToProcess[] = [
+                { agentAlias: 'claude', model: 'opus', label: null }
+            ];
+
+            const combos = generateMatrixCombinations(bases, agents);
+
+            assert.strictEqual(combos.length, 0);
+        });
+
+        test('should generate 0 combinations when agents is empty', () => {
+            const bases: BaseToProcess[] = [{ branch: 'main', label: null }];
+            const agents: AgentModelToProcess[] = [];
+
+            const combos = generateMatrixCombinations(bases, agents);
+
+            assert.strictEqual(combos.length, 0);
+        });
+
+        test('should preserve label information in combinations', () => {
+            const bases: BaseToProcess[] = [
+                { branch: '1092-epic', label: 'base-1092-epic' }
+            ];
+            const agents: AgentModelToProcess[] = [
+                { agentAlias: 'claude-prod', model: 'claude-opus-4-5-20251101', label: 'llm-claude-opus-4-5-20251101' }
+            ];
+
+            const combos = generateMatrixCombinations(bases, agents);
+
+            assert.strictEqual(combos.length, 1);
+            assert.strictEqual(combos[0].base.label, 'base-1092-epic');
+            assert.strictEqual(combos[0].agent.label, 'llm-claude-opus-4-5-20251101');
+        });
+
+        test('should handle mixed custom and llm labels in matrix', () => {
+            const bases: BaseToProcess[] = [{ branch: 'main', label: null }];
+            const agents: AgentModelToProcess[] = [
+                { agentAlias: 'claude', model: 'opus', label: 'llm-opus' },
+                { agentAlias: 'claude-prod', model: 'claude-opus-4-5', label: 'enterprise-bot' }  // custom label
+            ];
+
+            const combos = generateMatrixCombinations(bases, agents);
+
+            assert.strictEqual(combos.length, 2);
+
+            const llmCombo = combos.find(c => c.agent.label === 'llm-opus');
+            const customCombo = combos.find(c => c.agent.label === 'enterprise-bot');
+
+            assert.ok(llmCombo);
+            assert.ok(customCombo);
+        });
+    });
+
+    describe('complex matrix expansion scenarios', () => {
+        test('should handle 5 bases × 4 agents = 20 jobs', () => {
+            const bases: BaseToProcess[] = [
+                { branch: 'main', label: null },
+                { branch: 'develop', label: null },
+                { branch: 'staging', label: null },
+                { branch: 'qa', label: null },
+                { branch: 'production', label: null }
+            ];
+            const agents: AgentModelToProcess[] = [
+                { agentAlias: 'claude', model: 'opus', label: null },
+                { agentAlias: 'claude', model: 'sonnet', label: null },
+                { agentAlias: 'gemini', model: 'pro', label: null },
+                { agentAlias: 'codex', model: 'mini', label: null }
+            ];
+
+            const combos = generateMatrixCombinations(bases, agents);
+
+            assert.strictEqual(combos.length, 20);
+        });
+
+        test('should order combinations correctly: bases first, then agents', () => {
+            const bases: BaseToProcess[] = [
+                { branch: 'A', label: null },
+                { branch: 'B', label: null }
+            ];
+            const agents: AgentModelToProcess[] = [
+                { agentAlias: 'agent1', model: 'model1', label: null },
+                { agentAlias: 'agent2', model: 'model2', label: null }
+            ];
+
+            const combos = generateMatrixCombinations(bases, agents);
+
+            // Should be ordered: A-agent1, A-agent2, B-agent1, B-agent2
+            assert.strictEqual(combos[0].base.branch, 'A');
+            assert.strictEqual(combos[0].agent.agentAlias, 'agent1');
+
+            assert.strictEqual(combos[1].base.branch, 'A');
+            assert.strictEqual(combos[1].agent.agentAlias, 'agent2');
+
+            assert.strictEqual(combos[2].base.branch, 'B');
+            assert.strictEqual(combos[2].agent.agentAlias, 'agent1');
+
+            assert.strictEqual(combos[3].base.branch, 'B');
+            assert.strictEqual(combos[3].agent.agentAlias, 'agent2');
+        });
+
+        test('should generate unique job IDs for all matrix combinations', () => {
+            const issueRef = { repoOwner: 'org', repoName: 'repo', number: 100 };
+            const bases: BaseToProcess[] = [
+                { branch: 'main', label: null },
+                { branch: 'develop', label: null }
+            ];
+            const agents: AgentModelToProcess[] = [
+                { agentAlias: 'claude', model: 'opus', label: null },
+                { agentAlias: 'gemini', model: 'pro', label: null }
+            ];
+
+            const jobIds = new Set<string>();
+            const combos = generateMatrixCombinations(bases, agents);
+
+            for (const combo of combos) {
+                const jobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${combo.agent.agentAlias}-${combo.agent.model}-${combo.base.branch}`;
+                jobIds.add(jobId);
+            }
+
+            // All 4 job IDs should be unique
+            assert.strictEqual(jobIds.size, 4);
+        });
+    });
+});
