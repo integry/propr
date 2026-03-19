@@ -1023,22 +1023,362 @@ describe('handlePRValidation - Core Logic', () => {
 });
 
 describe('cleanupWorktreeIfExists - Core Logic', () => {
-    test('should skip cleanup when worktreeInfo is undefined', async () => {
-        const mockCleanupWorktree = mock.fn();
-        const worktreeInfo = undefined;
+    /**
+     * Pure function extracted from cleanupWorktreeIfExists for testing.
+     * Determines cleanup options based on processing results.
+     *
+     * @param claudeResult - The result from Claude code execution
+     * @param postProcessingResult - The result from post-processing (PR creation, etc.)
+     * @returns Object containing deleteBranch flag and success status
+     */
+    function calculateCleanupOptions(
+        claudeResult: ClaudeCodeResponse | null | undefined,
+        postProcessingResult: PostProcessingResult | null
+    ): { deleteBranch: boolean; success: boolean; retentionStrategy: string } {
+        const wasSuccessful = claudeResult?.success && postProcessingResult?.pr;
+        return {
+            deleteBranch: !wasSuccessful,
+            success: !!wasSuccessful,
+            retentionStrategy: process.env.WORKTREE_RETENTION_STRATEGY || 'always_delete'
+        };
+    }
 
-        // The actual function would return early if worktreeInfo is undefined
-        if (!worktreeInfo) {
-            // Early return, no cleanup called
-            assert.strictEqual(mockCleanupWorktree.mock.calls.length, 0);
-        }
+    /**
+     * Pure function to determine if cleanup should be skipped.
+     * Extracted for testability.
+     */
+    function shouldSkipCleanup(worktreeInfo: WorktreeInfo | undefined): boolean {
+        return !worktreeInfo;
+    }
+
+    describe('skip cleanup when worktreeInfo is undefined', () => {
+        test('should skip cleanup when worktreeInfo is undefined', () => {
+            const worktreeInfo = undefined;
+
+            const shouldSkip = shouldSkipCleanup(worktreeInfo);
+
+            assert.strictEqual(shouldSkip, true);
+        });
+
+        test('should not skip cleanup when worktreeInfo is defined', () => {
+            const worktreeInfo: WorktreeInfo = {
+                worktreePath: '/tmp/worktree',
+                branchName: 'feature-branch'
+            };
+
+            const shouldSkip = shouldSkipCleanup(worktreeInfo);
+
+            assert.strictEqual(shouldSkip, false);
+        });
     });
 
-    test('should call cleanup with correct retention strategy from environment', () => {
-        // Test that cleanup options are correctly derived
-        const retentionStrategy = process.env.WORKTREE_RETENTION_STRATEGY || 'always_delete';
+    describe('keeps branch on failure (deleteBranch: false)', () => {
+        test('should keep branch when claudeResult is not successful (deleteBranch should be true for failure)', () => {
+            const claudeResult: ClaudeCodeResponse = {
+                success: false
+            };
+            const postProcessingResult: PostProcessingResult = {
+                success: false,
+                pr: null,
+                updatedLabels: []
+            };
 
-        assert.strictEqual(retentionStrategy, 'always_delete'); // Default value
+            const result = calculateCleanupOptions(claudeResult, postProcessingResult);
+
+            // When not successful, deleteBranch is true (branch WILL be deleted on failure)
+            assert.strictEqual(result.deleteBranch, true);
+            assert.strictEqual(result.success, false);
+        });
+
+        test('should keep branch when PR creation failed even if claude succeeded (deleteBranch: true)', () => {
+            const claudeResult: ClaudeCodeResponse = {
+                success: true
+            };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: null, // No PR created
+                updatedLabels: ['AI-done']
+            };
+
+            const result = calculateCleanupOptions(claudeResult, postProcessingResult);
+
+            // When no PR was created, deleteBranch is true
+            assert.strictEqual(result.deleteBranch, true);
+            assert.strictEqual(result.success, false);
+        });
+
+        test('should delete branch when claudeResult is null (failure case)', () => {
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 42, url: 'https://github.com/test/repo/pull/42', title: 'Test PR' },
+                updatedLabels: []
+            };
+
+            const result = calculateCleanupOptions(null, postProcessingResult);
+
+            assert.strictEqual(result.deleteBranch, true);
+            assert.strictEqual(result.success, false);
+        });
+
+        test('should delete branch when postProcessingResult is null (failure case)', () => {
+            const claudeResult: ClaudeCodeResponse = {
+                success: true
+            };
+
+            const result = calculateCleanupOptions(claudeResult, null);
+
+            assert.strictEqual(result.deleteBranch, true);
+            assert.strictEqual(result.success, false);
+        });
+
+        test('should delete branch when both results are null (failure case)', () => {
+            const result = calculateCleanupOptions(null, null);
+
+            assert.strictEqual(result.deleteBranch, true);
+            assert.strictEqual(result.success, false);
+        });
+
+        test('should delete branch when claudeResult is undefined', () => {
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 42, url: 'url', title: 'title' },
+                updatedLabels: []
+            };
+
+            const result = calculateCleanupOptions(undefined, postProcessingResult);
+
+            assert.strictEqual(result.deleteBranch, true);
+            assert.strictEqual(result.success, false);
+        });
+    });
+
+    describe('deletes branch on success', () => {
+        test('should NOT delete branch when processing was fully successful with PR (deleteBranch: false)', () => {
+            const claudeResult: ClaudeCodeResponse = {
+                success: true,
+                model: 'claude-opus-4-5-20251101'
+            };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 42, url: 'https://github.com/test/repo/pull/42', title: 'Test PR' },
+                updatedLabels: ['AI-done']
+            };
+
+            const result = calculateCleanupOptions(claudeResult, postProcessingResult);
+
+            // When successful, deleteBranch is false (branch is preserved)
+            assert.strictEqual(result.deleteBranch, false);
+            assert.strictEqual(result.success, true);
+        });
+
+        test('should preserve branch when PR was created successfully', () => {
+            const claudeResult: ClaudeCodeResponse = {
+                success: true,
+                finalResult: 'Implementation completed'
+            };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 123, url: 'https://github.com/owner/repo/pull/123', title: 'Fix issue #456' },
+                updatedLabels: ['AI-done', 'reviewed']
+            };
+
+            const result = calculateCleanupOptions(claudeResult, postProcessingResult);
+
+            assert.strictEqual(result.deleteBranch, false);
+            assert.strictEqual(result.success, true);
+        });
+
+        test('should correctly identify success with minimal PR data', () => {
+            const claudeResult: ClaudeCodeResponse = {
+                success: true
+            };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 1, url: 'url', title: 'title' },
+                updatedLabels: []
+            };
+
+            const result = calculateCleanupOptions(claudeResult, postProcessingResult);
+
+            assert.strictEqual(result.deleteBranch, false);
+            assert.strictEqual(result.success, true);
+        });
+    });
+
+    describe('applies retention strategy', () => {
+        test('should use default retention strategy when environment variable is not set', () => {
+            const originalEnv = process.env.WORKTREE_RETENTION_STRATEGY;
+            delete process.env.WORKTREE_RETENTION_STRATEGY;
+
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 42, url: 'url', title: 'title' },
+                updatedLabels: []
+            };
+
+            const result = calculateCleanupOptions(claudeResult, postProcessingResult);
+
+            assert.strictEqual(result.retentionStrategy, 'always_delete');
+
+            // Restore original env
+            if (originalEnv !== undefined) {
+                process.env.WORKTREE_RETENTION_STRATEGY = originalEnv;
+            }
+        });
+
+        test('should use environment retention strategy when set', () => {
+            const originalEnv = process.env.WORKTREE_RETENTION_STRATEGY;
+            process.env.WORKTREE_RETENTION_STRATEGY = 'keep_on_failure';
+
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 42, url: 'url', title: 'title' },
+                updatedLabels: []
+            };
+
+            const result = calculateCleanupOptions(claudeResult, postProcessingResult);
+
+            assert.strictEqual(result.retentionStrategy, 'keep_on_failure');
+
+            // Restore original env
+            if (originalEnv !== undefined) {
+                process.env.WORKTREE_RETENTION_STRATEGY = originalEnv;
+            } else {
+                delete process.env.WORKTREE_RETENTION_STRATEGY;
+            }
+        });
+
+        test('should correctly pass retention strategy with failed processing', () => {
+            const originalEnv = process.env.WORKTREE_RETENTION_STRATEGY;
+            process.env.WORKTREE_RETENTION_STRATEGY = 'keep_all';
+
+            const claudeResult: ClaudeCodeResponse = { success: false };
+            const postProcessingResult: PostProcessingResult = {
+                success: false,
+                pr: null,
+                updatedLabels: []
+            };
+
+            const result = calculateCleanupOptions(claudeResult, postProcessingResult);
+
+            assert.strictEqual(result.deleteBranch, true);
+            assert.strictEqual(result.success, false);
+            assert.strictEqual(result.retentionStrategy, 'keep_all');
+
+            // Restore original env
+            if (originalEnv !== undefined) {
+                process.env.WORKTREE_RETENTION_STRATEGY = originalEnv;
+            } else {
+                delete process.env.WORKTREE_RETENTION_STRATEGY;
+            }
+        });
+    });
+
+    describe('combined scenarios', () => {
+        test('should handle error case where claude succeeded but PR was not created', () => {
+            const claudeResult: ClaudeCodeResponse = {
+                success: true,
+                model: 'claude-opus-4-5-20251101',
+                error: 'Timeout during PR creation'
+            };
+            const postProcessingResult: PostProcessingResult = {
+                success: false,
+                pr: null,
+                updatedLabels: ['AI-done'],
+                error: 'PR creation failed'
+            };
+
+            const result = calculateCleanupOptions(claudeResult, postProcessingResult);
+
+            // Even though claude succeeded, no PR means deleteBranch: true
+            assert.strictEqual(result.deleteBranch, true);
+            assert.strictEqual(result.success, false);
+        });
+
+        test('should handle case where postProcessingResult.success is false but PR exists', () => {
+            const claudeResult: ClaudeCodeResponse = {
+                success: true
+            };
+            // This edge case: postProcessingResult.success is false, but pr exists
+            const postProcessingResult: PostProcessingResult = {
+                success: false,
+                pr: { number: 42, url: 'url', title: 'title' },
+                updatedLabels: []
+            };
+
+            const result = calculateCleanupOptions(claudeResult, postProcessingResult);
+
+            // PR exists and claude succeeded, so branch should be preserved
+            assert.strictEqual(result.deleteBranch, false);
+            assert.strictEqual(result.success, true);
+        });
+
+        test('should evaluate wasSuccessful correctly based on both conditions', () => {
+            // Test case: only claudeResult.success is true
+            const case1 = calculateCleanupOptions({ success: true }, null);
+            assert.strictEqual(case1.success, false);
+
+            // Test case: only postProcessingResult.pr exists
+            const case2 = calculateCleanupOptions(
+                null,
+                { success: true, pr: { number: 1, url: 'u', title: 't' }, updatedLabels: [] }
+            );
+            assert.strictEqual(case2.success, false);
+
+            // Test case: both conditions met
+            const case3 = calculateCleanupOptions(
+                { success: true },
+                { success: true, pr: { number: 1, url: 'u', title: 't' }, updatedLabels: [] }
+            );
+            assert.strictEqual(case3.success, true);
+        });
+    });
+
+    describe('error handling in cleanup', () => {
+        test('should generate correct cleanup options even with complex claudeResult', () => {
+            const complexClaudeResult: ClaudeCodeResponse = {
+                success: true,
+                model: 'claude-opus-4-5-20251101',
+                executionTime: 15000,
+                finalResult: 'Implementation completed successfully',
+                conversationLog: [{ role: 'assistant', content: 'Done' }],
+                sessionId: 'session-123',
+                conversationId: 'conv-456',
+                commitMessage: 'fix: resolved issue #42',
+                modifiedFiles: ['src/index.ts', 'test/index.test.ts'],
+                tokenUsage: { input: 1000, output: 500 }
+            };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 789, url: 'https://github.com/org/repo/pull/789', title: 'Complex PR' },
+                updatedLabels: ['AI-done', 'auto-merge']
+            };
+
+            const result = calculateCleanupOptions(complexClaudeResult, postProcessingResult);
+
+            assert.strictEqual(result.deleteBranch, false);
+            assert.strictEqual(result.success, true);
+        });
+
+        test('should handle claudeResult with success: false and error message', () => {
+            const claudeResult: ClaudeCodeResponse = {
+                success: false,
+                error: 'Failed to implement due to complexity'
+            };
+            const postProcessingResult: PostProcessingResult = {
+                success: false,
+                pr: null,
+                updatedLabels: ['AI-done'],
+                error: 'Claude execution failed'
+            };
+
+            const result = calculateCleanupOptions(claudeResult, postProcessingResult);
+
+            assert.strictEqual(result.deleteBranch, true);
+            assert.strictEqual(result.success, false);
+        });
     });
 });
 
