@@ -1,7 +1,8 @@
 export { default as logger, generateCorrelationId, createCorrelatedLogger } from './utils/logger.js';
 export { handleError, withErrorHandling, safeAsync, makeIdempotent, categorizeError, ErrorCategories } from './utils/errorHandler.js';
 export type { ErrorCategory, ErrorDetails, ErrorHandlerOptions, IssueRef as ErrorIssueRef } from './utils/errorHandler.js';
-export { withRetry, retryConfigs } from './utils/retryHandler.js';
+export { withRetry, retryConfigs, calculateDelay } from './utils/retryHandler.js';
+export type { RetryConfig, RetryOptions } from './utils/retryHandler.js';
 export * from './utils/constants.js';
 export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './utils/llmMetrics.js';
 export { persistLlmLog, createLlmLogFromAnalysis } from './utils/llmLogger.js';
