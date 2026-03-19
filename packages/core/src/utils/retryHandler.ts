@@ -40,7 +40,7 @@ interface ErrorLike {
  * @param config - Retry configuration
  * @returns Delay in milliseconds
  */
-function calculateDelay(attempt: number, config: RetryConfig): number {
+export function calculateDelay(attempt: number, config: RetryConfig): number {
     const exponentialDelay = config.baseDelay * Math.pow(config.exponentialBase, attempt);
     let delay = Math.min(exponentialDelay, config.maxDelay);
 
