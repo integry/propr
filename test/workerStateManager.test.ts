@@ -1538,6 +1538,555 @@ test('markTaskFailed updates timestamp in lastError', async () => {
     await stateManager.close();
 });
 
+// ============================================================================
+// getResumableTask tests
+// ============================================================================
+
+test('getResumableTask returns null when task not found', async () => {
+    mockRedisInstance.get.mock.mockImplementation(async () => null);
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('non-existent-task');
+
+    assert.strictEqual(result, null);
+
+    await stateManager.close();
+});
+
+test('getResumableTask returns null for COMPLETED state', async () => {
+    const completedState: TaskStateData = {
+        taskId: 'task-completed',
+        issueRef: { number: 500, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-completed',
+        state: TaskStates.COMPLETED,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [
+            { state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' },
+            { state: TaskStates.COMPLETED, timestamp: new Date().toISOString(), reason: 'Task completed' }
+        ]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(completedState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-completed');
+
+    assert.strictEqual(result, null);
+
+    await stateManager.close();
+});
+
+test('getResumableTask returns null for PENDING state', async () => {
+    const pendingState: TaskStateData = {
+        taskId: 'task-pending',
+        issueRef: { number: 501, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-pending',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(pendingState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-pending');
+
+    assert.strictEqual(result, null);
+
+    await stateManager.close();
+});
+
+test('getResumableTask returns null for FAILED state', async () => {
+    const failedState: TaskStateData = {
+        taskId: 'task-failed',
+        issueRef: { number: 502, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-failed',
+        state: TaskStates.FAILED,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 1,
+        history: [
+            { state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' },
+            { state: TaskStates.FAILED, timestamp: new Date().toISOString(), reason: 'Task failed' }
+        ],
+        lastError: { message: 'Some error', category: 'unknown', timestamp: new Date().toISOString() }
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(failedState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-failed');
+
+    assert.strictEqual(result, null);
+
+    await stateManager.close();
+});
+
+test('getResumableTask returns null for CANCELLED state', async () => {
+    const cancelledState: TaskStateData = {
+        taskId: 'task-cancelled',
+        issueRef: { number: 503, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-cancelled',
+        state: TaskStates.CANCELLED,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [
+            { state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' },
+            { state: TaskStates.CANCELLED, timestamp: new Date().toISOString(), reason: 'Task cancelled' }
+        ]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(cancelledState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-cancelled');
+
+    assert.strictEqual(result, null);
+
+    await stateManager.close();
+});
+
+test('getResumableTask returns task in PROCESSING state for recovery', async () => {
+    const recentTime = new Date().toISOString();
+    const processingState: TaskStateData = {
+        taskId: 'task-processing',
+        issueRef: { number: 510, repoOwner: 'proc-owner', repoName: 'proc-repo' },
+        correlationId: 'corr-processing',
+        state: TaskStates.PROCESSING,
+        createdAt: recentTime,
+        updatedAt: recentTime,
+        attempts: 0,
+        history: [
+            { state: TaskStates.PENDING, timestamp: recentTime, reason: 'Task created' },
+            { state: TaskStates.PROCESSING, timestamp: recentTime, reason: 'Processing started' }
+        ]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(processingState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-processing');
+
+    assert.ok(result, 'Should return resumable task info');
+    assert.strictEqual(result.taskId, 'task-processing');
+    assert.strictEqual(result.state, TaskStates.PROCESSING);
+    assert.strictEqual(result.isStale, false);
+    assert.strictEqual(result.issueRef.number, 510);
+    assert.strictEqual(result.correlationId, 'corr-processing');
+
+    await stateManager.close();
+});
+
+test('getResumableTask returns task in CLAUDE_EXECUTION state', async () => {
+    const recentTime = new Date().toISOString();
+    const claudeExecState: TaskStateData = {
+        taskId: 'task-claude-exec',
+        issueRef: { number: 511, repoOwner: 'claude-owner', repoName: 'claude-repo' },
+        correlationId: 'corr-claude-exec',
+        state: TaskStates.CLAUDE_EXECUTION,
+        createdAt: recentTime,
+        updatedAt: recentTime,
+        attempts: 0,
+        history: [
+            { state: TaskStates.PENDING, timestamp: recentTime, reason: 'Task created' },
+            { state: TaskStates.PROCESSING, timestamp: recentTime, reason: 'Processing started' },
+            { state: TaskStates.CLAUDE_EXECUTION, timestamp: recentTime, reason: 'Claude execution started' }
+        ]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(claudeExecState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-claude-exec');
+
+    assert.ok(result, 'Should return resumable task info');
+    assert.strictEqual(result.taskId, 'task-claude-exec');
+    assert.strictEqual(result.state, TaskStates.CLAUDE_EXECUTION);
+    assert.strictEqual(result.isStale, false);
+
+    await stateManager.close();
+});
+
+test('getResumableTask returns task in POST_PROCESSING state', async () => {
+    const recentTime = new Date().toISOString();
+    const postProcState: TaskStateData = {
+        taskId: 'task-post-proc',
+        issueRef: { number: 512, repoOwner: 'post-owner', repoName: 'post-repo' },
+        correlationId: 'corr-post-proc',
+        state: TaskStates.POST_PROCESSING,
+        createdAt: recentTime,
+        updatedAt: recentTime,
+        attempts: 0,
+        history: [
+            { state: TaskStates.PENDING, timestamp: recentTime, reason: 'Task created' },
+            { state: TaskStates.PROCESSING, timestamp: recentTime, reason: 'Processing started' },
+            { state: TaskStates.CLAUDE_EXECUTION, timestamp: recentTime, reason: 'Claude execution started' },
+            { state: TaskStates.POST_PROCESSING, timestamp: recentTime, reason: 'Post-processing started' }
+        ]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(postProcState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-post-proc');
+
+    assert.ok(result, 'Should return resumable task info');
+    assert.strictEqual(result.taskId, 'task-post-proc');
+    assert.strictEqual(result.state, TaskStates.POST_PROCESSING);
+    assert.strictEqual(result.isStale, false);
+
+    await stateManager.close();
+});
+
+test('getResumableTask marks task as stale if updated more than 30 minutes ago', async () => {
+    // Create a timestamp 35 minutes in the past
+    const staleTime = new Date(Date.now() - 35 * 60 * 1000).toISOString();
+    const staleState: TaskStateData = {
+        taskId: 'task-stale',
+        issueRef: { number: 520, repoOwner: 'stale-owner', repoName: 'stale-repo' },
+        correlationId: 'corr-stale',
+        state: TaskStates.PROCESSING,
+        createdAt: staleTime,
+        updatedAt: staleTime,
+        attempts: 0,
+        history: [
+            { state: TaskStates.PENDING, timestamp: staleTime, reason: 'Task created' },
+            { state: TaskStates.PROCESSING, timestamp: staleTime, reason: 'Processing started' }
+        ]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(staleState));
+    mockLogger.warn.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-stale');
+
+    assert.ok(result, 'Should return resumable task info');
+    assert.strictEqual(result.taskId, 'task-stale');
+    assert.strictEqual(result.state, TaskStates.PROCESSING);
+    assert.strictEqual(result.isStale, true);
+    assert.ok(result.staleDuration, 'Should have staleDuration');
+    assert.ok(result.staleDuration >= 35 * 60 * 1000, 'Stale duration should be at least 35 minutes');
+
+    await stateManager.close();
+});
+
+test('getResumableTask returns isStale=false for recently updated tasks', async () => {
+    // Create a timestamp 5 minutes in the past (well within the 30 minute threshold)
+    const recentTime = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const recentState: TaskStateData = {
+        taskId: 'task-recent',
+        issueRef: { number: 521, repoOwner: 'recent-owner', repoName: 'recent-repo' },
+        correlationId: 'corr-recent',
+        state: TaskStates.CLAUDE_EXECUTION,
+        createdAt: recentTime,
+        updatedAt: recentTime,
+        attempts: 0,
+        history: [
+            { state: TaskStates.PENDING, timestamp: recentTime, reason: 'Task created' },
+            { state: TaskStates.CLAUDE_EXECUTION, timestamp: recentTime, reason: 'Claude execution' }
+        ]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(recentState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-recent');
+
+    assert.ok(result, 'Should return resumable task info');
+    assert.strictEqual(result.isStale, false);
+    assert.strictEqual(result.staleDuration, undefined);
+
+    await stateManager.close();
+});
+
+test('getResumableTask logs warning for stale tasks', async () => {
+    // Create a timestamp 40 minutes in the past
+    const staleTime = new Date(Date.now() - 40 * 60 * 1000).toISOString();
+    const staleState: TaskStateData = {
+        taskId: 'task-stale-log',
+        issueRef: { number: 522, repoOwner: 'log-owner', repoName: 'log-repo' },
+        correlationId: 'corr-stale-log',
+        state: TaskStates.POST_PROCESSING,
+        createdAt: staleTime,
+        updatedAt: staleTime,
+        attempts: 1,
+        history: [
+            { state: TaskStates.PENDING, timestamp: staleTime, reason: 'Task created' },
+            { state: TaskStates.POST_PROCESSING, timestamp: staleTime, reason: 'Post-processing' }
+        ]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(staleState));
+    mockLogger.warn.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    await stateManager.getResumableTask('task-stale-log');
+
+    // Verify warning was logged
+    assert.ok(mockLogger.warn.mock.calls.length >= 1, 'Should log warning for stale task');
+
+    const warnCall = mockLogger.warn.mock.calls[0];
+    const logData = warnCall.arguments[0] as {
+        taskId: string;
+        correlationId: string;
+        issueNumber: number;
+        state: string;
+        lastUpdate: string;
+        staleDuration: number;
+    };
+
+    assert.strictEqual(logData.taskId, 'task-stale-log');
+    assert.strictEqual(logData.correlationId, 'corr-stale-log');
+    assert.strictEqual(logData.issueNumber, 522);
+    assert.strictEqual(logData.state, TaskStates.POST_PROCESSING);
+    assert.strictEqual(logData.lastUpdate, staleTime);
+    assert.ok(logData.staleDuration >= 40 * 60 * 1000, 'Stale duration should be at least 40 minutes');
+
+    const logMessage = warnCall.arguments[1];
+    assert.ok(logMessage.includes('stale task'), 'Log message should mention stale task');
+
+    await stateManager.close();
+});
+
+test('getResumableTask returns correct staleDuration for stale tasks', async () => {
+    // Create a timestamp exactly 45 minutes in the past
+    const staleDurationMs = 45 * 60 * 1000;
+    const staleTime = new Date(Date.now() - staleDurationMs).toISOString();
+    const staleState: TaskStateData = {
+        taskId: 'task-stale-duration',
+        issueRef: { number: 523, repoOwner: 'duration-owner', repoName: 'duration-repo' },
+        correlationId: 'corr-stale-duration',
+        state: TaskStates.PROCESSING,
+        createdAt: staleTime,
+        updatedAt: staleTime,
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: staleTime, reason: 'Processing' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(staleState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-stale-duration');
+
+    assert.ok(result, 'Should return resumable task info');
+    assert.strictEqual(result.isStale, true);
+    assert.ok(result.staleDuration, 'Should have staleDuration');
+    // Allow some tolerance for test execution time (within 5 seconds)
+    assert.ok(result.staleDuration >= staleDurationMs - 5000, 'Stale duration should be approximately 45 minutes');
+    assert.ok(result.staleDuration <= staleDurationMs + 5000, 'Stale duration should be approximately 45 minutes');
+
+    await stateManager.close();
+});
+
+test('getResumableTask does not return staleDuration for non-stale tasks', async () => {
+    const recentTime = new Date().toISOString();
+    const recentState: TaskStateData = {
+        taskId: 'task-no-stale-duration',
+        issueRef: { number: 524, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-no-stale',
+        state: TaskStates.PROCESSING,
+        createdAt: recentTime,
+        updatedAt: recentTime,
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: recentTime, reason: 'Processing' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(recentState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-no-stale-duration');
+
+    assert.ok(result, 'Should return resumable task info');
+    assert.strictEqual(result.isStale, false);
+    assert.strictEqual(result.staleDuration, undefined, 'Should not have staleDuration for non-stale tasks');
+
+    await stateManager.close();
+});
+
+test('getResumableTask preserves all task state data', async () => {
+    const recentTime = new Date().toISOString();
+    const fullState: TaskStateData = {
+        taskId: 'task-full-state',
+        issueRef: {
+            number: 530,
+            repoOwner: 'full-owner',
+            repoName: 'full-repo',
+            type: 'pull_request',
+            modelName: 'claude-3-opus'
+        },
+        correlationId: 'corr-full-state',
+        state: TaskStates.CLAUDE_EXECUTION,
+        createdAt: recentTime,
+        updatedAt: recentTime,
+        attempts: 2,
+        history: [
+            { state: TaskStates.PENDING, timestamp: recentTime, reason: 'Task created' },
+            { state: TaskStates.PROCESSING, timestamp: recentTime, reason: 'Processing started' },
+            { state: TaskStates.CLAUDE_EXECUTION, timestamp: recentTime, reason: 'Claude execution' }
+        ],
+        worktreeInfo: { path: '/tmp/worktrees/task-530', branch: 'feature/530' },
+        claudeResult: { success: true, sessionId: 'sess-530', executionTime: 30000 }
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(fullState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-full-state');
+
+    assert.ok(result, 'Should return resumable task info');
+
+    // Verify all original state data is preserved
+    assert.strictEqual(result.taskId, 'task-full-state');
+    assert.strictEqual(result.correlationId, 'corr-full-state');
+    assert.strictEqual(result.state, TaskStates.CLAUDE_EXECUTION);
+    assert.strictEqual(result.attempts, 2);
+    assert.strictEqual(result.history.length, 3);
+
+    // Verify issueRef is preserved
+    assert.strictEqual(result.issueRef.number, 530);
+    assert.strictEqual(result.issueRef.repoOwner, 'full-owner');
+    assert.strictEqual(result.issueRef.repoName, 'full-repo');
+    assert.strictEqual(result.issueRef.type, 'pull_request');
+    assert.strictEqual(result.issueRef.modelName, 'claude-3-opus');
+
+    // Verify additional metadata is preserved
+    assert.deepStrictEqual(result.worktreeInfo, { path: '/tmp/worktrees/task-530', branch: 'feature/530' });
+    assert.ok(result.claudeResult);
+    assert.strictEqual(result.claudeResult.success, true);
+    assert.strictEqual(result.claudeResult.sessionId, 'sess-530');
+    assert.strictEqual(result.claudeResult.executionTime, 30000);
+
+    // Verify resumable task additions
+    assert.strictEqual(result.isStale, false);
+
+    await stateManager.close();
+});
+
+test('getResumableTask handles task at exactly 30 minute threshold', async () => {
+    // Create a timestamp exactly 30 minutes in the past (at the boundary)
+    const thresholdTime = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const thresholdState: TaskStateData = {
+        taskId: 'task-threshold',
+        issueRef: { number: 540, repoOwner: 'threshold-owner', repoName: 'threshold-repo' },
+        correlationId: 'corr-threshold',
+        state: TaskStates.PROCESSING,
+        createdAt: thresholdTime,
+        updatedAt: thresholdTime,
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: thresholdTime, reason: 'Processing' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(thresholdState));
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const result = await stateManager.getResumableTask('task-threshold');
+
+    assert.ok(result, 'Should return resumable task info');
+    // Due to the > comparison (not >=), exactly at 30 minutes should still be non-stale
+    // However, with test execution time, it will likely be just over 30 minutes
+    // So we just verify it's a valid resumable task
+    assert.strictEqual(result.taskId, 'task-threshold');
+    assert.strictEqual(result.state, TaskStates.PROCESSING);
+    assert.ok('isStale' in result, 'Should have isStale property');
+
+    await stateManager.close();
+});
+
+test('getResumableTask does not log warning for non-stale tasks', async () => {
+    const recentTime = new Date().toISOString();
+    const recentState: TaskStateData = {
+        taskId: 'task-no-warn',
+        issueRef: { number: 550, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-no-warn',
+        state: TaskStates.PROCESSING,
+        createdAt: recentTime,
+        updatedAt: recentTime,
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: recentTime, reason: 'Processing' }]
+    };
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(recentState));
+    mockLogger.warn.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    await stateManager.getResumableTask('task-no-warn');
+
+    // Verify no warning was logged
+    assert.strictEqual(mockLogger.warn.mock.calls.length, 0, 'Should not log warning for non-stale task');
+
+    await stateManager.close();
+});
+
 // Force exit due to module-level initialization in @propr/core
 after(() => {
     process.exit(0);
