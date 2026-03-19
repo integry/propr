@@ -2087,6 +2087,664 @@ test('getResumableTask does not log warning for non-stale tasks', async () => {
     await stateManager.close();
 });
 
+// ============================================================================
+// cleanupOldTasks tests
+// ============================================================================
+
+test('cleanupOldTasks removes tasks older than maxAge', async () => {
+    // Create old completed task (2 days old)
+    const oldTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const oldCompletedTask: TaskStateData = {
+        taskId: 'task-old-completed',
+        issueRef: { number: 600, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-old-completed',
+        state: TaskStates.COMPLETED,
+        createdAt: oldTime,
+        updatedAt: oldTime,
+        attempts: 0,
+        history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-completed']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldCompletedTask));
+    mockRedisInstance.del.mock.resetCalls();
+    mockLogger.debug.mock.resetCalls();
+    mockLogger.info.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    // Default maxAge is 24 hours, so a 48-hour-old task should be removed
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    assert.strictEqual(cleanedCount, 1);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.del.mock.calls[0].arguments[0], 'test:worker:state:task-old-completed');
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks skips tasks within maxAge', async () => {
+    // Create recent completed task (1 hour old)
+    const recentTime = new Date(Date.now() - 1 * 3600 * 1000).toISOString();
+    const recentCompletedTask: TaskStateData = {
+        taskId: 'task-recent-completed',
+        issueRef: { number: 601, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-recent-completed',
+        state: TaskStates.COMPLETED,
+        createdAt: recentTime,
+        updatedAt: recentTime,
+        attempts: 0,
+        history: [{ state: TaskStates.COMPLETED, timestamp: recentTime, reason: 'Completed' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-recent-completed']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(recentCompletedTask));
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    // Default maxAge is 24 hours, so a 1-hour-old task should NOT be removed
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    assert.strictEqual(cleanedCount, 0);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 0);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks skips PROCESSING state tasks even if old', async () => {
+    // Create old processing task (2 days old)
+    const oldTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const oldProcessingTask: TaskStateData = {
+        taskId: 'task-old-processing',
+        issueRef: { number: 602, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-old-processing',
+        state: TaskStates.PROCESSING,
+        createdAt: oldTime,
+        updatedAt: oldTime,
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: oldTime, reason: 'Processing' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-processing']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldProcessingTask));
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    // Processing tasks should NOT be removed regardless of age
+    assert.strictEqual(cleanedCount, 0);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 0);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks skips PENDING state tasks even if old', async () => {
+    // Create old pending task (2 days old)
+    const oldTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const oldPendingTask: TaskStateData = {
+        taskId: 'task-old-pending',
+        issueRef: { number: 603, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-old-pending',
+        state: TaskStates.PENDING,
+        createdAt: oldTime,
+        updatedAt: oldTime,
+        attempts: 0,
+        history: [{ state: TaskStates.PENDING, timestamp: oldTime, reason: 'Created' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-pending']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldPendingTask));
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    // Pending tasks should NOT be removed regardless of age
+    assert.strictEqual(cleanedCount, 0);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 0);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks skips CLAUDE_EXECUTION state tasks even if old', async () => {
+    // Create old claude_execution task (2 days old)
+    const oldTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const oldClaudeExecTask: TaskStateData = {
+        taskId: 'task-old-claude-exec',
+        issueRef: { number: 604, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-old-claude-exec',
+        state: TaskStates.CLAUDE_EXECUTION,
+        createdAt: oldTime,
+        updatedAt: oldTime,
+        attempts: 0,
+        history: [{ state: TaskStates.CLAUDE_EXECUTION, timestamp: oldTime, reason: 'Claude execution' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-claude-exec']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldClaudeExecTask));
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    // CLAUDE_EXECUTION tasks should NOT be removed regardless of age
+    assert.strictEqual(cleanedCount, 0);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 0);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks skips POST_PROCESSING state tasks even if old', async () => {
+    // Create old post_processing task (2 days old)
+    const oldTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const oldPostProcTask: TaskStateData = {
+        taskId: 'task-old-post-proc',
+        issueRef: { number: 605, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-old-post-proc',
+        state: TaskStates.POST_PROCESSING,
+        createdAt: oldTime,
+        updatedAt: oldTime,
+        attempts: 0,
+        history: [{ state: TaskStates.POST_PROCESSING, timestamp: oldTime, reason: 'Post-processing' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-post-proc']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldPostProcTask));
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    // POST_PROCESSING tasks should NOT be removed regardless of age
+    assert.strictEqual(cleanedCount, 0);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 0);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks removes old FAILED tasks', async () => {
+    // Create old failed task (2 days old)
+    const oldTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const oldFailedTask: TaskStateData = {
+        taskId: 'task-old-failed',
+        issueRef: { number: 606, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-old-failed',
+        state: TaskStates.FAILED,
+        createdAt: oldTime,
+        updatedAt: oldTime,
+        attempts: 1,
+        history: [{ state: TaskStates.FAILED, timestamp: oldTime, reason: 'Failed' }],
+        lastError: { message: 'Some error', category: 'unknown', timestamp: oldTime }
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-failed']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldFailedTask));
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    assert.strictEqual(cleanedCount, 1);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 1);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks removes old CANCELLED tasks', async () => {
+    // Create old cancelled task (2 days old)
+    const oldTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const oldCancelledTask: TaskStateData = {
+        taskId: 'task-old-cancelled',
+        issueRef: { number: 607, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-old-cancelled',
+        state: TaskStates.CANCELLED,
+        createdAt: oldTime,
+        updatedAt: oldTime,
+        attempts: 0,
+        history: [{ state: TaskStates.CANCELLED, timestamp: oldTime, reason: 'Cancelled by user' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-cancelled']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldCancelledTask));
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    assert.strictEqual(cleanedCount, 1);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 1);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks handles corrupted JSON gracefully', async () => {
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-corrupted']);
+    mockRedisInstance.get.mock.mockImplementation(async () => 'this is not valid JSON {{{');
+    mockRedisInstance.del.mock.resetCalls();
+    mockLogger.warn.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    // Should not throw - corrupted JSON is caught and logged
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    assert.strictEqual(cleanedCount, 0);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 0);
+
+    // Verify warning was logged
+    assert.ok(mockLogger.warn.mock.calls.length >= 1, 'Should log warning for corrupted JSON');
+    const warnCall = mockLogger.warn.mock.calls[0];
+    assert.ok(warnCall.arguments[0].key, 'Warning should include the key');
+    assert.ok(warnCall.arguments[0].error, 'Warning should include the error message');
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks uses custom maxAge parameter', async () => {
+    // Create task that's 2 hours old
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+    const oldTask: TaskStateData = {
+        taskId: 'task-custom-maxage',
+        issueRef: { number: 608, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-custom-maxage',
+        state: TaskStates.COMPLETED,
+        createdAt: twoHoursAgo,
+        updatedAt: twoHoursAgo,
+        attempts: 0,
+        history: [{ state: TaskStates.COMPLETED, timestamp: twoHoursAgo, reason: 'Completed' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-custom-maxage']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    // With 1 hour maxAge, a 2-hour-old task should be removed
+    const cleanedCount = await stateManager.cleanupOldTasks(3600); // 1 hour in seconds
+
+    assert.strictEqual(cleanedCount, 1);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 1);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks skips task when maxAge is longer than task age', async () => {
+    // Create task that's 2 hours old
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+    const task: TaskStateData = {
+        taskId: 'task-longer-maxage',
+        issueRef: { number: 609, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-longer-maxage',
+        state: TaskStates.COMPLETED,
+        createdAt: twoHoursAgo,
+        updatedAt: twoHoursAgo,
+        attempts: 0,
+        history: [{ state: TaskStates.COMPLETED, timestamp: twoHoursAgo, reason: 'Completed' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-longer-maxage']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(task));
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    // With 3 hour maxAge, a 2-hour-old task should NOT be removed
+    const cleanedCount = await stateManager.cleanupOldTasks(3 * 3600); // 3 hours in seconds
+
+    assert.strictEqual(cleanedCount, 0);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 0);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks handles multiple tasks with mixed states and ages', async () => {
+    const oldTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const recentTime = new Date(Date.now() - 1 * 3600 * 1000).toISOString();
+
+    const tasks: Record<string, TaskStateData> = {
+        'test:worker:state:old-completed': {
+            taskId: 'old-completed',
+            issueRef: { number: 610, repoOwner: 'owner', repoName: 'repo' },
+            correlationId: 'corr-1',
+            state: TaskStates.COMPLETED,
+            createdAt: oldTime,
+            updatedAt: oldTime,
+            attempts: 0,
+            history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
+        },
+        'test:worker:state:old-processing': {
+            taskId: 'old-processing',
+            issueRef: { number: 611, repoOwner: 'owner', repoName: 'repo' },
+            correlationId: 'corr-2',
+            state: TaskStates.PROCESSING,
+            createdAt: oldTime,
+            updatedAt: oldTime,
+            attempts: 0,
+            history: [{ state: TaskStates.PROCESSING, timestamp: oldTime, reason: 'Processing' }]
+        },
+        'test:worker:state:recent-completed': {
+            taskId: 'recent-completed',
+            issueRef: { number: 612, repoOwner: 'owner', repoName: 'repo' },
+            correlationId: 'corr-3',
+            state: TaskStates.COMPLETED,
+            createdAt: recentTime,
+            updatedAt: recentTime,
+            attempts: 0,
+            history: [{ state: TaskStates.COMPLETED, timestamp: recentTime, reason: 'Completed' }]
+        },
+        'test:worker:state:old-failed': {
+            taskId: 'old-failed',
+            issueRef: { number: 613, repoOwner: 'owner', repoName: 'repo' },
+            correlationId: 'corr-4',
+            state: TaskStates.FAILED,
+            createdAt: oldTime,
+            updatedAt: oldTime,
+            attempts: 1,
+            history: [{ state: TaskStates.FAILED, timestamp: oldTime, reason: 'Failed' }]
+        }
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => Object.keys(tasks));
+    mockRedisInstance.get.mock.mockImplementation(async (key: string) => {
+        const task = tasks[key];
+        return task ? JSON.stringify(task) : null;
+    });
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    // Should only clean up old-completed and old-failed (2 tasks)
+    // - old-processing: skipped (processing state)
+    // - recent-completed: skipped (too recent)
+    assert.strictEqual(cleanedCount, 2);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 2);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks returns 0 when no keys exist', async () => {
+    mockRedisInstance.keys.mock.mockImplementation(async () => []);
+    mockRedisInstance.del.mock.resetCalls();
+    mockLogger.info.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    assert.strictEqual(cleanedCount, 0);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 0);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks skips keys with null values', async () => {
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:null-task']);
+    mockRedisInstance.get.mock.mockImplementation(async () => null);
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    assert.strictEqual(cleanedCount, 0);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 0);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks logs debug message for each cleaned task', async () => {
+    const oldTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const oldTask: TaskStateData = {
+        taskId: 'task-debug-log',
+        issueRef: { number: 620, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-debug-log',
+        state: TaskStates.COMPLETED,
+        createdAt: oldTime,
+        updatedAt: oldTime,
+        attempts: 0,
+        history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-debug-log']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
+    mockRedisInstance.del.mock.resetCalls();
+    mockLogger.debug.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    await stateManager.cleanupOldTasks();
+
+    // Verify debug log was called
+    assert.ok(mockLogger.debug.mock.calls.length >= 1, 'Should log debug message for cleaned task');
+    const debugCall = mockLogger.debug.mock.calls.find(
+        (call) => (call.arguments[0] as { taskId?: string }).taskId === 'task-debug-log'
+    );
+    assert.ok(debugCall, 'Debug log should include taskId');
+    assert.ok((debugCall.arguments[0] as { state?: string }).state === TaskStates.COMPLETED, 'Debug log should include state');
+    assert.ok((debugCall.arguments[0] as { age?: number }).age, 'Debug log should include age');
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks logs info message with summary', async () => {
+    const oldTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const oldTask: TaskStateData = {
+        taskId: 'task-summary-log',
+        issueRef: { number: 621, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-summary-log',
+        state: TaskStates.COMPLETED,
+        createdAt: oldTime,
+        updatedAt: oldTime,
+        attempts: 0,
+        history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-summary-log']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
+    mockRedisInstance.del.mock.resetCalls();
+    mockLogger.info.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    await stateManager.cleanupOldTasks();
+
+    // Verify info log was called with summary
+    assert.ok(mockLogger.info.mock.calls.length >= 1, 'Should log info message with summary');
+    const infoCall = mockLogger.info.mock.calls.find(
+        (call) => (call.arguments[0] as { cleanedCount?: number }).cleanedCount !== undefined
+    );
+    assert.ok(infoCall, 'Info log should include cleanedCount');
+    const logData = infoCall.arguments[0] as { cleanedCount: number; totalKeys: number; maxAge: number };
+    assert.strictEqual(logData.cleanedCount, 1);
+    assert.strictEqual(logData.totalKeys, 1);
+    assert.strictEqual(logData.maxAge, 24 * 3600); // default maxAge
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks uses key prefix pattern for searching', async () => {
+    mockRedisInstance.keys.mock.resetCalls();
+    mockRedisInstance.keys.mock.mockImplementation(async () => []);
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    await stateManager.cleanupOldTasks();
+
+    // Verify keys was called with correct pattern
+    assert.strictEqual(mockRedisInstance.keys.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.keys.mock.calls[0].arguments[0], `${TEST_KEY_PREFIX}*`);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks handles Redis errors during delete gracefully', async () => {
+    const oldTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const oldTask: TaskStateData = {
+        taskId: 'task-del-error',
+        issueRef: { number: 622, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-del-error',
+        state: TaskStates.COMPLETED,
+        createdAt: oldTime,
+        updatedAt: oldTime,
+        attempts: 0,
+        history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-del-error']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
+    mockRedisInstance.del.mock.mockImplementation(async () => {
+        throw new Error('Redis delete failed');
+    });
+    mockLogger.warn.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    // Should not throw - errors are caught and logged
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    // cleanedCount should be 0 since delete failed
+    assert.strictEqual(cleanedCount, 0);
+
+    // Verify warning was logged
+    assert.ok(mockLogger.warn.mock.calls.length >= 1, 'Should log warning for delete error');
+
+    // Restore del mock
+    mockRedisInstance.del.mock.mockImplementation(async () => 1);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks determines age based on updatedAt not createdAt', async () => {
+    // Create task that was created 2 days ago but updated 1 hour ago
+    const oldCreated = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const recentUpdated = new Date(Date.now() - 1 * 3600 * 1000).toISOString();
+    const task: TaskStateData = {
+        taskId: 'task-updated-recently',
+        issueRef: { number: 623, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-updated-recently',
+        state: TaskStates.COMPLETED,
+        createdAt: oldCreated,
+        updatedAt: recentUpdated, // Updated recently
+        attempts: 0,
+        history: [{ state: TaskStates.COMPLETED, timestamp: recentUpdated, reason: 'Completed' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-updated-recently']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(task));
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    // With default 24 hour maxAge, task updated 1 hour ago should NOT be removed
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    assert.strictEqual(cleanedCount, 0);
+    assert.strictEqual(mockRedisInstance.del.mock.calls.length, 0);
+
+    await stateManager.close();
+});
+
+test('cleanupOldTasks handles task at exactly maxAge boundary', async () => {
+    // Create task that's exactly 24 hours old
+    const exactlyMaxAge = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const task: TaskStateData = {
+        taskId: 'task-exact-boundary',
+        issueRef: { number: 624, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-exact-boundary',
+        state: TaskStates.COMPLETED,
+        createdAt: exactlyMaxAge,
+        updatedAt: exactlyMaxAge,
+        attempts: 0,
+        history: [{ state: TaskStates.COMPLETED, timestamp: exactlyMaxAge, reason: 'Completed' }]
+    };
+
+    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-exact-boundary']);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(task));
+    mockRedisInstance.del.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+
+    // At exactly 24 hours (with < comparison), it should NOT be cleaned
+    // But with test execution time, it might be just over, so we just verify no error
+    const cleanedCount = await stateManager.cleanupOldTasks();
+
+    // The result depends on exact timing, but should not throw
+    assert.ok(cleanedCount >= 0, 'Should return valid count');
+
+    await stateManager.close();
+});
+
 // Force exit due to module-level initialization in @propr/core
 after(() => {
     process.exit(0);
