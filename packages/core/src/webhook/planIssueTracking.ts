@@ -10,7 +10,7 @@ import {
 import {
     determinePRStatusUpdate,
     isInProgressStatus,
-    type PlanIssueStatus
+    PlanIssueStatus
 } from './statusMachine.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
@@ -45,14 +45,14 @@ export async function handlePlanIssueStatusUpdate(
         if (payload.action === 'closed') {
             // Don't downgrade from 'merged' to 'closed' - when a PR is merged,
             // GitHub auto-closes the linked issue, but we want to keep 'merged' status
-            if (planIssue.status !== 'merged') {
-                newStatus = 'closed';
+            if (planIssue.status !== PlanIssueStatus.MERGED) {
+                newStatus = PlanIssueStatus.CLOSED;
             }
         } else if (payload.action === 'labeled') {
             const processingLabels = (process.env.PRIMARY_PROCESSING_LABELS || 'AI').split(',').map(l => l.trim());
             const hasProcessingLabel = labels.some(label => processingLabels.includes(label));
-            if (hasProcessingLabel && planIssue.status === 'pending') {
-                newStatus = 'processing';
+            if (hasProcessingLabel && planIssue.status === PlanIssueStatus.PENDING) {
+                newStatus = PlanIssueStatus.PROCESSING;
             }
         }
 
@@ -214,7 +214,7 @@ export async function handlePlanPRUpdate(
         // When a PR is merged, trigger the next pending issue in the same plan
         // Only if the merged issue had auto-merge enabled (indicated by auto-merge label)
         // Check both newStatus and current status to handle race conditions where status was already updated
-        const isMerged = newStatus === 'merged' || (action === 'closed' && payload.pull_request.merged && planIssue.status === 'merged');
+        const isMerged = newStatus === PlanIssueStatus.MERGED || (action === 'closed' && payload.pull_request.merged && planIssue.status === PlanIssueStatus.MERGED);
         if (isMerged && planIssue.draft_id) {
             await handleMergedPRNextIssueTrigger(repository, planIssue.issue_number, planIssue.draft_id, log);
         } else if (isMerged) {
@@ -282,7 +282,7 @@ export async function triggerNextPendingIssue(
         }
 
         // Find the next pending issue
-        const nextPending = planIssues.find(issue => issue.status === 'pending');
+        const nextPending = planIssues.find(issue => issue.status === PlanIssueStatus.PENDING);
         if (!nextPending) {
             log.debug({ draftId }, 'No more pending issues in plan');
             return;
@@ -362,7 +362,7 @@ export async function handlePlanPRCommentTracking(
             if (commentAuthor === botUsername) return;
 
             // Don't update status if the issue is already merged or closed
-            if (planIssue.status === 'merged' || planIssue.status === 'closed') {
+            if (planIssue.status === PlanIssueStatus.MERGED || planIssue.status === PlanIssueStatus.CLOSED) {
                 log.debug({
                     repository,
                     prNumber,
@@ -372,7 +372,7 @@ export async function handlePlanPRCommentTracking(
             }
 
             const newFollowupCount = (planIssue.followup_count || 0) + 1;
-            const newStatus: PlanIssueStatus = 'in_refinement';
+            const newStatus: PlanIssueStatus = PlanIssueStatus.IN_REFINEMENT;
 
             await updatePlanIssueByPR(repository, prNumber, { followup_count: newFollowupCount, status: newStatus });
             log.info({ repository, prNumber, followupCount: newFollowupCount }, 'Updated plan issue follow-up count from PR comment');

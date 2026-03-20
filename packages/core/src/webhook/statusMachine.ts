@@ -6,30 +6,16 @@
  * modifying any external state.
  */
 
-/**
- * Status enum for plan issues, representing the lifecycle of an issue.
- * - pending: Issue is waiting to be processed
- * - processing: Issue is currently being worked on
- * - under_review: PR has been opened for review
- * - in_refinement: PR is being refined based on feedback
- * - refinement_processing: Refinement changes are being processed
- * - merged: PR has been merged
- * - closed: Issue/PR closed without merge
- */
-export type PlanIssueStatus =
-    | 'pending'
-    | 'processing'
-    | 'under_review'
-    | 'in_refinement'
-    | 'refinement_processing'
-    | 'merged'
-    | 'closed';
+import { PlanIssueStatus } from '../config/planIssueManager.js';
+
+// Re-export the enum for backwards compatibility
+export { PlanIssueStatus };
 
 /**
  * Terminal statuses that cannot be transitioned from.
  * Once an issue reaches one of these statuses, it is considered complete.
  */
-export const TERMINAL_STATUSES: readonly PlanIssueStatus[] = ['merged', 'closed'] as const;
+export const TERMINAL_STATUSES: readonly PlanIssueStatus[] = [PlanIssueStatus.MERGED, PlanIssueStatus.CLOSED] as const;
 
 /**
  * Determines the new status for a plan issue based on a PR event.
@@ -61,18 +47,18 @@ export function determinePRStatusUpdate(
 ): PlanIssueStatus | null {
     // Never downgrade from terminal statuses - prevents race conditions where
     // delayed PR events (e.g., 'opened') run after the PR is already merged
-    if (currentStatus === 'merged' || currentStatus === 'closed') {
+    if (currentStatus === PlanIssueStatus.MERGED || currentStatus === PlanIssueStatus.CLOSED) {
         return null;
     }
 
     if (action === 'closed') {
-        return merged ? 'merged' : 'closed';
+        return merged ? PlanIssueStatus.MERGED : PlanIssueStatus.CLOSED;
     }
     if (action === 'opened' || action === 'reopened') {
-        return 'under_review';
+        return PlanIssueStatus.UNDER_REVIEW;
     }
-    if (action === 'synchronize' && currentStatus === 'in_refinement') {
-        return 'refinement_processing';
+    if (action === 'synchronize' && currentStatus === PlanIssueStatus.IN_REFINEMENT) {
+        return PlanIssueStatus.REFINEMENT_PROCESSING;
     }
     return null;
 }
@@ -84,7 +70,7 @@ export function determinePRStatusUpdate(
  * @returns true if the status is terminal, false otherwise
  */
 export function isTerminalStatus(status: PlanIssueStatus): boolean {
-    return status === 'merged' || status === 'closed';
+    return status === PlanIssueStatus.MERGED || status === PlanIssueStatus.CLOSED;
 }
 
 /**
@@ -94,8 +80,8 @@ export function isTerminalStatus(status: PlanIssueStatus): boolean {
  * @returns true if the status indicates work in progress
  */
 export function isInProgressStatus(status: PlanIssueStatus): boolean {
-    return status === 'processing' ||
-           status === 'under_review' ||
-           status === 'in_refinement' ||
-           status === 'refinement_processing';
+    return status === PlanIssueStatus.PROCESSING ||
+           status === PlanIssueStatus.UNDER_REVIEW ||
+           status === PlanIssueStatus.IN_REFINEMENT ||
+           status === PlanIssueStatus.REFINEMENT_PROCESSING;
 }

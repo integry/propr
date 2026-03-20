@@ -41,10 +41,10 @@ export {
     linkPRToPlanIssue,
     updatePlanIssueByPR,
     batchUpdatePlanIssueConfig,
-    deletePlanIssue
+    deletePlanIssue,
+    PlanIssueStatus
 } from './config/planIssueManager.js';
 export type {
-    PlanIssueStatus,
     PlanIssue,
     CreatePlanIssueInput,
     UpdatePlanIssueInput,
