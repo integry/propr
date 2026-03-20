@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { execSync } from 'child_process';
 import { stopDockerContainer, getStateManager } from '@propr/core';
+import { validateTaskId, validateTailParam } from './validation.js';
 
 interface DockerRoutesDeps {
   redisClient: RedisClientType;
@@ -24,6 +25,13 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
 
   async function getDockerInfo(req: Request, res: Response): Promise<void> {
     try {
+      // Validate taskId parameter
+      const taskIdValidation = validateTaskId(req.params.taskId);
+      if (!taskIdValidation.valid) {
+        res.status(400).json({ error: taskIdValidation.error });
+        return;
+      }
+
       const taskId = normalizeTaskId(req.params.taskId);
       const stateData = await redisClient.get(`worker:state:${taskId}`);
       if (!stateData) {
@@ -45,8 +53,22 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
 
   async function getDockerLogs(req: Request, res: Response): Promise<void> {
     try {
+      // Validate taskId parameter
+      const taskIdValidation = validateTaskId(req.params.taskId);
+      if (!taskIdValidation.valid) {
+        res.status(400).json({ error: taskIdValidation.error });
+        return;
+      }
+
+      // Validate tail parameter
+      const tailValidation = validateTailParam(req.query.tail);
+      if (!tailValidation.valid) {
+        res.status(400).json({ error: tailValidation.error });
+        return;
+      }
+      const tail = tailValidation.value!;
+
       const taskId = normalizeTaskId(req.params.taskId);
-      const { tail = '100' } = req.query;
       const stateData = await redisClient.get(`worker:state:${taskId}`);
       if (!stateData) {
         res.status(404).json({ error: 'Task state not found' });
@@ -59,7 +81,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         return;
       }
       try {
-        const logsOutput = execSync(`docker logs --tail ${parseInt(tail as string) || 100} ${entry.metadata.containerId}`, { encoding: 'utf8', timeout: 10000, maxBuffer: 10 * 1024 * 1024 });
+        const logsOutput = execSync(`docker logs --tail ${tail} ${entry.metadata.containerId}`, { encoding: 'utf8', timeout: 10000, maxBuffer: 10 * 1024 * 1024 });
         res.setHeader('Content-Type', 'text/plain');
         res.send(logsOutput);
       } catch (err) {
@@ -77,6 +99,13 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
 
   async function stopTask(req: Request, res: Response): Promise<void> {
     try {
+      // Validate taskId parameter
+      const taskIdValidation = validateTaskId(req.params.taskId);
+      if (!taskIdValidation.valid) {
+        res.status(400).json({ error: taskIdValidation.error });
+        return;
+      }
+
       const taskId = normalizeTaskId(req.params.taskId);
       console.log(`[stop-execution] Attempting to stop task: ${req.params.taskId} (taskId: ${taskId})`);
       const stateData = await redisClient.get(`worker:state:${taskId}`);
