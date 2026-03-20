@@ -1,6 +1,6 @@
 import { test, after, mock, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS, resolveLlmLabel, ALL_MODELS, findMatchingModel } from '@propr/core';
+import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS, resolveLlmLabel, ALL_MODELS, findMatchingModel, getModelShortName } from '@propr/core';
 import { AgentRegistry } from '@propr/core';
 import type { AgentConfig } from '@propr/core';
 
@@ -350,6 +350,124 @@ test('findMatchingModel - matches string to internal model IDs', async (t) => {
 
         // Known model still works
         assert.strictEqual(findMatchingModel('opus', config), 'claude-opus-4-5-20251101');
+    });
+});
+
+test('getModelShortName - returns short display names for PR titles', async (t) => {
+    await t.test('returns correct short name for Claude models', () => {
+        // Claude Opus 4.5
+        assert.strictEqual(getModelShortName('claude-opus-4-5-20251101'), 'Claude Opus');
+        // Claude Sonnet 4.5
+        assert.strictEqual(getModelShortName('claude-sonnet-4-5-20250929'), 'Claude Sonnet');
+        // Claude Haiku 4.5
+        assert.strictEqual(getModelShortName('claude-haiku-4-5-20251001'), 'Claude Haiku');
+    });
+
+    await t.test('returns correct short name for Codex (OpenAI) models', () => {
+        // GPT-5.4
+        assert.strictEqual(getModelShortName('gpt-5.4'), 'GPT-5.4');
+        // GPT-5.4 Mini
+        assert.strictEqual(getModelShortName('gpt-5.4-mini'), 'GPT-5.4 Mini');
+        // GPT-5.3 Codex
+        assert.strictEqual(getModelShortName('gpt-5.3-codex'), 'GPT-5.3 Codex');
+        // GPT-5.3 Codex Spark
+        assert.strictEqual(getModelShortName('gpt-5.3-codex-spark'), 'Codex Spark');
+        // GPT-5.2 Codex
+        assert.strictEqual(getModelShortName('gpt-5.2-codex'), 'GPT-5.2 Codex');
+        // GPT-5.2
+        assert.strictEqual(getModelShortName('gpt-5.2'), 'GPT-5.2');
+        // GPT-5.1 Codex Max
+        assert.strictEqual(getModelShortName('gpt-5.1-codex-max'), 'Codex Max');
+        // GPT-5.1 Codex Mini
+        assert.strictEqual(getModelShortName('gpt-5.1-codex-mini'), 'Codex Mini');
+    });
+
+    await t.test('returns correct short name for Gemini models', () => {
+        // Gemini 3 Pro Preview
+        assert.strictEqual(getModelShortName('gemini-3-pro-preview'), 'Gemini 3 Preview');
+        // Gemini 3 Flash Preview
+        assert.strictEqual(getModelShortName('gemini-3-flash-preview'), 'Gemini 3 Flash');
+        // Gemini 2.5 Pro
+        assert.strictEqual(getModelShortName('gemini-2.5-pro'), 'Gemini Pro');
+        // Gemini 2.5 Flash
+        assert.strictEqual(getModelShortName('gemini-2.5-flash'), 'Gemini Flash');
+        // Gemini 2.5 Flash Lite
+        assert.strictEqual(getModelShortName('gemini-2.5-flash-lite'), 'Flash Lite');
+    });
+
+    await t.test('returns AI for unknown models', () => {
+        // Completely unknown model
+        assert.strictEqual(getModelShortName('unknown-model-xyz'), 'AI');
+        // Similar but not exact match
+        assert.strictEqual(getModelShortName('claude-opus-3'), 'AI');
+        // Random string
+        assert.strictEqual(getModelShortName('some-random-model'), 'AI');
+        // Empty string
+        assert.strictEqual(getModelShortName(''), 'AI');
+    });
+
+    await t.test('handles undefined input', () => {
+        assert.strictEqual(getModelShortName(undefined), 'AI');
+    });
+
+    await t.test('verifies all 16 models return correct short names', () => {
+        // This test verifies the exact count and mapping for all models
+        const expectedMappings: Record<string, string> = {
+            // 3 Claude models
+            'claude-opus-4-5-20251101': 'Claude Opus',
+            'claude-sonnet-4-5-20250929': 'Claude Sonnet',
+            'claude-haiku-4-5-20251001': 'Claude Haiku',
+            // 8 Codex models
+            'gpt-5.4': 'GPT-5.4',
+            'gpt-5.4-mini': 'GPT-5.4 Mini',
+            'gpt-5.3-codex': 'GPT-5.3 Codex',
+            'gpt-5.3-codex-spark': 'Codex Spark',
+            'gpt-5.2-codex': 'GPT-5.2 Codex',
+            'gpt-5.2': 'GPT-5.2',
+            'gpt-5.1-codex-max': 'Codex Max',
+            'gpt-5.1-codex-mini': 'Codex Mini',
+            // 5 Gemini models
+            'gemini-3-pro-preview': 'Gemini 3 Preview',
+            'gemini-3-flash-preview': 'Gemini 3 Flash',
+            'gemini-2.5-pro': 'Gemini Pro',
+            'gemini-2.5-flash': 'Gemini Flash',
+            'gemini-2.5-flash-lite': 'Flash Lite',
+        };
+
+        // Verify we have exactly 16 models
+        const modelCount = Object.keys(expectedMappings).length;
+        assert.strictEqual(modelCount, 16, `Expected 16 models but found ${modelCount}`);
+
+        // Verify each model returns the correct short name
+        for (const [modelId, expectedShortName] of Object.entries(expectedMappings)) {
+            const actualShortName = getModelShortName(modelId);
+            assert.strictEqual(
+                actualShortName,
+                expectedShortName,
+                `Model ${modelId} should return "${expectedShortName}" but got "${actualShortName}"`
+            );
+        }
+    });
+
+    await t.test('ALL_MODELS array matches the 16 expected models', () => {
+        // Verify ALL_MODELS contains all 16 models
+        assert.strictEqual(ALL_MODELS.length, 16, `Expected 16 models in ALL_MODELS but found ${ALL_MODELS.length}`);
+
+        // Verify each model in ALL_MODELS has a valid shortName
+        for (const model of ALL_MODELS) {
+            const shortName = getModelShortName(model.id);
+            assert.strictEqual(
+                shortName,
+                model.shortName,
+                `getModelShortName(${model.id}) should return "${model.shortName}" but got "${shortName}"`
+            );
+            // Ensure shortName is not 'AI' for known models
+            assert.notStrictEqual(
+                shortName,
+                'AI',
+                `Known model ${model.id} should not return 'AI' as short name`
+            );
+        }
     });
 });
 
