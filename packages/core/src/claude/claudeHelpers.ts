@@ -311,34 +311,44 @@ export function parseStreamJsonOutput(result: ExecutionResult): ClaudeOutput {
     return claudeOutput;
 }
 
+function checkRateLimitError(jsonLine: JsonLineMessage): void {
+    // Check for new rate limit format: {"type": "assistant", "error": "rate_limit", "message": {...}}
+    if (jsonLine.type !== 'assistant' || jsonLine.error !== 'rate_limit') {
+        return;
+    }
+
+    // Extract message text from content array
+    const messageText = extractMessageText(jsonLine.message?.content);
+
+    // Try to parse reset time from the message, or use next round hour + 2 minutes
+    const resetTimestamp = parseResetTimeFromMessage(messageText) || calculateNextRoundHourPlus2Minutes();
+
+    logger.warn({ messageText, resetTimestamp }, 'Claude rate limit reached (new format). Throwing specific error for requeue.');
+    throw new UsageLimitError(
+        `Claude usage limit reached. Limit resets at timestamp ${resetTimestamp}.`,
+        resetTimestamp,
+        messageText || 'Rate limit reached'
+    );
+}
+
+function extractMessageText(content: unknown): string {
+    if (!content || !Array.isArray(content)) {
+        return '';
+    }
+    for (const item of content) {
+        if (item.type === 'text' && item.text) {
+            return item.text;
+        }
+    }
+    return '';
+}
+
 function processJsonLine(
     jsonLine: JsonLineMessage,
     claudeOutput: ClaudeOutput,
     messageTimestamps: Map<string, string>
 ): void {
-    // Check for new rate limit format: {"type": "assistant", "error": "rate_limit", "message": {...}}
-    if (jsonLine.type === 'assistant' && jsonLine.error === 'rate_limit') {
-        // Extract message text from content array
-        let messageText = '';
-        if (jsonLine.message?.content && Array.isArray(jsonLine.message.content)) {
-            for (const item of jsonLine.message.content) {
-                if (item.type === 'text' && item.text) {
-                    messageText = item.text;
-                    break;
-                }
-            }
-        }
-
-        // Try to parse reset time from the message, or use next round hour + 2 minutes
-        const resetTimestamp = parseResetTimeFromMessage(messageText) || calculateNextRoundHourPlus2Minutes();
-
-        logger.warn({ messageText, resetTimestamp }, 'Claude rate limit reached (new format). Throwing specific error for requeue.');
-        throw new UsageLimitError(
-            `Claude usage limit reached. Limit resets at timestamp ${resetTimestamp}.`,
-            resetTimestamp,
-            messageText || 'Rate limit reached'
-        );
-    }
+    checkRateLimitError(jsonLine);
 
     if (jsonLine.type === 'user' || jsonLine.type === 'assistant') {
         const messageKey = jsonLine.message?.id || `${jsonLine.type}-${JSON.stringify(jsonLine).substring(0, 100)}`;
