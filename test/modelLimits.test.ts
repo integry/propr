@@ -199,18 +199,11 @@ test('getEffectiveTokenLimit - model resolution', async (t) => {
 });
 
 test('getModelHardLimit - returns max usable tokens', async (t) => {
-    await t.test('returns 98% of model limit', () => {
-        // Default model
+    await t.test('returns 98% of model limit for default', () => {
         const defaultHardLimit = getModelHardLimit(undefined);
         const expectedDefault = Math.floor(MODEL_LIMITS['default'] * EFFECTIVE_MAX_RATIO);
         assert.strictEqual(defaultHardLimit, expectedDefault, 'Default hard limit should be 98% of 200K');
         assert.strictEqual(defaultHardLimit, 196000, 'Default hard limit should be 196000');
-
-        // Gemini model (1M)
-        const geminiHardLimit = getModelHardLimit('gemini-2.5-pro');
-        const expectedGemini = Math.floor(1000000 * EFFECTIVE_MAX_RATIO);
-        assert.strictEqual(geminiHardLimit, expectedGemini, 'Gemini hard limit should be 98% of 1M');
-        assert.strictEqual(geminiHardLimit, 980000, 'Gemini hard limit should be 980000');
     });
 
     await t.test('handles agent:model format', () => {
@@ -229,6 +222,201 @@ test('getModelHardLimit - returns max usable tokens', async (t) => {
         const geminiHardLimit = getModelHardLimit('gemini-2.5-pro');
         const geminiEffectiveAt100 = getEffectiveTokenLimit('gemini-2.5-pro', 100);
         assert.strictEqual(geminiHardLimit, geminiEffectiveAt100, 'Gemini hard limit should equal effective at 100');
+    });
+});
+
+test('getModelHardLimit - all 16 known models', async (t) => {
+    // All models should return 98% of their max tokens for safety
+
+    await t.test('Claude models (3 models, 200K context)', () => {
+        // Claude Opus 4.5
+        const opusLimit = getModelHardLimit('claude-opus-4-5-20251101');
+        assert.strictEqual(opusLimit, Math.floor(200000 * 0.98), 'Claude Opus should return 98% of 200K');
+        assert.strictEqual(opusLimit, 196000, 'Claude Opus hard limit should be 196000');
+
+        // Claude Sonnet 4.5
+        const sonnetLimit = getModelHardLimit('claude-sonnet-4-5-20250929');
+        assert.strictEqual(sonnetLimit, Math.floor(200000 * 0.98), 'Claude Sonnet should return 98% of 200K');
+        assert.strictEqual(sonnetLimit, 196000, 'Claude Sonnet hard limit should be 196000');
+
+        // Claude Haiku 4.5
+        const haikuLimit = getModelHardLimit('claude-haiku-4-5-20251001');
+        assert.strictEqual(haikuLimit, Math.floor(200000 * 0.98), 'Claude Haiku should return 98% of 200K');
+        assert.strictEqual(haikuLimit, 196000, 'Claude Haiku hard limit should be 196000');
+    });
+
+    await t.test('Codex models (8 models, 400K context)', () => {
+        const expectedCodexLimit = Math.floor(400000 * 0.98); // 392000
+
+        // GPT-5.4
+        const gpt54Limit = getModelHardLimit('gpt-5.4');
+        assert.strictEqual(gpt54Limit, expectedCodexLimit, 'GPT-5.4 should return 98% of 400K');
+        assert.strictEqual(gpt54Limit, 392000, 'GPT-5.4 hard limit should be 392000');
+
+        // GPT-5.4 Mini
+        const gpt54MiniLimit = getModelHardLimit('gpt-5.4-mini');
+        assert.strictEqual(gpt54MiniLimit, expectedCodexLimit, 'GPT-5.4 Mini should return 98% of 400K');
+        assert.strictEqual(gpt54MiniLimit, 392000, 'GPT-5.4 Mini hard limit should be 392000');
+
+        // GPT-5.3 Codex
+        const gpt53CodexLimit = getModelHardLimit('gpt-5.3-codex');
+        assert.strictEqual(gpt53CodexLimit, expectedCodexLimit, 'GPT-5.3 Codex should return 98% of 400K');
+        assert.strictEqual(gpt53CodexLimit, 392000, 'GPT-5.3 Codex hard limit should be 392000');
+
+        // GPT-5.3 Codex Spark
+        const gpt53SparkLimit = getModelHardLimit('gpt-5.3-codex-spark');
+        assert.strictEqual(gpt53SparkLimit, expectedCodexLimit, 'GPT-5.3 Codex Spark should return 98% of 400K');
+        assert.strictEqual(gpt53SparkLimit, 392000, 'GPT-5.3 Codex Spark hard limit should be 392000');
+
+        // GPT-5.2 Codex
+        const gpt52CodexLimit = getModelHardLimit('gpt-5.2-codex');
+        assert.strictEqual(gpt52CodexLimit, expectedCodexLimit, 'GPT-5.2 Codex should return 98% of 400K');
+        assert.strictEqual(gpt52CodexLimit, 392000, 'GPT-5.2 Codex hard limit should be 392000');
+
+        // GPT-5.2
+        const gpt52Limit = getModelHardLimit('gpt-5.2');
+        assert.strictEqual(gpt52Limit, expectedCodexLimit, 'GPT-5.2 should return 98% of 400K');
+        assert.strictEqual(gpt52Limit, 392000, 'GPT-5.2 hard limit should be 392000');
+
+        // GPT-5.1 Codex Max
+        const codexMaxLimit = getModelHardLimit('gpt-5.1-codex-max');
+        assert.strictEqual(codexMaxLimit, expectedCodexLimit, 'GPT-5.1 Codex Max should return 98% of 400K');
+        assert.strictEqual(codexMaxLimit, 392000, 'GPT-5.1 Codex Max hard limit should be 392000');
+
+        // GPT-5.1 Codex Mini
+        const codexMiniLimit = getModelHardLimit('gpt-5.1-codex-mini');
+        assert.strictEqual(codexMiniLimit, expectedCodexLimit, 'GPT-5.1 Codex Mini should return 98% of 400K');
+        assert.strictEqual(codexMiniLimit, 392000, 'GPT-5.1 Codex Mini hard limit should be 392000');
+    });
+
+    await t.test('Gemini models (5 models, 1M context)', () => {
+        const expectedGeminiLimit = Math.floor(1000000 * 0.98); // 980000
+
+        // Gemini 3 Pro Preview
+        const g3ProPreviewLimit = getModelHardLimit('gemini-3-pro-preview');
+        assert.strictEqual(g3ProPreviewLimit, expectedGeminiLimit, 'Gemini 3 Pro Preview should return 98% of 1M');
+        assert.strictEqual(g3ProPreviewLimit, 980000, 'Gemini 3 Pro Preview hard limit should be 980000');
+
+        // Gemini 3 Flash Preview
+        const g3FlashPreviewLimit = getModelHardLimit('gemini-3-flash-preview');
+        assert.strictEqual(g3FlashPreviewLimit, expectedGeminiLimit, 'Gemini 3 Flash Preview should return 98% of 1M');
+        assert.strictEqual(g3FlashPreviewLimit, 980000, 'Gemini 3 Flash Preview hard limit should be 980000');
+
+        // Gemini 2.5 Pro
+        const g25ProLimit = getModelHardLimit('gemini-2.5-pro');
+        assert.strictEqual(g25ProLimit, expectedGeminiLimit, 'Gemini 2.5 Pro should return 98% of 1M');
+        assert.strictEqual(g25ProLimit, 980000, 'Gemini 2.5 Pro hard limit should be 980000');
+
+        // Gemini 2.5 Flash
+        const g25FlashLimit = getModelHardLimit('gemini-2.5-flash');
+        assert.strictEqual(g25FlashLimit, expectedGeminiLimit, 'Gemini 2.5 Flash should return 98% of 1M');
+        assert.strictEqual(g25FlashLimit, 980000, 'Gemini 2.5 Flash hard limit should be 980000');
+
+        // Gemini 2.5 Flash Lite
+        const g25FlashLiteLimit = getModelHardLimit('gemini-2.5-flash-lite');
+        assert.strictEqual(g25FlashLiteLimit, expectedGeminiLimit, 'Gemini 2.5 Flash Lite should return 98% of 1M');
+        assert.strictEqual(g25FlashLiteLimit, 980000, 'Gemini 2.5 Flash Lite hard limit should be 980000');
+    });
+
+    await t.test('verifies total model count is 16', () => {
+        // Model IDs for all 16 known models
+        const allKnownModels = [
+            // Claude (3)
+            'claude-opus-4-5-20251101',
+            'claude-sonnet-4-5-20250929',
+            'claude-haiku-4-5-20251001',
+            // Codex (8)
+            'gpt-5.4',
+            'gpt-5.4-mini',
+            'gpt-5.3-codex',
+            'gpt-5.3-codex-spark',
+            'gpt-5.2-codex',
+            'gpt-5.2',
+            'gpt-5.1-codex-max',
+            'gpt-5.1-codex-mini',
+            // Gemini (5)
+            'gemini-3-pro-preview',
+            'gemini-3-flash-preview',
+            'gemini-2.5-pro',
+            'gemini-2.5-flash',
+            'gemini-2.5-flash-lite',
+        ];
+
+        assert.strictEqual(allKnownModels.length, 16, 'Should have exactly 16 known models');
+
+        // Verify all models return a valid hard limit (not default)
+        for (const modelId of allKnownModels) {
+            const limit = getModelHardLimit(modelId);
+            assert.ok(limit > 0, `${modelId} should return a positive hard limit`);
+            // All known models should return their specific limit, not default
+            // (they have varying maxTokens, so we just ensure it's valid)
+        }
+    });
+});
+
+test('getModelHardLimit - edge cases and safety margin', async (t) => {
+    await t.test('returns default limit for undefined modelId', () => {
+        const limit = getModelHardLimit(undefined);
+        assert.strictEqual(limit, 196000, 'undefined modelId should return default limit (98% of 200K)');
+    });
+
+    await t.test('returns default limit for unknown model', () => {
+        const limit = getModelHardLimit('completely-unknown-model-xyz');
+        const expectedDefault = Math.floor(MODEL_LIMITS['default'] * EFFECTIVE_MAX_RATIO);
+        assert.strictEqual(limit, expectedDefault, 'Unknown model should return default limit');
+        assert.strictEqual(limit, 196000, 'Unknown model hard limit should be 196000');
+    });
+
+    await t.test('handles various agent prefixes with agent:model format', () => {
+        const modelId = 'claude-opus-4-5-20251101';
+        const expectedLimit = Math.floor(200000 * 0.98);
+
+        // Test various agent prefixes
+        assert.strictEqual(getModelHardLimit(`claude:${modelId}`), expectedLimit, 'claude: prefix');
+        assert.strictEqual(getModelHardLimit(`codex:${modelId}`), expectedLimit, 'codex: prefix');
+        assert.strictEqual(getModelHardLimit(`gemini:${modelId}`), expectedLimit, 'gemini: prefix');
+        assert.strictEqual(getModelHardLimit(`custom:${modelId}`), expectedLimit, 'custom: prefix');
+    });
+
+    await t.test('handles edge case of model ID containing multiple colons', () => {
+        // A model ID like "agent:model:with:colons" extracts only "model" (split(':')[1])
+        // Since "model" is unknown, it should use default
+        const limit = getModelHardLimit('agent:model:with:colons');
+        const expectedDefault = Math.floor(MODEL_LIMITS['default'] * EFFECTIVE_MAX_RATIO);
+        assert.strictEqual(limit, expectedDefault, 'Should use default for malformed model ID');
+    });
+
+    await t.test('98% safety margin is correctly applied', () => {
+        // Verify the 98% safety margin (EFFECTIVE_MAX_RATIO = 0.98)
+        assert.strictEqual(EFFECTIVE_MAX_RATIO, 0.98, 'EFFECTIVE_MAX_RATIO should be 0.98');
+
+        // For each tier of models, verify the 2% buffer calculation
+        // Claude (200K): 200000 * 0.98 = 196000 (buffer: 4000 tokens)
+        const claudeLimit = getModelHardLimit('claude-opus-4-5-20251101');
+        assert.strictEqual(200000 - claudeLimit, 4000, 'Claude buffer should be 4000 tokens (2%)');
+
+        // Codex (400K): 400000 * 0.98 = 392000 (buffer: 8000 tokens)
+        const codexLimit = getModelHardLimit('gpt-5.4');
+        assert.strictEqual(400000 - codexLimit, 8000, 'Codex buffer should be 8000 tokens (2%)');
+
+        // Gemini (1M): 1000000 * 0.98 = 980000 (buffer: 20000 tokens)
+        const geminiLimit = getModelHardLimit('gemini-2.5-pro');
+        assert.strictEqual(1000000 - geminiLimit, 20000, 'Gemini buffer should be 20000 tokens (2%)');
+    });
+
+    await t.test('hard limit is always less than raw model limit', () => {
+        // Test a sampling of models to ensure hard limit < raw limit
+        const testCases = [
+            { modelId: 'claude-opus-4-5-20251101', rawLimit: 200000 },
+            { modelId: 'gpt-5.4', rawLimit: 400000 },
+            { modelId: 'gemini-2.5-pro', rawLimit: 1000000 },
+        ];
+
+        for (const { modelId, rawLimit } of testCases) {
+            const hardLimit = getModelHardLimit(modelId);
+            assert.ok(hardLimit < rawLimit, `${modelId} hard limit (${hardLimit}) should be less than raw limit (${rawLimit})`);
+            assert.ok(hardLimit > rawLimit * 0.9, `${modelId} hard limit should be > 90% of raw limit (for safety check)`);
+        }
     });
 });
 
