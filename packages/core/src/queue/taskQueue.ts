@@ -23,6 +23,7 @@ export interface IssueJobData {
     title?: string;
     subtitle?: string;
     issueNumber?: number;
+    isRetryFromRateLimit?: boolean;
 }
 
 export interface CommentJobData {

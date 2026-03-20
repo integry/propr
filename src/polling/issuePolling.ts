@@ -10,6 +10,7 @@ import { Redis } from 'ioredis';
 const AI_PRIMARY_TAG = process.env.AI_PRIMARY_TAG || 'AI';
 const AI_EXCLUDE_TAGS_PROCESSING = process.env.AI_EXCLUDE_TAGS_PROCESSING || 'AI-processing';
 const AI_DONE_TAG = process.env.AI_DONE_TAG || 'AI-done';
+const AI_WAITING_TAG = process.env.AI_WAITING_TAG || 'AI-waiting';
 const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 
@@ -103,14 +104,15 @@ export async function fetchIssuesForRepo(
                     typeof label === 'string' ? label : label.name
                 );
                 return !labelNames.includes(AI_EXCLUDE_TAGS_PROCESSING) &&
-                       !labelNames.includes(AI_DONE_TAG);
+                       !labelNames.includes(AI_DONE_TAG) &&
+                       !labelNames.includes(AI_WAITING_TAG);
             });
 
             correlatedLogger.debug({
                 repo: repoFullName,
                 totalIssues: issues.length,
                 filteredIssues: filteredIssues.length,
-                excludedLabels: [AI_EXCLUDE_TAGS_PROCESSING, AI_DONE_TAG]
+                excludedLabels: [AI_EXCLUDE_TAGS_PROCESSING, AI_DONE_TAG, AI_WAITING_TAG]
             }, 'Filtered issues by labels');
 
             return { data: { items: filteredIssues } };

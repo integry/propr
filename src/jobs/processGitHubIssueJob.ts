@@ -5,7 +5,7 @@
 
 import { Job } from 'bullmq';
 import {
-  logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, ensureGitRepository,
+  logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
   UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
 import type { IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult } from '@propr/core';
@@ -28,7 +28,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   }
 
   const context = await initializeJobContext(job);
-  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG } = context;
+  const { jobId, issueRef, correlationId, correlatedLogger, stateManager, modelName, taskId, AI_PROCESSING_TAG, AI_DONE_TAG, AI_WAITING_TAG } = context;
 
   await addModelSpecificDelay(modelName);
 
@@ -50,6 +50,23 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   correlatedLogger.info({ jobId, taskId, issueNumber: issueRef.number, repo: `${issueRef.repoOwner}/${issueRef.repoName}` }, 'Processing job started');
 
   const octokit = await getAuthenticatedClient(context);
+
+  // Handle retry from rate limit - swap AI-waiting back to AI-processing
+  if (job.data.isRetryFromRateLimit) {
+    correlatedLogger.info({ jobId, issueNumber: issueRef.number }, 'Resuming from rate limit retry - swapping labels');
+    try {
+      await safeRemoveLabel(
+        { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
+        AI_WAITING_TAG
+      );
+      await safeAddLabel(
+        { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
+        AI_PROCESSING_TAG
+      );
+    } catch (labelError) {
+      correlatedLogger.warn({ error: (labelError as Error).message }, 'Failed to swap labels on rate limit retry');
+    }
+  }
 
   let localRepoPath: string | undefined;
   let worktreeInfo: WorktreeInfo | undefined;
@@ -105,8 +122,11 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
 
   } catch (error) {
     if (error instanceof UsageLimitError) {
-      await handleUsageLimitError(error, job, issueRef, { octokit, correlatedLogger, stateManager, taskId });
-      return { status: 'error', error: (error as Error).message };
+      await handleUsageLimitError(error, job, issueRef, {
+        octokit, correlatedLogger, stateManager, taskId,
+        AI_PROCESSING_TAG, AI_WAITING_TAG
+      });
+      return { status: 'requeued', reason: 'rate_limit' };
     } else {
       await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
       const isUserCancelled = (error as Error).message?.includes('aborted by user') || (error as Error).name === 'ExecutionAbortedError';

@@ -1,11 +1,12 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
-    ErrorCategories,
     safeRemoveLabel,
+    safeAddLabel,
     generateCompletionComment,
     recordLLMMetrics,
-    formatResetTime,
+    formatRetryTime,
+    hoursUntil,
     issueQueue,
     db,
     getModelShortName,
@@ -39,6 +40,7 @@ export { getModelShortName };
 
 export interface UsageLimitError extends Error {
     resetTimestamp?: number;
+    rawErrorMessage?: string;
 }
 
 export interface PostProcessingResult {
@@ -52,7 +54,14 @@ export interface PostProcessingResult {
     error?: string;
 }
 
-interface UsageLimitErrorOptions { octokit: Octokit; correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string; }
+interface UsageLimitErrorOptions {
+    octokit: Octokit;
+    correlatedLogger: Logger;
+    stateManager: WorkerStateManager;
+    taskId: string;
+    AI_PROCESSING_TAG?: string;
+    AI_WAITING_TAG?: string;
+}
 interface GenericErrorOptions extends UsageLimitErrorOptions { claudeResult: ClaudeCodeResponse | null; worktreeInfo: WorktreeInfo | undefined; AI_PROCESSING_TAG: string; }
 interface CreatePROptions { commitResult: CommitResult | null; claudeResult: ClaudeCodeResponse | null; modelName: string; repoValidation: RepoValidation; PR_LABEL: string; correlatedLogger: Logger; issueTitle: string; }
 
@@ -61,8 +70,12 @@ type Octokit = {
 };
 
 export function calculateUsageLimitDelay(error: UsageLimitError): number {
-    const resetTimeUTC = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
-    return (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
+    // Use reset timestamp + 2 minutes for known reset times
+    // The timestamp already includes the 2-minute buffer from parseResetTimeFromMessage
+    const resetTimeMs = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
+    // Add a small random jitter (0-60 seconds) to avoid thundering herd
+    const jitter = Math.floor(Math.random() * 60 * 1000);
+    return Math.max(0, (resetTimeMs - Date.now()) + jitter);
 }
 
 export async function handleSimpleUsageLimitError(
@@ -77,50 +90,102 @@ export async function handleSimpleUsageLimitError(
     return { status: 'requeued', repository, delay };
 }
 
+function formatRateLimitComment(
+    error: UsageLimitError,
+    retryTimestamp: number
+): string {
+    const rawMessage = error.rawErrorMessage || 'Usage limit reached';
+    const resetTimeStr = error.resetTimestamp ? formatRetryTime(error.resetTimestamp) : 'Unknown';
+    const retryTimeStr = formatRetryTime(retryTimestamp);
+    const hoursRemaining = error.resetTimestamp ? hoursUntil(error.resetTimestamp) : 1;
+    const hoursText = hoursRemaining < 1
+        ? 'less than an hour'
+        : `approximately ${Math.ceil(hoursRemaining)} hour${Math.ceil(hoursRemaining) > 1 ? 's' : ''}`;
+
+    return `⌛ **Rate Limit Reached**
+
+**Error from agent:**
+> ${rawMessage}
+
+**Reset time:** ${resetTimeStr} (in ${hoursText})
+**Next retry:** ${retryTimeStr}
+
+---
+*The task will automatically resume after the rate limit resets. No action needed.*`;
+}
+
 export async function handleUsageLimitError(
     error: UsageLimitError,
     job: Job<IssueJobData>,
     issueRef: IssueJobData,
     options: UsageLimitErrorOptions
 ): Promise<void> {
-    const { octokit, correlatedLogger, stateManager, taskId } = options;
+    const { octokit, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_WAITING_TAG } = options;
     const jobId = job.id;
 
     correlatedLogger.warn({
         jobId,
         issueNumber: issueRef.number,
-        resetTimestamp: error.resetTimestamp
-    }, 'Claude usage limit hit during issue processing. Requeueing job.');
+        resetTimestamp: error.resetTimestamp,
+        rawErrorMessage: error.rawErrorMessage
+    }, 'Claude usage limit hit during issue processing. Requeueing job with AI-waiting label.');
 
     const delay = calculateUsageLimitDelay(error);
-    const readableResetTime = formatResetTime(error.resetTimestamp);
+    const retryTimestamp = Math.floor((Date.now() + delay) / 1000);
 
+    // Update labels: remove AI-processing, add AI-waiting
+    if (octokit && AI_PROCESSING_TAG && AI_WAITING_TAG) {
+        try {
+            await safeRemoveLabel(
+                { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
+                AI_PROCESSING_TAG
+            );
+            await safeAddLabel(
+                { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
+                AI_WAITING_TAG
+            );
+            correlatedLogger.info({ issueNumber: issueRef.number, AI_PROCESSING_TAG, AI_WAITING_TAG }, 'Swapped processing label to waiting label');
+        } catch (labelError) {
+            correlatedLogger.warn({ error: (labelError as Error).message }, 'Failed to update labels for rate limit');
+        }
+    }
+
+    // Post enhanced comment with error details and retry time
     if (octokit) {
         try {
+            const commentBody = formatRateLimitComment(error, retryTimestamp);
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: issueRef.repoOwner,
                 repo: issueRef.repoName,
                 issue_number: issueRef.number,
-                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing this issue.
-
-The job has been automatically rescheduled and will restart ${readableResetTime}.
-
----
-*Job ID: ${jobId} will run again after delay.*`
+                body: commentBody
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to issue.');
         }
     }
 
-    await issueQueue.add(job.name, job.data, { delay: Math.max(0, delay) });
+    // Requeue job with isRetryFromRateLimit flag
+    const requeuedJobData: IssueJobData = {
+        ...job.data,
+        isRetryFromRateLimit: true
+    };
+    await issueQueue.add(job.name, requeuedJobData, { delay: Math.max(0, delay) });
 
+    // Keep task in processing state - don't mark as failed
+    // The task will continue when the retry runs
     try {
-        await stateManager.markTaskFailed(taskId, error, {
-            errorCategory: ErrorCategories.CLAUDE_EXECUTION
+        await stateManager.updateTaskState(taskId, 'processing', {
+            reason: 'Rate limit reached - waiting for retry',
+            historyMetadata: {
+                rateLimitError: true,
+                resetTimestamp: error.resetTimestamp,
+                retryTimestamp,
+                rawErrorMessage: error.rawErrorMessage
+            }
         });
     } catch (stateError) {
-        correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state to failed (requeued)');
+        correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state for rate limit wait');
     }
 }
 
@@ -315,16 +380,21 @@ Comment on this PR to request refinements — the AI agent monitors comments and
         }, 'PR created successfully');
 
         // Only add PR_LABEL to PRs (baseLabel/modelLabel are for issues only)
-        await withRetry(
-            () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-                owner: issueRef.repoOwner,
-                repo: issueRef.repoName,
-                issue_number: prResponse.data.number,
-                labels: [PR_LABEL]
-            }),
-            retryConfigs.githubApi,
-            `add_pr_label_${prResponse.data.number}`
-        );
+        try {
+            await withRetry(
+                () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+                    owner: issueRef.repoOwner,
+                    repo: issueRef.repoName,
+                    issue_number: prResponse.data.number,
+                    labels: [PR_LABEL]
+                }),
+                retryConfigs.githubApi,
+                `add_pr_label_${prResponse.data.number}`
+            );
+            correlatedLogger.info({ prNumber: prResponse.data.number, label: PR_LABEL }, 'Added PR label to new PR');
+        } catch (labelError) {
+            correlatedLogger.warn({ prNumber: prResponse.data.number, label: PR_LABEL, error: (labelError as Error).message }, 'Failed to add PR label to new PR after retries');
+        }
 
         return {
             success: true,
