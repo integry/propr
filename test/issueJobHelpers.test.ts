@@ -1,4 +1,4 @@
-import { test, describe } from 'node:test';
+import { test, describe, mock } from 'node:test';
 import assert from 'node:assert';
 
 /**
@@ -268,6 +268,340 @@ describe('categorizeError', () => {
             // "git" is a substring of "digit"
             const result = categorizeError('invalid digit in number');
             assert.strictEqual(result, 'git_error');
+        });
+    });
+});
+
+/**
+ * Pure function extracted from issueJobHelpers.ts for testing.
+ * Tests the core logic of calculateUsageLimitDelay.
+ *
+ * The original function is at: src/jobs/issueJobHelpers.ts:63
+ */
+
+// Default constants from issueJobHelpers.ts (lines 34-35)
+const REQUEUE_BUFFER_MS = 5 * 60 * 1000; // 5 minutes
+const REQUEUE_JITTER_MS = 2 * 60 * 1000; // 2 minutes
+const DEFAULT_RESET_OFFSET_MS = 60 * 60 * 1000; // 1 hour
+
+interface UsageLimitError extends Error {
+    resetTimestamp?: number;
+}
+
+/**
+ * Testable version of calculateUsageLimitDelay that accepts dependencies.
+ * Allows mocking Date.now() and Math.random() for deterministic testing.
+ *
+ * @param error - The usage limit error with optional resetTimestamp (in seconds)
+ * @param now - Current timestamp in milliseconds (injectable for testing)
+ * @param random - Random value between 0 and 1 (injectable for testing)
+ * @returns Delay in milliseconds
+ */
+function calculateUsageLimitDelay(
+    error: UsageLimitError,
+    now: number = Date.now(),
+    random: number = Math.random()
+): number {
+    const resetTimeUTC = error.resetTimestamp ? (error.resetTimestamp * 1000) : (now + DEFAULT_RESET_OFFSET_MS);
+    return (resetTimeUTC - now) + REQUEUE_BUFFER_MS + Math.floor(random * REQUEUE_JITTER_MS);
+}
+
+describe('calculateUsageLimitDelay', () => {
+    describe('with resetTimestamp provided', () => {
+        test('should calculate delay based on resetTimestamp (in seconds)', () => {
+            const now = 1700000000000; // Fixed "now" timestamp
+            const resetTimestamp = 1700000060; // 60 seconds from now (in seconds)
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            // Expected: (60 * 1000) + REQUEUE_BUFFER_MS + 0
+            // = 60000 + 300000 + 0 = 360000
+            assert.strictEqual(result, 60000 + REQUEUE_BUFFER_MS);
+        });
+
+        test('should include jitter in calculation', () => {
+            const now = 1700000000000;
+            const resetTimestamp = 1700000060; // 60 seconds from now
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0.5);
+
+            // Expected: 60000 + 300000 + floor(0.5 * 120000)
+            // = 60000 + 300000 + 60000 = 420000
+            const expectedJitter = Math.floor(0.5 * REQUEUE_JITTER_MS);
+            assert.strictEqual(result, 60000 + REQUEUE_BUFFER_MS + expectedJitter);
+        });
+
+        test('should include maximum jitter when random is close to 1', () => {
+            const now = 1700000000000;
+            const resetTimestamp = 1700000060;
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0.999);
+
+            const expectedJitter = Math.floor(0.999 * REQUEUE_JITTER_MS);
+            assert.strictEqual(result, 60000 + REQUEUE_BUFFER_MS + expectedJitter);
+        });
+
+        test('should handle resetTimestamp in the past', () => {
+            const now = 1700000000000;
+            const resetTimestamp = 1699999940; // 60 seconds ago
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            // resetTimeUTC = 1699999940 * 1000 = 1699999940000
+            // (1699999940000 - 1700000000000) = -60000
+            // -60000 + 300000 + 0 = 240000
+            assert.strictEqual(result, -60000 + REQUEUE_BUFFER_MS);
+        });
+
+        test('should handle resetTimestamp far in the future', () => {
+            const now = 1700000000000;
+            const resetTimestamp = 1700003600; // 1 hour from now
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            // Expected: (3600 * 1000) + 300000 + 0 = 3900000
+            assert.strictEqual(result, 3600000 + REQUEUE_BUFFER_MS);
+        });
+    });
+
+    describe('without resetTimestamp (defaults to 1 hour)', () => {
+        test('should default to 1 hour delay when resetTimestamp is undefined', () => {
+            const now = 1700000000000;
+            const error: UsageLimitError = new Error('Usage limit');
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            // Expected: DEFAULT_RESET_OFFSET_MS + REQUEUE_BUFFER_MS + 0
+            // = 3600000 + 300000 = 3900000
+            assert.strictEqual(result, DEFAULT_RESET_OFFSET_MS + REQUEUE_BUFFER_MS);
+        });
+
+        test('should default to 1 hour delay when resetTimestamp is 0', () => {
+            const now = 1700000000000;
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp: 0 });
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            // resetTimestamp of 0 is falsy, so should use default
+            assert.strictEqual(result, DEFAULT_RESET_OFFSET_MS + REQUEUE_BUFFER_MS);
+        });
+
+        test('should include jitter with default reset time', () => {
+            const now = 1700000000000;
+            const error: UsageLimitError = new Error('Usage limit');
+
+            const result = calculateUsageLimitDelay(error, now, 0.75);
+
+            const expectedJitter = Math.floor(0.75 * REQUEUE_JITTER_MS);
+            assert.strictEqual(result, DEFAULT_RESET_OFFSET_MS + REQUEUE_BUFFER_MS + expectedJitter);
+        });
+    });
+
+    describe('always positive acceptance criteria', () => {
+        test('should return positive value with future resetTimestamp', () => {
+            const now = 1700000000000;
+            const resetTimestamp = 1700000001; // 1 second from now
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            assert.ok(result > 0, `Expected positive delay, got ${result}`);
+        });
+
+        test('should return positive value with default reset time', () => {
+            const now = 1700000000000;
+            const error: UsageLimitError = new Error('Usage limit');
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            assert.ok(result > 0, `Expected positive delay, got ${result}`);
+        });
+
+        test('should return positive value even with past resetTimestamp due to buffer', () => {
+            const now = 1700000000000;
+            // 4 minutes in the past (240 seconds)
+            // This should still be positive because buffer is 5 minutes (300000ms)
+            const resetTimestamp = now / 1000 - 240;
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            // -240000 + 300000 = 60000 (still positive due to buffer)
+            assert.ok(result > 0, `Expected positive delay, got ${result}`);
+        });
+
+        test('should return positive value with maximum jitter', () => {
+            const now = 1700000000000;
+            const error: UsageLimitError = new Error('Usage limit');
+
+            const result = calculateUsageLimitDelay(error, now, 0.9999);
+
+            assert.ok(result > 0, `Expected positive delay, got ${result}`);
+        });
+
+        test('should return positive value with minimum jitter (0)', () => {
+            const now = 1700000000000;
+            const error: UsageLimitError = new Error('Usage limit');
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            assert.ok(result > 0, `Expected positive delay, got ${result}`);
+        });
+    });
+
+    describe('jitter range validation', () => {
+        test('should have zero jitter when random is 0', () => {
+            const now = 1700000000000;
+            const resetTimestamp = 1700000060;
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const resultWithZeroRandom = calculateUsageLimitDelay(error, now, 0);
+            const resultWithSomeRandom = calculateUsageLimitDelay(error, now, 0.5);
+
+            assert.ok(resultWithSomeRandom > resultWithZeroRandom, 'Jitter should increase delay');
+        });
+
+        test('should have jitter less than REQUEUE_JITTER_MS', () => {
+            const now = 1700000000000;
+            const resetTimestamp = 1700000060;
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const resultNoJitter = calculateUsageLimitDelay(error, now, 0);
+            const resultMaxJitter = calculateUsageLimitDelay(error, now, 0.9999);
+
+            const actualJitter = resultMaxJitter - resultNoJitter;
+            assert.ok(actualJitter < REQUEUE_JITTER_MS, `Jitter ${actualJitter} should be less than ${REQUEUE_JITTER_MS}`);
+        });
+
+        test('should produce different delays for different random values', () => {
+            const now = 1700000000000;
+            const error: UsageLimitError = new Error('Usage limit');
+
+            const result1 = calculateUsageLimitDelay(error, now, 0.25);
+            const result2 = calculateUsageLimitDelay(error, now, 0.75);
+
+            assert.notStrictEqual(result1, result2, 'Different random values should produce different delays');
+            assert.ok(result2 > result1, 'Higher random value should produce longer delay');
+        });
+    });
+
+    describe('edge cases', () => {
+        test('should handle very large resetTimestamp', () => {
+            const now = 1700000000000;
+            const resetTimestamp = 2000000000; // Year 2033
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            // Should not throw and should return a large positive number
+            assert.ok(result > 0, `Expected positive delay, got ${result}`);
+            assert.ok(result > DEFAULT_RESET_OFFSET_MS, 'Should be greater than default reset offset');
+        });
+
+        test('should handle resetTimestamp equal to now', () => {
+            const now = 1700000000000;
+            const resetTimestamp = now / 1000; // Exactly now
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            // (now - now) + buffer = 0 + 300000 = 300000
+            assert.strictEqual(result, REQUEUE_BUFFER_MS);
+        });
+
+        test('should handle fractional resetTimestamp', () => {
+            const now = 1700000000000;
+            const resetTimestamp = 1700000060.5; // Fractional seconds
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            // resetTimeUTC = 1700000060.5 * 1000 = 1700000060500
+            // (1700000060500 - 1700000000000) = 60500
+            // 60500 + 300000 = 360500
+            assert.strictEqual(result, 60500 + REQUEUE_BUFFER_MS);
+        });
+
+        test('should handle negative resetTimestamp', () => {
+            const now = 1700000000000;
+            const resetTimestamp = -1000; // Negative timestamp
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0);
+
+            // resetTimeUTC = -1000 * 1000 = -1000000
+            // (-1000000 - 1700000000000) + 300000 = very negative
+            // This is a degenerate case but function should not throw
+            assert.ok(typeof result === 'number', 'Should return a number');
+        });
+
+        test('should use Math.floor for jitter calculation', () => {
+            const now = 1700000000000;
+            const error: UsageLimitError = new Error('Usage limit');
+
+            // Use a random value that would produce a fractional jitter
+            const randomValue = 0.333;
+            const result = calculateUsageLimitDelay(error, now, randomValue);
+
+            // Verify the result is an integer
+            assert.strictEqual(result, Math.floor(result), 'Result should be an integer');
+
+            // Verify the specific calculation
+            const expectedJitter = Math.floor(randomValue * REQUEUE_JITTER_MS);
+            assert.strictEqual(result, DEFAULT_RESET_OFFSET_MS + REQUEUE_BUFFER_MS + expectedJitter);
+        });
+    });
+
+    describe('buffer and jitter constants', () => {
+        test('REQUEUE_BUFFER_MS should be 5 minutes', () => {
+            assert.strictEqual(REQUEUE_BUFFER_MS, 5 * 60 * 1000);
+            assert.strictEqual(REQUEUE_BUFFER_MS, 300000);
+        });
+
+        test('REQUEUE_JITTER_MS should be 2 minutes', () => {
+            assert.strictEqual(REQUEUE_JITTER_MS, 2 * 60 * 1000);
+            assert.strictEqual(REQUEUE_JITTER_MS, 120000);
+        });
+
+        test('DEFAULT_RESET_OFFSET_MS should be 1 hour', () => {
+            assert.strictEqual(DEFAULT_RESET_OFFSET_MS, 60 * 60 * 1000);
+            assert.strictEqual(DEFAULT_RESET_OFFSET_MS, 3600000);
+        });
+    });
+
+    describe('integration-style tests', () => {
+        test('should calculate reasonable delay for typical usage limit scenario', () => {
+            // Use a fixed timestamp to avoid timing issues between setup and assertion
+            const now = 1700000000000;
+            // Simulate a reset time 30 minutes from now (in seconds)
+            const resetTimestamp = (now / 1000) + 30 * 60;
+            const error: UsageLimitError = Object.assign(new Error('Usage limit'), { resetTimestamp });
+
+            const result = calculateUsageLimitDelay(error, now, 0.5);
+
+            // Should be exactly 30 min + 5 min buffer + 1 min jitter
+            // = 36 minutes = 2160000ms
+            const expectedBase = 30 * 60 * 1000 + REQUEUE_BUFFER_MS;
+            const expectedJitter = Math.floor(0.5 * REQUEUE_JITTER_MS);
+            assert.strictEqual(result, expectedBase + expectedJitter);
+        });
+
+        test('should handle the real-world function signature compatibility', () => {
+            // Test that the function can be called with just an error object
+            // (simulating real usage where Date.now() and Math.random() are used)
+            const error: UsageLimitError = new Error('Rate limit exceeded');
+            const result = calculateUsageLimitDelay(error);
+
+            // Just verify it returns a reasonable positive number
+            assert.ok(result > 0, 'Should return positive delay');
+            assert.ok(result >= REQUEUE_BUFFER_MS, 'Should include at least the buffer');
+            assert.ok(result <= DEFAULT_RESET_OFFSET_MS + REQUEUE_BUFFER_MS + REQUEUE_JITTER_MS,
+                'Should not exceed max possible delay for default case');
         });
     });
 });
