@@ -32,12 +32,13 @@ interface GitHubCommit {
     message: string;
     author?: {
       name?: string;
+      email?: string;
       date?: string;
-    };
+    } | null;
   };
   author?: {
     login?: string;
-  };
+  } | null;
 }
 
 function formatCommit(c: GitHubCommit): CommitInfo {
