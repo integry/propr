@@ -42,33 +42,57 @@ interface CumulativeTokenUsage {
     totalInputWithCache: number;  // input + cache_creation + cache_read (for cost calc and display)
 }
 
-function calculateTokens(conversationLog: ConversationStep[] | undefined): CumulativeTokenUsage {
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheCreationTokens = 0;
-    let cacheReadTokens = 0;
+function calculateTokens(conversationLog: ConversationStep[] | undefined, reportedTokenUsage?: TokenUsage): CumulativeTokenUsage {
+    let aggregatedInputTokens = 0;
+    let aggregatedOutputTokens = 0;
+    let aggregatedCacheCreationTokens = 0;
+    let aggregatedCacheReadTokens = 0;
 
     if (conversationLog && Array.isArray(conversationLog)) {
         // Deduplicate by message ID (per Claude docs, same ID = same usage)
         const seenIds = new Set<string>();
         conversationLog.forEach(step => {
             const message = step.message as { id?: string; usage?: TokenUsage } | undefined;
-            const usage = message?.usage;
+            const stepWithUsage = step as { usage?: TokenUsage };
+            // Check both message?.usage and root-level step.usage
+            // Claude CLI sometimes stores usage at the root of the entry instead of nested in message
+            const usage = message?.usage || stepWithUsage.usage;
             if (usage) {
                 // Skip if we've already counted this message ID
-                if (message?.id && seenIds.has(message.id)) {
+                const msgId = message?.id;
+                if (msgId && seenIds.has(msgId)) {
                     return;
                 }
-                if (message?.id) {
-                    seenIds.add(message.id);
+                if (msgId) {
+                    seenIds.add(msgId);
                 }
-                inputTokens += usage.input_tokens ?? 0;
-                outputTokens += usage.output_tokens ?? 0;
-                cacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
-                cacheReadTokens += usage.cache_read_input_tokens ?? 0;
+                aggregatedInputTokens += usage.input_tokens ?? 0;
+                aggregatedOutputTokens += usage.output_tokens ?? 0;
+                aggregatedCacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
+                aggregatedCacheReadTokens += usage.cache_read_input_tokens ?? 0;
             }
         });
     }
+
+    // Get reported token usage totals
+    const reportedInputTokens = reportedTokenUsage?.input_tokens ?? 0;
+    const reportedOutputTokens = reportedTokenUsage?.output_tokens ?? 0;
+    const reportedCacheCreationTokens = reportedTokenUsage?.cache_creation_input_tokens ?? 0;
+    const reportedCacheReadTokens = reportedTokenUsage?.cache_read_input_tokens ?? 0;
+
+    // Calculate totals for comparison
+    const aggregatedTotal = aggregatedInputTokens + aggregatedOutputTokens +
+                            aggregatedCacheCreationTokens + aggregatedCacheReadTokens;
+    const reportedTotal = reportedInputTokens + reportedOutputTokens +
+                          reportedCacheCreationTokens + reportedCacheReadTokens;
+
+    // Use whichever is higher to avoid undercounting
+    const useAggregated = aggregatedTotal > reportedTotal;
+
+    const inputTokens = useAggregated ? aggregatedInputTokens : reportedInputTokens;
+    const outputTokens = useAggregated ? aggregatedOutputTokens : reportedOutputTokens;
+    const cacheCreationTokens = useAggregated ? aggregatedCacheCreationTokens : reportedCacheCreationTokens;
+    const cacheReadTokens = useAggregated ? aggregatedCacheReadTokens : reportedCacheReadTokens;
 
     return {
         inputTokens,
@@ -328,7 +352,7 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         const dateKey = timestamp.split('T')[0];
         const extracted = extractMetricsFromClaudeResult(claudeResult);
         const { model, success, executionTimeMs, executionTimeSec, numTurns, sessionId, conversationId } = extracted;
-        const cumulativeTokens = calculateTokens(claudeResult?.conversationLog);
+        const cumulativeTokens = calculateTokens(claudeResult?.conversationLog, claudeResult?.tokenUsage);
         const costUsd = await calculateCost(model, cumulativeTokens, claudeResult);
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
 

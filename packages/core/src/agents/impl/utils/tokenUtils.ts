@@ -32,9 +32,11 @@ export function aggregateTokensFromConversationLog(
     let foundCount = 0;
     for (const entry of conversationLog) {
         if (entry.type === 'assistant') {
-            // Usage is nested inside message object
+            // Check both message?.usage and entry.usage (root level)
+            // Claude CLI sometimes stores usage at the root of the entry instead of nested in message
             const message = entry.message as { usage?: TokenUsage } | undefined;
-            const usage = message?.usage;
+            const entryWithUsage = entry as { usage?: TokenUsage };
+            const usage = message?.usage || entryWithUsage.usage;
             if (usage) {
                 foundCount++;
                 aggregated.input_tokens = (aggregated.input_tokens || 0) + (usage.input_tokens || 0);
