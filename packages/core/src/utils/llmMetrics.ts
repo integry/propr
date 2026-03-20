@@ -25,168 +25,100 @@ const connectionOptions: RedisConnectionOptions = {
 
 function extractMetricsFromClaudeResult(claudeResult: ClaudeResult | null): ExtractedMetrics {
     const model = claudeResult?.model ?? process.env.CLAUDE_MODEL ?? 'unknown';
-    const success = claudeResult?.success ?? false;
     const executionTimeMs = claudeResult?.executionTime ?? 0;
-    const executionTimeSec = Math.round(executionTimeMs / 1000);
-    const numTurns = claudeResult?.finalResult?.num_turns ?? 0;
-    const sessionId = claudeResult?.sessionId ?? 'unknown';
-    const conversationId = claudeResult?.conversationId ?? null;
-    return { model, success, executionTimeMs, executionTimeSec, numTurns, sessionId, conversationId };
+    return { model, success: claudeResult?.success ?? false, executionTimeMs, executionTimeSec: Math.round(executionTimeMs / 1000),
+        numTurns: claudeResult?.finalResult?.num_turns ?? 0, sessionId: claudeResult?.sessionId ?? 'unknown',
+        conversationId: claudeResult?.conversationId ?? null };
 }
 
 interface CumulativeTokenUsage {
-    inputTokens: number;
-    outputTokens: number;
-    cacheCreationTokens: number;
-    cacheReadTokens: number;
+    inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number;
     totalInputWithCache: number;  // input + cache_creation + cache_read (for cost calc and display)
 }
 
 function calculateTokens(conversationLog: ConversationStep[] | undefined, reportedTokenUsage?: TokenUsage): CumulativeTokenUsage {
-    let aggregatedInputTokens = 0;
-    let aggregatedOutputTokens = 0;
-    let aggregatedCacheCreationTokens = 0;
-    let aggregatedCacheReadTokens = 0;
-
+    let aggrInput = 0, aggrOutput = 0, aggrCacheCreate = 0, aggrCacheRead = 0;
     if (conversationLog && Array.isArray(conversationLog)) {
-        // Deduplicate by message ID (per Claude docs, same ID = same usage)
-        const seenIds = new Set<string>();
+        const seenIds = new Set<string>(); // Deduplicate by message ID (per Claude docs, same ID = same usage)
         conversationLog.forEach(step => {
             const message = step.message as { id?: string; usage?: TokenUsage } | undefined;
-            const stepWithUsage = step as { usage?: TokenUsage };
-            // Check both message?.usage and root-level step.usage
-            // Claude CLI sometimes stores usage at the root of the entry instead of nested in message
-            const usage = message?.usage || stepWithUsage.usage;
+            // Check both message?.usage and root-level step.usage (Claude CLI stores usage in either location)
+            const usage = message?.usage || (step as { usage?: TokenUsage }).usage;
             if (usage) {
-                // Skip if we've already counted this message ID
                 const msgId = message?.id;
-                if (msgId && seenIds.has(msgId)) {
-                    return;
-                }
-                if (msgId) {
-                    seenIds.add(msgId);
-                }
-                aggregatedInputTokens += usage.input_tokens ?? 0;
-                aggregatedOutputTokens += usage.output_tokens ?? 0;
-                aggregatedCacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
-                aggregatedCacheReadTokens += usage.cache_read_input_tokens ?? 0;
+                if (msgId && seenIds.has(msgId)) return;
+                if (msgId) seenIds.add(msgId);
+                aggrInput += usage.input_tokens ?? 0; aggrOutput += usage.output_tokens ?? 0;
+                aggrCacheCreate += usage.cache_creation_input_tokens ?? 0; aggrCacheRead += usage.cache_read_input_tokens ?? 0;
             }
         });
     }
-
-    // Get reported token usage totals
-    const reportedInputTokens = reportedTokenUsage?.input_tokens ?? 0;
-    const reportedOutputTokens = reportedTokenUsage?.output_tokens ?? 0;
-    const reportedCacheCreationTokens = reportedTokenUsage?.cache_creation_input_tokens ?? 0;
-    const reportedCacheReadTokens = reportedTokenUsage?.cache_read_input_tokens ?? 0;
-
-    // Calculate totals for comparison
-    const aggregatedTotal = aggregatedInputTokens + aggregatedOutputTokens +
-                            aggregatedCacheCreationTokens + aggregatedCacheReadTokens;
-    const reportedTotal = reportedInputTokens + reportedOutputTokens +
-                          reportedCacheCreationTokens + reportedCacheReadTokens;
-
-    // Use whichever is higher to avoid undercounting
-    const useAggregated = aggregatedTotal > reportedTotal;
-
-    const inputTokens = useAggregated ? aggregatedInputTokens : reportedInputTokens;
-    const outputTokens = useAggregated ? aggregatedOutputTokens : reportedOutputTokens;
-    const cacheCreationTokens = useAggregated ? aggregatedCacheCreationTokens : reportedCacheCreationTokens;
-    const cacheReadTokens = useAggregated ? aggregatedCacheReadTokens : reportedCacheReadTokens;
-
-    return {
-        inputTokens,
-        outputTokens,
-        cacheCreationTokens,
-        cacheReadTokens,
-        totalInputWithCache: inputTokens + cacheCreationTokens + cacheReadTokens
-    };
+    const rptInput = reportedTokenUsage?.input_tokens ?? 0, rptOutput = reportedTokenUsage?.output_tokens ?? 0;
+    const rptCacheCreate = reportedTokenUsage?.cache_creation_input_tokens ?? 0, rptCacheRead = reportedTokenUsage?.cache_read_input_tokens ?? 0;
+    const aggrTotal = aggrInput + aggrOutput + aggrCacheCreate + aggrCacheRead;
+    const rptTotal = rptInput + rptOutput + rptCacheCreate + rptCacheRead;
+    const useAggr = aggrTotal > rptTotal; // Use whichever is higher to avoid undercounting
+    const [inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens] = useAggr
+        ? [aggrInput, aggrOutput, aggrCacheCreate, aggrCacheRead] : [rptInput, rptOutput, rptCacheCreate, rptCacheRead];
+    return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, totalInputWithCache: inputTokens + cacheCreationTokens + cacheReadTokens };
 }
 
-async function calculateCost(model: string, conversationLogTokens: CumulativeTokenUsage, claudeResult: ClaudeResult | null): Promise<number> {
-    let calculatedCostUsd = 0;
+async function calculateCost(model: string, tokens: CumulativeTokenUsage, claudeResult: ClaudeResult | null): Promise<number> {
     const openRouterId = getOpenRouterId(model);
     const pricing = await getModelPricing(openRouterId) as ModelPricing | null;
-
-    const { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens } = conversationLogTokens;
+    const { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens } = tokens;
     const { cacheReadMultiplier, cacheCreationMultiplier } = getCachePricingMultipliers(model);
-
-    logger.info({
-        model, openRouterId, pricingFound: !!pricing, pricing,
-        inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens,
-        cacheReadMultiplier, cacheCreationMultiplier
-    }, 'Cost calculation: looking up pricing');
-
+    logger.info({ model, openRouterId, pricingFound: !!pricing, pricing, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens,
+        cacheReadMultiplier, cacheCreationMultiplier }, 'Cost calculation: looking up pricing');
     const hasTokens = inputTokens > 0 || outputTokens > 0 || cacheCreationTokens > 0 || cacheReadTokens > 0;
-
+    let calculatedCostUsd = 0;
     if (pricing && hasTokens) {
-        // Calculate cost with proper cache pricing multipliers
-        const inputCost = inputTokens * pricing.prompt;
+        const inputCost = inputTokens * pricing.prompt, outputCost = outputTokens * pricing.completion;
         const cacheCreationCost = cacheCreationTokens * pricing.prompt * cacheCreationMultiplier;
         const cacheReadCost = cacheReadTokens * pricing.prompt * cacheReadMultiplier;
-        const outputCost = outputTokens * pricing.completion;
-
         calculatedCostUsd = inputCost + cacheCreationCost + cacheReadCost + outputCost;
-
-        logger.info({
-            model, openRouterId, calculatedCostUsd,
-            breakdown: { inputCost, cacheCreationCost, cacheReadCost, outputCost }
-        }, 'Calculated dynamic cost with cache pricing');
-    } else if (!pricing) {
-        logger.warn({ model, openRouterId }, 'No pricing found for model - cost will be 0 or fallback');
-    } else {
-        logger.warn({ model, inputTokens, outputTokens }, 'No token data available - cost will be 0 or fallback');
-    }
+        logger.info({ model, openRouterId, calculatedCostUsd, breakdown: { inputCost, cacheCreationCost, cacheReadCost, outputCost } },
+            'Calculated dynamic cost with cache pricing');
+    } else if (!pricing) { logger.warn({ model, openRouterId }, 'No pricing found for model - cost will be 0 or fallback'); }
+    else { logger.warn({ model, inputTokens, outputTokens }, 'No token data available - cost will be 0 or fallback'); }
     return calculatedCostUsd > 0 ? calculatedCostUsd : (claudeResult?.finalResult?.cost_usd ?? claudeResult?.finalResult?.total_cost_usd ?? 0);
 }
 
 async function updateAggregatedMetrics(metricsRedis: InstanceType<typeof Redis>, metrics: AggregatedMetrics): Promise<void> {
     const { model, success, costUsd, numTurns, executionTimeMs, dateKey } = metrics;
     const successKey = success ? 'successful' : 'failed';
-    await metricsRedis.incr(`llm:metrics:total:${successKey}`);
-    await metricsRedis.incr(`llm:metrics:daily:${dateKey}:${successKey}`);
-    await metricsRedis.incr(`llm:metrics:model:${model}:${successKey}`);
-
-    const currentTotalCost = parseFloat(await metricsRedis.get('llm:metrics:total:costUsd') ?? '0');
-    await metricsRedis.set('llm:metrics:total:costUsd', (currentTotalCost + costUsd).toFixed(4));
-    const currentDailyCost = parseFloat(await metricsRedis.get(`llm:metrics:daily:${dateKey}:costUsd`) ?? '0');
-    await metricsRedis.set(`llm:metrics:daily:${dateKey}:costUsd`, (currentDailyCost + costUsd).toFixed(4));
-    const currentModelCost = parseFloat(await metricsRedis.get(`llm:metrics:model:${model}:costUsd`) ?? '0');
-    await metricsRedis.set(`llm:metrics:model:${model}:costUsd`, (currentModelCost + costUsd).toFixed(4));
-
-    const currentTotalTurns = parseInt(await metricsRedis.get('llm:metrics:total:turns') ?? '0');
-    await metricsRedis.set('llm:metrics:total:turns', currentTotalTurns + numTurns);
-    const currentModelTurns = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:turns`) ?? '0');
-    await metricsRedis.set(`llm:metrics:model:${model}:turns`, currentModelTurns + numTurns);
-
-    const currentTotalTime = parseInt(await metricsRedis.get('llm:metrics:total:executionTimeMs') ?? '0');
-    await metricsRedis.set('llm:metrics:total:executionTimeMs', currentTotalTime + executionTimeMs);
-    const currentModelTime = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:executionTimeMs`) ?? '0');
-    await metricsRedis.set(`llm:metrics:model:${model}:executionTimeMs`, currentModelTime + executionTimeMs);
-
-    await metricsRedis.sadd('llm:metrics:models:used', model);
+    const incrAndAdd = async (key: string, val: number, isFloat = false) => {
+        const cur = isFloat ? parseFloat(await metricsRedis.get(key) ?? '0') : parseInt(await metricsRedis.get(key) ?? '0');
+        await metricsRedis.set(key, isFloat ? (cur + val).toFixed(4) : String(cur + val));
+    };
+    await Promise.all([
+        metricsRedis.incr(`llm:metrics:total:${successKey}`), metricsRedis.incr(`llm:metrics:daily:${dateKey}:${successKey}`),
+        metricsRedis.incr(`llm:metrics:model:${model}:${successKey}`), metricsRedis.sadd('llm:metrics:models:used', model)
+    ]);
+    await Promise.all([
+        incrAndAdd('llm:metrics:total:costUsd', costUsd, true), incrAndAdd(`llm:metrics:daily:${dateKey}:costUsd`, costUsd, true),
+        incrAndAdd(`llm:metrics:model:${model}:costUsd`, costUsd, true), incrAndAdd('llm:metrics:total:turns', numTurns),
+        incrAndAdd(`llm:metrics:model:${model}:turns`, numTurns), incrAndAdd('llm:metrics:total:executionTimeMs', executionTimeMs),
+        incrAndAdd(`llm:metrics:model:${model}:executionTimeMs`, executionTimeMs)
+    ]);
 }
 
 async function checkCostThreshold(metricsRedis: InstanceType<typeof Redis>, metrics: CostCheckMetrics, issueRef: IssueRef): Promise<void> {
     const { timestamp, correlationId, costUsd, model, numTurns } = metrics;
     const costThreshold = parseFloat(process.env.LLM_COST_THRESHOLD_USD ?? '10.00');
     if (costUsd > costThreshold) {
-        const alertEntry: HighCostAlert = {
-            timestamp, correlationId, issueNumber: issueRef.number,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            costUsd, threshold: costThreshold, model, numTurns
-        };
+        const alertEntry: HighCostAlert = { timestamp, correlationId, issueNumber: issueRef.number,
+            repository: `${issueRef.repoOwner}/${issueRef.repoName}`, costUsd, threshold: costThreshold, model, numTurns };
         await metricsRedis.lpush('llm:metrics:alerts:highcost', JSON.stringify(alertEntry));
         await metricsRedis.ltrim('llm:metrics:alerts:highcost', 0, 99);
         logger.warn({ ...alertEntry, message: 'LLM cost exceeded threshold' });
     }
 }
 
-function extractToolUsage(messageContent: MessageContent[] | undefined): { toolName: string | null; toolInput: unknown | null; toolUseId: string | null } {
-    if (!messageContent || !Array.isArray(messageContent)) return { toolName: null, toolInput: null, toolUseId: null };
-    const toolUse = messageContent.find(block => block.type === 'tool_use');
-    if (!toolUse) return { toolName: null, toolInput: null, toolUseId: null };
-    return { toolName: toolUse.name ?? null, toolInput: toolUse.input ?? null, toolUseId: toolUse.id ?? null };
+function extractToolUsage(content: MessageContent[] | undefined): { toolName: string | null; toolInput: unknown | null; toolUseId: string | null } {
+    const toolUse = content?.find(b => b.type === 'tool_use');
+    return toolUse ? { toolName: toolUse.name ?? null, toolInput: toolUse.input ?? null, toolUseId: toolUse.id ?? null }
+        : { toolName: null, toolInput: null, toolUseId: null };
 }
 
 function calculateMessageCost(messageTokens: number, totalTokens: number, costUsd: number): number | null {
@@ -218,11 +150,7 @@ function buildConversationDetail(params: ConversationDetailParams): Conversation
 }
 
 interface ProcessConversationLogParams {
-    claudeResult: ClaudeResult;
-    executionId: string;
-    costUsd: number;
-    correlationId?: string;
-    taskId?: string | null;
+    claudeResult: ClaudeResult; executionId: string; costUsd: number; correlationId?: string; taskId?: string | null;
 }
 
 async function processConversationLog(params: ProcessConversationLogParams): Promise<void> {
@@ -387,62 +315,58 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
 }
 
 async function getTotalMetrics(metricsRedis: InstanceType<typeof Redis>): Promise<LLMMetricsSummary> {
-    const totalSuccessful = parseInt(await metricsRedis.get('llm:metrics:total:successful') ?? '0');
-    const totalFailed = parseInt(await metricsRedis.get('llm:metrics:total:failed') ?? '0');
-    const totalCostUsd = parseFloat(await metricsRedis.get('llm:metrics:total:costUsd') ?? '0');
-    const totalTurns = parseInt(await metricsRedis.get('llm:metrics:total:turns') ?? '0');
-    const totalExecutionTimeMs = parseInt(await metricsRedis.get('llm:metrics:total:executionTimeMs') ?? '0');
+    const [totalSuccessful, totalFailed, totalCostUsd, totalTurns, totalExecutionTimeMs] = await Promise.all([
+        metricsRedis.get('llm:metrics:total:successful').then(v => parseInt(v ?? '0')),
+        metricsRedis.get('llm:metrics:total:failed').then(v => parseInt(v ?? '0')),
+        metricsRedis.get('llm:metrics:total:costUsd').then(v => parseFloat(v ?? '0')),
+        metricsRedis.get('llm:metrics:total:turns').then(v => parseInt(v ?? '0')),
+        metricsRedis.get('llm:metrics:total:executionTimeMs').then(v => parseInt(v ?? '0'))
+    ]);
     const totalRequests = totalSuccessful + totalFailed;
-    return {
-        totalRequests, totalSuccessful, totalFailed,
-        successRate: totalRequests > 0 ? totalSuccessful / totalRequests : 0,
-        totalCostUsd, avgCostPerRequest: totalRequests > 0 ? totalCostUsd / totalRequests : 0,
-        totalTurns, avgTurnsPerRequest: totalRequests > 0 ? totalTurns / totalRequests : 0,
-        avgExecutionTimeSec: totalRequests > 0 ? (totalExecutionTimeMs / totalRequests) / 1000 : 0
-    };
+    const avg = (val: number) => totalRequests > 0 ? val / totalRequests : 0;
+    return { totalRequests, totalSuccessful, totalFailed, successRate: avg(totalSuccessful), totalCostUsd,
+        avgCostPerRequest: avg(totalCostUsd), totalTurns, avgTurnsPerRequest: avg(totalTurns),
+        avgExecutionTimeSec: avg(totalExecutionTimeMs) / 1000 };
 }
 
 async function getModelMetrics(metricsRedis: InstanceType<typeof Redis>): Promise<Record<string, ModelMetrics>> {
     const modelsUsed = await metricsRedis.smembers('llm:metrics:models:used');
-    const modelMetrics: Record<string, ModelMetrics> = {};
-    for (const model of modelsUsed) {
-        const modelSuccessful = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:successful`) ?? '0');
-        const modelFailed = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:failed`) ?? '0');
-        const modelCostUsd = parseFloat(await metricsRedis.get(`llm:metrics:model:${model}:costUsd`) ?? '0');
-        const modelTurns = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:turns`) ?? '0');
-        const modelExecutionTimeMs = parseInt(await metricsRedis.get(`llm:metrics:model:${model}:executionTimeMs`) ?? '0');
-        const modelTotal = modelSuccessful + modelFailed;
-        modelMetrics[model] = {
-            totalRequests: modelTotal, successful: modelSuccessful, failed: modelFailed,
-            successRate: modelTotal > 0 ? modelSuccessful / modelTotal : 0,
-            totalCostUsd: modelCostUsd, avgCostPerRequest: modelTotal > 0 ? modelCostUsd / modelTotal : 0,
-            totalTurns: modelTurns, avgTurnsPerRequest: modelTotal > 0 ? modelTurns / modelTotal : 0,
-            avgExecutionTimeSec: modelTotal > 0 ? (modelExecutionTimeMs / modelTotal) / 1000 : 0
-        };
-    }
-    return modelMetrics;
+    const entries = await Promise.all(modelsUsed.map(async (model) => {
+        const [successful, failed, costUsd, turns, execTimeMs] = await Promise.all([
+            metricsRedis.get(`llm:metrics:model:${model}:successful`).then(v => parseInt(v ?? '0')),
+            metricsRedis.get(`llm:metrics:model:${model}:failed`).then(v => parseInt(v ?? '0')),
+            metricsRedis.get(`llm:metrics:model:${model}:costUsd`).then(v => parseFloat(v ?? '0')),
+            metricsRedis.get(`llm:metrics:model:${model}:turns`).then(v => parseInt(v ?? '0')),
+            metricsRedis.get(`llm:metrics:model:${model}:executionTimeMs`).then(v => parseInt(v ?? '0'))
+        ]);
+        const total = successful + failed;
+        const avg = (val: number) => total > 0 ? val / total : 0;
+        return [model, { totalRequests: total, successful, failed, successRate: avg(successful), totalCostUsd: costUsd,
+            avgCostPerRequest: avg(costUsd), totalTurns: turns, avgTurnsPerRequest: avg(turns),
+            avgExecutionTimeSec: avg(execTimeMs) / 1000 }] as const;
+    }));
+    return Object.fromEntries(entries);
 }
 
 async function getDailyMetrics(metricsRedis: InstanceType<typeof Redis>): Promise<DailyMetric[]> {
-    const dailyMetrics: DailyMetric[] = [];
     const today = new Date();
-    for (let i = 0; i < 7; i++) {
-        const date = new Date(today);
-        date.setDate(date.getDate() - i);
-        const dateKey = date.toISOString().split('T')[0];
-        const daySuccessful = parseInt(await metricsRedis.get(`llm:metrics:daily:${dateKey}:successful`) ?? '0');
-        const dayFailed = parseInt(await metricsRedis.get(`llm:metrics:daily:${dateKey}:failed`) ?? '0');
-        const dayCostUsd = parseFloat(await metricsRedis.get(`llm:metrics:daily:${dateKey}:costUsd`) ?? '0');
-        dailyMetrics.push({ date: dateKey, successful: daySuccessful, failed: dayFailed, total: daySuccessful + dayFailed, costUsd: dayCostUsd });
-    }
-    return dailyMetrics;
+    const dateKeys = Array.from({ length: 7 }, (_, i) => {
+        const d = new Date(today); d.setDate(d.getDate() - i); return d.toISOString().split('T')[0];
+    });
+    return Promise.all(dateKeys.map(async (dateKey) => {
+        const [successful, failed, costUsd] = await Promise.all([
+            metricsRedis.get(`llm:metrics:daily:${dateKey}:successful`).then(v => parseInt(v ?? '0')),
+            metricsRedis.get(`llm:metrics:daily:${dateKey}:failed`).then(v => parseInt(v ?? '0')),
+            metricsRedis.get(`llm:metrics:daily:${dateKey}:costUsd`).then(v => parseFloat(v ?? '0'))
+        ]);
+        return { date: dateKey, successful, failed, total: successful + failed, costUsd };
+    }));
 }
 
 async function getHighCostAlerts(metricsRedis: InstanceType<typeof Redis>): Promise<HighCostAlert[]> {
-    const highCostAlerts = await metricsRedis.lrange('llm:metrics:alerts:highcost', 0, 9);
-    return highCostAlerts.map((alert: string) => {
-        try { return JSON.parse(alert) as HighCostAlert; } catch { return null; }
-    }).filter((alert: HighCostAlert | null): alert is HighCostAlert => alert !== null);
+    return (await metricsRedis.lrange('llm:metrics:alerts:highcost', 0, 9))
+        .map((a: string) => { try { return JSON.parse(a) as HighCostAlert; } catch { return null; } })
+        .filter((a): a is HighCostAlert => a !== null);
 }
 
 export async function getLLMMetricsSummary(): Promise<LLMMetricsSummaryResult> {
@@ -464,16 +388,10 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummaryResult> {
 export async function getLLMMetricsByCorrelationId(correlationId: string): Promise<LLMMetricsData | null> {
     const metricsRedis = new Redis(connectionOptions);
     try {
-        const metricsKey = `llm:metrics:${correlationId}`;
-        const metricsData = await metricsRedis.get(metricsKey);
-        if (metricsData) {
-            return JSON.parse(metricsData) as LLMMetricsData;
-        }
-        return null;
+        const data = await metricsRedis.get(`llm:metrics:${correlationId}`);
+        return data ? JSON.parse(data) as LLMMetricsData : null;
     } catch (error) {
         logger.error({ error: (error as Error).message, correlationId }, 'Failed to retrieve LLM metrics by correlation ID');
         return null;
-    } finally {
-        await metricsRedis.quit();
-    }
+    } finally { await metricsRedis.quit(); }
 }
