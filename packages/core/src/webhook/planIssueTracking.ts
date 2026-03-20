@@ -5,9 +5,13 @@ import {
     updatePlanIssueStatus,
     linkPRToPlanIssue,
     updatePlanIssueByPR,
-    getPlanIssuesByDraft,
-    type PlanIssueStatus
+    getPlanIssuesByDraft
 } from '../config/planIssueManager.js';
+import {
+    determinePRStatusUpdate,
+    isInProgressStatus,
+    type PlanIssueStatus
+} from './statusMachine.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
 import { loadPrLabel } from '../config/configManager.js';
@@ -163,28 +167,8 @@ async function handleMergedPRNextIssueTrigger(
     await triggerNextPendingIssue(draftId, repository, epicLabel, log);
 }
 
-export function determinePRStatusUpdate(
-    action: string,
-    merged: boolean,
-    currentStatus: PlanIssueStatus
-): PlanIssueStatus | null {
-    // Never downgrade from terminal statuses - prevents race conditions where
-    // delayed PR events (e.g., 'opened') run after the PR is already merged
-    if (currentStatus === 'merged' || currentStatus === 'closed') {
-        return null;
-    }
-
-    if (action === 'closed') {
-        return merged ? 'merged' : 'closed';
-    }
-    if (action === 'opened' || action === 'reopened') {
-        return 'under_review';
-    }
-    if (action === 'synchronize' && currentStatus === 'in_refinement') {
-        return 'refinement_processing';
-    }
-    return null;
-}
+// Re-export from statusMachine for backwards compatibility
+export { determinePRStatusUpdate } from './statusMachine.js';
 
 /**
  * Handles PR events to track PR associations with plan issues.
@@ -287,10 +271,9 @@ export async function triggerNextPendingIssue(
 
         // Check if there are any issues currently in progress (processing or under_review)
         // These statuses indicate an active PR or processing that hasn't completed yet
-        const inProgressStatuses = ['processing', 'under_review', 'in_refinement', 'refinement_processing'];
-        const hasInProgressIssue = planIssues.some(issue => inProgressStatuses.includes(issue.status));
+        const hasInProgressIssue = planIssues.some(issue => isInProgressStatus(issue.status));
         if (hasInProgressIssue) {
-            const inProgressIssues = planIssues.filter(issue => inProgressStatuses.includes(issue.status));
+            const inProgressIssues = planIssues.filter(issue => isInProgressStatus(issue.status));
             log.debug({
                 draftId,
                 inProgressIssues: inProgressIssues.map(i => ({ number: i.issue_number, status: i.status }))
