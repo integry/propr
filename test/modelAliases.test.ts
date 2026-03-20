@@ -1,7 +1,8 @@
 import { test, after, mock, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS, resolveLlmLabel, ALL_MODELS } from '@propr/core';
+import { resolveModelAlias, getDefaultModel, MODEL_ALIASES, DEFAULT_MODEL_ALIAS, resolveLlmLabel, ALL_MODELS, findMatchingModel } from '@propr/core';
 import { AgentRegistry } from '@propr/core';
+import type { AgentConfig } from '@propr/core';
 
 test('Model Aliases Configuration', async (t) => {
     await t.test('should resolve known aliases to full model IDs', () => {
@@ -221,6 +222,135 @@ test('resolveLlmLabel - 5-step model resolution', async (t) => {
     registry.getAllAgents = originalGetAllAgents;
     registry.getDefaultAgent = originalGetDefaultAgent;
     registry.ensureInitialized = originalEnsureInitialized;
+});
+
+test('findMatchingModel - matches string to internal model IDs', async (t) => {
+    // Mock AgentConfig for testing findMatchingModel
+    const createMockConfig = (supportedModels: string[]): AgentConfig => ({
+        id: 'test-agent',
+        type: 'claude',
+        alias: 'test',
+        enabled: true,
+        dockerImage: 'test:latest',
+        configPath: '~/.test',
+        supportedModels
+    });
+
+    await t.test('matches exact model ID (case-insensitive)', () => {
+        const config = createMockConfig(['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001']);
+
+        // Exact match with correct case
+        assert.strictEqual(findMatchingModel('claude-opus-4-5-20251101', config), 'claude-opus-4-5-20251101');
+        assert.strictEqual(findMatchingModel('claude-sonnet-4-5-20250929', config), 'claude-sonnet-4-5-20250929');
+
+        // Exact match with different case
+        assert.strictEqual(findMatchingModel('CLAUDE-OPUS-4-5-20251101', config), 'claude-opus-4-5-20251101');
+        assert.strictEqual(findMatchingModel('Claude-Sonnet-4-5-20250929', config), 'claude-sonnet-4-5-20250929');
+    });
+
+    await t.test('matches exact shortAlias from modelDefinitions', () => {
+        const config = createMockConfig(['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001']);
+
+        // shortAlias for claude models: opus, sonnet, haiku
+        assert.strictEqual(findMatchingModel('opus', config), 'claude-opus-4-5-20251101');
+        assert.strictEqual(findMatchingModel('sonnet', config), 'claude-sonnet-4-5-20250929');
+        assert.strictEqual(findMatchingModel('haiku', config), 'claude-haiku-4-5-20251001');
+
+        // Case-insensitive shortAlias
+        assert.strictEqual(findMatchingModel('OPUS', config), 'claude-opus-4-5-20251101');
+        assert.strictEqual(findMatchingModel('Sonnet', config), 'claude-sonnet-4-5-20250929');
+    });
+
+    await t.test('matches exact shortAlias for gemini models', () => {
+        const config = createMockConfig(['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview']);
+
+        // shortAlias for gemini models: pro, flash, g3-flash-preview
+        assert.strictEqual(findMatchingModel('pro', config), 'gemini-2.5-pro');
+        assert.strictEqual(findMatchingModel('flash', config), 'gemini-2.5-flash');
+        assert.strictEqual(findMatchingModel('g3-flash-preview', config), 'gemini-3-flash-preview');
+    });
+
+    await t.test('matches exact shortAlias for codex models', () => {
+        const config = createMockConfig(['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark']);
+
+        // shortAlias for codex models: gpt54, gpt54-mini, codex-spark
+        assert.strictEqual(findMatchingModel('gpt54', config), 'gpt-5.4');
+        assert.strictEqual(findMatchingModel('gpt54-mini', config), 'gpt-5.4-mini');
+        assert.strictEqual(findMatchingModel('codex-spark', config), 'gpt-5.3-codex-spark');
+    });
+
+    await t.test('matches partial model ID (contains)', () => {
+        const config = createMockConfig(['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001']);
+
+        // Partial match: model ID contains the short name
+        assert.strictEqual(findMatchingModel('opus-4-5', config), 'claude-opus-4-5-20251101');
+        assert.strictEqual(findMatchingModel('20251101', config), 'claude-opus-4-5-20251101');
+        assert.strictEqual(findMatchingModel('sonnet-4-5', config), 'claude-sonnet-4-5-20250929');
+    });
+
+    await t.test('matches partial model ID for gemini', () => {
+        const config = createMockConfig(['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']);
+
+        // Partial match on model ID
+        assert.strictEqual(findMatchingModel('2.5-pro', config), 'gemini-2.5-pro');
+        assert.strictEqual(findMatchingModel('flash-lite', config), 'gemini-2.5-flash-lite');
+    });
+
+    await t.test('matches partial shortAlias (contains)', () => {
+        const config = createMockConfig(['gemini-3-flash-preview']);
+
+        // shortAlias is 'g3-flash-preview', partial match should work
+        assert.strictEqual(findMatchingModel('g3-flash', config), 'gemini-3-flash-preview');
+        assert.strictEqual(findMatchingModel('flash-prev', config), 'gemini-3-flash-preview');
+    });
+
+    await t.test('returns null when no match is found', () => {
+        const config = createMockConfig(['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929']);
+
+        // No match - completely unrelated string
+        assert.strictEqual(findMatchingModel('nonexistent-model', config), null);
+        assert.strictEqual(findMatchingModel('gpt-4', config), null);
+        assert.strictEqual(findMatchingModel('xyz123', config), null);
+
+        // No match - haiku is not in supported models
+        assert.strictEqual(findMatchingModel('haiku', config), null);
+    });
+
+    await t.test('returns null for empty supported models', () => {
+        const config = createMockConfig([]);
+
+        assert.strictEqual(findMatchingModel('opus', config), null);
+        assert.strictEqual(findMatchingModel('any-model', config), null);
+    });
+
+    await t.test('prioritizes exact model ID match over partial match', () => {
+        // If we have models like "flash" and "flash-lite", exact match should win
+        const config = createMockConfig(['gemini-2.5-flash', 'gemini-2.5-flash-lite']);
+
+        // 'flash' is shortAlias for gemini-2.5-flash, should match first
+        assert.strictEqual(findMatchingModel('flash', config), 'gemini-2.5-flash');
+    });
+
+    await t.test('prioritizes exact shortAlias over partial model ID match', () => {
+        const config = createMockConfig(['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929']);
+
+        // 'opus' is exact shortAlias, should match before partial model ID match
+        assert.strictEqual(findMatchingModel('opus', config), 'claude-opus-4-5-20251101');
+    });
+
+    await t.test('handles models not in MODEL_INFO_MAP gracefully', () => {
+        // Create config with a custom model not in MODEL_INFO_MAP
+        const config = createMockConfig(['custom-model-xyz', 'claude-opus-4-5-20251101']);
+
+        // Custom model should still be matchable by exact ID
+        assert.strictEqual(findMatchingModel('custom-model-xyz', config), 'custom-model-xyz');
+
+        // Partial match on custom model
+        assert.strictEqual(findMatchingModel('model-xyz', config), 'custom-model-xyz');
+
+        // Known model still works
+        assert.strictEqual(findMatchingModel('opus', config), 'claude-opus-4-5-20251101');
+    });
 });
 
 // Force exit due to module-level initialization in @propr/core
