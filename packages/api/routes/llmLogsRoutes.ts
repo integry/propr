@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
+import { validatePagination, validateUUID, validateBoolean } from './validation.js';
 
 interface LlmLogsRoutesDeps {
   db: Knex;
@@ -36,17 +37,38 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
 
   async function getLlmLogs(req: Request, res: Response): Promise<void> {
     try {
-      // Parse pagination parameters
-      const page = Math.max(1, parseInt(req.query.page as string) || 1);
-      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
-      const offset = (page - 1) * limit;
+      // Validate pagination parameters
+      const paginationResult = validatePagination(req.query.page, req.query.limit, { maxLimit: 100, defaultLimit: 50 });
+      if (!paginationResult.valid) {
+        res.status(400).json({ error: paginationResult.error });
+        return;
+      }
+      const { page, limit, offset } = paginationResult.params!;
 
-      // Parse filter parameters
+      // Parse and validate filter parameters
       const executionType = req.query.execution_type as string | undefined;
       const model = req.query.model as string | undefined;
       const success = req.query.success as string | undefined;
       const draftId = req.query.draft_id as string | undefined;
       const agentAlias = req.query.agent_alias as string | undefined;
+
+      // Validate draft_id if provided
+      if (draftId) {
+        const draftIdValidation = validateUUID(draftId, 'Draft ID');
+        if (!draftIdValidation.valid) {
+          res.status(400).json({ error: draftIdValidation.error });
+          return;
+        }
+      }
+
+      // Validate success parameter if provided
+      if (success !== undefined && success !== '') {
+        const successValidation = validateBoolean(success);
+        if (!successValidation.valid) {
+          res.status(400).json({ error: 'success parameter must be true or false' });
+          return;
+        }
+      }
 
       // Build base query from the new llm_logs table
       let query = db('llm_logs')

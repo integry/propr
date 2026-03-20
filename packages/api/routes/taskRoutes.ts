@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 import { generateCorrelationId, getAuthenticatedOctokit, issueQueue, COMMENT_BATCH_DELAY_MS } from '@propr/core';
 import type { SystemTaskJobData, CommentJobData, UnprocessedComment } from '@propr/core';
 import { getTasksFromDb } from './taskHelpers.js';
+import { validatePagination, validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger, validateRepository } from './validation.js';
 
 interface TaskRoutesDeps {
   db: Knex;
@@ -22,14 +23,44 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
   async function getTasks(req: Request, res: Response): Promise<void> {
     try {
-      const { status = 'all', limit = '50', offset = '0', repository = 'all', search = '', forReview = '', excludeMerged = '' } = req.query as Record<string, string>;
+      const { status = 'all', repository = 'all', search = '', forReview = '', excludeMerged = '' } = req.query as Record<string, string>;
+
+      // Validate limit parameter
+      const limitValidation = validatePositiveInteger(req.query.limit, 'Limit', { max: 1000 });
+      if (!limitValidation.valid) {
+        res.status(400).json({ error: limitValidation.error });
+        return;
+      }
+      const limit = limitValidation.value ?? 50;
+
+      // Validate offset parameter
+      const offsetValidation = validatePositiveInteger(req.query.offset, 'Offset', { max: 1000000 });
+      if (!offsetValidation.valid) {
+        res.status(400).json({ error: offsetValidation.error });
+        return;
+      }
+      const offset = offsetValidation.value ?? 0;
+
+      // Validate repository filter
+      const repoValidation = validateRepositoryFilter(repository);
+      if (!repoValidation.valid) {
+        res.status(400).json({ error: repoValidation.error });
+        return;
+      }
+
+      // Validate search parameter length
+      const searchValidation = validateStringLength(search, 'Search', { maxLength: 500 });
+      if (!searchValidation.valid) {
+        res.status(400).json({ error: searchValidation.error });
+        return;
+      }
 
       const result = await getTasksFromDb({
         db,
         status,
         repository,
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit,
+        offset,
         search,
         forReview: forReview === 'true',
         excludeMerged: excludeMerged === 'true'
@@ -55,6 +86,38 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
           error: 'Missing required parameters',
           required: ['repo', 'pr', 'commit', 'commentId', 'owner']
         });
+        return;
+      }
+
+      // Validate repo name
+      if (typeof repo !== 'string' || repo.length > 100) {
+        res.status(400).json({ error: 'Invalid repo name' });
+        return;
+      }
+
+      // Validate owner name
+      if (typeof owner !== 'string' || owner.length > 100) {
+        res.status(400).json({ error: 'Invalid owner name' });
+        return;
+      }
+
+      // Validate PR number
+      const prValidation = validatePositiveInteger(pr, 'PR number', { required: true, max: 10000000 });
+      if (!prValidation.valid) {
+        res.status(400).json({ error: prValidation.error });
+        return;
+      }
+
+      // Validate commit hash
+      if (typeof commit !== 'string' || !/^[a-f0-9]{7,40}$/i.test(commit)) {
+        res.status(400).json({ error: 'Invalid commit hash' });
+        return;
+      }
+
+      // Validate commentId
+      const commentIdValidation = validatePositiveInteger(commentId, 'Comment ID', { required: true, max: 10000000000 });
+      if (!commentIdValidation.valid) {
+        res.status(400).json({ error: commentIdValidation.error });
         return;
       }
 
@@ -104,6 +167,31 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
           error: 'Missing required parameters',
           required: ['owner', 'repo', 'pr', 'commit']
         });
+        return;
+      }
+
+      // Validate owner name
+      if (typeof owner !== 'string' || owner.length > 100) {
+        res.status(400).json({ error: 'Invalid owner name' });
+        return;
+      }
+
+      // Validate repo name
+      if (typeof repo !== 'string' || repo.length > 100) {
+        res.status(400).json({ error: 'Invalid repo name' });
+        return;
+      }
+
+      // Validate PR number
+      const prValidation = validatePositiveInteger(pr, 'PR number', { required: true, max: 10000000 });
+      if (!prValidation.valid) {
+        res.status(400).json({ error: prValidation.error });
+        return;
+      }
+
+      // Validate commit hash
+      if (typeof commit !== 'string' || !/^[a-f0-9]{7,40}$/i.test(commit)) {
+        res.status(400).json({ error: 'Invalid commit hash' });
         return;
       }
 
@@ -172,8 +260,10 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       const { taskId } = req.params;
       const { force } = req.query;
 
-      if (!taskId) {
-        res.status(400).json({ error: 'Task ID is required' });
+      // Validate taskId parameter
+      const taskIdValidation = validateTaskId(taskId);
+      if (!taskIdValidation.valid) {
+        res.status(400).json({ error: taskIdValidation.error });
         return;
       }
 
@@ -222,12 +312,21 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       const { taskId } = req.params;
       const { body } = req.body;
 
-      if (!taskId) {
-        res.status(400).json({ error: 'Task ID is required' });
+      // Validate taskId parameter
+      const taskIdValidation = validateTaskId(taskId);
+      if (!taskIdValidation.valid) {
+        res.status(400).json({ error: taskIdValidation.error });
         return;
       }
 
-      if (!body || typeof body !== 'string' || body.trim().length === 0) {
+      // Validate comment body
+      const bodyValidation = validateStringLength(body, 'Comment body', { required: true, minLength: 1, maxLength: 65536 });
+      if (!bodyValidation.valid) {
+        res.status(400).json({ error: bodyValidation.error });
+        return;
+      }
+
+      if (typeof body !== 'string' || body.trim().length === 0) {
         res.status(400).json({ error: 'Comment body is required' });
         return;
       }

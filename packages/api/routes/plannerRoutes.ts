@@ -5,6 +5,14 @@ import path from 'path';
 import fs from 'fs-extra';
 import crypto from 'crypto';
 import {
+  validatePagination,
+  validateRepository,
+  validateRepositoryFilter,
+  validateEnum,
+  validateUUID,
+  ALLOWED_EXTENSIONS,
+} from './validation.js';
+import {
   checkDbAndAuth,
   sendCheckError,
   verifyDraftOwnership,
@@ -47,9 +55,50 @@ import { linkTodosToDraft } from '@propr/core';
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
 
+// MIME types allowed for file uploads
+const ALLOWED_MIME_TYPES = [
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'application/json',
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+];
+
 const upload = multer({
   dest: uploadDir,
-  limits: { fileSize: 10 * 1024 * 1024 }
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    // Validate filename - prevent path traversal
+    if (file.originalname.includes('..') || file.originalname.includes('/') || file.originalname.includes('\\')) {
+      cb(new Error('Invalid filename'));
+      return;
+    }
+
+    // Validate filename length
+    if (file.originalname.length > 255) {
+      cb(new Error('Filename is too long (max 255 characters)'));
+      return;
+    }
+
+    // Validate file extension
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ext && !ALLOWED_EXTENSIONS.includes(ext as typeof ALLOWED_EXTENSIONS[number])) {
+      cb(new Error(`File type not allowed. Allowed types: ${ALLOWED_EXTENSIONS.join(', ')}`));
+      return;
+    }
+
+    // Validate MIME type
+    if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+      cb(new Error(`MIME type not allowed. Allowed types: ${ALLOWED_MIME_TYPES.join(', ')}`));
+      return;
+    }
+
+    cb(null, true);
+  },
 });
 
 export const attachmentUpload = upload.single('file');
@@ -66,14 +115,34 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     if (!check.valid) { sendCheckError(res, check); return; }
 
     try {
-      const page = Math.max(1, Number(req.query.page) || 1);
-      const limit = Math.min(Math.max(1, Number(req.query.limit) || 10), 100);
-      const offset = (page - 1) * limit;
+      // Validate pagination parameters
+      const paginationResult = validatePagination(req.query.page, req.query.limit, { maxLimit: 100, defaultLimit: 10 });
+      if (!paginationResult.valid) {
+        res.status(400).json({ error: paginationResult.error });
+        return;
+      }
+      const { page, limit, offset } = paginationResult.params!;
+
+      // Validate repository filter
+      const repoValidation = validateRepositoryFilter(req.query.repository);
+      if (!repoValidation.valid) {
+        res.status(400).json({ error: repoValidation.error });
+        return;
+      }
+
+      const validStatuses = ['draft', 'review', 'generating', 'refining', 'executed', 'approved', 'merged', 'pr_created'] as const;
+
+      // Validate status filter
+      const statusValidation = validateEnum(req.query.status, ['all', ...validStatuses], 'Status');
+      if (!statusValidation.valid) {
+        res.status(400).json({ error: statusValidation.error });
+        return;
+      }
+
       const repository = req.query.repository as string | undefined;
       const search = req.query.search as string | undefined;
       const status = req.query.status as string | undefined;
       const excludeStatuses = req.query.excludeStatuses as string | undefined;
-      const validStatuses = ['draft', 'review', 'generating', 'refining', 'executed', 'approved', 'merged', 'pr_created'];
       // Build query with optional repository filter
       let query = db!('task_drafts').where({ user_id: req.user!.id });
 
@@ -81,13 +150,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
         query = query.andWhere('repository', repository);
       }
 
-      if (status && status !== 'all' && validStatuses.includes(status)) {
+      if (status && status !== 'all' && (validStatuses as readonly string[]).includes(status)) {
         query = query.andWhere('status', status);
       }
 
       // Exclude multiple statuses (comma-separated) - useful for header dropdown
       if (excludeStatuses) {
-        const statusesToExclude = excludeStatuses.split(',').filter(s => validStatuses.includes(s.trim()));
+        const statusesToExclude = excludeStatuses.split(',').filter(s => (validStatuses as readonly string[]).includes(s.trim()));
         if (statusesToExclude.length > 0) {
           query = query.whereNotIn('status', statusesToExclude);
         }
@@ -149,7 +218,25 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     if (!check.valid) { sendCheckError(res, check); return; }
 
     const { repository, prompt, todoIds } = req.body;
-    if (!repository) { res.status(400).json({ error: 'Repository is required' }); return; }
+
+    // Validate repository format
+    const repoValidation = validateRepository(repository);
+    if (!repoValidation.valid) {
+      res.status(400).json({ error: repoValidation.error });
+      return;
+    }
+
+    // Validate prompt if provided
+    if (prompt !== undefined && typeof prompt !== 'string') {
+      res.status(400).json({ error: 'Prompt must be a string' });
+      return;
+    }
+
+    // Validate todoIds if provided
+    if (todoIds !== undefined && (!Array.isArray(todoIds) || !todoIds.every(id => typeof id === 'string'))) {
+      res.status(400).json({ error: 'todoIds must be an array of strings' });
+      return;
+    }
 
     try {
       const draftId = crypto.randomUUID();
@@ -176,6 +263,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
+    // Validate draft ID
+    const idValidation = validateUUID(req.params.id, 'Draft ID');
+    if (!idValidation.valid) {
+      res.status(400).json({ error: idValidation.error });
+      return;
+    }
+
     try {
       const draft = await db!('task_drafts').where({ draft_id: req.params.id }).first();
       if (!draft) { res.status(404).json({ error: 'Draft not found' }); return; }
@@ -196,6 +290,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   async function updateDraft(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
+
+    // Validate draft ID
+    const idValidation = validateUUID(req.params.id, 'Draft ID');
+    if (!idValidation.valid) {
+      res.status(400).json({ error: idValidation.error });
+      return;
+    }
 
     try {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
@@ -231,6 +332,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
+    // Validate draft ID
+    const idValidation = validateUUID(req.params.id, 'Draft ID');
+    if (!idValidation.valid) {
+      res.status(400).json({ error: idValidation.error });
+      return;
+    }
+
     try {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
@@ -252,6 +360,13 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   async function resetDraftToSetup(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
+
+    // Validate draft ID
+    const idValidation = validateUUID(req.params.id, 'Draft ID');
+    if (!idValidation.valid) {
+      res.status(400).json({ error: idValidation.error });
+      return;
+    }
 
     try {
       const ownership = await verifyDraftOwnership(db!, req.params.id, req.user!.id, ['user_id', 'status', 'context_config']);
