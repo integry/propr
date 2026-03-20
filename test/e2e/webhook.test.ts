@@ -824,6 +824,779 @@ describe('E2E Webhook Issue Events Simulation', () => {
     });
 });
 
+// --- PR Event Types ---
+
+interface MockPullRequest {
+    id: number;
+    number: number;
+    title: string;
+    html_url: string;
+    state: 'open' | 'closed';
+    merged: boolean;
+    body: string | null;
+    head: {
+        ref: string;
+        sha: string;
+    };
+    base: {
+        ref: string;
+        sha: string;
+    };
+    labels: MockLabel[];
+    created_at: string;
+    updated_at: string;
+    merged_at: string | null;
+}
+
+interface PullRequestOpenedPayload {
+    action: 'opened';
+    pull_request: MockPullRequest;
+    repository: MockRepository;
+    sender: MockSender;
+}
+
+interface PullRequestClosedPayload {
+    action: 'closed';
+    pull_request: MockPullRequest;
+    repository: MockRepository;
+    sender: MockSender;
+}
+
+interface PullRequestLabeledPayload {
+    action: 'labeled';
+    pull_request: MockPullRequest;
+    label: MockLabel;
+    repository: MockRepository;
+    sender: MockSender;
+}
+
+interface PullRequestSynchronizePayload {
+    action: 'synchronize';
+    pull_request: MockPullRequest;
+    repository: MockRepository;
+    sender: MockSender;
+}
+
+type PullRequestEventPayload = PullRequestOpenedPayload | PullRequestClosedPayload | PullRequestLabeledPayload | PullRequestSynchronizePayload;
+
+// --- PR Event Types for Mock Handler ---
+
+interface ProcessedPREvent {
+    type: 'pr_opened' | 'pr_closed' | 'pr_merged' | 'pr_labeled' | 'pr_synchronized';
+    payload: PullRequestEventPayload;
+    correlationId: string;
+    timestamp: Date;
+}
+
+interface LinkedPlanIssue {
+    repository: string;
+    issueNumber: number;
+    prNumber: number;
+    status: string;
+}
+
+interface MockPRWebhookHandler {
+    processedEvents: ProcessedPREvent[];
+    linkedPlanIssues: LinkedPlanIssue[];
+    statusUpdates: Array<{
+        action: string;
+        repository: string;
+        prNumber: number;
+        newStatus: string;
+    }>;
+    nextIssueTriggers: Array<{
+        draftId: string;
+        repository: string;
+        triggeredIssueNumber: number;
+    }>;
+}
+
+// --- Mock Factory for PR Events ---
+
+function createMockPullRequest(
+    number: number,
+    body: string | null = null,
+    state: 'open' | 'closed' = 'open',
+    merged = false,
+    labels: string[] = []
+): MockPullRequest {
+    return {
+        id: number * 2000,
+        number,
+        title: `Test PR #${number}`,
+        html_url: `https://github.com/testowner/testrepo/pull/${number}`,
+        state,
+        merged,
+        body,
+        head: {
+            ref: `feature-branch-${number}`,
+            sha: `abc123${number}`
+        },
+        base: {
+            ref: 'main',
+            sha: `def456${number}`
+        },
+        labels: labels.map(name => createMockLabel(name)),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        merged_at: merged ? new Date().toISOString() : null
+    };
+}
+
+// --- Mock PR Webhook Handler ---
+
+function createMockPRWebhookHandler(): MockPRWebhookHandler & {
+    processPullRequestEvent: (payload: PullRequestEventPayload, correlationId: string) => Promise<void>;
+    registerPlanIssue: (repository: string, issueNumber: number, draftId: string, status?: string) => void;
+    getPlanIssueStatus: (repository: string, issueNumber: number) => string | null;
+    clear: () => void;
+} {
+    const state: MockPRWebhookHandler = {
+        processedEvents: [],
+        linkedPlanIssues: [],
+        statusUpdates: [],
+        nextIssueTriggers: []
+    };
+
+    // Mock plan issues database
+    const planIssues = new Map<string, { issueNumber: number; draftId: string; status: string; prNumber?: number }>();
+
+    return {
+        ...state,
+
+        /**
+         * Simulates PR event processing based on webhookHandler.ts behavior.
+         * This includes:
+         * - Linking PRs to issues via "fixes #X" references
+         * - Status updates when PR is opened, merged, or closed
+         * - Triggering next pending issue on merge
+         */
+        async processPullRequestEvent(payload: PullRequestEventPayload, correlationId: string): Promise<void> {
+            const [owner, repo] = payload.repository.full_name.split('/');
+            const repository = payload.repository.full_name;
+            const prNumber = payload.pull_request.number;
+
+            // Record the event
+            let eventType: ProcessedPREvent['type'];
+            if (payload.action === 'opened') eventType = 'pr_opened';
+            else if (payload.action === 'closed' && payload.pull_request.merged) eventType = 'pr_merged';
+            else if (payload.action === 'closed') eventType = 'pr_closed';
+            else if (payload.action === 'labeled') eventType = 'pr_labeled';
+            else eventType = 'pr_synchronized';
+
+            state.processedEvents.push({
+                type: eventType,
+                payload,
+                correlationId,
+                timestamp: new Date()
+            });
+
+            // Handle PR opened - link to issue via "fixes #X" reference
+            if (payload.action === 'opened') {
+                const prBody = payload.pull_request.body || '';
+                const issueRefs = prBody.match(/(?:fixes|closes|resolves|fix|close|resolve)\s*#(\d+)/gi);
+
+                if (issueRefs) {
+                    for (const ref of issueRefs) {
+                        const match = ref.match(/#(\d+)/);
+                        if (match) {
+                            const linkedIssueNumber = parseInt(match[1], 10);
+                            const issueKey = `${repository}:${linkedIssueNumber}`;
+                            const planIssue = planIssues.get(issueKey);
+
+                            if (planIssue) {
+                                // Link PR to plan issue
+                                planIssue.prNumber = prNumber;
+                                state.linkedPlanIssues.push({
+                                    repository,
+                                    issueNumber: linkedIssueNumber,
+                                    prNumber,
+                                    status: planIssue.status
+                                });
+
+                                // Update status to under_review
+                                planIssue.status = 'under_review';
+                                state.statusUpdates.push({
+                                    action: 'opened',
+                                    repository,
+                                    prNumber,
+                                    newStatus: 'under_review'
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Handle PR closed (merged or not)
+            if (payload.action === 'closed') {
+                // Find the plan issue linked to this PR
+                const linkedIssue = Array.from(planIssues.entries()).find(([_, issue]) => issue.prNumber === prNumber);
+
+                if (linkedIssue) {
+                    const [issueKey, planIssue] = linkedIssue;
+                    const newStatus = payload.pull_request.merged ? 'merged' : 'closed';
+
+                    // Update status
+                    planIssue.status = newStatus;
+                    state.statusUpdates.push({
+                        action: payload.pull_request.merged ? 'merged' : 'closed',
+                        repository,
+                        prNumber,
+                        newStatus
+                    });
+
+                    // Trigger next issue if merged
+                    if (payload.pull_request.merged && planIssue.draftId) {
+                        // Find next pending issue in the same draft
+                        const sameDraftIssues = Array.from(planIssues.entries())
+                            .filter(([_, issue]) => issue.draftId === planIssue.draftId)
+                            .sort((a, b) => a[1].issueNumber - b[1].issueNumber);
+
+                        const nextPending = sameDraftIssues.find(([_, issue]) => issue.status === 'pending');
+
+                        if (nextPending) {
+                            const [_, nextIssue] = nextPending;
+                            nextIssue.status = 'processing';
+                            state.nextIssueTriggers.push({
+                                draftId: planIssue.draftId,
+                                repository,
+                                triggeredIssueNumber: nextIssue.issueNumber
+                            });
+                        }
+                    }
+                }
+            }
+        },
+
+        registerPlanIssue(repository: string, issueNumber: number, draftId: string, status = 'pending'): void {
+            const key = `${repository}:${issueNumber}`;
+            planIssues.set(key, { issueNumber, draftId, status });
+        },
+
+        getPlanIssueStatus(repository: string, issueNumber: number): string | null {
+            const key = `${repository}:${issueNumber}`;
+            return planIssues.get(key)?.status ?? null;
+        },
+
+        clear(): void {
+            state.processedEvents = [];
+            state.linkedPlanIssues = [];
+            state.statusUpdates = [];
+            state.nextIssueTriggers = [];
+            planIssues.clear();
+        }
+    };
+}
+
+// --- PR Webhook Tests ---
+
+describe('E2E Webhook PR Events Simulation', () => {
+    let prWebhookHandler: ReturnType<typeof createMockPRWebhookHandler>;
+
+    beforeEach(() => {
+        prWebhookHandler = createMockPRWebhookHandler();
+    });
+
+    afterEach(() => {
+        prWebhookHandler.clear();
+    });
+
+    describe('PR Opened Event Simulation', () => {
+        test('links PR to plan issue when body contains fixes reference', async () => {
+            // Register a plan issue first
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 42, 'draft-001');
+
+            const payload: PullRequestOpenedPayload = {
+                action: 'opened',
+                pull_request: createMockPullRequest(100, 'Fixes #42 - implementing feature'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await prWebhookHandler.processPullRequestEvent(payload, 'corr-pr-opened-001');
+
+            // Verify event was recorded
+            const openedEvents = prWebhookHandler.processedEvents.filter(e => e.type === 'pr_opened');
+            assert.strictEqual(openedEvents.length, 1, 'Should record one opened event');
+
+            // Verify PR was linked to plan issue
+            assert.strictEqual(prWebhookHandler.linkedPlanIssues.length, 1, 'Should link PR to plan issue');
+            assert.strictEqual(prWebhookHandler.linkedPlanIssues[0]?.issueNumber, 42, 'Should link to issue #42');
+            assert.strictEqual(prWebhookHandler.linkedPlanIssues[0]?.prNumber, 100, 'Should link PR #100');
+        });
+
+        test('updates plan issue status to under_review when PR is opened', async () => {
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 43, 'draft-002', 'processing');
+
+            const payload: PullRequestOpenedPayload = {
+                action: 'opened',
+                pull_request: createMockPullRequest(101, 'Closes #43'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await prWebhookHandler.processPullRequestEvent(payload, 'corr-pr-opened-002');
+
+            // Verify status update
+            assert.strictEqual(prWebhookHandler.statusUpdates.length, 1, 'Should record status update');
+            assert.strictEqual(prWebhookHandler.statusUpdates[0]?.newStatus, 'under_review', 'Status should be under_review');
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 43), 'under_review');
+        });
+
+        test('handles multiple issue references in PR body', async () => {
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 44, 'draft-003');
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 45, 'draft-003');
+
+            const payload: PullRequestOpenedPayload = {
+                action: 'opened',
+                pull_request: createMockPullRequest(102, 'Fixes #44 and Resolves #45'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await prWebhookHandler.processPullRequestEvent(payload, 'corr-pr-opened-003');
+
+            // Verify both issues were linked
+            assert.strictEqual(prWebhookHandler.linkedPlanIssues.length, 2, 'Should link to both issues');
+            const linkedNumbers = prWebhookHandler.linkedPlanIssues.map(l => l.issueNumber).sort((a, b) => a - b);
+            assert.deepStrictEqual(linkedNumbers, [44, 45], 'Should link to issues 44 and 45');
+        });
+
+        test('ignores PR without issue references', async () => {
+            const payload: PullRequestOpenedPayload = {
+                action: 'opened',
+                pull_request: createMockPullRequest(103, 'Some feature without issue reference'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await prWebhookHandler.processPullRequestEvent(payload, 'corr-pr-opened-004');
+
+            // Event should be recorded
+            assert.strictEqual(prWebhookHandler.processedEvents.length, 1);
+            // But no linking should occur
+            assert.strictEqual(prWebhookHandler.linkedPlanIssues.length, 0, 'Should not link any issues');
+        });
+
+        test('ignores references to non-existent plan issues', async () => {
+            // No plan issues registered
+            const payload: PullRequestOpenedPayload = {
+                action: 'opened',
+                pull_request: createMockPullRequest(104, 'Fixes #999'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await prWebhookHandler.processPullRequestEvent(payload, 'corr-pr-opened-005');
+
+            assert.strictEqual(prWebhookHandler.linkedPlanIssues.length, 0, 'Should not link non-existent issues');
+        });
+
+        test('handles various reference formats', async () => {
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 50, 'draft-004');
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 51, 'draft-004');
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 52, 'draft-004');
+
+            const payload: PullRequestOpenedPayload = {
+                action: 'opened',
+                pull_request: createMockPullRequest(105, 'fix #50, close #51, resolve #52'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await prWebhookHandler.processPullRequestEvent(payload, 'corr-pr-opened-006');
+
+            assert.strictEqual(prWebhookHandler.linkedPlanIssues.length, 3, 'Should handle all reference formats');
+        });
+    });
+
+    describe('PR Merged Event Simulation', () => {
+        test('updates plan issue status to merged when PR is merged', async () => {
+            // Register and link a plan issue
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 60, 'draft-005', 'processing');
+
+            // First, open the PR to link it
+            const openPayload: PullRequestOpenedPayload = {
+                action: 'opened',
+                pull_request: createMockPullRequest(200, 'Fixes #60'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+            await prWebhookHandler.processPullRequestEvent(openPayload, 'corr-pr-merge-001a');
+
+            // Then merge the PR
+            const mergePayload: PullRequestClosedPayload = {
+                action: 'closed',
+                pull_request: createMockPullRequest(200, 'Fixes #60', 'closed', true),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+            await prWebhookHandler.processPullRequestEvent(mergePayload, 'corr-pr-merge-001b');
+
+            // Verify merged event was recorded
+            const mergedEvents = prWebhookHandler.processedEvents.filter(e => e.type === 'pr_merged');
+            assert.strictEqual(mergedEvents.length, 1, 'Should record one merged event');
+
+            // Verify status update to merged
+            const mergeUpdate = prWebhookHandler.statusUpdates.find(u => u.newStatus === 'merged');
+            assert.ok(mergeUpdate, 'Should have merged status update');
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 60), 'merged');
+        });
+
+        test('triggers next pending issue when PR is merged', async () => {
+            // Register multiple plan issues in the same draft
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 61, 'draft-006', 'processing');
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 62, 'draft-006', 'pending');
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 63, 'draft-006', 'pending');
+
+            // Open and link PR to first issue
+            const openPayload: PullRequestOpenedPayload = {
+                action: 'opened',
+                pull_request: createMockPullRequest(201, 'Fixes #61'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+            await prWebhookHandler.processPullRequestEvent(openPayload, 'corr-pr-merge-002a');
+
+            // Merge the PR
+            const mergePayload: PullRequestClosedPayload = {
+                action: 'closed',
+                pull_request: createMockPullRequest(201, 'Fixes #61', 'closed', true),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+            await prWebhookHandler.processPullRequestEvent(mergePayload, 'corr-pr-merge-002b');
+
+            // Verify next issue was triggered
+            assert.strictEqual(prWebhookHandler.nextIssueTriggers.length, 1, 'Should trigger next issue');
+            assert.strictEqual(prWebhookHandler.nextIssueTriggers[0]?.draftId, 'draft-006');
+            assert.strictEqual(prWebhookHandler.nextIssueTriggers[0]?.triggeredIssueNumber, 62, 'Should trigger issue #62');
+
+            // Verify next issue status changed to processing
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 62), 'processing');
+        });
+
+        test('does not trigger next issue when all issues are completed', async () => {
+            // Register issues where all are either merged or processing
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 64, 'draft-007', 'processing');
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 65, 'draft-007', 'merged');
+
+            // Open and merge PR
+            const openPayload: PullRequestOpenedPayload = {
+                action: 'opened',
+                pull_request: createMockPullRequest(202, 'Fixes #64'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+            await prWebhookHandler.processPullRequestEvent(openPayload, 'corr-pr-merge-003a');
+
+            const mergePayload: PullRequestClosedPayload = {
+                action: 'closed',
+                pull_request: createMockPullRequest(202, 'Fixes #64', 'closed', true),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+            await prWebhookHandler.processPullRequestEvent(mergePayload, 'corr-pr-merge-003b');
+
+            // Should not trigger any new issues
+            assert.strictEqual(prWebhookHandler.nextIssueTriggers.length, 0, 'Should not trigger when no pending issues');
+        });
+
+        test('handles complete plan execution flow', async () => {
+            // Set up a plan with 3 issues
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 70, 'draft-008', 'processing');
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 71, 'draft-008', 'pending');
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 72, 'draft-008', 'pending');
+
+            // Process first issue
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'opened',
+                pull_request: createMockPullRequest(300, 'Fixes #70'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'flow-001a');
+
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'closed',
+                pull_request: createMockPullRequest(300, 'Fixes #70', 'closed', true),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'flow-001b');
+
+            // First issue should be merged, second should be processing
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 70), 'merged');
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 71), 'processing');
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 72), 'pending');
+
+            // Process second issue
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'opened',
+                pull_request: createMockPullRequest(301, 'Fixes #71'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'flow-002a');
+
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'closed',
+                pull_request: createMockPullRequest(301, 'Fixes #71', 'closed', true),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'flow-002b');
+
+            // Second issue should be merged, third should be processing
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 71), 'merged');
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 72), 'processing');
+
+            // Verify all triggers happened
+            assert.strictEqual(prWebhookHandler.nextIssueTriggers.length, 2, 'Should have triggered two issues');
+        });
+    });
+
+    describe('PR Closed (Not Merged) Event Simulation', () => {
+        test('updates plan issue status to closed when PR is closed without merge', async () => {
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 80, 'draft-009', 'processing');
+
+            // Open PR
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'opened',
+                pull_request: createMockPullRequest(400, 'Fixes #80'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'corr-pr-close-001a');
+
+            // Close without merge
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'closed',
+                pull_request: createMockPullRequest(400, 'Fixes #80', 'closed', false),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'corr-pr-close-001b');
+
+            // Verify closed event
+            const closedEvents = prWebhookHandler.processedEvents.filter(e => e.type === 'pr_closed');
+            assert.strictEqual(closedEvents.length, 1, 'Should record one closed event');
+
+            // Verify status update to closed (not merged)
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 80), 'closed');
+        });
+
+        test('does not trigger next issue when PR is closed without merge', async () => {
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 81, 'draft-010', 'processing');
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 82, 'draft-010', 'pending');
+
+            // Open and close without merge
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'opened',
+                pull_request: createMockPullRequest(401, 'Fixes #81'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'corr-pr-close-002a');
+
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'closed',
+                pull_request: createMockPullRequest(401, 'Fixes #81', 'closed', false),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'corr-pr-close-002b');
+
+            // Should NOT trigger next issue
+            assert.strictEqual(prWebhookHandler.nextIssueTriggers.length, 0, 'Should not trigger when PR closed without merge');
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 82), 'pending', 'Next issue should remain pending');
+        });
+    });
+
+    describe('Event Correlation for PR Events', () => {
+        test('preserves correlation ID through PR event processing', async () => {
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 90, 'draft-011');
+
+            const correlationId = 'pr-correlation-12345';
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'opened',
+                pull_request: createMockPullRequest(500, 'Fixes #90'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, correlationId);
+
+            // All events should have the same correlation ID
+            for (const event of prWebhookHandler.processedEvents) {
+                assert.strictEqual(event.correlationId, correlationId, 'Correlation ID should be preserved');
+            }
+        });
+
+        test('different PR events have different correlation IDs', async () => {
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 91, 'draft-012');
+
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'opened',
+                pull_request: createMockPullRequest(501, 'Fixes #91'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'pr-corr-001');
+
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'closed',
+                pull_request: createMockPullRequest(501, 'Fixes #91', 'closed', true),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'pr-corr-002');
+
+            const correlationIds = new Set(prWebhookHandler.processedEvents.map(e => e.correlationId));
+            assert.strictEqual(correlationIds.size, 2, 'Should have 2 unique correlation IDs');
+        });
+    });
+
+    describe('Complex PR Event Sequences', () => {
+        test('handles concurrent PRs for different plan issues', async () => {
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 100, 'draft-013', 'processing');
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 101, 'draft-013', 'pending');
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 102, 'draft-014', 'processing');
+
+            // Open two PRs concurrently
+            await Promise.all([
+                prWebhookHandler.processPullRequestEvent({
+                    action: 'opened',
+                    pull_request: createMockPullRequest(600, 'Fixes #100'),
+                    repository: createMockRepository(),
+                    sender: createMockSender()
+                }, 'concurrent-pr-001'),
+                prWebhookHandler.processPullRequestEvent({
+                    action: 'opened',
+                    pull_request: createMockPullRequest(601, 'Fixes #102'),
+                    repository: createMockRepository(),
+                    sender: createMockSender()
+                }, 'concurrent-pr-002')
+            ]);
+
+            // Both should be linked
+            assert.strictEqual(prWebhookHandler.linkedPlanIssues.length, 2, 'Should link both PRs');
+
+            // Both statuses should be under_review
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 100), 'under_review');
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 102), 'under_review');
+        });
+
+        test('handles PR lifecycle: open -> close -> reopen (via new PR)', async () => {
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 110, 'draft-015', 'processing');
+
+            // Open first PR
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'opened',
+                pull_request: createMockPullRequest(700, 'Fixes #110'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'lifecycle-001');
+
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 110), 'under_review');
+
+            // Close without merge
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'closed',
+                pull_request: createMockPullRequest(700, 'Fixes #110', 'closed', false),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'lifecycle-002');
+
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 110), 'closed');
+        });
+    });
+
+    describe('Edge Cases for PR Events', () => {
+        test('handles PR with null body', async () => {
+            const payload: PullRequestOpenedPayload = {
+                action: 'opened',
+                pull_request: createMockPullRequest(800, null),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            };
+
+            await prWebhookHandler.processPullRequestEvent(payload, 'edge-pr-001');
+
+            // Should not throw and should record event
+            assert.strictEqual(prWebhookHandler.processedEvents.length, 1);
+            assert.strictEqual(prWebhookHandler.linkedPlanIssues.length, 0);
+        });
+
+        test('handles large PR numbers', async () => {
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 999, 'draft-016');
+
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'opened',
+                pull_request: createMockPullRequest(99999, 'Fixes #999'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'edge-pr-002');
+
+            assert.strictEqual(prWebhookHandler.linkedPlanIssues[0]?.prNumber, 99999);
+        });
+
+        test('records timestamp for each PR event', async () => {
+            const beforeTime = new Date();
+
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'opened',
+                pull_request: createMockPullRequest(900, 'Test PR'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'edge-pr-003');
+
+            const afterTime = new Date();
+
+            for (const event of prWebhookHandler.processedEvents) {
+                assert.ok(event.timestamp >= beforeTime, 'Event timestamp should be after test start');
+                assert.ok(event.timestamp <= afterTime, 'Event timestamp should be before test end');
+            }
+        });
+
+        test('handles special characters in repository name', async () => {
+            prWebhookHandler.registerPlanIssue('my-org/my-repo-name', 120, 'draft-017');
+
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'opened',
+                pull_request: createMockPullRequest(901, 'Fixes #120'),
+                repository: createMockRepository('my-org', 'my-repo-name'),
+                sender: createMockSender()
+            }, 'edge-pr-004');
+
+            assert.strictEqual(prWebhookHandler.linkedPlanIssues[0]?.repository, 'my-org/my-repo-name');
+        });
+    });
+
+    describe('Status Update Verification', () => {
+        test('tracks all status transitions correctly', async () => {
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 130, 'draft-018', 'pending');
+
+            // Change to processing (simulated by changing initial status)
+            prWebhookHandler.registerPlanIssue('testowner/testrepo', 130, 'draft-018', 'processing');
+
+            // Open PR -> under_review
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'opened',
+                pull_request: createMockPullRequest(1000, 'Fixes #130'),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'status-001');
+
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 130), 'under_review');
+
+            // Merge PR -> merged
+            await prWebhookHandler.processPullRequestEvent({
+                action: 'closed',
+                pull_request: createMockPullRequest(1000, 'Fixes #130', 'closed', true),
+                repository: createMockRepository(),
+                sender: createMockSender()
+            }, 'status-002');
+
+            assert.strictEqual(prWebhookHandler.getPlanIssueStatus('testowner/testrepo', 130), 'merged');
+
+            // Verify all status updates were recorded
+            const statusUpdateActions = prWebhookHandler.statusUpdates.map(u => u.newStatus);
+            assert.ok(statusUpdateActions.includes('under_review'), 'Should have under_review status');
+            assert.ok(statusUpdateActions.includes('merged'), 'Should have merged status');
+        });
+    });
+});
+
 describe('Daemon Action Verification', () => {
     test('labeled event triggers appropriate daemon action chain', async () => {
         const webhookHandler = createMockWebhookHandler();
