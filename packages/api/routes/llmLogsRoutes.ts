@@ -32,6 +32,65 @@ interface CountRow {
   count: number | string;
 }
 
+interface LlmLogFilters {
+  executionType?: string;
+  model?: string;
+  success?: boolean;
+  draftId?: string;
+  agentAlias?: string;
+}
+
+function applyLlmLogFilters<T extends Knex.QueryBuilder>(query: T, filters: LlmLogFilters): T {
+  if (filters.executionType) {
+    query = query.where('execution_type', filters.executionType) as T;
+  }
+  if (filters.model) {
+    query = query.where('model_name', filters.model) as T;
+  }
+  if (filters.success !== undefined) {
+    query = query.where('success', filters.success) as T;
+  }
+  if (filters.draftId) {
+    query = query.where('draft_id', filters.draftId) as T;
+  }
+  if (filters.agentAlias) {
+    query = query.where('agent_alias', filters.agentAlias) as T;
+  }
+  return query;
+}
+
+function formatLlmLogRow(row: LlmLogRow): Record<string, unknown> {
+  let metadata: Record<string, unknown> | null = null;
+  if (row.metadata) {
+    try {
+      metadata = JSON.parse(row.metadata);
+    } catch {
+      // If parsing fails, keep as null
+    }
+  }
+  return {
+    logId: row.log_id,
+    executionType: row.execution_type,
+    modelName: row.model_name,
+    startTime: row.start_time,
+    endTime: row.end_time,
+    durationMs: row.duration_ms,
+    success: Boolean(row.success),
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheCreationInputTokens: row.cache_creation_input_tokens,
+    cacheReadInputTokens: row.cache_read_input_tokens,
+    costUsd: row.cost_usd ? Number(row.cost_usd) : null,
+    errorMessage: row.error_message,
+    sessionId: row.session_id,
+    correlationId: row.correlation_id,
+    draftId: row.draft_id,
+    repository: row.repository,
+    agentAlias: row.agent_alias,
+    metadata,
+  };
+}
+
 export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
   const { db } = deps;
 
@@ -70,112 +129,39 @@ export function createLlmLogsRoutes(deps: LlmLogsRoutesDeps) {
         }
       }
 
-      // Build base query from the new llm_logs table
-      let query = db('llm_logs')
-        .select(
-          'log_id',
-          'execution_type',
-          'model_name',
-          'start_time',
-          'end_time',
-          'duration_ms',
-          'success',
-          'input_tokens',
-          'output_tokens',
-          'cache_creation_input_tokens',
-          'cache_read_input_tokens',
-          'cost_usd',
-          'error_message',
-          'session_id',
-          'correlation_id',
-          'draft_id',
-          'repository',
-          'agent_alias',
-          'metadata'
-        );
+      // Build filters object
+      const filters: LlmLogFilters = {
+        executionType,
+        model,
+        success: success !== undefined ? (success === 'true' || success === '1') : undefined,
+        draftId,
+        agentAlias
+      };
 
-      // Apply filters
-      if (executionType) {
-        query = query.where('execution_type', executionType);
-      }
-      if (model) {
-        query = query.where('model_name', model);
-      }
-      if (success !== undefined) {
-        const successBool = success === 'true' || success === '1';
-        query = query.where('success', successBool);
-      }
-      if (draftId) {
-        query = query.where('draft_id', draftId);
-      }
-      if (agentAlias) {
-        query = query.where('agent_alias', agentAlias);
-      }
+      // Build and execute queries
+      const baseQuery = db('llm_logs').select(
+        'log_id', 'execution_type', 'model_name', 'start_time', 'end_time',
+        'duration_ms', 'success', 'input_tokens', 'output_tokens',
+        'cache_creation_input_tokens', 'cache_read_input_tokens', 'cost_usd',
+        'error_message', 'session_id', 'correlation_id', 'draft_id',
+        'repository', 'agent_alias', 'metadata'
+      );
 
-      // Get total count for pagination
-      let countQuery = db('llm_logs').count('* as count');
-      if (executionType) {
-        countQuery = countQuery.where('execution_type', executionType);
-      }
-      if (model) {
-        countQuery = countQuery.where('model_name', model);
-      }
-      if (success !== undefined) {
-        const successBool = success === 'true' || success === '1';
-        countQuery = countQuery.where('success', successBool);
-      }
-      if (draftId) {
-        countQuery = countQuery.where('draft_id', draftId);
-      }
-      if (agentAlias) {
-        countQuery = countQuery.where('agent_alias', agentAlias);
-      }
+      const countQuery = db('llm_logs').count('* as count');
 
       const [logs, countResult] = await Promise.all([
-        query
+        applyLlmLogFilters(baseQuery, filters)
           .orderBy('start_time', 'desc')
           .limit(limit)
           .offset(offset) as unknown as Promise<LlmLogRow[]>,
-        countQuery.first() as unknown as Promise<CountRow | undefined>
+        applyLlmLogFilters(countQuery, filters).first() as unknown as Promise<CountRow | undefined>
       ]);
 
       const total = Number(countResult?.count || 0);
       const totalPages = Math.ceil(total / limit);
 
-      // Format response
       res.json({
-        logs: logs.map((row) => {
-          // Parse metadata JSON string to object
-          let metadata: Record<string, unknown> | null = null;
-          if (row.metadata) {
-            try {
-              metadata = JSON.parse(row.metadata);
-            } catch {
-              // If parsing fails, keep as null
-            }
-          }
-          return {
-            logId: row.log_id,
-            executionType: row.execution_type,
-            modelName: row.model_name,
-            startTime: row.start_time,
-            endTime: row.end_time,
-            durationMs: row.duration_ms,
-            success: Boolean(row.success),
-            inputTokens: row.input_tokens,
-            outputTokens: row.output_tokens,
-            cacheCreationInputTokens: row.cache_creation_input_tokens,
-            cacheReadInputTokens: row.cache_read_input_tokens,
-            costUsd: row.cost_usd ? Number(row.cost_usd) : null,
-            errorMessage: row.error_message,
-            sessionId: row.session_id,
-            correlationId: row.correlation_id,
-            draftId: row.draft_id,
-            repository: row.repository,
-            agentAlias: row.agent_alias,
-            metadata,
-          };
-        }),
+        logs: logs.map(formatLlmLogRow),
         pagination: {
           page,
           limit,
