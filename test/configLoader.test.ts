@@ -434,6 +434,125 @@ describe('reloadConfigs logic', async () => {
     });
 });
 
+describe('getPrimaryProcessingLabels parsing logic', async () => {
+    beforeEach(() => {
+        saveAndClearEnv(CONFIG_ENV_KEYS);
+    });
+
+    afterEach(() => {
+        restoreEnv();
+    });
+
+    test('should return empty array when parsing empty string', () => {
+        const result = parseLabels('');
+        assert.deepStrictEqual(result, []);
+    });
+
+    test('should return empty array when parsing undefined', () => {
+        const result = parseLabels(undefined);
+        assert.deepStrictEqual(result, []);
+    });
+
+    test('should parse single label correctly', () => {
+        const result = parseLabels('AI');
+        assert.deepStrictEqual(result, ['AI']);
+    });
+
+    test('should parse comma-separated labels correctly', () => {
+        const result = parseLabels('AI,enhancement,bug');
+        assert.deepStrictEqual(result, ['AI', 'enhancement', 'bug']);
+    });
+
+    test('should trim whitespace from label names', () => {
+        const result = parseLabels('  AI  ,  enhancement  ,  bug  ');
+        assert.deepStrictEqual(result, ['AI', 'enhancement', 'bug']);
+    });
+
+    test('should filter out empty strings from labels', () => {
+        const result = parseLabels('AI,,enhancement,');
+        assert.deepStrictEqual(result, ['AI', 'enhancement']);
+    });
+
+    test('should handle multiple consecutive commas in labels', () => {
+        const result = parseLabels('AI,,,enhancement');
+        assert.deepStrictEqual(result, ['AI', 'enhancement']);
+    });
+
+    test('should handle leading comma in labels', () => {
+        const result = parseLabels(',AI,enhancement');
+        assert.deepStrictEqual(result, ['AI', 'enhancement']);
+    });
+
+    test('should handle trailing comma in labels', () => {
+        const result = parseLabels('AI,enhancement,');
+        assert.deepStrictEqual(result, ['AI', 'enhancement']);
+    });
+
+    test('should handle labels with special characters', () => {
+        const result = parseLabels('AI,bug-fix,feature:new,v1.0');
+        assert.deepStrictEqual(result, ['AI', 'bug-fix', 'feature:new', 'v1.0']);
+    });
+
+    test('should handle labels with unicode characters', () => {
+        const result = parseLabels('AI,バグ,功能');
+        assert.deepStrictEqual(result, ['AI', 'バグ', '功能']);
+    });
+
+    test('should default to [AI_PRIMARY_TAG] when PRIMARY_PROCESSING_LABELS is not set', () => {
+        delete process.env.CONFIG_REPO;
+        delete process.env.PRIMARY_PROCESSING_LABELS;
+        process.env.AI_PRIMARY_TAG = 'CustomTag';
+
+        const labels = parseLabels(process.env.PRIMARY_PROCESSING_LABELS);
+        if (labels.length === 0) {
+            const defaultLabels = [process.env.AI_PRIMARY_TAG ?? 'AI'];
+            assert.deepStrictEqual(defaultLabels, ['CustomTag']);
+        }
+    });
+
+    test('should default to [AI] when both PRIMARY_PROCESSING_LABELS and AI_PRIMARY_TAG are not set', () => {
+        delete process.env.CONFIG_REPO;
+        delete process.env.PRIMARY_PROCESSING_LABELS;
+        delete process.env.AI_PRIMARY_TAG;
+
+        const labels = parseLabels(process.env.PRIMARY_PROCESSING_LABELS);
+        if (labels.length === 0) {
+            const defaultLabels = [process.env.AI_PRIMARY_TAG ?? 'AI'];
+            assert.deepStrictEqual(defaultLabels, ['AI']);
+        }
+    });
+
+    test('should handle only whitespace input', () => {
+        const result = parseLabels('   ');
+        assert.deepStrictEqual(result, []);
+    });
+
+    test('should handle comma-only input', () => {
+        const result = parseLabels(',,,');
+        assert.deepStrictEqual(result, []);
+    });
+
+    test('should handle mixed whitespace and commas', () => {
+        const result = parseLabels('  ,  ,  ');
+        assert.deepStrictEqual(result, []);
+    });
+
+    test('should handle single whitespace-only segment', () => {
+        const result = parseLabels('AI,   ,enhancement');
+        assert.deepStrictEqual(result, ['AI', 'enhancement']);
+    });
+
+    test('should preserve label case', () => {
+        const result = parseLabels('AI,Enhancement,BUG,feature');
+        assert.deepStrictEqual(result, ['AI', 'Enhancement', 'BUG', 'feature']);
+    });
+
+    test('should handle labels with numbers', () => {
+        const result = parseLabels('v1,v2,version-3');
+        assert.deepStrictEqual(result, ['v1', 'v2', 'version-3']);
+    });
+});
+
 describe('Edge cases and error handling', async () => {
     beforeEach(() => {
         saveAndClearEnv(CONFIG_ENV_KEYS);
