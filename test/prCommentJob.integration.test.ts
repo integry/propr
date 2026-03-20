@@ -1644,3 +1644,728 @@ describe('PR Comment Validation - Integration Tests', () => {
         });
     });
 });
+
+/**
+ * Integration tests for PR Comment Batching
+ *
+ * These tests verify:
+ * 1. Multiple comments are combined into a single batch
+ * 2. Batch delay is applied correctly
+ * 3. Edits during batch processing are handled
+ * 4. Aborts/deletions during batch processing are handled
+ * 5. buildCombinedComment correctly combines multiple comments
+ */
+
+// Default batch delay matching production constant
+const COMMENT_BATCH_DELAY_MS = 3000;
+
+interface CombinedCommentResult {
+    combinedCommentBody: string;
+    combinedBodyHtml?: string;
+    commentAuthors: string[];
+}
+
+// Implementation of buildCombinedComment matching production logic
+function buildCombinedComment(unprocessedComments: UnprocessedComment[]): CombinedCommentResult {
+    let combinedCommentBody: string;
+    let combinedBodyHtml: string | undefined;
+    let commentAuthors: string[] = [];
+
+    if (unprocessedComments.length === 1) {
+        combinedCommentBody = unprocessedComments[0].body;
+        combinedBodyHtml = unprocessedComments[0].body_html;
+        commentAuthors = [unprocessedComments[0].author];
+    } else {
+        combinedCommentBody = unprocessedComments.map((comment, index) => `**Comment ${index + 1}** (by @${comment.author}):\n${comment.body}`).join('\n\n---\n\n');
+        const htmlParts = unprocessedComments.filter(c => c.body_html).map(c => c.body_html);
+        combinedBodyHtml = htmlParts.length > 0 ? htmlParts.join('\n') : undefined;
+        commentAuthors = [...new Set(unprocessedComments.map(c => c.author))];
+    }
+    return { combinedCommentBody, combinedBodyHtml, commentAuthors };
+}
+
+// Enhanced mock queue for batch delay testing
+interface MockBatchQueue {
+    jobs: Array<{ name: string; data: CommentJobData; options: { delay?: number; jobId?: string } }>;
+    delayedJobs: Map<string, { data: CommentJobData; delay: number; addedAt: number }>;
+    add: (name: string, data: CommentJobData, options?: { delay?: number; jobId?: string }) => Promise<void>;
+    getDelayed: () => Promise<Array<{ id: string; data: CommentJobData }>>;
+    getActive: () => Promise<Array<{ id: string; data: CommentJobData }>>;
+    getWaiting: () => Promise<Array<{ id: string; data: CommentJobData }>>;
+    clear: () => void;
+    hasJobForPR: (owner: string, repo: string, prNumber: number) => boolean;
+    removeJob: (jobId: string) => boolean;
+}
+
+function createMockBatchQueue(): MockBatchQueue {
+    const jobs: Array<{ name: string; data: CommentJobData; options: { delay?: number; jobId?: string } }> = [];
+    const delayedJobs = new Map<string, { data: CommentJobData; delay: number; addedAt: number }>();
+    const activeJobs: Array<{ id: string; data: CommentJobData }> = [];
+
+    return {
+        jobs,
+        delayedJobs,
+
+        async add(name: string, data: CommentJobData, options: { delay?: number; jobId?: string } = {}): Promise<void> {
+            const jobId = options.jobId || `job-${Date.now()}`;
+            jobs.push({ name, data, options });
+            if (options.delay && options.delay > 0) {
+                delayedJobs.set(jobId, { data, delay: options.delay, addedAt: Date.now() });
+            }
+        },
+
+        async getDelayed(): Promise<Array<{ id: string; data: CommentJobData }>> {
+            return Array.from(delayedJobs.entries()).map(([id, job]) => ({ id, data: job.data }));
+        },
+
+        async getActive(): Promise<Array<{ id: string; data: CommentJobData }>> {
+            return activeJobs;
+        },
+
+        async getWaiting(): Promise<Array<{ id: string; data: CommentJobData }>> {
+            return [];
+        },
+
+        clear(): void {
+            jobs.length = 0;
+            delayedJobs.clear();
+            activeJobs.length = 0;
+        },
+
+        hasJobForPR(owner: string, repo: string, prNumber: number): boolean {
+            return jobs.some(j =>
+                j.name === 'processPullRequestComment' &&
+                j.data.repoOwner === owner &&
+                j.data.repoName === repo &&
+                j.data.pullRequestNumber === prNumber
+            );
+        },
+
+        removeJob(jobId: string): boolean {
+            const index = jobs.findIndex(j => j.options.jobId === jobId);
+            if (index !== -1) {
+                jobs.splice(index, 1);
+                delayedJobs.delete(jobId);
+                return true;
+            }
+            return false;
+        }
+    };
+}
+
+// Batch processing simulation functions
+async function storeCommentForBatch(
+    comment: UnprocessedComment,
+    pendingCommentsKey: string,
+    redisClient: MockRedisClientWithLists
+): Promise<void> {
+    await redisClient.rpush(pendingCommentsKey, JSON.stringify(comment));
+}
+
+async function enqueueNewCommentJob(
+    comment: UnprocessedComment,
+    queue: MockBatchQueue,
+    options: { owner: string; repo: string; prNumber: number; branchName: string; llm: string | null; correlationId: string }
+): Promise<string> {
+    const { owner, repo, prNumber, branchName, llm, correlationId } = options;
+    const timestamp = Date.now();
+    const jobId = `pr-comments-batch-${owner}-${repo}-${prNumber}-${timestamp}`;
+
+    const jobData: CommentJobData = {
+        pullRequestNumber: prNumber,
+        comments: [comment],
+        repoOwner: owner,
+        repoName: repo,
+        branchName,
+        llm,
+        correlationId
+    };
+
+    await queue.add('processPullRequestComment', jobData, { jobId, delay: COMMENT_BATCH_DELAY_MS });
+    return jobId;
+}
+
+async function processBatchJob(
+    queue: MockBatchQueue,
+    redisClient: MockRedisClientWithLists,
+    jobId: string,
+    owner: string,
+    repo: string,
+    prNumber: number
+): Promise<UnprocessedComment[]> {
+    const pendingCommentsKey = getPendingPrCommentsKey(owner, repo, prNumber);
+
+    // Get the job from the queue
+    const delayedJobs = await queue.getDelayed();
+    const job = delayedJobs.find(j => j.id === jobId);
+    if (!job) return [];
+
+    // Get initial comments from job
+    const commentsToProcess: UnprocessedComment[] = [...(job.data.comments || [])];
+
+    // Pick up any pending comments that accumulated during the delay
+    const pendingComments = await redisClient.lrange(pendingCommentsKey, 0, -1);
+    if (pendingComments.length > 0) {
+        await redisClient.del(pendingCommentsKey);
+        processPendingComments(commentsToProcess, pendingComments);
+    }
+
+    return commentsToProcess;
+}
+
+describe('PR Comment Batching - Integration Tests', () => {
+    let redisClient: MockRedisClientWithLists;
+    let batchQueue: MockBatchQueue;
+
+    beforeEach(() => {
+        redisClient = createMockRedisClientWithLists();
+        batchQueue = createMockBatchQueue();
+    });
+
+    afterEach(() => {
+        redisClient.storage.clear();
+        redisClient.listStorage.clear();
+        batchQueue.clear();
+    });
+
+    describe('buildCombinedComment - Comment Combining', () => {
+        test('returns single comment unchanged', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: 'Fix the bug', author: 'user1', type: 'issue' }
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            assert.strictEqual(result.combinedCommentBody, 'Fix the bug');
+            assert.deepStrictEqual(result.commentAuthors, ['user1']);
+        });
+
+        test('combines multiple comments with proper formatting', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: 'Fix bug A', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Also fix bug B', author: 'user2', type: 'issue' },
+                { id: 3, body: 'And update the docs', author: 'user3', type: 'review' }
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            assert.ok(result.combinedCommentBody.includes('**Comment 1** (by @user1):\nFix bug A'));
+            assert.ok(result.combinedCommentBody.includes('**Comment 2** (by @user2):\nAlso fix bug B'));
+            assert.ok(result.combinedCommentBody.includes('**Comment 3** (by @user3):\nAnd update the docs'));
+            assert.ok(result.combinedCommentBody.includes('---'), 'Comments should be separated by horizontal rule');
+            assert.deepStrictEqual(result.commentAuthors.sort(), ['user1', 'user2', 'user3'].sort());
+        });
+
+        test('deduplicates authors when same user posts multiple comments', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: 'First request', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Second request', author: 'user1', type: 'issue' },
+                { id: 3, body: 'Third request', author: 'user2', type: 'issue' }
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            assert.strictEqual(result.commentAuthors.length, 2, 'Should deduplicate authors');
+            assert.ok(result.commentAuthors.includes('user1'));
+            assert.ok(result.commentAuthors.includes('user2'));
+        });
+
+        test('preserves body_html for single comment', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: 'Text', author: 'user1', type: 'issue', body_html: '<p>Text with <img src="signed-url"/></p>' }
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            assert.strictEqual(result.combinedBodyHtml, '<p>Text with <img src="signed-url"/></p>');
+        });
+
+        test('combines body_html for multiple comments', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: 'Text 1', author: 'user1', type: 'issue', body_html: '<p>HTML 1</p>' },
+                { id: 2, body: 'Text 2', author: 'user2', type: 'issue', body_html: '<p>HTML 2</p>' }
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            assert.ok(result.combinedBodyHtml?.includes('<p>HTML 1</p>'));
+            assert.ok(result.combinedBodyHtml?.includes('<p>HTML 2</p>'));
+        });
+
+        test('handles mixed comments with and without body_html', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: 'Text 1', author: 'user1', type: 'issue', body_html: '<p>HTML</p>' },
+                { id: 2, body: 'Text 2', author: 'user2', type: 'issue' } // No body_html
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            assert.strictEqual(result.combinedBodyHtml, '<p>HTML</p>');
+        });
+
+        test('returns undefined combinedBodyHtml when no comments have HTML', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: 'Text 1', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Text 2', author: 'user2', type: 'issue' }
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            assert.strictEqual(result.combinedBodyHtml, undefined);
+        });
+
+        test('handles review and issue comments in same batch', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: 'Issue comment', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Review comment with context', author: 'user2', type: 'review', hasCodeContext: true }
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            assert.ok(result.combinedCommentBody.includes('Issue comment'));
+            assert.ok(result.combinedCommentBody.includes('Review comment with context'));
+        });
+    });
+
+    describe('Batch Delay Mechanism', () => {
+        test('jobs are created with correct batch delay', async () => {
+            const comment: UnprocessedComment = { id: 1, body: 'Test', author: 'user1', type: 'issue' };
+
+            await enqueueNewCommentJob(comment, batchQueue, {
+                owner: 'testowner',
+                repo: 'testrepo',
+                prNumber: 123,
+                branchName: 'feature-branch',
+                llm: null,
+                correlationId: 'corr-1'
+            });
+
+            assert.strictEqual(batchQueue.jobs.length, 1);
+            assert.strictEqual(batchQueue.jobs[0].options.delay, COMMENT_BATCH_DELAY_MS);
+        });
+
+        test('job ID follows correct format for batch jobs', async () => {
+            const comment: UnprocessedComment = { id: 1, body: 'Test', author: 'user1', type: 'issue' };
+
+            const jobId = await enqueueNewCommentJob(comment, batchQueue, {
+                owner: 'myorg',
+                repo: 'myrepo',
+                prNumber: 456,
+                branchName: 'main',
+                llm: null,
+                correlationId: 'corr-1'
+            });
+
+            assert.ok(jobId.startsWith('pr-comments-batch-myorg-myrepo-456-'), `Job ID should follow format: ${jobId}`);
+        });
+
+        test('delayed jobs are tracked in queue', async () => {
+            const comment: UnprocessedComment = { id: 1, body: 'Test', author: 'user1', type: 'issue' };
+
+            await enqueueNewCommentJob(comment, batchQueue, {
+                owner: 'owner',
+                repo: 'repo',
+                prNumber: 1,
+                branchName: 'main',
+                llm: null,
+                correlationId: 'corr-1'
+            });
+
+            const delayedJobs = await batchQueue.getDelayed();
+            assert.strictEqual(delayedJobs.length, 1, 'Should have one delayed job');
+        });
+    });
+
+    describe('Comment Accumulation During Delay', () => {
+        test('comments arriving during delay are stored in pending queue', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+
+            // First comment triggers job creation
+            const firstComment: UnprocessedComment = { id: 1, body: 'First', author: 'user1', type: 'issue' };
+            await enqueueNewCommentJob(firstComment, batchQueue, {
+                owner: 'owner', repo: 'repo', prNumber: 123, branchName: 'main', llm: null, correlationId: 'corr-1'
+            });
+
+            // Second comment arrives during delay - stored in pending
+            const secondComment: UnprocessedComment = { id: 2, body: 'Second', author: 'user2', type: 'issue' };
+            await storeCommentForBatch(secondComment, pendingKey, redisClient);
+
+            // Third comment arrives during delay
+            const thirdComment: UnprocessedComment = { id: 3, body: 'Third', author: 'user3', type: 'review' };
+            await storeCommentForBatch(thirdComment, pendingKey, redisClient);
+
+            const pendingLength = await redisClient.llen(pendingKey);
+            assert.strictEqual(pendingLength, 2, 'Should have 2 pending comments');
+        });
+
+        test('batch processing combines initial and pending comments', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+
+            // First comment triggers job
+            const firstComment: UnprocessedComment = { id: 1, body: 'First', author: 'user1', type: 'issue' };
+            const jobId = await enqueueNewCommentJob(firstComment, batchQueue, {
+                owner: 'owner', repo: 'repo', prNumber: 123, branchName: 'main', llm: null, correlationId: 'corr-1'
+            });
+
+            // More comments arrive during delay
+            await storeCommentForBatch({ id: 2, body: 'Second', author: 'user2', type: 'issue' }, pendingKey, redisClient);
+            await storeCommentForBatch({ id: 3, body: 'Third', author: 'user3', type: 'review' }, pendingKey, redisClient);
+
+            // Process the batch job
+            const commentsToProcess = await processBatchJob(batchQueue, redisClient, jobId, 'owner', 'repo', 123);
+
+            assert.strictEqual(commentsToProcess.length, 3, 'Should have all 3 comments');
+            assert.ok(commentsToProcess.some(c => c.id === 1));
+            assert.ok(commentsToProcess.some(c => c.id === 2));
+            assert.ok(commentsToProcess.some(c => c.id === 3));
+        });
+
+        test('pending queue is cleared after pickup', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+
+            const firstComment: UnprocessedComment = { id: 1, body: 'First', author: 'user1', type: 'issue' };
+            const jobId = await enqueueNewCommentJob(firstComment, batchQueue, {
+                owner: 'owner', repo: 'repo', prNumber: 123, branchName: 'main', llm: null, correlationId: 'corr-1'
+            });
+
+            await storeCommentForBatch({ id: 2, body: 'Second', author: 'user2', type: 'issue' }, pendingKey, redisClient);
+
+            // Process batch
+            await processBatchJob(batchQueue, redisClient, jobId, 'owner', 'repo', 123);
+
+            const pendingLength = await redisClient.llen(pendingKey);
+            assert.strictEqual(pendingLength, 0, 'Pending queue should be empty after processing');
+        });
+    });
+
+    describe('Edit Handling During Batch Processing', () => {
+        test('edited comment is updated with new content', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'Original request', author: 'user1', type: 'issue', updated_at: '2024-01-01T00:00:00Z' },
+                { id: 2, body: 'Another request', author: 'user2', type: 'issue', updated_at: '2024-01-01T00:00:00Z' }
+            ];
+
+            // Comment 1 was edited after being queued
+            const validationComments: ValidationComment[] = [
+                { id: 1, body: 'Updated request with more details', updated_at: '2024-01-01T01:00:00Z' },
+                { id: 2, body: 'Another request', updated_at: '2024-01-01T00:00:00Z' }
+            ];
+
+            const result = validateAndFilterComments(commentsToProcess, validationComments);
+
+            assert.strictEqual(result.length, 2);
+            const editedComment = result.find(c => c.id === 1);
+            assert.strictEqual(editedComment?.body, 'Updated request with more details', 'Should use updated body');
+        });
+
+        test('combined batch reflects edited content', () => {
+            // Simulate an edit scenario where we validate and then combine
+            const originalComments: UnprocessedComment[] = [
+                { id: 1, body: 'Fix typo', author: 'user1', type: 'issue', updated_at: '2024-01-01T00:00:00Z' },
+                { id: 2, body: 'Add tests', author: 'user2', type: 'issue', updated_at: '2024-01-01T00:00:00Z' }
+            ];
+
+            const validationComments: ValidationComment[] = [
+                { id: 1, body: 'Fix typo and formatting', updated_at: '2024-01-01T01:00:00Z' }, // Edited
+                { id: 2, body: 'Add tests', updated_at: '2024-01-01T00:00:00Z' }
+            ];
+
+            const validated = validateAndFilterComments(originalComments, validationComments);
+            const combined = buildCombinedComment(validated);
+
+            assert.ok(combined.combinedCommentBody.includes('Fix typo and formatting'), 'Should contain edited content');
+            assert.ok(combined.combinedCommentBody.includes('Add tests'));
+        });
+    });
+
+    describe('Abort/Deletion Handling During Batch Processing', () => {
+        test('deleted comment is removed from batch', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'Keep this', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Delete this', author: 'user2', type: 'issue' },
+                { id: 3, body: 'Also keep', author: 'user3', type: 'issue' }
+            ];
+
+            // Comment 2 was deleted (not in validation list)
+            const validationComments: ValidationComment[] = [
+                { id: 1, body: 'Keep this' },
+                { id: 3, body: 'Also keep' }
+            ];
+
+            const result = validateAndFilterComments(commentsToProcess, validationComments);
+
+            assert.strictEqual(result.length, 2, 'Deleted comment should be removed');
+            assert.ok(!result.some(c => c.id === 2), 'Comment 2 should not be present');
+        });
+
+        test('batch continues processing remaining comments after deletion', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'First request', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Deleted', author: 'user2', type: 'issue' },
+                { id: 3, body: 'Third request', author: 'user3', type: 'issue' }
+            ];
+
+            const validationComments: ValidationComment[] = [
+                { id: 1, body: 'First request' },
+                { id: 3, body: 'Third request' }
+            ];
+
+            const validated = validateAndFilterComments(commentsToProcess, validationComments);
+            const combined = buildCombinedComment(validated);
+
+            assert.ok(combined.combinedCommentBody.includes('First request'));
+            assert.ok(combined.combinedCommentBody.includes('Third request'));
+            assert.ok(!combined.combinedCommentBody.includes('Deleted'));
+        });
+
+        test('handles all comments deleted scenario', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'Deleted 1', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Deleted 2', author: 'user2', type: 'issue' }
+            ];
+
+            const validationComments: ValidationComment[] = [];
+
+            const result = validateAndFilterComments(commentsToProcess, validationComments);
+
+            assert.strictEqual(result.length, 0, 'Should return empty array when all deleted');
+        });
+
+        test('job can be removed from queue on abort', async () => {
+            const comment: UnprocessedComment = { id: 1, body: 'Test', author: 'user1', type: 'issue' };
+            const jobId = await enqueueNewCommentJob(comment, batchQueue, {
+                owner: 'owner', repo: 'repo', prNumber: 123, branchName: 'main', llm: null, correlationId: 'corr-1'
+            });
+
+            assert.strictEqual(batchQueue.jobs.length, 1, 'Job should be in queue');
+
+            const removed = batchQueue.removeJob(jobId);
+
+            assert.strictEqual(removed, true, 'Job should be removed');
+            assert.strictEqual(batchQueue.jobs.length, 0, 'Queue should be empty');
+        });
+    });
+
+    describe('Batch Job Deduplication', () => {
+        test('detects existing job for same PR', async () => {
+            const comment: UnprocessedComment = { id: 1, body: 'Test', author: 'user1', type: 'issue' };
+
+            await enqueueNewCommentJob(comment, batchQueue, {
+                owner: 'owner', repo: 'repo', prNumber: 123, branchName: 'main', llm: null, correlationId: 'corr-1'
+            });
+
+            const hasJob = batchQueue.hasJobForPR('owner', 'repo', 123);
+            assert.strictEqual(hasJob, true, 'Should detect existing job');
+        });
+
+        test('does not detect job for different PR', async () => {
+            const comment: UnprocessedComment = { id: 1, body: 'Test', author: 'user1', type: 'issue' };
+
+            await enqueueNewCommentJob(comment, batchQueue, {
+                owner: 'owner', repo: 'repo', prNumber: 123, branchName: 'main', llm: null, correlationId: 'corr-1'
+            });
+
+            const hasJob = batchQueue.hasJobForPR('owner', 'repo', 456);
+            assert.strictEqual(hasJob, false, 'Should not detect job for different PR');
+        });
+
+        test('different repos have independent jobs', async () => {
+            const comment: UnprocessedComment = { id: 1, body: 'Test', author: 'user1', type: 'issue' };
+
+            await enqueueNewCommentJob(comment, batchQueue, {
+                owner: 'owner', repo: 'repo1', prNumber: 123, branchName: 'main', llm: null, correlationId: 'corr-1'
+            });
+
+            const hasJobRepo1 = batchQueue.hasJobForPR('owner', 'repo1', 123);
+            const hasJobRepo2 = batchQueue.hasJobForPR('owner', 'repo2', 123);
+
+            assert.strictEqual(hasJobRepo1, true, 'Should detect job for repo1');
+            assert.strictEqual(hasJobRepo2, false, 'Should not detect job for repo2');
+        });
+    });
+
+    describe('Comment Processing Order', () => {
+        test('comments are processed in FIFO order', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+
+            // Add comments in order
+            await storeCommentForBatch({ id: 1, body: 'First', author: 'user1', type: 'issue' }, pendingKey, redisClient);
+            await storeCommentForBatch({ id: 2, body: 'Second', author: 'user2', type: 'issue' }, pendingKey, redisClient);
+            await storeCommentForBatch({ id: 3, body: 'Third', author: 'user3', type: 'issue' }, pendingKey, redisClient);
+
+            const pendingComments = await redisClient.lrange(pendingKey, 0, -1);
+            const parsed = pendingComments.map(c => JSON.parse(c) as UnprocessedComment);
+
+            assert.strictEqual(parsed[0].id, 1, 'First comment should be first');
+            assert.strictEqual(parsed[1].id, 2, 'Second comment should be second');
+            assert.strictEqual(parsed[2].id, 3, 'Third comment should be third');
+        });
+
+        test('combined comment body preserves order', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: 'First request', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Second request', author: 'user2', type: 'issue' },
+                { id: 3, body: 'Third request', author: 'user3', type: 'issue' }
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            const firstIndex = result.combinedCommentBody.indexOf('First request');
+            const secondIndex = result.combinedCommentBody.indexOf('Second request');
+            const thirdIndex = result.combinedCommentBody.indexOf('Third request');
+
+            assert.ok(firstIndex < secondIndex, 'First should come before second');
+            assert.ok(secondIndex < thirdIndex, 'Second should come before third');
+        });
+    });
+
+    describe('Full Batch Processing Flow', () => {
+        test('complete batch flow: enqueue, accumulate, process, combine', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+
+            // Step 1: First comment triggers job with delay
+            const firstComment: UnprocessedComment = { id: 1, body: 'Fix the authentication bug', author: 'alice', type: 'issue' };
+            const jobId = await enqueueNewCommentJob(firstComment, batchQueue, {
+                owner: 'owner', repo: 'repo', prNumber: 123, branchName: 'feature/auth', llm: 'claude-sonnet-4-20250514', correlationId: 'batch-1'
+            });
+
+            assert.strictEqual(batchQueue.jobs.length, 1, 'Job should be queued');
+            assert.strictEqual(batchQueue.jobs[0].options.delay, COMMENT_BATCH_DELAY_MS, 'Job should have batch delay');
+
+            // Step 2: More comments arrive during delay (would be stored via webhook)
+            await storeCommentForBatch({ id: 2, body: 'Also add rate limiting', author: 'bob', type: 'issue' }, pendingKey, redisClient);
+            await storeCommentForBatch({ id: 3, body: 'Fix this line too', author: 'carol', type: 'review', hasCodeContext: true }, pendingKey, redisClient);
+
+            // Step 3: Process the batch job (after delay would expire)
+            const allComments = await processBatchJob(batchQueue, redisClient, jobId, 'owner', 'repo', 123);
+
+            assert.strictEqual(allComments.length, 3, 'Should have all 3 comments in batch');
+
+            // Step 4: Combine the comments
+            const combined = buildCombinedComment(allComments);
+
+            assert.ok(combined.combinedCommentBody.includes('Fix the authentication bug'));
+            assert.ok(combined.combinedCommentBody.includes('Also add rate limiting'));
+            assert.ok(combined.combinedCommentBody.includes('Fix this line too'));
+            assert.deepStrictEqual(combined.commentAuthors.sort(), ['alice', 'bob', 'carol'].sort());
+        });
+
+        test('handles empty pending queue during processing', async () => {
+            const firstComment: UnprocessedComment = { id: 1, body: 'Only comment', author: 'user1', type: 'issue' };
+            const jobId = await enqueueNewCommentJob(firstComment, batchQueue, {
+                owner: 'owner', repo: 'repo', prNumber: 123, branchName: 'main', llm: null, correlationId: 'batch-1'
+            });
+
+            // No additional comments arrive during delay
+            const allComments = await processBatchJob(batchQueue, redisClient, jobId, 'owner', 'repo', 123);
+
+            assert.strictEqual(allComments.length, 1, 'Should have only the initial comment');
+            assert.strictEqual(allComments[0].id, 1);
+        });
+
+        test('handles validation and combining together', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+
+            const firstComment: UnprocessedComment = { id: 1, body: 'Original', author: 'user1', type: 'issue', updated_at: '2024-01-01T00:00:00Z' };
+            const jobId = await enqueueNewCommentJob(firstComment, batchQueue, {
+                owner: 'owner', repo: 'repo', prNumber: 123, branchName: 'main', llm: null, correlationId: 'batch-1'
+            });
+
+            await storeCommentForBatch(
+                { id: 2, body: 'Second', author: 'user2', type: 'issue', updated_at: '2024-01-01T00:00:00Z' },
+                pendingKey, redisClient
+            );
+            await storeCommentForBatch(
+                { id: 3, body: 'Third (will be deleted)', author: 'user3', type: 'issue' },
+                pendingKey, redisClient
+            );
+
+            const allComments = await processBatchJob(batchQueue, redisClient, jobId, 'owner', 'repo', 123);
+
+            // Simulate validation: comment 1 was edited, comment 3 was deleted
+            const validationComments: ValidationComment[] = [
+                { id: 1, body: 'Updated original', updated_at: '2024-01-01T01:00:00Z' },
+                { id: 2, body: 'Second', updated_at: '2024-01-01T00:00:00Z' }
+            ];
+
+            const validated = validateAndFilterComments(allComments, validationComments);
+            const combined = buildCombinedComment(validated);
+
+            assert.strictEqual(validated.length, 2, 'Should have 2 comments after validation');
+            assert.ok(combined.combinedCommentBody.includes('Updated original'), 'Should have edited content');
+            assert.ok(combined.combinedCommentBody.includes('Second'));
+            assert.ok(!combined.combinedCommentBody.includes('Third'), 'Deleted comment should not be present');
+        });
+    });
+
+    describe('Edge Cases', () => {
+        test('handles large batches of comments', () => {
+            const comments: UnprocessedComment[] = [];
+            for (let i = 1; i <= 20; i++) {
+                comments.push({ id: i, body: `Request ${i}`, author: `user${i}`, type: 'issue' });
+            }
+
+            const result = buildCombinedComment(comments);
+
+            assert.ok(result.combinedCommentBody.includes('**Comment 1**'));
+            assert.ok(result.combinedCommentBody.includes('**Comment 20**'));
+            assert.strictEqual(result.commentAuthors.length, 20, 'Should have 20 unique authors');
+        });
+
+        test('handles comments with special characters', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: 'Fix `code` with **markdown**', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Handle <html> & special "quotes"', author: 'user2', type: 'issue' }
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            assert.ok(result.combinedCommentBody.includes('`code`'));
+            assert.ok(result.combinedCommentBody.includes('<html>'));
+        });
+
+        test('handles empty comment bodies', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: '', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Valid content', author: 'user2', type: 'issue' }
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            assert.ok(result.combinedCommentBody.includes('Valid content'));
+        });
+
+        test('handles comments with multiline content', () => {
+            const comments: UnprocessedComment[] = [
+                { id: 1, body: 'Line 1\nLine 2\nLine 3', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Single line', author: 'user2', type: 'issue' }
+            ];
+
+            const result = buildCombinedComment(comments);
+
+            assert.ok(result.combinedCommentBody.includes('Line 1\nLine 2\nLine 3'));
+        });
+
+        test('preserves comment metadata through batching', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+
+            const reviewComment: UnprocessedComment = {
+                id: 1,
+                body: 'Review comment',
+                author: 'reviewer',
+                type: 'review',
+                hasCodeContext: true,
+                body_html: '<p>HTML content</p>'
+            };
+
+            await storeCommentForBatch(reviewComment, pendingKey, redisClient);
+
+            const pendingComments = await redisClient.lrange(pendingKey, 0, -1);
+            const parsed = JSON.parse(pendingComments[0]) as UnprocessedComment;
+
+            assert.strictEqual(parsed.type, 'review');
+            assert.strictEqual(parsed.hasCodeContext, true);
+            assert.strictEqual(parsed.body_html, '<p>HTML content</p>');
+        });
+    });
+});
