@@ -33,6 +33,8 @@ export interface PlannerConfig {
   files: PlannerAttachment[];
   contextRepositories: { repository: string; branch?: string }[];
   generationModel: string | null;
+  /** Manually selected file paths to include in context */
+  manualFiles: string[];
 }
 
 interface RepoInfoState {
