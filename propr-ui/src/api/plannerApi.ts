@@ -51,32 +51,19 @@ export interface ContextStats {
 
 export type Granularity = 'single' | 'balanced' | 'granular';
 
-/**
- * Configuration for an additional context repository.
- * These repositories provide examples and documentation only - no code changes will be made to them.
- */
+/** Configuration for an additional context repository (examples/docs only, no code changes) */
 export interface ContextRepository {
-  /** Repository identifier in format "owner/repo" */
   repository: string;
-  /** Optional branch, defaults to the repository's default branch */
   branch?: string;
-  /** Optional description of what this repository provides (e.g., "UI component examples") */
   description?: string;
 }
 
-/**
- * Metadata about granularity enforcement actions applied during plan generation
- */
+/** Metadata about granularity enforcement actions applied during plan generation */
 export interface GranularityEnforcementMetadata {
-  /** Whether enforcement was applied (tasks were merged) */
   enforced: boolean;
-  /** The granularity setting that was used */
   granularity: Granularity;
-  /** Original task count before enforcement */
   originalTaskCount: number;
-  /** Final task count after enforcement */
   finalTaskCount: number;
-  /** Human-readable message about the enforcement action */
   message?: string;
 }
 
@@ -165,25 +152,8 @@ export const getContextStats = async (draftId: string, config: { level: string }
   return response.json();
 };
 
-export const uploadAttachment = async (draftId: string, file: File): Promise<PlannerAttachment> => {
-  const formData = new FormData();
-  formData.append('file', file);
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/attachments`, {
-    method: 'POST',
-    body: formData,
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const removeAttachment = async (draftId: string, attachmentId: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/attachments/${attachmentId}`, {
-    method: 'DELETE',
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-};
+// Re-export attachment functions from plannerDraftActionsApi
+export { uploadAttachment, removeAttachment } from './plannerDraftActionsApi';
 
 export const generatePlan = async (draftId: string, options?: PlanGenerationOptions): Promise<void> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/generate`, {
@@ -225,9 +195,7 @@ export interface ChatMessage {
   timestamp: string;
 }
 
-/**
- * Context configuration stored with the draft, including granularity enforcement info
- */
+/** Context configuration stored with the draft */
 export interface DraftContextConfig {
   baseBranch?: string;
   granularity?: Granularity;
@@ -385,44 +353,9 @@ export const getDrafts = async (options: GetDraftsOptions = {}): Promise<Paginat
   return response.json();
 };
 
-export const deleteDraft = async (draftId: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
-    method: 'DELETE',
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-};
-
-/**
- * Reset a draft from 'review' status back to 'draft' status.
- * This allows the user to return to the setup wizard and modify their configuration.
- * The plan_json is cleared but context_config (settings) are preserved.
- */
-export const resetDraftToSetup = async (draftId: string): Promise<PlannerDraft> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/reset-to-setup`, {
-    method: 'POST',
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export interface RepositoryInfo {
-  defaultBranch: string;
-  branches: string[];
-}
-
-export const getRepositoryInfo = async (draftId: string): Promise<RepositoryInfo> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/repository-info`, {
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getAttachmentUrl = (draftId: string, attachmentId: string): string => {
-  return `${API_BASE_URL}/api/planner/drafts/${draftId}/attachments/${attachmentId}`;
-};
+// Re-export draft action functions from plannerDraftActionsApi
+export { deleteDraft, resetDraftToSetup, getRepositoryInfo, getAttachmentUrl } from './plannerDraftActionsApi';
+export type { RepositoryInfo } from './plannerDraftActionsApi';
 
 export const downloadContext = async (options: PreviewOptions): Promise<Blob> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/preview/context`, {
@@ -435,116 +368,17 @@ export const downloadContext = async (options: PreviewOptions): Promise<Blob> =>
   return response.blob();
 };
 
-/**
- * Response from validating a context repository
- */
-export interface ValidateContextRepositoryResponse {
-  /** Whether the repository is valid and accessible */
-  valid: boolean;
-  /** The repository identifier that was validated */
-  repository: string;
-  /** Default branch of the repository (if valid) */
-  defaultBranch?: string;
-  /** Description of the repository (if available) */
-  description?: string;
-  /** Error message if validation failed */
-  error?: string;
-}
-
-/**
- * Validate that a context repository exists and is accessible.
- * Use this before adding a repository to the context repositories list.
- */
-export const validateContextRepository = async (
-  repository: string,
-  branch?: string
-): Promise<ValidateContextRepositoryResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/validate-context-repository`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repository, branch }),
-    credentials: 'include'
-  });
-  // Don't use handleApiResponse here since we want to return the error details
-  const data = await response.json();
-  return data;
-};
-
-/**
- * Abort an in-progress plan generation.
- * Sets an abort signal in Redis and resets the draft status to 'draft'.
- */
-export const abortGeneration = async (draftId: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/abort`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ draftId }),
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-};
-
-/**
- * Abort an in-progress plan refinement.
- * Sets an abort signal in Redis and resets the draft status to 'review'.
- */
-export const abortRefinement = async (draftId: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/abort-refinement`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ draftId }),
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-};
-
-export interface ReviseDraftResponse {
-  success: boolean;
-  message: string;
-  previousStatus: string;
-  issuesDetached: number;
-}
-
-/**
- * Revise a draft plan - moves it from any active/completed status back to review,
- * detaching existing issues but preserving plan data and chat history.
- * This allows the user to iterate on a plan even after execution.
- */
-export const reviseDraft = async (draftId: string): Promise<ReviseDraftResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/revise`, {
-    method: 'POST',
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export interface PauseResumeResponse {
-  paused: boolean;
-  pausedAt: string | null;
-}
-
-/**
- * Pause plan execution. When paused, the current task continues to completion
- * but the next pending issue won't be automatically triggered.
- */
-export const pauseDraft = async (draftId: string): Promise<PauseResumeResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/pause`, {
-    method: 'POST',
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-/**
- * Resume plan execution. After resuming, pending issues can be triggered again.
- */
-export const resumeDraft = async (draftId: string): Promise<PauseResumeResponse> => {
-  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/resume`, {
-    method: 'POST',
-    credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
+// Re-export validation and action functions from plannerDraftActionsApi
+export {
+  validateContextRepository,
+  abortGeneration,
+  abortRefinement,
+  reviseDraft,
+  pauseDraft,
+  resumeDraft
+} from './plannerDraftActionsApi';
+export type {
+  ValidateContextRepositoryResponse,
+  ReviseDraftResponse,
+  PauseResumeResponse
+} from './plannerDraftActionsApi';

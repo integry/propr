@@ -15,10 +15,7 @@ interface ApprovedPlanViewProps {
   onRefetch?: () => void;
 }
 
-// Original Prompt Popover Component - styled like Step 2 (Review Plan)
-interface OriginalPromptPopoverProps {
-  prompt: string;
-}
+interface OriginalPromptPopoverProps { prompt: string; }
 
 const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -72,6 +69,84 @@ const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt })
   );
 };
 
+interface HeaderActionsProps {
+  draft: DraftWithPlan; isPaused: boolean; isPauseLoading: boolean; isRevising: boolean;
+  isDeleting: boolean; repoUrl: string | null; onPauseResume: () => void; onRevise: () => void; onDelete: () => void;
+}
+
+const HeaderActions: React.FC<HeaderActionsProps> = ({
+  draft, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl,
+  onPauseResume, onRevise, onDelete
+}) => {
+  const showPauseResume = draft.status === 'executed' || draft.status === 'pr_created';
+  const pauseButtonClass = isPaused
+    ? 'text-green-600 hover:text-green-700 hover:bg-green-50'
+    : 'text-orange-600 hover:text-orange-700 hover:bg-orange-50';
+
+  return (
+    <div className="flex items-center gap-2 flex-shrink-0">
+      {showPauseResume && (
+        <button
+          onClick={onPauseResume}
+          disabled={isPauseLoading}
+          className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${pauseButtonClass}`}
+          title={isPaused ? 'Resume plan execution' : 'Pause plan execution'}
+        >
+          {isPauseLoading ? <Loader2 size={16} className="animate-spin" /> : isPaused ? <Play size={16} /> : <Pause size={16} />}
+          <span className="hidden sm:inline">{isPaused ? 'Resume' : 'Pause'}</span>
+        </button>
+      )}
+      <button
+        onClick={onRevise}
+        disabled={isRevising}
+        className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        title="Revise Plan"
+      >
+        {isRevising ? <Loader2 size={16} className="animate-spin" /> : <Edit3 size={16} />}
+        <span className="hidden sm:inline">Revise</span>
+      </button>
+      <button
+        onClick={onDelete}
+        disabled={isDeleting}
+        className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        title="Delete Plan"
+      >
+        {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+      </button>
+      {repoUrl && (
+        <>
+          <div className="h-6 w-px bg-gray-300 mx-1 hidden sm:block" />
+          <a
+            href={repoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm"
+          >
+            <Github size={16} />
+            <span className="hidden sm:inline">View Issues on GitHub</span>
+            <ExternalLink size={14} />
+          </a>
+        </>
+      )}
+    </div>
+  );
+};
+
+interface FooterStatsProps { stats: { total: number; merged: number; processing: number; pending: number }; onRefresh: () => void; }
+
+const FooterStats: React.FC<FooterStatsProps> = ({ stats, onRefresh }) => (
+  <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
+    <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs sm:text-sm text-gray-600">
+      <span className="font-medium">{stats.total} {stats.total === 1 ? 'Issue' : 'Issues'}</span>
+      {stats.merged > 0 && (<><span className="text-gray-400">•</span><span className="text-purple-600">{stats.merged} Merged</span></>)}
+      {stats.processing > 0 && (<><span className="text-gray-400">•</span><span className="text-amber-600">{stats.processing} Processing</span></>)}
+      {stats.pending > 0 && (<><span className="text-gray-400">•</span><span className="text-gray-500">{stats.pending} Pending</span></>)}
+    </div>
+    <button onClick={onRefresh} className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors flex-shrink-0" title="Refresh issues">
+      <RefreshCw size={16} />
+    </button>
+  </div>
+);
 
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRefetch }) => {
   const navigate = useNavigate();
@@ -264,72 +339,17 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
           )}
         </div>
 
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {/* Pause/Resume - only show for executed or pr_created status */}
-          {(draft.status === 'executed' || draft.status === 'pr_created') && (
-            <button
-              onClick={handlePauseResume}
-              disabled={isPauseLoading}
-              className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                isPaused
-                  ? 'text-green-600 hover:text-green-700 hover:bg-green-50'
-                  : 'text-orange-600 hover:text-orange-700 hover:bg-orange-50'
-              }`}
-              title={isPaused ? 'Resume plan execution' : 'Pause plan execution'}
-            >
-              {isPauseLoading ? (
-                <Loader2 size={16} className="animate-spin" />
-              ) : isPaused ? (
-                <Play size={16} />
-              ) : (
-                <Pause size={16} />
-              )}
-              <span className="hidden sm:inline">{isPaused ? 'Resume' : 'Pause'}</span>
-            </button>
-          )}
-          {/* Revise Plan */}
-          <button
-            onClick={() => setShowReviseDialog(true)}
-            disabled={isRevising}
-            className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Revise Plan"
-          >
-            {isRevising ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <Edit3 size={16} />
-            )}
-            <span className="hidden sm:inline">Revise</span>
-          </button>
-          {/* Delete Plan */}
-          <button
-            onClick={() => setShowDeleteDialog(true)}
-            disabled={isDeleting}
-            className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Delete Plan"
-          >
-            {isDeleting ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <Trash2 size={16} />
-            )}
-          </button>
-          {repoUrl && (
-            <>
-              <div className="h-6 w-px bg-gray-300 mx-1 hidden sm:block" />
-              <a
-                href={repoUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm"
-              >
-                <Github size={16} />
-                <span className="hidden sm:inline">View Issues on GitHub</span>
-                <ExternalLink size={14} />
-              </a>
-            </>
-          )}
-        </div>
+        <HeaderActions
+          draft={draft}
+          isPaused={isPaused}
+          isPauseLoading={isPauseLoading}
+          isRevising={isRevising}
+          isDeleting={isDeleting}
+          repoUrl={repoUrl}
+          onPauseResume={handlePauseResume}
+          onRevise={() => setShowReviseDialog(true)}
+          onDelete={() => setShowDeleteDialog(true)}
+        />
       </div>
 
       {/* Single-Pane Action Dashboard */}
@@ -347,36 +367,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
       </div>
 
       {/* Pro Studio Footer - Anchored with status summary and refresh */}
-      <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
-        <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs sm:text-sm text-gray-600">
-          <span className="font-medium">{footerStats.total} {footerStats.total === 1 ? 'Issue' : 'Issues'}</span>
-          {footerStats.merged > 0 && (
-            <>
-              <span className="text-gray-400">•</span>
-              <span className="text-purple-600">{footerStats.merged} Merged</span>
-            </>
-          )}
-          {footerStats.processing > 0 && (
-            <>
-              <span className="text-gray-400">•</span>
-              <span className="text-amber-600">{footerStats.processing} Processing</span>
-            </>
-          )}
-          {footerStats.pending > 0 && (
-            <>
-              <span className="text-gray-400">•</span>
-              <span className="text-gray-500">{footerStats.pending} Pending</span>
-            </>
-          )}
-        </div>
-        <button
-          onClick={handleRefresh}
-          className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors flex-shrink-0"
-          title="Refresh issues"
-        >
-          <RefreshCw size={16} />
-        </button>
-      </div>
+      <FooterStats stats={footerStats} onRefresh={handleRefresh} />
 
       <DeletePlanDialog
         isOpen={showDeleteDialog}

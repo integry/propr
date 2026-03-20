@@ -4,6 +4,7 @@ import { Paperclip, Loader2 } from 'lucide-react';
 import { AttachmentChip, RemoteAttachmentChip } from './ComposerControls';
 import { GenerationProgress } from './GenerationProgress';
 import { NewModeHeader, EditModeHeader } from './SetupWizardHeaders';
+import { ManualFileSelector } from './ManualFileSelector';
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; }
 
@@ -114,6 +115,10 @@ interface SetupWizardLeftPaneProps {
   isGenerating: boolean;
   generationTrace?: GenerationTrace;
   onAbort: () => Promise<void>;
+  // Manual file selection
+  manualFiles?: string[];
+  onAddManualFile?: (filePath: string) => void;
+  onRemoveManualFile?: (filePath: string) => void;
 }
 
 export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
@@ -149,6 +154,9 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   isGenerating,
   generationTrace,
   onAbort,
+  manualFiles = [],
+  onAddManualFile,
+  onRemoveManualFile,
 }) => (
   <div className="w-full md:w-[65%] h-auto md:h-full flex flex-col">
     {/* Header with repo/branch - Toolbar border for alignment with right pane */}
@@ -200,7 +208,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             isGenerating || isUploading ? 'opacity-70 cursor-not-allowed bg-gray-50' : ''
           }`}
         />
-        <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-white border-t border-gray-100">
+        <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-white border-t border-gray-100 space-y-2">
           <AttachmentsSection
             isNewMode={isNewMode}
             localFiles={localFiles}
@@ -213,6 +221,14 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             fileInputRef={fileInputRef}
             onFileInputChange={onFileInputChange}
           />
+          {onAddManualFile && onRemoveManualFile && (
+            <ManualFileSelector
+              files={manualFiles}
+              onAddFile={onAddManualFile}
+              onRemoveFile={onRemoveManualFile}
+              disabled={isGenerating || isUploading}
+            />
+          )}
         </div>
       </div>
     </div>
