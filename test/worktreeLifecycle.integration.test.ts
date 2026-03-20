@@ -5,6 +5,152 @@ import path from 'path';
 import os from 'os';
 import { simpleGit, SimpleGit } from 'simple-git';
 
+// ============================================================================
+// Inline implementations of cleanup functions for testing
+// These match the behavior in packages/core/src/git/worktreeOperations.ts
+// without requiring GitHub env vars and other external dependencies
+// ============================================================================
+
+interface CleanupOptions {
+    deleteBranch?: boolean;
+    success?: boolean;
+    retentionStrategy?: string;
+    retentionHours?: number;
+}
+
+interface RetentionInfo {
+    timestamp: string;
+    issueProcessed: boolean;
+    success: boolean;
+    retentionHours: number;
+    scheduledCleanup: string;
+}
+
+interface CleanupResult {
+    cleaned: number;
+    retained: number;
+}
+
+async function createRetentionMarker(worktreePath: string, retentionHours: number): Promise<void> {
+    const retentionInfo: RetentionInfo = {
+        timestamp: new Date().toISOString(),
+        issueProcessed: true,
+        success: false,
+        retentionHours,
+        scheduledCleanup: new Date(Date.now() + retentionHours * 60 * 60 * 1000).toISOString()
+    };
+    await fs.writeJson(path.join(worktreePath, '.retention-info.json'), retentionInfo);
+}
+
+async function cleanupWorktree(
+    localRepoPath: string,
+    worktreePath: string,
+    branchName: string,
+    options: CleanupOptions = {}
+): Promise<void> {
+    const {
+        deleteBranch = false,
+        success = true,
+        retentionStrategy = 'always_delete',
+        retentionHours = 24
+    } = options;
+
+    // keep_on_failure: skip cleanup on failure
+    if (!success && retentionStrategy === 'keep_on_failure') {
+        await createRetentionMarker(worktreePath, retentionHours);
+        return;
+    }
+
+    // keep_for_hours: create marker then proceed with cleanup
+    if (!success && retentionStrategy === 'keep_for_hours') {
+        await createRetentionMarker(worktreePath, retentionHours);
+    }
+
+    const git: SimpleGit = simpleGit(localRepoPath);
+
+    try {
+        await git.raw(['worktree', 'remove', worktreePath, '--force']);
+    } catch {
+        // Fallback to direct fs removal
+        await fs.remove(worktreePath);
+    }
+
+    if (deleteBranch && branchName) {
+        try {
+            await git.deleteLocalBranch(branchName, true);
+        } catch {
+            // Ignore branch deletion errors
+        }
+    }
+}
+
+async function processWorktreeItem(itemPath: string, stats: fs.Stats): Promise<CleanupResult> {
+    let cleaned = 0;
+    let retained = 0;
+
+    const retentionFile = path.join(itemPath, '.retention-info.json');
+
+    if (await fs.pathExists(retentionFile)) {
+        try {
+            const retentionInfo = await fs.readJson(retentionFile) as RetentionInfo;
+            const scheduledCleanup = new Date(retentionInfo.scheduledCleanup);
+            const now = new Date();
+
+            if (now >= scheduledCleanup) {
+                await fs.remove(itemPath);
+                cleaned++;
+            } else {
+                retained++;
+            }
+        } catch {
+            // If we can't read retention info, retain the worktree
+            retained++;
+        }
+    } else {
+        // No retention marker - recursively check subdirectories
+        const subResult = await processWorktreeDirectory(itemPath);
+        cleaned += subResult.cleaned;
+        retained += subResult.retained;
+    }
+
+    return { cleaned, retained };
+}
+
+async function processWorktreeDirectory(dirPath: string): Promise<CleanupResult> {
+    let cleaned = 0;
+    let retained = 0;
+
+    const items = await fs.readdir(dirPath);
+
+    for (const item of items) {
+        const itemPath = path.join(dirPath, item);
+        const stats = await fs.stat(itemPath);
+
+        if (stats.isDirectory()) {
+            const result = await processWorktreeItem(itemPath, stats);
+            cleaned += result.cleaned;
+            retained += result.retained;
+        }
+    }
+
+    return { cleaned, retained };
+}
+
+async function cleanupExpiredWorktrees(worktreesBasePath: string): Promise<CleanupResult> {
+    let cleaned = 0;
+    let retained = 0;
+
+    if (!await fs.pathExists(worktreesBasePath)) {
+        return { cleaned, retained };
+    }
+
+    const result = await processWorktreeDirectory(worktreesBasePath);
+    cleaned = result.cleaned;
+    retained = result.retained;
+
+    return { cleaned, retained };
+}
+
 interface WorktreeInfo {
     worktreePath: string;
     branchName: string;
@@ -534,6 +680,291 @@ describe('Worktree Lifecycle Integration Tests', () => {
             // Get entries in worktrees directory
             const entries = await fs.readdir(worktreesDir);
             assert(entries.length > 0, 'Should have at least one worktree metadata entry');
+        });
+    });
+
+    describe('Worktree Cleanup with Retention Strategies', () => {
+        test('keep_on_failure strategy creates retention marker when success is false', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 5001,
+                issueTitle: 'Keep On Failure Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Call cleanupWorktree with keep_on_failure strategy and success=false
+            await cleanupWorktree(testRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
+                deleteBranch: false,
+                success: false,
+                retentionStrategy: 'keep_on_failure',
+                retentionHours: 24
+            });
+
+            // Worktree should still exist
+            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should be retained on failure');
+
+            // Retention marker should be created
+            const retentionFile = path.join(worktreeInfo.worktreePath, '.retention-info.json');
+            assert(await fs.pathExists(retentionFile), 'Retention marker should exist');
+
+            // Verify marker contents
+            const retentionInfo = await fs.readJson(retentionFile);
+            assert.strictEqual(retentionInfo.success, false);
+            assert.strictEqual(retentionInfo.retentionHours, 24);
+            assert.strictEqual(retentionInfo.issueProcessed, true);
+            assert(retentionInfo.timestamp, 'Should have timestamp');
+            assert(retentionInfo.scheduledCleanup, 'Should have scheduledCleanup');
+        });
+
+        test('keep_on_failure strategy removes worktree when success is true', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 5002,
+                issueTitle: 'Keep On Failure Success Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Call cleanupWorktree with keep_on_failure strategy but success=true
+            await cleanupWorktree(testRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
+                deleteBranch: false,
+                success: true,
+                retentionStrategy: 'keep_on_failure'
+            });
+
+            // Worktree should be removed since success=true
+            assert(!await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should be removed on success');
+        });
+
+        test('always_delete strategy removes worktree regardless of success', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 5003,
+                issueTitle: 'Always Delete Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Call cleanupWorktree with always_delete strategy and success=false
+            await cleanupWorktree(testRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
+                deleteBranch: false,
+                success: false,
+                retentionStrategy: 'always_delete'
+            });
+
+            // Worktree should be removed even on failure with always_delete
+            assert(!await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should be removed with always_delete strategy');
+        });
+
+        test('keep_for_hours strategy creates marker and then removes worktree', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 5004,
+                issueTitle: 'Keep For Hours Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Call cleanupWorktree with keep_for_hours strategy
+            await cleanupWorktree(testRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
+                deleteBranch: false,
+                success: false,
+                retentionStrategy: 'keep_for_hours',
+                retentionHours: 48
+            });
+
+            // Worktree should be removed immediately (keep_for_hours still removes, just creates marker first)
+            assert(!await fs.pathExists(worktreeInfo.worktreePath), 'Worktree should be removed with keep_for_hours strategy');
+        });
+
+        test('retention marker contains correct scheduled cleanup time', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 5005,
+                issueTitle: 'Scheduled Cleanup Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            const retentionHours = 12;
+            const beforeCall = Date.now();
+
+            await cleanupWorktree(testRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
+                success: false,
+                retentionStrategy: 'keep_on_failure',
+                retentionHours
+            });
+
+            const afterCall = Date.now();
+            const retentionFile = path.join(worktreeInfo.worktreePath, '.retention-info.json');
+            const retentionInfo = await fs.readJson(retentionFile);
+
+            // Verify scheduled cleanup time is approximately retentionHours from now
+            const scheduledCleanup = new Date(retentionInfo.scheduledCleanup).getTime();
+            const expectedMinTime = beforeCall + retentionHours * 60 * 60 * 1000;
+            const expectedMaxTime = afterCall + retentionHours * 60 * 60 * 1000;
+
+            assert(scheduledCleanup >= expectedMinTime, 'Scheduled cleanup should be at least retentionHours from call start');
+            assert(scheduledCleanup <= expectedMaxTime, 'Scheduled cleanup should be at most retentionHours from call end');
+        });
+    });
+
+    describe('Expired Worktree Cleanup', () => {
+        test('cleanupExpiredWorktrees removes worktrees past scheduled cleanup time', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 6001,
+                issueTitle: 'Expired Cleanup Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Create a retention marker with scheduledCleanup in the past
+            const retentionInfo = {
+                timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), // 2 hours ago
+                issueProcessed: true,
+                success: false,
+                retentionHours: 1,
+                scheduledCleanup: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString() // 1 hour ago (expired)
+            };
+            await fs.writeJson(path.join(worktreeInfo.worktreePath, '.retention-info.json'), retentionInfo);
+
+            // Run cleanup
+            const result = await cleanupExpiredWorktrees(worktreesBasePath);
+
+            // Worktree should be cleaned up
+            assert(!await fs.pathExists(worktreeInfo.worktreePath), 'Expired worktree should be removed');
+            assert.strictEqual(result.cleaned, 1, 'Should report 1 cleaned worktree');
+        });
+
+        test('cleanupExpiredWorktrees retains worktrees before scheduled cleanup time', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 6002,
+                issueTitle: 'Retained Cleanup Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Create a retention marker with scheduledCleanup in the future
+            const retentionInfo = {
+                timestamp: new Date().toISOString(),
+                issueProcessed: true,
+                success: false,
+                retentionHours: 24,
+                scheduledCleanup: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours from now
+            };
+            await fs.writeJson(path.join(worktreeInfo.worktreePath, '.retention-info.json'), retentionInfo);
+
+            // Run cleanup
+            const result = await cleanupExpiredWorktrees(worktreesBasePath);
+
+            // Worktree should still exist
+            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Non-expired worktree should be retained');
+            assert.strictEqual(result.retained, 1, 'Should report 1 retained worktree');
+            assert.strictEqual(result.cleaned, 0, 'Should report 0 cleaned worktrees');
+        });
+
+        test('cleanupExpiredWorktrees handles multiple worktrees with mixed expiration', async () => {
+            const git = simpleGit(testRepoPath);
+
+            // Create an expired worktree
+            const expiredIssue: IssueInfo = {
+                issueId: 6003,
+                issueTitle: 'Expired Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+            const expiredWorktree = generateWorktreeInfo(expiredIssue);
+            await createWorktreeWithGit(git, expiredWorktree, 'HEAD');
+            await fs.writeJson(path.join(expiredWorktree.worktreePath, '.retention-info.json'), {
+                timestamp: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
+                issueProcessed: true,
+                success: false,
+                retentionHours: 24,
+                scheduledCleanup: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() // expired
+            });
+
+            // Create a non-expired worktree
+            const activeIssue: IssueInfo = {
+                issueId: 6004,
+                issueTitle: 'Active Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+            const activeWorktree = generateWorktreeInfo(activeIssue);
+            await createWorktreeWithGit(git, activeWorktree, 'HEAD');
+            await fs.writeJson(path.join(activeWorktree.worktreePath, '.retention-info.json'), {
+                timestamp: new Date().toISOString(),
+                issueProcessed: true,
+                success: false,
+                retentionHours: 48,
+                scheduledCleanup: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString() // not expired
+            });
+
+            // Run cleanup
+            const result = await cleanupExpiredWorktrees(worktreesBasePath);
+
+            // Verify results
+            assert(!await fs.pathExists(expiredWorktree.worktreePath), 'Expired worktree should be removed');
+            assert(await fs.pathExists(activeWorktree.worktreePath), 'Active worktree should be retained');
+            assert.strictEqual(result.cleaned, 1, 'Should report 1 cleaned worktree');
+            assert.strictEqual(result.retained, 1, 'Should report 1 retained worktree');
+        });
+
+        test('cleanupExpiredWorktrees handles non-existent base path gracefully', async () => {
+            const nonExistentPath = path.join(tempDir, 'non-existent-worktrees');
+
+            // Should not throw
+            const result = await cleanupExpiredWorktrees(nonExistentPath);
+
+            assert.strictEqual(result.cleaned, 0);
+            assert.strictEqual(result.retained, 0);
+        });
+
+        test('cleanupExpiredWorktrees handles corrupted retention info gracefully', async () => {
+            const git = simpleGit(testRepoPath);
+            const issueInfo: IssueInfo = {
+                issueId: 6005,
+                issueTitle: 'Corrupted Info Test',
+                owner: 'testowner',
+                repoName: 'testrepo'
+            };
+
+            const worktreeInfo = generateWorktreeInfo(issueInfo);
+            await createWorktreeWithGit(git, worktreeInfo, 'HEAD');
+
+            // Create a corrupted retention marker (invalid JSON)
+            await fs.writeFile(path.join(worktreeInfo.worktreePath, '.retention-info.json'), 'invalid json content');
+
+            // Run cleanup - should not throw
+            const result = await cleanupExpiredWorktrees(worktreesBasePath);
+
+            // Worktree should be retained since retention info couldn't be read
+            assert(await fs.pathExists(worktreeInfo.worktreePath), 'Worktree with corrupted info should be retained');
+            assert.strictEqual(result.retained, 1, 'Should report 1 retained worktree');
         });
     });
 });
