@@ -1,46 +1,14 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
-// Define PlanIssueStatus type locally to avoid importing from @propr/core
-// which triggers module-level initialization (Redis, GitHub auth, etc.)
-type PlanIssueStatus =
-    | 'pending'
-    | 'processing'
-    | 'under_review'
-    | 'in_refinement'
-    | 'refinement_processing'
-    | 'merged'
-    | 'closed';
-
-/**
- * Pure function extracted from planIssueTracking.ts for testing.
- * This is a copy of the original function to enable isolated unit testing
- * without triggering module-level side effects from @propr/core imports.
- *
- * The original function is at: packages/core/src/webhook/planIssueTracking.ts:166
- */
-function determinePRStatusUpdate(
-    action: string,
-    merged: boolean,
-    currentStatus: PlanIssueStatus
-): PlanIssueStatus | null {
-    // Never downgrade from terminal statuses - prevents race conditions where
-    // delayed PR events (e.g., 'opened') run after the PR is already merged
-    if (currentStatus === 'merged' || currentStatus === 'closed') {
-        return null;
-    }
-
-    if (action === 'closed') {
-        return merged ? 'merged' : 'closed';
-    }
-    if (action === 'opened' || action === 'reopened') {
-        return 'under_review';
-    }
-    if (action === 'synchronize' && currentStatus === 'in_refinement') {
-        return 'refinement_processing';
-    }
-    return null;
-}
+// Import from the pure statusMachine module - no side effects, no mocks needed
+import {
+    determinePRStatusUpdate,
+    isTerminalStatus,
+    isInProgressStatus,
+    TERMINAL_STATUSES,
+    type PlanIssueStatus
+} from '../packages/core/src/webhook/statusMachine.js';
 
 describe('determinePRStatusUpdate', () => {
     describe('terminal states (merged, closed) should return null', () => {
@@ -181,6 +149,68 @@ describe('determinePRStatusUpdate', () => {
             const result = determinePRStatusUpdate('reopened', false, 'closed');
             assert.strictEqual(result, null);
         });
+    });
+});
+
+describe('isTerminalStatus', () => {
+    test('returns true for merged status', () => {
+        assert.strictEqual(isTerminalStatus('merged'), true);
+    });
+
+    test('returns true for closed status', () => {
+        assert.strictEqual(isTerminalStatus('closed'), true);
+    });
+
+    const nonTerminalStatuses: PlanIssueStatus[] = [
+        'pending',
+        'processing',
+        'under_review',
+        'in_refinement',
+        'refinement_processing'
+    ];
+
+    for (const status of nonTerminalStatuses) {
+        test(`returns false for ${status} status`, () => {
+            assert.strictEqual(isTerminalStatus(status), false);
+        });
+    }
+});
+
+describe('isInProgressStatus', () => {
+    const inProgressStatuses: PlanIssueStatus[] = [
+        'processing',
+        'under_review',
+        'in_refinement',
+        'refinement_processing'
+    ];
+
+    for (const status of inProgressStatuses) {
+        test(`returns true for ${status} status`, () => {
+            assert.strictEqual(isInProgressStatus(status), true);
+        });
+    }
+
+    const notInProgressStatuses: PlanIssueStatus[] = [
+        'pending',
+        'merged',
+        'closed'
+    ];
+
+    for (const status of notInProgressStatuses) {
+        test(`returns false for ${status} status`, () => {
+            assert.strictEqual(isInProgressStatus(status), false);
+        });
+    }
+});
+
+describe('TERMINAL_STATUSES constant', () => {
+    test('contains merged and closed', () => {
+        assert.ok(TERMINAL_STATUSES.includes('merged'));
+        assert.ok(TERMINAL_STATUSES.includes('closed'));
+    });
+
+    test('has exactly 2 statuses', () => {
+        assert.strictEqual(TERMINAL_STATUSES.length, 2);
     });
 });
 

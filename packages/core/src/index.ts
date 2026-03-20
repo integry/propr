@@ -104,7 +104,13 @@ export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor,
 export { handleCommentDeleted, handleCommentEdited, processCommentEvent } from './webhook/commentEventHandler.js';
 export type { CommentPayload, CommentEventConfig, CommentEventType } from './webhook/commentEventHandler.js';
 export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './webhook/commentEventHelpers.js';
-export { determinePRStatusUpdate } from './webhook/planIssueTracking.js';
+export {
+    determinePRStatusUpdate,
+    isTerminalStatus,
+    isInProgressStatus,
+    TERMINAL_STATUSES
+} from './webhook/statusMachine.js';
+export type { PlanIssueStatus as StatusMachinePlanIssueStatus } from './webhook/statusMachine.js';
 
 export { getExecutionAnalysis } from './services/analysisService.js';
 export { getModelPricing } from './services/pricingService.js';
