@@ -193,6 +193,10 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
 
         return response;
     } catch (error) {
+        if (error instanceof UsageLimitError) {
+            throw error;
+        }
+
         const executionTime = Date.now() - startTime;
         const err = error as Error;
         logger.error({

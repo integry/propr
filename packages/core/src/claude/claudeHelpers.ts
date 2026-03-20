@@ -291,11 +291,20 @@ export function parseStreamJsonOutput(result: ExecutionResult): ClaudeOutput {
 
     const lines = result.stdout.split('\n').filter(line => line.trim());
     for (const line of lines) {
+        let jsonLine: JsonLineMessage;
         try {
-            const jsonLine: JsonLineMessage = JSON.parse(line);
-            processJsonLine(jsonLine, claudeOutput, result.messageTimestamps);
+            jsonLine = JSON.parse(line);
         } catch {
             continue;
+        }
+
+        try {
+            processJsonLine(jsonLine, claudeOutput, result.messageTimestamps);
+        } catch (error) {
+            // Propagate usage limit detection to trigger upstream requeue logic.
+            if (error instanceof UsageLimitError) {
+                throw error;
+            }
         }
     }
 
