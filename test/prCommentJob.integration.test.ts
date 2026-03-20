@@ -716,3 +716,931 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
         });
     });
 });
+
+/**
+ * Integration tests for PR Comment Validation
+ *
+ * These tests verify:
+ * 1. Bot comment filtering logic
+ * 2. Redis tracking of processed comments
+ * 3. Completion marker detection ({commentId}✓)
+ * 4. Pending comments pickup from Redis
+ */
+
+interface UnprocessedComment {
+    id: number;
+    body: string;
+    body_html?: string;
+    author: string;
+    type: 'review' | 'issue';
+    hasCodeContext?: boolean;
+    updated_at?: string;
+}
+
+interface PRComment {
+    id: number;
+    user: { login: string; type?: string };
+    body: string | null;
+    body_html?: string;
+    created_at: string;
+    pull_request_review_id?: number;
+    updated_at?: string;
+}
+
+interface ValidationComment {
+    id: number;
+    body?: string;
+    updated_at?: string;
+}
+
+// Enhanced Mock Redis client with List operations for pending comments
+interface MockRedisClientWithLists {
+    storage: Map<string, { value: string; expiry: number | null }>;
+    listStorage: Map<string, string[]>;
+    set: (key: string, value: string, ...args: (string | number)[]) => Promise<string | null>;
+    get: (key: string) => Promise<string | null>;
+    expire: (key: string, seconds: number) => Promise<number>;
+    del: (key: string) => Promise<number>;
+    lrange: (key: string, start: number, stop: number) => Promise<string[]>;
+    llen: (key: string) => Promise<number>;
+    lpush: (key: string, ...values: string[]) => Promise<number>;
+    rpush: (key: string, ...values: string[]) => Promise<number>;
+}
+
+function createMockRedisClientWithLists(): MockRedisClientWithLists {
+    const storage = new Map<string, { value: string; expiry: number | null }>();
+    const listStorage = new Map<string, string[]>();
+
+    return {
+        storage,
+        listStorage,
+
+        async set(key: string, value: string, ...args: (string | number)[]): Promise<string | null> {
+            const hasNX = args.includes('NX');
+            const exIndex = args.indexOf('EX');
+            const expiry = exIndex !== -1 ? Number(args[exIndex + 1]) : null;
+
+            if (hasNX) {
+                if (storage.has(key)) {
+                    return null;
+                }
+            }
+
+            storage.set(key, { value, expiry });
+            return 'OK';
+        },
+
+        async get(key: string): Promise<string | null> {
+            const entry = storage.get(key);
+            return entry ? entry.value : null;
+        },
+
+        async expire(key: string, seconds: number): Promise<number> {
+            const entry = storage.get(key);
+            if (entry) {
+                entry.expiry = seconds;
+                return 1;
+            }
+            return 0;
+        },
+
+        async del(key: string): Promise<number> {
+            const deleted = storage.delete(key) || listStorage.delete(key);
+            return deleted ? 1 : 0;
+        },
+
+        async lrange(key: string, start: number, stop: number): Promise<string[]> {
+            const list = listStorage.get(key) || [];
+            if (stop === -1) stop = list.length - 1;
+            return list.slice(start, stop + 1);
+        },
+
+        async llen(key: string): Promise<number> {
+            const list = listStorage.get(key) || [];
+            return list.length;
+        },
+
+        async lpush(key: string, ...values: string[]): Promise<number> {
+            const list = listStorage.get(key) || [];
+            list.unshift(...values.reverse());
+            listStorage.set(key, list);
+            return list.length;
+        },
+
+        async rpush(key: string, ...values: string[]): Promise<number> {
+            const list = listStorage.get(key) || [];
+            list.push(...values);
+            listStorage.set(key, list);
+            return list.length;
+        }
+    };
+}
+
+// Helper functions matching production logic
+function getPendingPrCommentsKey(owner: string, repo: string, prNumber: number): string {
+    return `pending-pr-comments:${owner}:${repo}:${prNumber}`;
+}
+
+function filterCommentByAuthor(commentAuthor: string, userType: string | null = null): { shouldFilter: boolean; reason: string | null } {
+    const GITHUB_BOT_USERNAME = process.env.GITHUB_BOT_USERNAME || 'propr.dev[bot]';
+
+    if (GITHUB_BOT_USERNAME && commentAuthor === GITHUB_BOT_USERNAME) {
+        return { shouldFilter: true, reason: 'bot_own_comment' };
+    }
+
+    const isBotAccount =
+        commentAuthor.endsWith('[bot]') ||
+        commentAuthor.includes('[bot]') ||
+        userType === 'Bot';
+
+    if (isBotAccount) {
+        return { shouldFilter: true, reason: 'bot_account' };
+    }
+
+    return { shouldFilter: false, reason: null };
+}
+
+function filterUnprocessedComments(
+    commentsToProcess: UnprocessedComment[],
+    prCommentsForValidation: PRComment[],
+    botUsername: string
+): UnprocessedComment[] {
+    return commentsToProcess
+        .filter(comment => {
+            const alreadyProcessed = prCommentsForValidation.some(prComment => {
+                const isBotComment = prComment.user.login === botUsername;
+                if (!isBotComment) return false;
+                // Check for completion marker: {commentId}✓
+                return prComment.body?.includes(`${String(comment.id)}✓`);
+            });
+
+            return !alreadyProcessed;
+        })
+        .map(comment => {
+            const apiComment = prCommentsForValidation.find(c => c.id === comment.id);
+            if (apiComment && apiComment.body_html) {
+                return { ...comment, body_html: apiComment.body_html };
+            }
+            return comment;
+        });
+}
+
+function validateAndFilterComments(
+    commentsToProcess: UnprocessedComment[],
+    allCommentsForValidation: ValidationComment[]
+): UnprocessedComment[] {
+    const validatedComments: UnprocessedComment[] = [];
+    for (const comment of commentsToProcess) {
+        const currentComment = allCommentsForValidation.find(c => c.id === comment.id);
+
+        if (!currentComment) {
+            // Comment has been deleted, skip
+            continue;
+        }
+
+        const commentWasEditedAfterQueuing = comment.updated_at && currentComment.updated_at !== comment.updated_at;
+
+        if (commentWasEditedAfterQueuing) {
+            validatedComments.push({ ...comment, body: currentComment.body || comment.body });
+        } else {
+            validatedComments.push(comment);
+        }
+    }
+    return validatedComments;
+}
+
+function parsePendingComment(commentJson: string): UnprocessedComment | null {
+    try {
+        return JSON.parse(commentJson) as UnprocessedComment;
+    } catch {
+        return null;
+    }
+}
+
+function processPendingComments(commentsToProcess: UnprocessedComment[], pendingComments: string[]): void {
+    for (const commentJson of pendingComments) {
+        const pendingComment = parsePendingComment(commentJson);
+        if (pendingComment && !commentsToProcess.some(c => c.id === pendingComment.id)) {
+            commentsToProcess.push(pendingComment);
+        }
+    }
+}
+
+async function pickUpPendingComments(
+    commentsToProcess: UnprocessedComment[],
+    options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: MockRedisClientWithLists }
+): Promise<UnprocessedComment[]> {
+    const { repoOwner, repoName, pullRequestNumber, redisClient } = options;
+    const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
+
+    const pendingComments = await redisClient.lrange(pendingCommentsKey, 0, -1);
+    if (pendingComments.length > 0) {
+        await redisClient.del(pendingCommentsKey);
+        processPendingComments(commentsToProcess, pendingComments);
+    }
+
+    return commentsToProcess;
+}
+
+describe('PR Comment Validation - Integration Tests', () => {
+    let redisClient: MockRedisClientWithLists;
+
+    beforeEach(() => {
+        redisClient = createMockRedisClientWithLists();
+        // Reset environment variable
+        delete process.env.GITHUB_BOT_USERNAME;
+    });
+
+    afterEach(() => {
+        redisClient.storage.clear();
+        redisClient.listStorage.clear();
+        delete process.env.GITHUB_BOT_USERNAME;
+    });
+
+    describe('Bot Comment Filtering', () => {
+        test('filters comments from default bot username', () => {
+            const result = filterCommentByAuthor('propr.dev[bot]');
+
+            assert.strictEqual(result.shouldFilter, true);
+            assert.strictEqual(result.reason, 'bot_own_comment');
+        });
+
+        test('filters comments from configured bot username', () => {
+            process.env.GITHUB_BOT_USERNAME = 'custom-bot[bot]';
+
+            const result = filterCommentByAuthor('custom-bot[bot]');
+
+            assert.strictEqual(result.shouldFilter, true);
+            assert.strictEqual(result.reason, 'bot_own_comment');
+        });
+
+        test('filters comments ending with [bot]', () => {
+            const result = filterCommentByAuthor('some-integration[bot]');
+
+            assert.strictEqual(result.shouldFilter, true);
+            assert.strictEqual(result.reason, 'bot_account');
+        });
+
+        test('filters comments containing [bot]', () => {
+            const result = filterCommentByAuthor('github-actions[bot]');
+
+            assert.strictEqual(result.shouldFilter, true);
+            assert.strictEqual(result.reason, 'bot_account');
+        });
+
+        test('filters comments with Bot user type', () => {
+            const result = filterCommentByAuthor('dependabot', 'Bot');
+
+            assert.strictEqual(result.shouldFilter, true);
+            assert.strictEqual(result.reason, 'bot_account');
+        });
+
+        test('allows comments from regular users', () => {
+            const result = filterCommentByAuthor('regularuser');
+
+            assert.strictEqual(result.shouldFilter, false);
+            assert.strictEqual(result.reason, null);
+        });
+
+        test('allows comments from users with User type', () => {
+            const result = filterCommentByAuthor('johndoe', 'User');
+
+            assert.strictEqual(result.shouldFilter, false);
+            assert.strictEqual(result.reason, null);
+        });
+
+        test('filters multiple bot accounts correctly', () => {
+            const bots = [
+                'github-actions[bot]',
+                'dependabot[bot]',
+                'codecov[bot]',
+                'sonarcloud[bot]',
+                'propr.dev[bot]'
+            ];
+
+            for (const bot of bots) {
+                const result = filterCommentByAuthor(bot);
+                assert.strictEqual(result.shouldFilter, true, `Should filter ${bot}`);
+            }
+        });
+
+        test('allows multiple regular users correctly', () => {
+            const users = ['alice', 'bob', 'charlie', 'developer123'];
+
+            for (const user of users) {
+                const result = filterCommentByAuthor(user);
+                assert.strictEqual(result.shouldFilter, false, `Should allow ${user}`);
+            }
+        });
+    });
+
+    describe('Completion Marker Detection', () => {
+        test('detects completion marker in bot comment', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 12345, body: 'Please fix the bug', author: 'user1', type: 'issue' }
+            ];
+
+            const prComments: PRComment[] = [
+                {
+                    id: 99999,
+                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    body: '✅ **Applied the requested follow-up changes**\n\n---\n_Processing comment ID: 12345✓_',
+                    created_at: '2024-01-01T00:00:00Z'
+                }
+            ];
+
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+
+            assert.strictEqual(filtered.length, 0, 'Already processed comment should be filtered out');
+        });
+
+        test('does not filter comments without completion marker', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 12345, body: 'Please fix the bug', author: 'user1', type: 'issue' }
+            ];
+
+            const prComments: PRComment[] = [
+                {
+                    id: 99999,
+                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    body: '🔄 **Processing your request...**',
+                    created_at: '2024-01-01T00:00:00Z'
+                }
+            ];
+
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+
+            assert.strictEqual(filtered.length, 1, 'Comment without marker should remain');
+            assert.strictEqual(filtered[0].id, 12345);
+        });
+
+        test('detects multiple completion markers in single bot comment', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 111, body: 'Fix bug A', author: 'user1', type: 'issue' },
+                { id: 222, body: 'Fix bug B', author: 'user2', type: 'issue' },
+                { id: 333, body: 'New feature', author: 'user3', type: 'issue' }
+            ];
+
+            const prComments: PRComment[] = [
+                {
+                    id: 99999,
+                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    body: '✅ **Applied changes**\n\n---\n_Processing comment IDs: 111✓, 222✓_',
+                    created_at: '2024-01-01T00:00:00Z'
+                }
+            ];
+
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+
+            assert.strictEqual(filtered.length, 1, 'Only unprocessed comment should remain');
+            assert.strictEqual(filtered[0].id, 333, 'Comment 333 should be the only one remaining');
+        });
+
+        test('ignores completion markers from non-bot users', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 12345, body: 'Please fix the bug', author: 'user1', type: 'issue' }
+            ];
+
+            const prComments: PRComment[] = [
+                {
+                    id: 99999,
+                    user: { login: 'regularuser', type: 'User' },
+                    body: 'Some text with 12345✓ marker that should be ignored',
+                    created_at: '2024-01-01T00:00:00Z'
+                }
+            ];
+
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+
+            assert.strictEqual(filtered.length, 1, 'Comment should remain since marker is from non-bot');
+        });
+
+        test('handles completion marker format variations', () => {
+            const testCases = [
+                { marker: '12345✓', shouldMatch: true },
+                { marker: 'ID: 12345✓', shouldMatch: true },
+                { marker: '_Processing comment ID: 12345✓_', shouldMatch: true },
+                { marker: 'Comment by @user (ID: 12345✓)', shouldMatch: true }
+            ];
+
+            for (const tc of testCases) {
+                const commentsToProcess: UnprocessedComment[] = [
+                    { id: 12345, body: 'Test', author: 'user1', type: 'issue' }
+                ];
+
+                const prComments: PRComment[] = [
+                    {
+                        id: 99999,
+                        user: { login: 'propr.dev[bot]', type: 'Bot' },
+                        body: tc.marker,
+                        created_at: '2024-01-01T00:00:00Z'
+                    }
+                ];
+
+                const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+                const isFiltered = filtered.length === 0;
+
+                assert.strictEqual(isFiltered, tc.shouldMatch, `Marker "${tc.marker}" should${tc.shouldMatch ? '' : ' not'} match`);
+            }
+        });
+    });
+
+    describe('Redis Tracking - Processed Comments', () => {
+        test('stores processed comment tracking key correctly', async () => {
+            const owner = 'testowner';
+            const repo = 'testrepo';
+            const prNumber = 123;
+            const commentId = 456;
+
+            const trackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${commentId}`;
+            await redisClient.set(trackingKey, 'processed', 'EX', 86400);
+
+            const value = await redisClient.get(trackingKey);
+            assert.strictEqual(value, 'processed');
+        });
+
+        test('tracking key has correct format', () => {
+            const testCases = [
+                { owner: 'org1', repo: 'repo1', pr: 1, comment: 100, expected: 'pr-comment-processed:org1:repo1:1:100' },
+                { owner: 'my-org', repo: 'my-repo', pr: 999, comment: 555, expected: 'pr-comment-processed:my-org:my-repo:999:555' },
+                { owner: 'CamelCase', repo: 'MixedCase', pr: 42, comment: 888, expected: 'pr-comment-processed:CamelCase:MixedCase:42:888' }
+            ];
+
+            for (const tc of testCases) {
+                const key = `pr-comment-processed:${tc.owner}:${tc.repo}:${tc.pr}:${tc.comment}`;
+                assert.strictEqual(key, tc.expected, `Key format for ${tc.owner}/${tc.repo}#${tc.pr}`);
+            }
+        });
+
+        test('tracking key persists with TTL', async () => {
+            const trackingKey = 'pr-comment-processed:owner:repo:1:100';
+            await redisClient.set(trackingKey, 'processed', 'EX', 86400);
+
+            const entry = redisClient.storage.get(trackingKey);
+            assert.ok(entry, 'Entry should exist');
+            assert.strictEqual(entry.expiry, 86400, 'TTL should be 86400 seconds (1 day)');
+        });
+    });
+
+    describe('Redis Tracking - Pending Comments Queue', () => {
+        test('pending comments key format is correct', () => {
+            const testCases = [
+                { owner: 'org1', repo: 'repo1', pr: 1, expected: 'pending-pr-comments:org1:repo1:1' },
+                { owner: 'my-org', repo: 'my-repo', pr: 999, expected: 'pending-pr-comments:my-org:my-repo:999' }
+            ];
+
+            for (const tc of testCases) {
+                const key = getPendingPrCommentsKey(tc.owner, tc.repo, tc.pr);
+                assert.strictEqual(key, tc.expected, `Key format for ${tc.owner}/${tc.repo}#${tc.pr}`);
+            }
+        });
+
+        test('adds pending comment to queue', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+            const comment: UnprocessedComment = { id: 456, body: 'Test comment', author: 'user1', type: 'issue' };
+
+            await redisClient.lpush(pendingKey, JSON.stringify(comment));
+
+            const length = await redisClient.llen(pendingKey);
+            assert.strictEqual(length, 1);
+
+            const comments = await redisClient.lrange(pendingKey, 0, -1);
+            assert.strictEqual(comments.length, 1);
+            const parsed = JSON.parse(comments[0]) as UnprocessedComment;
+            assert.strictEqual(parsed.id, 456);
+        });
+
+        test('retrieves multiple pending comments in FIFO order', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+
+            const comment1: UnprocessedComment = { id: 1, body: 'First', author: 'user1', type: 'issue' };
+            const comment2: UnprocessedComment = { id: 2, body: 'Second', author: 'user2', type: 'issue' };
+            const comment3: UnprocessedComment = { id: 3, body: 'Third', author: 'user3', type: 'issue' };
+
+            await redisClient.rpush(pendingKey, JSON.stringify(comment1));
+            await redisClient.rpush(pendingKey, JSON.stringify(comment2));
+            await redisClient.rpush(pendingKey, JSON.stringify(comment3));
+
+            const comments = await redisClient.lrange(pendingKey, 0, -1);
+            assert.strictEqual(comments.length, 3);
+
+            const parsed = comments.map(c => JSON.parse(c) as UnprocessedComment);
+            assert.strictEqual(parsed[0].id, 1, 'First comment should be first');
+            assert.strictEqual(parsed[1].id, 2, 'Second comment should be second');
+            assert.strictEqual(parsed[2].id, 3, 'Third comment should be third');
+        });
+
+        test('clears pending comments after pickup', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+            const comment: UnprocessedComment = { id: 456, body: 'Test', author: 'user1', type: 'issue' };
+
+            await redisClient.lpush(pendingKey, JSON.stringify(comment));
+
+            const commentsToProcess: UnprocessedComment[] = [];
+            await pickUpPendingComments(commentsToProcess, {
+                repoOwner: 'owner',
+                repoName: 'repo',
+                pullRequestNumber: 123,
+                redisClient
+            });
+
+            const length = await redisClient.llen(pendingKey);
+            assert.strictEqual(length, 0, 'Pending queue should be empty after pickup');
+        });
+
+        test('picks up pending comments and merges with existing', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+
+            const existingComments: UnprocessedComment[] = [
+                { id: 1, body: 'Existing', author: 'user1', type: 'issue' }
+            ];
+
+            const pendingComment: UnprocessedComment = { id: 2, body: 'Pending', author: 'user2', type: 'review' };
+            await redisClient.lpush(pendingKey, JSON.stringify(pendingComment));
+
+            const result = await pickUpPendingComments([...existingComments], {
+                repoOwner: 'owner',
+                repoName: 'repo',
+                pullRequestNumber: 123,
+                redisClient
+            });
+
+            assert.strictEqual(result.length, 2, 'Should have both existing and pending comments');
+            assert.ok(result.some(c => c.id === 1), 'Should contain existing comment');
+            assert.ok(result.some(c => c.id === 2), 'Should contain pending comment');
+        });
+
+        test('deduplicates pending comments', async () => {
+            const pendingKey = getPendingPrCommentsKey('owner', 'repo', 123);
+
+            const existingComments: UnprocessedComment[] = [
+                { id: 1, body: 'Existing', author: 'user1', type: 'issue' }
+            ];
+
+            // Add same comment ID to pending queue
+            const duplicateComment: UnprocessedComment = { id: 1, body: 'Duplicate', author: 'user1', type: 'issue' };
+            await redisClient.lpush(pendingKey, JSON.stringify(duplicateComment));
+
+            const result = await pickUpPendingComments([...existingComments], {
+                repoOwner: 'owner',
+                repoName: 'repo',
+                pullRequestNumber: 123,
+                redisClient
+            });
+
+            assert.strictEqual(result.length, 1, 'Duplicates should be removed');
+            assert.strictEqual(result[0].id, 1);
+        });
+
+        test('handles empty pending queue gracefully', async () => {
+            const existingComments: UnprocessedComment[] = [
+                { id: 1, body: 'Existing', author: 'user1', type: 'issue' }
+            ];
+
+            const result = await pickUpPendingComments([...existingComments], {
+                repoOwner: 'owner',
+                repoName: 'repo',
+                pullRequestNumber: 123,
+                redisClient
+            });
+
+            assert.strictEqual(result.length, 1, 'Should keep existing comments');
+            assert.strictEqual(result[0].id, 1);
+        });
+    });
+
+    describe('Comment Validation - Deleted Comments', () => {
+        test('filters out deleted comments', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'Comment 1', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Comment 2', author: 'user2', type: 'issue' },
+                { id: 3, body: 'Comment 3', author: 'user3', type: 'issue' }
+            ];
+
+            // Comment 2 has been deleted (not in validation list)
+            const validationComments: ValidationComment[] = [
+                { id: 1, body: 'Comment 1' },
+                { id: 3, body: 'Comment 3' }
+            ];
+
+            const result = validateAndFilterComments(commentsToProcess, validationComments);
+
+            assert.strictEqual(result.length, 2, 'Deleted comment should be filtered out');
+            assert.ok(result.some(c => c.id === 1), 'Comment 1 should remain');
+            assert.ok(result.some(c => c.id === 3), 'Comment 3 should remain');
+            assert.ok(!result.some(c => c.id === 2), 'Comment 2 should be filtered out');
+        });
+
+        test('handles all comments deleted', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'Comment 1', author: 'user1', type: 'issue' },
+                { id: 2, body: 'Comment 2', author: 'user2', type: 'issue' }
+            ];
+
+            const validationComments: ValidationComment[] = [];
+
+            const result = validateAndFilterComments(commentsToProcess, validationComments);
+
+            assert.strictEqual(result.length, 0, 'All deleted comments should be filtered out');
+        });
+    });
+
+    describe('Comment Validation - Edited Comments', () => {
+        test('updates content for edited comments', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'Original text', author: 'user1', type: 'issue', updated_at: '2024-01-01T00:00:00Z' }
+            ];
+
+            const validationComments: ValidationComment[] = [
+                { id: 1, body: 'Updated text', updated_at: '2024-01-01T01:00:00Z' }
+            ];
+
+            const result = validateAndFilterComments(commentsToProcess, validationComments);
+
+            assert.strictEqual(result.length, 1);
+            assert.strictEqual(result[0].body, 'Updated text', 'Body should be updated');
+        });
+
+        test('preserves content for unedited comments', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'Original text', author: 'user1', type: 'issue', updated_at: '2024-01-01T00:00:00Z' }
+            ];
+
+            const validationComments: ValidationComment[] = [
+                { id: 1, body: 'Original text', updated_at: '2024-01-01T00:00:00Z' }
+            ];
+
+            const result = validateAndFilterComments(commentsToProcess, validationComments);
+
+            assert.strictEqual(result.length, 1);
+            assert.strictEqual(result[0].body, 'Original text', 'Body should be preserved');
+        });
+
+        test('handles mixed edited and unedited comments', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'Original 1', author: 'user1', type: 'issue', updated_at: '2024-01-01T00:00:00Z' },
+                { id: 2, body: 'Original 2', author: 'user2', type: 'issue', updated_at: '2024-01-01T00:00:00Z' }
+            ];
+
+            const validationComments: ValidationComment[] = [
+                { id: 1, body: 'Updated 1', updated_at: '2024-01-01T01:00:00Z' },  // Edited
+                { id: 2, body: 'Original 2', updated_at: '2024-01-01T00:00:00Z' }  // Not edited
+            ];
+
+            const result = validateAndFilterComments(commentsToProcess, validationComments);
+
+            assert.strictEqual(result.length, 2);
+            const comment1 = result.find(c => c.id === 1);
+            const comment2 = result.find(c => c.id === 2);
+
+            assert.strictEqual(comment1?.body, 'Updated 1', 'Comment 1 should be updated');
+            assert.strictEqual(comment2?.body, 'Original 2', 'Comment 2 should be preserved');
+        });
+    });
+
+    describe('Comment Body HTML Enrichment', () => {
+        test('enriches comments with body_html from API response', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'Test comment', author: 'user1', type: 'issue' }
+            ];
+
+            const prComments: PRComment[] = [
+                {
+                    id: 1,
+                    user: { login: 'user1', type: 'User' },
+                    body: 'Test comment',
+                    body_html: '<p>Test comment with <img src="signed-url"/></p>',
+                    created_at: '2024-01-01T00:00:00Z'
+                }
+            ];
+
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+
+            assert.strictEqual(filtered.length, 1);
+            assert.strictEqual(filtered[0].body_html, '<p>Test comment with <img src="signed-url"/></p>');
+        });
+
+        test('handles comments without body_html', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'Test comment', author: 'user1', type: 'issue' }
+            ];
+
+            const prComments: PRComment[] = [
+                {
+                    id: 1,
+                    user: { login: 'user1', type: 'User' },
+                    body: 'Test comment',
+                    created_at: '2024-01-01T00:00:00Z'
+                }
+            ];
+
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+
+            assert.strictEqual(filtered.length, 1);
+            assert.strictEqual(filtered[0].body_html, undefined);
+        });
+    });
+
+    describe('Integration Scenario - Full Comment Processing Flow', () => {
+        test('processes new comments while filtering processed ones', async () => {
+            // Setup: 3 comments - 1 already processed, 1 new, 1 pending
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 100, body: 'Already processed', author: 'user1', type: 'issue' },
+                { id: 200, body: 'New comment', author: 'user2', type: 'issue' }
+            ];
+
+            const prComments: PRComment[] = [
+                {
+                    id: 100,
+                    user: { login: 'user1', type: 'User' },
+                    body: 'Already processed',
+                    created_at: '2024-01-01T00:00:00Z'
+                },
+                {
+                    id: 200,
+                    user: { login: 'user2', type: 'User' },
+                    body: 'New comment',
+                    created_at: '2024-01-01T00:01:00Z'
+                },
+                {
+                    id: 999,
+                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    body: '✅ Applied changes\n\n---\n_Processing comment ID: 100✓_',
+                    created_at: '2024-01-01T00:00:30Z'
+                }
+            ];
+
+            // Add pending comment to Redis
+            const pendingComment: UnprocessedComment = { id: 300, body: 'Pending', author: 'user3', type: 'review' };
+            await redisClient.lpush(
+                getPendingPrCommentsKey('owner', 'repo', 123),
+                JSON.stringify(pendingComment)
+            );
+
+            // Step 1: Filter already processed
+            const afterProcessedFilter = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            assert.strictEqual(afterProcessedFilter.length, 1, 'Should filter out processed comment');
+            assert.strictEqual(afterProcessedFilter[0].id, 200);
+
+            // Step 2: Pick up pending comments
+            const finalComments = await pickUpPendingComments(afterProcessedFilter, {
+                repoOwner: 'owner',
+                repoName: 'repo',
+                pullRequestNumber: 123,
+                redisClient
+            });
+
+            assert.strictEqual(finalComments.length, 2, 'Should have new + pending comments');
+            assert.ok(finalComments.some(c => c.id === 200), 'Should have new comment');
+            assert.ok(finalComments.some(c => c.id === 300), 'Should have pending comment');
+        });
+
+        test('handles concurrent PR isolation', async () => {
+            // Two different PRs should have independent pending queues
+            const pr1Key = getPendingPrCommentsKey('owner', 'repo', 1);
+            const pr2Key = getPendingPrCommentsKey('owner', 'repo', 2);
+
+            const comment1: UnprocessedComment = { id: 1, body: 'PR1 comment', author: 'user1', type: 'issue' };
+            const comment2: UnprocessedComment = { id: 2, body: 'PR2 comment', author: 'user2', type: 'issue' };
+
+            await redisClient.lpush(pr1Key, JSON.stringify(comment1));
+            await redisClient.lpush(pr2Key, JSON.stringify(comment2));
+
+            // Pick up PR1 comments
+            const pr1Comments = await pickUpPendingComments([], {
+                repoOwner: 'owner',
+                repoName: 'repo',
+                pullRequestNumber: 1,
+                redisClient
+            });
+
+            // PR2 queue should be unaffected
+            const pr2Length = await redisClient.llen(pr2Key);
+
+            assert.strictEqual(pr1Comments.length, 1, 'PR1 should have 1 comment');
+            assert.strictEqual(pr1Comments[0].id, 1);
+            assert.strictEqual(pr2Length, 1, 'PR2 queue should be unaffected');
+        });
+
+        test('handles multiple bot comments with different markers', async () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 100, body: 'Comment A', author: 'user1', type: 'issue' },
+                { id: 200, body: 'Comment B', author: 'user2', type: 'issue' },
+                { id: 300, body: 'Comment C', author: 'user3', type: 'issue' },
+                { id: 400, body: 'Comment D', author: 'user4', type: 'issue' }
+            ];
+
+            const prComments: PRComment[] = [
+                ...commentsToProcess.map(c => ({
+                    id: c.id,
+                    user: { login: c.author, type: 'User' },
+                    body: c.body,
+                    created_at: '2024-01-01T00:00:00Z'
+                })) as PRComment[],
+                // First batch processed
+                {
+                    id: 1001,
+                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    body: '✅ Batch 1\n---\n_Processing comment IDs: 100✓, 200✓_',
+                    created_at: '2024-01-01T00:01:00Z'
+                },
+                // Second batch only processed 300
+                {
+                    id: 1002,
+                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    body: '✅ Batch 2\n---\n_Processing comment ID: 300✓_',
+                    created_at: '2024-01-01T00:02:00Z'
+                }
+            ];
+
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+
+            assert.strictEqual(filtered.length, 1, 'Only comment 400 should remain');
+            assert.strictEqual(filtered[0].id, 400);
+        });
+    });
+
+    describe('Edge Cases', () => {
+        test('handles malformed pending comment JSON gracefully', () => {
+            const commentsToProcess: UnprocessedComment[] = [];
+            const pendingComments = [
+                'not valid json',
+                '{"id": 1, "body": "valid", "author": "user1", "type": "issue"}'
+            ];
+
+            processPendingComments(commentsToProcess, pendingComments);
+
+            assert.strictEqual(commentsToProcess.length, 1, 'Should skip malformed JSON');
+            assert.strictEqual(commentsToProcess[0].id, 1);
+        });
+
+        test('handles empty comment body in completion marker check', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 123, body: 'Test', author: 'user1', type: 'issue' }
+            ];
+
+            const prComments: PRComment[] = [
+                {
+                    id: 999,
+                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    body: null,
+                    created_at: '2024-01-01T00:00:00Z'
+                }
+            ];
+
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+
+            assert.strictEqual(filtered.length, 1, 'Should not crash on null body');
+        });
+
+        test('handles comment IDs that look like markers but are partial matches', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 123, body: 'Test', author: 'user1', type: 'issue' },
+                { id: 1234, body: 'Test 2', author: 'user2', type: 'issue' }
+            ];
+
+            const prComments: PRComment[] = [
+                {
+                    id: 999,
+                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    body: '_Processing comment ID: 123✓_',  // Only 123 is marked
+                    created_at: '2024-01-01T00:00:00Z'
+                }
+            ];
+
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+
+            assert.strictEqual(filtered.length, 1, 'Only 123 should be filtered');
+            assert.strictEqual(filtered[0].id, 1234, '1234 should remain (different ID)');
+        });
+
+        test('handles review vs issue comment types', () => {
+            const commentsToProcess: UnprocessedComment[] = [
+                { id: 1, body: 'Review comment', author: 'user1', type: 'review', hasCodeContext: true },
+                { id: 2, body: 'Issue comment', author: 'user2', type: 'issue' }
+            ];
+
+            const prComments: PRComment[] = [
+                {
+                    id: 1,
+                    user: { login: 'user1', type: 'User' },
+                    body: 'Review comment',
+                    created_at: '2024-01-01T00:00:00Z',
+                    pull_request_review_id: 12345
+                },
+                {
+                    id: 2,
+                    user: { login: 'user2', type: 'User' },
+                    body: 'Issue comment',
+                    created_at: '2024-01-01T00:00:00Z'
+                }
+            ];
+
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+
+            assert.strictEqual(filtered.length, 2, 'Both types should be processed');
+            assert.ok(filtered.some(c => c.type === 'review'), 'Review comment should be present');
+            assert.ok(filtered.some(c => c.type === 'issue'), 'Issue comment should be present');
+        });
+    });
+});
