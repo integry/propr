@@ -920,3 +920,497 @@ describe('determineResultStatus', () => {
         });
     });
 });
+
+/**
+ * Pure function extracted from issueJobHelpers.ts for testing.
+ * Tests the core logic of buildClaudeResultSection.
+ *
+ * The original function is at: src/jobs/issueJobHelpers.ts:416
+ */
+
+/**
+ * Extended interface for ClaudeCodeResponse with all fields used by buildClaudeResultSection.
+ */
+interface ClaudeCodeResponseFull {
+    success: boolean;
+    executionTime?: number;
+    modifiedFiles?: string[];
+    conversationLog?: Array<{ role: string; content: string }>;
+    error?: string;
+    sessionId?: string | null;
+    conversationId?: string;
+    model?: string;
+    tokenUsage?: { inputTokens: number; outputTokens: number } | null;
+}
+
+/**
+ * Builds a Claude result section with safe defaults for null/undefined values.
+ *
+ * @param claudeResult - The Claude Code execution result (or null)
+ * @returns An object with extracted fields and safe defaults
+ */
+function buildClaudeResultSection(claudeResult: ClaudeCodeResponseFull | null): { success: boolean } {
+    return {
+        success: claudeResult?.success ?? false,
+        executionTime: claudeResult?.executionTime ?? 0,
+        modifiedFiles: claudeResult?.modifiedFiles ?? [],
+        conversationLog: claudeResult?.conversationLog ?? [],
+        error: claudeResult?.error ?? null,
+        sessionId: claudeResult?.sessionId ?? null,
+        conversationId: claudeResult?.conversationId ?? null,
+        model: claudeResult?.model ?? null,
+        tokenUsage: claudeResult?.tokenUsage ?? null
+    } as { success: boolean };
+}
+
+describe('buildClaudeResultSection', () => {
+    describe('null result handling', () => {
+        test('should return safe defaults when claudeResult is null', () => {
+            const result = buildClaudeResultSection(null);
+
+            assert.strictEqual(result.success, false);
+            assert.strictEqual((result as any).executionTime, 0);
+            assert.deepStrictEqual((result as any).modifiedFiles, []);
+            assert.deepStrictEqual((result as any).conversationLog, []);
+            assert.strictEqual((result as any).error, null);
+            assert.strictEqual((result as any).sessionId, null);
+            assert.strictEqual((result as any).conversationId, null);
+            assert.strictEqual((result as any).model, null);
+            assert.strictEqual((result as any).tokenUsage, null);
+        });
+
+        test('should return object with success property typed correctly', () => {
+            const result = buildClaudeResultSection(null);
+
+            assert.strictEqual(typeof result.success, 'boolean');
+        });
+    });
+
+    describe('success field extraction', () => {
+        test('should extract success: true from claudeResult', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual(result.success, true);
+        });
+
+        test('should extract success: false from claudeResult', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: false };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual(result.success, false);
+        });
+    });
+
+    describe('executionTime field extraction', () => {
+        test('should extract executionTime when present', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true, executionTime: 5000 };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).executionTime, 5000);
+        });
+
+        test('should default executionTime to 0 when undefined', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).executionTime, 0);
+        });
+
+        test('should handle executionTime of 0 correctly', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true, executionTime: 0 };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).executionTime, 0);
+        });
+
+        test('should handle large executionTime values', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true, executionTime: 3600000 };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).executionTime, 3600000);
+        });
+    });
+
+    describe('modifiedFiles field extraction', () => {
+        test('should extract modifiedFiles when present', () => {
+            const files = ['src/index.ts', 'test/index.test.ts'];
+            const claudeResult: ClaudeCodeResponseFull = { success: true, modifiedFiles: files };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).modifiedFiles, files);
+        });
+
+        test('should default modifiedFiles to empty array when undefined', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).modifiedFiles, []);
+        });
+
+        test('should handle empty modifiedFiles array', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true, modifiedFiles: [] };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).modifiedFiles, []);
+        });
+
+        test('should handle single file in modifiedFiles', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true, modifiedFiles: ['README.md'] };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).modifiedFiles, ['README.md']);
+        });
+
+        test('should handle many files in modifiedFiles', () => {
+            const files = Array.from({ length: 50 }, (_, i) => `file${i}.ts`);
+            const claudeResult: ClaudeCodeResponseFull = { success: true, modifiedFiles: files };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).modifiedFiles, files);
+            assert.strictEqual((result as any).modifiedFiles.length, 50);
+        });
+    });
+
+    describe('conversationLog field extraction', () => {
+        test('should extract conversationLog when present', () => {
+            const log = [{ role: 'user', content: 'Hello' }, { role: 'assistant', content: 'Hi' }];
+            const claudeResult: ClaudeCodeResponseFull = { success: true, conversationLog: log };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).conversationLog, log);
+        });
+
+        test('should default conversationLog to empty array when undefined', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).conversationLog, []);
+        });
+
+        test('should handle empty conversationLog array', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true, conversationLog: [] };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).conversationLog, []);
+        });
+
+        test('should handle long conversation logs', () => {
+            const log = Array.from({ length: 100 }, (_, i) => ({
+                role: i % 2 === 0 ? 'user' : 'assistant',
+                content: `Message ${i}`
+            }));
+            const claudeResult: ClaudeCodeResponseFull = { success: true, conversationLog: log };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).conversationLog.length, 100);
+        });
+    });
+
+    describe('error field extraction', () => {
+        test('should extract error when present', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: false, error: 'Something went wrong' };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).error, 'Something went wrong');
+        });
+
+        test('should default error to null when undefined', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).error, null);
+        });
+
+        test('should handle empty string error', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: false, error: '' };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).error, '');
+        });
+
+        test('should handle multiline error messages', () => {
+            const errorMsg = 'Error on line 1\nError on line 2\nStack trace...';
+            const claudeResult: ClaudeCodeResponseFull = { success: false, error: errorMsg };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).error, errorMsg);
+        });
+    });
+
+    describe('sessionId field extraction', () => {
+        test('should extract sessionId when present', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true, sessionId: 'session-123-abc' };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).sessionId, 'session-123-abc');
+        });
+
+        test('should default sessionId to null when undefined', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).sessionId, null);
+        });
+
+        test('should handle explicit null sessionId', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true, sessionId: null };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).sessionId, null);
+        });
+    });
+
+    describe('conversationId field extraction', () => {
+        test('should extract conversationId when present', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true, conversationId: 'conv-456-def' };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).conversationId, 'conv-456-def');
+        });
+
+        test('should default conversationId to null when undefined', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).conversationId, null);
+        });
+    });
+
+    describe('model field extraction', () => {
+        test('should extract model when present', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true, model: 'claude-3-opus' };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).model, 'claude-3-opus');
+        });
+
+        test('should default model to null when undefined', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).model, null);
+        });
+
+        test('should handle various model names', () => {
+            const modelNames = ['claude-3-haiku', 'claude-3-sonnet', 'claude-3-opus', 'claude-2'];
+            modelNames.forEach(modelName => {
+                const claudeResult: ClaudeCodeResponseFull = { success: true, model: modelName };
+                const result = buildClaudeResultSection(claudeResult);
+                assert.strictEqual((result as any).model, modelName);
+            });
+        });
+    });
+
+    describe('tokenUsage field extraction', () => {
+        test('should extract tokenUsage when present', () => {
+            const tokenUsage = { inputTokens: 1000, outputTokens: 500 };
+            const claudeResult: ClaudeCodeResponseFull = { success: true, tokenUsage };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).tokenUsage, tokenUsage);
+        });
+
+        test('should default tokenUsage to null when undefined', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).tokenUsage, null);
+        });
+
+        test('should handle explicit null tokenUsage', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true, tokenUsage: null };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).tokenUsage, null);
+        });
+
+        test('should handle zero token counts', () => {
+            const tokenUsage = { inputTokens: 0, outputTokens: 0 };
+            const claudeResult: ClaudeCodeResponseFull = { success: true, tokenUsage };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).tokenUsage, tokenUsage);
+        });
+
+        test('should handle large token counts', () => {
+            const tokenUsage = { inputTokens: 100000, outputTokens: 50000 };
+            const claudeResult: ClaudeCodeResponseFull = { success: true, tokenUsage };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).tokenUsage, tokenUsage);
+        });
+    });
+
+    describe('complete result extraction', () => {
+        test('should extract all fields from a complete claudeResult', () => {
+            const claudeResult: ClaudeCodeResponseFull = {
+                success: true,
+                executionTime: 12345,
+                modifiedFiles: ['src/app.ts', 'test/app.test.ts'],
+                conversationLog: [
+                    { role: 'user', content: 'Fix the bug' },
+                    { role: 'assistant', content: 'I will fix it' }
+                ],
+                error: undefined,
+                sessionId: 'sess-abc-123',
+                conversationId: 'conv-def-456',
+                model: 'claude-3-sonnet',
+                tokenUsage: { inputTokens: 2500, outputTokens: 1500 }
+            };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual(result.success, true);
+            assert.strictEqual((result as any).executionTime, 12345);
+            assert.deepStrictEqual((result as any).modifiedFiles, ['src/app.ts', 'test/app.test.ts']);
+            assert.strictEqual((result as any).conversationLog.length, 2);
+            assert.strictEqual((result as any).error, null); // undefined becomes null
+            assert.strictEqual((result as any).sessionId, 'sess-abc-123');
+            assert.strictEqual((result as any).conversationId, 'conv-def-456');
+            assert.strictEqual((result as any).model, 'claude-3-sonnet');
+            assert.deepStrictEqual((result as any).tokenUsage, { inputTokens: 2500, outputTokens: 1500 });
+        });
+
+        test('should extract all fields from a failed claudeResult with error', () => {
+            const claudeResult: ClaudeCodeResponseFull = {
+                success: false,
+                executionTime: 5000,
+                modifiedFiles: [],
+                conversationLog: [{ role: 'user', content: 'Do something' }],
+                error: 'Execution failed: timeout',
+                sessionId: 'sess-xyz',
+                conversationId: 'conv-xyz',
+                model: 'claude-3-haiku',
+                tokenUsage: { inputTokens: 100, outputTokens: 50 }
+            };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual(result.success, false);
+            assert.strictEqual((result as any).executionTime, 5000);
+            assert.deepStrictEqual((result as any).modifiedFiles, []);
+            assert.strictEqual((result as any).conversationLog.length, 1);
+            assert.strictEqual((result as any).error, 'Execution failed: timeout');
+            assert.strictEqual((result as any).sessionId, 'sess-xyz');
+            assert.strictEqual((result as any).conversationId, 'conv-xyz');
+            assert.strictEqual((result as any).model, 'claude-3-haiku');
+            assert.deepStrictEqual((result as any).tokenUsage, { inputTokens: 100, outputTokens: 50 });
+        });
+    });
+
+    describe('safe defaults (acceptance criteria)', () => {
+        test('should provide safe default for success (false)', () => {
+            const result = buildClaudeResultSection(null);
+            assert.strictEqual(result.success, false);
+        });
+
+        test('should provide safe default for executionTime (0)', () => {
+            const result = buildClaudeResultSection(null);
+            assert.strictEqual((result as any).executionTime, 0);
+        });
+
+        test('should provide safe default for modifiedFiles ([])', () => {
+            const result = buildClaudeResultSection(null);
+            assert.deepStrictEqual((result as any).modifiedFiles, []);
+            assert.ok(Array.isArray((result as any).modifiedFiles));
+        });
+
+        test('should provide safe default for conversationLog ([])', () => {
+            const result = buildClaudeResultSection(null);
+            assert.deepStrictEqual((result as any).conversationLog, []);
+            assert.ok(Array.isArray((result as any).conversationLog));
+        });
+
+        test('should provide safe default for error (null)', () => {
+            const result = buildClaudeResultSection(null);
+            assert.strictEqual((result as any).error, null);
+        });
+
+        test('should provide safe default for sessionId (null)', () => {
+            const result = buildClaudeResultSection(null);
+            assert.strictEqual((result as any).sessionId, null);
+        });
+
+        test('should provide safe default for conversationId (null)', () => {
+            const result = buildClaudeResultSection(null);
+            assert.strictEqual((result as any).conversationId, null);
+        });
+
+        test('should provide safe default for model (null)', () => {
+            const result = buildClaudeResultSection(null);
+            assert.strictEqual((result as any).model, null);
+        });
+
+        test('should provide safe default for tokenUsage (null)', () => {
+            const result = buildClaudeResultSection(null);
+            assert.strictEqual((result as any).tokenUsage, null);
+        });
+    });
+
+    describe('edge cases', () => {
+        test('should handle claudeResult with only success field', () => {
+            const claudeResult: ClaudeCodeResponseFull = { success: true };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual(result.success, true);
+            // All other fields should have safe defaults
+            assert.strictEqual((result as any).executionTime, 0);
+            assert.deepStrictEqual((result as any).modifiedFiles, []);
+            assert.deepStrictEqual((result as any).conversationLog, []);
+            assert.strictEqual((result as any).error, null);
+            assert.strictEqual((result as any).sessionId, null);
+            assert.strictEqual((result as any).conversationId, null);
+            assert.strictEqual((result as any).model, null);
+            assert.strictEqual((result as any).tokenUsage, null);
+        });
+
+        test('should return a new object with reference to arrays from input', () => {
+            const claudeResult: ClaudeCodeResponseFull = {
+                success: true,
+                modifiedFiles: ['file.ts']
+            };
+            const result = buildClaudeResultSection(claudeResult);
+
+            // The function uses nullish coalescing (??) which preserves references
+            // This test documents the actual behavior - arrays are NOT deep copied
+            assert.strictEqual((result as any).modifiedFiles, claudeResult.modifiedFiles);
+        });
+
+        test('should handle special characters in string fields', () => {
+            const claudeResult: ClaudeCodeResponseFull = {
+                success: true,
+                error: 'Error: "quotes" and \'apostrophes\' and \n newlines',
+                sessionId: 'session-with-🎉-emoji',
+                model: 'claude-3-opus-20240229'
+            };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.strictEqual((result as any).error, 'Error: "quotes" and \'apostrophes\' and \n newlines');
+            assert.strictEqual((result as any).sessionId, 'session-with-🎉-emoji');
+        });
+
+        test('should handle files with special paths', () => {
+            const files = [
+                'src/utils/helper.ts',
+                'path/with spaces/file.ts',
+                'packages/@scope/module/index.ts',
+                '../relative/path.ts'
+            ];
+            const claudeResult: ClaudeCodeResponseFull = { success: true, modifiedFiles: files };
+            const result = buildClaudeResultSection(claudeResult);
+
+            assert.deepStrictEqual((result as any).modifiedFiles, files);
+        });
+    });
+
+    describe('return type validation', () => {
+        test('should return object with success property', () => {
+            const result = buildClaudeResultSection(null);
+            assert.ok('success' in result);
+        });
+
+        test('should return object castable to { success: boolean }', () => {
+            const result: { success: boolean } = buildClaudeResultSection(null);
+            assert.strictEqual(typeof result.success, 'boolean');
+        });
+    });
+});
