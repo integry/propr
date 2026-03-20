@@ -264,7 +264,7 @@ async function processAnalysisJob(job: Job<AnalysisJobData>): Promise<AnalysisRe
     }
 }
 
-function startAnalysisWorker(): Worker<AnalysisJobData, AnalysisResult> {
+async function startAnalysisWorker(): Promise<Worker<AnalysisJobData, AnalysisResult>> {
     const workerId = `analysis-worker:${generateCorrelationId()}`;
 
     logger.info({
@@ -273,7 +273,7 @@ function startAnalysisWorker(): Worker<AnalysisJobData, AnalysisResult> {
         workerId
     }, 'Starting Analysis Worker...');
 
-    const worker = createWorker<AnalysisJobData, AnalysisResult>(ANALYSIS_QUEUE_NAME, processAnalysisJob, { concurrency: 2 });
+    const worker = await createWorker<AnalysisJobData, AnalysisResult>(ANALYSIS_QUEUE_NAME, processAnalysisJob, { concurrency: 2 });
 
     process.on('SIGINT', async () => {
         logger.info('Analysis Worker received SIGINT, shutting down gracefully...');
@@ -293,5 +293,8 @@ function startAnalysisWorker(): Worker<AnalysisJobData, AnalysisResult> {
 export { processAnalysisJob, startAnalysisWorker };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-    startAnalysisWorker();
+    startAnalysisWorker().catch(err => {
+        logger.error({ error: err.message }, 'Failed to start analysis worker');
+        process.exit(1);
+    });
 }

@@ -147,97 +147,176 @@ const connectionOptions: RedisOptions = {
     port: REDIS_PORT,
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
+    lazyConnect: true,
 };
 
-const redisConnection = new Redis(connectionOptions);
-
-redisConnection.on('connect', () => {
-    logger.info('Successfully connected to Redis for BullMQ.');
-});
-
-redisConnection.on('error', (err: Error) => {
-    logger.error({ err }, 'Redis connection error for BullMQ.');
-});
+// Lazy-initialized Redis connection and queues
+let redisConnection: Redis | null = null;
+let _issueQueue: Queue<IssueJobData | CommentJobData> | null = null;
+let _analysisQueue: Queue<AnalysisJobData> | null = null;
+let _indexingQueue: Queue<IndexingJobData> | null = null;
+let isInitialized = false;
 
 export const GITHUB_ISSUE_QUEUE_NAME = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
-
 export const COMMENT_BATCH_DELAY_MS = parseInt(process.env.COMMENT_BATCH_DELAY_MS || '3000', 10);
-
-const issueQueueOptions: QueueOptions = {
-    connection: redisConnection,
-    defaultJobOptions: {
-        attempts: 3,
-        backoff: {
-            type: 'exponential',
-            delay: 2000,
-        },
-        removeOnComplete: {
-            age: 24 * 3600,
-            count: 1000,
-        },
-        removeOnFail: {
-            age: 7 * 24 * 3600,
-        },
-    },
-};
-
-export const issueQueue = new Queue<IssueJobData | CommentJobData>(GITHUB_ISSUE_QUEUE_NAME, issueQueueOptions);
-
-issueQueue.on('error', (err: Error) => {
-    logger.error({ queue: GITHUB_ISSUE_QUEUE_NAME, err }, 'Queue error');
-});
-
 export const ANALYSIS_QUEUE_NAME = process.env.ANALYSIS_QUEUE_NAME || 'analysis-processor';
-
-const analysisQueueOptions: QueueOptions = {
-    connection: redisConnection,
-    defaultJobOptions: {
-        attempts: 2,
-        backoff: {
-            type: 'exponential',
-            delay: 60000,
-        },
-        removeOnComplete: {
-            age: 24 * 3600,
-            count: 1000,
-        },
-        removeOnFail: true,
-    },
-};
-
-export const analysisQueue = new Queue<AnalysisJobData>(ANALYSIS_QUEUE_NAME, analysisQueueOptions);
-
-analysisQueue.on('error', (err: Error) => {
-    logger.error({ queue: ANALYSIS_QUEUE_NAME, err }, 'Analysis Queue error');
-});
-
-// --- Indexing Queue ---
-
 export const INDEXING_QUEUE_NAME = process.env.INDEXING_QUEUE_NAME || 'indexing-processor';
 
-const indexingQueueOptions: QueueOptions = {
-    connection: redisConnection,
-    defaultJobOptions: {
-        attempts: 3,
-        backoff: {
-            type: 'exponential',
-            delay: 30000,
-        },
-        removeOnComplete: {
-            age: 7 * 24 * 3600, // Keep for 7 days
-            count: 500,
-        },
-        removeOnFail: {
-            age: 14 * 24 * 3600, // Keep failed for 14 days for debugging
-        },
-    },
-};
+/**
+ * Initialize Redis connection and queues lazily.
+ * This prevents module-level connections that cause test hangs.
+ */
+async function ensureInitialized(): Promise<void> {
+    if (isInitialized) return;
 
-export const indexingQueue = new Queue<IndexingJobData>(INDEXING_QUEUE_NAME, indexingQueueOptions);
+    redisConnection = new Redis(connectionOptions);
 
-indexingQueue.on('error', (err: Error) => {
-    logger.error({ queue: INDEXING_QUEUE_NAME, err }, 'Indexing Queue error');
+    redisConnection.on('connect', () => {
+        logger.info('Successfully connected to Redis for BullMQ.');
+    });
+
+    redisConnection.on('error', (err: Error) => {
+        logger.error({ err }, 'Redis connection error for BullMQ.');
+    });
+
+    await redisConnection.connect();
+
+    const issueQueueOptions: QueueOptions = {
+        connection: redisConnection,
+        defaultJobOptions: {
+            attempts: 3,
+            backoff: {
+                type: 'exponential',
+                delay: 2000,
+            },
+            removeOnComplete: {
+                age: 24 * 3600,
+                count: 1000,
+            },
+            removeOnFail: {
+                age: 7 * 24 * 3600,
+            },
+        },
+    };
+
+    _issueQueue = new Queue<IssueJobData | CommentJobData>(GITHUB_ISSUE_QUEUE_NAME, issueQueueOptions);
+    _issueQueue.on('error', (err: Error) => {
+        logger.error({ queue: GITHUB_ISSUE_QUEUE_NAME, err }, 'Queue error');
+    });
+
+    const analysisQueueOptions: QueueOptions = {
+        connection: redisConnection,
+        defaultJobOptions: {
+            attempts: 2,
+            backoff: {
+                type: 'exponential',
+                delay: 60000,
+            },
+            removeOnComplete: {
+                age: 24 * 3600,
+                count: 1000,
+            },
+            removeOnFail: true,
+        },
+    };
+
+    _analysisQueue = new Queue<AnalysisJobData>(ANALYSIS_QUEUE_NAME, analysisQueueOptions);
+    _analysisQueue.on('error', (err: Error) => {
+        logger.error({ queue: ANALYSIS_QUEUE_NAME, err }, 'Analysis Queue error');
+    });
+
+    const indexingQueueOptions: QueueOptions = {
+        connection: redisConnection,
+        defaultJobOptions: {
+            attempts: 3,
+            backoff: {
+                type: 'exponential',
+                delay: 30000,
+            },
+            removeOnComplete: {
+                age: 7 * 24 * 3600, // Keep for 7 days
+                count: 500,
+            },
+            removeOnFail: {
+                age: 14 * 24 * 3600, // Keep failed for 14 days for debugging
+            },
+        },
+    };
+
+    _indexingQueue = new Queue<IndexingJobData>(INDEXING_QUEUE_NAME, indexingQueueOptions);
+    _indexingQueue.on('error', (err: Error) => {
+        logger.error({ queue: INDEXING_QUEUE_NAME, err }, 'Indexing Queue error');
+    });
+
+    isInitialized = true;
+    logger.debug('Task queues initialized lazily');
+}
+
+/**
+ * Get the issue queue, initializing if needed.
+ */
+export async function getIssueQueue(): Promise<Queue<IssueJobData | CommentJobData>> {
+    await ensureInitialized();
+    return _issueQueue!;
+}
+
+/**
+ * Get the analysis queue, initializing if needed.
+ */
+export async function getAnalysisQueue(): Promise<Queue<AnalysisJobData>> {
+    await ensureInitialized();
+    return _analysisQueue!;
+}
+
+/**
+ * Get the indexing queue, initializing if needed.
+ */
+export async function getIndexingQueue(): Promise<Queue<IndexingJobData>> {
+    await ensureInitialized();
+    return _indexingQueue!;
+}
+
+// Legacy synchronous exports for backward compatibility
+// These will throw if accessed before initialization
+// Use getIssueQueue(), getAnalysisQueue(), getIndexingQueue() for safe access
+export const issueQueue = new Proxy({} as Queue<IssueJobData | CommentJobData>, {
+    get(_target, prop) {
+        if (!_issueQueue) {
+            throw new Error('issueQueue accessed before initialization. Use getIssueQueue() instead or call ensureInitialized() first.');
+        }
+        return (_issueQueue as unknown as Record<string | symbol, unknown>)[prop];
+    }
 });
+
+export const analysisQueue = new Proxy({} as Queue<AnalysisJobData>, {
+    get(_target, prop) {
+        if (!_analysisQueue) {
+            throw new Error('analysisQueue accessed before initialization. Use getAnalysisQueue() instead or call ensureInitialized() first.');
+        }
+        return (_analysisQueue as unknown as Record<string | symbol, unknown>)[prop];
+    }
+});
+
+export const indexingQueue = new Proxy({} as Queue<IndexingJobData>, {
+    get(_target, prop) {
+        if (!_indexingQueue) {
+            throw new Error('indexingQueue accessed before initialization. Use getIndexingQueue() instead or call ensureInitialized() first.');
+        }
+        return (_indexingQueue as unknown as Record<string | symbol, unknown>)[prop];
+    }
+});
+
+/**
+ * Create a Redis connection for metrics (separate from queue connection).
+ */
+function createMetricsRedis(): Redis {
+    return new Redis({
+        host: REDIS_HOST,
+        port: REDIS_PORT,
+        maxRetriesPerRequest: null,
+        enableReadyCheck: false,
+    });
+}
 
 function getRepoFullName(job: Job<JobData> | undefined | null): string | null {
     if (!job?.data) return null;
@@ -352,15 +431,20 @@ async function updateFailedMetrics(
 
 export type ProcessorFunction<T = JobData, R = JobResult> = (job: Job<T>) => Promise<R>;
 
-export function createWorker<T extends JobData = JobData, R extends JobResult = JobResult>(
+/**
+ * Create a worker for processing jobs. Initializes Redis connection if needed.
+ */
+export async function createWorker<T extends JobData = JobData, R extends JobResult = JobResult>(
     queueName: string,
     processorFunction: ProcessorFunction<T, R>,
     options: WorkerCreateOptions = {}
-): Worker<T, R> {
+): Promise<Worker<T, R>> {
+    await ensureInitialized();
+
     const concurrency = options.concurrency || parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
-    
+
     const workerOptions: WorkerOptions = {
-        connection: redisConnection,
+        connection: redisConnection!,
         concurrency: concurrency,
         autorun: true,
     };
@@ -371,7 +455,7 @@ export function createWorker<T extends JobData = JobData, R extends JobResult = 
         const duration = Date.now() - job.timestamp;
         logger.info({ jobId: job.id, jobName: job.name, result, duration }, 'Job completed successfully');
         try {
-            const metricsRedis = new Redis(connectionOptions);
+            const metricsRedis = createMetricsRedis();
             const repoFullName = getRepoFullName(job as unknown as Job<JobData>);
             await updateCompletedMetrics(metricsRedis, job as unknown as Job<JobData>, result as unknown as JobResult, { duration, repoFullName });
             const issueData = job.data as unknown as IssueJobData;
@@ -402,7 +486,7 @@ export function createWorker<T extends JobData = JobData, R extends JobResult = 
             attemptsMade: job?.attemptsMade
         }, 'Job failed');
         try {
-            const metricsRedis = new Redis(connectionOptions);
+            const metricsRedis = createMetricsRedis();
             const repoFullName = getRepoFullName(job as unknown as Job<JobData> | undefined);
             await updateFailedMetrics(metricsRedis, job as unknown as Job<JobData> | undefined, err, repoFullName);
             const activity: ActivityLog = {
@@ -443,11 +527,32 @@ export function createWorker<T extends JobData = JobData, R extends JobResult = 
 export async function shutdownQueue(): Promise<void> {
     logger.info('Shutting down queue...');
 
+    if (!isInitialized) {
+        logger.info('Queue was never initialized, nothing to shutdown');
+        return;
+    }
+
     try {
-        await issueQueue.close();
-        await analysisQueue.close();
-        await indexingQueue.close();
-        await redisConnection.quit();
+        if (_issueQueue) {
+            await _issueQueue.close();
+        }
+        if (_analysisQueue) {
+            await _analysisQueue.close();
+        }
+        if (_indexingQueue) {
+            await _indexingQueue.close();
+        }
+        if (redisConnection) {
+            await redisConnection.quit();
+        }
+
+        // Reset state
+        _issueQueue = null;
+        _analysisQueue = null;
+        _indexingQueue = null;
+        redisConnection = null;
+        isInitialized = false;
+
         logger.info('Queue shutdown complete');
     } catch (err) {
         logger.error({ err }, 'Error during queue shutdown');
