@@ -6,10 +6,19 @@ import logger from '../utils/logger.js';
 import fs from 'fs';
 import { execa } from 'execa';
 
-const redis = new Redis({
-  host: process.env.REDIS_HOST || 'redis',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-});
+// Lazy-initialized Redis connection
+let redis: Redis | null = null;
+
+function getRedis(): Redis {
+  if (!redis) {
+    redis = new Redis({
+      host: process.env.REDIS_HOST || '127.0.0.1',
+      port: parseInt(process.env.REDIS_PORT || '6379', 10),
+      lazyConnect: true,
+    });
+  }
+  return redis;
+}
 
 interface PromptData {
   prompt?: string;
@@ -230,7 +239,7 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
 
   try {
     const promptKey = `execution:prompt:session:${sessionId}`;
-    const promptData: PromptData = JSON.parse(await redis.get(promptKey) || '{}');
+    const promptData: PromptData = JSON.parse(await getRedis().get(promptKey) || '{}');
     const originalPrompt = promptData.prompt || 'Original prompt not found.';
     const issueRef = promptData.issueRef;
 
@@ -312,7 +321,7 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     ) as string;
 
     const githubTokenKey = `github:token:${task.repository}`;
-    const tokenData = await redis.get(githubTokenKey);
+    const tokenData = await getRedis().get(githubTokenKey);
     const githubToken = tokenData || process.env.GH_TOKEN || '';
 
     const [repoOwner, repoName] = task.repository.split('/');

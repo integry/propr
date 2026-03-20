@@ -1,7 +1,7 @@
 import { Redis } from 'ioredis';
 import logger from './logger.js';
 import { db } from '../db/connection.js';
-import { analysisQueue } from '../queue/taskQueue.js';
+import { getAnalysisQueue } from '../queue/taskQueue.js';
 import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
 import { getCachePricingMultipliers } from './tokenCalculation.js';
@@ -243,7 +243,8 @@ async function enqueueAnalysisTask(
     correlationId?: string
 ): Promise<void> {
     try {
-        await analysisQueue.add('analyzeExecution', {
+        const queue = await getAnalysisQueue();
+        await queue.add('analyzeExecution', {
             taskId,
             executionId,
             sessionId: sessionId || 'unknown',

@@ -324,7 +324,7 @@ async function scanAndQueueRepositories(): Promise<void> {
     }
 }
 
-function startIndexingWorker(): Worker<IndexingJobData, IndexingResult> {
+async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingResult>> {
     const workerId = `indexing-worker:${generateCorrelationId()}`;
 
     logger.info({
@@ -335,7 +335,7 @@ function startIndexingWorker(): Worker<IndexingJobData, IndexingResult> {
         reindexIntervalMs: REINDEX_INTERVAL_MS
     }, 'Starting Indexing Worker...');
 
-    const worker = createWorker<IndexingJobData, IndexingResult>(
+    const worker = await createWorker<IndexingJobData, IndexingResult>(
         INDEXING_QUEUE_NAME,
         processIndexingJob,
         { concurrency: 1 }
@@ -399,5 +399,8 @@ function startIndexingWorker(): Worker<IndexingJobData, IndexingResult> {
 export { processIndexingJob, startIndexingWorker, scanAndQueueRepositories };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-    startIndexingWorker();
+    startIndexingWorker().catch(err => {
+        logger.error({ error: err.message }, 'Failed to start indexing worker');
+        process.exit(1);
+    });
 }
