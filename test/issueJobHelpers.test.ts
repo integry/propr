@@ -605,3 +605,318 @@ describe('calculateUsageLimitDelay', () => {
         });
     });
 });
+
+/**
+ * Pure function extracted from issueJobHelpers.ts for testing.
+ * Tests the core logic of determineResultStatus.
+ *
+ * The original function is at: src/jobs/issueJobHelpers.ts:410
+ */
+
+/**
+ * Minimal interface for ClaudeCodeResponse used in determineResultStatus.
+ * Only the 'success' property is used by the function.
+ */
+interface ClaudeCodeResponse {
+    success: boolean;
+    // Other properties exist but are not used by determineResultStatus
+}
+
+/**
+ * Minimal interface for PostProcessingResult used in determineResultStatus.
+ * Only the 'pr' property is used by the function.
+ */
+interface PostProcessingResult {
+    success: boolean;
+    pr: {
+        number: number;
+        url: string;
+        title: string;
+    } | null;
+    updatedLabels: string[];
+    error?: string;
+}
+
+/**
+ * Determines the result status based on Claude execution and post-processing results.
+ *
+ * @param claudeResult - The Claude Code execution result (or null if failed)
+ * @param postProcessingResult - The post-processing result (or null if not performed)
+ * @returns One of: 'claude_processing_failed', 'complete_with_pr', 'claude_success_no_changes'
+ */
+function determineResultStatus(
+    claudeResult: ClaudeCodeResponse | null,
+    postProcessingResult: PostProcessingResult | null
+): string {
+    if (!claudeResult?.success) return 'claude_processing_failed';
+    if (postProcessingResult?.pr) return 'complete_with_pr';
+    return 'claude_success_no_changes';
+}
+
+describe('determineResultStatus', () => {
+    describe('claude_processing_failed status', () => {
+        test('should return claude_processing_failed when claudeResult is null', () => {
+            const result = determineResultStatus(null, null);
+            assert.strictEqual(result, 'claude_processing_failed');
+        });
+
+        test('should return claude_processing_failed when claudeResult.success is false', () => {
+            const claudeResult: ClaudeCodeResponse = { success: false };
+            const result = determineResultStatus(claudeResult, null);
+            assert.strictEqual(result, 'claude_processing_failed');
+        });
+
+        test('should return claude_processing_failed when claudeResult.success is false even with PR', () => {
+            const claudeResult: ClaudeCodeResponse = { success: false };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 123, url: 'https://github.com/test/repo/pull/123', title: 'Test PR' },
+                updatedLabels: []
+            };
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'claude_processing_failed');
+        });
+
+        test('should return claude_processing_failed when claudeResult is null with postProcessingResult', () => {
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 123, url: 'https://github.com/test/repo/pull/123', title: 'Test PR' },
+                updatedLabels: []
+            };
+            const result = determineResultStatus(null, postProcessingResult);
+            assert.strictEqual(result, 'claude_processing_failed');
+        });
+    });
+
+    describe('complete_with_pr status', () => {
+        test('should return complete_with_pr when Claude succeeded and PR was created', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 123, url: 'https://github.com/test/repo/pull/123', title: 'Test PR' },
+                updatedLabels: []
+            };
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'complete_with_pr');
+        });
+
+        test('should return complete_with_pr with minimal PR object', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 1, url: '', title: '' },
+                updatedLabels: []
+            };
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'complete_with_pr');
+        });
+
+        test('should return complete_with_pr even when postProcessing success is false but PR exists', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const postProcessingResult: PostProcessingResult = {
+                success: false,
+                pr: { number: 123, url: 'https://github.com/test/repo/pull/123', title: 'Test PR' },
+                updatedLabels: [],
+                error: 'Some error occurred'
+            };
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'complete_with_pr');
+        });
+
+        test('should return complete_with_pr with labels and PR', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 456, url: 'https://github.com/test/repo/pull/456', title: 'Feature PR' },
+                updatedLabels: ['enhancement', 'reviewed']
+            };
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'complete_with_pr');
+        });
+    });
+
+    describe('claude_success_no_changes status', () => {
+        test('should return claude_success_no_changes when Claude succeeded but no PR', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: null,
+                updatedLabels: []
+            };
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'claude_success_no_changes');
+        });
+
+        test('should return claude_success_no_changes when postProcessingResult is null', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const result = determineResultStatus(claudeResult, null);
+            assert.strictEqual(result, 'claude_success_no_changes');
+        });
+
+        test('should return claude_success_no_changes with labels but no PR', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: null,
+                updatedLabels: ['reviewed', 'no-changes-needed']
+            };
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'claude_success_no_changes');
+        });
+
+        test('should return claude_success_no_changes when postProcessing has error but no PR', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const postProcessingResult: PostProcessingResult = {
+                success: false,
+                pr: null,
+                updatedLabels: [],
+                error: 'Failed to create PR'
+            };
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'claude_success_no_changes');
+        });
+    });
+
+    describe('priority/order of status determination', () => {
+        test('should check Claude success before checking for PR', () => {
+            // If Claude failed, it should return claude_processing_failed
+            // even if somehow there's a PR in the result
+            const claudeResult: ClaudeCodeResponse = { success: false };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: { number: 123, url: 'https://github.com/test/repo/pull/123', title: 'Test PR' },
+                updatedLabels: []
+            };
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'claude_processing_failed');
+        });
+
+        test('should check PR existence before defaulting to no_changes', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+
+            // With PR
+            const withPR: PostProcessingResult = {
+                success: true,
+                pr: { number: 1, url: '', title: '' },
+                updatedLabels: []
+            };
+            assert.strictEqual(determineResultStatus(claudeResult, withPR), 'complete_with_pr');
+
+            // Without PR
+            const withoutPR: PostProcessingResult = {
+                success: true,
+                pr: null,
+                updatedLabels: []
+            };
+            assert.strictEqual(determineResultStatus(claudeResult, withoutPR), 'claude_success_no_changes');
+        });
+    });
+
+    describe('edge cases', () => {
+        test('should handle both arguments being null', () => {
+            const result = determineResultStatus(null, null);
+            assert.strictEqual(result, 'claude_processing_failed');
+        });
+
+        test('should handle claudeResult with undefined success property', () => {
+            // TypeScript wouldn't normally allow this, but testing defensive behavior
+            const claudeResult = {} as ClaudeCodeResponse;
+            const result = determineResultStatus(claudeResult, null);
+            assert.strictEqual(result, 'claude_processing_failed');
+        });
+
+        test('should handle postProcessingResult with undefined pr property', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            // TypeScript wouldn't normally allow this, but testing defensive behavior
+            const postProcessingResult = { success: true, updatedLabels: [] } as PostProcessingResult;
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'claude_success_no_changes');
+        });
+
+        test('should return consistent type (string)', () => {
+            const results = [
+                determineResultStatus(null, null),
+                determineResultStatus({ success: false }, null),
+                determineResultStatus({ success: true }, null),
+                determineResultStatus({ success: true }, {
+                    success: true,
+                    pr: { number: 1, url: '', title: '' },
+                    updatedLabels: []
+                })
+            ];
+
+            results.forEach(result => {
+                assert.strictEqual(typeof result, 'string');
+            });
+        });
+    });
+
+    describe('return value validation', () => {
+        test('should only return one of three possible values', () => {
+            const validStatuses = ['claude_processing_failed', 'complete_with_pr', 'claude_success_no_changes'];
+
+            // Test various input combinations
+            const testCases: Array<[ClaudeCodeResponse | null, PostProcessingResult | null]> = [
+                [null, null],
+                [{ success: false }, null],
+                [{ success: true }, null],
+                [{ success: true }, { success: true, pr: null, updatedLabels: [] }],
+                [{ success: true }, { success: true, pr: { number: 1, url: '', title: '' }, updatedLabels: [] }],
+                [{ success: false }, { success: true, pr: { number: 1, url: '', title: '' }, updatedLabels: [] }],
+            ];
+
+            testCases.forEach(([claudeResult, postProcessingResult]) => {
+                const result = determineResultStatus(claudeResult, postProcessingResult);
+                assert.ok(
+                    validStatuses.includes(result),
+                    `Expected one of ${JSON.stringify(validStatuses)}, got "${result}"`
+                );
+            });
+        });
+    });
+
+    describe('real-world scenario tests', () => {
+        test('should handle successful issue resolution with PR', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: {
+                    number: 42,
+                    url: 'https://github.com/owner/repo/pull/42',
+                    title: 'Fix: Resolve issue #123'
+                },
+                updatedLabels: ['fixed', 'ready-for-review']
+            };
+
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'complete_with_pr');
+        });
+
+        test('should handle Claude execution timeout/failure', () => {
+            const claudeResult: ClaudeCodeResponse = { success: false };
+
+            const result = determineResultStatus(claudeResult, null);
+            assert.strictEqual(result, 'claude_processing_failed');
+        });
+
+        test('should handle issue that requires no code changes', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+            const postProcessingResult: PostProcessingResult = {
+                success: true,
+                pr: null,
+                updatedLabels: ['documentation', 'no-code-changes']
+            };
+
+            const result = determineResultStatus(claudeResult, postProcessingResult);
+            assert.strictEqual(result, 'claude_success_no_changes');
+        });
+
+        test('should handle analysis-only issues without changes', () => {
+            const claudeResult: ClaudeCodeResponse = { success: true };
+
+            // No post-processing was even attempted
+            const result = determineResultStatus(claudeResult, null);
+            assert.strictEqual(result, 'claude_success_no_changes');
+        });
+    });
+});
