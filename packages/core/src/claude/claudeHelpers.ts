@@ -4,16 +4,19 @@ import fs from 'fs';
 import logger from '../utils/logger.js';
 import { generateClaudePrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
 import { executeDockerCommand, ExecutionResult } from './docker/dockerExecutor.js';
+import { parseResetTimeFromMessage, calculateNextRoundHourPlus2Minutes } from '../utils/scheduling.js';
 
 export class UsageLimitError extends Error {
     resetTimestamp: number;
     retryable: boolean;
+    rawErrorMessage?: string;
 
-    constructor(message: string, resetTimestamp: number) {
+    constructor(message: string, resetTimestamp: number, rawErrorMessage?: string) {
         super(message);
         this.name = 'UsageLimitError';
         this.resetTimestamp = resetTimestamp;
         this.retryable = true;
+        this.rawErrorMessage = rawErrorMessage;
     }
 }
 
@@ -96,6 +99,7 @@ interface JsonLineMessage {
     message?: {
         id?: string;
         model?: string;
+        content?: Array<{ type: string; text?: string }>;
     };
     session_id?: string;
     conversation_id?: string;
@@ -105,6 +109,7 @@ interface JsonLineMessage {
     total_cost_usd?: number;
     cost_usd?: number;
     usage?: TokenUsage;
+    error?: string;
 }
 
 export function buildClaudePrompt(options: BuildClaudePromptOptions): string {
@@ -286,11 +291,20 @@ export function parseStreamJsonOutput(result: ExecutionResult): ClaudeOutput {
 
     const lines = result.stdout.split('\n').filter(line => line.trim());
     for (const line of lines) {
+        let jsonLine: JsonLineMessage;
         try {
-            const jsonLine: JsonLineMessage = JSON.parse(line);
-            processJsonLine(jsonLine, claudeOutput, result.messageTimestamps);
+            jsonLine = JSON.parse(line);
         } catch {
             continue;
+        }
+
+        try {
+            processJsonLine(jsonLine, claudeOutput, result.messageTimestamps);
+        } catch (error) {
+            // Propagate usage limit detection to trigger upstream requeue logic.
+            if (error instanceof UsageLimitError) {
+                throw error;
+            }
         }
     }
 
@@ -302,6 +316,30 @@ function processJsonLine(
     claudeOutput: ClaudeOutput,
     messageTimestamps: Map<string, string>
 ): void {
+    // Check for new rate limit format: {"type": "assistant", "error": "rate_limit", "message": {...}}
+    if (jsonLine.type === 'assistant' && jsonLine.error === 'rate_limit') {
+        // Extract message text from content array
+        let messageText = '';
+        if (jsonLine.message?.content && Array.isArray(jsonLine.message.content)) {
+            for (const item of jsonLine.message.content) {
+                if (item.type === 'text' && item.text) {
+                    messageText = item.text;
+                    break;
+                }
+            }
+        }
+
+        // Try to parse reset time from the message, or use next round hour + 2 minutes
+        const resetTimestamp = parseResetTimeFromMessage(messageText) || calculateNextRoundHourPlus2Minutes();
+
+        logger.warn({ messageText, resetTimestamp }, 'Claude rate limit reached (new format). Throwing specific error for requeue.');
+        throw new UsageLimitError(
+            `Claude usage limit reached. Limit resets at timestamp ${resetTimestamp}.`,
+            resetTimestamp,
+            messageText || 'Rate limit reached'
+        );
+    }
+
     if (jsonLine.type === 'user' || jsonLine.type === 'assistant') {
         const messageKey = jsonLine.message?.id || `${jsonLine.type}-${JSON.stringify(jsonLine).substring(0, 100)}`;
         const timestamp = messageTimestamps?.get(messageKey);

@@ -15,7 +15,7 @@ export type { PRValidationResult, PRInfo, ValidatePRCreationOptions, CurrentIssu
 export { IdempotentGitHubOps, IdempotentGitOps } from './utils/idempotentOps.js';
 export { estimateTokens, countTokens, getUsageStats, getDetailedUsageStats, getCachePricingMultipliers, calculateCostWithCachePricing } from './utils/tokenCalculation.js';
 export type { DetailedUsageStats, CachePricingMultipliers } from './utils/tokenCalculation.js';
-export { formatResetTime, addModelSpecificDelay } from './utils/scheduling.js';
+export { formatResetTime, addModelSpecificDelay, parseResetTimeFromMessage, calculateNextRoundHourPlus2Minutes, formatRetryTime, hoursUntil } from './utils/scheduling.js';
 export { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from './utils/commentFilters.js';
 export { ensureGitRepository } from './utils/git/gitValidation.js';
 export { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from './utils/github/labelOperations.js';
@@ -113,6 +113,8 @@ export { findRelevantFiles } from './services/relevanceService.js';
 export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';
 export { generatePlan, refinePlan, generateContextPreview, checkoutBranch, PlanningFailedError, BranchNotFoundError, buildFullContext } from './services/taskPlanningService.js';
 export type { GeneratePlanOptions, RefinePlanOptions, RefinePlanResult, RefinePlanEstimation, GenerateContextPreviewOptions, PreviewResult, PreviewStats, SmartFileSelection, TaskDraftConfig, Granularity } from './services/taskPlanningService.js';
+export { pauseDraft, resumeDraft, isDraftPaused, getDraftPauseState } from './services/taskPlanning/draftPauseResume.js';
+export type { PauseResumeResult } from './services/taskPlanning/draftPauseResume.js';
 export { estimateLlmDuration } from './utils/llmEstimation.js';
 export type { EstimationResult, EstimationOptions } from './utils/llmEstimation.js';
 export type { Base64Image, ContextRepository } from './services/planningHelpers.js';

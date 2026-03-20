@@ -268,6 +268,9 @@ export interface DraftWithPlan extends PlannerDraft {
   task_title?: string;
   title?: string;
   name?: string;
+  // Pause/resume state for plan execution
+  paused?: boolean;
+  paused_at?: string | null;
 }
 
 export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
@@ -339,6 +342,8 @@ export interface DraftListItem {
   updated_at: string;
   created_at: string;
   issue_summary?: IssueSummary | null;
+  paused?: boolean;
+  paused_at?: string | null;
 }
 
 export interface GetDraftsOptions {
@@ -507,6 +512,36 @@ export interface ReviseDraftResponse {
  */
 export const reviseDraft = async (draftId: string): Promise<ReviseDraftResponse> => {
   const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/revise`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export interface PauseResumeResponse {
+  paused: boolean;
+  pausedAt: string | null;
+}
+
+/**
+ * Pause plan execution. When paused, the current task continues to completion
+ * but the next pending issue won't be automatically triggered.
+ */
+export const pauseDraft = async (draftId: string): Promise<PauseResumeResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/pause`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+/**
+ * Resume plan execution. After resuming, pending issues can be triggered again.
+ */
+export const resumeDraft = async (draftId: string): Promise<PauseResumeResponse> => {
+  const response = await fetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/resume`, {
     method: 'POST',
     credentials: 'include'
   });

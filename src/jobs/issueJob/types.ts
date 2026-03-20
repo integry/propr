@@ -22,6 +22,7 @@ export interface JobContext {
   taskId: string;
   AI_PROCESSING_TAG: string;
   AI_DONE_TAG: string;
+  AI_WAITING_TAG: string;
   AI_PRIMARY_TAG: string;
   PR_LABEL: string;
 }

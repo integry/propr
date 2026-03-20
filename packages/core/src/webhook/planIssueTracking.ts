@@ -11,6 +11,7 @@ import {
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
 import { loadPrLabel } from '../config/configManager.js';
+import { isDraftPaused } from '../services/taskPlanning/draftPauseResume.js';
 import type {
     IssuesEvent,
     IssueCommentEvent,
@@ -282,6 +283,13 @@ export async function triggerNextPendingIssue(
     log: ReturnType<typeof logger.withCorrelation>
 ): Promise<void> {
     try {
+        // Check if the draft is paused - if so, don't trigger the next issue
+        const paused = await isDraftPaused(draftId);
+        if (paused) {
+            log.info({ draftId }, 'Skipping next issue trigger - draft execution is paused');
+            return;
+        }
+
         // Get all issues in the same plan
         const planIssues = await getPlanIssuesByDraft(draftId);
 
