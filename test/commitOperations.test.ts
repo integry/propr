@@ -1,5 +1,8 @@
-import { test, describe } from 'node:test';
+import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
+import fs from 'fs-extra';
+import path from 'path';
+import os from 'os';
 
 interface CommitMessageObject {
     claudeSuggested?: string;
@@ -185,6 +188,226 @@ describe('resolveCommitMessage', () => {
                 result,
                 'fix(ai): Resolve issue #808 - \n\nImplemented by Claude Code. Full conversation log in PR comment.'
             );
+        });
+    });
+});
+
+/**
+ * Re-implementation of validateWorktree for testing purposes.
+ * This mirrors the function in packages/core/src/git/commitOperations.ts
+ */
+async function validateWorktree(worktreePath: string, _issueNumber?: number): Promise<void> {
+    const gitPath = path.join(worktreePath, '.git');
+    const worktreeExists = await fs.pathExists(worktreePath);
+    const gitExists = await fs.pathExists(gitPath);
+
+    if (!worktreeExists) throw new Error(`Worktree path does not exist: ${worktreePath}`);
+    if (!gitExists) throw new Error(`Not a git repository (or any of the parent directories): ${worktreePath}`);
+
+    const gitStats = await fs.stat(gitPath);
+    if (gitStats.isDirectory()) {
+        // .git is a directory - this is a normal git repo, not a worktree
+        // The original function logs a warning but doesn't throw
+    } else if (gitStats.isFile()) {
+        const gitFileContent = await fs.readFile(gitPath, 'utf8');
+
+        // Verify the gitdir path actually exists (critical check)
+        const match = gitFileContent.match(/gitdir:\s*(.+)/);
+        if (match) {
+            const gitdirPath = match[1].trim();
+            if (!await fs.pathExists(gitdirPath)) {
+                throw new Error(`Worktree metadata was deleted: ${gitdirPath} no longer exists. The worktree .git file points to a non-existent directory.`);
+            }
+        }
+    }
+}
+
+describe('validateWorktree', () => {
+    let testDir: string;
+
+    beforeEach(async () => {
+        // Create a temporary directory for each test
+        testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'validateWorktree-test-'));
+    });
+
+    afterEach(async () => {
+        // Clean up the temporary directory after each test
+        if (testDir && await fs.pathExists(testDir)) {
+            await fs.remove(testDir);
+        }
+    });
+
+    describe('when given a valid worktree', () => {
+        test('passes for valid worktree with .git file pointing to existing gitdir', async () => {
+            // Create a mock worktree structure with a .git file
+            const worktreePath = path.join(testDir, 'worktree');
+            const gitdirPath = path.join(testDir, 'gitdir');
+
+            await fs.ensureDir(worktreePath);
+            await fs.ensureDir(gitdirPath);
+            await fs.writeFile(path.join(worktreePath, '.git'), `gitdir: ${gitdirPath}`);
+
+            // Should not throw
+            await assert.doesNotReject(async () => {
+                await validateWorktree(worktreePath, 123);
+            });
+        });
+
+        test('passes for valid worktree with .git directory (normal repo)', async () => {
+            // Create a mock normal git repo structure with .git directory
+            const worktreePath = path.join(testDir, 'repo');
+            const gitDirPath = path.join(worktreePath, '.git');
+
+            await fs.ensureDir(gitDirPath);
+
+            // Should not throw - .git as directory is valid (just logged as warning)
+            await assert.doesNotReject(async () => {
+                await validateWorktree(worktreePath, 456);
+            });
+        });
+
+        test('passes with issueNumber parameter', async () => {
+            const worktreePath = path.join(testDir, 'worktree-with-issue');
+            const gitdirPath = path.join(testDir, 'gitdir-with-issue');
+
+            await fs.ensureDir(worktreePath);
+            await fs.ensureDir(gitdirPath);
+            await fs.writeFile(path.join(worktreePath, '.git'), `gitdir: ${gitdirPath}`);
+
+            // Should pass with issue number
+            await assert.doesNotReject(async () => {
+                await validateWorktree(worktreePath, 789);
+            });
+        });
+
+        test('passes without issueNumber parameter', async () => {
+            const worktreePath = path.join(testDir, 'worktree-no-issue');
+            const gitdirPath = path.join(testDir, 'gitdir-no-issue');
+
+            await fs.ensureDir(worktreePath);
+            await fs.ensureDir(gitdirPath);
+            await fs.writeFile(path.join(worktreePath, '.git'), `gitdir: ${gitdirPath}`);
+
+            // Should pass without issue number
+            await assert.doesNotReject(async () => {
+                await validateWorktree(worktreePath);
+            });
+        });
+    });
+
+    describe('when given an invalid worktree', () => {
+        test('fails for missing worktree path', async () => {
+            const nonExistentPath = path.join(testDir, 'does-not-exist');
+
+            await assert.rejects(
+                async () => validateWorktree(nonExistentPath, 123),
+                {
+                    message: `Worktree path does not exist: ${nonExistentPath}`
+                }
+            );
+        });
+
+        test('fails for missing .git file or directory', async () => {
+            // Create worktree directory but no .git
+            const worktreePath = path.join(testDir, 'no-git');
+            await fs.ensureDir(worktreePath);
+
+            await assert.rejects(
+                async () => validateWorktree(worktreePath, 456),
+                {
+                    message: `Not a git repository (or any of the parent directories): ${worktreePath}`
+                }
+            );
+        });
+
+        test('fails for deleted gitdir path (worktree metadata deleted during execution)', async () => {
+            // Create worktree with .git file pointing to non-existent gitdir
+            const worktreePath = path.join(testDir, 'corrupted-worktree');
+            const nonExistentGitdir = path.join(testDir, 'deleted-gitdir');
+
+            await fs.ensureDir(worktreePath);
+            // Write .git file pointing to a gitdir that doesn't exist
+            await fs.writeFile(path.join(worktreePath, '.git'), `gitdir: ${nonExistentGitdir}`);
+
+            await assert.rejects(
+                async () => validateWorktree(worktreePath, 789),
+                (error: Error) => {
+                    assert.ok(error.message.includes('Worktree metadata was deleted'));
+                    assert.ok(error.message.includes(nonExistentGitdir));
+                    assert.ok(error.message.includes('no longer exists'));
+                    return true;
+                }
+            );
+        });
+    });
+
+    describe('edge cases', () => {
+        test('handles .git file with extra whitespace in gitdir path', async () => {
+            const worktreePath = path.join(testDir, 'whitespace-test');
+            const gitdirPath = path.join(testDir, 'gitdir-whitespace');
+
+            await fs.ensureDir(worktreePath);
+            await fs.ensureDir(gitdirPath);
+            // Write .git file with extra whitespace
+            await fs.writeFile(path.join(worktreePath, '.git'), `gitdir:   ${gitdirPath}   `);
+
+            // Should pass - function trims whitespace from gitdir path
+            await assert.doesNotReject(async () => {
+                await validateWorktree(worktreePath);
+            });
+        });
+
+        test('handles .git file without gitdir line', async () => {
+            const worktreePath = path.join(testDir, 'no-gitdir-line');
+
+            await fs.ensureDir(worktreePath);
+            // Write .git file without gitdir line
+            await fs.writeFile(path.join(worktreePath, '.git'), 'some other content');
+
+            // Should pass - no gitdir to validate
+            await assert.doesNotReject(async () => {
+                await validateWorktree(worktreePath);
+            });
+        });
+
+        test('handles empty .git file', async () => {
+            const worktreePath = path.join(testDir, 'empty-git-file');
+
+            await fs.ensureDir(worktreePath);
+            // Write empty .git file
+            await fs.writeFile(path.join(worktreePath, '.git'), '');
+
+            // Should pass - no gitdir to validate
+            await assert.doesNotReject(async () => {
+                await validateWorktree(worktreePath);
+            });
+        });
+
+        test('handles gitdir path with special characters', async () => {
+            const worktreePath = path.join(testDir, 'special-chars-test');
+            const gitdirPath = path.join(testDir, 'gitdir-with-special chars_and.dots');
+
+            await fs.ensureDir(worktreePath);
+            await fs.ensureDir(gitdirPath);
+            await fs.writeFile(path.join(worktreePath, '.git'), `gitdir: ${gitdirPath}`);
+
+            await assert.doesNotReject(async () => {
+                await validateWorktree(worktreePath);
+            });
+        });
+
+        test('handles absolute paths correctly', async () => {
+            const worktreePath = path.join(testDir, 'absolute-path-test');
+            const gitdirPath = path.join(testDir, 'absolute-gitdir');
+
+            await fs.ensureDir(worktreePath);
+            await fs.ensureDir(gitdirPath);
+            // Use absolute path
+            await fs.writeFile(path.join(worktreePath, '.git'), `gitdir: ${path.resolve(gitdirPath)}`);
+
+            await assert.doesNotReject(async () => {
+                await validateWorktree(worktreePath);
+            });
         });
     });
 });
